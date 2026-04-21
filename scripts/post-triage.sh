@@ -62,6 +62,7 @@ case "${ACTION}" in
 
     echo "Applying label..."
     gh issue edit "${ISSUE_NUMBER}" --repo "${REPO}" --add-label "needs-info"
+    gh issue edit "${ISSUE_NUMBER}" --repo "${REPO}" --remove-label "ready-to-triage" 2>/dev/null || true
     ;;
 
   duplicate)
@@ -74,6 +75,7 @@ case "${ACTION}" in
 
     echo "Applying label and closing..."
     gh issue edit "${ISSUE_NUMBER}" --repo "${REPO}" --add-label "duplicate"
+    gh issue edit "${ISSUE_NUMBER}" --repo "${REPO}" --remove-label "ready-to-triage" 2>/dev/null || true
     gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "not planned"
     ;;
 
@@ -87,6 +89,7 @@ case "${ACTION}" in
 
     echo "Applying label..."
     gh issue edit "${ISSUE_NUMBER}" --repo "${REPO}" --add-label "ready-to-code"
+    gh issue edit "${ISSUE_NUMBER}" --repo "${REPO}" --remove-label "ready-to-triage" 2>/dev/null || true
     ;;
 
   *)
