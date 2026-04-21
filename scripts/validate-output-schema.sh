@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # validate-output-schema.sh — Validate agent output against a JSON Schema.
 #
-# Generic script used by the harness validation_loop (ADR 0020).
+# Generic script used by the harness validation_loop (ADR 0022).
 # Works for any agent — the schema path is configured in the harness.
 #
 # Required env vars:
@@ -22,18 +22,26 @@ if [[ ! -d "${OUTPUT_DIR}" ]]; then
   exit 1
 fi
 
-# Find all JSON files in the output directory.
-JSON_FILES=()
-while IFS= read -r -d '' f; do
-  JSON_FILES+=("$f")
-done < <(find "${OUTPUT_DIR}" -maxdepth 1 -name '*.json' -print0)
+# Prefer triage-result.json by name; fall back to any .json file.
+if [[ -f "${OUTPUT_DIR}/triage-result.json" ]]; then
+  RESULT_FILE="${OUTPUT_DIR}/triage-result.json"
+else
+  JSON_FILES=()
+  while IFS= read -r -d '' f; do
+    JSON_FILES+=("$f")
+  done < <(find "${OUTPUT_DIR}" -maxdepth 1 -name '*.json' -print0)
 
-if [[ ${#JSON_FILES[@]} -eq 0 ]]; then
-  echo "FAIL: no JSON files found in ${OUTPUT_DIR}/"
-  exit 1
+  if [[ ${#JSON_FILES[@]} -eq 0 ]]; then
+    echo "FAIL: no JSON files found in ${OUTPUT_DIR}/"
+    exit 1
+  fi
+
+  if [[ ${#JSON_FILES[@]} -gt 1 ]]; then
+    echo "WARN: multiple JSON files found, using ${JSON_FILES[0]}"
+  fi
+
+  RESULT_FILE="${JSON_FILES[0]}"
 fi
-
-RESULT_FILE="${JSON_FILES[0]}"
 echo "Validating: ${RESULT_FILE} against ${FULLSEND_OUTPUT_SCHEMA}"
 
 # Validate JSON is parseable.
@@ -45,7 +53,7 @@ fi
 # Validate against schema using Python's jsonschema.
 # jsonschema is required — fail hard if not installed.
 if ! python3 -c "import jsonschema" 2>/dev/null; then
-  echo "FAIL: python3 jsonschema package is not installed (required by ADR 0020)"
+  echo "FAIL: python3 jsonschema package is not installed (required by ADR 0022)"
   exit 1
 fi
 

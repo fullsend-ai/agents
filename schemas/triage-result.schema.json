@@ -2,8 +2,9 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "triage-result.schema.json",
   "title": "Triage Agent Result",
-  "description": "Structured output from the triage agent, validated by the harness before the post-script runs (ADR 0020).",
+  "description": "Structured output from the triage agent, validated by the harness before the post-script runs (ADR 0022).",
   "type": "object",
+  "additionalProperties": false,
   "required": ["action", "reasoning", "comment"],
   "properties": {
     "action": {
@@ -72,7 +73,8 @@
         "recommended_fix": { "type": "string", "minLength": 1 },
         "proposed_test_case": { "type": "string", "minLength": 1 },
         "information_gaps": { "type": "array", "items": { "type": "string" } }
-      }
+      },
+      "additionalProperties": false
     }
   }
 }
