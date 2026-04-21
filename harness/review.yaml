@@ -1,0 +1,29 @@
+agent: agents/review.md
+model: sonnet
+image: ghcr.io/fullsend-ai/fullsend-code:latest
+policy: policies/review.yaml
+
+skills:
+  - skills/pr-review
+  - skills/code-review
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/workspace/.gcp-credentials.json
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  max_iterations: 2
+
+post_script: scripts/post-review.sh
+
+runner_env:
+  REVIEW_TOKEN: "${REVIEW_TOKEN}"
+  REPO_FULL_NAME: "${REPO_FULL_NAME}"
+  PR_NUMBER: "${PR_NUMBER}"
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/review-result.schema.json
+
+timeout_minutes: 20
