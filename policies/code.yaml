@@ -46,7 +46,6 @@ network_policies:
         enforcement: enforce
         access: allow
     binaries:
-      - path: "**/curl"
       - path: "**/claude"
       - path: "**/node"
 
@@ -88,8 +87,6 @@ network_policies:
         enforcement: enforce
         access: allow
     binaries:
-      - path: "**/curl"
-      - path: "**/wget"
       - path: "**/pre-commit"
 
   package_registries:

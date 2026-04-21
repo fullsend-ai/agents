@@ -39,6 +39,8 @@ PROTECTED_PATHS=(
   "scripts/"
   "api-servers/"
   "CODEOWNERS"
+  ".pre-commit-config.yaml"
+  ".gitattributes"
 )
 
 GITLEAKS_VERSION="8.30.1"
@@ -60,6 +62,7 @@ fi
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
+TARGET_BRANCH="${TARGET_BRANCH:-main}"
 
 echo "::add-mask::${PUSH_TOKEN}"
 
@@ -79,12 +82,13 @@ echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
 # ---------------------------------------------------------------------------
 # 2. Protected-path check
 # ---------------------------------------------------------------------------
-MERGE_BASE="$(git merge-base origin/main HEAD 2>/dev/null)" || MERGE_BASE=""
+MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
 if [ -n "${MERGE_BASE}" ]; then
   CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
 else
-  echo "::warning::Could not determine merge-base — falling back to HEAD~1 check"
-  CHANGED_FILES="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+  echo "::warning::Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
+  CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+    || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then
@@ -140,16 +144,15 @@ if [ -f .pre-commit-config.yaml ]; then
 
   if ! command -v pre-commit >/dev/null 2>&1; then
     echo "Installing pre-commit..."
-    pip install pre-commit 2>/dev/null \
-      || pip3 install pre-commit 2>/dev/null \
-      || pipx install pre-commit 2>/dev/null \
-      || true
+    pip install "pre-commit==4.5.1" 2>/dev/null \
+      || pip3 install "pre-commit==4.5.1" 2>/dev/null \
+      || pipx install "pre-commit==4.5.1" 2>/dev/null \
+      || echo "::warning::Failed to install pre-commit"
   fi
 
   if command -v pre-commit >/dev/null 2>&1; then
-    CHANGED_FILE_LIST="$(echo "${CHANGED_FILES}" | tr '\n' ' ')"
-    # shellcheck disable=SC2086
-    if pre-commit run --files ${CHANGED_FILE_LIST}; then
+    mapfile -t changed_array <<< "${CHANGED_FILES}"
+    if pre-commit run --files "${changed_array[@]}"; then
       echo "Pre-commit passed — all hooks clean"
     else
       echo "::error::BLOCKED — pre-commit hooks failed on agent's changes"
@@ -172,7 +175,7 @@ git remote set-url origin \
   "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
 echo "Pushing branch ${BRANCH}..."
-git push --force-with-lease -u origin "${BRANCH}" 2>&1
+git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
 
 # ---------------------------------------------------------------------------
 # 6. Create PR
@@ -248,7 +251,7 @@ Closes #${ISSUE_NUMBER}
 PR_URL="$(gh pr create \
   --repo "${REPO_FULL_NAME}" \
   --head "${BRANCH}" \
-  --base main \
+  --base "${TARGET_BRANCH}" \
   --title "${PR_TITLE}" \
   --body "${PR_BODY}" \
   --label "${PR_LABEL}" 2>&1)"

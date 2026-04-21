@@ -610,10 +610,12 @@ Closes #<number>"
 which gitlint &>/dev/null && gitlint --commit HEAD
 ```
 
-If gitlint fails, **amend immediately** to fix:
+If gitlint fails, **undo and recommit** with a corrected message (`--amend`
+is blocked by `disallowedTools`):
 
 ```bash
-git commit --amend -m "<fixed title>
+git reset --soft HEAD~1
+git commit -s -m "<fixed title>
 
 <fixed body — respect ALL line-length rules>"
 gitlint --commit HEAD
@@ -621,7 +623,7 @@ gitlint --commit HEAD
 
 Common gitlint failures:
 - **B1 body-max-line-length** on `Signed-off-by:` — the auto-generated
-  trailer is too long. Re-amend without `-s` and either add a shorter
+  trailer is too long. Recommit without `-s` and either add a shorter
   sign-off manually or omit it if the repo doesn't require DCO.
 - **T1 title-max-length** — shorten the title.
 - **B1 body-max-line-length** on prose — re-wrap the offending line.

@@ -36,5 +36,6 @@ runner_env:
   REPO_FULL_NAME: "${REPO_FULL_NAME}"
   ISSUE_NUMBER: "${ISSUE_NUMBER}"
   REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+  TARGET_BRANCH: "${TARGET_BRANCH}"
 
 timeout_minutes: 25
