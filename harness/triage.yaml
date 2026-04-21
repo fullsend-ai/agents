@@ -1,6 +1,6 @@
 agent: agents/triage.md
 model: opus
-image: quay.io/manonru/fullsend-exp:latest
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/triage.yaml
 
 host_files:
