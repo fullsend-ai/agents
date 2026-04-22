@@ -49,6 +49,29 @@ echo "Using result: ${RESULT_FILE}"
 
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 
+# Guard against stale reviews: if the PR head has moved since the agent
+# reviewed it (e.g. force-push during the race window after cancel-in-progress),
+# refuse to post a review against unreviewed code.
+if [ "${ACTION}" != "failure" ]; then
+  REVIEWED_SHA=$(jq -r '.head_sha // empty' "${RESULT_FILE}")
+  CURRENT_SHA=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json headRefOid --jq '.headRefOid')
+  if [ -n "${REVIEWED_SHA}" ] && [ "${REVIEWED_SHA}" != "${CURRENT_SHA}" ]; then
+    echo ":⚠:Review stale: reviewed ${REVIEWED_SHA} but HEAD is now ${CURRENT_SHA}"
+    gh pr comment "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --body "$(cat <<EOF
+## Review: automated review
+
+**Outcome:** failure
+**Reason:** stale-head
+
+The review agent reviewed commit \`${REVIEWED_SHA}\` but the PR HEAD is now \`${CURRENT_SHA}\`. This review was discarded to avoid approving unreviewed code.
+
+<sub>Posted by <a href="https://github.com/fullsend-ai/fullsend">fullsend</a> review agent</sub>
+EOF
+)"
+    exit 1
+  fi
+fi
+
 BODY_FILE=$(mktemp)
 trap 'rm -f "${BODY_FILE}"' EXIT
 
