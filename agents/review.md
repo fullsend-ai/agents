@@ -5,7 +5,9 @@ description: >-
   alignment, and style.
 tools: >-
   Read, Grep, Glob, Bash
-model: sonnet
+disallowedTools: >-
+  Write, Edit, NotebookEdit
+model: opus
 skills:
   - code-review
   - pr-review
