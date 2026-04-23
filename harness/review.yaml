@@ -18,8 +18,6 @@ host_files:
   - src: env/review.env
     dest: /tmp/workspace/.env.d/review.env
     expand: true
-  - src: scripts/scan-unicode
-    dest: /tmp/workspace/bin/scan-unicode
 
 validation_loop:
   script: scripts/validate-output-schema.sh

@@ -102,29 +102,12 @@ step 3.
 
 - Non-rendering Unicode in changed files
 
-  Run the helper using the `SCAN_UNICODE` environment variable (or
-  `scripts/scan-unicode` as a fallback). Before starting, verify that it
-  exists:
-
-    ```bash
-      test -x "${SCAN_UNICODE:-scripts/scan-unicode}"
-    ```
-
-  If `scan-unicode` is missing, STOP. Do not improvise a replacement or skip
-  scanning.
+  Use `fullsend scan context` to scan for non-rendering Unicode. The
+  PostToolUse unicode hook also automatically sanitizes tool results at
+  runtime (tag characters, zero-width, bidi overrides, ANSI/OSC escapes).
 
   ```bash
-  # Write PR title to temp file and scan
-  gh pr view <number> --json title --jq '.title' > /tmp/pr-title.txt
-  "${SCAN_UNICODE:-scripts/scan-unicode}" /tmp/pr-title.txt
-
-  # Write PR body to temp file and scan
-  gh pr view <number> --json body --jq '.body' > /tmp/pr-body.txt
-  "${SCAN_UNICODE:-scripts/scan-unicode}" /tmp/pr-body.txt
-
-  # Write commit messages to temp file and scan
-  gh pr view <number> --json commits --jq '.commits[].messageHeadline' > /tmp/commit-msgs.txt
-  "${SCAN_UNICODE:-scripts/scan-unicode}" /tmp/commit-msgs.txt
+  fullsend scan context .
   ```
 
 #### Scope authorization
