@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient"]
+      "enum": ["insufficient", "duplicate", "sufficient", "feature-request"]
     },
     "reasoning": {
       "type": "string",
@@ -43,6 +43,18 @@
     {
       "if": { "properties": { "action": { "const": "sufficient" } }, "required": ["action"] },
       "then": { "required": ["clarity_scores", "triage_summary"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "feature-request" } }, "required": ["action"] },
+      "then": {
+        "not": {
+          "anyOf": [
+            { "required": ["clarity_scores"] },
+            { "required": ["triage_summary"] },
+            { "required": ["duplicate_of"] }
+          ]
+        }
+      }
     }
   ],
   "$defs": {

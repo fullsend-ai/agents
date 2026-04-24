@@ -132,6 +132,22 @@ Information is sufficient for a developer to investigate and fix.
 }
 ```
 
+### Action: `feature-request`
+
+The issue describes desired new behavior rather than a defect in existing functionality. The reporter expects something that has never been implemented.
+
+**When to use:** The described behavior clearly never existed in the product. This is not a regression — no prior version had this capability.
+
+**When NOT to use:** If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
+
+```json
+{
+  "action": "feature-request",
+  "reasoning": "Brief explanation of why this is a feature request, not a bug — what behavior the reporter expects and why it has never existed",
+  "comment": "A professional, non-dismissive comment explaining that this describes new functionality rather than a defect. Acknowledge the request is reasonable and explain it will be relabeled for product/engineering prioritization."
+}
+```
+
 ## Questioning guidelines
 
 - Ask ONE question per invocation. The most diagnostic question — the one that would move the lowest clarity dimension the most.
