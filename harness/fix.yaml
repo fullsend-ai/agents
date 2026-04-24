@@ -13,6 +13,11 @@ image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/fix.yaml
 
 pre_script: scripts/pre-fix.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  max_iterations: 2
+
 post_script: scripts/post-fix.sh
 
 host_files:
@@ -41,5 +46,7 @@ runner_env:
   HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
   FIX_ITERATION: "${FIX_ITERATION}"
   REVIEW_BODY_FILE: "${REVIEW_BODY_FILE}"
+  FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/fix-result.schema.json
+  FULLSEND_OUTPUT_FILE: fix-result.json
 
 timeout_minutes: 25

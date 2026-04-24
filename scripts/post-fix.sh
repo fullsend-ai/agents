@@ -180,6 +180,10 @@ if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
     "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
+  # Plain push (no --force-with-lease). Agents always create new
+  # commits (amend is in disallowedTools), so force-push is unnecessary
+  # and plain push is safer (refuses diverged branches). post-code.sh
+  # still uses --force-with-lease; tracked in #411.
   echo "Pushing branch ${BRANCH}..."
   git push -u origin -- "${BRANCH}" 2>&1
   echo "Branch ${BRANCH} pushed successfully"
@@ -197,13 +201,15 @@ PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
 # Find fix-result.json in the output directory.
 # RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
 # before we cd'd into REPO_DIR. The agent writes its structured output to
-# iteration-<N>/output/fix-result.json within runDir.
+# iteration-<N>/output/fix-result.json within runDir. Uses glob order
+# (naturally ascending iteration numbers) to find the last iteration,
+# matching the pattern in post-triage.sh.
 RESULT_FILE=""
-# shellcheck disable=SC2086
-FOUND="$(ls -t "${RUN_DIR}"/iteration-*/output/fix-result.json 2>/dev/null | head -1 || true)"
-if [ -n "${FOUND}" ]; then
-  RESULT_FILE="${FOUND}"
-fi
+for dir in "${RUN_DIR}"/iteration-*/output; do
+  if [ -f "${dir}/fix-result.json" ]; then
+    RESULT_FILE="${dir}/fix-result.json"
+  fi
+done
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   echo "::warning::No fix-result.json found — skipping summary comment"
@@ -252,6 +258,6 @@ echo ""
 echo "Fix post-script complete:"
 echo "  Branch: ${BRANCH:-none}"
 echo "  PR: #${PR_NUMBER}"
-echo "  Pushed: ${NO_PUSH/true/no}"
+if [ "${NO_PUSH}" = "true" ]; then echo "  Pushed: no"; else echo "  Pushed: yes"; fi
 echo "  Trigger: ${TRIGGER_SOURCE}"
 echo "  Iteration: ${ITERATION} of ${CAP}"
