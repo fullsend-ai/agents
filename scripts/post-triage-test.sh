@@ -121,6 +121,23 @@ run_test "invalid-json-fails" \
   "" \
   "true"
 
+run_test "feature-request-posts-comment" \
+  '{"action":"feature-request","reasoning":"CSV export has never existed","comment":"This describes a new feature rather than a bug. The ability to export to CSV is not part of the current functionality. Relabeling for prioritization."}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "feature-request-applies-label" \
+  '{"action":"feature-request","reasoning":"CSV export has never existed","comment":"This describes a new feature rather than a bug."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=type/feature --silent"
+
+run_test "feature-request-removes-bug-labels" \
+  '{"action":"feature-request","reasoning":"CSV export has never existed","comment":"This describes a new feature rather than a bug."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/bug -X DELETE --silent"
+
+run_test "feature-request-no-comment-fails" \
+  '{"action":"feature-request","reasoning":"CSV export has never existed"}' \
+  "" \
+  "true"
+
 # --- Summary ---
 
 echo ""
