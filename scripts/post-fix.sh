@@ -88,12 +88,12 @@ else
   NO_PUSH=false
 fi
 
-MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
-if [ -n "${MERGE_BASE}" ]; then
-  CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
-else
-  CHANGED_FILES="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
-fi
+# Scope to the agent's commit(s) only — not the entire branch. The fix agent
+# always creates new commits (never amends), so HEAD~1..HEAD captures exactly
+# the agent's work. Using MERGE_BASE..HEAD would include files the original PR
+# author changed, causing false positives in the protected-path check when the
+# PR legitimately modifies .github/ or other protected paths.
+CHANGED_FILES="$(git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 
 if [ -z "${CHANGED_FILES}" ] && [ "${NO_PUSH}" = "false" ]; then
   echo "::warning::No changed files in agent's commit(s) — nothing to push"
@@ -107,14 +107,16 @@ if [ "${NO_PUSH}" = "false" ]; then
   echo "Changed files:"
   echo "${CHANGED_FILES}" | sed 's/^/  /'
 
-  for pattern in "${PROTECTED_PATHS[@]}"; do
-    MATCHES="$(echo "${CHANGED_FILES}" | grep "^${pattern}" || true)"
-    if [ -n "${MATCHES}" ]; then
-      echo "::error::BLOCKED — agent modified protected path: ${pattern}"
-      echo "${MATCHES}" | sed 's/^/  ::error::  /'
-      exit 1
-    fi
-  done
+  while IFS= read -r file; do
+    [ -z "${file}" ] && continue
+    for pattern in "${PROTECTED_PATHS[@]}"; do
+      if [[ "${file}" == ${pattern}* ]]; then
+        echo "::error::BLOCKED — agent modified protected path: ${pattern}"
+        echo "  ::error::  ${file}"
+        exit 1
+      fi
+    done
+  done <<< "${CHANGED_FILES}"
 
   echo "Protected-path check passed"
 fi
@@ -137,11 +139,7 @@ if [ "${NO_PUSH}" = "false" ]; then
     export PATH="${HOME}/.local/bin:${PATH}"
   fi
 
-  if [ -n "${MERGE_BASE}" ]; then
-    SCAN_RANGE="${MERGE_BASE}..HEAD"
-  else
-    SCAN_RANGE="HEAD~1..HEAD"
-  fi
+  SCAN_RANGE="HEAD~1..HEAD"
 
   gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact
   echo "Secret scan passed — no leaks in agent's commit(s)"
