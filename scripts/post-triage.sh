@@ -101,11 +101,37 @@ case "${ACTION}" in
       echo "ERROR: action is 'sufficient' but no comment provided"
       exit 1
     fi
+
+    # Guard: reject sufficient results that contain information_gaps.
+    # If the agent identified open questions, it should have used "insufficient".
+    GAP_COUNT=$(jq '.triage_summary.information_gaps // [] | length' "${RESULT_FILE}")
+    if [[ "${GAP_COUNT}" -gt 0 ]]; then
+      echo "ERROR: action is 'sufficient' but triage_summary contains ${GAP_COUNT} information_gaps — open questions must block triage"
+      exit 1
+    fi
+
     echo "Posting triage summary..."
     printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 
     echo "Applying label..."
     add_label "ready-to-code"
+    ;;
+
+  feature-request)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'feature-request' but no comment provided"
+      exit 1
+    fi
+    echo "Posting feature-request comment..."
+    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+
+    echo "Removing bug-related labels..."
+    for label in bug bug-report type/bug; do
+      gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${label}" -X DELETE --silent 2>/dev/null || true
+    done
+
+    echo "Applying type/feature label..."
+    add_label "type/feature"
     ;;
 
   *)
