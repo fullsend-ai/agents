@@ -24,7 +24,9 @@ if [[ ! -d "${OUTPUT_DIR}" ]]; then
   exit 1
 fi
 
-RESULT_FILE="${OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE:-agent-result.json}"
+_output_file="${FULLSEND_OUTPUT_FILE:-agent-result.json}"
+_output_file="$(basename "${_output_file}")"
+RESULT_FILE="${OUTPUT_DIR}/${_output_file}"
 if [[ ! -f "${RESULT_FILE}" ]]; then
   echo "FAIL: ${RESULT_FILE} not found"
   exit 1

@@ -78,7 +78,7 @@ run_test_custom_filename() {
 
   local test_dir="${TMPDIR}/${test_name}"
   mkdir -p "${test_dir}/output"
-  echo "${json_content}" > "${test_dir}/output/${output_file}"
+  echo "${json_content}" > "${test_dir}/output/$(basename "${output_file}")"
 
   local exit_code=0
   FULLSEND_OUTPUT_SCHEMA="${schema}" FULLSEND_OUTPUT_FILE="${output_file}" \
@@ -135,6 +135,13 @@ run_test "additional-properties-rejected" \
 run_test "invalid-category-rejected" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"invented-category","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done."}' \
   "false"
+
+# --- FULLSEND_OUTPUT_FILE path traversal guard ---
+run_test_custom_filename "path-traversal-stripped" \
+  '{"pr_number":42,"summary":"Fixed 1 issue.","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check","path":"pkg/handler.go"}],"files_changed":["pkg/handler.go"]}' \
+  "../../etc/fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
 
 # --- Summary ---
 
