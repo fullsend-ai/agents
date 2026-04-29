@@ -268,7 +268,7 @@ echo "  PR: #${PR_NUMBER}"
 if [ "${NO_PUSH}" = "true" ]; then echo "  Pushed: no"; else echo "  Pushed: yes"; fi
 echo "  Trigger: ${TRIGGER_SOURCE}"
 if [ "${TRIGGER_SOURCE:-bot}" = "human" ]; then
-  echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap)"
+  echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap, total across bot+human)"
 else
   echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap)"
 fi

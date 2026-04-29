@@ -137,11 +137,11 @@ should try a fundamentally different approach rather than repeating the same
 fix strategy.
 
 Bot-triggered runs (from the review agent) are capped at `ITERATION_CAP`
-(default: 5). When this cap is reached, the `needs-human` label is added and
-the autonomous loop stops. A human can then direct the agent with `/fix`
-commands up to `ITERATION_CAP_HUMAN` (default: 10) total iterations. This
-ensures humans are never locked out of the agent after a bot loop exhausts
-its budget.
+(default: 5). When the iteration count approaches this cap, the `needs-human`
+label is added and the autonomous loop stops on the next attempt. A human can
+then direct the agent with `/fix` commands up to `ITERATION_CAP_HUMAN`
+(default: 10) total iterations (bot + human combined). This ensures humans
+are never locked out of the agent after a bot loop exhausts its budget.
 
 ## Detailed fix procedure
 
