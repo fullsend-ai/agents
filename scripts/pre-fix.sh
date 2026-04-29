@@ -8,13 +8,13 @@
 # Required environment variables (set by the workflow):
 #   PR_NUMBER          — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
-#   TRIGGER_SOURCE     — must be "bot" or "human"
+#   TRIGGER_SOURCE     — GitHub username that triggered the fix (usernames ending in [bot] are bot triggers)
 #
 # Optional environment variables:
 #   FIX_ITERATION      — current iteration count (default: 1)
 #   ITERATION_CAP      — max bot-triggered iterations (default: 5)
 #   ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
-#   HUMAN_INSTRUCTION  — instruction text (only when TRIGGER_SOURCE=human)
+#   HUMAN_INSTRUCTION  — instruction text (only when TRIGGER_SOURCE doesn't end in [bot])
 set -euo pipefail
 
 errors=0
