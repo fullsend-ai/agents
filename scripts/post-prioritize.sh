@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# post-prioritize.sh — Write RICE scores to the project board and post a reasoning comment.
+#
+# Runs on the host after sandbox cleanup. Working directory is the fullsend
+# run output directory (e.g., /tmp/fullsend/agent-prioritize-<id>/).
+#
+# Required env vars:
+#   GITHUB_ISSUE_URL  — HTML URL of the issue
+#   GH_TOKEN          — GitHub token with project write + issues write scope
+#   ORG               — GitHub organization
+#   PROJECT_NUMBER    — Project board number
+
+set -euo pipefail
+
+# Source issue URL from pre-script output (fullsend doesn't propagate
+# pre-script env exports to the post-script process).
+if [[ -f /tmp/pre-prioritize-output.env ]]; then
+  # shellcheck disable=SC1091
+  source /tmp/pre-prioritize-output.env
+fi
+
+: "${GITHUB_ISSUE_URL:?GITHUB_ISSUE_URL must be set}"
+: "${GH_TOKEN:?GH_TOKEN must be set}"
+: "${ORG:?ORG must be set}"
+: "${PROJECT_NUMBER:?PROJECT_NUMBER must be set}"
+
+# Find the result JSON from the last iteration.
+RESULT_FILE=""
+for dir in iteration-*/output; do
+  if [[ -f "${dir}/agent-result.json" ]]; then
+    RESULT_FILE="${dir}/agent-result.json"
+  fi
+done
+
+if [[ -z "${RESULT_FILE}" ]]; then
+  echo "ERROR: agent-result.json not found in any iteration output directory"
+  exit 1
+fi
+
+echo "Reading RICE result from: ${RESULT_FILE}"
+
+if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
+  echo "ERROR: ${RESULT_FILE} is not valid JSON"
+  exit 1
+fi
+
+# Extract scores.
+REACH=$(jq -r '.reach' "${RESULT_FILE}")
+IMPACT=$(jq -r '.impact' "${RESULT_FILE}")
+CONFIDENCE=$(jq -r '.confidence' "${RESULT_FILE}")
+EFFORT=$(jq -r '.effort' "${RESULT_FILE}")
+
+# Compute final RICE score: (R * I * C) / E
+SCORE=$(python3 -c "
+r, i, c, e = ${REACH}, ${IMPACT}, ${CONFIDENCE}, ${EFFORT}
+print(round(r * i * c / e, 2))
+")
+
+echo "RICE scores: R=${REACH} I=${IMPACT} C=${CONFIDENCE} E=${EFFORT} → Score=${SCORE}"
+
+# Extract reasoning.
+REASONING_REACH=$(jq -r '.reasoning.reach' "${RESULT_FILE}")
+REASONING_IMPACT=$(jq -r '.reasoning.impact' "${RESULT_FILE}")
+REASONING_CONFIDENCE=$(jq -r '.reasoning.confidence' "${RESULT_FILE}")
+REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}")
+
+# --- Write scores to the project board ---
+
+# Resolve project and item IDs.
+PROJECT_ID=$(gh project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
+
+# Get issue node ID from URL.
+REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
+ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
+ISSUE_NODE_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
+
+# Find the project item ID for this issue.
+ITEM_ID=$(gh api graphql -f query='
+  query($projectId: ID!) {
+    node(id: $projectId) {
+      ... on ProjectV2 {
+        items(first: 100) {
+          nodes {
+            id
+            content { ... on Issue { url } }
+          }
+        }
+      }
+    }
+  }
+' -f projectId="${PROJECT_ID}" \
+  | jq -r --arg url "${GITHUB_ISSUE_URL}" \
+    '.data.node.items.nodes[] | select(.content.url == $url) | .id')
+
+if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
+  echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board"
+  exit 1
+fi
+
+# Get field IDs for all RICE fields.
+FIELDS_JSON=$(gh project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json)
+
+get_field_id() {
+  echo "${FIELDS_JSON}" | jq -r --arg name "$1" '.fields[] | select(.name == $name) | .id'
+}
+
+REACH_FIELD_ID=$(get_field_id "RICE Reach")
+IMPACT_FIELD_ID=$(get_field_id "RICE Impact")
+CONFIDENCE_FIELD_ID=$(get_field_id "RICE Confidence")
+EFFORT_FIELD_ID=$(get_field_id "RICE Effort")
+SCORE_FIELD_ID=$(get_field_id "RICE Score")
+
+# Update each field on the project item.
+# Uses --input - with jq-built JSON variables to ensure proper Float coercion.
+# The gh CLI's -F flag does not reliably coerce strings to GraphQL Float.
+update_field() {
+  local field_id="$1"
+  local value="$2"
+  gh api graphql --input - <<GRAPHQL_EOF
+{
+  "query": "mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: Float!) { updateProjectV2ItemFieldValue(input: { projectId: \$projectId, itemId: \$itemId, fieldId: \$fieldId, value: { number: \$value } }) { projectV2Item { id } } }",
+  "variables": $(jq -n --arg pid "${PROJECT_ID}" --arg iid "${ITEM_ID}" --arg fid "${field_id}" --argjson val "${value}" '{projectId: $pid, itemId: $iid, fieldId: $fid, value: $val}')
+}
+GRAPHQL_EOF
+}
+
+echo "Writing scores to project board..."
+update_field "${REACH_FIELD_ID}" "${REACH}"
+update_field "${IMPACT_FIELD_ID}" "${IMPACT}"
+update_field "${CONFIDENCE_FIELD_ID}" "${CONFIDENCE}"
+update_field "${EFFORT_FIELD_ID}" "${EFFORT}"
+update_field "${SCORE_FIELD_ID}" "${SCORE}"
+echo "Project fields updated."
+
+# --- Rerank items by RICE Score (descending, nulls at bottom) ---
+
+echo "Reranking project board by RICE Score..."
+
+# Fetch all items with their RICE Score values.
+RANKED_JSON=$(gh api graphql -f query='
+  query($projectId: ID!) {
+    node(id: $projectId) {
+      ... on ProjectV2 {
+        items(first: 100) {
+          nodes {
+            id
+            fieldValues(first: 20) {
+              nodes {
+                ... on ProjectV2ItemFieldNumberValue {
+                  field { ... on ProjectV2Field { id } }
+                  number
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+' -f projectId="${PROJECT_ID}")
+
+# Build a sorted list: scored items descending by score, then unscored items.
+SORTED_IDS=$(echo "${RANKED_JSON}" | jq -r --arg fid "${SCORE_FIELD_ID}" '
+  [.data.node.items.nodes[] | {
+    id: .id,
+    score: ([.fieldValues.nodes[] | select(.field.id == $fid) | .number] | first)
+  }]
+  | ([ .[] | select(.score != null) ] | sort_by(-.score))
+    + [ .[] | select(.score == null) ]
+  | .[].id
+')
+
+# Reposition items in order using updateProjectV2ItemPosition.
+AFTER_ID=""
+for item_id in ${SORTED_IDS}; do
+  gh api graphql --input - <<RERANK_EOF > /dev/null
+{
+  "query": "mutation(\$projectId: ID!, \$itemId: ID!, \$afterId: ID) { updateProjectV2ItemPosition(input: { projectId: \$projectId, itemId: \$itemId, afterId: \$afterId }) { items(first: 1) { nodes { id } } } }",
+  "variables": $(jq -n --arg pid "${PROJECT_ID}" --arg iid "${item_id}" --arg aid "${AFTER_ID}" '{projectId: $pid, itemId: $iid, afterId: (if $aid == "" then null else $aid end)}')
+}
+RERANK_EOF
+  AFTER_ID="${item_id}"
+done
+
+echo "Board reranked by RICE Score."
+
+# --- Post reasoning comment ---
+
+COMMENT=$(cat <<COMMENT_EOF
+<!-- fullsend:prioritize-agent -->
+**RICE Priority Score: ${SCORE}**
+
+<details>
+<summary>Score breakdown</summary>
+
+| Dimension | Score | Reasoning |
+|-----------|-------|-----------|
+| **Reach** | ${REACH} | ${REASONING_REACH} |
+| **Impact** | ${IMPACT} | ${REASONING_IMPACT} |
+| **Confidence** | ${CONFIDENCE} | ${REASONING_CONFIDENCE} |
+| **Effort** | ${EFFORT} | ${REASONING_EFFORT} |
+
+**Formula:** (${REACH} x ${IMPACT} x ${CONFIDENCE}) / ${EFFORT} = **${SCORE}**
+
+</details>
+COMMENT_EOF
+)
+
+if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
+  exit 1
+fi
+
+echo "Posting RICE comment..."
+printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:prioritize-agent -->" --token "${GH_TOKEN}" --result -
+echo "Post-prioritize complete."
