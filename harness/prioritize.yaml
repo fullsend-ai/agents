@@ -3,6 +3,11 @@ model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
 policy: policies/prioritize.yaml
 
+# No skills mounted yet. The agent prompt encourages opportunistic use of
+# skills like customer-research when available — adding them here later
+# will make them discoverable inside the sandbox.
+skills: []
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /tmp/workspace/.env.d/gcp-vertex.env

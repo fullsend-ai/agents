@@ -12,17 +12,24 @@
 
 set -euo pipefail
 
-# Source issue URL from pre-script output (fullsend doesn't propagate
+# Read issue URL from pre-script output (fullsend doesn't propagate
 # pre-script env exports to the post-script process).
+# Reads the value directly instead of sourcing to avoid executing arbitrary shell.
 if [[ -f /tmp/pre-prioritize-output.env ]]; then
-  # shellcheck disable=SC1091
-  source /tmp/pre-prioritize-output.env
+  GITHUB_ISSUE_URL=$(grep -oP '(?<=GITHUB_ISSUE_URL=")[^"]+' /tmp/pre-prioritize-output.env || true)
+  export GITHUB_ISSUE_URL
 fi
 
 : "${GITHUB_ISSUE_URL:?GITHUB_ISSUE_URL must be set}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
 : "${ORG:?ORG must be set}"
 : "${PROJECT_NUMBER:?PROJECT_NUMBER must be set}"
+
+# Validate URL format early, before any parsing or API calls.
+if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
+  exit 1
+fi
 
 # Find the result JSON from the last iteration.
 RESULT_FILE=""
@@ -51,28 +58,26 @@ CONFIDENCE=$(jq -r '.confidence' "${RESULT_FILE}")
 EFFORT=$(jq -r '.effort' "${RESULT_FILE}")
 
 # Compute final RICE score: (R * I * C) / E
-SCORE=$(python3 -c "
-r, i, c, e = ${REACH}, ${IMPACT}, ${CONFIDENCE}, ${EFFORT}
-print(round(r * i * c / e, 2))
-")
+SCORE=$(jq -n --argjson r "${REACH}" --argjson i "${IMPACT}" \
+  --argjson c "${CONFIDENCE}" --argjson e "${EFFORT}" \
+  '(($r * $i * $c / $e) * 100 | round) / 100')
 
 echo "RICE scores: R=${REACH} I=${IMPACT} C=${CONFIDENCE} E=${EFFORT} → Score=${SCORE}"
 
-# Extract reasoning.
-REASONING_REACH=$(jq -r '.reasoning.reach' "${RESULT_FILE}")
-REASONING_IMPACT=$(jq -r '.reasoning.impact' "${RESULT_FILE}")
-REASONING_CONFIDENCE=$(jq -r '.reasoning.confidence' "${RESULT_FILE}")
-REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}")
+# Extract reasoning (escape pipe chars to avoid breaking the markdown table).
+REASONING_REACH=$(jq -r '.reasoning.reach' "${RESULT_FILE}" | sed 's/|/\\|/g')
+REASONING_IMPACT=$(jq -r '.reasoning.impact' "${RESULT_FILE}" | sed 's/|/\\|/g')
+REASONING_CONFIDENCE=$(jq -r '.reasoning.confidence' "${RESULT_FILE}" | sed 's/|/\\|/g')
+REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}" | sed 's/|/\\|/g')
 
 # --- Write scores to the project board ---
 
 # Resolve project and item IDs.
 PROJECT_ID=$(gh project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
 
-# Get issue node ID from URL.
+# Parse repo and issue number from URL.
 REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
 ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
-ISSUE_NODE_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
 
 # Find the project item ID for this issue.
 ITEM_ID=$(gh api graphql -f query='
@@ -205,11 +210,6 @@ COMMENT=$(cat <<COMMENT_EOF
 </details>
 COMMENT_EOF
 )
-
-if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
-  exit 1
-fi
 
 echo "Posting RICE comment..."
 printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:prioritize-agent -->" --token "${GH_TOKEN}" --result -

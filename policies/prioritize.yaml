@@ -14,11 +14,6 @@ network_policies:
   vertex_ai:
     name: vertex-ai
     endpoints:
-      - host: "*.github.com"
-        port: 443
-        protocol: tcp
-        enforcement: enforce
-        access: allow
       - host: "*.googleapis.com"
         port: 443
         protocol: tcp
@@ -27,4 +22,21 @@ network_policies:
     binaries:
       - path: "**/curl"
       - path: "**/claude"
+      - path: "**/node"
+
+  github_api:
+    name: github-api
+    endpoints:
+      - host: "api.github.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "github.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/gh"
       - path: "**/node"
