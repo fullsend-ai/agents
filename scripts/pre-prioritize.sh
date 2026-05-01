@@ -121,8 +121,7 @@ OLDEST=$(echo "${ITEMS_JSON}" | jq -r --arg fid "${SCORE_FIELD_ID}" '
    | select(.updatedAt != null)
   ]
   | sort_by(.updatedAt)
-  | first
-  | "\(.updatedAt)\t\(.url)"
+  | if length == 0 then empty else first | "\(.updatedAt)\t\(.url)" end
 ')
 
 if [[ -z "${OLDEST}" || "${OLDEST}" == "null" ]]; then
