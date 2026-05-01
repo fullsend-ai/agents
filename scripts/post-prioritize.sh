@@ -144,63 +144,9 @@ update_field "${EFFORT_FIELD_ID}" "${EFFORT}"
 update_field "${SCORE_FIELD_ID}" "${SCORE}"
 echo "Project fields updated."
 
-# --- Rerank items by RICE Score (descending, nulls at bottom) ---
-
-echo "Reranking project board by RICE Score..."
-
-# Fetch all items with their RICE Score values.
-RANKED_JSON=$(gh api graphql -f query='
-  query($projectId: ID!) {
-    node(id: $projectId) {
-      ... on ProjectV2 {
-        items(first: 100) {
-          nodes {
-            id
-            fieldValues(first: 20) {
-              nodes {
-                ... on ProjectV2ItemFieldNumberValue {
-                  field { ... on ProjectV2Field { id } }
-                  number
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-' -f projectId="${PROJECT_ID}")
-
-# Warn if we hit the pagination limit.
-RANKED_COUNT=$(echo "${RANKED_JSON}" | jq '[.data.node.items.nodes[]] | length')
-if [[ "${RANKED_COUNT}" -ge 100 ]]; then
-  echo "WARNING: project board has ${RANKED_COUNT}+ items; reranking only covers the first 100."
-fi
-
-# Build a sorted list: scored items descending by score, then unscored items.
-SORTED_IDS=$(echo "${RANKED_JSON}" | jq -r --arg fid "${SCORE_FIELD_ID}" '
-  [.data.node.items.nodes[] | {
-    id: .id,
-    score: ([.fieldValues.nodes[] | select(.field.id == $fid) | .number] | first)
-  }]
-  | ([ .[] | select(.score != null) ] | sort_by(-.score))
-    + [ .[] | select(.score == null) ]
-  | .[].id
-')
-
-# Reposition items in order using updateProjectV2ItemPosition.
-AFTER_ID=""
-for item_id in ${SORTED_IDS}; do
-  gh api graphql --input - <<RERANK_EOF > /dev/null
-{
-  "query": "mutation(\$projectId: ID!, \$itemId: ID!, \$afterId: ID) { updateProjectV2ItemPosition(input: { projectId: \$projectId, itemId: \$itemId, afterId: \$afterId }) { items(first: 1) { nodes { id } } } }",
-  "variables": $(jq -n --arg pid "${PROJECT_ID}" --arg iid "${item_id}" --arg aid "${AFTER_ID}" '{projectId: $pid, itemId: $iid, afterId: (if $aid == "" then null else $aid end)}')
-}
-RERANK_EOF
-  AFTER_ID="${item_id}"
-done
-
-echo "Board reranked by RICE Score."
+# Board reranking by RICE Score is deferred — the Projects V2 board supports
+# sorting by custom fields natively, avoiding N sequential API mutations and
+# secondary rate limit risk. See future work in the PR description.
 
 # --- Post reasoning comment ---
 
