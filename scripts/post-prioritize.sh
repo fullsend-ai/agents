@@ -122,6 +122,13 @@ CONFIDENCE_FIELD_ID=$(get_field_id "RICE Confidence")
 EFFORT_FIELD_ID=$(get_field_id "RICE Effort")
 SCORE_FIELD_ID=$(get_field_id "RICE Score")
 
+for fid_var in REACH_FIELD_ID IMPACT_FIELD_ID CONFIDENCE_FIELD_ID EFFORT_FIELD_ID SCORE_FIELD_ID; do
+  if [[ -z "${!fid_var}" ]]; then
+    echo "ERROR: ${fid_var} not found on project board. Run scripts/setup-prioritize.sh first."
+    exit 1
+  fi
+done
+
 # Update each field on the project item.
 # Uses --input - with jq-built JSON variables to ensure proper Float coercion.
 # The gh CLI's -F flag does not reliably coerce strings to GraphQL Float.
