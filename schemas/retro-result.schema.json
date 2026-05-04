@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "retro-result.schema.json",
+  "title": "Retro Agent Result",
+  "description": "Structured output from the retro agent, validated by the harness before the post-script runs (ADR 0022).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["summary", "proposals"],
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384,
+      "description": "Markdown summary to post as a comment on the originating PR/issue. Links to each filed proposal issue."
+    },
+    "proposals": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/proposal" },
+      "description": "List of improvement proposals. Each becomes a GitHub issue."
+    }
+  },
+  "$defs": {
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target_repo", "title", "what_happened", "what_could_go_better", "proposed_change", "validation_criteria"],
+      "properties": {
+        "target_repo": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$",
+          "description": "Full owner/repo where the issue should be filed."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Concise issue title."
+        },
+        "what_happened": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Timeline of events with links to logs, PR comments, and agent runs."
+        },
+        "what_could_go_better": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Improvement opportunities with honest uncertainty assessment."
+        },
+        "proposed_change": {
+          "type": "string",
+          "minLength": 1,
+          "description": "What to change and where, specific enough for an implementer to act on."
+        },
+        "validation_criteria": {
+          "type": "string",
+          "minLength": 1,
+          "description": "How to know the change had the desired effect. Measurable or observable outcomes."
+        }
+      }
+    }
+  }
+}
