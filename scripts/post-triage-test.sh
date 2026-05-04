@@ -98,17 +98,21 @@ run_test "sufficient-bug-gets-ready-to-code" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
-run_test "sufficient-enhancement-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"enhancement","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is an enhancement."}' \
+run_test "sufficient-feature-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
-run_test "sufficient-performance-gets-triaged" \
+run_test "sufficient-other-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Misc","severity":"low","category":"other","problem":"Misc","root_cause_hypothesis":"Unclear","reproduction_steps":["step 1"],"environment":"Linux","impact":"Some","recommended_fix":"Investigate","proposed_test_case":"test_misc"},"comment":"## Triage Summary\n\nMisc."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test "sufficient-performance-gets-ready-to-code" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_query_speed"},"comment":"## Triage Summary\n\nThis is a performance issue."}' \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
-run_test "sufficient-documentation-gets-triaged" \
+run_test "sufficient-documentation-gets-ready-to-code" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nThis is a documentation issue."}' \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 run_test "sufficient-with-empty-info-gaps-passes" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
@@ -174,23 +178,6 @@ run_test "missing-json-fails" \
 
 run_test "invalid-json-fails" \
   "this is not json" \
-  "" \
-  "true"
-
-run_test "feature-request-posts-comment" \
-  '{"action":"feature-request","reasoning":"CSV export has never existed","comment":"This describes a new feature rather than a bug. The ability to export to CSV is not part of the current functionality. Relabeling for prioritization."}' \
-  "gh issue comment 42 --repo test-org/test-repo --body-file -"
-
-run_test "feature-request-applies-label" \
-  '{"action":"feature-request","reasoning":"CSV export has never existed","comment":"This describes a new feature rather than a bug."}' \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=type/feature --silent"
-
-run_test "feature-request-removes-bug-labels" \
-  '{"action":"feature-request","reasoning":"CSV export has never existed","comment":"This describes a new feature rather than a bug."}' \
-  "gh api repos/test-org/test-repo/issues/42/labels/bug -X DELETE --silent"
-
-run_test "feature-request-no-comment-fails" \
-  '{"action":"feature-request","reasoning":"CSV export has never existed"}' \
   "" \
   "true"
 

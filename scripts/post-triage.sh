@@ -149,36 +149,22 @@ case "${ACTION}" in
     remove_label "blocked"
     remove_label "needs-info"
 
-    # Only bugs get the ready-to-code label (which triggers the code agent).
-    # Non-bug sufficient results (enhancement, performance, documentation, etc.)
-    # receive the triaged label instead and wait for human prioritization.
+    # Low-risk categories (bug, documentation, performance) auto-promote to
+    # ready-to-code, which triggers the code agent. Feature work and anything
+    # else receives the triaged label and waits for human prioritization
+    # (per #561, only feature issues should require human review before coding).
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
-    if [[ "${CATEGORY}" == "bug" ]]; then
-      echo "Applying ready-to-code label (bug)..."
-      add_label "ready-to-code"
-    else
-      echo "Applying triaged label (non-bug: ${CATEGORY})..."
-      add_label "triaged"
-    fi
-    ;;
-
-  feature-request)
-    if [[ -z "${COMMENT}" ]]; then
-      echo "ERROR: action is 'feature-request' but no comment provided"
-      exit 1
-    fi
-    echo "Posting feature-request comment..."
-    printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
-
-    echo "Removing bug-related labels..."
-    remove_label "blocked"
-    for label in bug bug-report type/bug; do
-      gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${label}" -X DELETE --silent 2>/dev/null || true
-    done
-
-    echo "Applying type/feature label..."
-    add_label "type/feature"
+    case "${CATEGORY}" in
+      bug|documentation|performance)
+        echo "Applying ready-to-code label (${CATEGORY})..."
+        add_label "ready-to-code"
+        ;;
+      *)
+        echo "Applying triaged label (${CATEGORY})..."
+        add_label "triaged"
+        ;;
+    esac
     ;;
 
   *)

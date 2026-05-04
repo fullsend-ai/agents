@@ -166,6 +166,8 @@ Only use `blocked` when you can identify a specific open issue or PR that must b
 
 Information is sufficient for a developer to investigate and fix.
 
+**Choosing a category:** the `feature` category covers issues that describe desired new behavior rather than a defect in existing functionality — the reporter expects something that has never been implemented. Use `feature` only when the described behavior clearly never existed in the product. If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
+
 ```json
 {
   "action": "sufficient",
@@ -180,7 +182,7 @@ Information is sufficient for a developer to investigate and fix.
   "triage_summary": {
     "title": "Refined issue title (clear, specific, actionable)",
     "severity": "critical | high | medium | low",
-    "category": "bug | performance | security | documentation | enhancement | other",
+    "category": "bug | performance | security | documentation | feature | other",
     "problem": "Clear description of the problem",
     "root_cause_hypothesis": "Most likely root cause",
     "reproduction_steps": ["step 1", "step 2"],
@@ -190,22 +192,6 @@ Information is sufficient for a developer to investigate and fix.
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout."
   },
   "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block."
-}
-```
-
-### Action: `feature-request`
-
-The issue describes desired new behavior rather than a defect in existing functionality. The reporter expects something that has never been implemented.
-
-**When to use:** The described behavior clearly never existed in the product. This is not a regression — no prior version had this capability.
-
-**When NOT to use:** If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
-
-```json
-{
-  "action": "feature-request",
-  "reasoning": "Brief explanation of why this is a feature request, not a bug — what behavior the reporter expects and why it has never existed",
-  "comment": "A professional, non-dismissive comment explaining that this describes new functionality rather than a defect. Acknowledge the request is reasonable and explain it will be relabeled for product/engineering prioritization."
 }
 ```
 
