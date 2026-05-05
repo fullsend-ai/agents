@@ -16,9 +16,6 @@ host_files:
     dest: /tmp/workspace/.env.d/prioritize.env
     expand: true
 
-skills:
-  - skills/customer-research
-
 pre_script: scripts/pre-prioritize.sh
 
 validation_loop:
