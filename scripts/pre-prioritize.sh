@@ -54,41 +54,62 @@ if [[ -z "${SCORE_FIELD_ID}" ]]; then
 fi
 
 # Fetch items via GraphQL to get field values.
-# Paginate up to 100 items (sufficient for early adoption).
-ITEMS_JSON=$(gh api graphql -f query='
-  query($projectId: ID!) {
-    node(id: $projectId) {
-      ... on ProjectV2 {
-        items(first: 100) {
-          nodes {
-            id
-            fieldValues(first: 20) {
-              nodes {
-                ... on ProjectV2ItemFieldNumberValue {
-                  field { ... on ProjectV2Field { id name } }
-                  number
-                  updatedAt
+# Paginate through all items using cursor-based pagination.
+ITEMS_JSON='{"data":{"node":{"items":{"nodes":[]}}}}'
+HAS_NEXT_PAGE=true
+CURSOR=""
+
+while [[ "${HAS_NEXT_PAGE}" == "true" ]]; do
+  if [[ -z "${CURSOR}" ]]; then
+    AFTER_ARG=""
+  else
+    AFTER_ARG=", after: \$cursor"
+  fi
+
+  PAGE_JSON=$(gh api graphql -f query="
+    query(\$projectId: ID!$([ -n "${CURSOR}" ] && echo ', $cursor: String!')) {
+      node(id: \$projectId) {
+        ... on ProjectV2 {
+          items(first: 100${AFTER_ARG}) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            nodes {
+              id
+              fieldValues(first: 20) {
+                nodes {
+                  ... on ProjectV2ItemFieldNumberValue {
+                    field { ... on ProjectV2Field { id name } }
+                    number
+                    updatedAt
+                  }
                 }
               }
-            }
-            content {
-              ... on Issue {
-                url
-                state
+              content {
+                ... on Issue {
+                  url
+                  state
+                }
               }
             }
           }
         }
       }
     }
-  }
-' -f projectId="${PROJECT_ID}")
+  " -f projectId="${PROJECT_ID}" ${CURSOR:+-f cursor="${CURSOR}"})
 
-# Warn if we hit the pagination limit — items beyond 100 will be missed.
-ITEM_COUNT=$(echo "${ITEMS_JSON}" | jq '[.data.node.items.nodes[]] | length')
-if [[ "${ITEM_COUNT}" -ge 100 ]]; then
-  echo "WARNING: project board has ${ITEM_COUNT}+ items; pagination limit is 100. Some items may be missed."
-fi
+  # Merge nodes from this page into the accumulated result.
+  ITEMS_JSON=$(jq -s '
+    .[0].data.node.items.nodes += .[1].data.node.items.nodes
+    | .[0]
+  ' <(echo "${ITEMS_JSON}") <(echo "${PAGE_JSON}"))
+
+  HAS_NEXT_PAGE=$(echo "${PAGE_JSON}" | jq -r '.data.node.items.pageInfo.hasNextPage')
+  CURSOR=$(echo "${PAGE_JSON}" | jq -r '.data.node.items.pageInfo.endCursor')
+done
+
+echo "Fetched $(echo "${ITEMS_JSON}" | jq '.data.node.items.nodes | length') project items."
 
 # Find the first open issue with no RICE Score.
 UNSCORED_URL=$(echo "${ITEMS_JSON}" | jq -r --arg fid "${SCORE_FIELD_ID}" '
