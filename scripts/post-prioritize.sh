@@ -64,11 +64,13 @@ SCORE=$(jq -n --argjson r "${REACH}" --argjson i "${IMPACT}" \
 
 echo "RICE scores: R=${REACH} I=${IMPACT} C=${CONFIDENCE} E=${EFFORT} → Score=${SCORE}"
 
-# Extract reasoning (escape pipe chars to avoid breaking the markdown table).
-REASONING_REACH=$(jq -r '.reasoning.reach' "${RESULT_FILE}" | sed 's/|/\\|/g')
-REASONING_IMPACT=$(jq -r '.reasoning.impact' "${RESULT_FILE}" | sed 's/|/\\|/g')
-REASONING_CONFIDENCE=$(jq -r '.reasoning.confidence' "${RESULT_FILE}" | sed 's/|/\\|/g')
-REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}" | sed 's/|/\\|/g')
+# Extract reasoning — sanitize for markdown table embedding:
+#   1. Strip HTML tags to prevent HTML/markdown injection from attacker-controlled issue content.
+#   2. Escape pipe characters to avoid breaking the markdown table layout.
+REASONING_REACH=$(jq -r '.reasoning.reach' "${RESULT_FILE}" | sed 's/<[^>]*>//g; s/|/\\|/g')
+REASONING_IMPACT=$(jq -r '.reasoning.impact' "${RESULT_FILE}" | sed 's/<[^>]*>//g; s/|/\\|/g')
+REASONING_CONFIDENCE=$(jq -r '.reasoning.confidence' "${RESULT_FILE}" | sed 's/<[^>]*>//g; s/|/\\|/g')
+REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}" | sed 's/<[^>]*>//g; s/|/\\|/g')
 
 # --- Write scores to the project board ---
 
@@ -128,15 +130,19 @@ done
 # Update each field on the project item.
 # Uses --input - with jq-built JSON variables to ensure proper Float coercion.
 # The gh CLI's -F flag does not reliably coerce strings to GraphQL Float.
+# The entire JSON body is built with jq to avoid unquoted heredoc expansion.
 update_field() {
   local field_id="$1"
   local value="$2"
-  gh api graphql --input - <<GRAPHQL_EOF
-{
-  "query": "mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: Float!) { updateProjectV2ItemFieldValue(input: { projectId: \$projectId, itemId: \$itemId, fieldId: \$fieldId, value: { number: \$value } }) { projectV2Item { id } } }",
-  "variables": $(jq -n --arg pid "${PROJECT_ID}" --arg iid "${ITEM_ID}" --arg fid "${field_id}" --argjson val "${value}" '{projectId: $pid, itemId: $iid, fieldId: $fid, value: $val}')
-}
-GRAPHQL_EOF
+  jq -n \
+    --arg pid "${PROJECT_ID}" \
+    --arg iid "${ITEM_ID}" \
+    --arg fid "${field_id}" \
+    --argjson val "${value}" \
+    '{
+      query: "mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) { updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { number: $value } }) { projectV2Item { id } } }",
+      variables: {projectId: $pid, itemId: $iid, fieldId: $fid, value: $val}
+    }' | gh api graphql --input -
 }
 
 echo "Writing scores to project board..."
@@ -153,25 +159,35 @@ echo "Project fields updated."
 
 # --- Post reasoning comment ---
 
-COMMENT=$(cat <<COMMENT_EOF
-<!-- fullsend:prioritize-agent -->
-**RICE Priority Score: ${SCORE}**
+# Build comment body with jq to avoid shell expansion of reasoning strings.
+# Reasoning text originates from agent output processing untrusted issue content;
+# using jq --arg ensures no shell interpretation of backticks or $(...) sequences.
+COMMENT=$(jq -n \
+  --arg score "${SCORE}" \
+  --arg reach "${REACH}" \
+  --arg impact "${IMPACT}" \
+  --arg confidence "${CONFIDENCE}" \
+  --arg effort "${EFFORT}" \
+  --arg r_reach "${REASONING_REACH}" \
+  --arg r_impact "${REASONING_IMPACT}" \
+  --arg r_confidence "${REASONING_CONFIDENCE}" \
+  --arg r_effort "${REASONING_EFFORT}" \
+  -r '"<!-- fullsend:prioritize-agent -->
+**RICE Priority Score: \($score)**
 
 <details>
 <summary>Score breakdown</summary>
 
 | Dimension | Score | Reasoning |
 |-----------|-------|-----------|
-| **Reach** | ${REACH} | ${REASONING_REACH} |
-| **Impact** | ${IMPACT} | ${REASONING_IMPACT} |
-| **Confidence** | ${CONFIDENCE} | ${REASONING_CONFIDENCE} |
-| **Effort** | ${EFFORT} | ${REASONING_EFFORT} |
+| **Reach** | \($reach) | \($r_reach) |
+| **Impact** | \($impact) | \($r_impact) |
+| **Confidence** | \($confidence) | \($r_confidence) |
+| **Effort** | \($effort) | \($r_effort) |
 
-**Formula:** (${REACH} x ${IMPACT} x ${CONFIDENCE}) / ${EFFORT} = **${SCORE}**
+**Formula:** (\($reach) x \($impact) x \($confidence)) / \($effort) = **\($score)**
 
-</details>
-COMMENT_EOF
-)
+</details>"')
 
 echo "Posting RICE comment..."
 printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:prioritize-agent -->" --token "${GH_TOKEN}" --result -
