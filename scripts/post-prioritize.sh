@@ -78,43 +78,27 @@ PROJECT_ID=$(gh project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json 
 # Parse repo and issue number from URL.
 REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
 ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
+ISSUE_NODE_ID=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
 
-# Find the project item ID for this issue (paginate through all items).
-ITEM_ID=""
-CURSOR=""
-HAS_NEXT_PAGE=true
-
-while [[ "${HAS_NEXT_PAGE}" == "true" && -z "${ITEM_ID}" ]]; do
-  if [[ -z "${CURSOR}" ]]; then
-    AFTER_ARG=""
-  else
-    AFTER_ARG=", after: \$cursor"
-  fi
-
-  PAGE_JSON=$(gh api graphql -f query="
-    query(\$projectId: ID!$([ -n "${CURSOR}" ] && echo ', $cursor: String!')) {
-      node(id: \$projectId) {
-        ... on ProjectV2 {
-          items(first: 100${AFTER_ARG}) {
-            pageInfo {
-              hasNextPage
-              endCursor
-            }
-            nodes {
-              id
-              content { ... on Issue { url } }
-            }
+# Find the project item ID for this issue via the issue's projectItems connection.
+# This is a single API call regardless of project size, avoiding pagination and timeouts.
+ITEM_RESPONSE=$(gh api graphql -f query='
+  query($issueId: ID!) {
+    node(id: $issueId) {
+      ... on Issue {
+        projectItems(first: 10) {
+          nodes {
+            id
+            project { id }
           }
         }
       }
     }
-  " -f projectId="${PROJECT_ID}" ${CURSOR:+-f cursor="${CURSOR}"})
+  }
+' -f issueId="${ISSUE_NODE_ID}")
 
-  ITEM_ID=$(echo "${PAGE_JSON}" | jq -r --arg url "${GITHUB_ISSUE_URL}" \
-    '.data.node.items.nodes[] | select(.content.url == $url) | .id // empty')
-  HAS_NEXT_PAGE=$(echo "${PAGE_JSON}" | jq -r '.data.node.items.pageInfo.hasNextPage')
-  CURSOR=$(echo "${PAGE_JSON}" | jq -r '.data.node.items.pageInfo.endCursor')
-done
+ITEM_ID=$(echo "${ITEM_RESPONSE}" | jq -r --arg pid "${PROJECT_ID}" \
+  '(.data.node.projectItems.nodes // [])[] | select(.project.id == $pid) | .id')
 
 if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
   echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board"
