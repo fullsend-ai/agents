@@ -13,13 +13,13 @@
 
 set -euo pipefail
 
-echo "::notice::🔗 Retro target: ${ORIGINATING_URL}"
-
 # Accept both issue and PR URLs.
 if [[ ! "${ORIGINATING_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
-  echo "ERROR: ORIGINATING_URL does not match expected pattern: ${ORIGINATING_URL}"
+  echo "ERROR: ORIGINATING_URL does not match expected pattern"
   exit 1
 fi
+
+echo "::notice::Retro target: ${ORIGINATING_URL}"
 
 if [[ -n "${RETRO_COMMENT:-}" ]]; then
   echo "Retro triggered on-demand with comment."
