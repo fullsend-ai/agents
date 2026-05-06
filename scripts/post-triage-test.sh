@@ -133,7 +133,7 @@ run_test "duplicate-removes-blocked-label" \
 
 run_test "duplicate-closes-issue" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
-  "gh issue close 42 --repo test-org/test-repo --reason not planned"
+  "gh issue close 42 --repo test-org/test-repo --reason duplicate"
 
 run_test "duplicate-self-reference-fails" \
   '{"action":"duplicate","reasoning":"same issue","duplicate_of":42,"comment":"Duplicate of itself."}' \

@@ -100,7 +100,7 @@ case "${ACTION}" in
     echo "Applying label and closing..."
     remove_label "blocked"
     add_label "duplicate"
-    gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "not planned"
+    gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "duplicate"
     ;;
 
   blocked)
