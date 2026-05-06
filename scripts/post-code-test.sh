@@ -250,6 +250,80 @@ count_closes_test "single-closes-with-body" \
 count_closes_test "single-closes-empty-body" \
   "" "99"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the no-op detection logic from post-code.sh
+# so we can test it without a git repo or network access.
+#
+# Returns the exit code and message the postscript would produce.
+# ---------------------------------------------------------------------------
+detect_noop() {
+  local branch="$1"
+  local changed_files="$2"
+
+  # Step 1: branch check (mirrors lines 64-67 of post-code.sh)
+  if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "master" ]; then
+    echo "noop:branch:Agent did not create a feature branch (current: '${branch:-detached HEAD}') — nothing to do"
+    return 0
+  fi
+
+  # Step 2: changed files check (mirrors lines 84-87 of post-code.sh)
+  if [ -z "${changed_files}" ]; then
+    echo "noop:files:No changed files in agent's commit(s) — nothing to do"
+    return 0
+  fi
+
+  echo "proceed"
+  return 0
+}
+
+run_noop_test() {
+  local test_name="$1"
+  local branch="$2"
+  local changed_files="$3"
+  local expected_prefix="$4"  # "noop:branch", "noop:files", or "proceed"
+
+  local actual
+  actual="$(detect_noop "${branch}" "${changed_files}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  branch:         '${branch}'"
+    echo "  changed_files:  '${changed_files}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- No-op detection test cases ---
+
+# On main with no changes → exit 0, noop via branch check
+run_noop_test "noop-on-main-no-changes" \
+  "main" "" "noop:branch"
+
+# On master with no changes → exit 0, noop via branch check
+run_noop_test "noop-on-master-no-changes" \
+  "master" "" "noop:branch"
+
+# Detached HEAD (empty branch) with no changes → exit 0, noop via branch check
+run_noop_test "noop-detached-head" \
+  "" "" "noop:branch"
+
+# Feature branch with no file changes → exit 0, noop via files check
+run_noop_test "noop-feature-branch-no-changes" \
+  "agent/42-fix-widget" "" "noop:files"
+
+# Feature branch WITH file changes → proceed (existing behavior)
+run_noop_test "proceed-feature-branch-with-changes" \
+  "agent/42-fix-widget" "src/widget.go" "proceed"
+
+# On main but with changes → still noop (branch check comes first)
+run_noop_test "noop-on-main-with-changes" \
+  "main" "src/widget.go" "noop:branch"
+
 # --- Summary ---
 
 echo ""

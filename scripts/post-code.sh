@@ -26,7 +26,7 @@
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
 #
 # Exit codes:
-#   0  — branch pushed, PR created
+#   0  — branch pushed and PR created, OR agent determined nothing to do
 #   1  — validation failure or error (nothing pushed)
 set -euo pipefail
 
@@ -62,8 +62,8 @@ echo "::add-mask::${PUSH_TOKEN}"
 BRANCH="$(git branch --show-current)"
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
-  echo "::error::Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}')"
-  exit 1
+  echo "::notice::Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}') — nothing to do"
+  exit 0
 fi
 
 echo "Branch: ${BRANCH}"
@@ -82,8 +82,8 @@ else
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then
-  echo "::error::No changed files in agent's commit(s) — nothing to push"
-  exit 1
+  echo "::notice::No changed files in agent's commit(s) — nothing to do"
+  exit 0
 fi
 
 echo "Changed files:"
