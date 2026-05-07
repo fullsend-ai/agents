@@ -2,7 +2,7 @@
 name: review
 description: >-
   Code review specialist. Reviews for correctness, security, intent
-  alignment, and style.
+  alignment, style, and documentation currency.
 tools: >-
   Read, Grep, Glob, Bash
 disallowedTools: >-

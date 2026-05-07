@@ -66,9 +66,7 @@ understand where documentation lives — different repos organize docs
 differently.
 
 Search for documentation files (`.md`, `.rst`, `.adoc`) across the
-repository. Exclude generated or dependency directories (`.git`,
-`vendor`, `node_modules`) but do not exclude documentation files based
-on their name or location.
+repository.
 
 If the repository has no documentation files, produce zero findings
 and exit — there is nothing to check.
