@@ -260,7 +260,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
   echo "::warning::Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
   gh label create "needs-human" --repo "${REPO_FULL_NAME}" \
     --description "Agent loop needs human intervention" --color "D93F0B" \
-    --force 2>/dev/null || true
+    2>/dev/null || true
   gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
     --add-label "needs-human" 2>/dev/null || true
 fi
