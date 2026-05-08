@@ -3,16 +3,13 @@ name: agent-scaffolding
 description: >-
   Use when diagnosing why agents underperform or ideating improvements to
   agent infrastructure — skills, agent definitions, harness configs,
-  AGENTS.md files, hooks, CI gates, or context files. Provides
-  research-backed principles for what makes agent scaffolding effective.
+  AGENTS.md files, hooks, CI gates, or context files.
 ---
 
 # Agent Scaffolding
 
-This skill teaches the principles behind effective agent infrastructure
-so you can diagnose scaffolding problems and propose grounded
-improvements. It is not a setup checklist — it is a lens for evaluating
-and improving what already exists.
+Diagnose scaffolding problems and propose improvements. This is a lens
+for evaluating what exists, not a setup checklist.
 
 ## Core principles
 
@@ -49,10 +46,10 @@ execute. When a convention matters, enforce it mechanically.
 ### 3. Minimal, hand-written context
 
 Auto-generated context files (e.g., shipping `/init` output unedited)
-reduce agent success rates by ~3% and increase costs by 20-23% (ETH
-Zurich, Feb 2026). Human-written context helps only marginally (+4%).
-Agents are good at discovering repo structure on their own — only tell
-them things they cannot figure out by reading the code.
+reduce agent success rates by ~3% and increase costs by 20-23%.
+Human-written context helps only marginally (+4%). Agents are good at
+discovering repo structure on their own — only tell them things they
+cannot figure out by reading the code.
 
 **Diagnostic questions:**
 - Is the context file under 150 lines? Over 300 is a red flag.
@@ -96,82 +93,26 @@ contracts.
 - Is there a design rationale that should be captured so agents don't
   repeat this class of mistake?
 
-## Applying principles to agent infrastructure
+## Applying principles to infrastructure
 
-### Skills
+**Skills** — Narrow, self-contained, loads only when needed. Write
+specific trigger descriptions. Know whether you're writing a rigid
+procedure or a flexible reference. Don't restate the agent definition.
 
-A good skill is narrow, self-contained, and loads only when needed.
+**Agent definitions** — Short and stable; changes affect every run.
+Prohibitions belong here, not in skills. When the agent keeps doing
+something wrong, ask: constraint (agent def), procedure (skill), or
+enforcement (hook/lint)?
 
-- **Trigger description matters.** A vague trigger means the skill
-  loads when irrelevant (noise) or fails to load when needed (miss).
-  Be specific about when to use it and when not to.
-- **Procedure vs. reference.** Rigid skills (TDD, debugging) should be
-  step-by-step procedures the agent follows exactly. Flexible skills
-  (patterns, conventions) should teach principles the agent applies
-  with judgment. Know which kind you're writing.
-- **Don't restate the agent definition.** The agent prompt is the
-  authority on prohibitions and identity. Skills teach procedures and
-  domain knowledge.
+**Harness configs** — Determines what the agent *can* do (vs. *should*
+do). Too-tight sandbox causes undiagnosable failures; too-loose creates
+risk. Missing runtime context may be a harness fix, not a prompt fix.
 
-### Agent definitions
+**Context files** — Under 150 lines, hard cap 300. Build commands, test
+commands, key conventions, PR rules. For large repos, the root file is a
+routing layer. Treat recurring review comments as update signals.
 
-The agent prompt defines identity, permissions, and constraints. It
-should be short and stable — changes here affect every run.
+**Hooks** — Start with auto-format and blocking destructive operations.
+Commit shared hooks so they apply to every agent. A blocking hook beats
+a context file line asking the agent not to do it.
 
-- Prohibitions belong in the agent definition, not scattered across
-  skills.
-- If the agent keeps doing something wrong, ask whether the fix is a
-  constraint (agent definition), a procedure (skill), or an
-  enforcement mechanism (hook/lint rule).
-
-### Harness configs
-
-The harness (environment, tool permissions, sandbox policy) determines
-what the agent *can* do. Skills and agent definitions determine what it
-*should* do.
-
-- A sandbox policy that's too tight causes tool failures the agent
-  can't diagnose. Too loose creates security risk.
-- Environment variables and pre/post scripts set up the world the
-  agent operates in. If the agent is missing context it needs at
-  runtime, the fix might be in the harness, not the prompt.
-
-### AGENTS.md / context files
-
-- Under 150 lines. Hard cap at 300.
-- Build commands, test commands, key conventions, PR rules.
-- For repos over 100K lines, the root file is a routing layer — not
-  an encyclopedia.
-- Treat review comments on agent PRs as update signals. Every
-  recurring review comment is a missing line in the context file or a
-  missing lint rule.
-
-### Hooks
-
-- Start with auto-format on edit and blocking destructive operations.
-- Store shared hooks in committed settings so they apply to every
-  agent.
-- A hook that blocks a bad action is worth more than a context file
-  line that asks the agent not to do it.
-
-## Anti-patterns
-
-| Anti-pattern | Why it fails | Better approach |
-|---|---|---|
-| Auto-generated context shipped as-is | -3% success, +20% cost | Hand-write, keep minimal |
-| Exhaustive architecture narratives | Agents discover structure themselves | Document only non-obvious decisions |
-| Context file > 300 lines | Adherence drops, context diluted | Split into skills and path-scoped rules |
-| No verification mechanism | Agent can't self-correct | Provide runnable tests and lint |
-| Advisory-only conventions | Agent may ignore them | Enforce with hooks and lint rules |
-| Static context, never updated | Context rot as codebase evolves | Treat review comments as update signals |
-| Fixing everything in the prompt | Prompt changes affect all runs | Prefer skills, hooks, or lint rules for targeted fixes |
-
-## Key numbers
-
-| Metric | Value | Source |
-|---|---|---|
-| Auto-generated context impact | -3% success, +20% cost | ETH Zurich (Feb 2026) |
-| Human-written context impact | +4% success | ETH Zurich (Feb 2026) |
-| Same model, better scaffolding | +26% accuracy | LangChain Terminal-Bench |
-| Recommended context file length | Under 150 lines | Anthropic, ETH Zurich |
-| AI-coauthored PR issue rate | 1.7x higher than human | CodeRabbit (Dec 2025) |
