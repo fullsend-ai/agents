@@ -144,9 +144,20 @@ For each issue identified, record:
 Then determine the overall outcome:
 
 - Any **critical** or **high** finding -> `request-changes`
-- **Medium**, **low**, or **info** findings only -> `comment-only` (or
-  `approve` if findings are info-only and the change is safe)
+- Multiple **medium** findings which could affect the
+  intended outcome of the PR -> `request-changes`
+- One **medium** finding (but no critical/high) -> `comment-only` (attach
+  findings as comments in the review body so the author sees them, but
+  do not block the PR)
+- **Low** or **info** findings only (no medium+) -> `approve` (attach
+  findings as comments in the review body so the author sees them, but
+  do not block the PR)
 - No findings -> `approve`
+- The approach is fundamentally wrong — wrong design, unauthorized
+  change, or the PR should be closed/completely rethought -> `reject`.
+  Use `reject` only when no amount of code-level iteration will make
+  the PR mergeable. This is distinct from `request-changes`, which
+  implies fixable issues.
 
 ## Constraints
 
