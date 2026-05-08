@@ -147,6 +147,7 @@ case "${ACTION}" in
 
     echo "Removing stale labels..."
     remove_label "blocked"
+    remove_label "needs-info"
 
     # Only bugs get the ready-to-code label (which triggers the code agent).
     # Non-bug sufficient results (enhancement, performance, documentation, etc.)
