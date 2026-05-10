@@ -2,8 +2,9 @@
 name: pr-review
 description: >-
   PR-specific review procedure. Gathers GitHub context, delegates code
-  evaluation to the code-review skill, adds PR-specific checks, and
-  writes a structured review result.
+  evaluation to the code-review skill, delegates documentation
+  staleness checks to the docs-review skill, adds PR-specific checks,
+  and writes a structured review result.
 ---
 
 # PR Review
