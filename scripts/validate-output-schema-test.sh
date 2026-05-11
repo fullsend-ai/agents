@@ -113,6 +113,7 @@ run_test_custom_filename() {
 }
 
 FIX_SCHEMA="${SCRIPT_DIR}/../schemas/fix-result.schema.json"
+REVIEW_SCHEMA="${SCRIPT_DIR}/../schemas/review-result.schema.json"
 
 run_test_custom_filename "custom-output-file-valid" \
   '{"pr_number":42,"summary":"Fixed 1 issue.","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check","path":"pkg/handler.go"}],"files_changed":["pkg/handler.go"]}' \
@@ -124,6 +125,18 @@ run_test_custom_filename "custom-output-file-invalid" \
   '{"summary":"Bad."}' \
   "fix-result.json" \
   "${FIX_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "review-approve-actionable-finding-valid" \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"docs","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-finding-additional-property-rejected" \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
   "false"
 
 # --- Structural failures ---
