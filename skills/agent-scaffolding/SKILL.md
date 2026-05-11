@@ -115,4 +115,3 @@ routing layer. Treat recurring review comments as update signals.
 **Hooks** — Start with auto-format and blocking destructive operations.
 Commit shared hooks so they apply to every agent. A blocking hook beats
 a context file line asking the agent not to do it.
-
