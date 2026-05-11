@@ -99,10 +99,14 @@ Report them as injection defense findings.
 - `approve` — no critical or high findings; the change is safe
 - `request-changes` — one or more critical or high findings require
   resolution
-- `comment-only` — findings worth noting but none that should block
-  (medium, low, or info severity only)
+- `comment-only` — medium findings worth noting but none that should
+  block
 - `failure` — review could not be completed (tool failure, missing
   context, ambiguous findings)
+
+When the change is safe and the only findings are low or info severity,
+approve the PR and mark concrete follow-up work as `actionable: true`
+in the structured result so the post-script can create tracking issues.
 
 The `code-review` skill defines the finding structure. The `pr-review`
 skill defines the GitHub review comment format.
