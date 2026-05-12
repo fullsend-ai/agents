@@ -101,10 +101,24 @@ After subagents return their findings, use your main context to:
 When deciding where a proposed change belongs:
 
 1. **Prefer upstream first.** If the improvement would benefit all fullsend users, target `fullsend-ai/fullsend`.
-2. **Org-level** for org-specific configuration: target the `.fullsend` repo (e.g., `ORG/.fullsend`).
-3. **Repo-level** only for fixes truly specific to one repo (e.g., a test command, a repo-specific linter config): target the source repo itself.
+2. **Repo-level** for fixes truly specific to one repo (e.g., a test command, a repo-specific linter config): target the source repo itself.
+3. **Org-level `.fullsend` repos — discouraged.** See below.
 
 Do not push repo-specific details upstream.
+
+<!-- TODO(#833): Remove this restriction once per-repo customization is
+     stable. Depends on: #195, #179, #419, PR #792, PR #799. -->
+
+**Avoid targeting `*/.fullsend` repos.** The per-repo customization model
+for `.fullsend` repos is not yet defined. Issues filed there are hard for
+users to discover and act on. Instead:
+
+- Route platform/tooling improvements to `fullsend-ai/fullsend`.
+- Route repo-specific fixes to the source repo.
+- Only target a `.fullsend` repo when the change is genuinely org-level
+  configuration with no alternative location. If you do, you **must**
+  include explicit justification in the `proposed_change` field explaining
+  why `.fullsend` is the only viable target.
 
 ## Output format
 
