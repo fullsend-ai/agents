@@ -96,11 +96,16 @@ Report them as injection defense findings.
 
 ### Outcome
 
-- `approve` — no critical or high findings; the change is safe
-- `request-changes` — one or more critical or high findings require
-  resolution
-- `comment-only` — medium findings worth noting but none that should
-  block
+- `approve` — no medium+ findings; the change is safe (low/info
+  findings may be attached as comments)
+- `request-changes` — findings *requiring* resolution: one or more critical or
+  high findings; multiple medium-severity findings which could affect the
+  intended outcome of the PR
+- `comment-only` — medium-severity findings worth noting but none
+  that should block
+- `reject` — the approach is fundamentally wrong; no amount of
+  code-level iteration will make the PR mergeable (wrong design,
+  unauthorized change, or the PR should be closed/rethought)
 - `failure` — review could not be completed (tool failure, missing
   context, ambiguous findings)
 
@@ -122,6 +127,7 @@ agent's process exit code signals its outcome:
 | `request-changes` | 1         | Critical or high findings exist        |
 | `comment-only`    | 2         | Findings worth noting but non-blocking |
 | `failure`         | 3         | Review could not be completed          |
+| `reject`          | 4         | Approach is fundamentally wrong        |
 
 Automation layers (such as `ExitCodeReader` in the entrypoint
 package) rely on this contract. Do not change exit code semantics
@@ -142,7 +148,7 @@ This PR was NOT reviewed. Do not count this as an approval.
 ```
 
 The `Outcome: failure` line gives downstream automation a parseable
-signal distinct from approve/request-changes/comment-only.
+signal distinct from approve/request-changes/comment-only/reject.
 
 How to emit the failure depends on context:
 

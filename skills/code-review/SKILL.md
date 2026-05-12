@@ -149,11 +149,21 @@ For each issue identified, record:
 Then determine the overall outcome:
 
 - Any **critical** or **high** finding -> `request-changes`
-- Any **medium** finding -> `comment-only`
-- **Low** or **info** findings only -> `approve` if the change is safe.
-  Preserve actionable low/info findings in the structured output with
-  `actionable: true` so the post-script can create follow-up issues.
+- Multiple **medium** findings which could affect the
+  intended outcome of the PR -> `request-changes`
+- One **medium** finding (but no critical/high) -> `comment-only` (attach
+  findings as comments in the review body so the author sees them, but
+  do not block the PR)
+- **Low** or **info** findings only (no medium+) -> `approve` (attach
+  findings as comments in the review body so the author sees them, but
+  do not block the PR). Preserve concrete follow-up work in the structured
+  output with `actionable: true` so the post-script can create follow-up issues.
 - No findings -> `approve`
+- The approach is fundamentally wrong — wrong design, unauthorized
+  change, or the PR should be closed/completely rethought -> `reject`.
+  Use `reject` only when no amount of code-level iteration will make
+  the PR mergeable. This is distinct from `request-changes`, which
+  implies fixable issues.
 
 ## Constraints
 

@@ -35,6 +35,8 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+LYCHEE_VERSION="0.24.2"
+LYCHEE_SHA256="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -116,7 +118,22 @@ gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 4. Authoritative pre-commit check
+# 4. Install lychee (for pre-commit markdown link checking)
+# ---------------------------------------------------------------------------
+if ! command -v lychee >/dev/null 2>&1; then
+  echo "Installing lychee v${LYCHEE_VERSION}..."
+  mkdir -p "${HOME}/.local/bin"
+  curl -fsSL \
+    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz" \
+    -o /tmp/lychee.tar.gz \
+    && echo "${LYCHEE_SHA256}  /tmp/lychee.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/lychee.tar.gz -C "${HOME}/.local/bin" lychee \
+    && rm /tmp/lychee.tar.gz
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Authoritative pre-commit check
 # ---------------------------------------------------------------------------
 if [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -148,16 +165,19 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Push branch
+# 6. Push branch
 # ---------------------------------------------------------------------------
 git remote set-url origin \
   "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
+# Plain push (no --force-with-lease). Agents always create new
+# commits (amend is in disallowedTools), so force-push is unnecessary
+# and plain push is safer (refuses diverged branches).
 echo "Pushing branch ${BRANCH}..."
-git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
+git push -u origin -- "${BRANCH}" 2>&1
 
 # ---------------------------------------------------------------------------
-# 6. Create PR
+# 7. Create PR
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 

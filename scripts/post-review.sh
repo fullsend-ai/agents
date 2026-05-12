@@ -122,4 +122,14 @@ fullsend post-review \
   --token "${REVIEW_TOKEN}" \
   --result "${RESULT_FILE}"
 
+if [ "${ACTION}" = "reject" ]; then
+  echo "Reject disposition — closing PR and applying label"
+  gh pr close "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" \
+    --comment "Closed by review agent: approach rejected." || true
+  gh pr edit "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" \
+    --add-label "rejected" || true
+fi
+
 echo "Review posted on ${REPO_FULL_NAME}#${PR_NUMBER}"

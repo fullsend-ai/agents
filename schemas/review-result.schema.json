@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["approve", "request-changes", "comment", "failure"]
+      "enum": ["approve", "request-changes", "comment", "reject", "failure"]
     },
     "pr_number": { "type": "integer", "minimum": 1 },
     "repo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
@@ -37,6 +37,10 @@
     {
       "if": { "properties": { "action": { "const": "comment" } }, "required": ["action"] },
       "then": { "required": ["body", "head_sha"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "reject" } }, "required": ["action"] },
+      "then": { "required": ["body", "head_sha", "findings"] }
     },
     {
       "if": { "properties": { "action": { "const": "failure" } }, "required": ["action"] },

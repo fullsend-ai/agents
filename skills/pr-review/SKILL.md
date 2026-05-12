@@ -126,7 +126,7 @@ Compose the review comment using this structure:
 
 **Head SHA:** <sha>
 **Timestamp:** <ISO 8601>
-**Outcome:** <approve | request-changes | comment-only>
+**Outcome:** <approve | request-changes | comment-only | reject>
 
 ### Summary
 
@@ -163,6 +163,7 @@ Map the outcome to an action value:
 | request-changes    | `request-changes`   | `body`, `head_sha`, `findings[]`   |
 | comment-only       | `comment`           | `body`, `head_sha`                 |
 | failure            | `failure`           | `reason` (body optional)           |
+| reject             | `reject`            | `body`, `head_sha`, `findings[]`   |
 
 #### Pipeline mode (`$FULLSEND_OUTPUT_DIR` is set)
 
@@ -200,11 +201,25 @@ jq -n \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
-For `request-changes`, include structured findings alongside the body:
+For `request-changes` or `reject`, include structured findings alongside
+the body:
 
 ```bash
 jq -n \
   --arg action "request-changes" \
+  --argjson pr_number <number> \
+  --arg repo "<owner/repo>" \
+  --arg head_sha "<sha>" \
+  --arg body "<markdown review comment>" \
+  --argjson findings '<findings array>' \
+  '{action: $action, pr_number: $pr_number, repo: $repo,
+    head_sha: $head_sha, body: $body, findings: $findings}' \
+  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+```bash
+jq -n \
+  --arg action "reject" \
   --argjson pr_number <number> \
   --arg repo "<owner/repo>" \
   --arg head_sha "<sha>" \
@@ -255,6 +270,12 @@ EOF
 # Comment only (no approve/reject decision)
 gh pr review <number> --comment --body "$(cat <<'EOF'
 <review comment>
+EOF
+)"
+
+# Reject
+gh pr review <number> --request-changes --body "$(cat <<'EOF'
+<rejection comment>
 EOF
 )"
 ```
