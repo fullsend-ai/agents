@@ -170,8 +170,11 @@ fi
 git remote set-url origin \
   "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
+# Plain push (no --force-with-lease). Agents always create new
+# commits (amend is in disallowedTools), so force-push is unnecessary
+# and plain push is safer (refuses diverged branches).
 echo "Pushing branch ${BRANCH}..."
-git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
+git push -u origin -- "${BRANCH}" 2>&1
 
 # ---------------------------------------------------------------------------
 # 7. Create PR
