@@ -204,8 +204,7 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   # Plain push (no --force-with-lease). Agents always create new
   # commits (amend is in disallowedTools), so force-push is unnecessary
-  # and plain push is safer (refuses diverged branches). post-code.sh
-  # still uses --force-with-lease; tracked in #411.
+  # and plain push is safer (refuses diverged branches).
   echo "Pushing branch ${BRANCH}..."
   git push -u origin -- "${BRANCH}" 2>&1
   echo "Branch ${BRANCH} pushed successfully"
