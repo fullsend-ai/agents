@@ -109,6 +109,10 @@ Report them as injection defense findings.
 - `failure` — review could not be completed (tool failure, missing
   context, ambiguous findings)
 
+When the change is safe and the only findings are low or info severity,
+approve the PR and mark concrete follow-up work as `actionable: true`
+in the structured result so the post-script can create tracking issues.
+
 The `code-review` skill defines the finding structure. The `pr-review`
 skill defines the GitHub review comment format.
 

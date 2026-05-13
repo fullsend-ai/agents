@@ -159,7 +159,7 @@ Map the outcome to an action value:
 
 | Outcome            | Action              | Required fields                    |
 |--------------------|---------------------|------------------------------------|
-| approve            | `approve`           | `body`, `head_sha`                 |
+| approve            | `approve`           | `body`, `head_sha`; include `findings[]` when low/info findings are actionable follow-up work |
 | request-changes    | `request-changes`   | `body`, `head_sha`, `findings[]`   |
 | comment-only       | `comment`           | `body`, `head_sha`                 |
 | failure            | `failure`           | `reason` (body optional)           |
@@ -170,7 +170,7 @@ Map the outcome to an action value:
 Write the result as JSON. Do NOT call `gh pr review` — the post-script
 handles all GitHub mutations. The JSON shape varies by action.
 
-For `approve` or `comment`:
+For `approve` with no actionable findings, or for `comment`:
 
 ```bash
 jq -n \
@@ -181,6 +181,23 @@ jq -n \
   --arg body "<markdown review comment>" \
   '{action: $action, pr_number: $pr_number, repo: $repo,
     head_sha: $head_sha, body: $body}' \
+  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+For `approve` with actionable low/info findings, include structured
+findings alongside the body. Only include findings that are concrete
+follow-up work; set `actionable: true` on those findings.
+
+```bash
+jq -n \
+  --arg action "approve" \
+  --argjson pr_number <number> \
+  --arg repo "<owner/repo>" \
+  --arg head_sha "<sha>" \
+  --arg body "<markdown review comment>" \
+  --argjson findings '<findings array>' \
+  '{action: $action, pr_number: $pr_number, repo: $repo,
+    head_sha: $head_sha, body: $body, findings: $findings}' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
@@ -215,7 +232,8 @@ jq -n \
 
 Each finding object has: `severity` (critical/high/medium/low/info),
 `category`, `file`, `line` (optional), `description`, `remediation`
-(optional).
+(optional), and `actionable` (optional boolean). For approved reviews,
+only low/info findings with `actionable: true` become follow-up issues.
 
 For `failure`, provide the reason — body is optional:
 

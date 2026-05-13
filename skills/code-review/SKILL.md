@@ -140,6 +140,11 @@ For each issue identified, record:
 - **Description:** natural-language explanation of the finding
 - **Location:** relative file path and line number(s)
 - **Remediation:** suggested fix or action (required for critical/high)
+- **Actionable:** whether the finding should become tracked follow-up
+  work if the PR is approved. Use `true` only for concrete low/info
+  items that can be fixed independently after merge. Use `false` for
+  observations, praise, broad suggestions, and anything already handled
+  by the PR.
 
 Then determine the overall outcome:
 
@@ -151,7 +156,8 @@ Then determine the overall outcome:
   do not block the PR)
 - **Low** or **info** findings only (no medium+) -> `approve` (attach
   findings as comments in the review body so the author sees them, but
-  do not block the PR)
+  do not block the PR). Preserve concrete follow-up work in the structured
+  output with `actionable: true` so the post-script can create follow-up issues.
 - No findings -> `approve`
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought -> `reject`.
