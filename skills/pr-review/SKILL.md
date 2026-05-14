@@ -178,16 +178,9 @@ and re-evaluate the overall outcome.
 Compose the review comment using this structure:
 
 ```markdown
-## Review: <owner>/<repo>#<number>
+<!-- **Head SHA:** <sha> -->
 
-**Head SHA:** <sha>
-**Timestamp:** <ISO 8601>
-**Outcome:** <approve | request-changes | comment-only | reject>
-
-### Summary
-
-<one paragraph synthesizing the key findings; lead with the outcome
-rationale>
+## Review
 
 ### Findings
 
@@ -203,13 +196,26 @@ rationale>
 #### Medium / Low / Info
 
 ...
-
-### Footer
-
-Outcome: <outcome>
-This review applies to SHA `<sha>`. Any push to the PR head clears
-this review and requires a new evaluation.
 ```
+
+**Formatting rules:**
+
+- **Head SHA** is embedded in a hidden HTML comment on the first line.
+  It is not shown to reviewers but is required for re-review anchoring
+  (the `pre-fetch-prior-review.sh` script extracts it).
+- **No visible SHA, timestamp, or outcome lines.** These are implicit
+  in the GitHub PR review process (the SHA is pinned via the formal
+  review API, the timestamp is on the comment, and the outcome is
+  conveyed via GitHub's approve/request-changes mechanism).
+- **No summary section.** The PR description already explains the
+  change; the review should focus on findings.
+- **Only include finding severity sections that have findings.** If
+  there are no critical findings, omit the `#### Critical` heading
+  entirely. If the only findings are medium/low/info, only show that
+  section. If there are no findings at all, state "No findings." in
+  place of the findings section.
+- **No footer.** Do not repeat the outcome or include boilerplate
+  about pushes clearing the review.
 
 If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
 info-level finding in the review output:
@@ -359,8 +365,10 @@ wins.
 - **Never post without completing the `code-review` and `docs-review`
   skills first.** Partial reviews miss context and produce unreliable
   verdicts.
-- **Always include the PR head SHA in the review comment.** The review
-  is only valid for the SHA evaluated; new pushes require a new review.
+- **Always include the PR head SHA in a hidden HTML comment.** The
+  SHA must appear as `<!-- **Head SHA:** <sha> -->` so the re-review
+  anchoring script can extract it, but it must not be visible to
+  reviewers.
 - **Report failure rather than posting a partial review.** If you cannot
   complete all seven dimensions (tool failure, missing context, ambiguous
   findings), produce a failure result (see step 6) rather than posting

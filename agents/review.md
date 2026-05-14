@@ -181,17 +181,18 @@ without updating all consumers.
 When the review cannot be completed, the failure body is:
 
 ```markdown
-## Review: <owner>/<repo>#<number>
+<!-- **Head SHA:** <sha> -->
 
-**Head SHA:** <sha>
-**Outcome:** failure
+## Review
+
 **Reason:** <tool-failure | missing-context | ambiguous-findings | token-limit>
 
 This PR was NOT reviewed. Do not count this as an approval.
 ```
 
-The `Outcome: failure` line gives downstream automation a parseable
-signal distinct from approve/request-changes/comment-only/reject.
+When the review fails: the review body no longer carries a parseable outcome
+signal; downstream automation reads the `action: "failure"` field in the JSON
+result instead.
 
 How to emit the failure depends on context:
 
