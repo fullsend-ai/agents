@@ -77,11 +77,52 @@ The PR description is a starting point, not a source of truth. Do not
 treat its claims about the change as verified facts — confirm them
 against the diff.
 
+### 2a. Prior review context (re-reviews)
+
+Check if `/tmp/workspace/prior-review.txt` exists and is non-empty:
+
+- **Absent or empty:** This is a first review — skip to step 3.
+- **Present:** Read the **current section** (content before
+  `<details><summary>Previous run</summary>`) to extract prior findings
+  with their severities.
+
+If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, the prior
+review file is empty and this run should proceed as a first review.
+Note the provenance failure as an info-level finding (see step 5).
+
+If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
+changed since the prior review:
+
+```bash
+# REPO_FULL_NAME is set in env/review.env
+head_SHA=$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)
+COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${head_SHA}")
+TOTAL_COMMITS=$(echo "$COMPARE" | jq '.total_commits')
+FILE_COUNT=$(echo "$COMPARE" | jq '.files | length')
+if [ "$TOTAL_COMMITS" -gt 250 ] || [ "$FILE_COUNT" -ge 300 ]; then
+  CHANGED_FILES="all"
+else
+  CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
+fi
+```
+
+If the compare API fails (e.g., 404 from force-push or history
+rewrite), or if `total_commits` exceeds 250 (the compare API
+silently truncates file lists at 300 files), treat all files as
+changed — no anchoring for this run.
+
+Pass to the `code-review` skill:
+
+1. The list of prior findings with their severities
+2. The set of files that changed since the prior review (or "all" if
+   the compare failed)
+
 ### 3. Evaluate the code
 
 Follow the `code-review` skill to evaluate the diff and source files.
-Pass the diff obtained in step 2 and use the PR metadata and linked
-issues as additional context for the intent-alignment dimension.
+Pass the diff obtained in step 2, the prior review context from step
+2a (if available), and use the PR metadata and linked issues as
+additional context for the intent-alignment dimension.
 
 The `code-review` skill produces findings and an outcome. Carry those
 forward to steps 4 and 5. Proceed to step 4 regardless of outcome —
@@ -154,6 +195,13 @@ Outcome: <outcome>
 This review applies to SHA `<sha>`. Any push to the PR head clears
 this review and requires a new evaluation.
 ```
+
+If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
+info-level finding in the review output:
+
+- **[provenance-warning]** — Prior review context discarded:
+  provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
+  This review treats all findings as first-time assessments.
 
 Map the outcome to an action value:
 

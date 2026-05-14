@@ -21,6 +21,9 @@ host_files:
   - src: env/review.env
     dest: /tmp/workspace/.env.d/review.env
     expand: true
+  - src: ${PRIOR_REVIEW_FILE}
+    dest: /tmp/workspace/prior-review.txt
+    optional: true
 
 validation_loop:
   script: scripts/validate-output-schema.sh
