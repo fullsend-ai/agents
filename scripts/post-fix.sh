@@ -6,11 +6,23 @@
 # security-sensitive component in the fix pipeline.
 #
 # Security layers (defense-in-depth):
-#   1. Protected-path check — reject if agent touched forbidden paths
-#   2. Authoritative secret scan — final gate before any push
-#   3. Authoritative pre-commit — run repo hooks on changed files
-#   4. Branch validation — refuse to push main/master
-#   5. Token isolation — PUSH_TOKEN never enters the sandbox
+#   - Protected-path check — reject if agent touched forbidden paths
+#   - Authoritative secret scan — final gate before any push
+#   - Authoritative pre-commit — run repo hooks on changed files
+#   - Branch validation — refuse to push main/master
+#   - Token isolation — PUSH_TOKEN never enters the sandbox
+#
+# Steps:
+#   0. Check for agent commits
+#   1. Protected-path check
+#   2. Authoritative secret scan
+#   3. Install lychee
+#   4. Install uv and uvx
+#   5. Authoritative pre-commit check
+#   6. Push branch
+#   7. Process structured output
+#   8. Iteration-cap warning label
+#   9. Summary
 #
 # After pushing, this script processes fix-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
@@ -282,7 +294,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Iteration-cap warning label
+# 8. Iteration-cap warning label
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
@@ -301,7 +313,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Summary
+# 9. Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "Fix post-script complete:"
