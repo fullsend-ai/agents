@@ -47,3 +47,19 @@ network_policies:
     binaries:
       - path: "**/gh"
       - path: "**/node"
+
+  github_artifacts:
+    name: github-artifacts
+    endpoints:
+      - host: "*.blob.core.windows.net"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      - host: "*.actions.githubusercontent.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**/gh"
