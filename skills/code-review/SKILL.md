@@ -62,6 +62,10 @@ dimension carry over to another — each requires its own scrutiny.
 
 - Logic errors, off-by-one, nil/null handling
 - Edge cases and error paths not covered by the change
+- API contract changes: if the change modifies parameters sent to an
+  external API (GitHub, cloud providers, etc.), verify the API accepts
+  the new values for every code path that calls the function. Different
+  API operations often have different required fields.
 - Test adequacy: are the right behaviors tested?
 - Test integrity: do the tests actually constrain the code's behavior,
   or do they merely assert it runs? If test files covering the changed
@@ -136,13 +140,70 @@ For each issue identified, record:
 - **Description:** natural-language explanation of the finding
 - **Location:** relative file path and line number(s)
 - **Remediation:** suggested fix or action (required for critical/high)
+- **Actionable:** whether the finding should become tracked follow-up
+  work if the PR is approved. Use `true` only for concrete low/info
+  items that can be fixed independently after merge. Use `false` for
+  observations, praise, broad suggestions, and anything already handled
+  by the PR.
+
+#### Severity anchoring (re-reviews)
+
+When prior review context is available (passed from the `pr-review`
+skill):
+
+- **Unchanged-file anchor:** For findings whose file has NOT changed
+  since the prior review SHA AND that match a prior finding (same
+  category + same file + substantially same code area/function):
+  severity SHOULD match unless your independent analysis concludes
+  the prior assessment was clearly incorrect — this prevents both
+  escalation and de-escalation on unchanged code. If you believe the
+  prior severity was incorrect, keep the prior severity but add a note
+  explaining why a different level might be warranted.
+
+  If a finding references multiple files and ANY of them have changed since the
+  prior review SHA, the finding may be re-evaluated normally.
+- **Changed-file re-evaluation:** For findings whose file HAS changed
+  since the prior review SHA: severity may be re-evaluated normally.
+- **New findings:** For findings with no prior match: assess severity
+  normally.
+
+When prior review context is NOT available (first review): assess all
+findings normally.
+
+#### Finding matching procedure
+
+To match a current finding against a prior finding:
+
+1. **Category match:** same review dimension (correctness, security, etc.)
+2. **File match:** same relative file path
+3. **Code location match:** verify the function or class containing the
+   finding still exists in the unchanged file. Use function/class names
+   as anchors — if line numbers shifted due to insertions or deletions
+   elsewhere in the file, the function name is the stable identifier.
+4. **Description match:** the finding's description applies to the same
+   logical issue (not just the same line number)
+
+If all four criteria match, apply the anchoring rule. If any criterion
+fails, treat the finding as new.
 
 Then determine the overall outcome:
 
 - Any **critical** or **high** finding -> `request-changes`
-- **Medium**, **low**, or **info** findings only -> `comment-only` (or
-  `approve` if findings are info-only and the change is safe)
+- Multiple **medium** findings which could affect the
+  intended outcome of the PR -> `request-changes`
+- One **medium** finding (but no critical/high) -> `comment-only` (attach
+  findings as comments in the review body so the author sees them, but
+  do not block the PR)
+- **Low** or **info** findings only (no medium+) -> `approve` (attach
+  findings as comments in the review body so the author sees them, but
+  do not block the PR). Preserve concrete follow-up work in the structured
+  output with `actionable: true` so the post-script can create follow-up issues.
 - No findings -> `approve`
+- The approach is fundamentally wrong — wrong design, unauthorized
+  change, or the PR should be closed/completely rethought -> `reject`.
+  Use `reject` only when no amount of code-level iteration will make
+  the PR mergeable. This is distinct from `request-changes`, which
+  implies fixable issues.
 
 ## Constraints
 

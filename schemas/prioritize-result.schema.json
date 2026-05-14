@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prioritize-result.schema.json",
+  "title": "Prioritize Agent Result",
+  "description": "Structured RICE scores from the prioritize agent, validated by the harness before the post-script runs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reach", "impact", "confidence", "effort", "reasoning"],
+  "properties": {
+    "reach": {
+      "type": "number",
+      "minimum": 0.25,
+      "maximum": 3
+    },
+    "impact": {
+      "type": "number",
+      "minimum": 0.25,
+      "maximum": 3
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0.1,
+      "maximum": 1
+    },
+    "effort": {
+      "type": "number",
+      "minimum": 0.25,
+      "maximum": 3
+    },
+    "reasoning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reach", "impact", "confidence", "effort"],
+      "properties": {
+        "reach": { "type": "string", "minLength": 1 },
+        "impact": { "type": "string", "minLength": 1 },
+        "confidence": { "type": "string", "minLength": 1 },
+        "effort": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

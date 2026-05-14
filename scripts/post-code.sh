@@ -26,7 +26,7 @@
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
 #
 # Exit codes:
-#   0  — branch pushed, PR created
+#   0  — branch pushed and PR created, OR agent determined nothing to do
 #   1  — validation failure or error (nothing pushed)
 set -euo pipefail
 
@@ -35,6 +35,10 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+LYCHEE_VERSION="0.24.2"
+LYCHEE_SHA256="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+UV_VERSION="0.11.14"
+UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -62,8 +66,8 @@ echo "::add-mask::${PUSH_TOKEN}"
 BRANCH="$(git branch --show-current)"
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
-  echo "::error::Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}')"
-  exit 1
+  echo "::notice::Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}') — nothing to do"
+  exit 0
 fi
 
 echo "Branch: ${BRANCH}"
@@ -82,8 +86,8 @@ else
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then
-  echo "::error::No changed files in agent's commit(s) — nothing to push"
-  exit 1
+  echo "::notice::No changed files in agent's commit(s) — nothing to do"
+  exit 0
 fi
 
 echo "Changed files:"
@@ -116,7 +120,39 @@ gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 4. Authoritative pre-commit check
+# 4. Install lychee (for pre-commit markdown link checking)
+# ---------------------------------------------------------------------------
+if ! command -v lychee >/dev/null 2>&1; then
+  echo "Installing lychee v${LYCHEE_VERSION}..."
+  mkdir -p "${HOME}/.local/bin"
+  curl -fsSL \
+    "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz" \
+    -o /tmp/lychee.tar.gz \
+    && echo "${LYCHEE_SHA256}  /tmp/lychee.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/lychee.tar.gz -C "${HOME}/.local/bin" lychee \
+    && rm /tmp/lychee.tar.gz
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Install uv and uvx (for pre-commit Python tooling)
+# ---------------------------------------------------------------------------
+if ! command -v uvx >/dev/null 2>&1; then
+  echo "Installing uv v${UV_VERSION} (includes uvx)..."
+  mkdir -p "${HOME}/.local/bin"
+  curl -fsSL \
+    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+    -o /tmp/uv.tar.gz \
+    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/uv.tar.gz -C /tmp \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv "${HOME}/.local/bin/" \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx "${HOME}/.local/bin/" \
+    && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Authoritative pre-commit check
 # ---------------------------------------------------------------------------
 if [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -148,23 +184,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Push branch
+# 7. Push branch
 # ---------------------------------------------------------------------------
 git remote set-url origin \
   "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
+# Plain push (no --force-with-lease). Agents always create new
+# commits (amend is in disallowedTools), so force-push is unnecessary
+# and plain push is safer (refuses diverged branches).
 echo "Pushing branch ${BRANCH}..."
-git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
+git push -u origin -- "${BRANCH}" 2>&1
 
 # ---------------------------------------------------------------------------
-# 6. Create PR
+# 8. Create PR
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
-
-PR_LABEL="ready-for-review"
-gh label create "${PR_LABEL}" --repo "${REPO_FULL_NAME}" \
-  --description "Agent PR ready for human review" --color "0E8A16" \
-  --force 2>/dev/null || true
 
 EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
   --json number --jq '.[0].number' 2>/dev/null || true)"
@@ -172,8 +206,6 @@ EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
 if [ -n "${EXISTING_PR_NUM}" ]; then
   EXISTING_PR_URL="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
     --json url --jq '.[0].url' 2>/dev/null || true)"
-  gh pr edit "${EXISTING_PR_NUM}" --repo "${REPO_FULL_NAME}" \
-    --add-label "${PR_LABEL}" 2>/dev/null || true
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
@@ -183,7 +215,7 @@ fi
 echo "Creating PR..."
 
 COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
-COMMIT_BODY_RAW="$(git log -1 --format='%b' HEAD | sed '/^Signed-off-by:/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+COMMIT_BODY_RAW="$(git log -1 --format='%b' HEAD | sed '/^Signed-off-by:/d' | sed '/^Closes #/d' | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
 
 COMMIT_BODY="$(echo "${COMMIT_BODY_RAW}" | awk '
   /^$/           { if (buf) print buf; print; buf=""; next }
@@ -193,22 +225,29 @@ COMMIT_BODY="$(echo "${COMMIT_BODY_RAW}" | awk '
   END            { if (buf) print buf }
 ')"
 
-PR_TITLE="${COMMIT_SUBJECT}"
-
-FILE_SUMMARY="$(echo "${CHANGED_FILES}" | sort | sed 's|^|  - `|; s|$|`|')"
+# ---------------------------------------------------------------------------
+# Ensure PR title includes an issue reference.
+#
+# Many repos enforce PR title conventions like "type(TICKET): description".
+# The code agent may produce a plain "type: description" commit subject that
+# omits the issue reference. When the title follows conventional commit format
+# (word + colon), inject the issue number as a scope if no scope is present.
+# ---------------------------------------------------------------------------
+if echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+\('; then
+  # Already has a scope — e.g. "fix(#42): ..." or "feat(PROJ-123): ..."
+  PR_TITLE="${COMMIT_SUBJECT}"
+elif echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+: '; then
+  # Conventional commit without scope — inject issue reference
+  PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
+else
+  # Non-conventional title — leave as-is
+  PR_TITLE="${COMMIT_SUBJECT}"
+fi
 
 if [ -z "${COMMIT_BODY}" ]; then
-  DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}.
-
-### Changed files
-
-${FILE_SUMMARY}"
+  DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
 else
-  DESCRIPTION="${COMMIT_BODY}
-
-### Changed files
-
-${FILE_SUMMARY}"
+  DESCRIPTION="${COMMIT_BODY}"
 fi
 
 PR_BODY="${DESCRIPTION}
@@ -222,9 +261,7 @@ Closes #${ISSUE_NUMBER}
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
 - [x] Pre-commit hooks passed (authoritative run on runner)
-- [x] Tests ran inside sandbox
-
-<sub>Created by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> code agent</sub>"
+- [x] Tests ran inside sandbox"
 
 PR_URL="$(gh pr create \
   --repo "${REPO_FULL_NAME}" \
@@ -232,7 +269,7 @@ PR_URL="$(gh pr create \
   --base "${TARGET_BRANCH}" \
   --title "${PR_TITLE}" \
   --body "${PR_BODY}" \
-  --label "${PR_LABEL}" 2>&1)"
+  2>&1)"
 
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"

@@ -41,47 +41,19 @@ RESULT_FILE=$(find .  -maxdepth 4 -path '*/iteration-*/output/agent-result.json'
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   echo "::error::No agent-result.json found — posting failure notice"
-  gh pr comment "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --body "$(cat <<'EOF'
-## Review: automated review
-
-**Outcome:** failure
-**Reason:** agent-no-output
-
-The review agent did not produce a result. This PR was NOT reviewed.
-Do not count this as an approval.
-
-<sub>Posted by <a href="https://github.com/fullsend-ai/fullsend">fullsend</a> review agent</sub>
-EOF
-)"
+  echo '{"action":"failure","reason":"agent-no-output"}' | \
+    fullsend post-review \
+      --repo "${REPO_FULL_NAME}" \
+      --pr "${PR_NUMBER}" \
+      --token "${REVIEW_TOKEN}" \
+      --result -
   exit 1
 fi
 
 echo "Using result: ${RESULT_FILE}"
 
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
-
-# Guard against stale reviews: if the PR head has moved since the agent
-# reviewed it (e.g. force-push during the race window after cancel-in-progress),
-# refuse to post a review against unreviewed code.
-if [ "${ACTION}" != "failure" ]; then
-  REVIEWED_SHA=$(jq -r '.head_sha // empty' "${RESULT_FILE}")
-  CURRENT_SHA=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json headRefOid --jq '.headRefOid')
-  if [ -n "${REVIEWED_SHA}" ] && [ "${REVIEWED_SHA}" != "${CURRENT_SHA}" ]; then
-    echo ":⚠:Review stale: reviewed ${REVIEWED_SHA} but HEAD is now ${CURRENT_SHA}"
-    gh pr comment "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --body "$(cat <<EOF
-## Review: automated review
-
-**Outcome:** failure
-**Reason:** stale-head
-
-The review agent reviewed commit \`${REVIEWED_SHA}\` but the PR HEAD is now \`${CURRENT_SHA}\`. This review was discarded to avoid approving unreviewed code.
-
-<sub>Posted by <a href="https://github.com/fullsend-ai/fullsend">fullsend</a> review agent</sub>
-EOF
-)"
-    exit 1
-  fi
-fi
+# ACTION retains the original value for the entire script — not re-read after protected-path downgrade.
 
 # ---------------------------------------------------------------------------
 # Protected-path check: the review agent must not approve PRs that touch
@@ -102,6 +74,7 @@ REVIEW_PROTECTED_PATHS=(
   ".gitattributes"
 )
 
+DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then
   PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
   if [ -z "${PR_FILES}" ]; then
@@ -123,7 +96,6 @@ if [ "${ACTION}" = "approve" ]; then
   if [ -n "${PROTECTED_MATCHES}" ]; then
     echo "PR touches protected paths — downgrading approve to comment"
     echo "${PROTECTED_MATCHES}" | sed '/^$/d' | sed 's/^/  /'
-    ACTION="comment"
 
     PROTECTED_NOTICE=$'\n\n---\n\n'
     PROTECTED_NOTICE+=$'> **Protected paths detected** — this PR modifies files under one or more\n'
@@ -136,51 +108,66 @@ if [ "${ACTION}" = "approve" ]; then
       PROTECTED_NOTICE+="> - \`${f}\`"$'\n'
     done <<< "${PROTECTED_MATCHES}"
 
-    ORIGINAL_BODY=$(jq -r '.body' "${RESULT_FILE}")
-    MODIFIED_BODY="${ORIGINAL_BODY}${PROTECTED_NOTICE}"
-    export MODIFIED_REVIEW_BODY="${MODIFIED_BODY}"
+    # Rewrite the result file with downgraded action and appended notice.
+    MODIFIED_RESULT=$(mktemp)
+    trap 'rm -f "${MODIFIED_RESULT}"' EXIT
+    jq --arg notice "${PROTECTED_NOTICE}" \
+      '.action = "comment" | .body = (.body + $notice)' \
+      "${RESULT_FILE}" > "${MODIFIED_RESULT}"
+    RESULT_FILE="${MODIFIED_RESULT}"
+    DOWNGRADED=true
   fi
 fi
 
-BODY_FILE=$(mktemp)
-trap 'rm -f "${BODY_FILE}"' EXIT
+fullsend post-review \
+  --repo "${REPO_FULL_NAME}" \
+  --pr "${PR_NUMBER}" \
+  --token "${REVIEW_TOKEN}" \
+  --result "${RESULT_FILE}"
 
-case "${ACTION}" in
-  approve)          FLAG="--approve" ;;
-  request-changes)  FLAG="--request-changes" ;;
-  comment)          FLAG="--comment" ;;
-  failure)
-    REASON=$(jq -r '.reason' "${RESULT_FILE}")
-    BODY=$(jq -r '.body // empty' "${RESULT_FILE}")
-    if [ -n "${BODY}" ]; then
-      printf '%s' "${BODY}" > "${BODY_FILE}"
-    else
-      cat > "${BODY_FILE}" <<EOF
-## Review: automated review
+# ---------------------------------------------------------------------------
+# Outcome labels: apply labels based on the review action.
+# Labels are created if missing, matching the needs-human pattern in
+# post-fix.sh.
+# Label logic is mirrored in post-review-test.sh — update both.
+# ---------------------------------------------------------------------------
 
-**Outcome:** failure
-**Reason:** ${REASON}
+# Remove stale outcome labels from prior runs before applying the new one.
+# 2>/dev/null is intentional: unlike --add-label (where we want to see failures),
+# removal of a non-existent label is the common case and not worth logging.
+for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --remove-label "${stale_label}" 2>/dev/null || true
+done
 
-This PR was NOT reviewed. Do not count this as an approval.
-
-<sub>Posted by <a href="https://github.com/fullsend-ai/fullsend">fullsend</a> review agent</sub>
-EOF
-    fi
-    gh pr comment "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --body-file "${BODY_FILE}"
-    echo "Review posted: failure notice (${REASON}) on ${REPO_FULL_NAME}#${PR_NUMBER}"
-    exit 0
-    ;;
-  *)
-    echo "::error::Unknown action '${ACTION}'"
-    exit 1
-    ;;
-esac
-
-if [ -n "${MODIFIED_REVIEW_BODY:-}" ]; then
-  printf '%s' "${MODIFIED_REVIEW_BODY}" > "${BODY_FILE}"
-else
-  jq -r '.body' "${RESULT_FILE}" > "${BODY_FILE}"
+if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ]; then
+  echo "Approve disposition — applying ready-for-merge label"
+  gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
+    --description "All reviewers approved — ready to merge" --color "0E8A16" \
+    2>/dev/null || true
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --add-label "ready-for-merge" || true
+elif { [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "true" ]; } || \
+     [ "${ACTION}" = "comment" ]; then
+  echo "Review requires human judgment — applying requires-manual-review label"
+  gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
+    --description "Review requires human judgment" --color "FBCA04" \
+    2>/dev/null || true
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --add-label "requires-manual-review" || true
+elif [ "${ACTION}" = "reject" ]; then
+  echo "Reject disposition — closing PR and applying label"
+  gh label create "rejected" --repo "${REPO_FULL_NAME}" \
+    --description "Approach rejected by review agent" --color "B60205" \
+    2>/dev/null || true
+  gh pr close "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" \
+    --comment "Closed by review agent: approach rejected." || true
+  gh pr edit "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" \
+    --add-label "rejected" || true
+elif [ "${ACTION}" = "request_changes" ]; then
+  echo "Request-changes disposition — no outcome label (fix agent triggers on event)"
 fi
-gh pr review "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" "${FLAG}" --body-file "${BODY_FILE}"
 
-echo "Review posted: ${ACTION} on ${REPO_FULL_NAME}#${PR_NUMBER}"
+echo "Review posted on ${REPO_FULL_NAME}#${PR_NUMBER}"

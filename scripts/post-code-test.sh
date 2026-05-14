@@ -1,0 +1,334 @@
+#!/usr/bin/env bash
+# post-code-test.sh — Test the PR title injection logic from post-code.sh.
+#
+# Extracts and tests the title-rewriting logic in isolation using shell
+# functions. This avoids needing a full git repo or GitHub API access.
+#
+# Run from the repo root:
+#   bash internal/scaffold/fullsend-repo/scripts/post-code-test.sh
+
+set -euo pipefail
+
+FAILURES=0
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the title-rewriting logic from post-code.sh
+# so we can test it without a git repo or network access.
+# ---------------------------------------------------------------------------
+rewrite_title() {
+  local commit_subject="$1"
+  local issue_number="$2"
+
+  if echo "${commit_subject}" | grep -qE '^[a-z]+\('; then
+    echo "${commit_subject}"
+  elif echo "${commit_subject}" | grep -qE '^[a-z]+: '; then
+    echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
+  else
+    echo "${commit_subject}"
+  fi
+}
+
+run_test() {
+  local test_name="$1"
+  local commit_subject="$2"
+  local issue_number="$3"
+  local expected="$4"
+
+  local actual
+  actual="$(rewrite_title "${commit_subject}" "${issue_number}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  input:    '${commit_subject}' (issue #${issue_number})"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Test cases ---
+
+# Plain conventional commit — should inject issue reference
+run_test "fix-without-scope" \
+  "fix: correct placeholder text in secrets page dropdowns" \
+  "837" \
+  "fix(#837): correct placeholder text in secrets page dropdowns"
+
+run_test "feat-without-scope" \
+  "feat: add CSV export support" \
+  "42" \
+  "feat(#42): add CSV export support"
+
+run_test "chore-without-scope" \
+  "chore: update dependencies" \
+  "100" \
+  "chore(#100): update dependencies"
+
+run_test "docs-without-scope" \
+  "docs: update contributing guide" \
+  "55" \
+  "docs(#55): update contributing guide"
+
+run_test "refactor-without-scope" \
+  "refactor: simplify error handling" \
+  "200" \
+  "refactor(#200): simplify error handling"
+
+# Already has a scope — should NOT modify
+run_test "already-has-issue-scope" \
+  "fix(#837): correct placeholder text" \
+  "837" \
+  "fix(#837): correct placeholder text"
+
+run_test "already-has-jira-scope" \
+  "fix(KFLUXUI-1200): correct placeholder text" \
+  "837" \
+  "fix(KFLUXUI-1200): correct placeholder text"
+
+run_test "already-has-component-scope" \
+  "feat(api): add new endpoint" \
+  "42" \
+  "feat(api): add new endpoint"
+
+# Non-conventional titles — should NOT modify
+run_test "non-conventional-title" \
+  "Add CSV export support" \
+  "42" \
+  "Add CSV export support"
+
+run_test "uppercase-type" \
+  "Fix: correct placeholder text" \
+  "42" \
+  "Fix: correct placeholder text"
+
+run_test "no-colon" \
+  "fix the placeholder text" \
+  "42" \
+  "fix the placeholder text"
+
+# Edge cases
+run_test "test-type" \
+  "test: add unit tests for export" \
+  "99" \
+  "test(#99): add unit tests for export"
+
+run_test "ci-type" \
+  "ci: update workflow permissions" \
+  "10" \
+  "ci(#10): update workflow permissions"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the PR body assembly logic from post-code.sh
+# so we can test it without a git repo or network access.
+# ---------------------------------------------------------------------------
+build_pr_body() {
+  local commit_body="$1"
+  local issue_number="$2"
+  local branch="$3"
+  local scan_range="$4"
+
+  local description
+  if [ -z "${commit_body}" ]; then
+    description="Automated implementation for issue #${issue_number}."
+  else
+    description="${commit_body}"
+  fi
+
+  echo "${description}
+
+---
+
+Closes #${issue_number}
+
+### Post-script verification
+
+- [x] Branch is not main/master (\`${branch}\`)
+- [x] Secret scan passed (gitleaks — \`${scan_range}\`)
+- [x] Pre-commit hooks passed (authoritative run on runner)
+- [x] Tests ran inside sandbox"
+}
+
+run_body_test() {
+  local test_name="$1"
+  local commit_body="$2"
+  local issue_number="$3"
+  local branch="$4"
+  local check_pattern="$5"
+  local expect_present="$6"  # "yes" or "no"
+
+  local actual
+  actual="$(build_pr_body "${commit_body}" "${issue_number}" "${branch}" "abc123..def456")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- PR body test cases ---
+
+# Body should contain exactly one Closes line (the footer one)
+run_body_test "closes-appears-once" \
+  "Fix the widget rendering." \
+  "42" "agent/42-fix-widget" \
+  "Closes #42" "yes"
+
+# Body should NOT contain a Changed files section
+run_body_test "no-changed-files-section" \
+  "Fix the widget rendering." \
+  "42" "agent/42-fix-widget" \
+  "Changed files" "no"
+
+# Body should NOT contain a Created by footer
+run_body_test "no-created-by-footer" \
+  "Fix the widget rendering." \
+  "42" "agent/42-fix-widget" \
+  "Created by" "no"
+
+# Empty commit body should use fallback description
+run_body_test "empty-body-fallback" \
+  "" \
+  "99" "agent/99-add-feature" \
+  "Automated implementation for issue #99." "yes"
+
+# Empty commit body should still not have Changed files
+run_body_test "empty-body-no-changed-files" \
+  "" \
+  "99" "agent/99-add-feature" \
+  "Changed files" "no"
+
+# Empty commit body should still not have Created by
+run_body_test "empty-body-no-created-by" \
+  "" \
+  "99" "agent/99-add-feature" \
+  "Created by" "no"
+
+# Verify the Closes line count is exactly 1
+count_closes_test() {
+  local test_name="$1"
+  local commit_body="$2"
+  local issue_number="$3"
+
+  local actual
+  actual="$(build_pr_body "${commit_body}" "${issue_number}" "branch" "range")"
+  local count
+  count="$(echo "${actual}" | grep -c "Closes #${issue_number}" || true)"
+
+  if [ "${count}" -ne 1 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected exactly 1 'Closes #${issue_number}', found ${count}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+count_closes_test "single-closes-with-body" \
+  "Fix rendering bug in the widget component." "42"
+
+count_closes_test "single-closes-empty-body" \
+  "" "99"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the no-op detection logic from post-code.sh
+# so we can test it without a git repo or network access.
+#
+# Returns the exit code and message the postscript would produce.
+# ---------------------------------------------------------------------------
+detect_noop() {
+  local branch="$1"
+  local changed_files="$2"
+
+  # Step 1: branch check (mirrors lines 64-67 of post-code.sh)
+  if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "master" ]; then
+    echo "noop:branch:Agent did not create a feature branch (current: '${branch:-detached HEAD}') — nothing to do"
+    return 0
+  fi
+
+  # Step 2: changed files check (mirrors lines 84-87 of post-code.sh)
+  if [ -z "${changed_files}" ]; then
+    echo "noop:files:No changed files in agent's commit(s) — nothing to do"
+    return 0
+  fi
+
+  echo "proceed"
+  return 0
+}
+
+run_noop_test() {
+  local test_name="$1"
+  local branch="$2"
+  local changed_files="$3"
+  local expected_prefix="$4"  # "noop:branch", "noop:files", or "proceed"
+
+  local actual
+  actual="$(detect_noop "${branch}" "${changed_files}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  branch:         '${branch}'"
+    echo "  changed_files:  '${changed_files}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- No-op detection test cases ---
+
+# On main with no changes → exit 0, noop via branch check
+run_noop_test "noop-on-main-no-changes" \
+  "main" "" "noop:branch"
+
+# On master with no changes → exit 0, noop via branch check
+run_noop_test "noop-on-master-no-changes" \
+  "master" "" "noop:branch"
+
+# Detached HEAD (empty branch) with no changes → exit 0, noop via branch check
+run_noop_test "noop-detached-head" \
+  "" "" "noop:branch"
+
+# Feature branch with no file changes → exit 0, noop via files check
+run_noop_test "noop-feature-branch-no-changes" \
+  "agent/42-fix-widget" "" "noop:files"
+
+# Feature branch WITH file changes → proceed (existing behavior)
+run_noop_test "proceed-feature-branch-with-changes" \
+  "agent/42-fix-widget" "src/widget.go" "proceed"
+
+# On main but with changes → still noop (branch check comes first)
+run_noop_test "noop-on-main-with-changes" \
+  "main" "src/widget.go" "noop:branch"
+
+# --- Summary ---
+
+echo ""
+if [ ${FAILURES} -gt 0 ]; then
+  echo "${FAILURES} test(s) failed"
+  exit 1
+fi
+echo "All tests passed"
