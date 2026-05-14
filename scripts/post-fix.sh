@@ -60,6 +60,8 @@ GITLEAKS_VERSION="8.30.1"
 GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
 LYCHEE_VERSION="0.24.2"
 LYCHEE_SHA256="1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a"
+UV_VERSION="0.11.14"
+UV_SHA256="f3b623eb0e6141a7053d571d59a0bdc341e0f238ea8f5f0b4815ddbec9a2a296"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -170,7 +172,24 @@ if ! command -v lychee >/dev/null 2>&1; then
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Authoritative pre-commit check (only if pushing)
+# 4. Install uv and uvx (for pre-commit Python tooling)
+# ---------------------------------------------------------------------------
+if ! command -v uvx >/dev/null 2>&1; then
+  echo "Installing uv v${UV_VERSION} (includes uvx)..."
+  mkdir -p "${HOME}/.local/bin"
+  curl -fsSL \
+    "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz" \
+    -o /tmp/uv.tar.gz \
+    && echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/uv.tar.gz -C /tmp \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uv "${HOME}/.local/bin/" \
+    && mv /tmp/uv-x86_64-unknown-linux-gnu/uvx "${HOME}/.local/bin/" \
+    && rm -rf /tmp/uv.tar.gz /tmp/uv-x86_64-unknown-linux-gnu
+  export PATH="${HOME}/.local/bin:${PATH}"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Authoritative pre-commit check (only if pushing)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
@@ -196,7 +215,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Push branch (only if we have commits)
+# 6. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
@@ -211,7 +230,7 @@ if [ "${NO_PUSH}" = "false" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Process structured output (fix-result.json)
+# 7. Process structured output (fix-result.json)
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
