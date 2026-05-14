@@ -181,6 +181,10 @@ run_test "invalid-json-fails" \
   "" \
   "true"
 
+run_test "label-actions-applied" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API crash matches area/api label.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
+
 # --- Summary ---
 
 echo ""
