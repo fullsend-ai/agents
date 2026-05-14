@@ -67,17 +67,19 @@ add_label() {
 
 # remove_label silently removes a label (no error if absent).
 remove_label() {
-  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/$1" -X DELETE --silent 2>/dev/null || true
+  local encoded
+  encoded=$(printf '%s' "$1" | jq -sRr @uri)
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
 }
 
 # Control labels managed by the triage pipeline. The post script refuses to
 # add or remove these via label_actions (same set that pre-triage.sh resets,
 # plus blocked and triaged).
-CONTROL_LABELS="needs-info ready-to-code duplicate not-ready not-reproducible type/feature blocked triaged"
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "not-ready" "not-reproducible" "type/feature" "blocked" "triaged")
 
 is_control_label() {
   local label="$1"
-  for cl in ${CONTROL_LABELS}; do
+  for cl in "${CONTROL_LABELS[@]}"; do
     if [[ "${cl}" == "${label}" ]]; then
       return 0
     fi
@@ -182,9 +184,16 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 
   echo "Processing ${LABEL_COUNT} label action(s)..."
 
+  LABELS_APPLIED=0
   for i in $(seq 0 $((LABEL_COUNT - 1))); do
     LA_ACTION=$(jq -r ".label_actions.actions[${i}].action" "${RESULT_FILE}")
     LA_LABEL=$(jq -r ".label_actions.actions[${i}].label" "${RESULT_FILE}")
+
+    # Validate label name to prevent path injection from untrusted agent output.
+    if [[ ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL}' -- contains invalid characters"
+      continue
+    fi
 
     if is_control_label "${LA_LABEL}"; then
       echo "::warning::Refused to ${LA_ACTION} control label '${LA_LABEL}' -- control labels are managed by the triage pipeline"
@@ -195,19 +204,26 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
       add)
         echo "Adding label '${LA_LABEL}'..."
         add_label "${LA_LABEL}"
+        LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       remove)
         echo "Removing label '${LA_LABEL}'..."
         remove_label "${LA_LABEL}"
+        LABELS_APPLIED=$((LABELS_APPLIED + 1))
+        ;;
+      *)
+        echo "::warning::Unknown label action '${LA_ACTION}' for label '${LA_LABEL}'"
         ;;
     esac
   done
 
-  # Append the label reason to the comment.
-  COMMENT="${COMMENT}
+  # Append the label reason to the comment only if at least one label was applied.
+  if [[ "${LABELS_APPLIED}" -gt 0 ]]; then
+    COMMENT="${COMMENT}
 
 ---
 **Labels:** ${LABEL_REASON}"
+  fi
 fi
 
 # --- Post comment ---

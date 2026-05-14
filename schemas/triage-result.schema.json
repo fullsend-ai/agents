@@ -100,12 +100,13 @@
         "actions": {
           "type": "array",
           "minItems": 1,
+          "maxItems": 20,
           "items": {
             "type": "object",
             "required": ["action", "label"],
             "properties": {
               "action": { "type": "string", "enum": ["add", "remove"] },
-              "label": { "type": "string", "minLength": 1 }
+              "label": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9._/: +-]+$" }
             },
             "additionalProperties": false
           }
