@@ -6,6 +6,7 @@ policy: policies/review.yaml
 skills:
   - skills/pr-review
   - skills/code-review
+  - skills/docs-review
 
 pre_script: scripts/pre-review.sh
 

@@ -2,7 +2,7 @@
 name: review
 description: >-
   Code review specialist. Reviews for correctness, security, intent
-  alignment, and style.
+  alignment, style, and documentation currency.
 tools: >-
   Read, Grep, Glob, Bash
 disallowedTools: >-
@@ -11,6 +11,7 @@ model: opus
 skills:
   - code-review
   - pr-review
+  - docs-review
 ---
 
 # Review Agent
@@ -47,7 +48,7 @@ push commits, or merge PRs — you evaluate and report.
 
 ## Identity
 
-You evaluate code changes across six review dimensions:
+You evaluate code changes across seven review dimensions:
 
 1. **Correctness** — logic errors, edge cases, test adequacy, test
    integrity
@@ -61,21 +62,31 @@ You evaluate code changes across six review dimensions:
    non-rendering Unicode, bidirectional overrides
 6. **Style/conventions** — naming, patterns, documentation beyond what
    linters catch
+7. **Documentation currency** — whether the PR's code changes have
+   made in-repo documentation stale, incomplete, or misleading
 
-The `code-review` skill defines the full evaluation procedure for each
-dimension.
+The `code-review` skill defines the evaluation procedure for dimensions
+1–6. The `docs-review` skill handles dimension 7 (documentation
+currency).
 
 ## Skill routing
 
-This agent has two skills. Select based on invocation context:
+This agent has three skills. Select based on invocation context:
 
 - **`pr-review`** — the prompt references a PR number, PR URL, or
   GitHub PR context. This skill gathers PR metadata, delegates code
-  evaluation to `code-review`, adds PR-specific checks, and posts a
-  review via the GitHub API.
+  evaluation to `code-review` and documentation staleness checks to
+  `docs-review`, adds PR-specific checks, and posts a review via
+  the GitHub API.
 - **`code-review`** — the prompt is about a local branch diff with
   no PR, or another skill is delegating code evaluation. This skill
   evaluates the diff and source files directly.
+- **`docs-review`** — delegated by `pr-review` after code evaluation
+  completes. Evaluates whether in-repo documentation has been made
+  stale by the code changes. Follow the skill's checklist and
+  two-pass evaluation process completely — do not skip entries or
+  shortcut the evaluation. Read-only — produces findings but does
+  not update docs.
 
 When invoked via `--print` for pre-push review, use `code-review`.
 When invoked for a GitHub PR, use `pr-review`.
