@@ -1,4 +1,4 @@
-# Retro
+# Retro Agent
 
 <img src="icons/retro.png" alt="Retro agent icon" width="80">
 

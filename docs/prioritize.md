@@ -1,4 +1,4 @@
-# Prioritize
+# Prioritize Agent
 
 <img src="icons/prioritize.png" alt="Prioritize agent icon" width="80">
 

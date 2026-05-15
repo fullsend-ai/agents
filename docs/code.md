@@ -1,4 +1,4 @@
-# Code
+# Code Agent
 
 <img src="icons/coder.png" alt="Code agent icon" width="80">
 

@@ -1,4 +1,4 @@
-# Review
+# Review Agent
 
 <img src="icons/review.png" alt="Review agent icon" width="80">
 
