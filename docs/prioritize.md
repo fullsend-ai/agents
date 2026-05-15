@@ -46,18 +46,25 @@ uses it to inform Reach and Impact scores. This is not a command — it's an
 agent skill that the prioritize agent invokes automatically during scoring.
 
 To provide one, create a skill directory in your target repository at
-`.claude/skills/customer-research/` with a `SKILL.md` and any helper scripts
-the agent can run to dynamically gather data:
+`.agents/skills/customer-research/` with a `SKILL.md` and any helper scripts
+organized in a `scripts/` subdirectory. Then symlink `.claude/skills` to
+`.agents/skills` so the skill is discoverable by both fullsend and any local
+agent tooling:
 
 ```
 your-repo/
-  .claude/skills/customer-research/
+  .agents/skills/customer-research/
     SKILL.md
-    query-salesforce.sh
-    search-drive.sh
+    scripts/
+      query-salesforce.sh
+      search-drive.sh
+  .claude/skills -> ../.agents/skills
 ```
 
-**`.claude/skills/customer-research/SKILL.md`:**
+> **Tip:** You can scaffold this structure using a skill creator skill like
+> Anthropic's built-in `/skill` or the superpowers `writing-skills` skill.
+
+**`.agents/skills/customer-research/SKILL.md`:**
 
 ```markdown
 ---
@@ -65,6 +72,9 @@ name: customer-research
 description: >-
   Gather customer context from Salesforce and Google Drive to inform
   RICE prioritization scoring.
+allowed_tools:
+  - Bash(scripts/query-salesforce.sh*)
+  - Bash(scripts/search-drive.sh*)
 ---
 
 # Customer Research
@@ -76,7 +86,7 @@ Research customer context for the issue being prioritized.
 Run the Salesforce query script to find accounts with support cases
 related to this issue's feature area:
 
-    bash .claude/skills/customer-research/query-salesforce.sh "SEARCH_TERM"
+    bash scripts/query-salesforce.sh "SEARCH_TERM"
 
 The script returns a JSON summary of affected accounts by tier
 (Strategic, Enterprise, Growth). Strategic accounts should
@@ -87,7 +97,7 @@ significantly increase the Reach score.
 Run the Drive search script to find relevant customer interviews,
 roadmap documents, and competitive analysis:
 
-    bash .claude/skills/customer-research/search-drive.sh "SEARCH_TERM"
+    bash scripts/search-drive.sh "SEARCH_TERM"
 
 Look for:
 - Customer interview transcripts mentioning the problem.
@@ -102,7 +112,7 @@ Return a short summary (under 500 characters) describing:
 - Any direct customer quotes or requests that strengthen the case.
 ```
 
-**`.claude/skills/customer-research/query-salesforce.sh`:**
+**`.agents/skills/customer-research/scripts/query-salesforce.sh`:**
 
 ```bash
 #!/usr/bin/env bash
@@ -116,7 +126,7 @@ curl -sf -H "Authorization: Bearer $SFDC_TOKEN" \
     ORDER BY cnt DESC LIMIT 20"
 ```
 
-**`.claude/skills/customer-research/search-drive.sh`:**
+**`.agents/skills/customer-research/scripts/search-drive.sh`:**
 
 ```bash
 #!/usr/bin/env bash
