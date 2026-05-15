@@ -1,0 +1,58 @@
+# Review
+
+![Review agent icon](icons/review.png)
+
+Code review specialist that evaluates pull requests for correctness, security, intent alignment, style, and documentation currency.
+
+## How the agent works
+
+The review agent is triggered when a PR is opened or updated. It follows the same pre-script / sandbox / post-script pipeline as the other agents.
+
+1. **Pre-script** validates inputs and fetches PR metadata.
+2. **Sandbox** — the agent reads the PR diff, the linked issue (if any), and the surrounding codebase. It applies three review skills (code-review, pr-review, docs-review) to evaluate the change across multiple dimensions. It produces a structured JSON review result. The agent cannot write files, edit code, or push — it is strictly read-only.
+3. **Post-script** posts the review on the PR using a dedicated review token.
+
+If a prior review exists (e.g., re-review after fixes), it is injected into the sandbox so the agent can assess whether previous findings were addressed.
+
+## How it helps
+
+- Every PR gets a thorough review within minutes, regardless of team availability.
+- Reviews cover security, correctness, intent alignment, and docs staleness — dimensions humans sometimes skip under time pressure.
+- The structured output format makes it easy to see what was flagged and why.
+
+## Commands
+
+| Command | Where | Effect |
+|---------|-------|--------|
+| `/fs-review` | Issue or PR comment | Triggers a review |
+
+The `/fs-review` command does not accept arguments. The review agent also runs
+automatically when a PR is opened, synchronized (new commits pushed), or moved
+out of draft.
+
+## Control labels
+
+These labels are applied by the review post-script based on the review outcome.
+
+| Label | Meaning |
+|-------|---------|
+| `ready-for-merge` | The review agent approved the PR. No blocking findings. |
+| `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
+| `rejected` | The review agent rejected the PR and the post-script closed it. |
+
+When the review agent requests changes (without rejecting), no outcome label is
+applied — the `pull_request_review` event triggers the [fix agent](fix.md) directly.
+
+Stale outcome labels from prior review runs are removed before the new one is
+applied.
+
+## Configuration and extension
+
+Detailed harness-level customization is coming soon. Today, the best way to
+influence how the review agent behaves on your repository is by adding
+instructions and skills to the repo itself. See
+[Customizing Agents with Skills](../guides/user/customizing-with-skills.md).
+
+## Source
+
+[`internal/scaffold/fullsend-repo/harness/review.yaml`](../../internal/scaffold/fullsend-repo/harness/review.yaml)
