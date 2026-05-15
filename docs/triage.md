@@ -1,4 +1,4 @@
-# Triage
+# Triage Agent
 
 <img src="icons/triage.png" alt="Triage agent icon" width="80">
 
