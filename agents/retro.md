@@ -69,7 +69,20 @@ After gathering findings from subagents:
 
 ## Output
 
-Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`. See the `retro-analysis` skill for the exact schema and writing guidance.
+Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
+
+The top-level object must have **exactly two properties** — no others:
+
+```json
+{
+  "summary": "...",
+  "proposals": [...]
+}
+```
+
+The schema enforces `"additionalProperties": false`. Any extra top-level key (e.g., `timeline`, `workflow_quality`, `originating_url`, `metadata`) will fail validation.
+
+See the `retro-analysis` skill for the proposal object schema and writing guidance.
 
 ## Target repo restrictions
 
