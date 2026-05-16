@@ -129,8 +129,9 @@ if ! command -v lychee >/dev/null 2>&1; then
     "https://github.com/lycheeverse/lychee/releases/download/lychee-v${LYCHEE_VERSION}/lychee-x86_64-unknown-linux-gnu.tar.gz" \
     -o /tmp/lychee.tar.gz \
     && echo "${LYCHEE_SHA256}  /tmp/lychee.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/lychee.tar.gz -C "${HOME}/.local/bin" lychee \
-    && rm /tmp/lychee.tar.gz
+    && tar xzf /tmp/lychee.tar.gz -C /tmp \
+    && mv /tmp/lychee-x86_64-unknown-linux-gnu/lychee "${HOME}/.local/bin/" \
+    && rm -rf /tmp/lychee.tar.gz /tmp/lychee-x86_64-unknown-linux-gnu
   export PATH="${HOME}/.local/bin:${PATH}"
 fi
 
