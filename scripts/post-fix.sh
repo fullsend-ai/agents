@@ -308,7 +308,7 @@ BOT_CAP="${ITERATION_CAP:-5}"
 WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 
 # The needs-human label is based on the bot cap — it signals that the
-# autonomous review→fix loop needs human direction. Human-triggered /fix
+# autonomous review→fix loop needs human direction. Human-triggered /fs-fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
   echo "::warning::Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
