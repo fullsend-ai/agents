@@ -420,12 +420,14 @@ cat > "${FULLSEND_OUTPUT_DIR}/fix-result.json" << 'FIXEOF'
 FIXEOF
 ```
 
-Validate the JSON is well-formed:
+Validate the output against the schema:
 
 ```bash
-python3 -c "import json; json.load(open('${FULLSEND_OUTPUT_DIR}/fix-result.json'))" \
-  || jq . "${FULLSEND_OUTPUT_DIR}/fix-result.json" > /dev/null
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/fix-result.json"
 ```
+
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. Do not exit until the check passes.
 
 ## Partial work
 

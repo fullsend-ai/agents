@@ -305,6 +305,16 @@ Write the result to `$FULLSEND_OUTPUT_DIR/agent-result.json` following
 the output schema in the agent definition (`agents/review.md`). Do NOT
 call `gh pr review` — the post-script handles all GitHub mutations.
 
+After writing the file, validate it before exiting:
+
+```bash
+fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
+
 #### Interactive mode (`$FULLSEND_OUTPUT_DIR` is not set)
 
 Post the review directly using the appropriate flag:

@@ -127,6 +127,11 @@ Write the result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
 - Write ONLY the JSON file. No markdown report, no other output files.
 - The JSON must be valid and parseable. No markdown fences around it,
   no trailing text.
+- After writing the JSON file, validate it before exiting:
+  ```bash
+  fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
+  ```
+  If validation fails, fix the JSON and re-run the check until it passes.
 - Do NOT post comments, apply labels, or modify the issue in any way.
   Your only output is the JSON file. A post-script handles all GitHub
   mutations.
