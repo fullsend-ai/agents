@@ -290,88 +290,9 @@ Map the outcome to an action value:
 
 #### Pipeline mode (`$FULLSEND_OUTPUT_DIR` is set)
 
-Write the result as JSON. Do NOT call `gh pr review` — the post-script
-handles all GitHub mutations. The JSON shape varies by action.
-
-For `approve` with no actionable findings, or for `comment`:
-
-```bash
-jq -n \
-  --arg action "<action>" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-For `approve` with actionable low/info findings, include structured
-findings alongside the body. Only include findings that are concrete
-follow-up work; set `actionable: true` on those findings.
-
-```bash
-jq -n \
-  --arg action "approve" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, findings: $findings}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-For `request-changes` or `reject`, include structured findings alongside
-the body:
-
-```bash
-jq -n \
-  --arg action "request-changes" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, findings: $findings}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-```bash
-jq -n \
-  --arg action "reject" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, findings: $findings}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-Each finding object has: `severity` (critical/high/medium/low/info),
-`category`, `file`, `line` (optional), `description`, `remediation`
-(optional), and `actionable` (optional boolean). For approved reviews,
-only low/info findings with `actionable: true` become follow-up issues.
-
-For `failure`, provide the reason — body is optional:
-
-```bash
-jq -n \
-  --arg action "failure" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg reason "<reason>" \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    reason: $reason}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-Exit after writing the file.
+Write the result to `$FULLSEND_OUTPUT_DIR/agent-result.json` following
+the output schema in the agent definition (`agents/review.md`). Do NOT
+call `gh pr review` — the post-script handles all GitHub mutations.
 
 #### Interactive mode (`$FULLSEND_OUTPUT_DIR` is not set)
 

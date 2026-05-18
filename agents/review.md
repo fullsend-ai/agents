@@ -156,8 +156,79 @@ When the change is safe and the only findings are low or info severity,
 approve the PR and mark concrete follow-up work as `actionable: true`
 in the structured result so the post-script can create tracking issues.
 
-The `code-review` skill defines the finding structure. The `pr-review`
-skill defines the GitHub review comment format.
+### Pipeline mode output
+
+When `$FULLSEND_OUTPUT_DIR` is set, write the result to
+`$FULLSEND_OUTPUT_DIR/agent-result.json`. The JSON shape varies by
+action. **Only include fields listed here — the schema is strict
+(`additionalProperties: false`) and will reject unknown fields such as
+`outcome`, `summary`, `prior_review_sha`, or `prior_review_provenance`.**
+
+For `approve` with no actionable findings, or for `comment`:
+
+```bash
+jq -n \
+  --arg action "<action>" \
+  --argjson pr_number <number> \
+  --arg repo "<owner/repo>" \
+  --arg head_sha "<sha>" \
+  --arg body "<markdown review comment>" \
+  '{action: $action, pr_number: $pr_number, repo: $repo,
+    head_sha: $head_sha, body: $body}' \
+  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+For `approve` with actionable low/info findings:
+
+```bash
+jq -n \
+  --arg action "approve" \
+  --argjson pr_number <number> \
+  --arg repo "<owner/repo>" \
+  --arg head_sha "<sha>" \
+  --arg body "<markdown review comment>" \
+  --argjson findings '<findings array>' \
+  '{action: $action, pr_number: $pr_number, repo: $repo,
+    head_sha: $head_sha, body: $body, findings: $findings}' \
+  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+For `request-changes` or `reject`:
+
+```bash
+jq -n \
+  --arg action "<request-changes|reject>" \
+  --argjson pr_number <number> \
+  --arg repo "<owner/repo>" \
+  --arg head_sha "<sha>" \
+  --arg body "<markdown review comment>" \
+  --argjson findings '<findings array>' \
+  '{action: $action, pr_number: $pr_number, repo: $repo,
+    head_sha: $head_sha, body: $body, findings: $findings}' \
+  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+For `failure`:
+
+```bash
+jq -n \
+  --arg action "failure" \
+  --argjson pr_number <number> \
+  --arg repo "<owner/repo>" \
+  --arg reason "<tool-failure|missing-context|ambiguous-findings|token-limit>" \
+  '{action: $action, pr_number: $pr_number, repo: $repo,
+    reason: $reason}' \
+  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+Each finding object has these fields only: `severity`
+(critical/high/medium/low/info), `category`, `file`, `line` (optional
+integer), `description`, `remediation` (optional string), `actionable`
+(optional boolean). For approved reviews, only low/info findings with
+`actionable: true` become follow-up issues.
+
+Exit after writing the file. Do NOT call `gh pr review` in pipeline
+mode — the post-script handles all GitHub mutations.
 
 ## Exit code contract
 
