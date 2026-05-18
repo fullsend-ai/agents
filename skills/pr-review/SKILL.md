@@ -286,9 +286,11 @@ info-level finding in the review output:
   provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
   This review treats all findings as first-time assessments.
 
-Map the outcome to an action value:
+Map the outcome to an action value. `action`, `pr_number`, and `repo`
+are always required (see the agent definition for the full schema).
+The table below lists the **additional** required fields per action:
 
-| Outcome            | Action              | Required fields                    |
+| Outcome            | Action              | Additional required fields         |
 |--------------------|---------------------|------------------------------------|
 | approve            | `approve`           | `body`, `head_sha`; include `findings[]` when low/info findings are actionable follow-up work |
 | request-changes    | `request-changes`   | `body`, `head_sha`, `findings[]`   |

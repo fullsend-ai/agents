@@ -263,12 +263,6 @@ jq -n \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
-Each finding object has these fields only: `severity`
-(critical/high/medium/low/info), `category`, `file`, `line` (optional
-integer), `description`, `remediation` (optional string), `actionable`
-(optional boolean). For approved reviews, only low/info findings with
-`actionable: true` become follow-up issues.
-
 Exit after writing the file. Do NOT call `gh pr review` in pipeline
 mode — the post-script handles all GitHub mutations.
 
