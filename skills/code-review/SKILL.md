@@ -90,6 +90,21 @@ dimension carry over to another — each requires its own scrutiny.
 - Privilege escalation: can a lower-privilege principal gain
   higher-privilege access through the changed code?
 - Injection vulnerabilities: SQL, command, LDAP, path traversal.
+- **Permission manifest changes:** If the diff modifies any file that
+  declares or scopes permissions — GitHub App manifests, token
+  downscoping maps, OAuth scope lists, IAM/RBAC policies, Kubernetes
+  RBAC, or workflow `permissions:` blocks — always produce a finding,
+  even if the change appears internally consistent. Evaluate:
+  (a) does the new permission grant capabilities beyond the stated use
+  case? (b) is there a least-privilege alternative that achieves the
+  same goal? (c) is there a linked issue or ADR explicitly authorizing
+  the expansion? A permission expansion without explicit justification
+  must be at least **high** severity. A reduction in permissions is
+  still a finding (info) confirming the change is intentional.
+
+  Examples of permission-declaring files: GitHub App manifest JSON,
+  `permissions:` blocks in `.github/workflows/*.yml`, token scoping
+  maps, IAM policy JSON/YAML, Kubernetes `Role`/`ClusterRole` YAML.
 
 #### Content security
 
