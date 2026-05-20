@@ -149,7 +149,8 @@ fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
 If validation fails, read the error output, fix the JSON file, and
-re-run the check. Do not exit until the check passes.
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
 
 ### Writing good proposals
 

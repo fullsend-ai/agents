@@ -131,7 +131,9 @@ Write the result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
   ```bash
   fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
   ```
-  If validation fails, fix the JSON and re-run the check until it passes.
+  If validation fails, read the error output, fix the JSON file, and
+  re-run the check. If it still fails after 3 attempts, write the best
+  JSON you have and exit.
 - Do NOT post comments, apply labels, or modify the issue in any way.
   Your only output is the JSON file. A post-script handles all GitHub
   mutations.
