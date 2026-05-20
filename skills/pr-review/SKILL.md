@@ -183,6 +183,7 @@ Protected paths (kept in sync with `post-review.sh`):
 - `.claude/`
 - `agents/`
 - `harness/`
+- `plugins/`
 - `policies/`
 - `scripts/`
 - `api-servers/`
