@@ -197,7 +197,8 @@ Then determine the overall outcome:
 - **Low** or **info** findings only (no medium+) -> `approve` (attach
   findings as comments in the review body so the author sees them, but
   do not block the PR). Preserve concrete follow-up work in the structured
-  output with `actionable: true` so the post-script can create follow-up issues.
+  output with `actionable: true` (follow-up issue creation is temporarily
+  disabled pending #1137, but the field is retained for when it is re-enabled).
 - No findings -> `approve`
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought -> `reject`.

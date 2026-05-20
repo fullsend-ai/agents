@@ -201,7 +201,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `line`        | integer | no       | Line number (minimum 1)                       |
 | `description` | string  | yes      | Finding description (min 1 char)              |
 | `remediation` | string  | no       | Suggested fix                                 |
-| `actionable`  | boolean | no       | When true on low/info findings in an `approve` result, the post-script creates follow-up issues |
+| `actionable`  | boolean | no       | When true on low/info findings in an `approve` result, marks the finding for future follow-up issue creation (temporarily disabled; see #1137) |
 
 Schema validation failures trigger a harness retry iteration. The jq
 examples below show the exact JSON shape for each action.
