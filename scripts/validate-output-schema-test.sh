@@ -18,6 +18,7 @@ run_test() {
   local test_name="$1"
   local json_content="$2"
   local expect_pass="$3"  # "true" or "false"
+  local expect_output="${4:-}"  # optional: substring that must appear in stdout
 
   local test_dir="${TMPDIR}/${test_name}"
   mkdir -p "${test_dir}/output"
@@ -27,15 +28,27 @@ run_test() {
   FULLSEND_OUTPUT_SCHEMA="${SCHEMA}" \
     bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
+  local passed=true
   if [[ "${expect_pass}" == "true" && ${exit_code} -ne 0 ]]; then
     echo "FAIL: ${test_name} — expected PASS but got exit ${exit_code}"
-    cat "${TMPDIR}/stdout.log"
-    FAILURES=$((FAILURES + 1))
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
   elif [[ "${expect_pass}" == "false" && ${exit_code} -eq 0 ]]; then
     echo "FAIL: ${test_name} — expected FAIL but got PASS"
-    FAILURES=$((FAILURES + 1))
-  else
+    passed=false
+  fi
+
+  if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
+    echo "  actual output:"
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
+  fi
+
+  if [[ "${passed}" == "true" ]]; then
     echo "PASS: ${test_name}"
+  else
+    FAILURES=$((FAILURES + 1))
   fi
 }
 
@@ -91,6 +104,7 @@ run_test_custom_filename() {
   local output_file="$3"
   local schema="$4"
   local expect_pass="$5"
+  local expect_output="${6:-}"  # optional: substring that must appear in stdout
 
   local test_dir="${TMPDIR}/${test_name}"
   mkdir -p "${test_dir}/output"
@@ -100,15 +114,27 @@ run_test_custom_filename() {
   FULLSEND_OUTPUT_SCHEMA="${schema}" FULLSEND_OUTPUT_FILE="${output_file}" \
     bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
+  local passed=true
   if [[ "${expect_pass}" == "true" && ${exit_code} -ne 0 ]]; then
     echo "FAIL: ${test_name} — expected PASS but got exit ${exit_code}"
-    cat "${TMPDIR}/stdout.log"
-    FAILURES=$((FAILURES + 1))
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
   elif [[ "${expect_pass}" == "false" && ${exit_code} -eq 0 ]]; then
     echo "FAIL: ${test_name} — expected FAIL but got PASS"
-    FAILURES=$((FAILURES + 1))
-  else
+    passed=false
+  fi
+
+  if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
+    echo "  actual output:"
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
+  fi
+
+  if [[ "${passed}" == "true" ]]; then
     echo "PASS: ${test_name}"
+  else
+    FAILURES=$((FAILURES + 1))
   fi
 }
 
