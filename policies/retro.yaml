@@ -58,13 +58,13 @@ network_policies:
     endpoints:
       - host: "*.blob.core.windows.net"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-write
       - host: "*.actions.githubusercontent.com"
         port: 443
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: read-write
     binaries:
       - path: "**/gh"
