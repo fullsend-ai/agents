@@ -8,6 +8,7 @@
 # The agent NEVER pushes or creates PRs (disallowedTools enforces this).
 # Only the post-script, running on the runner with PUSH_TOKEN, can write.
 agent: agents/code.md
+doc: docs/agents/code.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/code.yaml

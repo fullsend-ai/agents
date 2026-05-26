@@ -1,4 +1,5 @@
 agent: agents/review.md
+doc: docs/agents/review.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
 policy: policies/review.yaml
