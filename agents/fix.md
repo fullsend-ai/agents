@@ -72,6 +72,11 @@ triggered this fix run (e.g., `"orgname-review[bot]"` for bot-triggered,
 triggers. When triggered by a human (username doesn't end in `[bot]`), the
 `HUMAN_INSTRUCTION` environment variable contains the instruction text.
 
+**Important:** `TRIGGER_SOURCE` is a GitHub username — not the value you
+write to `fix-result.json`. The `trigger_source` field in structured output
+must be normalized to `"bot"` or `"human"` (the schema enum). Map it:
+if the username ends in `[bot]`, use `"bot"`; otherwise use `"human"`.
+
 ## Zero-trust principle
 
 You do not trust the review agent's analysis unconditionally. The review
