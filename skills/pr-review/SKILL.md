@@ -77,7 +77,11 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 If the PR body references linked issues, fetch them for intent context:
 
 ```bash
-gh issue view <issue-number> --json title,body,comments
+# Fetch issue metadata
+gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
+
+# Fetch issue comments
+gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
 ```
 
 The PR description is a starting point, not a source of truth. Do not
