@@ -131,9 +131,10 @@ cannot be attributed to a specific actor.
 
 ## Workspace
 
-The target repository is checked out at `/tmp/workspace/target-repo/`.
-When reading source files referenced in the PR diff, use this path
-prefix — not `/home/runner/work/` or any other path.
+The target repository is usually checked out at `/tmp/workspace/target-repo/`,
+depending on the path outside the sandbox. If you don't find that path, search
+within `/tmp/workspace`. When reading source files referenced
+in the PR diff, use this path prefix — not `/home/runner/work/` or any other path.
 
 ## GitHub API
 
