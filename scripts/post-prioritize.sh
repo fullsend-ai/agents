@@ -143,13 +143,9 @@ update_field() {
 
 echo "Writing scores to project board (CSMA-aware)..."
 update_field "${REACH_FIELD_ID}" "${REACH}"
-github_csma_slot
 update_field "${IMPACT_FIELD_ID}" "${IMPACT}"
-github_csma_slot
 update_field "${CONFIDENCE_FIELD_ID}" "${CONFIDENCE}"
-github_csma_slot
 update_field "${EFFORT_FIELD_ID}" "${EFFORT}"
-github_csma_slot
 update_field "${SCORE_FIELD_ID}" "${SCORE}"
 echo "Project fields updated."
 
@@ -190,7 +186,7 @@ COMMENT=$(jq -n \
 </details>"')
 
 echo "Posting RICE comment..."
-printf '%s' "${COMMENT}" | github_csma_run_cmd fullsend post-comment \
+printf '%s' "${COMMENT}" | github_csma_run_cmd core fullsend post-comment \
   --repo "${REPO}" \
   --number "${ISSUE_NUMBER}" \
   --marker "<!-- fullsend:prioritize-agent -->" \

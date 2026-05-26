@@ -42,6 +42,11 @@ fi
 fail_count=\$(( fail_count + 1 ))
 echo "\${fail_count}" > "\${GH_FAIL_COUNT_FILE}"
 
+if [[ "\${GH_CSMA_FAIL_MODE:-}" == "auth" ]] && [[ "\$1" != "api" || "\$2" != "rate_limit" ]]; then
+  echo "ERROR: Resource not accessible by integration" >&2
+  exit 1
+fi
+
 if [[ -n "\${GH_CSMA_FAIL_UNTIL:-}" ]] && (( fail_count <= GH_CSMA_FAIL_UNTIL )); then
   echo "You have exceeded a secondary rate limit. Please retry again later." >&2
   exit 1
@@ -206,11 +211,88 @@ run_test() {
   echo "PASS: ${test_name}"
 }
 
+run_test_failure_stderr() {
+  local test_name="$1"
+  local fail_until="$2"
+  local expected_stderr="$3"
+  local fail_mode="${4:-}"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  > "${GH_LOG}"
+  rm -f "${GH_FAIL_COUNT}"
+  unset GH_CSMA_FAIL_UNTIL GH_CSMA_FAIL_MODE
+  export GITHUB_CSMA_MAX_ATTEMPTS="${GITHUB_CSMA_MAX_ATTEMPTS:-8}"
+  if [[ -n "${fail_until}" ]]; then
+    export GH_CSMA_FAIL_UNTIL="${fail_until}"
+  fi
+  if [[ -n "${fail_mode}" ]]; then
+    export GH_CSMA_FAIL_MODE="${fail_mode}"
+  fi
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2> "${TEST_TMPDIR}/stderr-${test_name}.log" || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected failure but got success"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stderr}" "${TEST_TMPDIR}/stderr-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stderr containing '${expected_stderr}'"
+    cat "${TEST_TMPDIR}/stderr-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Unit tests for shared CSMA helpers.
+# shellcheck source=lib/github-api-csma.sh
+source "${SCRIPT_DIR}/lib/github-api-csma.sh"
+if github_csma_is_rate_limit "HTTP 429: Too Many Requests"; then
+  :
+else
+  echo "FAIL: github_csma_is_rate_limit — expected HTTP 429 match"
+  FAILURES=$((FAILURES + 1))
+fi
+if github_csma_is_rate_limit "You have exceeded a secondary rate limit"; then
+  :
+else
+  echo "FAIL: github_csma_is_rate_limit — expected secondary limit match"
+  FAILURES=$((FAILURES + 1))
+fi
+if ! github_csma_is_rate_limit '{"totalCount":429}'; then
+  :
+else
+  echo "FAIL: github_csma_is_rate_limit — bare 429 must not match"
+  FAILURES=$((FAILURES + 1))
+fi
+delay=$(github_csma_backoff 0)
+if (( delay >= 1 && delay <= 120 )); then
+  echo "PASS: github_csma_backoff"
+else
+  echo "FAIL: github_csma_backoff — delay out of range: ${delay}"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # Happy path: no injected failures.
 run_test "happy-path" "" 8
 
 # Retry path: first two non-rate-limit gh calls fail with secondary limit, then succeed.
 run_test "rate-limit-retry" "2" 10
+
+# Non-retryable errors must surface to stderr without retry loops.
+run_test_failure_stderr "auth-error" "" "Resource not accessible by integration" "auth"
+
+# Exhausted retries on persistent rate limits.
+export GITHUB_CSMA_MAX_ATTEMPTS=3
+run_test_failure_stderr "exhausted-retries" "100" "secondary rate limit"
+unset GITHUB_CSMA_MAX_ATTEMPTS
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo ""
