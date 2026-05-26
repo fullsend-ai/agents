@@ -26,16 +26,21 @@ Follow these steps in order. Do not skip steps.
 
 Determine which PR to review:
 
-- If a PR number, URL, or branch name was provided, use it.
-- If none was provided, fall back to the current branch:
+- If `PR_NUMBER` and `REPO_FULL_NAME` are set in the environment, use
+  them (the harness always provides these).
+- If a PR URL was provided, extract the number and repo from the URL.
+- If none was provided, stop and report the failure rather than guessing.
+
+Fetch the PR head SHA:
 
 ```bash
-gh pr view --json number,headRefName,headRefOid
+PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
+HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
 ```
 
-Record the **PR head SHA** (`headRefOid`). You will include it in the
-review comment and in the `gh pr review` invocation. This SHA pins the
-review to the exact commit evaluated.
+Record the **PR head SHA**. You will include it in the review comment
+and in the result JSON. This SHA pins the review to the exact commit
+evaluated.
 
 If no PR can be identified, stop and report the failure rather than
 guessing.
@@ -45,13 +50,13 @@ guessing.
 Retrieve PR metadata and the full diff:
 
 ```bash
-# PR metadata: title, body, author, labels, linked issues
-gh pr view <number> --json title,body,author,labels,closingIssuesReferences
+# PR metadata: title, body, author, labels
+PR_META=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
 
-# Pre-check: size the PR before fetching the diff
-PR_STATS=$(gh pr view <number> --json changedFiles,additions,deletions,files)
-FILE_COUNT=$(echo "$PR_STATS" | jq '.changedFiles')
-LINE_COUNT=$(echo "$PR_STATS" | jq '.additions + .deletions')
+# PR files list (paginated — loop if needed)
+PR_FILES=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100")
+FILE_COUNT=$(echo "$PR_FILES" | jq 'length')
+LINE_COUNT=$(echo "$PR_FILES" | jq '[.[].additions + .[].deletions] | add')
 ```
 
 From there use FILE_COUNT and LINE_COUNT to decide how to proceed
@@ -96,8 +101,8 @@ If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
 changed since the prior review:
 
 ```bash
-# REPO_FULL_NAME is set in env/review.env
-head_SHA=$(gh pr view "${PR_NUMBER}" --json headRefOid --jq .headRefOid)
+# REPO_FULL_NAME and PR_NUMBER are set in env/review.env
+head_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" --jq '.head.sha')
 COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${head_SHA}")
 TOTAL_COMMITS=$(echo "$COMPARE" | jq '.total_commits')
 FILE_COUNT=$(echo "$COMPARE" | jq '.files | length')

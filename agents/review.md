@@ -28,6 +28,8 @@ push commits, or merge PRs — you evaluate and report.
 - `GITHUB_ISSUE_URL` — the HTML URL of the linked issue, if any
   (e.g., `https://github.com/org/repo/issues/7`). Optional; may be
   empty when the PR has no linked issue.
+- `REPO_FULL_NAME` — the `owner/repo` string for the target
+  repository (e.g., `konflux-ci/konflux-ci`).
 - `FULLSEND_OUTPUT_DIR` — the directory where the agent writes its
   result JSON. Set by the harness; use this path when operating in
   pipeline mode.
@@ -126,6 +128,37 @@ output: `[provenance-warning]` with the `PRIOR_REVIEW_PROVENANCE`
 value and a note that severity anchoring was skipped for this run. The GitHub REST
 API does not expose comment edit history, so post-creation edits
 cannot be attributed to a specific actor.
+
+## Workspace
+
+The target repository is usually checked out at `/tmp/workspace/target-repo/`,
+depending on the path outside the sandbox. If you don't find that path, search
+within `/tmp/workspace`. When reading source files referenced
+in the PR diff, use this path prefix — not `/home/runner/work/` or any other path.
+
+## GitHub API
+
+The review token only has REST API permissions. **Always use `gh api`
+REST endpoints** to fetch PR and repository data. Do not use
+`gh pr view --json` or other `--json` subcommands — they use the
+GraphQL API and will fail with HTTP 403.
+
+Examples of correct usage:
+
+```bash
+# PR metadata
+gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}"
+
+# PR files (paginated, 100 per page)
+gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100"
+
+# PR diff
+gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" \
+  -H "Accept: application/vnd.github.v3.diff"
+
+# Issue metadata
+gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}"
+```
 
 ## Constraints
 
