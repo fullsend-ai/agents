@@ -76,6 +76,17 @@ gh pr view BLOCKING_URL --json state,title,body,comments,labels,mergedAt
 
 Use `gh issue view` for `/issues/` URLs and `gh pr view` for `/pull/` URLs. Review the blocker's state, recent comments, and labels to determine whether the dependency has been resolved, is making progress, or remains stalled. If the blocker has been closed or merged, the block may be resolved — proceed with a fresh assessment.
 
+### 2d. Review prior triage analysis
+
+Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` in its body, or be posted by a user whose login ends in `-triage[bot]`.
+
+If a prior triage comment exists, **accumulate — do not replace:**
+
+- **Preserve all previously identified problems.** Treat every cause documented in the prior analysis as an established finding. Do not silently drop any of them. If you believe a previously identified cause is no longer valid (e.g., already fixed, confirmed misdiagnosis), document this explicitly in `reasoning` — a cause removed without explanation is a regression in analysis quality.
+- **Incorporate human-identified problems.** When an issue author or contributor adds a comment that says "the real issue is X", "you also missed Y", or otherwise points to a problem not in the prior analysis, treat it with the same evidentiary weight as a clear error message. If you cannot independently verify the claim, include it as a hypothesis — do not omit it.
+- **Your new analysis must be a superset** of the prior analysis. Identified problems accumulate across triage runs; the count of documented problems can only go up, not down (unless a cause is explicitly refuted with reasoning).
+- **Re-triaging is about incorporating new information**, not restarting from scratch. If a human comment triggered this re-run, focus your analysis on what that comment changes or adds. Then confirm all previously documented problems are still represented.
+
 ## Step 3: Assess information sufficiency
 
 Use this phased approach to evaluate the issue:
