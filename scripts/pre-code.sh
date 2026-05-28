@@ -60,9 +60,9 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
   exit 0
 fi
 
-# Allow override via CODE_FORCE (set when /fs-code --force is used).
-if [[ "${CODE_FORCE:-}" == "true" ]]; then
-  echo "CODE_FORCE=true — skipping existing-PR check"
+# Allow override when --force is in the trigger comment or CODE_FORCE is set.
+if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${COMMENT_BODY:-}" == *--force* ]]; then
+  echo "Force override — skipping existing-PR check"
   exit 0
 fi
 
