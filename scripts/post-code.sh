@@ -127,6 +127,34 @@ echo "Changed files:"
 echo "${CHANGED_FILES}" | sed 's/^/  /'
 
 # ---------------------------------------------------------------------------
+# 2b. Strip agent working directories (defense-in-depth)
+#
+# Agent working dirs (.agentready/, .fullsend-workspace/) should never
+# appear in commits. The harness excludes them via .git/info/exclude, but
+# if an agent manages to stage them anyway, strip them here before push.
+# ---------------------------------------------------------------------------
+AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
+STRIPPED_FILES=""
+for file in ${CHANGED_FILES}; do
+  is_artifact=false
+  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
+    dir="${pattern%/}"  # strip trailing slash for prefix matching
+    case "${file}" in
+      "${dir}"/*|"${dir}") is_artifact=true; break ;;
+      */"${dir}"/*|*/"${dir}") is_artifact=true; break ;;
+    esac
+  done
+  if [ "${is_artifact}" = "true" ]; then
+    echo "::warning::Stripping agent artifact from commit: ${file}"
+    STRIPPED_FILES="${STRIPPED_FILES} ${file}"
+  fi
+done
+
+if [ -n "${STRIPPED_FILES}" ]; then
+  echo "::warning::Agent committed working directory artifacts — stripping before push"
+fi
+
+# ---------------------------------------------------------------------------
 # 3. Authoritative secret scan
 # ---------------------------------------------------------------------------
 echo "Running authoritative secret scan on agent's commit..."
