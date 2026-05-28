@@ -96,7 +96,7 @@ if [[ -n "${HUMAN_PR_LINES}" ]]; then
 
   # Build a markdown list of existing PRs.
   PR_LIST_MD=""
-  while IFS=$'\t' read -r pr_num pr_author pr_url; do
+  while IFS=$'\t' read -r pr_num pr_author _pr_url; do
     PR_LIST_MD="${PR_LIST_MD}
 - #${pr_num} by @${pr_author}"
   done <<< "${HUMAN_PR_LINES}"

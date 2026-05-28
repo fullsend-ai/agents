@@ -161,7 +161,7 @@ run_test() {
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
 
-  > "${GH_LOG}"
+  : > "${GH_LOG}"
   rm -f "${GH_FAIL_COUNT}"
   unset GH_CSMA_FAIL_UNTIL GH_CSMA_FAIL_MODE
   if [[ -n "${fail_until}" ]]; then
@@ -234,7 +234,7 @@ run_test_failure_stderr() {
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
 
-  > "${GH_LOG}"
+  : > "${GH_LOG}"
   rm -f "${GH_FAIL_COUNT}"
   unset GH_CSMA_FAIL_UNTIL GH_CSMA_FAIL_MODE
   export GITHUB_CSMA_MAX_ATTEMPTS="${GITHUB_CSMA_MAX_ATTEMPTS:-8}"
