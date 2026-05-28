@@ -66,7 +66,8 @@ if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${COMMENT_BODY:-}" == *--force* ]]; 
   exit 0
 fi
 
-BOT_LOGIN="${FULLSEND_BOT_LOGIN:-fullsend-ai[bot]}"
+BOT_LOGIN="fullsend-ai[bot]"
+CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
 
 echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 
@@ -76,7 +77,7 @@ echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 HUMAN_PR_LINES="$(gh pr list --repo "${REPO_FULL_NAME}" --state open \
   --search "${ISSUE_NUMBER} in:body,title" \
   --json number,url,author \
-  --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
+  --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
   2>/dev/null || true)"
 
 if [[ -n "${HUMAN_PR_LINES}" ]]; then
