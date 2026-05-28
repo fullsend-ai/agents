@@ -315,6 +315,10 @@ Before writing code, form a concrete plan:
       values rather than referencing constants, so a symbol-only search misses them.
    3. Evaluate each match — some may be intentional (e.g., testing the non-default
       case) while others are stale assumptions that need updating.
+9. **Verify API contracts per code path** — if the fix removes, empties,
+   or changes a parameter sent to an external API, check the API documentation or
+   test each code path that uses the function. Different operations
+   (e.g., approve vs request-changes) often have different required fields.
 
 When requirements are ambiguous, distinguish between "vague but actionable"
 (you can make a reasonable conservative interpretation) and "genuinely
