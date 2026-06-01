@@ -74,7 +74,7 @@ report_failure_to_issue() {
   if [ -z "${GH_TOKEN:-}" ]; then
     export GH_TOKEN="${PUSH_TOKEN}"
   fi
-  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${REPO_FULL_NAME}/actions/runs/${GITHUB_RUN_ID:-unknown}"
+  local run_url="${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-${REPO_FULL_NAME}}/actions/runs/${GITHUB_RUN_ID:-unknown}"
   local comment_body="⚠️ **Post-code script failed** (exit code ${exit_code})
 
 The code agent completed, but the post-code script failed while \

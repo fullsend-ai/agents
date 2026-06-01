@@ -453,8 +453,10 @@ build_error_comment() {
   local exit_code="$1"
   local repo_full_name="$2"
   local run_id="$3"
+  local github_repository="${4:-}"  # GITHUB_REPOSITORY override (org-mode)
 
-  local run_url="https://github.com/${repo_full_name}/actions/runs/${run_id}"
+  local run_repo="${github_repository:-${repo_full_name}}"
+  local run_url="https://github.com/${run_repo}/actions/runs/${run_id}"
   echo "⚠️ **Post-code script failed** (exit code ${exit_code})
 
 The code agent completed, but the post-code script failed while \
@@ -473,9 +475,10 @@ run_error_comment_test() {
   local run_id="$4"
   local check_pattern="$5"
   local expect_present="$6"
+  local github_repository="${7:-}"  # optional GITHUB_REPOSITORY override
 
   local actual
-  actual="$(build_error_comment "${exit_code}" "${repo}" "${run_id}")"
+  actual="$(build_error_comment "${exit_code}" "${repo}" "${run_id}" "${github_repository}")"
 
   if [ "${expect_present}" = "yes" ]; then
     if ! echo "${actual}" | grep -qF "${check_pattern}"; then
@@ -517,6 +520,24 @@ run_error_comment_test "error-comment-has-retry-hint" \
 run_error_comment_test "error-comment-has-warning-emoji" \
   "1" "my-org/my-repo" "12345" \
   "⚠️" "yes"
+
+# Org-mode: GITHUB_REPOSITORY differs from REPO_FULL_NAME → URL uses dispatch repo
+run_error_comment_test "error-comment-org-mode-uses-dispatch-repo" \
+  "1" "test-org/my-app" "12345" \
+  "https://github.com/test-org/.fullsend/actions/runs/12345" "yes" \
+  "test-org/.fullsend"
+
+# Org-mode: URL must NOT contain the source repo name
+run_error_comment_test "error-comment-org-mode-not-source-repo" \
+  "1" "test-org/my-app" "12345" \
+  "https://github.com/test-org/my-app/actions/runs/12345" "no" \
+  "test-org/.fullsend"
+
+# Non-org-mode: no GITHUB_REPOSITORY → falls back to REPO_FULL_NAME
+run_error_comment_test "error-comment-non-org-mode-fallback" \
+  "1" "my-org/my-repo" "67890" \
+  "https://github.com/my-org/my-repo/actions/runs/67890" "yes" \
+  ""
 
 # --- Summary ---
 
