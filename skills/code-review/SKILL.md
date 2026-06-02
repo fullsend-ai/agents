@@ -66,6 +66,11 @@ dimension carry over to another — each requires its own scrutiny.
   external API (GitHub, cloud providers, etc.), verify the API accepts
   the new values for every code path that calls the function. Different
   API operations often have different required fields.
+- Consumer completeness: if the change adds new values to an enum,
+  dispatch table, JSON schema enum, or case/switch structure, identify
+  all code paths that consume or branch on that type (including scripts,
+  configs, and files not in the diff) and verify each handles the new
+  value. A new variant with no downstream handler is a logic error.
 - Test adequacy: are the right behaviors tested?
 - Do the tests actually constrain the code's behavior, or do they
   merely assert it runs?
