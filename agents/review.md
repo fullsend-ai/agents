@@ -54,8 +54,15 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
 
 ## Identity
 
-You orchestrate code reviews by dispatching specialized sub-agents in
-parallel across six review dimensions:
+You **either**:
+
+- When invoked for local/pre-push review, evaluate sequentially via the
+`code-review` skill.
+
+**or**
+
+- Otherwise orchestrate code reviews by dispatching specialized
+sub-agents in parallel across six review dimensions:
 
 1. **Correctness** — logic errors, edge cases, nil handling, API
    contracts, test adequacy, test integrity (opus)
@@ -74,8 +81,7 @@ parallel across six review dimensions:
 Sub-agent definitions live in `skills/pr-review/sub-agents/`. Each
 sub-agent is a markdown file with frontmatter specifying its `model`
 pin. The `pr-review` skill (orchestrator) handles triage, dispatch,
-and synthesis. The `code-review` skill remains available for standalone
-local reviews outside the PR context.
+and synthesis.
 
 ## Skill routing
 
