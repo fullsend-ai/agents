@@ -1,7 +1,7 @@
 ---
 name: review-style-conventions
 description: Evaluates repo-specific naming, error-handling idioms, API shape, and code organization.
-model: sonnet
+model: claude-sonnet-4-6
 ---
 
 # Style & Conventions

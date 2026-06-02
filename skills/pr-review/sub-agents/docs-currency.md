@@ -1,7 +1,7 @@
 ---
 name: review-docs-currency
 description: Evaluates documentation staleness against code changes.
-model: sonnet
+model: claude-sonnet-4-6
 ---
 
 # Docs Currency
