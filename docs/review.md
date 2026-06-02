@@ -9,7 +9,7 @@ Code review specialist that evaluates pull requests for correctness, security, i
 The review agent is triggered when a PR is opened or updated. It follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata.
-2. **Sandbox** — the agent reads the PR diff, the linked issue (if any), and the surrounding codebase. It applies three review skills (code-review, pr-review, docs-review) to evaluate the change across multiple dimensions. It produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
+2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator triages the change, then dispatches specialized sub-agents in parallel — each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** posts the review on the PR.
 
@@ -18,7 +18,7 @@ If a prior review exists (e.g., re-review after fixes), it is injected into the 
 ## How it helps
 
 - Every PR gets a thorough review within minutes, regardless of team availability.
-- Reviews cover security, correctness, intent alignment, and docs staleness — dimensions humans sometimes skip under time pressure.
+- Reviews cover security, correctness, intent & coherence, style, and docs currency — dimensions humans sometimes skip under time pressure.
 - The structured output format makes it easy to see what was flagged and why.
 
 ## Commands

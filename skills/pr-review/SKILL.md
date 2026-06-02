@@ -10,9 +10,13 @@ description: >-
 
 # PR Review (Orchestrator)
 
-(This skill's design is an approved temporary exception to ADR-0018
-"scripted pipelines for multi-agent orchestration", pending ADR-0018
-amendment)
+(This skill's design departs from ADR-0018 "scripted pipelines for
+multi-agent orchestration". ADR-0018 decided against LLM-based
+orchestration due to non-determinism observed in PR #123 experiments.
+This orchestrator re-introduces LLM-based dispatch with mitigations
+— a fixed sub-agent roster, structured context packages, and
+deterministic post-processing. A superseding ADR is needed to
+formally retire ADR-0018's prohibition.)
 
 This skill orchestrates a pull request review by triaging the change,
 dispatching specialized sub-agents in parallel, collecting and
