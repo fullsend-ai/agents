@@ -33,6 +33,17 @@ export GH_TOKEN="${REVIEW_TOKEN}"
 PR_STATE=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state --jq '.state')
 if [ "${PR_STATE}" != "OPEN" ]; then
   echo "PR is ${PR_STATE}, skipping review"
+
+  STATE_LOWER="$(echo "${PR_STATE}" | tr '[:upper:]' '[:lower:]')"
+  COMMENT_BODY="Review skipped — this PR is already **${STATE_LOWER}**.
+
+The \`/fs-review\` command only reviews open pull requests.
+
+<sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> post-review check</sub>"
+
+  printf '%s' "${COMMENT_BODY}" | gh issue comment "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
+
   exit 0
 fi
 
