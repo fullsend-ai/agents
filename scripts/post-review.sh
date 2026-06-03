@@ -130,11 +130,47 @@ if [ "${ACTION}" = "approve" ]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Post the review. Exit code 10 = stale-head: the PR HEAD moved after the
+# agent reviewed it. When this happens, post a /fs-review comment to
+# re-dispatch a fresh review for the current HEAD.
+# ---------------------------------------------------------------------------
+POST_REVIEW_EXIT=0
 fullsend post-review \
   --repo "${REPO_FULL_NAME}" \
   --pr "${PR_NUMBER}" \
   --token "${REVIEW_TOKEN}" \
-  --result "${RESULT_FILE}"
+  --result "${RESULT_FILE}" || POST_REVIEW_EXIT=$?
+
+if [ "${POST_REVIEW_EXIT}" -eq 10 ]; then
+  echo "Stale-head detected — checking whether to re-dispatch review"
+
+  # Loop guard: if a stale-head re-dispatch comment was posted recently
+  # (within the last 5 minutes), skip to avoid cascading dispatches from
+  # rapid force-pushes. The next synchronize event will pick it up.
+  REDISPATCH_MARKER="<!-- fullsend:stale-head-redispatch -->"
+  RECENT_REDISPATCH=$(gh api \
+    "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
+    --paginate --jq \
+    "[.[] | select(.body | contains(\"${REDISPATCH_MARKER}\"))
+          | select(.created_at > (now - 300 | strftime(\"%Y-%m-%dT%H:%M:%SZ\")))]
+     | length" 2>/dev/null || echo "0")
+
+  if [ "${RECENT_REDISPATCH}" -gt 0 ]; then
+    echo "Recent stale-head re-dispatch already exists — skipping"
+  else
+    echo "Re-dispatching review for current HEAD"
+    gh pr comment "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --body "/fs-review
+${REDISPATCH_MARKER}" || echo "::warning::Failed to post re-dispatch comment"
+  fi
+
+  # Stale-head is handled gracefully — exit 0 so the workflow does not
+  # appear as a failure.
+  exit 0
+elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
+  exit "${POST_REVIEW_EXIT}"
+fi
 
 # ---------------------------------------------------------------------------
 # Outcome labels: apply labels based on the review action.
