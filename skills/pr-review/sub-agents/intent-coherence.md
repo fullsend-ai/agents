@@ -1,7 +1,7 @@
 ---
 name: review-intent-coherence
 description: Evaluates intent alignment, scope authorization, and architectural coherence.
-model: claude-sonnet-4-6
+model: claude-sonnet-4-6@default
 ---
 
 # Intent & Coherence
