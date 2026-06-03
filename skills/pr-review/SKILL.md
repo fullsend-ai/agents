@@ -235,6 +235,10 @@ dimensions are relevant:
 
 - Any logic changes in production code, or test files are modified, or
   production changes lack corresponding test changes → `correctness`
+- Technical documentation with correctness surface area — files under
+  `docs/plans/`, or documents containing algorithm descriptions,
+  pseudocode, data structure definitions, CLI flag specifications, or
+  API behavior claims → `correctness`
 - Changes touch auth, RBAC, permissions, secrets, data handling,
   string literals, config files, embedded text, or metadata →
   `security`
@@ -272,6 +276,7 @@ complex PR that triggers all conditions legitimately needs all 6.
 
 | PR type                        | Agents dispatched                                                                |
 |--------------------------------|----------------------------------------------------------------------------------|
+| Implementation plan in docs/   | correctness, style-conventions, intent-coherence, docs-currency                  |
 | Typo fix in README             | correctness, style-conventions                                                   |
 | Bug fix in auth middleware     | correctness, security, style-conventions, intent-coherence                       |
 | New API endpoint with tests    | correctness, security, style-conventions, cross-repo-contracts                   |
