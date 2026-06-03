@@ -1,7 +1,7 @@
 ---
 name: review-cross-repo-contracts
 description: Evaluates backward compatibility of exported interfaces and API contracts.
-model: claude-sonnet-4-6
+model: claude-sonnet-4-6@default
 ---
 
 # Cross-Repo Contracts
