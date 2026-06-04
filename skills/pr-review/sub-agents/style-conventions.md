@@ -23,7 +23,7 @@ Before exploring context files, assess the diff size and nature.
 
 - Read only the changed files plus at most 3 sibling files in the same
   directory.
-- Do not read files outside the directories containing changed files.
+- Do not read files outside the directory of each changed file.
   A YAML config change does not require reading Go, Python, or other
   source files elsewhere in the repo.
 - Do not run shell pipelines (`awk`, `sed`, `grep`, `wc`) for
@@ -38,7 +38,7 @@ Before exploring context files, assess the diff size and nature.
 - Read 3-5 existing files in the same package/directory as the changed
   files to extract the established patterns before evaluating.
 
-## Early exit for mechanical and value-only changes
+## Early exit criteria
 
 If the diff is a mechanical, generated, or value-only change — such as
 a dependency version bump, Docker digest update, rendered-manifest

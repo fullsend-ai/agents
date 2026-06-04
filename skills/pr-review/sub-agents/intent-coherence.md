@@ -39,9 +39,10 @@ Calibrate investigation to the diff size and nature.
 - Read CLAUDE.md, AGENTS.md, and any ADRs referenced by changed files
   before evaluating coherence.
 - If the PR has a linked issue, read the issue to establish authorized
-  scope.
+  scope. If there is no linked issue, flag a `missing-authorization`
+  finding — non-trivial changes require explicit authorization.
 
-## Revert PRs
+## Revert PR authorization
 
 A PR is a candidate revert if **at least two** of the following signals
 are present:
