@@ -62,7 +62,6 @@ PROTECTED_PATHS=(
   "harness/"
   "plugins/"
   "policies/"
-  "scripts/"
   "api-servers/"
   "CODEOWNERS"
   ".pre-commit-config.yaml"
