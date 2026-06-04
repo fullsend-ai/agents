@@ -152,6 +152,31 @@ done
 
 if [ -n "${STRIPPED_FILES}" ]; then
   echo "::warning::Agent committed working directory artifacts — stripping before push"
+  # shellcheck disable=SC2086
+  git rm --cached --quiet ${STRIPPED_FILES}
+  git commit --amend --no-edit
+
+  # Rebuild CHANGED_FILES without the stripped artifacts.
+  CLEAN_FILES=""
+  for file in ${CHANGED_FILES}; do
+    is_stripped=false
+    for sf in ${STRIPPED_FILES}; do
+      if [ "${file}" = "${sf}" ]; then
+        is_stripped=true
+        break
+      fi
+    done
+    if [ "${is_stripped}" = "false" ]; then
+      CLEAN_FILES="${CLEAN_FILES}${CLEAN_FILES:+
+}${file}"
+    fi
+  done
+  CHANGED_FILES="${CLEAN_FILES}"
+
+  if [ -z "${CHANGED_FILES}" ]; then
+    echo "::notice::All changed files were agent artifacts — nothing to push"
+    exit 0
+  fi
 fi
 
 # ---------------------------------------------------------------------------
