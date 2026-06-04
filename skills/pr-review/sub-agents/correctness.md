@@ -33,6 +33,20 @@ or inter-component contract in the diff:
   unavailable, does the caller handle it or silently proceed as if it
   succeeded?
 
+**Consumer completeness:** If the diff adds new values to an enum,
+dispatch table, JSON schema enum, or case/switch structure, identify all
+code paths that consume or branch on that type (including scripts,
+configs, and files not in the diff) and verify each handles the new
+value. A new variant with no downstream handler is a logic error.
+
+**Removal / rename staleness:** When the diff removes or renames an
+identifier (enum value, label name, config key, action type, function
+name, CLI flag), grep the full repository — source code, scripts,
+configs, and workflows — for remaining references to the old name.
+Exclude the files already in the diff. Any hit outside the diff is a
+Medium-severity finding: "stale reference to removed/renamed
+`<identifier>` in `<file>:<line>`."
+
 ### Technical documentation with correctness surface area
 
 Not all documentation is prose. Any
