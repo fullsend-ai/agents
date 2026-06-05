@@ -20,6 +20,7 @@ host_files:
 skills:
   - skills/retro-analysis
   - skills/finding-agent-runs
+  - skills/agent-scaffolding
 
 pre_script: scripts/pre-retro.sh
 
