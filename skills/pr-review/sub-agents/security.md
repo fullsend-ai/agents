@@ -32,3 +32,98 @@ title parameter is also sanitized).
 metadata (PR body, commit messages, PR description)
 
 Inspect the code diff for injection patterns.
+
+## Exploration budget
+
+Calibrate investigation to the diff size and security surface area.
+
+**Low-risk diffs (docs-only, test-only, style-only changes):**
+
+- Scan for secrets, injection patterns, and permission changes in the diff.
+- Do not read additional source files unless the diff touches auth,
+  authorization, or permission-declaring files.
+
+**Security-relevant diffs (auth, permissions, workflows, config):**
+
+- Read the full file for every changed auth/authorization module to
+  understand the complete control flow — not just the diff lines.
+- Read related config files (manifests, IAM policies, workflow files)
+  to verify permission scope.
+- Trace call sites of changed functions to check for fail-open paths.
+
+## Fail-open / fail-closed evaluation
+
+**Category:** Use `fail-open` for all findings in this section.
+
+When reviewing authentication, authorization, or validation code, always
+determine what happens when configuration values are absent, empty, or
+malformed. The default behavior must deny access, not permit it.
+
+**Checklist — apply to every auth/validation code path in the diff:**
+
+- **Unset variables:** If the code reads an environment variable,
+  allowlist, config key, or feature flag that controls access, what
+  happens when that value is unset? If the code permits all requests
+  when the value is missing, that is a **critical** fail-open finding.
+- **Empty values:** An empty string, empty list, or zero-length array
+  must be treated as "no entries allowed," not "all entries allowed."
+  Code that skips validation when the list is empty is fail-open.
+- **Wildcard entries:** An allowlist containing `"*"` or `"all"` must
+  be called out. If the wildcard is intentional, it still requires a
+  finding (info severity) documenting the design choice. If it appears
+  accidental or unjustified, it is **high** severity.
+- **Parse failures:** If config parsing fails (malformed JSON/YAML,
+  invalid regex, type mismatch), the code must reject access rather
+  than falling through to a permissive default.
+
+**Rule of thumb:** If you can construct a scenario where removing or
+emptying a configuration value causes the system to grant broader access
+than when the value is correctly set, the code is fail-open and must be
+flagged.
+
+## Permission manifest changes
+
+**Category:** Use `permission-expansion` when permissions are added or
+broadened, `permission-reduction` when permissions are removed or narrowed.
+
+If the diff modifies any file that declares or scopes permissions —
+GitHub App manifests, token downscoping maps, OAuth scope lists,
+IAM/RBAC policies, Kubernetes RBAC, or workflow `permissions:` blocks —
+always produce a finding, even if the change appears internally
+consistent. Evaluate:
+
+(a) Does the new permission grant capabilities beyond the stated use
+case?
+(b) Is there a least-privilege alternative that achieves the same goal?
+(c) Is there a linked issue or ADR explicitly authorizing the expansion?
+
+A permission expansion without explicit justification must be at least
+**high** severity. A reduction in permissions is still a finding (info)
+confirming the change is intentional.
+
+Examples of permission-declaring files: GitHub App manifest JSON,
+`permissions:` blocks in `.github/workflows/*.yml`, token scoping maps,
+IAM policy JSON/YAML, Kubernetes `Role`/`ClusterRole` YAML.
+
+## Workflow permission and role auditing
+
+**Category:** Use `role-escalation` for role or token scope changes,
+`workflow-permission` for `permissions:` block changes, `secret-exposure`
+for secret handling issues.
+
+When a diff modifies workflow files (`.github/workflows/*.yml`,
+reusable workflow definitions):
+
+- **Role changes:** If a job, step, or reusable workflow call changes
+  its role, token scope, or permission level (e.g., from a read-only
+  role to a write role), produce a finding. Compare the old and new
+  values explicitly. A role escalation without linked justification
+  is **high** severity.
+- **`permissions:` blocks:** Any addition, removal, or modification of
+  a `permissions:` block must be flagged. Evaluate whether the requested
+  permissions follow the principle of least privilege for the workflow's
+  stated purpose.
+- **`secrets:` blocks:** New secret references or changes to secret
+  usage patterns must be reviewed. Verify that secrets are not exposed
+  to untrusted contexts (e.g., pull_request_target workflows running
+  fork code with access to secrets).
