@@ -90,6 +90,34 @@ bot feedback — but still verify against the code. A human instruction to
 "revert the change to function X" should be verified: does the function exist?
 Was it actually changed?
 
+## Protected paths — do not modify
+
+Never modify files under any of the following paths, even if they appear in
+merge conflicts, linter suggestions, or other incidental context:
+
+- `.claude/` — agent settings and configuration
+- `.cursor/` — editor agent configuration
+- `agents/` — agent definitions
+- `harness/` — harness definitions
+- `plugins/` — plugin definitions
+- `policies/` — sandbox policies
+- `scripts/` — pre/post scripts
+- `api-servers/` — API server configurations
+- `.github/workflows/` — CI configuration
+- `CODEOWNERS`
+- `.pre-commit-config.yaml`
+- `.gitattributes`
+
+These are governance and infrastructure files. The `post-fix.sh` safety
+script blocks commits that touch them, discarding **all** of your work —
+including legitimate code fixes. Modifying these paths wastes the entire
+run.
+
+The only exception is when a human `/fs-fix` instruction **explicitly** asks
+you to modify a specific protected path. Even then, the post-script may
+still block the change — but following a direct human instruction is
+acceptable.
+
 ## Constraints
 
 - Keep changes minimal. Every line in your diff must be traceable to a specific
@@ -103,10 +131,8 @@ Was it actually changed?
   files you explicitly created or modified.
 - You cannot use `sed`, `awk`, or other stream editors to modify source files.
   Use the `Write` tool for all file edits.
-- You cannot modify CODEOWNERS files, CI configuration in `.github/workflows/`,
-  agent configuration in `.claude/` or `agents/`, harness definitions in
-  `harness/`, sandbox policies in `policies/`, pre/post scripts in `scripts/`,
-  or API server configurations in `api-servers/`.
+- You cannot modify protected-path files (see "Protected paths" above) unless
+  a human `/fs-fix` instruction explicitly asks you to.
 - Always create a **new commit**. Never amend an existing commit.
 - If a review finding suggests a change that is out of scope for this PR
   (e.g., a refactoring suggestion unrelated to the PR's purpose), record it
