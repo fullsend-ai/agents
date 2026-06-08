@@ -113,6 +113,16 @@ dimension carry over to another — each requires its own scrutiny.
   individually; do not conclude safety from partial verification (e.g.,
   seeing the message body sanitized does not imply the title parameter
   is also sanitized).
+- **Exhaustive security-control verification:** NEVER assert that a
+  security control (sanitization, validation, authorization, escaping)
+  covers all attack surfaces based on verifying a subset. When you find
+  a security-relevant function applied to one variable, explicitly
+  enumerate ALL other variables in the same context and verify each one
+  individually. In your findings, state which inputs you verified as
+  protected and which you could not confirm. If any input lacks the
+  control, raise a finding even if the unprotected input appears
+  low-risk — the risk assessment belongs in the finding's severity, not
+  in a decision to omit the finding.
 - Content security: does the change affect how user-supplied content is
   handled or rendered? Are there sandboxing gaps?
 - **Permission manifest changes:** If the diff modifies any file that

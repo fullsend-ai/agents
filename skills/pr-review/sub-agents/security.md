@@ -31,6 +31,39 @@ title parameter is also sanitized).
 **Do not own:** Code style, documentation, PR scope authorization, PR
 metadata (PR body, commit messages, PR description)
 
+## Verification methodology
+
+**Anti-pattern — partial verification generalized to blanket safety
+claims:** NEVER assert that a security control (sanitization,
+validation, authorization, escaping) covers all attack surfaces based
+on verifying a subset. When you find a security-relevant function
+applied to one variable, you MUST explicitly enumerate ALL other
+variables in the same context and verify each one individually. If you
+cannot confirm exhaustive coverage, flag it as a potential gap rather
+than claiming safety.
+
+When evaluating any security control, follow this procedure:
+
+1. **Enumerate inputs.** List every variable, parameter, or
+   user-controlled value that flows into the security-sensitive
+   context (e.g., every interpolated variable in a format string,
+   every field in a SQL query, every parameter in a shell command).
+2. **Verify each independently.** For each enumerated input, confirm
+   whether the security control is applied. Do not assume that
+   applying the control to one input means others are covered.
+3. **Report coverage explicitly.** In your findings, state which
+   inputs you verified as protected and which you could not confirm.
+   A finding that says "sanitization is handled" without listing the
+   verified inputs is incomplete.
+4. **Flag gaps, don't dismiss them.** If any input lacks the security
+   control, raise a finding — even if the unprotected input appears
+   low-risk. The risk assessment belongs in the finding's severity,
+   not in a decision to omit the finding.
+
+This methodology applies to all security control evaluations:
+sanitization, input validation, authorization checks, output encoding,
+CSRF protection, and permission scoping.
+
 Inspect the code diff for injection patterns.
 
 ## Exploration budget
