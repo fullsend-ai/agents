@@ -61,6 +61,7 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
 fi
 
 # Allow override when --force is in the trigger comment or CODE_FORCE is set.
+echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
 if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${COMMENT_BODY:-}" == *--force* ]]; then
   echo "Force override — skipping existing-PR check"
   exit 0
@@ -101,14 +102,14 @@ if [[ -n "${HUMAN_PR_LINES}" ]]; then
 - #${pr_num} by @${pr_author}"
   done <<< "${HUMAN_PR_LINES}"
 
-  COMMENT_BODY="An open PR already addresses this issue — skipping automated implementation.
+  SKIP_COMMENT="An open PR already addresses this issue — skipping automated implementation.
 ${PR_LIST_MD}
 
 To override, comment \`/fs-code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-  printf '%s' "${COMMENT_BODY}" | gh issue comment "${ISSUE_NUMBER}" \
+  printf '%s' "${SKIP_COMMENT}" | gh issue comment "${ISSUE_NUMBER}" \
     --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
 
   echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
