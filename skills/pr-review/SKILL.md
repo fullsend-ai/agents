@@ -577,17 +577,21 @@ findings.
 
 Protected paths (kept in sync with `post-review.sh`):
 
-- `.github/`
 - `.claude/`
+- `.cursor/`
+- `.gitattributes`
+- `.github/`
+- `.pre-commit-config.yaml`
+- `AGENTS.md`
 - `agents/`
+- `api-servers/`
+- `CLAUDE.md`
+- `CODEOWNERS`
 - `harness/`
 - `plugins/`
 - `policies/`
 - `scripts/`
-- `api-servers/`
-- `CODEOWNERS`
-- `.pre-commit-config.yaml`
-- `.gitattributes`
+- `skills/`
 
 For each file in the PR diff, check whether its path starts with (or
 exactly matches) any entry in the list above.

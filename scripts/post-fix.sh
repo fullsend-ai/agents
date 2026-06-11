@@ -56,16 +56,21 @@ is_bot_user() {
 # Configuration
 # ---------------------------------------------------------------------------
 PROTECTED_PATHS=(
-  ".github/"
   ".claude/"
+  ".cursor/"
+  ".gitattributes"
+  ".github/"
+  ".pre-commit-config.yaml"
+  "AGENTS.md"
   "agents/"
+  "api-servers/"
+  "CLAUDE.md"
+  "CODEOWNERS"
   "harness/"
   "plugins/"
   "policies/"
-  "api-servers/"
-  "CODEOWNERS"
-  ".pre-commit-config.yaml"
-  ".gitattributes"
+  "scripts/"
+  "skills/"
 )
 
 GITLEAKS_VERSION="8.30.1"
