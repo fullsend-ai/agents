@@ -13,8 +13,6 @@ skills:
   - skills/code-review
   - skills/docs-review
 
-pre_script: scripts/pre-review.sh
-
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
@@ -31,17 +29,24 @@ host_files:
     dest: /sandbox/workspace/prior-review.txt
     optional: true
 
+pre_script: scripts/pre-review.sh
+post_script: scripts/post-review.sh
+
 validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
 
-post_script: scripts/post-review.sh
-
 runner_env:
-  REVIEW_TOKEN: "${REVIEW_TOKEN}"
-  REPO_FULL_NAME: "${REPO_FULL_NAME}"
-  PR_NUMBER: "${PR_NUMBER}"
-  GITHUB_PR_URL: "${GITHUB_PR_URL}"
   FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/review-result.schema.json
 
 timeout_minutes: 20
+
+forge:
+  github:
+    pre_script: scripts/pre-review.sh
+    post_script: scripts/post-review.sh
+    runner_env:
+      REVIEW_TOKEN: "${REVIEW_TOKEN}"
+      REPO_FULL_NAME: "${REPO_FULL_NAME}"
+      PR_NUMBER: "${PR_NUMBER}"
+      GITHUB_PR_URL: "${GITHUB_PR_URL}"

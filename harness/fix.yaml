@@ -18,12 +18,11 @@ role: coder
 slug: fullsend-ai-coder
 
 pre_script: scripts/pre-fix.sh
+post_script: scripts/post-fix.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
   max_iterations: 2
-
-post_script: scripts/post-fix.sh
 
 host_files:
   - src: env/gcp-vertex.env
@@ -44,11 +43,6 @@ skills:
   - skills/fix-review
 
 runner_env:
-  PUSH_TOKEN: "${PUSH_TOKEN}"
-  PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
-  REPO_FULL_NAME: "${REPO_FULL_NAME}"
-  PR_NUMBER: "${PR_NUMBER}"
-  REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
   TARGET_BRANCH: "${TARGET_BRANCH}"
   TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
   HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
@@ -59,3 +53,14 @@ runner_env:
   FULLSEND_OUTPUT_FILE: fix-result.json
 
 timeout_minutes: 25
+
+forge:
+  github:
+    pre_script: scripts/pre-fix.sh
+    post_script: scripts/post-fix.sh
+    runner_env:
+      PUSH_TOKEN: "${PUSH_TOKEN}"
+      PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
+      REPO_FULL_NAME: "${REPO_FULL_NAME}"
+      PR_NUMBER: "${PR_NUMBER}"
+      REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
