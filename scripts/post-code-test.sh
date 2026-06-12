@@ -687,6 +687,13 @@ Co-authored-by: someone <someone@example.com>
 Signed-off-by: bot <bot@noreply.github.com>" \
   "blocked:signed-off-by"
 
+# Variant casing should pass (detection is intentionally case-sensitive)
+run_signoff_test "signoff-variant-casing-passes" \
+  "Fix rendering bug.
+
+signed-off-by: bot <bot@noreply.github.com>" \
+  "pass"
+
 # --- Summary ---
 
 echo ""

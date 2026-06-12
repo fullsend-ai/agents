@@ -213,7 +213,7 @@ if [ "${NO_PUSH}" = "false" ]; then
     echo "::error::DCO is a human attestation; the DCO app waives the check for bots."
     exit 1
   fi
-  echo "No Signed-off-by trailers found"
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
 
 # ---------------------------------------------------------------------------

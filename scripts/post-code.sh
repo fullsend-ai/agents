@@ -220,7 +220,7 @@ if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
   echo "::error::DCO is a human attestation; the DCO app waives the check for bots."
   exit 1
 fi
-echo "No Signed-off-by trailers found"
+echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
 # 4. Install lychee (for pre-commit markdown link checking)
