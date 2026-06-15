@@ -124,8 +124,22 @@ else
 fi
 
 echo "Posting summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
-jq -nc --arg body "${COMMENT}" '{body: $body}' | gh api \
+COMMENT_RESPONSE=""
+COMMENT_EXIT=0
+COMMENT_RESPONSE=$(jq -nc --arg body "${COMMENT}" '{body: $body}' | gh api \
   "repos/${ORIGINATING_REPO}/issues/${ORIGINATING_NUMBER}/comments" \
-  --input -
+  --input - 2>&1) || COMMENT_EXIT=$?
+
+if [[ ${COMMENT_EXIT} -ne 0 ]]; then
+  # Treat 401/403 as non-fatal — the token lacks permission to comment on
+  # this repo, but the core deliverables (analysis + proposal issues) are
+  # already complete. See #2305.
+  if echo "${COMMENT_RESPONSE}" | grep -qE "HTTP (401|403)"; then
+    echo "::warning::Could not post summary comment to ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: insufficient permissions (${COMMENT_RESPONSE}). Skipping."
+  else
+    echo "ERROR: failed to post summary comment: ${COMMENT_RESPONSE}"
+    exit 1
+  fi
+fi
 
 echo "Post-retro complete."
