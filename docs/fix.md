@@ -133,6 +133,10 @@ Remove the label or use `/fs-fix` to re-engage.
 See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Customizing with Skills](../guides/user/customizing-with-skills.md).
 
+### Variables
+
+None.
+
 ## Source
 
 [`internal/scaffold/fullsend-repo/harness/fix.yaml`](../../internal/scaffold/fullsend-repo/harness/fix.yaml)
