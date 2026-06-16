@@ -115,7 +115,17 @@
         "remediation": { "type": "string" },
         "actionable": {
           "type": "boolean",
-          "description": "When true with a non-empty remediation, routes the verdict to request-changes so the fix agent can address the finding automatically."
+          "description": "True when this non-blocking finding should be tracked as a follow-up issue if the review approves."
+        },
+        "verified_variables": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Variables in the security-sensitive context that were verified as having the security control applied."
+        },
+        "unchecked_variables": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Variables in the security-sensitive context that were not verified as having the security control applied."
         }
       },
       "additionalProperties": false

@@ -275,7 +275,9 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `line`        | integer | no       | Line number (minimum 1)                       |
 | `description` | string  | yes      | Finding description (min 1 char)              |
 | `remediation` | string  | no       | Suggested fix                                 |
-| `actionable`  | boolean | no       | When true with a non-empty `remediation`, routes the verdict to `request-changes` so the fix agent can address the finding automatically (follow-up issue creation is temporarily disabled; see #1137) |
+| `actionable`  | boolean | no       | When true on low/info findings in an `approve` result, marks the finding for future follow-up issue creation (temporarily disabled; see #1137) |
+| `verified_variables` | array | no | Variables confirmed as having the security control applied. Required in findings that identify a sanitization or security control function. |
+| `unchecked_variables` | array | no | Variables in the same context not confirmed as having the security control. Required in findings that identify a sanitization or security control function. |
 
 Schema validation failures trigger a harness retry iteration. The jq
 examples below show the exact JSON shape for each action.
