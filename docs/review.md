@@ -70,6 +70,26 @@ the upstream default -- no other configuration needed.
 See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) and
 [Customizing with Skills](../guides/user/customizing-with-skills.md).
 
+### Variables
+
+| Variable | Description | Default | Valid values |
+|----------|-------------|---------|--------------|
+| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
+
+This variable is read in two places:
+
+1. **Sandbox (agent inference):** The review agent reads it from the
+   environment and omits findings below the threshold from its output
+   (`body` and `findings` array). Set it in `env/review.env` or via the
+   CI workflow `env:` block.
+2. **Post-script (runner):** The post-script filters the `findings`
+   array as defense-in-depth before posting. Set it in the CI workflow
+   `env:` block.
+
+Set the same value in both places. If they differ, the more restrictive
+value wins for inline comments (post-script filters what the agent
+already filtered).
+
 ## Source
 
 [`internal/scaffold/fullsend-repo/harness/review.yaml`](../../internal/scaffold/fullsend-repo/harness/review.yaml)
