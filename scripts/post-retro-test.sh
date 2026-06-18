@@ -209,6 +209,11 @@ run_test "happy-path-one-proposal" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "repos/test-org/test-repo/issues/10/comments"
 
+# Verify that the happy-path also called gh issue create.
+run_test "happy-path-issue-created" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create"
+
 # Happy path: no proposals, comment posted successfully.
 run_test "happy-path-no-proposals" \
   "${FIXTURE_NO_PROPOSALS}" \

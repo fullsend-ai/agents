@@ -124,9 +124,13 @@ else
 fi
 
 echo "Posting summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
-COMMENT_RESPONSE=""
+# Note: we handle 401/403 inline rather than relying on github-api-csma.sh
+# because the intent is different. CSMA retries rate-limited requests; here
+# we want graceful degradation when the token permanently lacks permission
+# to comment on a specific repo. Retrying a 403 permission error is futile.
+COMMENT_OUTPUT=""
 COMMENT_EXIT=0
-COMMENT_RESPONSE=$(jq -nc --arg body "${COMMENT}" '{body: $body}' | gh api \
+COMMENT_OUTPUT=$(jq -nc --arg body "${COMMENT}" '{body: $body}' | gh api \
   "repos/${ORIGINATING_REPO}/issues/${ORIGINATING_NUMBER}/comments" \
   --input - 2>&1) || COMMENT_EXIT=$?
 
@@ -134,10 +138,18 @@ if [[ ${COMMENT_EXIT} -ne 0 ]]; then
   # Treat 401/403 as non-fatal — the token lacks permission to comment on
   # this repo, but the core deliverables (analysis + proposal issues) are
   # already complete. See #2305.
-  if echo "${COMMENT_RESPONSE}" | grep -qE "HTTP (401|403)"; then
-    echo "::warning::Could not post summary comment to ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: insufficient permissions (${COMMENT_RESPONSE}). Skipping."
+  # The grep pattern matches gh CLI's "HTTP 4xx" error format. If a future
+  # gh version changes the format, the match will fail-closed (treating the
+  # error as fatal), which is the safer default.
+  if echo "${COMMENT_OUTPUT}" | grep -qE "HTTP (401|403)"; then
+    # Sanitize before interpolating into GHA workflow command to prevent
+    # injecting ::set-output or ::save-state directives via crafted responses.
+    SAFE_OUTPUT="${COMMENT_OUTPUT//::/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
+    echo "::warning::Could not post summary comment to ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: insufficient permissions (${SAFE_OUTPUT}). Skipping."
   else
-    echo "ERROR: failed to post summary comment: ${COMMENT_RESPONSE}"
+    echo "ERROR: failed to post summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: ${COMMENT_OUTPUT}"
     exit 1
   fi
 fi
