@@ -146,10 +146,19 @@ if [[ ${COMMENT_EXIT} -ne 0 ]]; then
     # injecting ::set-output or ::save-state directives via crafted responses.
     SAFE_OUTPUT="${COMMENT_OUTPUT//::/}"
     SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0a/}"
     SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0d/}"
     echo "::warning::Could not post summary comment to ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: insufficient permissions (${SAFE_OUTPUT}). Skipping."
   else
-    echo "ERROR: failed to post summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: ${COMMENT_OUTPUT}"
+    # Sanitize before echoing to prevent GHA workflow command injection
+    # (same pattern as the 401/403 branch above).
+    SAFE_OUTPUT="${COMMENT_OUTPUT//::/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0a/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
+    SAFE_OUTPUT="${SAFE_OUTPUT//%0d/}"
+    echo "ERROR: failed to post summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: ${SAFE_OUTPUT}"
     exit 1
   fi
 fi
