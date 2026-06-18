@@ -76,19 +76,15 @@ See [Customizing with AGENTS.md](../guides/user/customizing-with-agents-md.md) a
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted from both the narrative body and the posted inline comments. | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
-This variable is read in two places:
+Set this in the CI workflow `env:` block. The env file passes it to the
+sandbox automatically, and the post-script reads it from the runner
+environment directly — no separate configuration is needed.
 
-1. **Sandbox (agent inference):** The review agent reads it from the
-   environment and omits findings below the threshold from its output
-   (`body` and `findings` array). Set it in `env/review.env` or via the
-   CI workflow `env:` block.
-2. **Post-script (runner):** The post-script filters the `findings`
-   array as defense-in-depth before posting. Set it in the CI workflow
-   `env:` block.
-
-Set the same value in both places. If they differ, the more restrictive
-value wins for inline comments (post-script filters what the agent
-already filtered).
+The review agent omits findings below the threshold from its output. The
+post-script also filters the structured `findings` array as
+defense-in-depth. When filtering removes all findings from a
+`request-changes` verdict, the post-script downgrades the verdict to
+`comment` (applying the `requires-manual-review` label).
 
 ## Source
 

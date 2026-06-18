@@ -188,6 +188,98 @@ run_filter_test "no-findings-key-passthrough" \
   "$NO_FINDINGS" "low" "-1"
 
 # ---------------------------------------------------------------------------
+# Verdict-downgrade tests: when filtering empties all findings, the action
+# must be downgraded from request-changes/reject to comment with findings
+# key removed.
+# Mirrors filter + downgrade logic in post-review.sh — keep in sync
+# ---------------------------------------------------------------------------
+
+filter_and_downgrade() {
+  local result_json="$1"
+  local threshold="$2"
+
+  local filtered
+  filtered="$(filter_findings_json "$result_json" "$threshold")"
+  local count
+  count="$(echo "$filtered" | jq 'if .findings then (.findings | length) else -1 end')"
+
+  if [ "$count" -eq 0 ]; then
+    local action
+    action="$(echo "$filtered" | jq -r '.action')"
+    if [ "$action" = "request-changes" ] || [ "$action" = "reject" ]; then
+      echo "$filtered" | jq 'del(.findings) | .action = "comment"'
+      return
+    fi
+    # For approve/comment, just remove the empty findings array
+    echo "$filtered" | jq 'del(.findings)'
+    return
+  fi
+  echo "$filtered"
+}
+
+run_downgrade_test() {
+  local test_name="$1"
+  local input_json="$2"
+  local threshold="$3"
+  local expected_action="$4"
+  local expected_has_findings="$5"
+
+  local result
+  result="$(filter_and_downgrade "$input_json" "$threshold")"
+  local actual_action
+  actual_action="$(echo "$result" | jq -r '.action')"
+  local has_findings
+  has_findings="$(echo "$result" | jq 'has("findings")')"
+
+  if [ "$actual_action" != "$expected_action" ] || [ "$has_findings" != "$expected_has_findings" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected action:       '${expected_action}'"
+    echo "  actual action:         '${actual_action}'"
+    echo "  expected has_findings: '${expected_has_findings}'"
+    echo "  actual has_findings:   '${has_findings}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# All findings are info-level; threshold=low removes them all → downgrade
+ALL_INFO='{"action":"request-changes","findings":[
+  {"severity":"info","category":"style","file":"a.go","description":"x"},
+  {"severity":"info","category":"style","file":"b.go","description":"y"}
+]}'
+
+run_downgrade_test "request-changes-all-filtered-downgrade" \
+  "$ALL_INFO" "low" "comment" "false"
+
+# Same scenario with reject action
+ALL_INFO_REJECT='{"action":"reject","findings":[
+  {"severity":"info","category":"style","file":"a.go","description":"x"}
+]}'
+
+run_downgrade_test "reject-all-filtered-downgrade" \
+  "$ALL_INFO_REJECT" "low" "comment" "false"
+
+# Partial filtering: some findings remain → no downgrade
+run_downgrade_test "request-changes-partial-filter-no-downgrade" \
+  "$MIXED_FINDINGS" "medium" "request-changes" "true"
+
+# comment with all findings filtered → action stays comment, findings removed
+COMMENT_ALL_INFO='{"action":"comment","body":"text","head_sha":"abc123","findings":[
+  {"severity":"info","category":"style","file":"a.go","description":"x"}
+]}'
+run_downgrade_test "comment-all-filtered-removes-findings" \
+  "$COMMENT_ALL_INFO" "low" "comment" "false"
+
+# approve with all findings filtered → action stays approve, findings removed
+APPROVE_ALL_INFO='{"action":"approve","body":"LGTM","head_sha":"abc123","findings":[
+  {"severity":"info","category":"style","file":"a.go","description":"x"}
+]}'
+run_downgrade_test "approve-all-filtered-removes-findings" \
+  "$APPROVE_ALL_INFO" "low" "approve" "false"
+
+# ---------------------------------------------------------------------------
 # Control-label guard tests
 # ---------------------------------------------------------------------------
 

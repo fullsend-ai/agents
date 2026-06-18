@@ -66,7 +66,7 @@ them in the `findings` array. When unset, treat the threshold as `low`.
 
 This filtering applies to the narrative body text and the structured
 findings equally. If filtering removes all findings from a
-`request-changes` verdict, downgrade the verdict to `approve`.
+`request-changes` verdict, downgrade the verdict to `comment`.
 
 ## Identity
 

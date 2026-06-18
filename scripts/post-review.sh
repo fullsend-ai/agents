@@ -76,6 +76,12 @@ echo "Using result: ${RESULT_FILE}"
 # ---------------------------------------------------------------------------
 REVIEW_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD:-low}"
 
+case "$REVIEW_FINDING_SEVERITY_THRESHOLD" in
+  info|low|medium|high|critical) ;;
+  *) echo "::warning::Invalid REVIEW_FINDING_SEVERITY_THRESHOLD='${REVIEW_FINDING_SEVERITY_THRESHOLD}', defaulting to 'low'"
+     REVIEW_FINDING_SEVERITY_THRESHOLD="low" ;;
+esac
+
 severity_rank() {
   case "$1" in
     info)     echo 0 ;;
@@ -108,6 +114,24 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   if [ "${filtered_count}" -lt "${original_count}" ]; then
     echo "Severity filter (threshold=${REVIEW_FINDING_SEVERITY_THRESHOLD}): kept ${filtered_count}/${original_count} findings"
     RESULT_FILE="${FILTERED_RESULT}"
+
+    # If filtering removed all findings, delete the empty findings array
+    # (minItems: 1 in the schema). For request-changes/reject, also
+    # downgrade to comment — zero findings with a blocking verdict is
+    # semantically wrong. Use "comment" (not "approve") so the PR gets
+    # requires-manual-review, not ready-for-merge.
+    if [ "${filtered_count}" -eq 0 ]; then
+      original_action=$(jq -r '.action' "${FILTERED_RESULT}")
+      DOWNGRADE_RESULT=$(mktemp)
+      CLEANUP_FILES+=("${DOWNGRADE_RESULT}")
+      if [ "${original_action}" = "request-changes" ] || [ "${original_action}" = "reject" ]; then
+        echo "All findings removed by severity filter — downgrading '${original_action}' to 'comment'"
+        jq 'del(.findings) | .action = "comment"' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
+      else
+        jq 'del(.findings)' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
+      fi
+      RESULT_FILE="${DOWNGRADE_RESULT}"
+    fi
   else
     rm -f "${FILTERED_RESULT}"
   fi
