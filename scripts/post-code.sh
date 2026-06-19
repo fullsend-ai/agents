@@ -332,7 +332,10 @@ echo "${PUSH_OUTPUT}"
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
     echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
-    git push --force-with-lease -u origin -- "${BRANCH}" 2>&1
+    if ! git push --force-with-lease -u origin -- "${BRANCH}" 2>&1; then
+      echo "::error::Force-with-lease push also failed"
+      exit 1
+    fi
   else
     echo "::error::Push failed with unexpected error (git push origin ${BRANCH})" >&2
     echo "::error::Push output: ${PUSH_OUTPUT}" >&2

@@ -251,11 +251,26 @@ if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
     "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
-  # Plain push (no --force-with-lease). Agents always create new
-  # commits (amend is in disallowedTools), so force-push is unnecessary
-  # and plain push is safer (refuses diverged branches).
+  # Plain push first. Falls back to --force-with-lease when the push
+  # is rejected (non-fast-forward), which happens after a rebase — the
+  # agent rewrote history so the remote branch diverged. force-with-lease
+  # is safe: it still rejects if someone else pushed in the meantime.
   echo "Pushing branch ${BRANCH}..."
-  git push -u origin -- "${BRANCH}" 2>&1
+  PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+  echo "${PUSH_OUTPUT}"
+
+  if [ "${PUSH_RC}" -ne 0 ]; then
+    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+      echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+      if ! git push --force-with-lease -u origin -- "${BRANCH}" 2>&1; then
+        echo "::error::Force-with-lease push also failed"
+        exit 1
+      fi
+    else
+      echo "::error::Push failed with unexpected error"
+      exit 1
+    fi
+  fi
   echo "Branch ${BRANCH} pushed successfully"
 fi
 
