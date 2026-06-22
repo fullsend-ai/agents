@@ -37,7 +37,7 @@ These labels are applied by the review post-script based on the review outcome.
 
 | Label | Meaning |
 |-------|---------|
-| `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) post-script after pushing; not a dispatch trigger — review runs via `pull_request_target` instead. |
+| `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) post-script after pushing. Triggers review when applied to a PR (not standalone issues). |
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
 | `rejected` | The review agent rejected the PR and the post-script closed it. |
