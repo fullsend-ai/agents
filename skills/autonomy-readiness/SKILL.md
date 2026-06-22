@@ -8,11 +8,7 @@ description: >
 
 # Autonomy Readiness Analysis
 
-Analyze the difference between what the review agent found on a PR and what human reviewers found on the same PR. Use those deltas to propose concrete repo changes that either close gaps or, when agent coverage is strong, justify relaxing human oversight.
-
-## When to use this skill
-
-Use this skill after you have access to both the review agent's posted findings on a PR and the human review feedback on the same PR. You need the full PR timeline -- agent comments, human comments, requested changes, and inline suggestions -- before you can extract a meaningful delta.
+Analyze the difference between what the review agent found on a PR and what human reviewers found on the same PR. Use those deltas to propose concrete changes that either close gaps or, when agent coverage is strong, justify relaxing human oversight. You need the full PR timeline -- agent findings, human comments, requested changes, and inline suggestions -- before you can extract a meaningful delta.
 
 ## Phase 1: Extract the delta
 
@@ -93,21 +89,8 @@ For each autonomy-increasing proposal, include:
 
 When in doubt, prefer the smaller change. One directory before an entire subtree. Shadow mode before real autonomy. Every proposal must be individually reversible. If you cannot define rollback criteria for a proposal, the proposal is too aggressive -- narrow the scope until rollback is straightforward.
 
-## In-scope repo changes
+## What to propose
 
-1. Tests (unit, integration, or end-to-end)
-2. CI gates and linting rules
-3. Documentation (ADRs, AGENTS.md, README, inline comments)
-4. CODEOWNERS entries
-5. Protected path rules
-6. Agent permissions and team membership
-7. Auto-merge scope
+Think broadly about what would make a difference. Common categories include tests, CI gates, documentation, CODEOWNERS changes, protected path rules, agent permissions, and auto-merge scope -- but do not limit yourself to these. If you identify a novel change that would close a gap or justify more autonomy, propose it.
 
-## Out of scope
-
-- Upstream changes to fullsend skills, prompts, or sub-agents. Note these when relevant, but do not propose them as the primary action. The repo should be self-sufficient.
-- Changes to review agent model or architecture.
-
-## Constraints
-
-The consuming agent's definition is the authoritative source of prohibitions and output constraints. This skill does not restate them.
+In particular, consider adding new agent skills to the target repo's `.claude/` directory. Skills added there are automatically picked up by both the fullsend review agent and casual Claude Code users. If a human reviewer consistently catches a class of issue that the agent misses, a repo-level skill teaching that pattern may be more effective than any other single change.
