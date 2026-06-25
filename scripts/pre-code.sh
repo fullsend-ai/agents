@@ -121,3 +121,30 @@ fi
 
 echo "No existing human PRs found — proceeding with code agent"
 echo "skipped=false" >> "${GITHUB_OUTPUT:-/dev/null}"
+
+# ---------------------------------------------------------------------------
+# Auto-detect and install pre-commit tool dependencies
+# ---------------------------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TARGET_REPO="${REPO_DIR:-${GITHUB_WORKSPACE:-}/target-repo}"
+RESOLVE_SCRIPT="${SCRIPT_DIR}/resolve-precommit-tools.py"
+INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
+
+if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
+   && [ -f "${RESOLVE_SCRIPT}" ] \
+   && [ -f "${INSTALL_SCRIPT}" ]; then
+  echo "Resolving pre-commit tool dependencies..."
+  MANIFEST="$(mktemp)"
+  if python3 "${RESOLVE_SCRIPT}" "${TARGET_REPO}" > "${MANIFEST}"; then
+    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+    else
+      echo "No additional pre-commit tools needed"
+    fi
+  else
+    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+  fi
+  rm -f "${MANIFEST}"
+fi
+export PATH="${HOME}/.local/bin:${PATH}"
+echo "${HOME}/.local/bin" >> "${GITHUB_PATH:-/dev/null}"
