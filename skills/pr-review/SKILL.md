@@ -841,7 +841,9 @@ of findings in the standard format:
   "line": "<line number, optional>",
   "description": "<explanation>",
   "remediation": "<fix, required for critical/high>",
-  "actionable": true|false
+  "actionable": true|false,
+  "verified_variables": [],
+  "unchecked_variables": []
 }
 ```
 
@@ -864,7 +866,9 @@ the sub-agent's tier:
   "category": "sub-agent-failure",
   "file": "N/A",
   "description": "The <dimension> sub-agent did not return findings: <reason>",
-  "actionable": false
+  "actionable": false,
+  "verified_variables": [],
+  "unchecked_variables": []
 }
 ```
 
@@ -1018,7 +1022,9 @@ isolation.
      "category": "sub-agent-failure",
      "file": "N/A",
      "description": "The challenger sub-agent did not return findings: <reason>. Using pre-challenger finding set.",
-     "actionable": false
+     "actionable": false,
+     "verified_variables": [],
+     "unchecked_variables": []
    }
    ```
 
