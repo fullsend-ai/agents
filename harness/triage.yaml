@@ -8,7 +8,7 @@ role: triage
 slug: fullsend-ai-triage
 
 host_files:
-  - src: env/gcp-vertex.env
+  - src: common/env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
