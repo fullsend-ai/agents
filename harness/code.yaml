@@ -40,7 +40,9 @@ plugins:
   - plugins/gopls-lsp
 
 validation_loop:
+  script: scripts/validate-output-schema.sh
   schema: schemas/code-result.schema.json
+  max_iterations: 2
 
 # Environment variables available to pre/post scripts on the runner.
 # These are expanded from the runner environment and NEVER enter the sandbox.

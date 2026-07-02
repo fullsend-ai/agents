@@ -2,7 +2,7 @@
 # post-triage-test.sh — Test post-triage.sh with fixture JSON inputs.
 #
 # Uses a mock gh command to capture calls without hitting GitHub.
-# Run from the repo root: bash internal/scaffold/fullsend-repo/scripts/post-triage-test.sh
+# Run from the repo root: bash scripts/post-triage-test.sh
 
 set -euo pipefail
 

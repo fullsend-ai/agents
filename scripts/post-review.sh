@@ -389,7 +389,7 @@ elif [ "${ACTION}" = "reject" ]; then
   gh pr edit "${PR_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
     --add-label "rejected" || true
-elif [ "${ACTION}" = "request_changes" ]; then
+elif [ "${ACTION}" = "request-changes" ]; then
   echo "Request-changes disposition — no outcome label (fix agent triggers on event)"
 fi
 

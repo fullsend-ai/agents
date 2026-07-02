@@ -5,7 +5,7 @@
 # functions. This avoids needing a live GitHub API or fullsend CLI.
 #
 # Run from the repo root:
-#   bash internal/scaffold/fullsend-repo/scripts/post-review-test.sh
+#   bash scripts/post-review-test.sh
 
 set -euo pipefail
 
@@ -31,7 +31,7 @@ determine_outcome_label() {
     echo "requires-manual-review"
   elif [ "${action}" = "comment" ]; then
     echo "requires-manual-review"
-  elif [ "${action}" = "request_changes" ]; then
+  elif [ "${action}" = "request-changes" ]; then
     echo "none"
   elif [ "${action}" = "reject" ]; then
     echo "rejected"
@@ -76,9 +76,9 @@ run_test "approve-with-downgrade" \
 run_test "comment-split-review" \
   "comment" "false" "requires-manual-review"
 
-# request_changes → no outcome label
+# request-changes → no outcome label
 run_test "request-changes-no-label" \
-  "request_changes" "false" "none"
+  "request-changes" "false" "none"
 
 # reject → rejected
 run_test "reject-label" \

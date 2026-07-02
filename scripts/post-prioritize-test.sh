@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # post-prioritize-test.sh — Test post-prioritize.sh with fixture JSON and mock gh/fullsend.
 #
-# Run from the repo root: bash internal/scaffold/fullsend-repo/scripts/post-prioritize-test.sh
+# Run from the repo root: bash scripts/post-prioritize-test.sh
 
 set -euo pipefail
 

@@ -416,8 +416,13 @@ if [ "${PUSH_RC}" -ne 0 ]; then
       exit 1
     fi
   else
+    SAFE_PUSH="${PUSH_OUTPUT//::/}"
+    SAFE_PUSH="${SAFE_PUSH//%0A/}"
+    SAFE_PUSH="${SAFE_PUSH//%0a/}"
+    SAFE_PUSH="${SAFE_PUSH//%0D/}"
+    SAFE_PUSH="${SAFE_PUSH//%0d/}"
     echo "::error::Push failed with unexpected error (git push origin ${BRANCH})" >&2
-    echo "::error::Push output: ${PUSH_OUTPUT}" >&2
+    echo "::error::Push output: ${SAFE_PUSH}" >&2
     exit 1
   fi
 fi

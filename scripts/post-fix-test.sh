@@ -5,7 +5,7 @@
 # functions. This avoids needing a full git repo or GitHub API access.
 #
 # Run from the repo root:
-#   bash internal/scaffold/fullsend-repo/scripts/post-fix-test.sh
+#   bash scripts/post-fix-test.sh
 
 set -euo pipefail
 
