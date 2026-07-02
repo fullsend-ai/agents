@@ -1,0 +1,87 @@
+---
+# harness/fix.yaml — fix agent with pre/post script pipeline.
+#
+# Flow: pre_script → sandbox (agent) → post_script
+#   pre_script  : validates inputs, checks iteration cap
+#   agent       : reads pre-fetched review body, fixes code, tests, scans, commits
+#   post_script : push commit, post summary comment on PR
+#
+# The agent NEVER pushes or creates PRs (disallowedTools enforces this).
+# Only the post-script, running on the runner with PUSH_TOKEN, can write.
+agent: agents/fix.md
+doc: docs/fix.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-code:latest
+policy: policies/fix.yaml
+
+role: coder
+slug: fullsend-ai-coder
+
+pre_script: scripts/pre-fix.sh
+post_script: scripts/post-fix.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/fix-result.schema.json
+  max_iterations: 2
+
+host_files:
+  - src: common/env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/fix.env
+    dest: /sandbox/workspace/.env.d/fix.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+  - src: ${REVIEW_BODY_FILE}
+    dest: /sandbox/workspace/review-body.txt
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+
+skills:
+  - skills/fix-review
+
+env:
+  runner:
+    TARGET_BRANCH: "${TARGET_BRANCH}"
+    TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
+    HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
+    FIX_ITERATION: "${FIX_ITERATION}"
+    REVIEW_BODY_FILE: "${REVIEW_BODY_FILE}"
+    PRE_AGENT_HEAD: "${PRE_AGENT_HEAD}"
+    FULLSEND_OUTPUT_FILE: fix-result.json
+  sandbox:
+    MAX_RETRIES: "1"
+    TIMEOUT_SECONDS: "1500"
+    STRATEGY_ESCALATION_THRESHOLD: "3"
+    ITERATION_CAP: "5"
+    ITERATION_CAP_HUMAN: "10"
+    GOPATH: "/sandbox/go"
+    GOMODCACHE: "/sandbox/go/pkg/mod"
+
+timeout_minutes: 25
+
+forge:
+  github:
+    pre_script: scripts/pre-fix.sh
+    post_script: scripts/post-fix.sh
+    env:
+      runner:
+        PUSH_TOKEN: "${PUSH_TOKEN}"
+        PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        PR_NUMBER: "${PR_NUMBER}"
+        REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+      sandbox:
+        PR_NUMBER: "${PR_NUMBER}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
+        HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
+        FIX_ITERATION: "${FIX_ITERATION}"
+        GH_TOKEN: "${GH_TOKEN}"
+        GIT_AUTHOR_NAME: "fullsend-fix"
+        GIT_AUTHOR_EMAIL: "${GIT_BOT_EMAIL}"
+        GIT_COMMITTER_NAME: "fullsend-fix"
+        GIT_COMMITTER_EMAIL: "${GIT_BOT_EMAIL}"

@@ -1,0 +1,397 @@
+#!/usr/bin/env bash
+# Post-script: push the fix agent's commit and process structured output.
+#
+# Runs on the GitHub Actions runner AFTER the sandbox is destroyed.
+# This script has write access to the target repo — it is the most
+# security-sensitive component in the fix pipeline.
+#
+# Security layers (defense-in-depth):
+#   - Authoritative secret scan — final gate before any push
+#   - Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
+#   - Authoritative pre-commit — run repo hooks on changed files
+#   - Branch validation — refuse to push main/master
+#   - Token isolation — PUSH_TOKEN never enters the sandbox
+#
+# Protected-path enforcement lives in post-review.sh: the review agent
+# cannot approve PRs that touch sensitive paths (e.g. .github/, CODEOWNERS,
+# agents/). The fix agent is free to propose changes to any path.
+#
+# Steps:
+#   0. Check for agent commits
+#   1. Authoritative secret scan
+#   2. Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
+#   3. Authoritative pre-commit check
+#   4. Push branch
+#   5. Process structured output
+#   6. Iteration-cap warning label
+#   7. Summary
+#
+# After pushing, this script processes fix-result.json to:
+#   - Post a summary comment on the PR documenting fixes and disagreements
+#   - Apply labels (needs-human) if the iteration cap is approaching
+#
+# Required environment variables:
+#   PUSH_TOKEN        — token with contents:write + pull-requests:write
+#   REPO_FULL_NAME    — owner/repo
+#   PR_NUMBER         — PR number
+#   REPO_DIR          — path to extracted repo (default: current directory)
+#   TRIGGER_SOURCE    — GitHub username that triggered the fix (usernames ending in [bot] are bot triggers)
+#
+# Optional environment variables:
+#   FIX_ITERATION     — current iteration count
+#   ITERATION_CAP     — max iterations (default: 5)
+#   PUSH_TOKEN_SOURCE — "github-app" (for logging)
+#
+# Exit codes:
+#   0  — branch pushed, PR updated
+#   1  — validation failure or error (nothing pushed)
+set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Helper: Bot user detection
+# ---------------------------------------------------------------------------
+is_bot_user() {
+  [[ "${1:-}" =~ \[bot\]$ ]]
+}
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+GITLEAKS_VERSION="8.30.1"
+GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+# ---------------------------------------------------------------------------
+# Setup
+# ---------------------------------------------------------------------------
+REPO_DIR="${REPO_DIR:-repo}"
+RUN_DIR="$(pwd)"
+
+if [ "${REPO_DIR}" != "." ]; then
+  if [ ! -d "${REPO_DIR}" ]; then
+    echo "::error::Extracted repo not found at ${REPO_DIR}" >&2
+    exit 1
+  fi
+  cd "${REPO_DIR}"
+fi
+
+: "${PUSH_TOKEN:?PUSH_TOKEN is required}"
+: "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
+: "${PR_NUMBER:?PR_NUMBER is required}"
+: "${TRIGGER_SOURCE:?TRIGGER_SOURCE is required}"
+TARGET_BRANCH="${TARGET_BRANCH:-main}"
+
+echo "::add-mask::${PUSH_TOKEN}"
+
+# ---------------------------------------------------------------------------
+# 0. Check for agent commits
+# ---------------------------------------------------------------------------
+BRANCH="$(git branch --show-current)"
+
+if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
+  echo "::warning::Agent did not produce a commit on a feature branch (current: '${BRANCH:-detached HEAD}')"
+  echo "::warning::Processing structured output only (no push)."
+  # Still process fix-result.json to post a summary comment.
+  NO_PUSH=true
+else
+  NO_PUSH=false
+fi
+
+# Scope to the agent's commit(s) only — not the entire branch. PRE_AGENT_HEAD
+# is set by fix.yml to the HEAD SHA before the harness runs, so this diff
+# captures every commit the agent made (including validation_loop retries).
+# Falls back to HEAD~1 if PRE_AGENT_HEAD is unset (shouldn't happen in CI).
+DIFF_BASE="${PRE_AGENT_HEAD:-$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)}"
+CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..HEAD" 2>/dev/null || true)"
+
+if [ -z "${CHANGED_FILES}" ] && [ "${NO_PUSH}" = "false" ]; then
+  echo "::warning::No changed files in agent's commit(s) — nothing to push"
+  NO_PUSH=true
+fi
+
+# Compute the branch's net changes relative to the target branch using
+# merge-base. After a rebase, PRE_AGENT_HEAD..HEAD includes upstream
+# changes (the rebase rewrites history so the old SHA is no longer an
+# ancestor). The merge-base diff isolates only what the branch itself
+# contributes — the same diff that will appear in the PR.
+# Fallback chain mirrors post-code.sh: warn, try origin/TARGET..HEAD,
+# then HEAD~1..HEAD. This keeps the two post-scripts aligned.
+MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MERGE_BASE=""
+if [ -n "${MERGE_BASE}" ]; then
+  BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+else
+  echo "::warning::Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
+  BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+    || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+fi
+
+if [ "${NO_PUSH}" = "false" ]; then
+  echo "Changed files (agent commits):"
+  echo "${CHANGED_FILES}" | sed 's/^/  /'
+
+  if [ "${BRANCH_CHANGED_FILES}" != "${CHANGED_FILES}" ]; then
+    echo "Branch-only changed files (merge-base-aware, used for pre-commit):"
+    echo "${BRANCH_CHANGED_FILES}" | sed 's/^/  /'
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 1. Authoritative secret scan (only if pushing)
+# ---------------------------------------------------------------------------
+if [ "${NO_PUSH}" = "false" ]; then
+  echo "Running authoritative secret scan on agent's commit..."
+
+  if ! command -v gitleaks >/dev/null 2>&1; then
+    echo "Installing gitleaks v${GITLEAKS_VERSION}..."
+    mkdir -p "${HOME}/.local/bin"
+    curl -fsSL \
+      "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+      -o /tmp/gitleaks.tar.gz \
+      && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c - \
+      && tar xzf /tmp/gitleaks.tar.gz -C "${HOME}/.local/bin" gitleaks \
+      && rm /tmp/gitleaks.tar.gz
+    export PATH="${HOME}/.local/bin:${PATH}"
+  fi
+
+  SCAN_RANGE="${DIFF_BASE}..HEAD"
+
+  gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact
+  echo "Secret scan passed — no leaks in agent's commit(s)"
+
+  # -------------------------------------------------------------------------
+  # 1b. Reject Signed-off-by trailers
+  #
+  # Agents must never produce Signed-off-by trailers. DCO is a human
+  # attestation — the DCO app already waives the check for bot authors.
+  # The bot noreply email makes the trailer ~90 characters, which causes
+  # gitlint body-max-line-length failures in repos with a 72-char limit.
+  # -------------------------------------------------------------------------
+  echo "Checking for Signed-off-by trailers in agent's commit(s)..."
+  if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+    echo "::error::BLOCKED — agent commit contains a Signed-off-by trailer" >&2
+    echo "::error::Agents must not use 'git commit -s' or append Signed-off-by trailers." >&2
+    echo "::error::DCO is a human attestation; the DCO app waives the check for bots." >&2
+    exit 1
+  fi
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Auto-install pre-commit tool dependencies
+# ---------------------------------------------------------------------------
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
+INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
+
+if [ -f .pre-commit-config.yaml ] \
+   && [ -f "${RESOLVE_SCRIPT}" ] \
+   && [ -f "${INSTALL_SCRIPT}" ]; then
+  MANIFEST="$(mktemp)"
+  LOCAL_REG="$(mktemp)"
+  RESOLVE_ARGS=(".")
+  if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+  fi
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
+    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+    fi
+  else
+    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+  fi
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
+fi
+export PATH="${HOME}/.local/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# 3. Authoritative pre-commit check (only if pushing)
+# ---------------------------------------------------------------------------
+if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
+  echo "Running authoritative pre-commit on agent's changed files..."
+
+  if ! command -v pre-commit >/dev/null 2>&1; then
+    pip install "pre-commit==4.5.1" 2>/dev/null \
+      || pip3 install "pre-commit==4.5.1" 2>/dev/null \
+      || pipx install "pre-commit==4.5.1" 2>/dev/null \
+      || echo "::warning::Failed to install pre-commit"
+  fi
+
+  if command -v pre-commit >/dev/null 2>&1; then
+    # SYNC: parallel retry block in post-code.sh section 5 — keep structure
+    #       in sync (variable names differ: BRANCH_CHANGED_FILES here vs
+    #       CHANGED_FILES there; SCAN_RANGE scopes differ by design).
+    mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
+    if pre-commit run --files "${changed_array[@]}"; then
+      echo "Pre-commit passed — all hooks clean"
+    else
+      # Single retry only — do not convert to a loop without adding a cap.
+      # Scope detection/staging to changed_array so hooks can't inject files
+      # outside the pre-commit scope into the commit.
+      if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
+        echo "::warning::Pre-commit hooks auto-fixed files — re-staging and retrying"
+        echo "Auto-fixed files:"
+        git diff --name-only -- "${changed_array[@]}" | sed 's/^/  /'
+        git diff --name-only -z -- "${changed_array[@]}" | xargs -0 -r git add --
+        git commit --amend --no-edit
+
+        echo "Re-running secret scan on amended commit..."
+        if ! gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact; then
+          echo "::error::BLOCKED — secret detected in amended commit after auto-fix" >&2
+          exit 1
+        fi
+        if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+          echo "::error::BLOCKED — amended commit contains a Signed-off-by trailer" >&2
+          exit 1
+        fi
+
+        if [ -n "${MERGE_BASE}" ]; then
+          BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
+        else
+          BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
+            || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
+        fi
+        if [ -z "${BRANCH_CHANGED_FILES}" ]; then
+          echo "::error::BLOCKED — pre-commit hooks removed all changes; commit is now empty" >&2
+          exit 1
+        fi
+        mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
+        if pre-commit run --files "${changed_array[@]}"; then
+          if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
+            echo "::error::BLOCKED — retry pre-commit left additional unstaged changes" >&2
+            echo "::error::Committed content would diverge from what pre-commit validated." >&2
+            exit 1
+          fi
+          echo "Pre-commit passed after auto-fix re-stage"
+        else
+          echo "::error::BLOCKED — pre-commit hooks still fail after auto-fix" >&2
+          echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
+          echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
+          exit 1
+        fi
+      else
+        echo "::error::BLOCKED — pre-commit hooks failed on agent's changes" >&2
+        echo "::error::The agent's code does not pass the repo's pre-commit hooks." >&2
+        echo "::error::Fix the issues and re-run, or update the pre-commit config." >&2
+        exit 1
+      fi
+    fi
+  else
+    echo "::warning::pre-commit not available — skipping authoritative check"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 4. Push branch (only if we have commits)
+# ---------------------------------------------------------------------------
+if [ "${NO_PUSH}" = "false" ]; then
+  git remote set-url origin \
+    "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
+
+  # Plain push first. Falls back to --force-with-lease when the push
+  # is rejected (non-fast-forward), which happens after a rebase — the
+  # agent rewrote history so the remote branch diverged. force-with-lease
+  # is safe: it still rejects if someone else pushed in the meantime.
+  echo "Pushing branch ${BRANCH}..."
+  PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+  echo "${PUSH_OUTPUT}"
+
+  if [ "${PUSH_RC}" -ne 0 ]; then
+    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+      echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+      if ! git push --force-with-lease -u origin -- "${BRANCH}" 2>&1; then
+        echo "::error::Force-with-lease push also failed"
+        exit 1
+      fi
+    else
+      echo "::error::Push failed with unexpected error"
+      exit 1
+    fi
+  fi
+  echo "Branch ${BRANCH} pushed successfully"
+fi
+
+# ---------------------------------------------------------------------------
+# 5. Process structured output (fix-result.json)
+# ---------------------------------------------------------------------------
+export GH_TOKEN="${PUSH_TOKEN}"
+
+# Locate process-fix-result.py relative to this script.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
+
+# Find fix-result.json in the output directory.
+# RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
+# before we cd'd into REPO_DIR. The agent writes its structured output to
+# iteration-<N>/output/fix-result.json within runDir. Uses glob order
+# (naturally ascending iteration numbers) to find the last iteration,
+# matching the pattern in post-triage.sh.
+RESULT_FILE=""
+for dir in "${RUN_DIR}"/iteration-*/output; do
+  if [ -f "${dir}/fix-result.json" ]; then
+    RESULT_FILE="${dir}/fix-result.json"
+  fi
+done
+
+if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
+  echo "::warning::No fix-result.json found — skipping summary comment"
+elif [ ! -f "${PROCESS_SCRIPT}" ]; then
+  echo "::warning::process-fix-result.py not found at ${PROCESS_SCRIPT} — skipping"
+else
+  # Scan fix-result.json for secrets before posting content as a PR comment.
+  # The agent could have been tricked into embedding sensitive data in the
+  # structured output via prompt injection in the review body.
+  if command -v gitleaks >/dev/null 2>&1; then
+    echo "Scanning fix-result.json for secrets before posting..."
+    SCAN_DIR="$(mktemp -d)"
+    cp "${RESULT_FILE}" "${SCAN_DIR}/fix-result.json"
+    if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
+      echo "::error::Secret detected in fix-result.json — refusing to post PR comment" >&2
+      rm -rf "${SCAN_DIR}"
+      exit 1
+    fi
+    rm -rf "${SCAN_DIR}"
+  fi
+
+  echo "Processing fix-result.json: ${RESULT_FILE}"
+  PROCESS_EXIT=0
+  python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
+  if [ "${PROCESS_EXIT}" -eq 1 ]; then
+    echo "::error::process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}" >&2
+    exit 1
+  elif [ "${PROCESS_EXIT}" -ne 0 ]; then
+    echo "::warning::process-fix-result.py exited ${PROCESS_EXIT} — continuing with labels/summary"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Iteration-cap warning label
+# ---------------------------------------------------------------------------
+ITERATION="${FIX_ITERATION:-1}"
+BOT_CAP="${ITERATION_CAP:-5}"
+WARN_THRESHOLD=$(( BOT_CAP - 1 ))
+
+# The needs-human label is based on the bot cap — it signals that the
+# autonomous review→fix loop needs human direction. Human-triggered /fs-fix
+# runs have a separate, higher cap (ITERATION_CAP_HUMAN).
+if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
+  echo "::warning::Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  gh label create "needs-human" --repo "${REPO_FULL_NAME}" \
+    --description "Agent loop needs human intervention" --color "D93F0B" \
+    2>/dev/null || true
+  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --add-label "needs-human" 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
+# 7. Summary
+# ---------------------------------------------------------------------------
+echo ""
+echo "Fix post-script complete:"
+echo "  Branch: ${BRANCH:-none}"
+echo "  PR: #${PR_NUMBER}"
+if [ "${NO_PUSH}" = "true" ]; then echo "  Pushed: no"; else echo "  Pushed: yes"; fi
+echo "  Trigger: ${TRIGGER_SOURCE}"
+if is_bot_user "${TRIGGER_SOURCE}"; then
+  echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap)"
+else
+  echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap, total across bot+human)"
+fi

@@ -125,4 +125,4 @@ where every agent would pay the context cost.
 
 ## Source
 
-[`internal/scaffold/fullsend-repo/harness/triage.yaml`](../../internal/scaffold/fullsend-repo/harness/triage.yaml)
+[`harness/triage.yaml`](../harness/triage.yaml)
