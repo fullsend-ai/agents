@@ -92,6 +92,36 @@ the review agent — if the triage was wrong, your code will fail review.
 - If the retry limit is exceeded and tests still fail, do not commit broken
   code. Stop. The post-script reports the failure.
 
+## Structured output
+
+You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/$FULLSEND_OUTPUT_FILE`
+(typically `code-result.json`) that documents the target branch for PR
+creation. The post-script reads this file to create the PR against the
+correct branch. Without this file, the harness validation loop will reject
+the run.
+
+Write this file early — during step 3 of the skill, after determining
+the target branch — so it is available even if the agent hits a timeout
+or error later.
+
+The file must contain at minimum:
+
+```json
+{
+  "target_branch": "<branch-name>"
+}
+```
+
+After writing the file, validate it:
+
+```bash
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}"
+```
+
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
+
 ## Failure handling
 
 Secret scanning is **non-negotiable**. The `scan-secrets` helper runs before

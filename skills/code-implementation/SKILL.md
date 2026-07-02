@@ -186,8 +186,9 @@ use that branch. Otherwise, determine the repo's default branch:
 git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2
 ```
 
-Write your chosen branch to the structured output file so the post-script
-knows which branch to target the PR against:
+**MANDATORY: Write the structured output file.** You MUST write this file
+so the post-script knows which branch to target the PR against. Without
+this file, the harness validation loop will reject the run.
 
 ```bash
 mkdir -p "${FULLSEND_OUTPUT_DIR}"
@@ -197,6 +198,14 @@ cat > "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}" <<RESULT
 }
 RESULT
 ```
+
+Validate the output immediately after writing:
+
+```bash
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}"
+```
+
+If validation fails, fix the JSON and re-run the check.
 
 Write this output early (during planning, after determining the target
 branch) so it is available even if the agent hits a timeout or error later.
@@ -738,6 +747,46 @@ message. The post-script runs an authoritative pre-commit on the runner.
 
 **Do not push the branch.** The post-script handles pushing, PR creation,
 and failure reporting.
+
+### 11. Verify structured output
+
+Before exiting, verify the structured output file exists and is valid.
+This is a **MANDATORY** final check — even if the commit succeeded, the
+harness validation loop will reject the run without this file.
+
+```bash
+echo "::notice::STEP 11: Verify structured output"
+```
+
+Check that the file exists:
+
+```bash
+test -f "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}" \
+  && echo "Output file exists" \
+  || echo "ERROR: Output file missing"
+```
+
+If the file is missing (e.g., step 3 was interrupted before writing it),
+write it now:
+
+```bash
+mkdir -p "${FULLSEND_OUTPUT_DIR}"
+cat > "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}" <<RESULT
+{
+  "target_branch": "<branch-name>"
+}
+RESULT
+```
+
+Validate the output:
+
+```bash
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}"
+```
+
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
 
 ## Partial work
 
