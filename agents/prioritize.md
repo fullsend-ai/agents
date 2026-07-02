@@ -1,8 +1,6 @@
 ---
 name: prioritize
 description: Score a GitHub issue using the RICE framework (Reach, Impact, Confidence, Effort) and produce structured scores with reasoning.
-skills:
-  - customer-research
 tools: Bash(gh,jq)
 model: opus
 ---
