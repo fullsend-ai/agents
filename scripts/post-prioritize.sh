@@ -56,7 +56,12 @@ EFFORT=$(jq -r '.effort' "${RESULT_FILE}")
 for var_name in REACH IMPACT CONFIDENCE EFFORT; do
   val="${!var_name}"
   if ! jq -e 'type == "number"' <<< "${val}" &>/dev/null; then
-    echo "::error::${var_name} is not a valid number: '${val}'" >&2
+    safe_val="${val//::/}"
+    safe_val="${safe_val//%0A/}"
+    safe_val="${safe_val//%0a/}"
+    safe_val="${safe_val//%0D/}"
+    safe_val="${safe_val//%0d/}"
+    echo "::error::${var_name} is not a valid number: '${safe_val}'" >&2
     exit 1
   fi
 done
