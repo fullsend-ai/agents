@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "review-result.schema.json",
+  "title": "Review Agent Result",
+  "description": "Structured output from the review agent, validated by the harness before the post-script runs (ADR 0022).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["action", "pr_number", "repo"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["approve", "request-changes", "comment", "reject", "failure"]
+    },
+    "pr_number": { "type": "integer", "minimum": 1 },
+    "repo": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "head_sha": { "type": "string", "minLength": 7 },
+    "body": { "type": "string", "minLength": 1 },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" },
+      "minItems": 1
+    },
+    "reason": {
+      "type": "string",
+      "enum": ["tool-failure", "missing-context", "ambiguous-findings", "token-limit"]
+    },
+    "label_actions": {
+      "$ref": "#/$defs/label_actions"
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "action": { "const": "approve" } }, "required": ["action"] },
+      "then": { "required": ["body", "head_sha"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "request-changes" } }, "required": ["action"] },
+      "then": { "required": ["body", "head_sha", "findings"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "comment" } }, "required": ["action"] },
+      "then": { "required": ["body", "head_sha"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "reject" } }, "required": ["action"] },
+      "then": { "required": ["body", "head_sha", "findings"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "failure" } }, "required": ["action"] },
+      "then": { "required": ["reason"] }
+    }
+  ],
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": ["severity", "category", "file", "description"],
+      "properties": {
+        "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
+        "category": { "type": "string", "minLength": 1 },
+        "file": { "type": "string", "minLength": 1 },
+        "line": { "type": "integer", "minimum": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "remediation": { "type": "string" },
+        "actionable": {
+          "type": "boolean",
+          "description": "True when this non-blocking finding should be tracked as a follow-up issue if the review approves."
+        }
+      },
+      "additionalProperties": false
+    },
+    "label_actions": {
+      "type": "object",
+      "required": ["reason", "actions"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Single sentence explaining why these labels are being applied or removed"
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["action", "label"],
+            "properties": {
+              "action": { "type": "string", "enum": ["add", "remove"] },
+              "label": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9._/: +-]+$" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
