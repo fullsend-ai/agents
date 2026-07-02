@@ -68,9 +68,6 @@ You can also overload it at the org level in your `.fullsend` config repo at
 `customized/skills/issue-labels/SKILL.md`. At runtime, your version replaces
 the upstream default -- no other configuration needed.
 
-See [Customizing with AGENTS.md](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/customizing-with-skills.md).
-
 ### Variables
 
 | Variable | Description | Default | Valid values |

@@ -43,9 +43,6 @@ on issues (not PRs). The code agent is also triggered automatically when the
 
 ## Configuration and extension
 
-See [Customizing with AGENTS.md](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/customizing-with-skills.md).
-
 ### Variables
 
 None.

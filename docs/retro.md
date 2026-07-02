@@ -47,9 +47,6 @@ The retro agent also runs automatically when a PR is closed (merged or not).
 
 ## Configuration and extension
 
-See [Customizing with AGENTS.md](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/customizing-with-agents-md.md) and
-[Customizing with Skills](https://github.com/fullsend-ai/fullsend/blob/main/docs/guides/user/customizing-with-skills.md).
-
 ### Variables
 
 None.
