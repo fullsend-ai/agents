@@ -102,7 +102,12 @@ for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     --color "ededed" \
     --force 2>/dev/null || true
 
-  echo "Filing issue in ${TARGET_REPO}: ${TITLE}"
+  SAFE_TITLE="${TITLE//::/}"
+  SAFE_TITLE="${SAFE_TITLE//%0A/}"
+  SAFE_TITLE="${SAFE_TITLE//%0a/}"
+  SAFE_TITLE="${SAFE_TITLE//%0D/}"
+  SAFE_TITLE="${SAFE_TITLE//%0d/}"
+  echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
   if ! ISSUE_URL=$(gh issue create \
     --repo "${TARGET_REPO}" \
     --title "${TITLE}" \

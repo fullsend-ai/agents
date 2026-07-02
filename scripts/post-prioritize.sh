@@ -53,6 +53,18 @@ IMPACT=$(jq -r '.impact' "${RESULT_FILE}")
 CONFIDENCE=$(jq -r '.confidence' "${RESULT_FILE}")
 EFFORT=$(jq -r '.effort' "${RESULT_FILE}")
 
+for var_name in REACH IMPACT CONFIDENCE EFFORT; do
+  val="${!var_name}"
+  if ! jq -e 'type == "number"' <<< "${val}" &>/dev/null; then
+    echo "::error::${var_name} is not a valid number: '${val}'" >&2
+    exit 1
+  fi
+done
+if jq -e '. == 0' <<< "${EFFORT}" &>/dev/null; then
+  echo "::error::EFFORT is 0 — cannot compute RICE score (division by zero)" >&2
+  exit 1
+fi
+
 # Compute final RICE score: (R * I * C) / E
 SCORE=$(jq -n --argjson r "${REACH}" --argjson i "${IMPACT}" \
   --argjson c "${CONFIDENCE}" --argjson e "${EFFORT}" \
