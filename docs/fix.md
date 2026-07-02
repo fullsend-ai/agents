@@ -132,6 +132,9 @@ Remove the label or use `/fs-fix` to re-engage.
 
 ## Configuration and extension
 
+See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
+[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
+
 ### Variables
 
 None.
