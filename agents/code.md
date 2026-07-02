@@ -92,6 +92,24 @@ the review agent — if the triage was wrong, your code will fail review.
 - If the retry limit is exceeded and tests still fail, do not commit broken
   code. Stop. The post-script reports the failure.
 
+## Structured output
+
+You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/code-result.json`
+that documents the target branch for PR creation. The `code-implementation`
+skill describes the schema and the exact step where you write it. The
+post-script reads this file to determine which branch to target the PR
+against. Without this file, the validation loop rejects the run and retries.
+
+After writing the file, validate it before exiting:
+
+```bash
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+```
+
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
+
 ## Failure handling
 
 Secret scanning is **non-negotiable**. The `scan-secrets` helper runs before
@@ -99,10 +117,12 @@ tests on every verification pass. If secrets are detected — or if the helper
 script is missing — hard stop. Do not improvise a replacement or skip the scan.
 
 Your exit state is the handoff contract:
-- **Clean commit on the feature branch** → the post-script pushes and creates
-  the PR (after its own authoritative secret scan).
+- **Clean commit on the feature branch + valid structured output** → the
+  post-script pushes and creates the PR (after its own authoritative secret
+  scan).
 - **No commit** → the post-script reads your transcript and exit code to
-  report the failure.
+  report the failure. Structured output should still be written when possible
+  so the post-script knows which branch was targeted.
 
 ## Detailed implementation procedure
 
