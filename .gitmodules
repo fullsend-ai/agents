@@ -1,0 +1,3 @@
+[submodule "eval/.agent-eval-harness"]
+	path = eval/.agent-eval-harness
+	url = https://github.com/ralphbean/agent-eval-harness.git
