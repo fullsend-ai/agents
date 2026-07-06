@@ -69,7 +69,7 @@ workflow after GoReleaser succeeds.
 
 - `fullsend.yaml` — centrally managed by fullsend for agent event
   dispatch. Do not modify without coordinating with the fullsend repo.
-- `release.yaml` — repo-specific release automation. Triggered by
+- `release.yml` — repo-specific release automation. Triggered by
   semver tag pushes from fullsend's release workflow. Creates a GitHub
   Release and moves the `v0` floating tag.
 
