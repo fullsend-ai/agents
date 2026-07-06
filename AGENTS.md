@@ -86,15 +86,6 @@ runtime from multiple sources in priority order: repo-level
 and upstream platform (`fullsend-ai/fullsend/skills/`). A skill reference
 in frontmatter is valid even if no matching directory exists in this repo.
 Do not treat missing local skill directories as bugs without first
-verifying the skill does not exist at org or platform level.
-
-When declaring an extension point skill in agent frontmatter — a skill
-that is intentionally absent from this repo and expected to be provided
-by target repos or org-level configuration — annotate the reference with
-an inline YAML comment:
-
-    skills:
-      - customer-research  # extension point: provided by target repos
-
-This annotation gives agents and human readers immediate context at the
-point of contact, without needing to consult this section.
+verifying the skill does not exist at org or platform level. For
+conventions on declaring extension point skills, see
+`docs/skill-resolution.md`.
