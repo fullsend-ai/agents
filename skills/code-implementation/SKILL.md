@@ -56,7 +56,7 @@ echo "::notice::STEP <N>: <title>"
 ```
 
 This uses GitHub Actions annotation syntax so it surfaces in the run
-summary. **Do this at steps 1, 3, 5, 9a, 9b, 9c, and 10.**
+summary. **Do this at steps 1, 3, 5, 9a, 9b, 9c, 10, and 11.**
 
 ## Time budget
 
@@ -186,21 +186,27 @@ use that branch. Otherwise, determine the repo's default branch:
 git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2
 ```
 
-Write your chosen branch to the structured output file so the post-script
-knows which branch to target the PR against:
+Write your chosen branch to the structured output file **early** so
+it is available even if the agent hits a timeout or error later:
 
 ```bash
 mkdir -p "${FULLSEND_OUTPUT_DIR}"
-cat > "${FULLSEND_OUTPUT_DIR}/${FULLSEND_OUTPUT_FILE}" <<RESULT
+cat > "${FULLSEND_OUTPUT_DIR}/code-result.json" <<RESULT
 {
   "target_branch": "<branch-name>"
 }
 RESULT
 ```
 
-Write this output early (during planning, after determining the target
-branch) so it is available even if the agent hits a timeout or error later.
 The post-script validates this against the repo's allowed branches.
+You will re-validate this file in the final step (step 11).
+
+**If you stop early (steps 4, 6, or 7),** the output file from this
+step is your final output. Run `fullsend-check-output` before exiting:
+
+```bash
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+```
 
 ### 4. Check for existing branch
 
@@ -220,9 +226,14 @@ gh pr list --head "<branch-name>" --json number,state --jq '.[0]'
 ```
 
 - **Open PR exists for this branch:** The work is already done and under
-  review. **Stop.** Do not add more commits on top of a working
-  implementation — that causes scope creep and timeouts. Your exit state
-  (no new commit) tells the post-script there is nothing new to push.
+  review. Validate structured output (step 3 already wrote it), then
+  **stop.** Do not add more commits on top of a working implementation —
+  that causes scope creep and timeouts. Your exit state (no new commit)
+  tells the post-script there is nothing new to push.
+
+  ```bash
+  fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+  ```
 - **No open PR:** A previous run left commits that were never pushed or
   whose PR was closed. Check out the branch and review the delta:
 
@@ -278,10 +289,12 @@ Before planning, determine what kind of work this issue requires:
 - **Test-only** — the issue asks for tests, not production code changes. Write
   tests that cover the described behavior. Do not modify production code unless
   tests require it (e.g., exporting a function for testability).
-- **Already-fixed** — if step 7 reveals the bug no longer exists, stop cleanly.
-  Do not implement a fix for a resolved issue.
+- **Already-fixed** — if step 7 reveals the bug no longer exists, validate
+  structured output and stop cleanly. Do not implement a fix for a resolved
+  issue.
 - **Label-gated** — if the issue has a label like `do-not-implement` or a gate
-  label that signals no work should be done, respect it. Stop cleanly.
+  label that signals no work should be done, validate structured output and
+  stop cleanly.
 
 ### 7. Verify the problem exists
 
@@ -292,8 +305,13 @@ Before implementing, confirm the reported behavior is still present:
 2. If there is a quick way to verify — run a targeted test, check a return
    value, trace the logic — do it.
 3. If the bug has already been fixed (by a recent commit, a dependency update,
-   or another PR), **stop**. Do not implement a fix for a resolved issue. Your
-   exit state (no commit) tells the post-script to report accordingly.
+   or another PR), validate structured output and **stop**. Do not implement
+   a fix for a resolved issue. Your exit state (no commit) tells the
+   post-script to report accordingly.
+
+   ```bash
+   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+   ```
 
 For feature requests and test-only tasks, skip this step — there is no bug to
 reproduce.
@@ -574,7 +592,12 @@ independently — if the harness kills the session, your retry count is
 irrelevant. Prefer committing with a disclosed issue over burning time
 on additional retry iterations.
 
-If the retry limit is reached and tests or linters still fail, do not commit. Stop.
+If the retry limit is reached and tests or linters still fail, do not
+commit. Validate structured output, then stop:
+
+```bash
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+```
 
 **9d. Self-review**
 
@@ -739,6 +762,43 @@ message. The post-script runs an authoritative pre-commit on the runner.
 **Do not push the branch.** The post-script handles pushing, PR creation,
 and failure reporting.
 
+### 11. Validate structured output
+
+**This step is MANDATORY.** The harness runs a validation loop that
+checks `$FULLSEND_OUTPUT_DIR/code-result.json` against
+`schemas/code-result.schema.json`. If validation fails, the harness
+retries the agent. Producing a valid output file is not optional.
+
+You wrote the initial output file in step 3. Confirm it still exists
+and contains the correct target branch:
+
+```bash
+echo "::notice::STEP 11: Validate structured output"
+cat "${FULLSEND_OUTPUT_DIR}/code-result.json"
+```
+
+The file must be valid JSON with exactly one field:
+
+```json
+{
+  "target_branch": "main"
+}
+```
+
+**Schema compliance:** The schema uses `additionalProperties: false`.
+Only the `target_branch` field is allowed. Any extra fields will cause
+validation to fail.
+
+Validate the output against the schema:
+
+```bash
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+```
+
+If validation fails, read the error output, fix the JSON file, and
+re-run the check. If it still fails after 3 attempts, write the best
+JSON you have and exit.
+
 ## Partial work
 
 If you hit a token limit or context window boundary before completing the
@@ -747,6 +807,10 @@ The review agent downstream will evaluate completeness — incomplete-but-passin
 code is caught at the review stage, not the implementation stage. The commit
 message should note that the work is partial (e.g., "partial implementation"
 in the description) so the review agent and post-script can act accordingly.
+
+**Structured output is still required for partial work.** The output file
+written in step 3 must exist and be valid. Run `fullsend-check-output`
+(step 11) even when exiting early.
 
 ## Constraints
 
