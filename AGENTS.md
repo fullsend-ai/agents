@@ -58,7 +58,27 @@ Determine:
 Use these criteria as checkpoints. If a checkpoint fails, fix the root
 cause — do not weaken the check.
 
-## 6. Skill resolution
+## 6. Versioning and releases
+
+This repository is versioned in lockstep with
+[fullsend](https://github.com/fullsend-ai/fullsend). Version tags are
+not created here directly — they are pushed by fullsend's release
+workflow after GoReleaser succeeds.
+
+**Workflows:**
+
+- `fullsend.yaml` — centrally managed by fullsend for agent event
+  dispatch. Do not modify without coordinating with the fullsend repo.
+- `release.yaml` — repo-specific release automation. Triggered by
+  semver tag pushes from fullsend's release workflow. Creates a GitHub
+  Release and moves the `v0` floating tag.
+
+**The `v0` tag** is a floating tag that always points to the latest
+stable (non-prerelease) version. Downstream consumers can reference
+`@v0` to track the latest release. Pre-release tags (`-rc.N`,
+`-alpha.N`, `-beta.N`) do not move `v0`.
+
+## 7. Skill resolution
 
 Skills declared in agent frontmatter `skills:` arrays are resolved at
 runtime from multiple sources in priority order: repo-level

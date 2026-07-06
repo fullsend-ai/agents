@@ -6,7 +6,11 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+*"
 
 permissions:
-  contents: write
+  contents: write # required for gh release create and git push (v0 tag)
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   release:
