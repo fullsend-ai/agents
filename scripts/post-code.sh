@@ -266,27 +266,14 @@ echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 # ---------------------------------------------------------------------------
 # 4. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
-INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
-
-if [ -f .pre-commit-config.yaml ] \
-   && [ -f "${RESOLVE_SCRIPT}" ] \
-   && [ -f "${INSTALL_SCRIPT}" ]; then
-  MANIFEST="$(mktemp)"
+if [ -f .pre-commit-config.yaml ]; then
   LOCAL_REG="$(mktemp)"
-  RESOLVE_ARGS=(".")
+  PRECOMMIT_INSTALL_ARGS=(--target-dir .)
   if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
-    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+    PRECOMMIT_INSTALL_ARGS+=(--local-registry "${LOCAL_REG}")
   fi
-  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
-    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
-      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
-    fi
-  else
-    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
-  fi
-  rm -f "${MANIFEST}" "${LOCAL_REG}"
+  fullsend postrun precommit-install "${PRECOMMIT_INSTALL_ARGS[@]}"
+  rm -f "${LOCAL_REG}"
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 

@@ -178,27 +178,14 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
-INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
-
-if [ -f .pre-commit-config.yaml ] \
-   && [ -f "${RESOLVE_SCRIPT}" ] \
-   && [ -f "${INSTALL_SCRIPT}" ]; then
-  MANIFEST="$(mktemp)"
+if [ -f .pre-commit-config.yaml ]; then
   LOCAL_REG="$(mktemp)"
-  RESOLVE_ARGS=(".")
+  PRECOMMIT_INSTALL_ARGS=(--target-dir .)
   if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
-    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+    PRECOMMIT_INSTALL_ARGS+=(--local-registry "${LOCAL_REG}")
   fi
-  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
-    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
-      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
-    fi
-  else
-    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
-  fi
-  rm -f "${MANIFEST}" "${LOCAL_REG}"
+  fullsend postrun precommit-install "${PRECOMMIT_INSTALL_ARGS[@]}"
+  rm -f "${LOCAL_REG}"
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 
@@ -314,10 +301,6 @@ fi
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
-# Locate process-fix-result.py relative to this script.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
-
 # Find fix-result.json in the output directory.
 # RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
 # before we cd'd into REPO_DIR. The agent writes its structured output to
@@ -333,8 +316,6 @@ done
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   echo "::warning::No fix-result.json found — skipping summary comment"
-elif [ ! -f "${PROCESS_SCRIPT}" ]; then
-  echo "::warning::process-fix-result.py not found at ${PROCESS_SCRIPT} — skipping"
 else
   # Scan fix-result.json for secrets before posting content as a PR comment.
   # The agent could have been tricked into embedding sensitive data in the
@@ -353,12 +334,12 @@ else
 
   echo "Processing fix-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
-  python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
+  fullsend postrun fix-summary --result "${RESULT_FILE}" --repo "${REPO_FULL_NAME}" --pr "${PR_NUMBER}" --token "${GH_TOKEN}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
-    echo "::error::process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}" >&2
+    echo "::error::fullsend postrun fix-summary failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}" >&2
     exit 1
   elif [ "${PROCESS_EXIT}" -ne 0 ]; then
-    echo "::warning::process-fix-result.py exited ${PROCESS_EXIT} — continuing with labels/summary"
+    echo "::warning::fullsend postrun fix-summary exited ${PROCESS_EXIT} — continuing with labels/summary"
   fi
 fi
 
