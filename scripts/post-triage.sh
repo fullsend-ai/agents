@@ -256,6 +256,55 @@ ${FAILED_CREATES}"
       exit 1
     fi
 
+    # Guard: warn and strip label_actions that contradict triage_summary.category.
+    # Maps each category to label names that would be inconsistent (e.g., category
+    # "documentation" should not apply an "enhancement" label). See #39.
+    # Control labels are excluded — they are already handled by is_control_label().
+    if [[ "$(jq 'has("label_actions")' "${RESULT_FILE}")" == "true" ]]; then
+      CATEGORY_CHECK=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
+      CONTRADICTING_LABELS=""
+      case "${CATEGORY_CHECK}" in
+        bug)           CONTRADICTING_LABELS="enhancement" ;;
+        documentation) CONTRADICTING_LABELS="enhancement" ;;
+        performance)   CONTRADICTING_LABELS="enhancement" ;;
+        security)      CONTRADICTING_LABELS="enhancement" ;;
+      esac
+      if [[ -n "${CONTRADICTING_LABELS}" ]]; then
+        # Build a jq array of labels to strip.
+        JQ_ARRAY="["
+        first=true
+        for cl in ${CONTRADICTING_LABELS}; do
+          ${first} || JQ_ARRAY="${JQ_ARRAY},"
+          JQ_ARRAY="${JQ_ARRAY}\"${cl}\""
+          first=false
+        done
+        JQ_ARRAY="${JQ_ARRAY}]"
+
+        # Log which labels are being stripped.
+        STRIPPED=$(jq -r --argjson bad "${JQ_ARRAY}" \
+          '.label_actions.actions[] | select(.label as $l | $bad | index($l)) | .label' \
+          "${RESULT_FILE}")
+        for lbl in ${STRIPPED}; do
+          echo "::warning::Stripping label '${lbl}' from label_actions — contradicts triage_summary.category '${CATEGORY_CHECK}'"
+        done
+
+        # Remove contradicting labels from the actions array.
+        if [[ -n "${STRIPPED}" ]]; then
+          RESULT_FILE_TMP="${RESULT_FILE}.tmp"
+          jq --argjson bad "${JQ_ARRAY}" \
+            '.label_actions.actions |= [.[] | select(.label as $l | $bad | index($l) | not)]' \
+            "${RESULT_FILE}" > "${RESULT_FILE_TMP}" && mv "${RESULT_FILE_TMP}" "${RESULT_FILE}"
+
+          # If all actions were removed, drop label_actions entirely.
+          REMAINING=$(jq '.label_actions.actions | length' "${RESULT_FILE}")
+          if [[ "${REMAINING}" -eq 0 ]]; then
+            RESULT_FILE_TMP="${RESULT_FILE}.tmp"
+            jq 'del(.label_actions)' "${RESULT_FILE}" > "${RESULT_FILE_TMP}" && mv "${RESULT_FILE_TMP}" "${RESULT_FILE}"
+          fi
+        fi
+      fi
+    fi
+
     remove_label "blocked"
     remove_label "needs-info"
 
