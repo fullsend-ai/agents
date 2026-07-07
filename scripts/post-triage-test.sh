@@ -55,6 +55,52 @@ fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
+cat > "${MOCK_BIN}/yq" <<'MOCKEOF'
+#!/usr/bin/env bash
+# Mock yq: handle allowlist queries used by post-triage.sh.
+# Parses the simple YAML list format used in config.yaml fixtures.
+EXPR=""
+FILE=""
+for arg in "$@"; do
+  case "${arg}" in
+    -*) ;;
+    *)
+      if [[ -z "${EXPR}" ]]; then
+        EXPR="${arg}"
+      else
+        FILE="${arg}"
+      fi
+      ;;
+  esac
+done
+if [[ -z "${FILE}" ]] || [[ ! -f "${FILE}" ]]; then
+  exit 0
+fi
+KEY=""
+if [[ "${EXPR}" == *"orgs"* ]]; then
+  KEY="orgs"
+elif [[ "${EXPR}" == *"repos"* ]]; then
+  KEY="repos"
+else
+  exit 0
+fi
+IN_KEY=false
+while IFS= read -r line; do
+  if [[ "${line}" =~ ^[[:space:]]*${KEY}: ]]; then
+    IN_KEY=true
+    continue
+  fi
+  if ${IN_KEY}; then
+    if [[ "${line}" =~ ^[[:space:]]*-[[:space:]]+(.*) ]]; then
+      echo "${BASH_REMATCH[1]}"
+    else
+      break
+    fi
+  fi
+done < "${FILE}"
+MOCKEOF
+chmod +x "${MOCK_BIN}/yq"
+
 export PATH="${MOCK_BIN}:${PATH}"
 export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
