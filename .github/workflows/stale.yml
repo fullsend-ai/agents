@@ -1,0 +1,43 @@
+name: Manage stale issues and PRs
+
+on:
+  schedule:
+    - cron: "30 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: write # only for delete-branch option
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/stale@eb5cf3af3ac0a1aa4c9c45633dd1ae542a27a899 # v10.3.0
+        with:
+          stale-issue-label: stale
+          stale-issue-message: >
+            This issue has been automatically marked as stale because it has not
+            had any activity in the last 4 months. It will be closed in 1 month
+            if no further activity occurs. Remove the `stale` label to reset the
+            inactivity timer.
+          days-before-issue-stale: 120
+          days-before-issue-close: 30
+          close-issue-message: >
+            This issue has been closed due to inactivity. Feel free to reopen it
+            if it is still relevant.
+
+          stale-pr-label: stale
+          stale-pr-message: >
+            This pull request has been automatically marked as stale because it
+            has not had any activity in the last month. It will be closed in 2
+            weeks if no further activity occurs. Remove the `stale` label to
+            reset the inactivity timer.
+          days-before-pr-stale: 30
+          days-before-pr-close: 14
+          delete-branch: true
+          close-pr-message: >
+            This pull request has been closed due to inactivity. Feel free to
+            reopen it if the changes are still needed.
