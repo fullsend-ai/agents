@@ -150,6 +150,8 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 
 **Anti-premature-prerequisites rule (HARD CONSTRAINT):** If your assessment identifies unresolved prerequisites — dependencies on work in other repos or unmerged changes that must land first — you MUST use `action: "prerequisites"`. Do NOT emit `action: "sufficient"` when prerequisites exist. The `sufficient` action means there are zero blockers and zero open questions.
 
+**Anti-question-bypass rule (HARD CONSTRAINT):** If the issue uses interrogative phrasing and describes no concrete defect, missing feature, or requested change, you MUST use `action: "question"`. Do NOT emit `action: "sufficient"` or `action: "insufficient"` for issues that are purely asking for information. The fact that answering a question might reveal an actionable improvement does not change the classification — the reporter asked a question, not filed a bug or feature request. Answer the question using the `question` action and let the reporter decide whether to convert it into actionable work.
+
 ## Step 4: Decide and write result
 
 Based on your assessment, choose exactly one action and write the result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
