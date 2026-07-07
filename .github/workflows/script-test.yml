@@ -24,6 +24,6 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install test dependencies
-        run: uv pip install --system jsonschema
+        run: uv pip install --system jsonschema==4.23.0
 
       - run: make script-test
