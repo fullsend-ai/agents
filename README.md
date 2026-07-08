@@ -40,6 +40,16 @@ Agents run inside sandboxed containers with strict filesystem, network, and bina
 
 The agent never has direct write access to the repository. All mutations flow through post-scripts.
 
+## Testing
+
+Run all agent shell script test suites from the repo root:
+
+```bash
+make test
+```
+
+This is an alias for `make script-test`, which runs the seven `scripts/*-test.sh` suites. CI runs the same target via `.github/workflows/script-test.yml`.
+
 ## Versioning
 
 This repository is versioned in lockstep with [fullsend](https://github.com/fullsend-ai/fullsend). Tags are pushed by fullsend's release workflow after a successful release — they are not created here directly. The `v0` floating tag always points to the latest stable (non-prerelease) version.
@@ -50,3 +60,4 @@ This repository is versioned in lockstep with [fullsend](https://github.com/full
 |------|-----------|---------|
 | `fullsend.yaml` | fullsend (centrally managed) | Routes GitHub events to agent dispatch workflows |
 | `release.yml` | This repo | Creates GitHub Releases and moves the `v0` tag on version tag push |
+| `script-test.yml` | This repo | Runs agent shell script tests on PRs and main branch pushes |
