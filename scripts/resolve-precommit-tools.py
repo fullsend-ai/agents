@@ -76,10 +76,12 @@ def merge_registries(upstream: dict, local: dict) -> tuple[dict, list[str]]:
         if entry.get("exclude") is True:
             idx = keyed.get(key)
             if idx is not None:
+                upstream_entry = upstream_tools[idx]
                 upstream_tools[idx] = None  # type: ignore[assignment]
-                match_val = entry.get("match_entry")
-                if match_val and match_entry_owners.get(match_val) == key:
-                    del match_entry_owners[match_val]
+                if isinstance(upstream_entry, dict):
+                    match_val = upstream_entry.get("match_entry")
+                    if match_val and match_entry_owners.get(match_val) == key:
+                        del match_entry_owners[match_val]
                 del keyed[key]
             continue
 

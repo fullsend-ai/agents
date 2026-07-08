@@ -38,7 +38,7 @@ ARCH="$(uname -m)"
 case "${ARCH}" in
   x86_64)
     TRIPLE="x86_64-unknown-linux-gnu"
-    GOARCH="x64"
+    GOARCH="amd64"
     ;;
   aarch64)
     TRIPLE="aarch64-unknown-linux-gnu"
@@ -139,7 +139,7 @@ while IFS= read -r entry; do
         exit 1
       fi
 
-      if ! tar xzf "${TARBALL}" -C "${DL_TMPDIR}"; then
+      if ! tar xzf "${TARBALL}" --no-absolute-names -C "${DL_TMPDIR}"; then
         echo "::warning::Failed to extract ${NAME} archive — skipping"
         rm -rf "${DL_TMPDIR}"
         continue
