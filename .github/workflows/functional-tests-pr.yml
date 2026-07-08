@@ -88,7 +88,7 @@ jobs:
           version = 1
 
           [openshell.gateway]
-          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:v${OPENSHELL_VERSION}"
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
           EOF
 
       - name: Install OpenShell CLI
