@@ -1,0 +1,183 @@
+name: Functional Tests (PR)
+
+# Temporary pull_request workflow to iterate on functional test fixes.
+# Once passing, copy changes back to functional-tests.yml (pull_request_target)
+# and delete this file.
+
+permissions: {}
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'eval/**'
+      - 'agents/**'
+      - 'harness/**'
+      - 'scripts/**'
+      - 'schemas/**'
+      - '.github/workflows/functional-tests-pr.yml'
+      - '.github/scripts/**'
+      - 'config.yaml'
+
+concurrency:
+  group: functional-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  functional-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          submodules: true
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Install agent-eval-harness
+        run: uv pip install --system -e 'eval/.agent-eval-harness[anthropic]'
+
+      - name: Install yq
+        run: |
+          curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "fullsend-eval[bot]"
+          git config --global user.email "fullsend-eval[bot]@users.noreply.github.com"
+
+      - name: Install fullsend
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FULLSEND_VERSION="${FULLSEND_VERSION:-latest}"
+          if [ "$FULLSEND_VERSION" = "latest" ]; then
+            FULLSEND_VERSION=$(gh release view --repo fullsend-ai/fullsend --json tagName -q .tagName)
+          fi
+          VERSION_NUM="${FULLSEND_VERSION#v}"
+          TARBALL="fullsend_${VERSION_NUM}_linux_amd64.tar.gz"
+          gh release download "$FULLSEND_VERSION" \
+            --repo fullsend-ai/fullsend \
+            --pattern "$TARBALL" \
+            --dir /tmp
+          tar xzf "/tmp/${TARBALL}" -C /usr/local/bin fullsend
+          chmod +x /usr/local/bin/fullsend
+          fullsend --version
+
+      - name: Install OpenShell CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FULLSEND_TAG="${FULLSEND_VERSION:-$(gh release view --repo fullsend-ai/fullsend --json tagName -q .tagName)}"
+          eval "$(gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/openshell-version.sh?ref=${FULLSEND_TAG}" --jq .content | base64 -d | grep '^OPENSHELL_VERSION=')"
+          gh release download "v${OPENSHELL_VERSION}" \
+            --repo NVIDIA/OpenShell \
+            --pattern "openshell-x86_64-unknown-linux-musl.tar.gz" \
+            --dir /tmp
+          tar xzf /tmp/openshell-x86_64-unknown-linux-musl.tar.gz -C /usr/local/bin openshell
+          chmod +x /usr/local/bin/openshell
+
+      - name: Configure OpenShell gateway
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FULLSEND_TAG="${FULLSEND_VERSION:-$(gh release view --repo fullsend-ai/fullsend --json tagName -q .tagName)}"
+          eval "$(gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/openshell-version.sh?ref=${FULLSEND_TAG}" --jq .content | base64 -d | grep '^OPENSHELL_VERSION=')"
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
+          cat > "$HOME/.config/openshell/gateway.toml" <<EOF
+          [openshell]
+          version = 1
+
+          [openshell.gateway]
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:v${OPENSHELL_VERSION}"
+          EOF
+
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Configure rootless Podman
+        run: |
+          whoami_user="$(whoami)"
+          grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
+          podman system migrate
+
+      - name: Start Podman API service
+        run: |
+          SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+          if [ ! -S "${SOCKET_PATH}" ]; then
+            mkdir -p "$(dirname "${SOCKET_PATH}")"
+            podman system service --time=0 "unix://${SOCKET_PATH}" &
+            for _i in $(seq 1 30); do
+              [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+              sleep 1
+            done
+            [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
+          fi
+
+      - name: Install validation dependencies
+        run: pip install --quiet "jsonschema>=4.18.0"
+
+      - name: Check for secrets
+        id: secrets-check
+        run: |
+          if [ -z "$WIF_PROVIDER" ]; then
+            echo "::warning::GCP secrets are not configured. Skipping functional tests."
+            echo "available=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+        env:
+          WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+
+      - name: Authenticate to GCP
+        if: steps.secrets-check.outputs.available == 'true'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Prepare sandbox credentials
+        if: steps.secrets-check.outputs.available == 'true'
+        run: |
+          echo "HOST_GOOGLE_APPLICATION_CREDENTIALS=$GOOGLE_APPLICATION_CREDENTIALS" >> "$GITHUB_ENV"
+          if [[ -f scripts/prepare-sandbox-credentials.sh ]]; then
+            bash scripts/prepare-sandbox-credentials.sh
+          fi
+
+      - name: Run functional tests
+        if: steps.secrets-check.outputs.available == 'true'
+        env:
+          EVAL_ORG: ${{ vars.EVAL_ORG }}
+          GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.EVALS_VERTEX_PROJECT_ID }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          CLOUD_ML_REGION: ${{ vars.EVALS_GCP_REGION }}
+          EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
+          FULLSEND_DIR: ${{ github.workspace }}
+        run: ./eval/run-functional.sh triage
+
+      - name: Scrub secrets from eval results
+        if: always() && steps.secrets-check.outputs.available == 'true'
+        run: find eval/runs/ -name '.eval-env' -delete 2>/dev/null || true; find /tmp/agent-eval/ -name '.eval-env' -delete 2>/dev/null || true
+
+      - name: Upload eval results
+        if: always() && steps.secrets-check.outputs.available == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: eval-results
+          path: |
+            eval/runs/
+            !eval/runs/**/.eval-env
+          retention-days: 30
