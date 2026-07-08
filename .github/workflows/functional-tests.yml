@@ -18,6 +18,7 @@ on:
       - 'schemas/**'
       - '.github/workflows/functional-tests.yml'
       - '.github/scripts/**'
+      - 'config.yaml'
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
   merge_group:
@@ -108,7 +109,7 @@ jobs:
               exit 0
             }
           fi
-          if echo "$FILES" | grep -qE '^eval/|^agents/|^harness/|^scripts/|^schemas/|^\.github/workflows/functional-tests\.yml$|^\.github/scripts/'; then
+          if echo "$FILES" | grep -qE '^eval/|^agents/|^harness/|^scripts/|^schemas/|^\.github/workflows/functional-tests\.yml$|^\.github/scripts/|^config\.yaml$'; then
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           else
             echo "::notice::No functional-test-relevant files changed — skipping tests"
@@ -167,21 +168,36 @@ jobs:
           chmod +x /usr/local/bin/fullsend
           fullsend --version
 
+      - name: Configure OpenShell gateway
+        if: steps.changes.outputs.relevant != 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          FULLSEND_TAG="${FULLSEND_VERSION:-$(gh release view --repo fullsend-ai/fullsend --json tagName -q .tagName)}"
+          eval "$(gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/openshell-version.sh?ref=${FULLSEND_TAG}" --jq .content | base64 -d | grep -E '^OPENSHELL_(VERSION|SHA)=')"
+          echo "OPENSHELL_VERSION=${OPENSHELL_VERSION}" >> "$GITHUB_ENV"
+          echo "OPENSHELL_SHA=${OPENSHELL_SHA}" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
+          cat > "$HOME/.config/openshell/gateway.toml" << EOF
+          [openshell]
+          version = 1
+
+          [openshell.gateway]
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+          EOF
+
       - name: Install OpenShell CLI
         if: steps.changes.outputs.relevant != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          OPENSHELL_VERSION="${OPENSHELL_VERSION:-latest}"
-          if [ "$OPENSHELL_VERSION" = "latest" ]; then
-            OPENSHELL_VERSION=$(gh release view --repo NVIDIA/OpenShell --json tagName -q .tagName)
-          fi
-          gh release download "$OPENSHELL_VERSION" \
-            --repo NVIDIA/OpenShell \
-            --pattern "openshell-x86_64-unknown-linux-musl.tar.gz" \
-            --dir /tmp
-          tar xzf /tmp/openshell-x86_64-unknown-linux-musl.tar.gz -C /usr/local/bin openshell
-          chmod +x /usr/local/bin/openshell
+          FULLSEND_TAG="${FULLSEND_VERSION:-$(gh release view --repo fullsend-ai/fullsend --json tagName -q .tagName)}"
+          SCRIPT_DIR="$(mktemp -d)"
+          gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/install-openshell.sh?ref=${FULLSEND_TAG}" --jq .content | base64 -d > "${SCRIPT_DIR}/install-openshell.sh"
+          gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/openshell-version.sh?ref=${FULLSEND_TAG}" --jq .content | base64 -d > "${SCRIPT_DIR}/openshell-version.sh"
+          chmod +x "${SCRIPT_DIR}/install-openshell.sh"
+          "${SCRIPT_DIR}/install-openshell.sh"
 
       - name: Install Podman
         if: steps.changes.outputs.relevant != 'false'
