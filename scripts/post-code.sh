@@ -266,14 +266,54 @@ echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 # ---------------------------------------------------------------------------
 # 4. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-if [ -f .pre-commit-config.yaml ]; then
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
+INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
+
+# Fallback: these companion scripts were never migrated into this repo
+# during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
+# always misses. The reusable workflow's "Prepare workspace" step always
+# materializes the full scripts/ directory (from fullsend's own scaffold)
+# at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
+# (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
+if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
+  for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
+    if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
+       && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
+      RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
+      INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
+      break
+    fi
+  done
+fi
+
+# Warn instead of silently skipping when the repo needs the auto-install but
+# the companions are missing everywhere — a silent skip here surfaces later
+# as a confusing "Executable X not found" pre-commit failure.
+if [ -f .pre-commit-config.yaml ] \
+   && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
+  echo "::warning::Pre-commit tool auto-install skipped: companion scripts not found"
+  echo "::warning::Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
+  echo "::warning::Pre-commit hooks requiring system tools (e.g. lychee) may fail"
+fi
+
+if [ -f .pre-commit-config.yaml ] \
+   && [ -f "${RESOLVE_SCRIPT}" ] \
+   && [ -f "${INSTALL_SCRIPT}" ]; then
+  MANIFEST="$(mktemp)"
   LOCAL_REG="$(mktemp)"
-  PRECOMMIT_INSTALL_ARGS=(--target-dir .)
+  RESOLVE_ARGS=(".")
   if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
-    PRECOMMIT_INSTALL_ARGS+=(--local-registry "${LOCAL_REG}")
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
   fi
-  fullsend postrun precommit-install "${PRECOMMIT_INSTALL_ARGS[@]}"
-  rm -f "${LOCAL_REG}"
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
+    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+    fi
+  else
+    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+  fi
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 

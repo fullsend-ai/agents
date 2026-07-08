@@ -178,14 +178,54 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-if [ -f .pre-commit-config.yaml ]; then
+SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
+INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
+
+# Fallback: these companion scripts were never migrated into this repo
+# during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
+# always misses. The reusable workflow's "Prepare workspace" step always
+# materializes the full scripts/ directory (from fullsend's own scaffold)
+# at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
+# (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
+if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
+  for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
+    if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
+       && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
+      RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
+      INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
+      break
+    fi
+  done
+fi
+
+# Warn instead of silently skipping when the repo needs the auto-install but
+# the companions are missing everywhere — a silent skip here surfaces later
+# as a confusing "Executable X not found" pre-commit failure.
+if [ -f .pre-commit-config.yaml ] \
+   && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
+  echo "::warning::Pre-commit tool auto-install skipped: companion scripts not found"
+  echo "::warning::Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
+  echo "::warning::Pre-commit hooks requiring system tools (e.g. lychee) may fail"
+fi
+
+if [ -f .pre-commit-config.yaml ] \
+   && [ -f "${RESOLVE_SCRIPT}" ] \
+   && [ -f "${INSTALL_SCRIPT}" ]; then
+  MANIFEST="$(mktemp)"
   LOCAL_REG="$(mktemp)"
-  PRECOMMIT_INSTALL_ARGS=(--target-dir .)
+  RESOLVE_ARGS=(".")
   if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
-    PRECOMMIT_INSTALL_ARGS+=(--local-registry "${LOCAL_REG}")
+    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
   fi
-  fullsend postrun precommit-install "${PRECOMMIT_INSTALL_ARGS[@]}"
-  rm -f "${LOCAL_REG}"
+  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
+    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+    fi
+  else
+    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+  fi
+  rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 
@@ -301,6 +341,21 @@ fi
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
+# Locate process-fix-result.py relative to this script, with workspace fallback
+# (see the "Auto-install pre-commit tool dependencies" comment above — this
+# companion script was never migrated into this repo either).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
+
+if [ ! -f "${PROCESS_SCRIPT}" ]; then
+  for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
+    if [ -f "${_ws_candidate}/process-fix-result.py" ]; then
+      PROCESS_SCRIPT="${_ws_candidate}/process-fix-result.py"
+      break
+    fi
+  done
+fi
+
 # Find fix-result.json in the output directory.
 # RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
 # before we cd'd into REPO_DIR. The agent writes its structured output to
@@ -316,6 +371,8 @@ done
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   echo "::warning::No fix-result.json found — skipping summary comment"
+elif [ ! -f "${PROCESS_SCRIPT}" ]; then
+  echo "::warning::process-fix-result.py not found at ${PROCESS_SCRIPT} — skipping"
 else
   # Scan fix-result.json for secrets before posting content as a PR comment.
   # The agent could have been tricked into embedding sensitive data in the
@@ -334,12 +391,12 @@ else
 
   echo "Processing fix-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
-  fullsend postrun fix-summary --result "${RESULT_FILE}" --repo "${REPO_FULL_NAME}" --pr "${PR_NUMBER}" --token "${GH_TOKEN}" || PROCESS_EXIT=$?
+  python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
-    echo "::error::fullsend postrun fix-summary failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}" >&2
+    echo "::error::process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}" >&2
     exit 1
   elif [ "${PROCESS_EXIT}" -ne 0 ]; then
-    echo "::warning::fullsend postrun fix-summary exited ${PROCESS_EXIT} — continuing with labels/summary"
+    echo "::warning::process-fix-result.py exited ${PROCESS_EXIT} — continuing with labels/summary"
   fi
 fi
 
