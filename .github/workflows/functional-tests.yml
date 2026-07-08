@@ -165,7 +165,7 @@ jobs:
             --dir /tmp
           tar xzf "/tmp/${TARBALL}" -C /usr/local/bin fullsend
           chmod +x /usr/local/bin/fullsend
-          fullsend version
+          fullsend --version
 
       - name: Install OpenShell CLI
         if: steps.changes.outputs.relevant != 'false'
