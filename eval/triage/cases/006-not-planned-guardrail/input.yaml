@@ -1,0 +1,29 @@
+forge: github
+fixture:
+  type: issue
+  title: "Add TOTP and WebAuthn multi-factor authentication"
+  body: |
+    ## Feature Request
+
+    **What I need:**
+    The login system currently only supports email/password. We need
+    multi-factor authentication — specifically TOTP (RFC 6238) and
+    WebAuthn/passkey support.
+
+    **Proposed behavior:**
+    - After email/password validation, prompt for a second factor
+    - TOTP: users scan a QR code in an authenticator app and enter
+      a 6-digit code on login
+    - WebAuthn: users register a hardware key or platform authenticator
+      and tap it on login
+    - Users can enroll multiple second factors
+    - Recovery codes for account recovery if the second factor is lost
+
+    **Why:**
+    Email/password alone is not sufficient for our compliance
+    requirements. TOTP and WebAuthn are the two most common second
+    factors and would cover most use cases.
+
+    **Impact:**
+    This is a prerequisite for SOC 2 compliance. Without MFA, we
+    cannot pass the audit scheduled for next quarter.

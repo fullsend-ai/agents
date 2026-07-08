@@ -287,6 +287,31 @@ run_test "question-missing-comment-fails" \
   "" \
   "true"
 
+run_test "not-planned-posts-comment" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope for the project goals. See docs/scope.md for more details."}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "not-planned-applies-label" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope for the project goals."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=not-planned --silent"
+
+run_test "not-planned-removes-blocked-label" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "not-planned-removes-needs-info-label" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "not-planned-closes-issue" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope for the project goals."}' \
+  "gh issue close 42 --repo test-org/test-repo --reason not planned"
+
+run_test "not-planned-missing-comment-fails" \
+  '{"action":"not-planned","reasoning":"out of scope"}' \
+  "" \
+  "true"
+
 run_test_stdout "question-control-label-refused" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Answer here.","label_actions":{"reason":"Tried to set question label.","actions":[{"action":"add","label":"question"}]}}' \
   "::warning::Refused to add control label 'question' -- control labels are managed by the triage pipeline"
@@ -317,6 +342,10 @@ run_test_stdout "label-actions-control-label-refused" \
 run_test_stdout "label-actions-feature-control-label-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set feature label.","actions":[{"action":"add","label":"feature"}]}}' \
   "::warning::Refused to add control label 'feature' -- control labels are managed by the triage pipeline"
+
+run_test_stdout "label-actions-not-planned-control-label-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set not-planned label.","actions":[{"action":"add","label":"not-planned"}]}}' \
+  "::warning::Refused to add control label 'not-planned' -- control labels are managed by the triage pipeline"
 
 run_test "label-actions-absent-still-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
