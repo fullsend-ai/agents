@@ -1,0 +1,11 @@
+version: "1"
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/fullsend/"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+agents:
+  - source: harness/triage.yaml
+  - source: harness/code.yaml
+  - source: harness/fix.yaml
+  - source: harness/review.yaml
+  - source: harness/retro.yaml
+  - source: harness/prioritize.yaml
