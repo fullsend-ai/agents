@@ -48,7 +48,7 @@ Run all agent shell script test suites from the repo root:
 make test
 ```
 
-This is an alias for `make script-test`, which runs the seven `scripts/*-test.sh` suites. CI runs the same target via `.github/workflows/script-test.yml`.
+This is an alias for `make script-test`, which runs the seven `scripts/*-test.sh` suites plus `scripts/resolve-precommit-tools-test.py`. CI runs the same target via `.github/workflows/script-test.yml`.
 
 ## Versioning
 
