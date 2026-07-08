@@ -164,6 +164,14 @@ and `Glob` to inspect project configuration:
    `check-pr-title` action with a regex). If the repo requires a specific
    format like `type(TICKET): description`, note the convention — you will
    use it when writing the commit subject in step 10.
+5. **Check for PR template.** Find the repo's pull request template(s).
+   If multiple templates exist, note them — you will select the right
+   one in step 10d after classifying the task type. If found, read and
+   note visible headings
+   and prompts (skip HTML comments). If no visible sections remain after
+   stripping comments, treat it as no template found. You will structure
+   the `pr_body` field in step 10d to match template sections — the
+   post-script uses `pr_body` as the PR description.
 
 From these files, determine:
 
@@ -186,27 +194,18 @@ use that branch. Otherwise, determine the repo's default branch:
 git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2
 ```
 
-Write your chosen branch to the structured output file **early** so
-it is available even if the agent hits a timeout or error later:
+Write the structured output file with the target branch now. Write only
+`target_branch` at this stage — `pr_body` is added after implementation
+(step 10d) so a timeout never leaks placeholder text as the PR description.
 
 ```bash
 mkdir -p "${FULLSEND_OUTPUT_DIR}"
-cat > "${FULLSEND_OUTPUT_DIR}/code-result.json" <<RESULT
-{
-  "target_branch": "<branch-name>"
-}
-RESULT
+
+jq -n --arg tb "<branch-name>" '{target_branch: $tb}' \
+  > "${FULLSEND_OUTPUT_DIR}/code-result.json"
 ```
 
-The post-script validates this against the repo's allowed branches.
-You will re-validate this file in the final step (step 11).
-
-**If you stop early (steps 4, 6, or 7),** the output file from this
-step is your final output. Run `fullsend-check-output` before exiting:
-
-```bash
-fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
-```
+The post-script validates `target_branch` against allowed branches.
 
 ### 4. Check for existing branch
 
@@ -294,7 +293,11 @@ Before planning, determine what kind of work this issue requires:
   issue.
 - **Label-gated** — if the issue has a label like `do-not-implement` or a gate
   label that signals no work should be done, validate structured output and
-  stop cleanly.
+  stop cleanly:
+
+  ```bash
+  fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+  ```
 
 ### 7. Verify the problem exists
 
@@ -693,10 +696,12 @@ that fits.
 **Body line length — comply with the repo's gitlint config:**
 
 If `.gitlint` has a `[body-max-line-length]` rule (e.g. `line-length=72`),
-you **MUST** hard-wrap body text at that limit. This is enforced by CI.
-The post-script will unwrap the body when building the PR description,
-so your hard-wrapped commit body will still render as nice prose on
-GitHub.
+you **MUST** hard-wrap commit body text at that limit. This is enforced
+by CI. The post-script will unwrap the commit body when building the PR
+description (legacy path), so your hard-wrapped commit body will still
+render as nice prose on GitHub. When you provide `pr_body` in the result
+file, the post-script uses it verbatim (no unwrapping), so `pr_body` is
+not subject to gitlint line-length constraints.
 
 Hard-wrap guidelines when a limit is configured:
 - Break lines at word boundaries before hitting the limit
@@ -727,6 +732,9 @@ content for human reviewers.>
 
 Closes #<number>"
 ```
+
+Keep commit body concise (respects gitlint line-length limits). PR body
+in code-result.json holds the template-structured description if needed.
 
 **After committing, validate the commit message if gitlint is available:**
 
@@ -762,6 +770,31 @@ message. The post-script runs an authoritative pre-commit on the runner.
 **Do not push the branch.** The post-script handles pushing, PR creation,
 and failure reporting.
 
+**10d. Write pr_body to structured output**
+
+Now that implementation is complete, add `pr_body` to the result file.
+The post-script uses `pr_body` as the PR description (no gitlint
+line-length constraints) and automatically appends
+`Closes #<issue-number>` — do not include closing references in pr_body.
+
+If step 3 found PR template(s), select the one matching the task type
+from step 6 and structure `pr_body` to match its sections. Otherwise,
+write a best-effort description covering what changed, why, testing
+approach, and any caveats.
+
+Use a quoted heredoc to capture `pr_body` content without shell
+expansion, then pass it to `jq --arg`:
+
+```bash
+pr_body=$(cat <<'PRBODY'
+<pr_body content>
+PRBODY
+)
+jq --arg pb "$pr_body" '. + {pr_body: $pb}' \
+  "${FULLSEND_OUTPUT_DIR}/code-result.json" > "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" \
+  && mv "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/code-result.json"
+```
+
 ### 11. Validate structured output
 
 **This step is MANDATORY.** The harness runs a validation loop that
@@ -777,17 +810,19 @@ echo "::notice::STEP 11: Validate structured output"
 cat "${FULLSEND_OUTPUT_DIR}/code-result.json"
 ```
 
-The file must be valid JSON with exactly one field:
+The file must be valid JSON with `target_branch` (required) and
+optionally `pr_body`:
 
 ```json
 {
-  "target_branch": "main"
+  "target_branch": "main",
+  "pr_body": "## Summary\n\nWhat changed and why.\n\n## Testing\n\nHow it was tested."
 }
 ```
 
 **Schema compliance:** The schema uses `additionalProperties: false`.
-Only the `target_branch` field is allowed. Any extra fields will cause
-validation to fail.
+Only `target_branch` and `pr_body` are allowed. Any other fields will
+cause validation to fail.
 
 Validate the output against the schema:
 
