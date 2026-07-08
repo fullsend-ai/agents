@@ -55,5 +55,6 @@ script-test:
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash .github/scripts/check-e2e-authorization-test.sh)
 	$(call run-timed,bash .github/scripts/select-eval-agents-test.sh)
+	$(call run-timed,python3 scripts/process-fix-result-test.py)
 
 test: script-test

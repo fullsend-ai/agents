@@ -309,6 +309,20 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Append action-hints footer (request-changes only)
+# ---------------------------------------------------------------------------
+
+if [ "${ACTION}" = "request-changes" ]; then
+  ACTION_HINTS_FOOTER=$'\n\n---\n**Next steps:**\n- `/fs-fix` — agent addresses review findings automatically\n- `/fs-fix <your instruction>` — agent fixes with your specific guidance\n- Push commits directly — review re-runs automatically on push\n- `/fs-fix-stop` — disable automatic fix runs for this PR'
+  FOOTER_RESULT=$(mktemp)
+  CLEANUP_FILES+=("${FOOTER_RESULT}")
+  jq --arg footer "${ACTION_HINTS_FOOTER}" \
+    '.body = (.body + $footer)' \
+    "${RESULT_FILE}" > "${FOOTER_RESULT}"
+  RESULT_FILE="${FOOTER_RESULT}"
+fi
+
+# ---------------------------------------------------------------------------
 # Post the review. Exit code 10 = stale-head: the PR HEAD moved after the
 # agent reviewed it. When this happens, post a /fs-review comment to
 # re-dispatch a fresh review for the current HEAD.

@@ -402,12 +402,16 @@ chmod +x "${MOCK_BIN}/gh"
 
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
-# Mock fullsend: log the call, consume stdin if --result - is used.
-BODY=""
+# Mock fullsend: log the call, consume stdin if --result - is used,
+# and copy the result file so tests can inspect the body.
 PREV=""
 for arg in "\$@"; do
-  if [[ "\${arg}" == "-" ]] && [[ "\${PREV}" == "--result" ]]; then
-    BODY=\$(cat)
+  if [[ "\${PREV}" == "--result" ]]; then
+    if [[ "\${arg}" == "-" ]]; then
+      cat > "${TMPDIR}/last-result.json"
+    elif [[ -f "\${arg}" ]]; then
+      cp "\${arg}" "${TMPDIR}/last-result.json"
+    fi
   fi
   PREV="\${arg}"
 done
@@ -718,6 +722,122 @@ run_label_test_with_env_stdout "draft-approve-log-message" \
 run_label_test_no_pattern "no-op-skip-ready-for-merge-removal" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
   "--remove-label ready-for-merge"
+
+# ---------------------------------------------------------------------------
+# Body-content tests: verify the assembled body passed to fullsend post-review
+# ---------------------------------------------------------------------------
+
+run_body_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_body_pattern="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ ! -f "${TMPDIR}/last-result.json" ]]; then
+    echo "FAIL: ${test_name} — no result file captured"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local body
+  body="$(jq -r '.body' "${TMPDIR}/last-result.json")"
+  if ! echo "${body}" | grep -qF "${expected_body_pattern}"; then
+    echo "FAIL: ${test_name} — expected body pattern '${expected_body_pattern}' not found"
+    echo "Actual body:"
+    echo "${body}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_body_count_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local pattern="$3"
+  local expected_count="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ ! -f "${TMPDIR}/last-result.json" ]]; then
+    echo "FAIL: ${test_name} — no result file captured"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local body
+  body="$(jq -r '.body' "${TMPDIR}/last-result.json")"
+  local actual_count
+  actual_count="$(echo "${body}" | grep -cF -- "${pattern}" || true)"
+
+  if [[ "${actual_count}" -ne "${expected_count}" ]]; then
+    echo "FAIL: ${test_name} — expected ${expected_count} occurrences of '${pattern}', found ${actual_count}"
+    echo "Actual body:"
+    echo "${body}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# request-changes + label_actions → body has label notice (---) AND action-hints footer (---)
+LABEL_PLUS_HINTS_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}'
+
+run_body_count_test "label-actions-plus-action-hints-two-hrs" \
+  "${LABEL_PLUS_HINTS_JSON}" "---" "2"
+
+run_body_test "label-actions-plus-action-hints-has-labels-section" \
+  "${LABEL_PLUS_HINTS_JSON}" "**Labels:** Touches API surface."
+
+run_body_test "label-actions-plus-action-hints-has-next-steps" \
+  "${LABEL_PLUS_HINTS_JSON}" "**Next steps:**"
 
 # --- Summary ---
 
