@@ -10,7 +10,7 @@
     "summary": {
       "type": "string",
       "minLength": 1,
-      "maxLength": 16384,
+      "maxLength": 32768,
       "description": "Markdown summary to post as a comment on the originating PR/issue. Links to each filed proposal issue."
     },
     "proposals": {
