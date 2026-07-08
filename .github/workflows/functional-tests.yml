@@ -178,9 +178,10 @@ jobs:
           fi
           gh release download "$OPENSHELL_VERSION" \
             --repo NVIDIA/OpenShell \
-            --pattern "openshell-linux-amd64" \
+            --pattern "openshell-x86_64-unknown-linux-musl.tar.gz" \
             --dir /tmp
-          install -m 0755 /tmp/openshell-linux-amd64 /usr/local/bin/openshell
+          tar xzf /tmp/openshell-x86_64-unknown-linux-musl.tar.gz -C /usr/local/bin openshell
+          chmod +x /usr/local/bin/openshell
 
       - name: Install Podman
         if: steps.changes.outputs.relevant != 'false'
