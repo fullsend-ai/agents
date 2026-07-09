@@ -180,7 +180,7 @@ jobs:
         run: |
           eval "$(gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/openshell-version.sh?ref=${FULLSEND_VERSION}" --jq .content | base64 -d | grep -E '^OPENSHELL_(VERSION|SHA)=')"
           if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
-            SAFE_VERSION=$(echo "$FULLSEND_VERSION" | tr -d '\n\r' | sed 's/::/: :/g')
+            SAFE_VERSION=$(echo "$FULLSEND_VERSION" | tr -d '\n\r' | sed -e 's/%0[aAdD]//g' -e 's/::/: :/g')
             echo "::error::Failed to resolve OpenShell version from fullsend tag ${SAFE_VERSION}"
             exit 1
           fi
