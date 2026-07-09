@@ -49,6 +49,7 @@ is_trusted_author() {
 
 is_trusted_bot() {
   local login="$1"
+  [[ -z "${login}" ]] && return 1
   case " ${TRUSTED_BOTS} " in
     *" ${login} "*) return 0 ;;
     *) return 1 ;;

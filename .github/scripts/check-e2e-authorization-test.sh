@@ -49,10 +49,6 @@ run_auth() {
   echo "${output}"
 }
 
-get_github_output() {
-  cat "${TMPDIR}/github-output"
-}
-
 assert_authorized() {
   local test_name="$1"
   local output="$2"
