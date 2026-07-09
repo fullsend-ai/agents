@@ -276,11 +276,13 @@ fails, treat the finding as new.
 Then determine the overall outcome:
 
 - Any **critical** or **high** finding -> `request-changes`
-- Multiple **medium** findings which could affect the
-  intended outcome of the PR -> `request-changes`
-- One **medium** finding (but no critical/high) -> `comment-only` (attach
-  findings as comments in the review body so the author sees them, but
-  do not block the PR)
+- One or more **medium** findings identifying a functional bug
+  (incorrect behavior, permission error, schema violation, or silent
+  failure) -> `request-changes`
+- One or more **medium** findings that are all
+  stylistic/advisory/process-related (no functional bugs) ->
+  `comment-only` (attach findings as comments in the review body so the
+  author sees them, but do not block the PR)
 - **Low** or **info** findings only (no medium+) -> `approve` (attach
   findings as comments in the review body so the author sees them, but
   do not block the PR). Preserve concrete follow-up work in the structured
