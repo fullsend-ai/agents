@@ -79,56 +79,44 @@ assert_unauthorized() {
 
 # Test: trusted bot (fullsend-ai-coder[bot]) is authorized
 setup_mock_gh
-output=$(
-  export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
-  export PR_AUTHOR_LOGIN="fullsend-ai-coder[bot]"
-  run_auth 1 "test-org/test-repo"
-)
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+export PR_AUTHOR_LOGIN="fullsend-ai-coder[bot]"
+output=$(run_auth 1 "test-org/test-repo")
 assert_authorized "trusted bot fullsend-ai-coder[bot] is authorized" "${output}"
 
 # Test: MEMBER association is authorized
 setup_mock_gh
-output=$(
-  export PR_AUTHOR_ASSOCIATION="MEMBER"
-  export PR_AUTHOR_LOGIN="some-human"
-  run_auth 1 "test-org/test-repo"
-)
+export PR_AUTHOR_ASSOCIATION="MEMBER"
+export PR_AUTHOR_LOGIN="some-human"
+output=$(run_auth 1 "test-org/test-repo")
 assert_authorized "MEMBER association is authorized" "${output}"
 
 # Test: OWNER association is authorized
 setup_mock_gh
-output=$(
-  export PR_AUTHOR_ASSOCIATION="OWNER"
-  export PR_AUTHOR_LOGIN="some-human"
-  run_auth 1 "test-org/test-repo"
-)
+export PR_AUTHOR_ASSOCIATION="OWNER"
+export PR_AUTHOR_LOGIN="some-human"
+output=$(run_auth 1 "test-org/test-repo")
 assert_authorized "OWNER association is authorized" "${output}"
 
 # Test: COLLABORATOR association is authorized
 setup_mock_gh
-output=$(
-  export PR_AUTHOR_ASSOCIATION="COLLABORATOR"
-  export PR_AUTHOR_LOGIN="some-human"
-  run_auth 1 "test-org/test-repo"
-)
+export PR_AUTHOR_ASSOCIATION="COLLABORATOR"
+export PR_AUTHOR_LOGIN="some-human"
+output=$(run_auth 1 "test-org/test-repo")
 assert_authorized "COLLABORATOR association is authorized" "${output}"
 
 # Test: CONTRIBUTOR association without bot login is unauthorized
 setup_mock_gh
-output=$(
-  export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
-  export PR_AUTHOR_LOGIN="random-contributor"
-  run_auth 1 "test-org/test-repo"
-)
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+export PR_AUTHOR_LOGIN="random-contributor"
+output=$(run_auth 1 "test-org/test-repo")
 assert_unauthorized "CONTRIBUTOR without bot login is unauthorized" "${output}"
 
 # Test: unknown bot is not trusted
 setup_mock_gh
-output=$(
-  export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
-  export PR_AUTHOR_LOGIN="some-other-bot[bot]"
-  run_auth 1 "test-org/test-repo"
-)
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+export PR_AUTHOR_LOGIN="some-other-bot[bot]"
+output=$(run_auth 1 "test-org/test-repo")
 assert_unauthorized "unknown bot is not trusted" "${output}"
 
 # --- Summary ---
