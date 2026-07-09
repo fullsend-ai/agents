@@ -12,22 +12,24 @@ set -euo pipefail
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
 pr="${1:-}"
 
-# Resolve PR URL and repo
+# Resolve PR URL, repo, and base branch
 if [[ -z "$pr" ]]; then
-  pr_json_init="$(gh pr view --json url,baseRefName -q '{url,baseRefName}')"
+  pr_json_init="$(gh pr view --json url,baseRefName,headRepository -q '{url,baseRefName,nwo:.headRepository.owner.login+"/"+.headRepository.name}')"
 else
-  pr_json_init="$(gh pr view "$pr" --json url,baseRefName -q '{url,baseRefName}')"
+  pr_json_init="$(gh pr view "$pr" --json url,baseRefName,headRepository -q '{url,baseRefName,nwo:.headRepository.owner.login+"/"+.headRepository.name}')"
 fi
 
 pr_url="$(echo "$pr_json_init" | jq -r .url)"
 base_branch="$(echo "$pr_json_init" | jq -r .baseRefName)"
+repo_nwo="$(echo "$pr_json_init" | jq -r .nwo)"
 
-# Extract owner/repo from the PR URL
-repo_nwo="$(echo "$pr_url" | sed -E 's|https://github.com/([^/]+/[^/]+)/pull/.*|\1|')"
-
-# Fetch required status checks from branch rulesets as a JSON array
-required_json="$(gh api "repos/$repo_nwo/rules/branches/$base_branch" \
-  --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | unique' 2>/dev/null || echo '[]')"
+# Fetch required status checks from branch rulesets (fail-closed on error)
+if ! required_json="$(gh api "repos/$repo_nwo/rules/branches/$base_branch" \
+  --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | unique' 2>&1)"; then
+  echo "Error: failed to fetch required checks for $repo_nwo branch $base_branch" >&2
+  echo "$required_json" >&2
+  exit 1
+fi
 
 if [[ "$(echo "$required_json" | jq 'length')" -gt 0 ]]; then
   echo "Required checks: $(echo "$required_json" | jq -r 'join(", ")')"

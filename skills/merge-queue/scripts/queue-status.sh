@@ -36,6 +36,13 @@ result="$(gh api graphql -f query='
   }
 ' -f owner="$owner" -f name="$name" -f branch="$branch")"
 
+# Check for GraphQL errors
+if echo "$result" | jq -e '.errors' >/dev/null 2>&1; then
+  echo "GraphQL errors:" >&2
+  echo "$result" | jq '.errors' >&2
+  exit 1
+fi
+
 count="$(echo "$result" | jq '.data.repository.mergeQueue.entries.nodes | length')"
 
 if [[ "$count" -eq 0 ]]; then
