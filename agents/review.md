@@ -235,11 +235,11 @@ gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}"
 - `approve` — no medium+ findings; the change is safe (low/info
   findings may be attached as comments)
 - `request-changes` — findings *requiring* resolution: one or more critical or
-  high findings; two or more medium-severity findings where at least one
-  identifies a functional bug (incorrect behavior, permission error, schema
-  violation, or silent failure). If the summary text states findings
-  should be addressed, fixed, or resolved before merge, the verdict must
-  be `request-changes`, not `comment` — the summary language and the
+  high findings; one or more medium-severity findings identifying a
+  functional bug (incorrect behavior, permission error, schema violation,
+  or silent failure). If the summary text states findings should be
+  addressed, fixed, or resolved before merge, the verdict must be
+  `request-changes`, not `comment` — the summary language and the
   verdict action must be consistent.
 - `comment-only` — medium-severity findings worth noting but none
   that should block. Use only when medium findings are stylistic,

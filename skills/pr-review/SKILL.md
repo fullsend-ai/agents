@@ -776,10 +776,10 @@ Merge the reconciled PR-specific findings (from 6e-1) into the
 challenger-adjudicated finding set and evaluate:
 
 - Any **critical** or **high** finding → `request-changes`
-- Two or more **medium** findings, at least one of which identifies a
-  functional bug (incorrect behavior, permission error, schema
-  violation, or silent failure) → `request-changes`
-- One **medium** finding, or multiple medium findings that are all
+- One or more **medium** findings identifying a functional bug
+  (incorrect behavior, permission error, schema violation, or silent
+  failure) → `request-changes`
+- One or more **medium** findings that are all
   stylistic/advisory/process-related (no functional bugs) →
   `comment-only` (attach findings as comments so the author sees them,
   but do not block the PR)
