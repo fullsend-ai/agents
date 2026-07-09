@@ -1,0 +1,62 @@
+---
+agent: agents/scribe.md
+doc: docs/scribe.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+policy: policies/scribe.yaml
+role: scribe
+slug: fullsend-ai-scribe
+
+host_files:
+  - src: common/env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+  - src: ${RUNNER_TEMP}/scribe-workspace/notes.tar.gz
+    dest: /sandbox/workspace/notes.tar.gz
+  - src: ${RUNNER_TEMP}/scribe-workspace/backlog.json
+    dest: /sandbox/workspace/backlog.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/closed-issues.json
+    dest: /sandbox/workspace/closed-issues.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/open-prs.json
+    dest: /sandbox/workspace/open-prs.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/repo-docs-index.json
+    dest: /sandbox/workspace/repo-docs-index.json
+  - src: ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json
+    dest: /sandbox/workspace/scribe-meta.json
+
+skills: []
+
+pre_script: scripts/pre-scribe.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  max_iterations: 2
+
+post_script: scripts/post-scribe.sh
+
+env:
+  runner:
+    SCRIBE_REPO: ${SCRIBE_REPO}
+    SCRIBE_SEARCH_QUERY: ${SCRIBE_SEARCH_QUERY}
+    SCRIBE_LOOKBACK_HOURS: ${SCRIBE_LOOKBACK_HOURS}
+    SCRIBE_DRY_RUN: ${SCRIBE_DRY_RUN}
+    SCRIBE_MIN_CONFIDENCE: ${SCRIBE_MIN_CONFIDENCE}
+    SCRIBE_MODE: ${SCRIBE_MODE}
+    SCRIBE_SLACK_WEBHOOK_URL: ${SCRIBE_SLACK_WEBHOOK_URL}
+    GH_TOKEN: ${GH_TOKEN}
+    CONTENTS_TOKEN: ${CONTENTS_TOKEN}
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/scribe-result.schema.json
+  sandbox:
+    SCRIBE_REPO: "${SCRIBE_REPO}"
+    SCRIBE_SEARCH_QUERY: "${SCRIBE_SEARCH_QUERY}"
+    SCRIBE_LOOKBACK_HOURS: "${SCRIBE_LOOKBACK_HOURS}"
+    SCRIBE_DRY_RUN: "${SCRIBE_DRY_RUN}"
+    SCRIBE_MIN_CONFIDENCE: "${SCRIBE_MIN_CONFIDENCE}"
+    SCRIBE_MODE: "${SCRIBE_MODE}"
+
+timeout_minutes: 15
