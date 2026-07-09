@@ -25,8 +25,8 @@ jobs:
 
       - name: Install yq
         run: |
-          sudo curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
+          curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
 
       - name: Install test dependencies
         run: uv pip install --system jsonschema==4.23.0
