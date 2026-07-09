@@ -162,7 +162,7 @@ jobs:
             echo "::error::Failed to resolve fullsend version"
             exit 1
           fi
-          echo "FULLSEND_VERSION=${FULLSEND_VERSION}" >> "$GITHUB_ENV"
+          { echo 'FULLSEND_VERSION<<GHEOF'; echo "${FULLSEND_VERSION}"; echo 'GHEOF'; } >> "$GITHUB_ENV"
           VERSION_NUM="${FULLSEND_VERSION#v}"
           TARBALL="fullsend_${VERSION_NUM}_linux_amd64.tar.gz"
           gh release download "$FULLSEND_VERSION" \
@@ -180,7 +180,8 @@ jobs:
         run: |
           eval "$(gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/openshell-version.sh?ref=${FULLSEND_VERSION}" --jq .content | base64 -d | grep -E '^OPENSHELL_(VERSION|SHA)=')"
           if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
-            echo "::error::Failed to resolve OpenShell version from fullsend tag ${FULLSEND_VERSION}"
+            SAFE_VERSION=$(echo "$FULLSEND_VERSION" | tr -d '\n\r' | sed 's/::/: :/g')
+            echo "::error::Failed to resolve OpenShell version from fullsend tag ${SAFE_VERSION}"
             exit 1
           fi
           echo "OPENSHELL_VERSION=${OPENSHELL_VERSION}" >> "$GITHUB_ENV"
