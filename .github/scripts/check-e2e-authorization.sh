@@ -22,6 +22,7 @@ PR_NUMBER="${1:?PR number required}"
 REPOSITORY="${2:?repository (owner/repo) required}"
 
 TRUSTED_ASSOCIATIONS="OWNER MEMBER COLLABORATOR"
+TRUSTED_BOTS="fullsend-ai-coder[bot]"
 OK_TO_TEST_LABEL="ok-to-test"
 
 write_error_output() {
@@ -42,6 +43,14 @@ is_trusted_author() {
   local assoc="$1"
   case " ${TRUSTED_ASSOCIATIONS} " in
     *" ${assoc} "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_trusted_bot() {
+  local login="$1"
+  case " ${TRUSTED_BOTS} " in
+    *" ${login} "*) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -76,7 +85,10 @@ else
   author_association="$(jq -r '.author_association' <<<"${pr_json}")"
 fi
 
-if is_trusted_author "${author_association}"; then
+if is_trusted_bot "${PR_AUTHOR_LOGIN:-}"; then
+  authorized=true
+  reason="trusted_bot"
+elif is_trusted_author "${author_association}"; then
   authorized=true
   reason="trusted_author"
 elif has_write_permission "${PR_AUTHOR_LOGIN:-}" 2>/dev/null; then
