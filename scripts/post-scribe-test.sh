@@ -180,6 +180,12 @@ run_test_stdout "comments-only-mode-skips-new-issues" \
   "Skipping 1 new issue proposals (mode: comments_only)"
 export SCRIBE_MODE="all"
 
+export SCRIBE_MODE="new_issues_only"
+run_test_stdout "new-issues-only-invalid-confidence-rejected" \
+  '{"topics":[],"new_issues":[{"title":"Add dark mode","summary":"Users want dark mode.","body":"## Problem\nNo dark mode.\n\n## Options considered\nTheme toggle.\n\n## Acceptance criteria\n- [ ] Toggle works\n\n## Related\nSource: [Meeting notes](https://docs.google.com/document/d/abc123)","confidence":"invalid","public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "GATE REJECTED"
+export SCRIBE_MODE="all"
+
 export SCRIBE_DRY_RUN="false"
 run_test "live-mode-uses-paginate-for-idempotency" \
   '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \

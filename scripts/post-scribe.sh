@@ -373,7 +373,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
 
   # Gate: confidence
   if ! is_valid_confidence "${CONFIDENCE}"; then
-    gate_reject "${TOPIC}" "invalid confidence value"
+    gate_reject "${TITLE}" "invalid confidence value"
     continue
   fi
   if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
