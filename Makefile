@@ -22,6 +22,7 @@ script-test:
 	$(call run-timed,bash scripts/post-review-test.sh)
 	$(call run-timed,bash scripts/post-fix-test.sh)
 	$(call run-timed,bash scripts/post-retro-test.sh)
+	$(call run-timed,bash scripts/post-scribe-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
 
 test: script-test
