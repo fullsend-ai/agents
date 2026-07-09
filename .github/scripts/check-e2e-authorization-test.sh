@@ -71,7 +71,7 @@ assert_unauthorized() {
   fi
 }
 
-# --- Tests ---
+# --- Test cases ---
 
 # Test: trusted bot (fullsend-ai-coder[bot]) is authorized
 setup_mock_gh
