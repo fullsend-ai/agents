@@ -5,6 +5,11 @@
 # is a trusted bot, when the collaborator permission API confirms write+
 # access, or when a fresh ok-to-test label was applied after the latest push.
 #
+# Security tradeoff: trusted bots bypass the ok-to-test label gate entirely.
+# A compromise of the bot's GitHub App credentials would auto-qualify its PRs
+# for credentialed e2e runs. Mitigated by gitleaks + pre-commit running
+# upstream in post-code.sh before the bot opens a PR.
+#
 # Usage: check-e2e-authorization.sh PR_NUMBER OWNER/REPO
 #
 # Environment (optional, from workflow):

@@ -63,10 +63,11 @@ assert_authorized() {
 assert_unauthorized() {
   local test_name="$1"
   local output="$2"
-  if echo "${output}" | grep -q "authorized=false"; then
+  local expected_reason="${3:-unauthorized}"
+  if echo "${output}" | grep -q "authorized=false" && echo "${output}" | grep -q "reason=${expected_reason}"; then
     echo "PASS: ${test_name}"
   else
-    echo "FAIL: ${test_name} — expected authorized=false, got: ${output}"
+    echo "FAIL: ${test_name} — expected authorized=false reason=${expected_reason}, got: ${output}"
     FAILURES=$((FAILURES + 1))
   fi
 }
