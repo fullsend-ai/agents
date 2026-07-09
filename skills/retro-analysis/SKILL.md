@@ -121,9 +121,13 @@ Use multiple searches with different keyword combinations if the first returns n
 - **Skip the proposal** if a recently closed issue addressed the same problem (closed in the last 90 days) — the fix may already be in flight.
 - **Include the proposal** only if you are confident no existing issue covers it, or if your proposal meaningfully refines an existing one in a way that warrants a new issue.
 
-**Do not file "evidence for" issues.** When your analysis produces evidence that supports or corroborates an existing open issue, put it in your `summary` field — not in a new proposal. Do not title proposals "Evidence for #XXXX" or use any other framing that makes a duplicate look like a new issue. The summary is posted as a comment on the originating PR or issue, which preserves the data point. Filing evidence as a separate proposal creates noise that compounds across retro runs.
+When your analysis produces evidence that supports or corroborates an existing open issue, add an entry to the `evidence_comments` array. The post-script posts each evidence comment directly on the referenced issue, giving issue owners a growing body of data points.
 
-When skipping, note the duplicate in your `summary` field — include the issue number and what specific evidence this retro found, so the human understands what was filtered and why. Keep evidence notes concise — one sentence per existing issue with the issue number and a brief description of the new evidence. The summary field has a schema length limit; prioritize the most impactful evidence if space is constrained.
+Each `evidence_comments` entry needs:
+- `issue_url` — the full GitHub URL of the existing issue (e.g. `https://github.com/owner/repo/issues/42`).
+- `body` — a markdown comment with: what PR/workflow this retro analyzed, the specific evidence found (concrete data points, not just "more evidence"), and a link back to the originating PR (`$ORIGINATING_URL`) for full context.
+
+Also note the evidence briefly in your `summary` field — include the issue number so the human reading the originating PR understands that evidence was generated.
 
 ## Localization guidance
 
@@ -165,11 +169,17 @@ Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json` with this s
       "proposed_change": "Specific change description...",
       "validation_criteria": "How to verify the improvement..."
     }
+  ],
+  "evidence_comments": [
+    {
+      "issue_url": "https://github.com/owner/repo/issues/42",
+      "body": "### Evidence from retro of PR #10\n\nSpecific evidence found...\n\n_Source: https://github.com/owner/repo/pull/10_"
+    }
   ]
 }
 ```
 
-**Schema is strict.** The top-level object allows ONLY `summary` and `proposals` — no additional properties. Each proposal object allows ONLY the six fields shown above. The harness validates against `$FULLSEND_OUTPUT_SCHEMA` with `"additionalProperties": false` at both levels. Do not add fields like `timeline`, `metadata`, `workflow_quality`, or `originating_url`.
+**Schema is strict.** The top-level object allows ONLY `summary`, `proposals`, and `evidence_comments` — no additional properties. Each proposal object allows ONLY the six fields shown above. Each evidence comment allows ONLY `issue_url` and `body`. The harness validates against `$FULLSEND_OUTPUT_SCHEMA` with `"additionalProperties": false` at all levels. Do not add fields like `timeline`, `metadata`, `workflow_quality`, or `originating_url`. The `evidence_comments` array is optional — omit it when no corroborating evidence was found.
 
 After writing the file, validate it before exiting:
 

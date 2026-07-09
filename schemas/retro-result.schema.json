@@ -18,9 +18,33 @@
       "maxItems": 3,
       "items": { "$ref": "#/$defs/proposal" },
       "description": "List of improvement proposals. Each becomes a GitHub issue."
+    },
+    "evidence_comments": {
+      "type": "array",
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/evidence_comment" },
+      "description": "Comments to post on existing open issues when this retro found corroborating evidence."
     }
   },
   "$defs": {
+    "evidence_comment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issue_url", "body"],
+      "properties": {
+        "issue_url": {
+          "type": "string",
+          "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$",
+          "description": "Full GitHub URL of the existing issue to comment on."
+        },
+        "body": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192,
+          "description": "Markdown comment body with the specific evidence found, what was analyzed, and a link to the originating PR."
+        }
+      }
+    },
     "proposal": {
       "type": "object",
       "additionalProperties": false,

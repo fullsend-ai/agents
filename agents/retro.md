@@ -75,14 +75,19 @@ After gathering findings from subagents:
 
 Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
 
-The top-level object must have **exactly two properties** — no others:
+The top-level object has two required properties and one optional:
 
 ```json
 {
   "summary": "...",
-  "proposals": [...]
+  "proposals": [...],
+  "evidence_comments": [...]
 }
 ```
+
+- `summary` (required) — Markdown summary posted as a comment on the originating PR/issue.
+- `proposals` (required) — Improvement proposals, each filed as a GitHub issue.
+- `evidence_comments` (optional) — Comments posted on existing open issues when this retro found corroborating evidence. See the `retro-analysis` skill for the evidence comment schema.
 
 The schema enforces `"additionalProperties": false`. Any extra top-level key (e.g., `timeline`, `workflow_quality`, `originating_url`, `metadata`) will fail validation.
 

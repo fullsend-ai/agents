@@ -122,6 +122,64 @@ for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
 "
 done
 
+# Post evidence comments on referenced issues.
+EVIDENCE_COUNT=$(jq '.evidence_comments // [] | length' "${RESULT_FILE}")
+if [[ "${EVIDENCE_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((EVIDENCE_COUNT - 1))); do
+    EU=$(jq -r ".evidence_comments[$i].issue_url" "${RESULT_FILE}")
+    if [[ ! "${EU}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+      echo "ERROR: evidence_comments[$i].issue_url does not match expected pattern: ${EU}" >&2
+      exit 1
+    fi
+    EB=$(jq -r ".evidence_comments[$i].body // empty" "${RESULT_FILE}")
+    if [[ -z "${EB}" ]]; then
+      echo "ERROR: evidence_comments[$i].body is missing or empty" >&2
+      exit 1
+    fi
+  done
+  echo "All ${EVIDENCE_COUNT} evidence comment(s) validated"
+
+  echo "Posting ${EVIDENCE_COUNT} evidence comment(s)"
+  for i in $(seq 0 $((EVIDENCE_COUNT - 1))); do
+    ISSUE_URL=$(jq -r ".evidence_comments[$i].issue_url" "${RESULT_FILE}")
+    EVIDENCE_BODY=$(jq -r ".evidence_comments[$i].body" "${RESULT_FILE}")
+
+    [[ "${ISSUE_URL}" =~ ^https://github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)/issues/([0-9]+)$ ]]
+    EVIDENCE_REPO="${BASH_REMATCH[1]}"
+    EVIDENCE_NUMBER="${BASH_REMATCH[2]}"
+
+    echo "  Commenting on ${EVIDENCE_REPO}#${EVIDENCE_NUMBER}"
+    EVIDENCE_OUTPUT=""
+    EVIDENCE_EXIT=0
+    EVIDENCE_OUTPUT=$(jq -nc --arg body "${EVIDENCE_BODY}" '{body: $body}' | gh api \
+      "repos/${EVIDENCE_REPO}/issues/${EVIDENCE_NUMBER}/comments" \
+      --input - 2>&1) || EVIDENCE_EXIT=$?
+
+    if [[ ${EVIDENCE_EXIT} -ne 0 ]]; then
+      if echo "${EVIDENCE_OUTPUT}" | grep -qE "HTTP (401|403)"; then
+        SAFE_OUTPUT="${EVIDENCE_OUTPUT//::/}"
+        SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
+        SAFE_OUTPUT="${SAFE_OUTPUT//%0a/}"
+        SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
+        SAFE_OUTPUT="${SAFE_OUTPUT//%0d/}"
+        SAFE_REPO="${EVIDENCE_REPO//::/}"
+        SAFE_NUMBER="${EVIDENCE_NUMBER//::/}"
+        echo "::warning::Could not post evidence comment on ${SAFE_REPO}#${SAFE_NUMBER}: insufficient permissions (${SAFE_OUTPUT}). Skipping."
+      else
+        SAFE_OUTPUT="${EVIDENCE_OUTPUT//::/}"
+        SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
+        SAFE_OUTPUT="${SAFE_OUTPUT//%0a/}"
+        SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
+        SAFE_OUTPUT="${SAFE_OUTPUT//%0d/}"
+        SAFE_REPO="${EVIDENCE_REPO//::/}"
+        SAFE_NUMBER="${EVIDENCE_NUMBER//::/}"
+        echo "ERROR: failed to post evidence comment on ${SAFE_REPO}#${SAFE_NUMBER}: ${SAFE_OUTPUT}"
+        exit 1
+      fi
+    fi
+  done
+fi
+
 # Post summary comment on the originating PR/issue.
 # Uses REST API (not gh issue comment) for consistency. Note: despite being
 # an "issues" endpoint, GitHub requires pull_requests:write when the target
