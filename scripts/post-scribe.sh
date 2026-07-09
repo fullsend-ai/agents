@@ -85,6 +85,14 @@ MAX_COMMENT_LEN=2000
 MAX_BODY_LEN=15000
 MAX_TITLE_LEN=200
 
+is_valid_confidence() {
+  [[ "${1}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
+}
+
+if ! is_valid_confidence "${MIN_CONFIDENCE}"; then
+  echo "ERROR: SCRIBE_MIN_CONFIDENCE must be a number between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
+  exit 1
+fi
 if (( $(echo "${MIN_CONFIDENCE} < 0 || ${MIN_CONFIDENCE} > 1" | bc -l) )); then
   echo "ERROR: SCRIBE_MIN_CONFIDENCE must be between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
   exit 1
@@ -176,7 +184,7 @@ gate_reject_content() {
 # not to, merge them: combine summaries, keep the highest confidence, keep
 # public_safe=false if any entry is unsafe.
 DEDUP_FILE="${RESULT_FILE}.deduped"
-jq '
+jq --argjson max_len "${MAX_COMMENT_LEN}" '
   .topics as $all |
   ($all | map(select(.existing_issue != null)) | group_by(.existing_issue) |
     map(
@@ -188,6 +196,9 @@ jq '
           if $t.public_safe == false then .public_safe = false | .public_safe_category = $t.public_safe_category else . end
         )
       end
+      | if ((.summary // "") | length) > $max_len then
+          .summary = ((.summary // "")[0:($max_len - 16)] + "\n\n_(truncated)_")
+        else . end
     )
   ) as $merged |
   ($all | map(select(.existing_issue == null))) as $rest |
@@ -261,6 +272,10 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   fi
 
   # Gate: confidence
+  if ! is_valid_confidence "${CONFIDENCE}"; then
+    gate_reject "${TOPIC}" "invalid confidence value"
+    continue
+  fi
   if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
     gate_reject "${TOPIC}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
     continue
@@ -357,6 +372,10 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
 
   # Gate: confidence
+  if ! is_valid_confidence "${CONFIDENCE}"; then
+    gate_reject "${TOPIC}" "invalid confidence value"
+    continue
+  fi
   if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
     gate_reject "${TITLE}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
     continue
