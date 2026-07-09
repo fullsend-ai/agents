@@ -73,9 +73,33 @@ done
 echo "All ${PROPOSAL_COUNT} proposal(s) validated"
 
 ISSUE_LINKS=""
+EVIDENCE_NOTES=""
+FILTERED_COUNT=0
 for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
   TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
   TITLE=$(jq -r ".proposals[$i].title" "${RESULT_FILE}")
+
+  # Deterministic gate: reject "Evidence for" proposals.
+  # The retro-analysis skill instructs the agent not to file these, but the
+  # agent ignores the instruction frequently enough that a post-script gate
+  # is needed. See fullsend-ai/fullsend#3881.
+  TITLE_LOWER=$(printf '%s' "${TITLE}" | tr '[:upper:]' '[:lower:]')
+  if [[ "${TITLE_LOWER}" =~ ^evidence[[:space:]]+(for|of)[[:space:]]+\# ]] || \
+     [[ "${TITLE_LOWER}" =~ ^evidence: ]] || \
+     [[ "${TITLE_LOWER}" =~ ^additional[[:space:]]+evidence ]]; then
+    SAFE_TITLE="${TITLE//$'\n'/}"
+    SAFE_TITLE="${SAFE_TITLE//$'\r'/}"
+    SAFE_TITLE="${SAFE_TITLE//::/:}"
+    SAFE_TITLE="${SAFE_TITLE//%0A/}"
+    SAFE_TITLE="${SAFE_TITLE//%0a/}"
+    SAFE_TITLE="${SAFE_TITLE//%0D/}"
+    SAFE_TITLE="${SAFE_TITLE//%0d/}"
+    echo "::warning::proposal[$i] rejected — title matches evidence-for pattern: ${SAFE_TITLE}. Folding into summary."
+    EVIDENCE_NOTES="${EVIDENCE_NOTES}
+- **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
+    FILTERED_COUNT=$((FILTERED_COUNT + 1))
+    continue
+  fi
 
   # Build the issue body from the four sections.
   BODY=$(jq -r --arg url "${ORIGINATING_URL}" "
@@ -132,10 +156,22 @@ if [[ -z "${SUMMARY}" ]]; then
   exit 1
 fi
 
-if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
-  COMMENT=$(printf '%s\n\n### Proposals filed\n\n%s' "${SUMMARY}" "${ISSUE_LINKS}")
-else
-  COMMENT="${SUMMARY}"
+if [[ ${FILTERED_COUNT} -gt 0 ]]; then
+  echo "${FILTERED_COUNT} proposal(s) filtered (evidence-for pattern)"
+fi
+
+COMMENT="${SUMMARY}"
+if [[ -n "${ISSUE_LINKS}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals filed\n\n%s' "${COMMENT}" "${ISSUE_LINKS}")
+fi
+if [[ -n "${EVIDENCE_NOTES}" ]]; then
+  COMMENT=$(printf '%s\n\n### Evidence notes (not filed as issues)\n%s' "${COMMENT}" "${EVIDENCE_NOTES}")
+fi
+
+# GitHub comment limit is 65536 chars. Truncate EVIDENCE_NOTES first if over.
+MAX_COMMENT_LEN=65000
+if [[ ${#COMMENT} -gt ${MAX_COMMENT_LEN} ]]; then
+  COMMENT="${COMMENT:0:${MAX_COMMENT_LEN}}"$'\n\n...(truncated)'
 fi
 
 echo "Posting summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
