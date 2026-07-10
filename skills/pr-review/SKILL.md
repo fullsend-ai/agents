@@ -183,6 +183,81 @@ rewrite), or if `total_commits` exceeds 250 (the compare API
 silently truncates file lists at 300 files), treat all files as
 changed — no anchoring for this run.
 
+#### 2a-1. Rebase-only short-circuit
+
+When the compare API shows zero changed files between
+`PRIOR_REVIEW_SHA` and the new HEAD, the push is a rebase-only
+change — only the git parent chain changed, not the code. In this
+case, skip sub-agent dispatch entirely and reuse the prior review's
+findings. This avoids the token cost of dispatching opus-tier
+sub-agents for a result that would be identical to the prior review.
+
+**All conditions must be true to short-circuit:**
+
+1. `PRIOR_REVIEW_SHA` is non-empty
+2. `PRIOR_REVIEW_PROVENANCE` is exactly `app-verified`
+3. The compare API succeeded (no 404 or error)
+4. `TOTAL_COMMITS` does not exceed 250 (no truncation)
+5. `FILE_COUNT` from the compare is `0` — no files changed between
+   `PRIOR_REVIEW_SHA` and the new HEAD
+6. The base branch diff is substantially unchanged:
+
+   ```bash
+   BASE_REF=$(echo "$PR_META" | jq -r '.base.ref')
+   PRIOR_BASE_FILE_COUNT=$(gh api \
+     "repos/${REPO_FULL_NAME}/compare/${BASE_REF}...${PRIOR_REVIEW_SHA}" \
+     --jq '.files | length')
+   CURRENT_BASE_FILE_COUNT=$(echo "$PR_FILES" | jq 'length')
+   ```
+
+   If `CURRENT_BASE_FILE_COUNT` differs from `PRIOR_BASE_FILE_COUNT`,
+   the base branch has diverged — fall through to a full review.
+
+**If any condition fails,** continue to step 3 (full review). Common
+fall-through cases:
+
+- Compare API returned 404 (force-push, history rewrite)
+- Provenance is not `app-verified` (prior review untrusted)
+- Files changed between prior SHA and HEAD (not a pure rebase)
+- Base branch diverged (new commits on base changed the PR diff)
+
+**Short-circuit result:**
+
+When all conditions are met, skip steps 3–6 and produce the review
+result directly in step 7:
+
+1. Parse the prior review's findings from
+   `/sandbox/workspace/prior-review.txt` (already read above).
+2. Derive the verdict from the prior findings using the same rules
+   as step 6f.
+3. Compose the review body:
+
+   ```markdown
+   <!-- **Head SHA:** <new-head-sha> -->
+
+   ## Review — rebase only
+
+   The branch was rebased with no code changes (0 files differ
+   between the prior reviewed commit `<PRIOR_REVIEW_SHA>` and the
+   current HEAD `<new-head-sha>`). Base branch file count is
+   unchanged.
+
+   All prior findings from the previous review remain as-is.
+   ```
+
+   If the prior review had findings, append them in the standard
+   step 7 format (grouped by severity under `### Findings`).
+
+4. Write the result with:
+   - `action`: the derived verdict
+   - `head_sha`: the new HEAD SHA
+   - `body`: the composed review body
+   - `findings`: the prior review's findings (when required by the
+     action — see step 7 table)
+
+Do NOT dispatch sub-agents. Proceed directly to step 7 to write the
+result file.
+
 ### 3. Triage
 
 Classify the change and prepare context packages for sub-agents. This
