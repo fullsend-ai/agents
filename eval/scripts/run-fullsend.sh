@@ -52,7 +52,11 @@ install -m 0600 /dev/null "$ENV_FILE"
 
   case "$FIXTURE_TYPE" in
     issue)        echo "GITHUB_ISSUE_URL=${FIXTURE_URL}" ;;
-    pull_request) echo "GITHUB_PR_URL=${FIXTURE_URL}" ;;
+    pull_request)
+      echo "GITHUB_PR_URL=${FIXTURE_URL}"
+      echo "PR_NUMBER=${FIXTURE_NUMBER}"
+      echo "REPO_FULL_NAME=${EPHEMERAL_REPO}"
+      ;;
   esac
 
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && echo "ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID}"
