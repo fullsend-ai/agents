@@ -50,3 +50,30 @@ Do not read additional files beyond the diff context.
 This rule takes precedence over the size-based categories above: a
 25-line value-only change exits here rather than triggering non-trivial
 exploration.
+
+## Commit-format severity escalation
+
+When evaluating commit messages and PR titles against the repo's commit
+conventions (COMMITS.md), classify violations of the **Forbidden
+type + scope combinations** table as **high** severity. COMMITS.md
+explicitly states these are required changes, not cosmetic — they must
+block the PR under the existing verdict logic.
+
+Forbidden combinations to check (from COMMITS.md):
+
+| Forbidden   | Use instead        |
+|-------------|--------------------|
+| `fix(ci)`   | `ci(<subsystem>)`  |
+| `feat(ci)`  | `ci(<subsystem>)`  |
+| `fix(e2e)`  | `ci(e2e)`          |
+| `feat(e2e)` | `ci(e2e)`          |
+
+If any commit message or the PR title uses one of these forbidden
+prefixes, emit a finding with:
+
+- **severity:** `high`
+- **category:** `naming-convention`
+- **description:** cite the specific forbidden combination and the
+  correct alternative from COMMITS.md
+- **remediation:** rewrite the commit message or PR title using the
+  correct type prefix
