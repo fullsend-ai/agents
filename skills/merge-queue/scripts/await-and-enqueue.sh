@@ -23,7 +23,10 @@ pr_url="$(echo "$pr_json_init" | jq -r .url)"
 base_branch="$(echo "$pr_json_init" | jq -r .baseRefName)"
 repo_nwo="$(echo "$pr_json_init" | jq -r .nwo)"
 
-# Fetch required status checks from branch rulesets (fail-closed on error)
+# Fetch required status checks from branch rulesets (fail-closed on error).
+# Note: only the rulesets API is queried. Repositories using classic branch
+# protection rules (without rulesets) will not have their required checks
+# discovered, and the script will proceed based on reported check statuses only.
 if ! required_json="$(gh api "repos/$repo_nwo/rules/branches/$base_branch" \
   --jq '[.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[].context] | unique' 2>&1)"; then
   echo "Error: failed to fetch required checks for $repo_nwo branch $base_branch" >&2
@@ -46,12 +49,14 @@ while true; do
   # Use jq to analyze all check statuses and required check coverage in one pass
   result="$(echo "$pr_json" | jq -r --argjson required "$required_json" '
     .statusCheckRollup as $checks |
-    # Build map of name -> conclusion
-    ($checks | map({(.name): (.conclusion // .status // "PENDING")}) | add // {}) as $map |
-    # Check for failures
-    [$map | to_entries[] | select(.value | test("FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED")) | .key + " (" + .value + ")"] as $failures |
-    # Check for pending
-    [$map | to_entries[] | select(.value | test("SUCCESS|NEUTRAL|SKIPPED|COMPLETED|FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED") | not) | .key] as $pending |
+    # Build map of check name -> conclusion.
+    # statusCheckRollup contains both CheckRun (.name, .conclusion) and
+    # StatusContext (.context, .state) objects — handle both.
+    ($checks | map({((.name // .context // "unknown")): (.conclusion // .state // .status // "PENDING")}) | add // {}) as $map |
+    # Check for failures (case-insensitive: StatusContext .state may be lowercase)
+    [$map | to_entries[] | select(.value | test("FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED"; "i")) | .key + " (" + .value + ")"] as $failures |
+    # Check for pending (case-insensitive for the same reason)
+    [$map | to_entries[] | select(.value | test("SUCCESS|NEUTRAL|SKIPPED|COMPLETED|FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED"; "i") | not) | .key] as $pending |
     # Check for missing required checks
     [$required[] | select(. as $r | $map | has($r) | not)] as $missing |
     {failures: $failures, pending: $pending, missing: $missing}

@@ -54,5 +54,5 @@ echo "Merge queue for ${repo}:${branch} — ${count} enqueued:"
 echo ""
 echo "$result" | jq -r '
   .data.repository.mergeQueue.entries.nodes[] |
-  "  #\(.position) [\(.state)] \(.pullRequest.url)  \(.pullRequest.title)\n      by \(.pullRequest.author.login), enqueued \(.enqueuedAt) by \(.enqueuer.login)  ETA: \(.estimatedTimeToMerge // "unknown")s"
+  "  #\(.position) [\(.state)] \(.pullRequest.url)  \(.pullRequest.title)\n      by \(.pullRequest.author.login), enqueued \(.enqueuedAt) by \(.enqueuer.login)  ETA: \(if .estimatedTimeToMerge then "\(.estimatedTimeToMerge)s" else "unknown" end)"
 '

@@ -58,6 +58,13 @@ Set `POLL_INTERVAL` (default: 30 seconds) to control how often it checks.
 - `jq` installed
 - The target repository must have merge queues enabled in its branch protection rules
 
+## Constraints
+
+- **Rulesets only:** `await-and-enqueue.sh` discovers required checks from
+  [repository rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets)
+  only. Repositories using classic branch protection rules will not have
+  their required checks verified before enqueuing.
+
 ## Common errors
 
 - **"Pull request is already in the merge queue"** — the PR was previously enqueued; no action needed.
