@@ -1,0 +1,183 @@
+name: review-eval
+description: Functional test of the fullsend review agent pipeline
+
+skill: review
+
+execution:
+  mode: case
+  timeout: 1200  # 20 min — agent timeout is 20 min, plus setup/teardown
+  parallelism: 4
+  env:
+    EVAL_ORG: $EVAL_ORG
+    GH_TOKEN: $GH_TOKEN
+    FULLSEND_DIR: $FULLSEND_DIR
+    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
+    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
+    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
+    CLOUD_ML_REGION: $CLOUD_ML_REGION
+
+hooks:
+  before_each:
+    - command: "setup-fixture.sh"
+      timeout: 120
+      description: "Create ephemeral repo and fixture"
+
+  after_each:
+    - command: "capture-fixture.sh"
+      timeout: 30
+      description: "Capture fixture state for judges"
+    - command: "teardown-fixture.sh"
+      timeout: 30
+      on_failure: continue
+      description: "Delete ephemeral repo"
+
+runner:
+  type: cli
+  command:
+    - "run-fullsend.sh"
+    - "{agent}"
+    - "{workspace}"
+    - "{output_dir}"
+  env:
+    FULLSEND_DIR: $FULLSEND_DIR
+    GH_TOKEN: $GH_TOKEN
+    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
+    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
+    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
+    CLOUD_ML_REGION: $CLOUD_ML_REGION
+
+models:
+  skill: claude-opus-4-6
+  judge: claude-opus-4-6
+
+dataset:
+  path: cases
+  schema: |
+    Each case directory contains:
+    - input.yaml: Fixture definition with forge, fixture type, title, body, and PR files.
+    - annotations.yaml: Expected fixture state (labels, reviews, state).
+    - repo/: Directory with the base repo contents (pushed to main before the PR).
+
+outputs:
+  - path: output
+    schema: |
+      fixture-state.json: Captured state of the GitHub PR after the
+      full agent pipeline (pre-script, agent, post-script) has run.
+      Contains: state, labels, comments, reviews, assignees, and
+      review_decision.
+
+# ---------------------------------------------------------------------------
+# Judges
+# ---------------------------------------------------------------------------
+judges:
+  - name: review_quality
+    description: |
+      Evaluate the overall quality of the review — did the agent understand the
+      change and produce a well-reasoned verdict?
+    prompt: |
+      You are evaluating a code review agent's work on a GitHub pull request.
+
+      The agent was given a PR against a repo, and ran a full review pipeline:
+      it read the diff and source code, analyzed the change, and posted a
+      review with a verdict.
+
+      Here is the captured state of the PR after the agent ran:
+      {{ outputs }}
+
+      Here is what the test case author expects from a good review of this
+      specific PR:
+      {{ annotations }}
+
+      Evaluate the quality of the review on a 1-5 scale:
+
+      1 = Wrong verdict or fundamentally misunderstood the change
+      2 = Correct verdict but review comment is generic or shows no
+          understanding of what changed
+      3 = Adequate — correct verdict with a reasonable comment
+      4 = Good — demonstrates understanding of the change and explains
+          why the verdict is appropriate
+      5 = Excellent — all of the above plus identifies specific strengths
+          or mentions the test coverage
+
+      Use the review_expectations field in the annotations as your rubric.
+
+      Respond with just a number 1-5.
+
+  - name: expected_labels
+    description: Required labels from annotations.yaml must be present
+    check: |
+      import json
+      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      actual = [l.lower() for l in state.get("labels", [])]
+      required = outputs.get("annotations", {}).get("labels", {}).get("required", [])
+      if not required:
+          return True, "No required labels specified"
+      missing = [l for l in required if l.lower() not in actual]
+      if missing:
+          return False, f"Missing labels: {missing} (actual: {actual})"
+      return True, f"All required labels present: {required}"
+
+  - name: forbidden_labels
+    description: Labels listed in annotations.yaml forbidden list must NOT be present
+    check: |
+      import json
+      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      actual = [l.lower() for l in state.get("labels", [])]
+      forbidden = outputs.get("annotations", {}).get("labels", {}).get("forbidden", [])
+      if not forbidden:
+          return True, "No forbidden labels specified"
+      present = [l for l in forbidden if l.lower() in actual]
+      if present:
+          return False, f"Forbidden labels present: {present} (actual: {actual})"
+      return True, f"No forbidden labels found (checked: {forbidden})"
+
+  - name: max_turns
+    description: Agent must complete within the declared turn budget
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found"
+      metrics = json.loads(raw)
+      actual = metrics.get("num_turns")
+      if actual is None:
+          return False, "num_turns not present in metrics.json"
+      limit = outputs.get("annotations", {}).get("max_turns")
+      if limit is None:
+          return False, "max_turns not declared in annotations.yaml"
+      if int(actual) > int(limit):
+          return False, f"Exceeded max_turns: {actual} > {limit}"
+      return True, f"Turns OK: {actual} <= {limit}"
+
+  - name: max_cost
+    description: Agent must complete within the declared cost budget
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found"
+      metrics = json.loads(raw)
+      actual = metrics.get("total_cost_usd")
+      if actual is None:
+          return False, "total_cost_usd not present in metrics.json"
+      limit = outputs.get("annotations", {}).get("max_cost_usd")
+      if limit is None:
+          return False, "max_cost_usd not declared in annotations.yaml"
+      if float(actual) > float(limit):
+          return False, f"Exceeded max_cost_usd: {actual} > {limit}"
+      return True, f"Cost OK: {actual} <= {limit}"
+
+# ---------------------------------------------------------------------------
+# Thresholds
+# ---------------------------------------------------------------------------
+thresholds:
+  review_quality:
+    min_mean: 3.0
+  expected_labels:
+    min_pass_rate: 1.0
+  forbidden_labels:
+    min_pass_rate: 1.0
+  max_turns:
+    min_pass_rate: 1.0
+  max_cost:
+    min_pass_rate: 1.0
