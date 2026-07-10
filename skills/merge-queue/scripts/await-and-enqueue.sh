@@ -54,9 +54,9 @@ while true; do
     # StatusContext (.context, .state) objects — handle both.
     ($checks | map({((.name // .context // "unknown")): (.conclusion // .state // .status // "PENDING")}) | add // {}) as $map |
     # Check for failures (case-insensitive: StatusContext .state may be lowercase)
-    [$map | to_entries[] | select(.value | test("FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED"; "i")) | .key + " (" + .value + ")"] as $failures |
+    [$map | to_entries[] | select(.value | test("FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED|STALE"; "i")) | .key + " (" + .value + ")"] as $failures |
     # Check for pending (case-insensitive for the same reason)
-    [$map | to_entries[] | select(.value | test("SUCCESS|NEUTRAL|SKIPPED|COMPLETED|FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED"; "i") | not) | .key] as $pending |
+    [$map | to_entries[] | select(.value | test("SUCCESS|NEUTRAL|SKIPPED|COMPLETED|FAILURE|ERROR|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED|STALE"; "i") | not) | .key] as $pending |
     # Check for missing required checks
     [$required[] | select(. as $r | $map | has($r) | not)] as $missing |
     {failures: $failures, pending: $pending, missing: $missing}

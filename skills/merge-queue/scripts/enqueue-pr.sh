@@ -43,6 +43,12 @@ if echo "$result" | jq -e '.errors' >/dev/null 2>&1; then
 fi
 
 position="$(echo "$result" | jq -r '.data.enqueuePullRequest.mergeQueueEntry.position')"
+
+if [[ "$position" == "null" ]]; then
+  echo "Error: mutation succeeded but mergeQueueEntry is null — the PR may not meet queue requirements." >&2
+  exit 1
+fi
+
 eta="$(echo "$result" | jq -r '.data.enqueuePullRequest.mergeQueueEntry.estimatedTimeToMerge // "unknown"')"
 
 echo "PR added to merge queue at position $position (ETA: $eta)"
