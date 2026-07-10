@@ -11,7 +11,7 @@ The retro agent is triggered after a workflow completes (PR merged or closed), o
 1. **Pre-script** gathers metadata about the originating PR or issue.
 2. **Sandbox** — the agent reads the full workflow history, identifies patterns (wasted cycles, missed context, repeated failures), and writes structured proposals. It uses the retro-analysis and finding-agent-runs skills. The agent cannot write files or edit code in the target repo.
 3. **Validation loop** — output is checked against a schema, with up to 2 retries.
-4. **Post-script** creates GitHub issues from the agent's proposals.
+4. **Post-script** creates GitHub issues from the agent's proposals. Proposals whose titles match evidence-for patterns (e.g. "Evidence for #1234: ...") are filtered out and folded into the summary comment as evidence notes instead of being filed as issues.
 
 When triggered via `/fs-retro`, the human's comment is passed to the agent as high-signal direction about what to focus on.
 
