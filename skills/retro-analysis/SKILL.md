@@ -98,8 +98,12 @@ Look for log lines matching these patterns:
 - `Agent <name> resolved from <owner>/<repo>@<ref>`
 
 Store the discovered repo (e.g., `fullsend-ai/agents`) for use in
-proposal localization. If the log does not contain these lines, fall
-back to `fullsend-ai/fullsend`.
+proposal localization. If the log does not contain these lines, note
+the discovery failure in your summary and target agent-layer proposals
+to `fullsend-ai/fullsend` only if you have independent evidence the
+change belongs there. Otherwise, target the source repo
+(`$REPO_FULL_NAME`) and note in the proposal that the agents repo
+could not be discovered.
 
 ### Dispatch subagents for each investigation thread
 
@@ -107,7 +111,7 @@ back to `fullsend-ai/fullsend`.
 - **Trace reader:** "Download and read the JSONL reasoning trace for run <RUN_ID>. Summarize what decisions the agent made and why."
 - **Comment analyzer:** "Read all comments on PR #N. Categorize them: agent review comments, human review comments, CI results, human interventions."
 - **Pattern searcher:** "Search the last 10 retro agent issues in <REPO>. List any recurring themes or prior proposals related to <TOPIC>."
-- **Harness inspector:** "Read the harness config at harness/<AGENT>.yaml and the agent definition at agents/<AGENT>.md in the .fullsend repo. Summarize the agent's configuration and constraints."
+- **Harness inspector:** "Read the harness config at harness/<AGENT>.yaml and the agent definition at agents/<AGENT>.md in the agents repo. Summarize the agent's configuration and constraints."
 
 ### Keep your main context for synthesis
 
