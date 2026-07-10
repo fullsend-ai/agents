@@ -278,6 +278,18 @@ jobs:
           FULLSEND_DIR: ${{ github.workspace }}
         run: ./eval/run-functional.sh triage
 
+      - name: Run functional tests (review)
+        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        env:
+          EVAL_ORG: ${{ vars.EVAL_ORG }}
+          GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ vars.EVALS_VERTEX_PROJECT_ID }}
+          GOOGLE_CLOUD_PROJECT: ${{ secrets.E2E_GCP_PROJECT_ID }}
+          CLOUD_ML_REGION: ${{ vars.EVALS_GCP_REGION }}
+          EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
+          FULLSEND_DIR: ${{ github.workspace }}
+        run: ./eval/run-functional.sh review
+
       - name: Scrub secrets from eval results
         if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
         run: find eval/runs/ -name '.eval-env' -delete 2>/dev/null || true; find /tmp/agent-eval/ -name '.eval-env' -delete 2>/dev/null || true
