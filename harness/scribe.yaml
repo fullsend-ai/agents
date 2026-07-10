@@ -35,6 +35,7 @@ pre_script: scripts/pre-scribe.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
+  schema: schemas/scribe-result.schema.json
   max_iterations: 2
 
 post_script: scripts/post-scribe.sh
@@ -50,7 +51,6 @@ env:
     SCRIBE_SLACK_WEBHOOK_URL: ${SCRIBE_SLACK_WEBHOOK_URL}
     GH_TOKEN: ${GH_TOKEN}
     CONTENTS_TOKEN: ${CONTENTS_TOKEN}
-    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/scribe-result.schema.json
   sandbox:
     SCRIBE_REPO: "${SCRIBE_REPO}"
     SCRIBE_SEARCH_QUERY: "${SCRIBE_SEARCH_QUERY}"
