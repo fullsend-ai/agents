@@ -79,7 +79,7 @@ remove_label() {
 # add or remove these via label_actions. This list covers labels that the
 # pipeline itself applies (pre-triage.sh resets the first five; the action
 # handlers apply blocked/triaged/feature).
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question")
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug")
 
 is_control_label() {
   local label="$1"
@@ -315,7 +315,13 @@ ${FAILED_CREATES}"
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
     case "${CATEGORY}" in
-      bug|documentation|performance)
+      bug)
+        echo "Applying bug label..."
+        add_label "bug"
+        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
+        DEFERRED_LABEL="ready-to-code"
+        ;;
+      documentation|performance)
         echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
         DEFERRED_LABEL="ready-to-code"
         ;;
