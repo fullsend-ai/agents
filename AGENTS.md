@@ -93,10 +93,20 @@ verifying the skill does not exist at org or platform level.
 Each skill's `SKILL.md` begins with a YAML frontmatter block. The
 following fields are part of the skill specification:
 
-- **`name`** (required) — identifier used to reference the skill.
+- **`name`** (required) — identifier used to reference the skill. Max 64
+  characters; lowercase letters, numbers, and hyphens only; must not
+  start or end with a hyphen.
 - **`description`** (required) — explains when and how to use the skill.
-- **`allowed-tools`** (optional) — restricts which tools agents may use
-  when invoking the skill.
+  Max 1024 characters; must be non-empty.
+- **`license`** (optional) — license name or reference to a bundled
+  license file.
+- **`compatibility`** (optional) — indicates environment requirements
+  (intended product, system packages, network access, etc.). Max 500
+  characters.
+- **`metadata`** (optional) — arbitrary key-value mapping for additional
+  metadata.
+- **`allowed-tools`** (optional) — space-separated string of pre-approved
+  tools the skill may use. (Experimental)
 
 These fields are defined by the skill spec. A field's first appearance
 in a skill file in this repo is not a novel pattern and should not be
