@@ -80,6 +80,27 @@ gh run download <RUN_ID> --repo "$DISPATCH_REPO"
 
 You have a large amount of context to cover. Use subagents to avoid overflowing your main context window.
 
+### Discovering the agents repo
+
+Agent definitions, skills, harness configs, and scripts are resolved at
+runtime from a separate repo — not from `fullsend-ai/fullsend`. The
+workflow run log identifies this repo. Extract it during exploration:
+
+```bash
+# From an agent workflow run log, extract the agents repo
+gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
+  | grep -oP 'Fetching agent \S+ from \K[^@]+' \
+  | head -1
+```
+
+Look for log lines matching these patterns:
+- `Fetching agent <name> from <owner>/<repo>@<ref>`
+- `Agent <name> resolved from <owner>/<repo>@<ref>`
+
+Store the discovered repo (e.g., `fullsend-ai/agents`) for use in
+proposal localization. If the log does not contain these lines, fall
+back to `fullsend-ai/fullsend`.
+
 ### Dispatch subagents for each investigation thread
 
 - **Workflow tracer:** "Find all agent workflow runs related to issue/PR #N. List each run with its stage, status, conclusion, and timestamp."
@@ -127,13 +148,19 @@ When skipping, note the duplicate in your `summary` field — include the issue 
 
 ## Localization guidance
 
-When deciding where a proposed change belongs:
+When deciding where a proposed change belongs, distinguish three layers:
 
-1. **Prefer upstream first.** If the improvement would benefit all fullsend users, target `fullsend-ai/fullsend`.
-2. **Repo-level** for fixes truly specific to one repo (e.g., a test command, a repo-specific linter config): target the source repo itself.
-3. **Org-level `.fullsend` repos — discouraged.** See below.
+1. **Platform tooling** (fullsend CLI, reusable workflows, sandbox) →
+   target `fullsend-ai/fullsend`.
+2. **Agent definitions, skills, harness configs, scripts** → target the
+   agents repo discovered from the workflow run log (see "Discovering
+   the agents repo" above). These files are resolved at runtime from a
+   separate repo — not from `fullsend-ai/fullsend`.
+3. **Repo-specific** fixes (test commands, linter config) → target the
+   source repo (`$REPO_FULL_NAME`).
 
-Do not push repo-specific details upstream.
+Do not push repo-specific details upstream. Do not conflate platform
+tooling with agent-layer artifacts — they live in different repos.
 
 <!-- TODO(#833): Remove this restriction once per-repo customization is
      stable. Depends on: #195, #179, #419, PR #792, PR #799. -->
@@ -142,7 +169,9 @@ Do not push repo-specific details upstream.
 for `.fullsend` repos is not yet defined. Issues filed there are hard for
 users to discover and act on. Instead:
 
-- Route platform/tooling improvements to `fullsend-ai/fullsend`.
+- Route platform tooling improvements to `fullsend-ai/fullsend`.
+- Route agent-layer improvements (agent definitions, skills, harness
+  configs, scripts) to the agents repo from the run log.
 - Route repo-specific fixes to the source repo.
 - Only target a `.fullsend` repo when the change is genuinely org-level
   configuration with no alternative location. If you do, you **must**

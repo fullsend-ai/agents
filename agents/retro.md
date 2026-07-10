@@ -51,6 +51,12 @@ These are defaults. If RETRO_COMMENT provides different focus areas, prioritize 
 
 Use the `retro-analysis` skill for detailed workflow tracing recipes.
 
+**Discover the agents repo from the run log.** Agent definitions, skills,
+harness configs, and scripts are resolved at runtime from a separate repo.
+Extract it from the workflow run log — see the `retro-analysis` skill's
+"Discovering the agents repo" section. Use the discovered repo when
+localizing agent-layer proposals.
+
 **Dispatch subagents for every read-heavy operation.** Your main context window is for synthesis, not data gathering. Examples:
 
 - "Read the JSONL trace for workflow run <ID> and summarize the agent's key decisions"
@@ -69,7 +75,7 @@ After gathering findings from subagents:
 2. **Identify improvement opportunities** — What could go better next time?
 3. **Check for patterns** — Is this a one-off or recurring issue?
 4. **Assess uncertainty** — How confident are you? What evidence supports your hypothesis? What could you be wrong about?
-5. **Localize the fix** — Where does the change belong? Prefer upstream (fullsend-ai/fullsend) if the improvement is universal. Use org config (.fullsend repo) for org-specific tuning. Use the source repo only for repo-specific fixes.
+5. **Localize the fix** — Where does the change belong? Distinguish platform tooling (`fullsend-ai/fullsend`), agent-layer artifacts (agents repo from the run log), and repo-specific fixes (source repo). See target repo restrictions below.
 
 ## Output
 
@@ -96,13 +102,16 @@ See the `retro-analysis` skill for the proposal object schema and writing guidan
 **Do not target `*/.fullsend` repos.** The `.fullsend` automation repos are
 in flux — per-repo customization patterns are not yet defined and users
 cannot easily discover or act on issues filed there. When you identify an
-improvement:
+improvement, distinguish three layers:
 
-1. If the change is to platform tooling (skills, agent definitions, harness
-   configs, workflows), target `fullsend-ai/fullsend` upstream.
-2. If the change is repo-specific (test commands, linter config), target
-   the source repository itself.
-3. Only target a `.fullsend` repo if the change is genuinely org-level
+1. If the change is to platform tooling (fullsend CLI, reusable workflows,
+   sandbox), target `fullsend-ai/fullsend` upstream.
+2. If the change is to an agent definition, skill, harness config, or
+   script, target the agents repo discovered from the workflow run log
+   (see the exploration approach above).
+3. If the change is repo-specific (test commands, linter config), target
+   the source repository (`$REPO_FULL_NAME`).
+4. Only target a `.fullsend` repo if the change is genuinely org-level
    configuration that cannot live anywhere else. In that case, include
    explicit justification in `proposed_change` explaining why `.fullsend`
    is the only viable location.
