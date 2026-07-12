@@ -87,3 +87,19 @@ and upstream platform (`fullsend-ai/fullsend/skills/`). A skill reference
 in frontmatter is valid even if no matching directory exists in this repo.
 Do not treat missing local skill directories as bugs without first
 verifying the skill does not exist at org or platform level.
+
+## 8. Eval coverage for skill changes
+
+Before marking an issue `ready-to-code` for changes to skill behavior,
+verify that the affected skill has functional eval coverage. For local skill
+definitions under `skills/<skill-name>/SKILL.md`, check for the corresponding
+eval config under `eval/<agent-or-skill-name>/eval.yaml`, using the repo's
+established mapping if the skill name and eval directory differ.
+
+If no matching eval coverage exists on the base branch, treat eval creation
+as a prerequisite and do not promote the issue to implementation. Ask for an
+eval task first, or split the work so coverage lands before behavior changes.
+
+If coverage exists, require the implementation plan to update or add eval
+cases for the changed behavior, or explicitly explain why the existing cases
+already cover the change.
