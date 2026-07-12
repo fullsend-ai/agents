@@ -34,6 +34,17 @@ sanitize_gha_log_output() {
   _sanitize_workflow_value "$1"
 }
 
+# Print sanitized command output to stdout or stderr without SC2005 echo-$(cmd) noise.
+print_sanitized_gha_log() {
+  local sanitized
+  sanitized="$(sanitize_gha_log_output "$1")"
+  if [ "${2:-}" = "stderr" ]; then
+    printf '%s\n' "${sanitized}" >&2
+  else
+    printf '%s\n' "${sanitized}"
+  fi
+}
+
 _redact_multiline_pem() {
   awk '
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/ {

@@ -78,6 +78,17 @@ sanitize_gha_log_output() {
   _sanitize_workflow_value "$1"
 }
 
+# Print sanitized command output to stdout or stderr without SC2005 echo-$(cmd) noise.
+print_sanitized_gha_log() {
+  local sanitized
+  sanitized="$(sanitize_gha_log_output "$1")"
+  if [ "${2:-}" = "stderr" ]; then
+    printf '%s\n' "${sanitized}" >&2
+  else
+    printf '%s\n' "${sanitized}"
+  fi
+}
+
 _redact_multiline_pem() {
   awk '
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/ {
@@ -481,7 +492,7 @@ else
 fi
 
 if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-  echo "$(sanitize_gha_log_output "${GITLEAKS_OUTPUT}")" >&2
+  print_sanitized_gha_log "${GITLEAKS_OUTPUT}" stderr
   post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
 fi
 echo "Secret scan passed — no leaks in agent's commit(s)"
@@ -576,10 +587,10 @@ if [ -f .pre-commit-config.yaml ]; then
     #       BRANCH_CHANGED_FILES there; SCAN_RANGE scopes differ by design).
     PRECOMMIT_OUTPUT=""
     if PRECOMMIT_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
-      echo "$(sanitize_gha_log_output "${PRECOMMIT_OUTPUT}")"
+      print_sanitized_gha_log "${PRECOMMIT_OUTPUT}"
       echo "Pre-commit passed — all hooks clean"
     else
-      echo "$(sanitize_gha_log_output "${PRECOMMIT_OUTPUT}")"
+      print_sanitized_gha_log "${PRECOMMIT_OUTPUT}"
       # Single retry only — do not convert to a loop without adding a cap.
       # Scope detection/staging to changed_array so hooks can't inject files
       # outside the pre-commit scope into the commit.
@@ -593,7 +604,7 @@ if [ -f .pre-commit-config.yaml ]; then
         echo "Re-running secret scan on amended commit..."
         GITLEAKS_OUTPUT=""
         if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-          echo "$(sanitize_gha_log_output "${GITLEAKS_OUTPUT}")" >&2
+          print_sanitized_gha_log "${GITLEAKS_OUTPUT}" stderr
           post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
         fi
         if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
@@ -614,14 +625,14 @@ if [ -f .pre-commit-config.yaml ]; then
         mapfile -t changed_array <<< "${CHANGED_FILES}"
         PRECOMMIT_RETRY_OUTPUT=""
         if PRECOMMIT_RETRY_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
-          echo "$(sanitize_gha_log_output "${PRECOMMIT_RETRY_OUTPUT}")"
+          print_sanitized_gha_log "${PRECOMMIT_RETRY_OUTPUT}"
           if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
             post_fail_to_issue pre-commit-blocked \
               "Retry pre-commit left additional unstaged changes; committed content would diverge from what pre-commit validated."
           fi
           echo "Pre-commit passed after auto-fix re-stage"
         else
-          echo "$(sanitize_gha_log_output "${PRECOMMIT_RETRY_OUTPUT}")"
+          print_sanitized_gha_log "${PRECOMMIT_RETRY_OUTPUT}"
           post_fail_to_issue pre-commit-blocked "${PRECOMMIT_RETRY_OUTPUT}"
         fi
       else
@@ -671,20 +682,20 @@ fi
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
-echo "$(sanitize_gha_log_output "${PUSH_OUTPUT}")"
+print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
     echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     FORCE_PUSH_OUTPUT=""
     if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
-      echo "$(sanitize_gha_log_output "${FORCE_PUSH_OUTPUT}")"
+      print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
       PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
       post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}"
     fi
-    echo "$(sanitize_gha_log_output "${FORCE_PUSH_OUTPUT}")"
+    print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
   else
     PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}")"
     post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}"
