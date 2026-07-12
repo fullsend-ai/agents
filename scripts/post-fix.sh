@@ -189,6 +189,33 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
 INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
 
+# Fallback: these companion scripts were never migrated into this repo
+# during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
+# always misses. The reusable workflow's "Prepare workspace" step always
+# materializes the full scripts/ directory (from fullsend's own scaffold)
+# at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
+# (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
+if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
+  for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
+    if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
+       && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
+      RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
+      INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
+      break
+    fi
+  done
+fi
+
+# Warn instead of silently skipping when the repo needs the auto-install but
+# the companions are missing everywhere — a silent skip here surfaces later
+# as a confusing "Executable X not found" pre-commit failure.
+if [ -f .pre-commit-config.yaml ] \
+   && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
+  echo "::warning::Pre-commit tool auto-install skipped: companion scripts not found"
+  echo "::warning::Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
+  echo "::warning::Pre-commit hooks requiring system tools (e.g. lychee) may fail"
+fi
+
 if [ -f .pre-commit-config.yaml ] \
    && [ -f "${RESOLVE_SCRIPT}" ] \
    && [ -f "${INSTALL_SCRIPT}" ]; then
@@ -326,9 +353,20 @@ fi
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
-# Locate process-fix-result.py relative to this script.
+# Locate process-fix-result.py relative to this script, with workspace fallback
+# (see the "Auto-install pre-commit tool dependencies" comment above — this
+# companion script was never migrated into this repo either).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
+
+if [ ! -f "${PROCESS_SCRIPT}" ]; then
+  for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
+    if [ -f "${_ws_candidate}/process-fix-result.py" ]; then
+      PROCESS_SCRIPT="${_ws_candidate}/process-fix-result.py"
+      break
+    fi
+  done
+fi
 
 # Find fix-result.json in the output directory.
 # RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved

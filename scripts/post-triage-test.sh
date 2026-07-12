@@ -24,7 +24,7 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -173,6 +173,10 @@ run_test "sufficient-posts-summary-and-labels" \
 run_test "sufficient-bug-gets-ready-to-code" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+run_test "sufficient-bug-gets-bug-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=bug --silent"
 
 run_test "sufficient-feature-gets-triaged" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
@@ -335,8 +339,8 @@ run_test "label-actions-multiple-second-label" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=priority/high --silent"
 
 run_test_stdout "label-actions-nonexistent-label-skipped" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Agent recommended a label that does not exist.","actions":[{"action":"add","label":"bug"}]}}' \
-  "::warning::Skipping label 'bug' -- does not exist in repo (will not auto-create)"
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Agent recommended a label that does not exist.","actions":[{"action":"add","label":"nonexistent-label"}]}}' \
+  "::warning::Skipping label 'nonexistent-label' -- does not exist in repo (will not auto-create)"
 
 run_test_stdout "label-actions-invalid-characters-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Injection attempt.","actions":[{"action":"add","label":"label;injection"}]}}' \
@@ -444,6 +448,16 @@ run_test_label_order "ready-to-code-applied-after-label-actions" \
 run_test "ready-to-code-applied-without-label-actions" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+# Verify label-category consistency guard strips contradicting labels (#39).
+run_test_stdout "label-category-contradiction-stripped" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nDocs issue.","label_actions":{"reason":"Reclassifying to enhancement.","actions":[{"action":"add","label":"enhancement"}]}}' \
+  "::warning::Stripping label 'enhancement' from label_actions — contradicts triage_summary.category 'documentation'"
+
+# Verify non-contradicting labels pass through the consistency guard.
+run_test "label-category-consistent-passes" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
 
 # --- Summary ---
 

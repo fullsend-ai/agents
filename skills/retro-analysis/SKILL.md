@@ -80,13 +80,38 @@ gh run download <RUN_ID> --repo "$DISPATCH_REPO"
 
 You have a large amount of context to cover. Use subagents to avoid overflowing your main context window.
 
+### Discovering the agents repo
+
+Agent definitions, skills, harness configs, and scripts are resolved at
+runtime from a separate repo — not from `fullsend-ai/fullsend`. The
+workflow run log identifies this repo. Extract it during exploration:
+
+```bash
+# From an agent workflow run log, extract the agents repo
+gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
+  | grep -oP 'Fetching agent \S+ from \K[^@]+' \
+  | head -1
+```
+
+Look for log lines matching these patterns:
+- `Fetching agent <name> from <owner>/<repo>@<ref>`
+- `Agent <name> resolved from <owner>/<repo>@<ref>`
+
+Store the discovered repo (e.g., `fullsend-ai/agents`) for use in
+proposal localization. If the log does not contain these lines, note
+the discovery failure in your summary and target agent-layer proposals
+to `fullsend-ai/fullsend` only if you have independent evidence the
+change belongs there. Otherwise, target the source repo
+(`$REPO_FULL_NAME`) and note in the proposal that the agents repo
+could not be discovered.
+
 ### Dispatch subagents for each investigation thread
 
 - **Workflow tracer:** "Find all agent workflow runs related to issue/PR #N. List each run with its stage, status, conclusion, and timestamp."
 - **Trace reader:** "Download and read the JSONL reasoning trace for run <RUN_ID>. Summarize what decisions the agent made and why."
 - **Comment analyzer:** "Read all comments on PR #N. Categorize them: agent review comments, human review comments, CI results, human interventions."
 - **Pattern searcher:** "Search the last 10 retro agent issues in <REPO>. List any recurring themes or prior proposals related to <TOPIC>."
-- **Harness inspector:** "Read the harness config at harness/<AGENT>.yaml and the agent definition at agents/<AGENT>.md in the .fullsend repo. Summarize the agent's configuration and constraints."
+- **Harness inspector:** "Read the harness config at harness/<AGENT>.yaml and the agent definition at agents/<AGENT>.md in the agents repo. Summarize the agent's configuration and constraints."
 
 ### Keep your main context for synthesis
 
@@ -121,17 +146,25 @@ Use multiple searches with different keyword combinations if the first returns n
 - **Skip the proposal** if a recently closed issue addressed the same problem (closed in the last 90 days) — the fix may already be in flight.
 - **Include the proposal** only if you are confident no existing issue covers it, or if your proposal meaningfully refines an existing one in a way that warrants a new issue.
 
-When skipping, note the duplicate in your `summary` field so the human understands what was filtered and why.
+**Do not file "evidence for" issues.** When your analysis produces evidence that supports or corroborates an existing open issue, put it in your `summary` field — not in a new proposal. Do not title proposals "Evidence for #XXXX" or use any other framing that makes a duplicate look like a new issue. The summary is posted as a comment on the originating PR or issue, which preserves the data point. Filing evidence as a separate proposal creates noise that compounds across retro runs.
+
+When skipping, note the duplicate in your `summary` field — include the issue number and what specific evidence this retro found, so the human understands what was filtered and why. Keep evidence notes concise — one sentence per existing issue with the issue number and a brief description of the new evidence. The summary field has a schema length limit; prioritize the most impactful evidence if space is constrained.
 
 ## Localization guidance
 
-When deciding where a proposed change belongs:
+When deciding where a proposed change belongs, distinguish three layers:
 
-1. **Prefer upstream first.** If the improvement would benefit all fullsend users, target `fullsend-ai/fullsend`.
-2. **Repo-level** for fixes truly specific to one repo (e.g., a test command, a repo-specific linter config): target the source repo itself.
-3. **Org-level `.fullsend` repos — discouraged.** See below.
+1. **Platform tooling** (fullsend CLI, reusable workflows, sandbox) →
+   target `fullsend-ai/fullsend`.
+2. **Agent definitions, skills, harness configs, scripts** → target the
+   agents repo discovered from the workflow run log (see "Discovering
+   the agents repo" above). These files are resolved at runtime from a
+   separate repo — not from `fullsend-ai/fullsend`.
+3. **Repo-specific** fixes (test commands, linter config) → target the
+   source repo (`$REPO_FULL_NAME`).
 
-Do not push repo-specific details upstream.
+Do not push repo-specific details upstream. Do not conflate platform
+tooling with agent-layer artifacts — they live in different repos.
 
 <!-- TODO(#833): Remove this restriction once per-repo customization is
      stable. Depends on: #195, #179, #419, PR #792, PR #799. -->
@@ -140,7 +173,9 @@ Do not push repo-specific details upstream.
 for `.fullsend` repos is not yet defined. Issues filed there are hard for
 users to discover and act on. Instead:
 
-- Route platform/tooling improvements to `fullsend-ai/fullsend`.
+- Route platform tooling improvements to `fullsend-ai/fullsend`.
+- Route agent-layer improvements (agent definitions, skills, harness
+  configs, scripts) to the agents repo from the run log.
 - Route repo-specific fixes to the source repo.
 - Only target a `.fullsend` repo when the change is genuinely org-level
   configuration with no alternative location. If you do, you **must**
