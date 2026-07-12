@@ -118,6 +118,15 @@ run_failure_comment_test "failure-comment-org-mode-uses-dispatch-repo" \
   "https://github.com/test-org/.fullsend/actions/runs/12345" "yes" \
   "test-org/.fullsend"
 
+run_failure_comment_test "failure-comment-org-mode-not-source-repo" \
+  "push-rejected" "push failed" "test-org/my-app" "12345" \
+  "https://github.com/test-org/my-app/actions/runs/12345" "no" \
+  "test-org/.fullsend"
+
+run_failure_comment_test "failure-comment-non-org-mode-fallback" \
+  "push-rejected" "push failed" "my-org/my-repo" "12345" \
+  "https://github.com/my-org/my-repo/actions/runs/12345" "yes"
+
 run_failure_comment_test "failure-comment-has-retry-hint" \
   "pr-creation-failed" "GraphQL error" "my-org/my-repo" "12345" \
   "/fs-code" "yes"
@@ -174,6 +183,32 @@ run_sanitize_test "sanitize-redacts-ghs-token" \
 run_sanitize_test "sanitize-redacts-access-token-url" \
   "remote: https://x-access-token:ghp_secret@github.com/org/repo.git" \
   "ghp_secret"
+
+run_sanitize_test "sanitize-strips-gha-workflow-commands" \
+  "$(printf '%s\n' '::warning::injected' 'line two')" \
+  "::warning::"
+
+run_sanitize_gha_log_test() {
+  local test_name="$1"
+  local input="$2"
+  local must_not_contain="$3"
+
+  local actual
+  actual="$(sanitize_gha_log_output "${input}")"
+
+  if echo "${actual}" | grep -qF "${must_not_contain}"; then
+    echo "FAIL: ${test_name}"
+    echo "  sanitized output still contains: '${must_not_contain}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_sanitize_gha_log_test "sanitize-gha-log-strips-workflow-commands" \
+  $'::error::boom' \
+  "::error::"
 
 run_categorize_push_test() {
   local test_name="$1"

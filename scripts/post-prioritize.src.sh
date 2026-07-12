@@ -12,6 +12,7 @@
 
 set -euo pipefail
 
+# shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/github-api-csma.lib.sh
 source "${SCRIPT_DIR}/lib/github-api-csma.lib.sh"

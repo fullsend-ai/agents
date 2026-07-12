@@ -29,6 +29,11 @@ _sanitize_workflow_value() {
   printf '%s' "${value}"
 }
 
+# Strip GitHub Actions workflow-command sequences from runner log output.
+sanitize_gha_log_output() {
+  _sanitize_workflow_value "$1"
+}
+
 _redact_multiline_pem() {
   awk '
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/ {
@@ -57,6 +62,8 @@ sanitize_failure_detail() {
       -e 's/x-access-token:[^@[:space:]]+/x-access-token:[REDACTED]/g' \
       -e 's/(Bearer|token)[[:space:]]+[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
     | _redact_multiline_pem)"
+
+  detail="$(sanitize_gha_log_output "${detail}")"
 
   if [ "${max_lines}" -gt 0 ]; then
     detail="$(printf '%s\n' "${detail}" | tail -n "${max_lines}")"

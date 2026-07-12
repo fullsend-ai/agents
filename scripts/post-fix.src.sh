@@ -41,6 +41,8 @@
 #   FIX_ITERATION     — current iteration count
 #   ITERATION_CAP     — max iterations (default: 5)
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging)
+#   POST_FAILURE_DETAIL_MAX_LINES
+#                     — max lines of failure detail in issue/PR comments (default: 30)
 #
 # Exit codes:
 #   0  — branch pushed, PR updated
@@ -161,7 +163,7 @@ if [ "${NO_PUSH}" = "false" ]; then
   SCAN_RANGE="${DIFF_BASE}..HEAD"
 
   if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-    echo "${GITLEAKS_OUTPUT}" >&2
+    echo "$(sanitize_gha_log_output "${GITLEAKS_OUTPUT}")" >&2
     post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
   fi
   echo "Secret scan passed — no leaks in agent's commit(s)"
@@ -256,10 +258,10 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
     mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
     PRECOMMIT_OUTPUT=""
     if PRECOMMIT_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
-      echo "${PRECOMMIT_OUTPUT}"
+      echo "$(sanitize_gha_log_output "${PRECOMMIT_OUTPUT}")"
       echo "Pre-commit passed — all hooks clean"
     else
-      echo "${PRECOMMIT_OUTPUT}"
+      echo "$(sanitize_gha_log_output "${PRECOMMIT_OUTPUT}")"
       # Single retry only — do not convert to a loop without adding a cap.
       # Scope detection/staging to changed_array so hooks can't inject files
       # outside the pre-commit scope into the commit.
@@ -273,7 +275,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
         echo "Re-running secret scan on amended commit..."
         GITLEAKS_OUTPUT=""
         if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-          echo "${GITLEAKS_OUTPUT}" >&2
+          echo "$(sanitize_gha_log_output "${GITLEAKS_OUTPUT}")" >&2
           post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
         fi
         if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
@@ -294,14 +296,14 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
         mapfile -t changed_array <<< "${BRANCH_CHANGED_FILES}"
         PRECOMMIT_RETRY_OUTPUT=""
         if PRECOMMIT_RETRY_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
-          echo "${PRECOMMIT_RETRY_OUTPUT}"
+          echo "$(sanitize_gha_log_output "${PRECOMMIT_RETRY_OUTPUT}")"
           if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
             post_fail_to_pr pre-commit-blocked \
               "Retry pre-commit left additional unstaged changes; committed content would diverge from what pre-commit validated."
           fi
           echo "Pre-commit passed after auto-fix re-stage"
         else
-          echo "${PRECOMMIT_RETRY_OUTPUT}"
+          echo "$(sanitize_gha_log_output "${PRECOMMIT_RETRY_OUTPUT}")"
           post_fail_to_pr pre-commit-blocked "${PRECOMMIT_RETRY_OUTPUT}"
         fi
       else
@@ -326,20 +328,20 @@ if [ "${NO_PUSH}" = "false" ]; then
   # is safe: it still rejects if someone else pushed in the meantime.
   echo "Pushing branch ${BRANCH}..."
   PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
-  echo "${PUSH_OUTPUT}"
+  echo "$(sanitize_gha_log_output "${PUSH_OUTPUT}")"
 
   if [ "${PUSH_RC}" -ne 0 ]; then
     if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
       echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
       FORCE_PUSH_OUTPUT=""
       if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
-        echo "${FORCE_PUSH_OUTPUT}"
+        echo "$(sanitize_gha_log_output "${FORCE_PUSH_OUTPUT}")"
         PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
         post_fail_to_pr "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}"
       fi
-      echo "${FORCE_PUSH_OUTPUT}"
+      echo "$(sanitize_gha_log_output "${FORCE_PUSH_OUTPUT}")"
     else
       PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}")"
       post_fail_to_pr "${PUSH_CATEGORY}" "${PUSH_OUTPUT}"

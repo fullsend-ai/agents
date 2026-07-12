@@ -80,8 +80,10 @@ bundle_lib_body() {
   local lib_path="$1"
   local line
   local first=true
+  local -a lines
 
-  while IFS= read -r line || [[ -n "${line}" ]]; do
+  mapfile -t lines < "${lib_path}"
+  for line in "${lines[@]}"; do
     if [[ "${first}" == true && "${line}" =~ ^#! ]]; then
       first=false
       continue
@@ -94,7 +96,7 @@ bundle_lib_body() {
     fi
 
     printf '%s\n' "${line}"
-  done < "${lib_path}"
+  done
 }
 
 bundle_expand_source() {
@@ -149,8 +151,10 @@ bundle_src_file() {
   local line=""
   local first=true
   local saw_shebang=false
+  local -a lines
 
-  while IFS= read -r line || [[ -n "${line}" ]]; do
+  mapfile -t lines < "${src_abs}"
+  for line in "${lines[@]}"; do
     if [[ "${first}" == true && "${line}" =~ ^#! ]]; then
       printf '%s\n' "${line}"
       printf '# GENERATED from %s — DO NOT EDIT. Run: make script-build\n' "${src_base}"
@@ -173,7 +177,7 @@ bundle_src_file() {
     fi
 
     printf '%s\n' "${line}"
-  done < "${src_abs}"
+  done
 }
 
 if [[ -n "${output_path}" ]]; then
