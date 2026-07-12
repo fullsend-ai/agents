@@ -48,7 +48,32 @@ Run all agent shell script test suites from the repo root:
 make test
 ```
 
-This is an alias for `make script-test`, which runs the seven `scripts/*-test.sh` suites. CI runs the same target via `.github/workflows/script-test.yml`.
+This is an alias for `make script-test`, which runs the `scripts/*-test.sh` suites. CI also runs `make check-bundle` and executes `make script-test` twice (source and bundled modes) via `.github/workflows/script-test.yml`.
+
+## Script bundling
+
+Harness fetches each runner script as an isolated blob, so post-scripts cannot `source` files from `scripts/lib/` at runtime. Scripts that use shared libraries are maintained as source files and bundled before commit:
+
+| Kind | Path | Edit? |
+|------|------|-------|
+| Library | `scripts/lib/*.lib.sh` | Yes — functions only, no side effects |
+| Source | `scripts/*.src.sh` | Yes — editable script with `source` calls |
+| Bundled | `scripts/*.sh` (from `.src.sh`) | No — generated; referenced by harness |
+
+After editing a `.src.sh` or `.lib.sh` file:
+
+```bash
+make script-build      # regenerate bundled .sh files
+make check-bundle      # verify committed bundles are current
+```
+
+Commit source and bundled files together. Test bundled scripts locally with:
+
+```bash
+make script-test SCRIPT_TEST_TARGET=bundled
+```
+
+Library tests source `.lib.sh` directly. Script tests honor `SCRIPT_TEST_TARGET` (`source` by default, `bundled` in CI's second pass).
 
 ## Versioning
 

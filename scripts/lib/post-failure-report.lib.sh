@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# post-failure-report.sh — Categorized, sanitized failure comments for post-scripts.
+# post-failure-report.lib.sh — Categorized, sanitized failure comments for post-scripts.
 #
-# Source from post-code.sh / post-fix.sh:
-#   source "${SCRIPT_DIR}/lib/post-failure-report.sh"
+# Source from post-code.src.sh / post-fix.src.sh:
+#   source "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
 #
 # Set POST_FAILURE_CATEGORY / POST_FAILURE_DETAIL before exit, or call post_fail.
 
@@ -18,6 +18,16 @@ POST_FAILURE_SECRET_SCAN_MESSAGE="Secret scan blocked the push. See workflow log
 
 # Maximum lines of sanitized detail to include in issue/PR comments.
 POST_FAILURE_DETAIL_MAX_LINES="${POST_FAILURE_DETAIL_MAX_LINES:-30}"
+
+_sanitize_workflow_value() {
+  local value="$1"
+  value="${value//::/}"
+  value="${value//%0A/}"
+  value="${value//%0a/}"
+  value="${value//%0D/}"
+  value="${value//%0d/}"
+  printf '%s' "${value}"
+}
 
 _redact_multiline_pem() {
   awk '
@@ -123,7 +133,7 @@ build_post_failure_comment() {
   local repo_full_name="$5"
   local retry_command="$6"
 
-  local label env_note sanitized_detail run_url detail_block
+  local label env_note sanitized_detail run_url detail_block indented_detail
 
   label="$(post_failure_category_label "${category}")"
   env_note="$(post_failure_environmental_note "${category}")"
@@ -136,12 +146,11 @@ build_post_failure_comment() {
   fi
 
   if [ -n "${sanitized_detail}" ]; then
+    indented_detail="$(printf '%s\n' "${sanitized_detail}" | sed 's/^/    /')"
     detail_block="$(cat <<EOF
 
 **Details:**
-\`\`\`
-${sanitized_detail}
-\`\`\`
+${indented_detail}
 EOF
 )"
   else
@@ -173,6 +182,7 @@ _post_failure_ensure_token() {
 
 report_post_failure_to_issue() {
   local exit_code="${1:-$?}"
+  local safe_issue_number
 
   if [ "${POST_FAILURE_REPORTED}" = "true" ]; then
     return 0
@@ -184,21 +194,23 @@ report_post_failure_to_issue() {
   local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
   local body
-  # ISSUE_NUMBER and REPO_FULL_NAME are required by post-code.sh before sourcing.
+  safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
+  # ISSUE_NUMBER and REPO_FULL_NAME are required by post-code.src.sh before sourcing.
   # shellcheck disable=SC2153
   body="$(build_post_failure_comment \
     "code" "${exit_code}" "${category}" "${detail}" \
     "${REPO_FULL_NAME}" "/fs-code")"
 
-  echo "::warning::Posting failure comment to issue #${ISSUE_NUMBER}..."
+  echo "::warning::Posting failure comment to issue #${safe_issue_number}..."
   gh issue comment "${ISSUE_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
     --body "${body}" 2>/dev/null || \
-    echo "::warning::Failed to post error comment to issue #${ISSUE_NUMBER}"
+    echo "::warning::Failed to post error comment to issue #${safe_issue_number}"
 }
 
 report_post_failure_to_pr() {
   local exit_code="${1:-$?}"
+  local safe_pr_number
 
   if [ "${POST_FAILURE_REPORTED}" = "true" ]; then
     return 0
@@ -210,17 +222,18 @@ report_post_failure_to_pr() {
   local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-fix script failed before push or PR update completed.}"
   local body
-  # PR_NUMBER and REPO_FULL_NAME are required by post-fix.sh before sourcing.
+  safe_pr_number="$(_sanitize_workflow_value "${PR_NUMBER}")"
+  # PR_NUMBER and REPO_FULL_NAME are required by post-fix.src.sh before sourcing.
   # shellcheck disable=SC2153
   body="$(build_post_failure_comment \
     "fix" "${exit_code}" "${category}" "${detail}" \
     "${REPO_FULL_NAME}" "/fs-fix")"
 
-  echo "::warning::Posting failure comment to PR #${PR_NUMBER}..."
+  echo "::warning::Posting failure comment to PR #${safe_pr_number}..."
   gh pr comment "${PR_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
     --body "${body}" 2>/dev/null || \
-    echo "::warning::Failed to post error comment to PR #${PR_NUMBER}"
+    echo "::warning::Failed to post error comment to PR #${safe_pr_number}"
 }
 
 post_fail_to_issue() {
