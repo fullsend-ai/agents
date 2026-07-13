@@ -353,16 +353,21 @@ jobs:
   # dynamic matrix shapes including empty (no agents to test).
   # ---------------------------------------------------------------------------
   functional-tests-complete:
-    needs: [detect, functional-tests]
+    needs: [gate, detect, functional-tests]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:
       - name: Check results
         env:
+          GATE_RESULT: ${{ needs.gate.result }}
           DETECT_RESULT: ${{ needs.detect.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
         run: |
+          if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
+            echo "::error::Gate job ${GATE_RESULT}"
+            exit 1
+          fi
           if [ "$DETECT_RESULT" = "failure" ] || [ "$DETECT_RESULT" = "cancelled" ]; then
             echo "::error::Detect job ${DETECT_RESULT}"
             exit 1

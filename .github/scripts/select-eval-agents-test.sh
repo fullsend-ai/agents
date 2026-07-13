@@ -347,6 +347,33 @@ fi
 cleanup_fixture "$FIXTURE"
 
 # ---------------------------------------------------------------------------
+# Test: empty stdin selects nothing
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo -n "" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ -z "$RESULT" ]]; then
+  pass "empty stdin selects nothing"
+else
+  fail "empty stdin selects nothing (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: duplicate file inputs produce deduplicated agent output
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(printf "env/triage.env\nenv/triage.env\nenv/triage.env\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+LINES=$(echo "$RESULT" | grep -c "triage")
+if [[ "$LINES" -eq 1 ]]; then
+  pass "duplicate file inputs produce single agent output"
+else
+  fail "duplicate file inputs produce single agent output (got $LINES lines: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

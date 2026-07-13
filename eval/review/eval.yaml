@@ -103,7 +103,7 @@ judges:
 
       Respond with just a number 1-5.
 
-  - name: expected_labels
+  - name: required_labels
     description: Required labels from annotations.yaml must be present
     check: |
       import json
@@ -173,7 +173,7 @@ judges:
 thresholds:
   review_quality:
     min_mean: 3.0
-  expected_labels:
+  required_labels:
     min_pass_rate: 1.0
   forbidden_labels:
     min_pass_rate: 1.0
