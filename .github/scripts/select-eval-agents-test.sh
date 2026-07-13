@@ -301,6 +301,24 @@ fi
 cleanup_fixture "$FIXTURE"
 
 # ---------------------------------------------------------------------------
+# Test: embedded variable references (mid-path) are also ignored
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+# Add a host_file with an embedded variable
+cat >> "$FIXTURE/harness/triage.yaml" << 'YAML'
+  - src: env/${AGENT_NAME}.env
+    dest: /sandbox/workspace/.env.d/agent.env
+YAML
+RESULT=$(echo 'env/${AGENT_NAME}.env' | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ -z "$RESULT" ]]; then
+  pass "embedded variable host_file paths are ignored"
+else
+  fail "embedded variable host_file paths are ignored (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
 # Test: malformed harness YAML causes failure (not silent skip)
 # ---------------------------------------------------------------------------
 run_test

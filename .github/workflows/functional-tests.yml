@@ -87,7 +87,7 @@ jobs:
     steps:
       - name: Get changed files
         id: changes
-        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
+        if: github.event_name != 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
@@ -95,6 +95,8 @@ jobs:
           REPO: ${{ github.repository }}
           MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
         run: |
           if [ "$EVENT_NAME" = "merge_group" ]; then
             FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
@@ -104,6 +106,16 @@ jobs:
             FILE_COUNT=$(echo "$FILES" | wc -l)
             if [ "$FILE_COUNT" -ge 300 ]; then
               echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
+              exit 0
+            fi
+          elif [ "$EVENT_NAME" = "push" ]; then
+            FILES=$(gh api "repos/${REPO}/compare/${PUSH_BEFORE}...${PUSH_AFTER}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch push diff — running all functional tests as a precaution"
+              exit 0
+            }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::Push diff returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
               exit 0
             fi
           else
@@ -144,7 +156,7 @@ jobs:
           if [ -n "$CHANGED_FILES" ]; then
             AGENTS=$(echo "$CHANGED_FILES" | bash .github/scripts/select-eval-agents.sh)
           else
-            # push/workflow_dispatch: run all agents with eval configs
+            # workflow_dispatch: run all agents with eval configs
             AGENTS=$(for d in eval/*/eval.yaml; do basename "$(dirname "$d")"; done)
           fi
           JSON=$(echo "$AGENTS" | jq -Rsc '[split("\n")[] | select(length > 0)]')

@@ -41,7 +41,7 @@ extract_refs() {
       (.plugins[]?),
       .forge.github.pre_script, .forge.github.post_script
     ] | .[] | select(. != null)
-  ' "$harness_file" | grep -v '^\$' | sort -u
+  ' "$harness_file" | grep -v '\$' | sort -u
 }
 
 # For each harness file with an eval config, check if any changed file is relevant.
