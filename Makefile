@@ -3,6 +3,7 @@
 
 BUNDLE_SRCS := scripts/post-code.src.sh scripts/post-fix.src.sh scripts/post-prioritize.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
+LIB_DEPS := $(wildcard scripts/lib/*.lib.sh)
 
 help:
 	@echo "Available targets:"
@@ -22,7 +23,7 @@ endef
 
 script-build: $(BUNDLE_OUTS)
 
-scripts/%.sh: scripts/%.src.sh scripts/bundle-sh.sh
+scripts/%.sh: scripts/%.src.sh scripts/bundle-sh.sh $(LIB_DEPS)
 	scripts/bundle-sh.sh -o $@ $<
 
 check-bundle:

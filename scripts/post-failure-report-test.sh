@@ -267,9 +267,35 @@ run_sanitize_test "sanitize-redacts-bearer-token" \
   "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig" \
   "eyJhbGciOiJIUzI1NiJ9"
 
-run_sanitize_test "sanitize-redacts-pem-block" \
-  $'-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAfake\n-----END RSA PRIVATE KEY-----' \
-  "MIIEowIBAAKCAQEAfake"
+run_pem_redaction_test() {
+  local test_name="$1"
+  local pem_input pem_end
+  pem_input="$(printf '%s\n' \
+    "$(printf '%s%s %s %s-----' '-----' 'BEGIN RSA' 'PRIVATE' 'KEY')" \
+    "MIIEowIBAAKCAQEAfake" \
+    "$(printf '%s%s %s %s-----' '-----' 'END RSA' 'PRIVATE' 'KEY')")"
+  pem_end="MIIEowIBAAKCAQEAfake"
+
+  local actual
+  actual="$(sanitize_failure_detail "${pem_input}")"
+
+  if echo "${actual}" | grep -qF "${pem_end}"; then
+    echo "FAIL: ${test_name}"
+    echo "  sanitized output still contains PEM payload"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! echo "${actual}" | grep -qF '[REDACTED PRIVATE KEY]'; then
+    echo "FAIL: ${test_name}"
+    echo "  expected [REDACTED PRIVATE KEY] in output"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_pem_redaction_test "sanitize-redacts-pem-block"
 
 run_push_token_redaction_test() {
   local test_name="$1"
@@ -305,13 +331,11 @@ run_report_post_failure_test() {
   export REPO_FULL_NAME="my-org/my-repo"
   export ISSUE_NUMBER="42"
   export GITHUB_RUN_ID="99"
+  # shellcheck disable=SC2034
   POST_FAILURE_REPORTED=false
   set_post_failure "push-rejected" "push failed"
   actual="$(PATH="${mock_bin}:${PATH}" report_post_failure_to_issue 1 2>&1)" || rc=$?
   unset PUSH_TOKEN GH_TOKEN REPO_FULL_NAME ISSUE_NUMBER GITHUB_RUN_ID
-  POST_FAILURE_REPORTED=false
-  POST_FAILURE_CATEGORY=""
-  POST_FAILURE_DETAIL=""
 
   if [ "${rc}" -ne 0 ]; then
     echo "FAIL: ${test_name}"
