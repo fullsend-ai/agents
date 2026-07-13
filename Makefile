@@ -24,6 +24,7 @@ script-test:
 	$(call run-timed,bash scripts/post-retro-test.sh)
 	$(call run-timed,bash scripts/post-scribe-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
+	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash .github/scripts/check-e2e-authorization-test.sh)
 
 test: script-test
