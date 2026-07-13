@@ -87,3 +87,27 @@ and upstream platform (`fullsend-ai/fullsend/skills/`). A skill reference
 in frontmatter is valid even if no matching directory exists in this repo.
 Do not treat missing local skill directories as bugs without first
 verifying the skill does not exist at org or platform level.
+
+### Valid SKILL.md frontmatter fields
+
+Each skill's `SKILL.md` begins with a YAML frontmatter block. The
+following fields are part of the skill specification:
+
+- **`name`** (required) — identifier used to reference the skill. Max 64
+  characters; lowercase letters, numbers, and hyphens only; must not
+  start or end with a hyphen.
+- **`description`** (required) — explains when and how to use the skill.
+  Max 1024 characters; must be non-empty.
+- **`license`** (optional) — license name or reference to a bundled
+  license file.
+- **`compatibility`** (optional) — indicates environment requirements
+  (intended product, system packages, network access, etc.). Max 500
+  characters.
+- **`metadata`** (optional) — arbitrary key-value mapping for additional
+  metadata.
+- **`allowed-tools`** (optional) — space-separated string of pre-approved
+  tools the skill may use. (Experimental)
+
+These fields are defined by the skill spec. A field's first appearance
+in a skill file in this repo is not a novel pattern and should not be
+flagged as a code-organization concern.
