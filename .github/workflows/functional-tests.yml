@@ -339,7 +339,8 @@ jobs:
     steps:
       - name: Check results
         run: |
-          if [ "${{ needs.functional-tests.result }}" = "failure" ]; then
-            echo "::error::One or more functional tests failed"
+          result="${{ needs.functional-tests.result }}"
+          if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
+            echo "::error::One or more functional tests ${result}"
             exit 1
           fi

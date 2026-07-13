@@ -28,6 +28,7 @@ FIXTURE_TYPE="${FIXTURE_TYPE:?FIXTURE_TYPE is required (set by before_each hook)
 # Clone the ephemeral repo as the target for fullsend run.
 # The hook already created it and pushed content.
 EPHEMERAL_REPO="${EPHEMERAL_REPO:?EPHEMERAL_REPO is required}"
+FIXTURE_NUMBER="${FIXTURE_NUMBER:?FIXTURE_NUMBER is required (set by before_each hook)}"
 TARGET_DIR=$(mktemp -d)
 GH_CRED_HELPER='!f(){ echo "password=${GH_TOKEN}"; };f'
 git -c "credential.helper=${GH_CRED_HELPER}" \
