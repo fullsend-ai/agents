@@ -9,7 +9,21 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+
 FAILURES=0
+
+POST_SCRIPT="$(resolve_agent_script post-code "${SCRIPT_DIR}")"
+if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_issue' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-failure-reporting"
+  echo "  ${POST_SCRIPT} missing gha_echo or post_fail_to_issue"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-failure-reporting"
+fi
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh

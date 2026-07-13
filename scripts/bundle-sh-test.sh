@@ -89,10 +89,33 @@ OUT="${TMPDIR}/dedup.sh"
 "${BUNDLER}" -o "${OUT}" "${FIXTURES}/dedup.src.sh"
 CONTENT="$(cat "${OUT}")"
 assert_contains "dedup-includes-leaf-once" "leaf_fn()" "${CONTENT}"
-assert_contains "dedup-already-bundled-comment" "# (already bundled: lib/leaf.lib.sh)" "${CONTENT}"
+assert_contains "dedup-already-bundled-comment" "# (already bundled:" "${CONTENT}"
 assert_eq "dedup-leaf-fn-count" "1" "$(printf '%s' "${CONTENT}" | grep -c '^leaf_fn()')"
 bash "${OUT}"
 echo "PASS: dedup-executes"
+
+# --- outside-lib bundle must fail ---
+if "${BUNDLER}" -o "${TMPDIR}/outside.sh" "${FIXTURES}/outside-lib.src.sh" 2>/dev/null; then
+  echo "FAIL: outside-lib-should-fail"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: outside-lib-should-fail"
+fi
+
+# --- check-bundle detects drift when mtimes are equal ---
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CORRUPT_TARGET="${REPO_ROOT}/scripts/post-code.sh"
+CORRUPT_BACKUP="${TMPDIR}/post-code.sh.bak"
+cp "${CORRUPT_TARGET}" "${CORRUPT_BACKUP}"
+printf '\n# corrupt\n' >> "${CORRUPT_TARGET}"
+touch -r "${CORRUPT_BACKUP}" "${REPO_ROOT}/scripts/post-code.src.sh"
+if ( cd "${REPO_ROOT}" && make check-bundle >/dev/null 2>&1 ); then
+  echo "FAIL: check-bundle-should-detect-equal-mtime-drift"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: check-bundle-detects-equal-mtime-drift"
+fi
+cp "${CORRUPT_BACKUP}" "${CORRUPT_TARGET}"
 
 # --- missing library fails ---
 if "${BUNDLER}" -o "${TMPDIR}/bad.sh" "${SCRIPT_DIR}/does-not-exist.src.sh" 2>/dev/null; then

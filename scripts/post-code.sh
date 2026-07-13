@@ -20,8 +20,8 @@
 # agents/). The code agent is free to propose changes to any path.
 #
 # Required environment variables:
-#   PUSH_TOKEN        — token with contents:write + pull-requests:write on target repo
-#                       (GitHub App installation token or PAT)
+#   PUSH_TOKEN        — token with contents:write + issues:write + pull-requests:write
+#                       on target repo (GitHub App installation token or PAT)
 #   REPO_FULL_NAME    — owner/repo (e.g. my-org/my-repo)
 #   ISSUE_NUMBER      — GitHub issue number
 #   REPO_DIR          — path to extracted repo (default: current directory)
@@ -70,6 +70,20 @@ _sanitize_workflow_value() {
   value="${value//%0a/}"
   value="${value//%0D/}"
   value="${value//%0d/}"
+  printf '%s' "${value}"
+}
+
+# Neutralize line-start GHA workflow commands in comment bodies without
+# stripping mid-string :: (e.g. std::string in compiler output).
+sanitize_comment_workflow_commands() {
+  local value="$1"
+  value="$(printf '%s\n' "${value}" | sed -E \
+    -e 's/^::(warning|error|notice|debug|group|endgroup):://')"
+  value="${value//%0A/}"
+  value="${value//%0a/}"
+  value="${value//%0D/}"
+  value="${value//%0d/}"
+  # printf '%s' drops trailing newline added by the pipeline above.
   printf '%s' "${value}"
 }
 
@@ -125,7 +139,14 @@ sanitize_failure_detail() {
       -e 's/(Bearer|token)[[:space:]]+[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
     | _redact_multiline_pem)"
 
-  detail="$(sanitize_gha_log_output "${detail}")"
+  if [ -n "${PUSH_TOKEN:-}" ]; then
+    detail="${detail//${PUSH_TOKEN}/[REDACTED]}"
+  fi
+  if [ -n "${GH_TOKEN:-}" ] && [ "${GH_TOKEN}" != "${PUSH_TOKEN:-}" ]; then
+    detail="${detail//${GH_TOKEN}/[REDACTED]}"
+  fi
+
+  detail="$(sanitize_comment_workflow_commands "${detail}")"
 
   if [ "${max_lines}" -gt 0 ]; then
     detail="$(printf '%s\n' "${detail}" | tail -n "${max_lines}")"
@@ -154,7 +175,7 @@ categorize_push_failure() {
     return 0
   fi
 
-  echo "push-rejected"
+  echo "push-failed"
 }
 
 post_failure_category_label() {
@@ -164,6 +185,7 @@ post_failure_category_label() {
     signed-off-by) echo "Signed-off-by rejected" ;;
     push-workflow-permission) echo "Push rejected — workflows permission" ;;
     push-rejected) echo "Push rejected" ;;
+    push-failed) echo "Push failed" ;;
     pr-creation-failed) echo "PR creation failed" ;;
     branch-validation) echo "Branch validation failed" ;;
     setup-error) echo "Setup error" ;;
@@ -270,11 +292,12 @@ report_post_failure_to_issue() {
     "code" "${exit_code}" "${category}" "${detail}" \
     "${REPO_FULL_NAME}" "/fs-code")"
 
-  echo "::warning::Posting failure comment to issue #${safe_issue_number}..."
-  gh issue comment "${ISSUE_NUMBER}" \
+  gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
+  if ! gh issue comment "${ISSUE_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null || \
-    echo "::warning::Failed to post error comment to issue #${safe_issue_number}"
+    --body "${body}" 2>/dev/null; then
+    gha_echo warning "Failed to post error comment to issue #${safe_issue_number} (check issues:write on PUSH_TOKEN)"
+  fi
 }
 
 report_post_failure_to_pr() {
@@ -298,11 +321,12 @@ report_post_failure_to_pr() {
     "fix" "${exit_code}" "${category}" "${detail}" \
     "${REPO_FULL_NAME}" "/fs-fix")"
 
-  echo "::warning::Posting failure comment to PR #${safe_pr_number}..."
-  gh pr comment "${PR_NUMBER}" \
+  gha_echo warning "Posting failure comment to PR #${safe_pr_number}..."
+  if ! gh pr comment "${PR_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null || \
-    echo "::warning::Failed to post error comment to PR #${safe_pr_number}"
+    --body "${body}" 2>/dev/null; then
+    gha_echo warning "Failed to post error comment to PR #${safe_pr_number} (check pull-requests:write on PUSH_TOKEN)"
+  fi
 }
 
 post_fail_to_issue() {
@@ -528,10 +552,11 @@ INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
 
 # Fallback: these companion scripts were never migrated into this repo
 # during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
-# always misses. The reusable workflow's "Prepare workspace" step always
-# materializes the full scripts/ directory (from fullsend's own scaffold)
-# at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
-# (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
+# always misses. In current fullsend reusable-workflow layouts, the
+# "Prepare workspace" step typically materializes scripts/ at
+# ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
+# (per-repo) — see fullsend-ai/.fullsend reusable workflows. Try those paths
+# when the BASH_SOURCE-relative lookup misses.
 if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
   for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
     if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
@@ -793,10 +818,10 @@ echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
 
 # Apply ready-for-review label so the review agent is dispatched via the
-# issues.labeled path. The pull_request_target.opened event requires the PR
-# author to pass is_event_actor_authorized, which fails for bot accounts
-# (GitHub App bots have no collaborator role). The label-based path has no
-# explicit auth gate — label application itself requires write access.
+# issues.labeled path. pull_request_target.opened requires the PR author to
+# pass authorization checks that often exclude bot accounts; the label path
+# is used instead (label application requires repo write access). See
+# .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
 gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \

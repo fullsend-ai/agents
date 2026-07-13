@@ -4,7 +4,7 @@
 [[ -n "${PARENT_LIB_LOADED:-}" ]] && return 0
 PARENT_LIB_LOADED=1
 
-source "${SCRIPT_DIR}/lib/nested.lib.sh"
+source "nested.lib.sh"
 
 parent_fn() {
   nested_fn

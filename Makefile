@@ -25,9 +25,16 @@ script-build: $(BUNDLE_OUTS)
 scripts/%.sh: scripts/%.src.sh scripts/bundle-sh.sh
 	scripts/bundle-sh.sh -o $@ $<
 
-check-bundle: script-build
-	@git diff --exit-code -- $(BUNDLE_OUTS) || \
-	  (echo 'Bundled scripts are stale; run make script-build' >&2; exit 1)
+check-bundle:
+	@tmp=$$(mktemp -d); \
+	trap 'rm -rf "$$tmp"' EXIT; \
+	for src in $(BUNDLE_SRCS); do \
+	  out="$$tmp/$$(basename "$${src%.src.sh}.sh")"; \
+	  committed="scripts/$$(basename "$${src%.src.sh}.sh")"; \
+	  scripts/bundle-sh.sh -o "$$out" "$$src" || exit 1; \
+	  diff -u "$$committed" "$$out" >/dev/null || \
+	    { echo "Bundled script stale: $$committed (run make script-build)" >&2; exit 1; }; \
+	done
 
 SCRIPT_TEST_TARGET ?= source
 export SCRIPT_TEST_TARGET

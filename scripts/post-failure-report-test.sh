@@ -237,6 +237,109 @@ run_categorize_push_test "categorize-generic-push-rejected" \
   "error: failed to push some refs: non-fast-forward" \
   "push-rejected"
 
+run_categorize_push_test "categorize-unexpected-push-failed" \
+  "fatal: repository 'org/missing' not found" \
+  "push-failed"
+
+run_preserve_scoped_name_test() {
+  local test_name="$1"
+  local input="$2"
+  local must_contain="$3"
+
+  local actual
+  actual="$(sanitize_failure_detail "${input}")"
+
+  if ! echo "${actual}" | grep -qF "${must_contain}"; then
+    echo "FAIL: ${test_name}"
+    echo "  expected to preserve: '${must_contain}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_preserve_scoped_name_test "sanitize-preserves-scoped-names" \
+  "error: no member named 'foo' in namespace std::string" \
+  "std::string"
+
+run_sanitize_test "sanitize-redacts-bearer-token" \
+  "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig" \
+  "eyJhbGciOiJIUzI1NiJ9"
+
+run_sanitize_test "sanitize-redacts-pem-block" \
+  $'-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEAfake\n-----END RSA PRIVATE KEY-----' \
+  "MIIEowIBAAKCAQEAfake"
+
+run_push_token_redaction_test() {
+  local test_name="$1"
+  local token="$2"
+  local input="$3"
+
+  local actual
+  export PUSH_TOKEN="${token}"
+  actual="$(sanitize_failure_detail "${input}")"
+  unset PUSH_TOKEN
+
+  if echo "${actual}" | grep -qF "${token}"; then
+    echo "FAIL: ${test_name}"
+    echo "  sanitized output still contains literal PUSH_TOKEN"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_push_token_redaction_test "sanitize-redacts-literal-push-token" \
+  "test-secret-token-value-12345" \
+  "push failed: auth test-secret-token-value-12345 invalid"
+
+run_report_post_failure_test() {
+  local test_name="$1"
+  local mock_bin="$2"
+
+  local actual rc=0
+  export PUSH_TOKEN="ghp_test"
+  export GH_TOKEN=""
+  export REPO_FULL_NAME="my-org/my-repo"
+  export ISSUE_NUMBER="42"
+  export GITHUB_RUN_ID="99"
+  POST_FAILURE_REPORTED=false
+  set_post_failure "push-rejected" "push failed"
+  actual="$(PATH="${mock_bin}:${PATH}" report_post_failure_to_issue 1 2>&1)" || rc=$?
+  unset PUSH_TOKEN GH_TOKEN REPO_FULL_NAME ISSUE_NUMBER GITHUB_RUN_ID
+  POST_FAILURE_REPORTED=false
+  POST_FAILURE_CATEGORY=""
+  POST_FAILURE_DETAIL=""
+
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  report_post_failure_to_issue exited ${rc}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! printf '%s' "${actual}" | /usr/bin/grep -q 'issue comment'; then
+    echo "FAIL: ${test_name}"
+    echo "  expected gh issue comment invocation"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+MOCK_BIN="$(mktemp -d)/bin"
+mkdir -p "${MOCK_BIN}"
+cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "gh $*"
+exit 0
+MOCKEOF
+chmod +x "${MOCK_BIN}/gh"
+run_report_post_failure_test "report-post-failure-invokes-gh-issue-comment" "${MOCK_BIN}"
+rm -rf "$(dirname "${MOCK_BIN}")"
+
 echo ""
 if [ ${FAILURES} -gt 0 ]; then
   echo "${FAILURES} test(s) failed"

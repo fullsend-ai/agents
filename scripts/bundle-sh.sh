@@ -73,7 +73,7 @@ bundle_resolve_path() {
 
 bundle_is_lib() {
   local path="$1"
-  [[ "${path}" == */scripts/lib/*.lib.sh ]] || [[ "${path}" == */lib/*.lib.sh && "${path}" == *".lib.sh" ]]
+  [[ "${path}" == */scripts/lib/*.lib.sh ]]
 }
 
 bundle_lib_body() {

@@ -31,7 +31,8 @@
 #   - Apply labels (needs-human) if the iteration cap is approaching
 #
 # Required environment variables:
-#   PUSH_TOKEN        — token with contents:write + pull-requests:write
+#   PUSH_TOKEN        — token with contents:write + issues:write + pull-requests:write
+#                       on target repo (GitHub App installation token or PAT)
 #   REPO_FULL_NAME    — owner/repo
 #   PR_NUMBER         — PR number
 #   REPO_DIR          — path to extracted repo (default: current directory)
@@ -193,10 +194,11 @@ INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
 
 # Fallback: these companion scripts were never migrated into this repo
 # during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
-# always misses. The reusable workflow's "Prepare workspace" step always
-# materializes the full scripts/ directory (from fullsend's own scaffold)
-# at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
-# (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
+# always misses. In current fullsend reusable-workflow layouts, the
+# "Prepare workspace" step typically materializes scripts/ at
+# ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
+# (per-repo) — see fullsend-ai/.fullsend reusable workflows. Try those paths
+# when the BASH_SOURCE-relative lookup misses.
 if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
   for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
     if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
