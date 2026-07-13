@@ -200,14 +200,16 @@ INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
 # (per-repo) — see fullsend-ai/.fullsend reusable workflows. Try those paths
 # when the BASH_SOURCE-relative lookup misses.
 if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
-    if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
-       && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
-      RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
-      INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
-      break
-    fi
-  done
+  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+      if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
+         && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
+        RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
+        INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
+        break
+      fi
+    done
+  fi
 fi
 
 # Warn instead of silently skipping when the repo needs the auto-install but
@@ -364,12 +366,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
 
 if [ ! -f "${PROCESS_SCRIPT}" ]; then
-  for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
-    if [ -f "${_ws_candidate}/process-fix-result.py" ]; then
-      PROCESS_SCRIPT="${_ws_candidate}/process-fix-result.py"
-      break
-    fi
-  done
+  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+      if [ -f "${_ws_candidate}/process-fix-result.py" ]; then
+        PROCESS_SCRIPT="${_ws_candidate}/process-fix-result.py"
+        break
+      fi
+    done
+  fi
 fi
 
 # Find fix-result.json in the output directory.
