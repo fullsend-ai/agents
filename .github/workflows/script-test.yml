@@ -30,6 +30,6 @@ jobs:
           chmod +x /usr/local/bin/yq
 
       - name: Install test dependencies
-        run: uv pip install --system jsonschema==4.23.0
+        run: uv pip install --system jsonschema==4.23.0 gitlint-core==0.19.1
 
       - run: make script-test
