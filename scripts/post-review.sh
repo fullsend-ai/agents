@@ -309,16 +309,57 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Post the review. Exit code 10 = stale-head: the PR HEAD moved after the
-# agent reviewed it. When this happens, post a /fs-review comment to
-# re-dispatch a fresh review for the current HEAD.
+# Post the review with retry logic. Transient GitHub API errors (e.g. 422
+# during PR transitional states) can cause fullsend post-review to fail even
+# though the review comment was posted successfully. Retry with backoff to
+# handle these transient failures.
+#
+# Exit code 10 = stale-head: bypasses retry, handled separately below.
+# Other non-zero exit codes are retried up to POST_REVIEW_MAX_ATTEMPTS times.
+# If all retries are exhausted, attempt degraded-mode label fallback so the
+# PR is not left without an outcome label.
+#
+# Environment:
+#   POST_REVIEW_RETRY_DELAY — override backoff seconds for all retries
+#                             (default: 5s first retry, 15s second retry;
+#                              set to 0 in tests to skip sleep)
 # ---------------------------------------------------------------------------
+POST_REVIEW_MAX_ATTEMPTS=3
+
 POST_REVIEW_EXIT=0
-fullsend post-review \
-  --repo "${REPO_FULL_NAME}" \
-  --pr "${PR_NUMBER}" \
-  --token "${REVIEW_TOKEN}" \
-  --result "${RESULT_FILE}" || POST_REVIEW_EXIT=$?
+for _pr_attempt in $(seq 1 "${POST_REVIEW_MAX_ATTEMPTS}"); do
+  POST_REVIEW_EXIT=0
+  fullsend post-review \
+    --repo "${REPO_FULL_NAME}" \
+    --pr "${PR_NUMBER}" \
+    --token "${REVIEW_TOKEN}" \
+    --result "${RESULT_FILE}" || POST_REVIEW_EXIT=$?
+
+  # Exit code 10 = stale-head: bypass retry, handle below
+  if [ "${POST_REVIEW_EXIT}" -eq 10 ]; then
+    break
+  fi
+
+  # Success: no retry needed
+  if [ "${POST_REVIEW_EXIT}" -eq 0 ]; then
+    break
+  fi
+
+  # Non-zero, non-stale-head: log and retry if attempts remain
+  if [ "${_pr_attempt}" -lt "${POST_REVIEW_MAX_ATTEMPTS}" ]; then
+    if [ -n "${POST_REVIEW_RETRY_DELAY+x}" ]; then
+      _backoff="${POST_REVIEW_RETRY_DELAY}"
+    elif [ "${_pr_attempt}" -eq 1 ]; then
+      _backoff=5
+    else
+      _backoff=15
+    fi
+    echo "::warning::fullsend post-review attempt ${_pr_attempt}/${POST_REVIEW_MAX_ATTEMPTS} failed (exit ${POST_REVIEW_EXIT}) — retrying in ${_backoff}s"
+    sleep "${_backoff}"
+  else
+    echo "::warning::fullsend post-review attempt ${_pr_attempt}/${POST_REVIEW_MAX_ATTEMPTS} failed (exit ${POST_REVIEW_EXIT}) — all retries exhausted"
+  fi
+done
 
 if [ "${POST_REVIEW_EXIT}" -eq 10 ]; then
   echo "Stale-head detected — checking whether to re-dispatch review"
@@ -347,8 +388,59 @@ ${REDISPATCH_MARKER}" || echo "::warning::Failed to post re-dispatch comment"
   # appear as a failure.
   exit 0
 elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
-  echo "::error::fullsend post-review failed with exit code ${POST_REVIEW_EXIT} (PR #${PR_NUMBER} in ${REPO_FULL_NAME})" >&2
-  exit "${POST_REVIEW_EXIT}"
+  echo "::error::fullsend post-review failed after ${POST_REVIEW_MAX_ATTEMPTS} attempts (exit ${POST_REVIEW_EXIT}, PR #${PR_NUMBER} in ${REPO_FULL_NAME})" >&2
+
+  # Degraded-mode fallback: the review comment may have been posted even
+  # though the formal review API call failed (e.g. 422 during PR
+  # transitional state). Apply the outcome label directly so the PR is
+  # not left in limbo without a label.
+  echo "Attempting degraded-mode label fallback..."
+  _fallback_applied=false
+
+  # Remove stale outcome labels (mirrors normal post-review flow).
+  for _stale in "ready-for-merge" "requires-manual-review" "rejected"; do
+    gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --remove-label "${_stale}" 2>/dev/null || true
+  done
+
+  # Label logic mirrors the outcome-label block below — keep in sync.
+  if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+    gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
+      --description "All reviewers approved — ready to merge" --color "0E8A16" \
+      2>/dev/null || true
+    if gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --add-label "ready-for-merge"; then
+      _fallback_applied=true
+      echo "Degraded-mode fallback: applied ready-for-merge label"
+    fi
+  elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
+       [ "${ACTION}" = "comment" ]; then
+    gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
+      --description "Review requires human judgment" --color "FBCA04" \
+      2>/dev/null || true
+    if gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --add-label "requires-manual-review"; then
+      _fallback_applied=true
+      echo "Degraded-mode fallback: applied requires-manual-review label"
+    fi
+  elif [ "${ACTION}" = "reject" ]; then
+    gh label create "rejected" --repo "${REPO_FULL_NAME}" \
+      --description "Approach rejected by review agent" --color "B60205" \
+      2>/dev/null || true
+    if gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --add-label "rejected"; then
+      _fallback_applied=true
+      echo "Degraded-mode fallback: applied rejected label"
+    fi
+  fi
+
+  if [ "${_fallback_applied}" = "true" ]; then
+    echo "::warning::Formal review failed but outcome label applied via degraded-mode fallback"
+  else
+    echo "::warning::Degraded-mode label fallback not applicable (action=${ACTION})"
+  fi
+
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------

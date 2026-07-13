@@ -719,6 +719,167 @@ run_label_test_no_pattern "no-op-skip-ready-for-merge-removal" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
   "--remove-label ready-for-merge"
 
+# ---------------------------------------------------------------------------
+# Retry logic tests
+#
+# These tests verify that fullsend post-review is retried on transient
+# failures and that the degraded-mode label fallback works when retries
+# are exhausted.
+# ---------------------------------------------------------------------------
+
+# Create retry-aware mock directory with a fullsend binary that tracks
+# call counts and returns configured exit codes per invocation.
+RETRY_MOCK_BIN="${TMPDIR}/retry-bin"
+mkdir -p "${RETRY_MOCK_BIN}"
+
+# Copy the gh mock (it has GH_LOG baked in from the heredoc expansion).
+cp "${MOCK_BIN}/gh" "${RETRY_MOCK_BIN}/gh"
+
+# Retry-aware fullsend mock. Uses:
+#   MOCK_FULLSEND_COUNTER    — path to a file tracking invocation count
+#   MOCK_FULLSEND_EXIT_CODES — comma-separated exit codes per invocation
+# The heredoc is unquoted so ${GH_LOG} is baked in at creation time;
+# runtime variables are escaped with \$.
+cat > "${RETRY_MOCK_BIN}/fullsend" <<RETRYMOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "post-review" ]]; then
+  if [ -n "\${MOCK_FULLSEND_COUNTER:-}" ]; then
+    COUNT=0
+    if [ -f "\${MOCK_FULLSEND_COUNTER}" ]; then
+      COUNT=\$(<"\${MOCK_FULLSEND_COUNTER}")
+    fi
+    COUNT=\$((COUNT + 1))
+    echo "\${COUNT}" > "\${MOCK_FULLSEND_COUNTER}"
+
+    IFS=',' read -ra EXIT_CODES <<< "\${MOCK_FULLSEND_EXIT_CODES:-0}"
+    IDX=\$((COUNT - 1))
+    if [ "\${IDX}" -lt "\${#EXIT_CODES[@]}" ]; then
+      exit "\${EXIT_CODES[\$IDX]}"
+    fi
+    exit "\${EXIT_CODES[\${#EXIT_CODES[@]}-1]}"
+  fi
+fi
+echo "fullsend \$*" >> "${GH_LOG}"
+RETRYMOCKEOF
+chmod +x "${RETRY_MOCK_BIN}/fullsend"
+
+run_retry_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local exit_codes="$3"        # comma-separated fullsend exit codes per attempt
+  local expected_exit="$4"     # expected script exit code
+  local expected_calls="$5"    # expected number of fullsend post-review calls
+  local expected_stdout="${6:-}"  # optional: pattern expected in stdout
+  local expected_gh_log="${7:-}"  # optional: pattern expected in GH_LOG
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local counter_file="${TMPDIR}/counter-${test_name}"
+  rm -f "${counter_file}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${RETRY_MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export POST_REVIEW_RETRY_DELAY=0
+    export MOCK_FULLSEND_COUNTER="${counter_file}"
+    export MOCK_FULLSEND_EXIT_CODES="${exit_codes}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [ "${exit_code}" -ne "${expected_exit}" ]; then
+    echo "FAIL: ${test_name} — expected exit ${expected_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local actual_count=0
+  if [ -f "${counter_file}" ]; then
+    actual_count=$(<"${counter_file}")
+  fi
+
+  if [ "${actual_count}" -ne "${expected_calls}" ]; then
+    echo "FAIL: ${test_name} — expected ${expected_calls} fullsend calls, got ${actual_count}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [ -n "${expected_stdout}" ]; then
+    if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  if [ -n "${expected_gh_log}" ]; then
+    if ! grep -qF -- "${expected_gh_log}" "${GH_LOG}"; then
+      echo "FAIL: ${test_name} — expected gh log '${expected_gh_log}' not found"
+      echo "Actual gh log:"
+      cat "${GH_LOG}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Retry test cases ---
+
+# Retry then succeed: fails twice, succeeds on 3rd attempt → exit 0, label applied
+run_retry_test "retry-then-succeed" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "1,1,0" "0" "3" \
+  "retrying in" "--add-label ready-for-merge"
+
+# Retries exhausted + fallback (approve): all 3 fail → exit 1, fallback label applied
+run_retry_test "retries-exhausted-fallback-approve" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "1,1,1" "1" "3" \
+  "Degraded-mode fallback: applied ready-for-merge" "--add-label ready-for-merge"
+
+# Retries exhausted + fallback (comment): all 3 fail → requires-manual-review
+run_retry_test "retries-exhausted-fallback-comment" \
+  '{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Split review"}' \
+  "1,1,1" "1" "3" \
+  "Degraded-mode fallback: applied requires-manual-review" "--add-label requires-manual-review"
+
+# Retries exhausted (request-changes): no fallback label applicable
+run_retry_test "retries-exhausted-no-fallback-label" \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Changes needed","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}]}' \
+  "1,1,1" "1" "3" \
+  "Degraded-mode label fallback not applicable"
+
+# Stale-head bypass: exit code 10 → no retry, stale-head handler runs
+run_retry_test "stale-head-no-retry" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "10" "0" "1" \
+  "Stale-head detected"
+
+# Retry logging: fails once then succeeds → verify log format
+run_retry_test "retry-logging" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "1,0" "0" "2" \
+  "attempt 1/3 failed (exit 1)"
+
+# All-retries-exhausted logging: verify exhaustion message
+run_retry_test "retry-exhaustion-logging" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "1,1,1" "1" "3" \
+  "all retries exhausted"
+
 # --- Summary ---
 
 echo ""
