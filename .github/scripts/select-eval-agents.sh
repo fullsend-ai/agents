@@ -41,7 +41,7 @@ extract_refs() {
       (.plugins[]?),
       .forge.github.pre_script, .forge.github.post_script
     ] | .[] | select(. != null)
-  ' "$harness_file" 2>/dev/null | grep -v '^\$' | sort -u
+  ' "$harness_file" | grep -v '^\$' | sort -u
 }
 
 # For each harness file with an eval config, check if any changed file is relevant.
@@ -49,11 +49,25 @@ for harness_file in "$REPO_ROOT"/harness/*.yaml; do
   [[ -f "$harness_file" ]] || continue
   agent="$(basename "$harness_file" .yaml)"
 
+  # Validate agent name — defense against injection via malicious filenames
+  if [[ ! "$agent" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    echo "::error::Invalid agent name: $agent" >&2
+    exit 1
+  fi
+
   # Only consider agents that have eval configs
   [[ -f "$REPO_ROOT/eval/$agent/eval.yaml" ]] || continue
 
   # Collect all paths this agent cares about
-  mapfile -t REFS < <(extract_refs "$harness_file")
+  if ! refs_output=$(extract_refs "$harness_file"); then
+    echo "::error::Failed to parse $harness_file" >&2
+    exit 1
+  fi
+  if [[ -n "$refs_output" ]]; then
+    mapfile -t REFS <<< "$refs_output"
+  else
+    REFS=()
+  fi
 
   selected=false
   for changed in "${CHANGED_FILES[@]}"; do

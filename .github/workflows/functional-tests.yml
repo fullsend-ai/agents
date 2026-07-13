@@ -111,11 +111,17 @@ jobs:
               echo "::warning::Failed to fetch PR files — running all functional tests as a precaution"
               exit 0
             }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::PR file list returned $FILE_COUNT files (possible truncation) — running all functional tests as a precaution"
+              exit 0
+            fi
           fi
+          DELIM="ghadelim_$(openssl rand -hex 8)"
           {
-            echo 'files<<GHEOF'
+            echo "files<<${DELIM}"
             echo "$FILES"
-            echo 'GHEOF'
+            echo "${DELIM}"
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -127,6 +133,7 @@ jobs:
       - name: Install yq
         run: |
           curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          echo "0fb28c6680193c41b364193d0c0fc4a03177aecde51cfc04d506b1517158c2fb  /usr/local/bin/yq" | sha256sum -c
           chmod +x /usr/local/bin/yq
 
       - name: Select eval agents
@@ -135,7 +142,7 @@ jobs:
           CHANGED_FILES: ${{ steps.changes.outputs.files }}
         run: |
           if [ -n "$CHANGED_FILES" ]; then
-            AGENTS=$(echo "$CHANGED_FILES" | .github/scripts/select-eval-agents.sh)
+            AGENTS=$(echo "$CHANGED_FILES" | bash .github/scripts/select-eval-agents.sh)
           else
             # push/workflow_dispatch: run all agents with eval configs
             AGENTS=$(for d in eval/*/eval.yaml; do basename "$(dirname "$d")"; done)
@@ -184,6 +191,7 @@ jobs:
       - name: Install yq
         run: |
           curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          echo "0fb28c6680193c41b364193d0c0fc4a03177aecde51cfc04d506b1517158c2fb  /usr/local/bin/yq" | sha256sum -c
           chmod +x /usr/local/bin/yq
 
       - name: Configure git identity
@@ -310,7 +318,8 @@ jobs:
           CLOUD_ML_REGION: ${{ vars.EVALS_GCP_REGION }}
           EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
           FULLSEND_DIR: ${{ github.workspace }}
-        run: ./eval/run-functional.sh ${{ matrix.agent }}
+          AGENT: ${{ matrix.agent }}
+        run: ./eval/run-functional.sh "$AGENT"
 
       - name: Scrub secrets from eval results
         if: always() && steps.secrets-check.outputs.available == 'true'
@@ -338,9 +347,15 @@ jobs:
     timeout-minutes: 1
     steps:
       - name: Check results
+        env:
+          DETECT_RESULT: ${{ needs.detect.result }}
+          TESTS_RESULT: ${{ needs.functional-tests.result }}
         run: |
-          result="${{ needs.functional-tests.result }}"
-          if [ "$result" = "failure" ] || [ "$result" = "cancelled" ]; then
-            echo "::error::One or more functional tests ${result}"
+          if [ "$DETECT_RESULT" = "failure" ] || [ "$DETECT_RESULT" = "cancelled" ]; then
+            echo "::error::Detect job ${DETECT_RESULT}"
+            exit 1
+          fi
+          if [ "$TESTS_RESULT" = "failure" ] || [ "$TESTS_RESULT" = "cancelled" ]; then
+            echo "::error::One or more functional tests ${TESTS_RESULT}"
             exit 1
           fi

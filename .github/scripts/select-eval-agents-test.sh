@@ -301,6 +301,34 @@ fi
 cleanup_fixture "$FIXTURE"
 
 # ---------------------------------------------------------------------------
+# Test: malformed harness YAML causes failure (not silent skip)
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+echo "not: valid: yaml: [[[" > "$FIXTURE/harness/triage.yaml"
+if OUTPUT=$(echo "agents/triage.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" 2>&1); then
+  fail "malformed YAML should cause nonzero exit (got success, output: '$OUTPUT')"
+else
+  pass "malformed YAML causes nonzero exit"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: invalid agent name (contains special chars) causes failure
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+mkdir -p "$FIXTURE/harness" "$FIXTURE/eval/bad\$(name)/cases"
+echo "agent: agents/bad.md" > "$FIXTURE/harness/bad\$(name).yaml"
+echo "dataset: {}" > "$FIXTURE/eval/bad\$(name)/eval.yaml"
+if OUTPUT=$(echo "agents/bad.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" 2>&1); then
+  fail "invalid agent name should cause nonzero exit (got success, output: '$OUTPUT')"
+else
+  pass "invalid agent name causes nonzero exit"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
