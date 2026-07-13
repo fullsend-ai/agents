@@ -117,14 +117,16 @@ INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
 # at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
 # (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
 if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  for _ws_candidate in "${GITHUB_WORKSPACE:-}/scripts" "${GITHUB_WORKSPACE:-}/.fullsend/scripts"; do
-    if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
-       && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
-      RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
-      INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
-      break
-    fi
-  done
+  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+      if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
+         && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
+        RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
+        INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
+        break
+      fi
+    done
+  fi
 fi
 
 # Warn instead of silently skipping when the repo needs the auto-install but

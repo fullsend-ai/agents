@@ -68,7 +68,7 @@ SCORE_PY="${HARNESS_DIR}/skills/eval-run/scripts/score.py"
 for script in "$WORKSPACE_PY" "$EXECUTE_PY" "$SCORE_PY"; do
   if [[ ! -f "$script" ]]; then
     echo "ERROR: harness script not found: $script" >&2
-    echo "       Run: git submodule update --init eval/.agent-eval-harness" >&2
+    echo "       Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness" >&2
     exit 1
   fi
 done

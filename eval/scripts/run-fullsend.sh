@@ -28,6 +28,7 @@ FIXTURE_TYPE="${FIXTURE_TYPE:?FIXTURE_TYPE is required (set by before_each hook)
 # Clone the ephemeral repo as the target for fullsend run.
 # The hook already created it and pushed content.
 EPHEMERAL_REPO="${EPHEMERAL_REPO:?EPHEMERAL_REPO is required}"
+FIXTURE_NUMBER="${FIXTURE_NUMBER:?FIXTURE_NUMBER is required (set by before_each hook)}"
 TARGET_DIR=$(mktemp -d)
 GH_CRED_HELPER='!f(){ echo "password=${GH_TOKEN}"; };f'
 git -c "credential.helper=${GH_CRED_HELPER}" \
@@ -52,7 +53,11 @@ install -m 0600 /dev/null "$ENV_FILE"
 
   case "$FIXTURE_TYPE" in
     issue)        echo "GITHUB_ISSUE_URL=${FIXTURE_URL}" ;;
-    pull_request) echo "GITHUB_PR_URL=${FIXTURE_URL}" ;;
+    pull_request)
+      echo "GITHUB_PR_URL=${FIXTURE_URL}"
+      echo "PR_NUMBER=${FIXTURE_NUMBER}"
+      echo "REPO_FULL_NAME=${EPHEMERAL_REPO}"
+      ;;
   esac
 
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && echo "ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID}"

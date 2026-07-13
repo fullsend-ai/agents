@@ -37,10 +37,14 @@ outcome and the post-script applies the corresponding label.
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
-| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Triggers the [code agent](code.md). |
+| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). |
 | `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the post-script closes the issue. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
+| `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
+| `question` | The issue is a question rather than a bug or feature request. |
+| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
+| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.
@@ -79,7 +83,7 @@ invent labels or apply labels not listed here.
 ## Control labels (never recommend these)
 
 These are managed by the triage pipeline. Never include them in `label_actions`:
-`needs-info`, `ready-to-code`, `duplicate`, `blocked`, `triaged`.
+`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`.
 
 ## Area labels
 

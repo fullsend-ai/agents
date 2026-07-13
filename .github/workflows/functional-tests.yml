@@ -9,13 +9,18 @@ permissions: {}
 on:
   push:
     branches: [main]
-    # SYNC-WITH: grep regex in "Check for functional-test-relevant changes" step
     paths:
       - 'eval/**'
       - 'agents/**'
       - 'harness/**'
       - 'scripts/**'
       - 'schemas/**'
+      - 'env/**'
+      - 'common/**'
+      - 'policies/**'
+      - 'skills/**'
+      - 'plugins/**'
+      - 'docs/**'
       - '.github/workflows/functional-tests.yml'
       - '.github/scripts/**'
       - 'config.yaml'
@@ -64,23 +69,25 @@ jobs:
           pr_author_association: ${{ github.event.pull_request.author_association }}
           pr_author_login: ${{ github.event.pull_request.user.login }}
 
-  functional-tests:
-    # For pull_request_target, runs only when gate sets authorized=true.
-    # Do not treat a skipped gate as authorized.
-    # This job checks out untrusted PR head code — no pull-requests: write here.
+  # ---------------------------------------------------------------------------
+  # Detect which agents need functional testing based on changed files.
+  # Lightweight job: checkout + yq + select-eval-agents.sh → JSON array.
+  # ---------------------------------------------------------------------------
+  detect:
     needs: gate
     if: >-
       !cancelled() &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      agents: ${{ steps.agents.outputs.agents }}
     steps:
-      - name: Check for functional-test-relevant changes
+      - name: Get changed files
         id: changes
-        if: github.event_name == 'pull_request_target' || github.event_name == 'merge_group'
+        if: github.event_name != 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
@@ -88,36 +95,95 @@ jobs:
           REPO: ${{ github.repository }}
           MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
-        # SYNC-WITH: push.paths filter above
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.event.after }}
         run: |
           if [ "$EVENT_NAME" = "merge_group" ]; then
             FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
-              echo "::warning::Failed to fetch merge group files — running functional tests as a precaution"
-              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::Failed to fetch merge group files — running all functional tests as a precaution"
               exit 0
             }
             FILE_COUNT=$(echo "$FILES" | wc -l)
             if [ "$FILE_COUNT" -ge 300 ]; then
-              echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running functional tests as a precaution"
-              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
+              exit 0
+            fi
+          elif [ "$EVENT_NAME" = "push" ]; then
+            FILES=$(gh api "repos/${REPO}/compare/${PUSH_BEFORE}...${PUSH_AFTER}" --jq '.files[].filename') || {
+              echo "::warning::Failed to fetch push diff — running all functional tests as a precaution"
+              exit 0
+            }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::Push diff returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
               exit 0
             fi
           else
             FILES=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename') || {
-              echo "::warning::Failed to fetch PR files — running functional tests as a precaution"
-              echo "relevant=true" >> "$GITHUB_OUTPUT"
+              echo "::warning::Failed to fetch PR files — running all functional tests as a precaution"
               exit 0
             }
+            FILE_COUNT=$(echo "$FILES" | wc -l)
+            if [ "$FILE_COUNT" -ge 300 ]; then
+              echo "::warning::PR file list returned $FILE_COUNT files (possible truncation) — running all functional tests as a precaution"
+              exit 0
+            fi
           fi
-          if echo "$FILES" | grep -qE '^eval/|^agents/|^harness/|^scripts/|^schemas/|^\.github/workflows/functional-tests\.yml$|^\.github/scripts/|^config\.yaml$'; then
-            echo "relevant=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::No functional-test-relevant files changed — skipping tests"
-            echo "relevant=false" >> "$GITHUB_OUTPUT"
-          fi
+          DELIM="ghadelim_$(openssl rand -hex 8)"
+          {
+            echo "files<<${DELIM}"
+            echo "$FILES"
+            echo "${DELIM}"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        if: steps.changes.outputs.relevant != 'false'
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+      - name: Install yq
+        run: |
+          curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          echo "0fb28c6680193c41b364193d0c0fc4a03177aecde51cfc04d506b1517158c2fb  /usr/local/bin/yq" | sha256sum -c
+          chmod +x /usr/local/bin/yq
+
+      - name: Select eval agents
+        id: agents
+        env:
+          CHANGED_FILES: ${{ steps.changes.outputs.files }}
+        run: |
+          if [ -n "$CHANGED_FILES" ]; then
+            AGENTS=$(echo "$CHANGED_FILES" | bash .github/scripts/select-eval-agents.sh)
+          else
+            # workflow_dispatch: run all agents with eval configs
+            AGENTS=$(for d in eval/*/eval.yaml; do basename "$(dirname "$d")"; done)
+          fi
+          JSON=$(echo "$AGENTS" | jq -Rsc '[split("\n")[] | select(length > 0)]')
+          echo "agents=$JSON" >> "$GITHUB_OUTPUT"
+          echo "Selected agents: $JSON"
+
+  # ---------------------------------------------------------------------------
+  # Run functional tests — one matrix leg per agent, in parallel.
+  # Each leg does full setup (python, fullsend, podman, etc.) independently.
+  # ---------------------------------------------------------------------------
+  functional-tests:
+    needs: [gate, detect]
+    if: >-
+      !cancelled() &&
+      needs.detect.outputs.agents != '[]' &&
+      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: ${{ fromJSON(needs.detect.outputs.agents) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
@@ -125,32 +191,27 @@ jobs:
           submodules: true
 
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        if: steps.changes.outputs.relevant != 'false'
         with:
           python-version: "3.12"
 
       - name: Install uv
-        if: steps.changes.outputs.relevant != 'false'
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install agent-eval-harness
-        if: steps.changes.outputs.relevant != 'false'
         run: uv pip install --system -e 'eval/.agent-eval-harness[anthropic]'
 
       - name: Install yq
-        if: steps.changes.outputs.relevant != 'false'
         run: |
           curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          echo "0fb28c6680193c41b364193d0c0fc4a03177aecde51cfc04d506b1517158c2fb  /usr/local/bin/yq" | sha256sum -c
           chmod +x /usr/local/bin/yq
 
       - name: Configure git identity
-        if: steps.changes.outputs.relevant != 'false'
         run: |
           git config --global user.name "fullsend-eval[bot]"
           git config --global user.email "fullsend-eval[bot]@users.noreply.github.com"
 
       - name: Install fullsend
-        if: steps.changes.outputs.relevant != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -174,7 +235,6 @@ jobs:
           fullsend --version
 
       - name: Configure OpenShell gateway
-        if: steps.changes.outputs.relevant != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -197,7 +257,6 @@ jobs:
           EOF
 
       - name: Install OpenShell CLI
-        if: steps.changes.outputs.relevant != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -208,20 +267,17 @@ jobs:
           "${SCRIPT_DIR}/install-openshell.sh"
 
       - name: Install Podman
-        if: steps.changes.outputs.relevant != 'false'
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
 
       - name: Configure rootless Podman
-        if: steps.changes.outputs.relevant != 'false'
         run: |
           whoami_user="$(whoami)"
           grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
           podman system migrate
 
       - name: Start Podman API service
-        if: steps.changes.outputs.relevant != 'false'
         run: |
           SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
           if [ ! -S "${SOCKET_PATH}" ]; then
@@ -235,11 +291,9 @@ jobs:
           fi
 
       - name: Install validation dependencies
-        if: steps.changes.outputs.relevant != 'false'
         run: pip install --quiet "jsonschema>=4.18.0"
 
       - name: Check for secrets
-        if: steps.changes.outputs.relevant != 'false'
         id: secrets-check
         run: |
           if [ -z "$WIF_PROVIDER" ]; then
@@ -252,14 +306,14 @@ jobs:
           WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
 
       - name: Authenticate to GCP
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: steps.secrets-check.outputs.available == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
 
       - name: Prepare sandbox credentials
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: steps.secrets-check.outputs.available == 'true'
         run: |
           echo "HOST_GOOGLE_APPLICATION_CREDENTIALS=$GOOGLE_APPLICATION_CREDENTIALS" >> "$GITHUB_ENV"
           if [[ -f scripts/prepare-sandbox-credentials.sh ]]; then
@@ -267,7 +321,7 @@ jobs:
           fi
 
       - name: Run functional tests
-        if: steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: steps.secrets-check.outputs.available == 'true'
         env:
           EVAL_ORG: ${{ vars.EVAL_ORG }}
           GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
@@ -276,18 +330,49 @@ jobs:
           CLOUD_ML_REGION: ${{ vars.EVALS_GCP_REGION }}
           EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
           FULLSEND_DIR: ${{ github.workspace }}
-        run: ./eval/run-functional.sh triage
+          AGENT: ${{ matrix.agent }}
+        run: ./eval/run-functional.sh "$AGENT"
 
       - name: Scrub secrets from eval results
-        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: always() && steps.secrets-check.outputs.available == 'true'
         run: find eval/runs/ -name '.eval-env' -delete 2>/dev/null || true; find /tmp/agent-eval/ -name '.eval-env' -delete 2>/dev/null || true
 
       - name: Upload eval results
-        if: always() && steps.changes.outputs.relevant != 'false' && steps.secrets-check.outputs.available == 'true'
+        if: always() && steps.secrets-check.outputs.available == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: eval-results
+          name: eval-results-${{ matrix.agent }}
           path: |
             eval/runs/
             !eval/runs/**/.eval-env
           retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Roll-up job with a stable name for branch protection required checks.
+  # Require "functional-tests-complete" in repo settings — it handles all
+  # dynamic matrix shapes including empty (no agents to test).
+  # ---------------------------------------------------------------------------
+  functional-tests-complete:
+    needs: [gate, detect, functional-tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Check results
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+          DETECT_RESULT: ${{ needs.detect.result }}
+          TESTS_RESULT: ${{ needs.functional-tests.result }}
+        run: |
+          if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
+            echo "::error::Gate job ${GATE_RESULT}"
+            exit 1
+          fi
+          if [ "$DETECT_RESULT" = "failure" ] || [ "$DETECT_RESULT" = "cancelled" ]; then
+            echo "::error::Detect job ${DETECT_RESULT}"
+            exit 1
+          fi
+          if [ "$TESTS_RESULT" = "failure" ] || [ "$TESTS_RESULT" = "cancelled" ]; then
+            echo "::error::One or more functional tests ${TESTS_RESULT}"
+            exit 1
+          fi
