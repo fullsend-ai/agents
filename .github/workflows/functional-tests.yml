@@ -73,7 +73,7 @@ jobs:
       !cancelled() &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 65
     permissions:
       contents: read
       id-token: write

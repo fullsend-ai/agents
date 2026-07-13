@@ -5,7 +5,7 @@ skill: review
 
 execution:
   mode: case
-  timeout: 1200  # 20 min — agent timeout is 20 min, plus setup/teardown
+  timeout: 1500  # 25 min — agent timeout is 20 min, plus 5 min buffer for setup/teardown
   parallelism: 4
   env:
     EVAL_ORG: $EVAL_ORG
