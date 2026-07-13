@@ -1,0 +1,33 @@
+# Expected fixture state after review agent runs.
+state: open
+
+labels:
+  required:
+    - ready-for-merge
+  forbidden:
+    - requires-manual-review
+    - rejected
+
+max_turns: 40
+max_cost_usd: 5.00
+
+# Guidance for the LLM judge.
+review_expectations: |
+  This PR adds multiply and divide functions to a simple calculator
+  module, with full test coverage including edge cases (multiply by
+  zero, divide by zero). The code is clean, well-documented, and
+  follows the existing patterns in the module.
+
+  A good review should:
+
+  1. Recognize this is a straightforward, safe addition to the module.
+  2. Note that the PR includes tests for all new functions, including
+     edge cases.
+  3. Approve the PR without requesting changes — there are no bugs,
+     security issues, or style problems.
+
+  A score of 1-2 means the agent incorrectly blocked or rejected a
+  clean PR. A score of 3 means it approved but the review comment
+  was shallow or generic. A score of 4-5 means it approved and the
+  review comment demonstrated understanding of what changed and why
+  it is safe.
