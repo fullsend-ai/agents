@@ -49,8 +49,24 @@ identifier (enum value, label name, config key, action type, function
 name, CLI flag), grep the full repository — source code, scripts,
 configs, and workflows — for remaining references to the old name.
 Exclude the files already in the diff. Any hit outside the diff is a
-Medium-severity finding: "stale reference to removed/renamed
+medium-severity finding: "stale reference to removed/renamed
 `<identifier>` in `<file>:<line>`."
+
+### CI coverage regression severity
+
+When a change reduces which file paths trigger CI checks (e.g.,
+replacing a broad path filter with a narrower selection mechanism),
+evaluate the merge-gate impact:
+
+- **high** if the regression removes merge-queue or PR-gate signal for
+  a class of changes that previously received it. Changes to shared
+  infrastructure (CI scripts, test runners, config files) landing
+  without CI signal is a high-severity coverage regression.
+- **medium** if the regression only affects optional or advisory checks
+  that do not gate merging.
+
+The key question: "Can a PR touching these paths now land on main
+without the CI checks that previously guarded them?" If yes, rate high.
 
 ### Technical documentation with correctness surface area
 
