@@ -347,6 +347,29 @@ fi
 cleanup_fixture "$FIXTURE"
 
 # ---------------------------------------------------------------------------
+# Test: harness with all variable refs does not fail (grep -v exits 1)
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+# Overwrite triage harness so every tracked field is a variable
+cat > "$FIXTURE/harness/triage.yaml" << 'YAML'
+agent: ${AGENT_PATH}
+doc: ${DOC_PATH}
+policy: ${POLICY_PATH}
+host_files:
+  - src: ${CREDS}
+    dest: /tmp/creds
+YAML
+# Changing the harness file itself should still select the agent
+RESULT=$(echo "harness/triage.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "all-variable harness does not fail; harness change still selects agent"
+else
+  fail "all-variable harness does not fail; harness change still selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
 # Test: empty stdin selects nothing
 # ---------------------------------------------------------------------------
 run_test
