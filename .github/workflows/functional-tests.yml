@@ -69,19 +69,21 @@ jobs:
           pr_author_association: ${{ github.event.pull_request.author_association }}
           pr_author_login: ${{ github.event.pull_request.user.login }}
 
-  functional-tests:
-    # For pull_request_target, runs only when gate sets authorized=true.
-    # Do not treat a skipped gate as authorized.
-    # This job checks out untrusted PR head code — no pull-requests: write here.
+  # ---------------------------------------------------------------------------
+  # Detect which agents need functional testing based on changed files.
+  # Lightweight job: checkout + yq + select-eval-agents.sh → JSON array.
+  # ---------------------------------------------------------------------------
+  detect:
     needs: gate
     if: >-
       !cancelled() &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 5
     permissions:
       contents: read
-      id-token: write
+    outputs:
+      agents: ${{ steps.agents.outputs.agents }}
     steps:
       - name: Get changed files
         id: changes
@@ -121,17 +123,6 @@ jobs:
           ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
-          submodules: true
-
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
-
-      - name: Install agent-eval-harness
-        run: uv pip install --system -e 'eval/.agent-eval-harness[anthropic]'
 
       - name: Install yq
         run: |
@@ -149,25 +140,58 @@ jobs:
             # push/workflow_dispatch: run all agents with eval configs
             AGENTS=$(for d in eval/*/eval.yaml; do basename "$(dirname "$d")"; done)
           fi
-          if [ -z "$AGENTS" ]; then
-            echo "::notice::No agents need functional testing for these changes"
-          else
-            echo "Selected agents: $(echo "$AGENTS" | tr '\n' ' ')"
-          fi
-          {
-            echo 'agents<<GHEOF'
-            echo "$AGENTS"
-            echo 'GHEOF'
-          } >> "$GITHUB_OUTPUT"
+          JSON=$(echo "$AGENTS" | jq -Rsc '[split("\n")[] | select(length > 0)]')
+          echo "agents=$JSON" >> "$GITHUB_OUTPUT"
+          echo "Selected agents: $JSON"
+
+  # ---------------------------------------------------------------------------
+  # Run functional tests — one matrix leg per agent, in parallel.
+  # Each leg does full setup (python, fullsend, podman, etc.) independently.
+  # ---------------------------------------------------------------------------
+  functional-tests:
+    needs: [gate, detect]
+    if: >-
+      !cancelled() &&
+      needs.detect.outputs.agents != '[]' &&
+      (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        agent: ${{ fromJSON(needs.detect.outputs.agents) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          submodules: true
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Install agent-eval-harness
+        run: uv pip install --system -e 'eval/.agent-eval-harness[anthropic]'
+
+      - name: Install yq
+        run: |
+          curl -sSfL "https://github.com/mikefarah/yq/releases/download/v4.47.1/yq_linux_amd64" -o /usr/local/bin/yq
+          chmod +x /usr/local/bin/yq
 
       - name: Configure git identity
-        if: steps.agents.outputs.agents != ''
         run: |
           git config --global user.name "fullsend-eval[bot]"
           git config --global user.email "fullsend-eval[bot]@users.noreply.github.com"
 
       - name: Install fullsend
-        if: steps.agents.outputs.agents != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -191,7 +215,6 @@ jobs:
           fullsend --version
 
       - name: Configure OpenShell gateway
-        if: steps.agents.outputs.agents != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -214,7 +237,6 @@ jobs:
           EOF
 
       - name: Install OpenShell CLI
-        if: steps.agents.outputs.agents != ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -225,20 +247,17 @@ jobs:
           "${SCRIPT_DIR}/install-openshell.sh"
 
       - name: Install Podman
-        if: steps.agents.outputs.agents != ''
         run: |
           sudo apt-get update
           sudo apt-get install -y podman
 
       - name: Configure rootless Podman
-        if: steps.agents.outputs.agents != ''
         run: |
           whoami_user="$(whoami)"
           grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
           podman system migrate
 
       - name: Start Podman API service
-        if: steps.agents.outputs.agents != ''
         run: |
           SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
           if [ ! -S "${SOCKET_PATH}" ]; then
@@ -252,11 +271,9 @@ jobs:
           fi
 
       - name: Install validation dependencies
-        if: steps.agents.outputs.agents != ''
         run: pip install --quiet "jsonschema>=4.18.0"
 
       - name: Check for secrets
-        if: steps.agents.outputs.agents != ''
         id: secrets-check
         run: |
           if [ -z "$WIF_PROVIDER" ]; then
@@ -269,14 +286,14 @@ jobs:
           WIF_PROVIDER: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
 
       - name: Authenticate to GCP
-        if: steps.agents.outputs.agents != '' && steps.secrets-check.outputs.available == 'true'
+        if: steps.secrets-check.outputs.available == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.E2E_GCP_WIF_PROVIDER }}
           service_account: ${{ secrets.E2E_GCP_SERVICE_ACCOUNT }}
 
       - name: Prepare sandbox credentials
-        if: steps.agents.outputs.agents != '' && steps.secrets-check.outputs.available == 'true'
+        if: steps.secrets-check.outputs.available == 'true'
         run: |
           echo "HOST_GOOGLE_APPLICATION_CREDENTIALS=$GOOGLE_APPLICATION_CREDENTIALS" >> "$GITHUB_ENV"
           if [[ -f scripts/prepare-sandbox-credentials.sh ]]; then
@@ -284,7 +301,7 @@ jobs:
           fi
 
       - name: Run functional tests
-        if: steps.agents.outputs.agents != '' && steps.secrets-check.outputs.available == 'true'
+        if: steps.secrets-check.outputs.available == 'true'
         env:
           EVAL_ORG: ${{ vars.EVAL_ORG }}
           GH_TOKEN: ${{ secrets.EVAL_GH_TOKEN }}
@@ -293,27 +310,36 @@ jobs:
           CLOUD_ML_REGION: ${{ vars.EVALS_GCP_REGION }}
           EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
           FULLSEND_DIR: ${{ github.workspace }}
-          SELECTED_AGENTS: ${{ steps.agents.outputs.agents }}
-        run: |
-          echo "$SELECTED_AGENTS" | while read -r agent; do
-            [ -z "$agent" ] && continue
-            echo ""
-            echo "=========================================="
-            echo "Running functional tests: $agent"
-            echo "=========================================="
-            ./eval/run-functional.sh "$agent"
-          done
+        run: ./eval/run-functional.sh ${{ matrix.agent }}
 
       - name: Scrub secrets from eval results
-        if: always() && steps.agents.outputs.agents != '' && steps.secrets-check.outputs.available == 'true'
+        if: always() && steps.secrets-check.outputs.available == 'true'
         run: find eval/runs/ -name '.eval-env' -delete 2>/dev/null || true; find /tmp/agent-eval/ -name '.eval-env' -delete 2>/dev/null || true
 
       - name: Upload eval results
-        if: always() && steps.agents.outputs.agents != '' && steps.secrets-check.outputs.available == 'true'
+        if: always() && steps.secrets-check.outputs.available == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: eval-results
+          name: eval-results-${{ matrix.agent }}
           path: |
             eval/runs/
             !eval/runs/**/.eval-env
           retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Roll-up job with a stable name for branch protection required checks.
+  # Require "functional-tests-complete" in repo settings — it handles all
+  # dynamic matrix shapes including empty (no agents to test).
+  # ---------------------------------------------------------------------------
+  functional-tests-complete:
+    needs: [detect, functional-tests]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Check results
+        run: |
+          if [ "${{ needs.functional-tests.result }}" = "failure" ]; then
+            echo "::error::One or more functional tests failed"
+            exit 1
+          fi
