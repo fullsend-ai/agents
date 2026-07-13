@@ -79,7 +79,7 @@ remove_label() {
 # add or remove these via label_actions. This list covers labels that the
 # pipeline itself applies (pre-triage.sh resets the first five; the action
 # handlers apply blocked/triaged/feature).
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug")
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation")
 
 is_control_label() {
   local label="$1"
@@ -321,7 +321,13 @@ ${FAILED_CREATES}"
         echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
         DEFERRED_LABEL="ready-to-code"
         ;;
-      documentation|performance)
+      documentation)
+        echo "Applying documentation label..."
+        add_label "documentation"
+        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
+        DEFERRED_LABEL="ready-to-code"
+        ;;
+      performance)
         echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
         DEFERRED_LABEL="ready-to-code"
         ;;
