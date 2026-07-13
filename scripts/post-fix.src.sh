@@ -80,7 +80,7 @@ trap 'report_post_failure_to_pr' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
-    echo "::error::Extracted repo not found at ${REPO_DIR}" >&2
+    gha_echo error "Extracted repo not found at ${REPO_DIR}" >&2
     post_fail_to_pr setup-error "Extracted repo not found at ${REPO_DIR}"
   fi
   cd "${REPO_DIR}"
@@ -96,8 +96,8 @@ echo "::add-mask::${PUSH_TOKEN}"
 BRANCH="$(git branch --show-current)"
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
-  echo "::warning::Agent did not produce a commit on a feature branch (current: '${BRANCH:-detached HEAD}')"
-  echo "::warning::Processing structured output only (no push)."
+  gha_echo warning "Agent did not produce a commit on a feature branch (current: '${BRANCH:-detached HEAD}')"
+  gha_echo warning "Processing structured output only (no push)."
   # Still process fix-result.json to post a summary comment.
   NO_PUSH=true
 else
@@ -112,7 +112,7 @@ DIFF_BASE="${PRE_AGENT_HEAD:-$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)}"
 CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..HEAD" 2>/dev/null || true)"
 
 if [ -z "${CHANGED_FILES}" ] && [ "${NO_PUSH}" = "false" ]; then
-  echo "::warning::No changed files in agent's commit(s) — nothing to push"
+  gha_echo warning "No changed files in agent's commit(s) — nothing to push"
   NO_PUSH=true
 fi
 
@@ -127,7 +127,7 @@ MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MER
 if [ -n "${MERGE_BASE}" ]; then
   BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
 else
-  echo "::warning::Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
+  gha_echo warning "Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
   BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
     || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 fi
@@ -213,9 +213,9 @@ fi
 # as a confusing "Executable X not found" pre-commit failure.
 if [ -f .pre-commit-config.yaml ] \
    && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
-  echo "::warning::Pre-commit tool auto-install skipped: companion scripts not found"
-  echo "::warning::Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
-  echo "::warning::Pre-commit hooks requiring system tools (e.g. lychee) may fail"
+  gha_echo warning "Pre-commit tool auto-install skipped: companion scripts not found"
+  gha_echo warning "Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
+  gha_echo warning "Pre-commit hooks requiring system tools (e.g. lychee) may fail"
 fi
 
 if [ -f .pre-commit-config.yaml ] \
@@ -232,7 +232,7 @@ if [ -f .pre-commit-config.yaml ] \
       bash "${INSTALL_SCRIPT}" "${MANIFEST}"
     fi
   else
-    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+    gha_echo warning "Pre-commit tool resolution failed — continuing without auto-install"
   fi
   rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
@@ -248,7 +248,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
     pip install "pre-commit==4.5.1" 2>/dev/null \
       || pip3 install "pre-commit==4.5.1" 2>/dev/null \
       || pipx install "pre-commit==4.5.1" 2>/dev/null \
-      || echo "::warning::Failed to install pre-commit"
+      || gha_echo warning "Failed to install pre-commit"
   fi
 
   if command -v pre-commit >/dev/null 2>&1; then
@@ -266,7 +266,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
       # Scope detection/staging to changed_array so hooks can't inject files
       # outside the pre-commit scope into the commit.
       if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
-        echo "::warning::Pre-commit hooks auto-fixed files — re-staging and retrying"
+        gha_echo warning "Pre-commit hooks auto-fixed files — re-staging and retrying"
         echo "Auto-fixed files:"
         git diff --name-only -- "${changed_array[@]}" | sed 's/^/  /'
         git diff --name-only -z -- "${changed_array[@]}" | xargs -0 -r git add --
@@ -311,7 +311,7 @@ if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
       fi
     fi
   else
-    echo "::warning::pre-commit not available — skipping authoritative check"
+    gha_echo warning "pre-commit not available — skipping authoritative check"
   fi
 fi
 
@@ -332,7 +332,7 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   if [ "${PUSH_RC}" -ne 0 ]; then
     if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
-      echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+      gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
       FORCE_PUSH_OUTPUT=""
       if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
         print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
@@ -384,9 +384,9 @@ for dir in "${RUN_DIR}"/iteration-*/output; do
 done
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
-  echo "::warning::No fix-result.json found — skipping summary comment"
+  gha_echo warning "No fix-result.json found — skipping summary comment"
 elif [ ! -f "${PROCESS_SCRIPT}" ]; then
-  echo "::warning::process-fix-result.py not found at ${PROCESS_SCRIPT} — skipping"
+  gha_echo warning "process-fix-result.py not found at ${PROCESS_SCRIPT} — skipping"
 else
   # Scan fix-result.json for secrets before posting content as a PR comment.
   # The agent could have been tricked into embedding sensitive data in the
@@ -409,7 +409,7 @@ else
     post_fail_to_pr process-output-failed \
       "process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}"
   elif [ "${PROCESS_EXIT}" -ne 0 ]; then
-    echo "::warning::process-fix-result.py exited ${PROCESS_EXIT} — continuing with labels/summary"
+    gha_echo warning "process-fix-result.py exited ${PROCESS_EXIT} — continuing with labels/summary"
   fi
 fi
 
@@ -424,7 +424,7 @@ WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 # autonomous review→fix loop needs human direction. Human-triggered /fs-fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
-  echo "::warning::Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
   gh label create "needs-human" --repo "${REPO_FULL_NAME}" \
     --description "Agent loop needs human intervention" --color "D93F0B" \
     2>/dev/null || true

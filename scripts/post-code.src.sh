@@ -62,7 +62,7 @@ trap 'report_post_failure_to_issue' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
-    echo "::error::Extracted repo not found at ${REPO_DIR}" >&2
+    gha_echo error "Extracted repo not found at ${REPO_DIR}" >&2
     post_fail_to_issue setup-error "Extracted repo not found at ${REPO_DIR}"
   fi
   cd "${REPO_DIR}"
@@ -116,7 +116,7 @@ echo "::add-mask::${PUSH_TOKEN}"
 BRANCH="$(git branch --show-current)"
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
-  echo "::notice::Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}') — nothing to do"
+  gha_echo notice "Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}') — nothing to do"
   exit 0
 fi
 
@@ -130,13 +130,13 @@ MERGE_BASE="$(git merge-base "origin/${TARGET_BRANCH}" HEAD 2>/dev/null)" || MER
 if [ -n "${MERGE_BASE}" ]; then
   CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
 else
-  echo "::warning::Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
+  gha_echo warning "Could not determine merge-base — trying origin/${TARGET_BRANCH}..HEAD"
   CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
     || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then
-  echo "::notice::No changed files in agent's commit(s) — nothing to do"
+  gha_echo notice "No changed files in agent's commit(s) — nothing to do"
   exit 0
 fi
 
@@ -162,13 +162,13 @@ for file in ${CHANGED_FILES}; do
     esac
   done
   if [ "${is_artifact}" = "true" ]; then
-    echo "::warning::Stripping agent artifact from commit: ${file}"
+    gha_echo warning "Stripping agent artifact from commit: ${file}"
     STRIPPED_FILES="${STRIPPED_FILES} ${file}"
   fi
 done
 
 if [ -n "${STRIPPED_FILES}" ]; then
-  echo "::warning::Agent committed working directory artifacts — stripping before push"
+  gha_echo warning "Agent committed working directory artifacts — stripping before push"
   # shellcheck disable=SC2086
   git rm --cached --quiet ${STRIPPED_FILES}
   git commit --amend --no-edit
@@ -191,7 +191,7 @@ if [ -n "${STRIPPED_FILES}" ]; then
   CHANGED_FILES="${CLEAN_FILES}"
 
   if [ -z "${CHANGED_FILES}" ]; then
-    echo "::notice::All changed files were agent artifacts — nothing to push"
+    gha_echo notice "All changed files were agent artifacts — nothing to push"
     exit 0
   fi
 fi
@@ -269,9 +269,9 @@ fi
 # as a confusing "Executable X not found" pre-commit failure.
 if [ -f .pre-commit-config.yaml ] \
    && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
-  echo "::warning::Pre-commit tool auto-install skipped: companion scripts not found"
-  echo "::warning::Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
-  echo "::warning::Pre-commit hooks requiring system tools (e.g. lychee) may fail"
+  gha_echo warning "Pre-commit tool auto-install skipped: companion scripts not found"
+  gha_echo warning "Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
+  gha_echo warning "Pre-commit hooks requiring system tools (e.g. lychee) may fail"
 fi
 
 if [ -f .pre-commit-config.yaml ] \
@@ -288,7 +288,7 @@ if [ -f .pre-commit-config.yaml ] \
       bash "${INSTALL_SCRIPT}" "${MANIFEST}"
     fi
   else
-    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+    gha_echo warning "Pre-commit tool resolution failed — continuing without auto-install"
   fi
   rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
@@ -305,7 +305,7 @@ if [ -f .pre-commit-config.yaml ]; then
     pip install "pre-commit==4.5.1" 2>/dev/null \
       || pip3 install "pre-commit==4.5.1" 2>/dev/null \
       || pipx install "pre-commit==4.5.1" 2>/dev/null \
-      || echo "::warning::Failed to install pre-commit"
+      || gha_echo warning "Failed to install pre-commit"
   fi
 
   if command -v pre-commit >/dev/null 2>&1; then
@@ -323,7 +323,7 @@ if [ -f .pre-commit-config.yaml ]; then
       # Scope detection/staging to changed_array so hooks can't inject files
       # outside the pre-commit scope into the commit.
       if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
-        echo "::warning::Pre-commit hooks auto-fixed files — re-staging and retrying"
+        gha_echo warning "Pre-commit hooks auto-fixed files — re-staging and retrying"
         echo "Auto-fixed files:"
         git diff --name-only -- "${changed_array[@]}" | sed 's/^/  /'
         git diff --name-only -z -- "${changed_array[@]}" | xargs -0 -r git add --
@@ -368,8 +368,8 @@ if [ -f .pre-commit-config.yaml ]; then
       fi
     fi
   else
-    echo "::warning::pre-commit not available on runner — skipping authoritative check"
-    echo "::warning::CI pre-commit will still run on the PR"
+    gha_echo warning "pre-commit not available on runner — skipping authoritative check"
+    gha_echo warning "CI pre-commit will still run on the PR"
   fi
 else
   echo "No .pre-commit-config.yaml — skipping pre-commit check"
@@ -399,7 +399,7 @@ if [ -n "${REMOTE_REF}" ]; then
   if [ -z "${OPEN_PR}" ]; then
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
     git push origin --delete "${BRANCH}" 2>&1 || \
-      echo "::warning::Failed to delete stale remote branch ${BRANCH}"
+      gha_echo warning "Failed to delete stale remote branch ${BRANCH}"
   else
     echo "Open PR #${OPEN_PR} uses ${BRANCH} — keeping remote branch"
   fi
@@ -414,7 +414,7 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
-    echo "::warning::Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     FORCE_PUSH_OUTPUT=""
     if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
@@ -522,4 +522,4 @@ PR_NUMBER_FROM_URL="${PR_URL##*/}"
 gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \
   --add-label "ready-for-review" 2>/dev/null || \
-  echo "::warning::Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+  gha_echo warning "Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"

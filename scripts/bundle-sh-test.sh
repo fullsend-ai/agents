@@ -75,6 +75,15 @@ run_bundle_test "simple" "${FIXTURES}/simple.src.sh"
 # --- nested bundle executes ---
 run_bundle_test "nested" "${FIXTURES}/nested.src.sh"
 
+# --- cross-dedup: parent sources nested; src also sources nested once ---
+OUT="${TMPDIR}/cross-dedup.sh"
+"${BUNDLER}" -o "${OUT}" "${FIXTURES}/cross-dedup.src.sh"
+CONTENT="$(cat "${OUT}")"
+assert_contains "cross-dedup-includes-nested-once" "nested_fn()" "${CONTENT}"
+assert_eq "cross-dedup-nested-fn-count" "1" "$(printf '%s' "${CONTENT}" | grep -c '^nested_fn()')"
+bash "${OUT}"
+echo "PASS: cross-dedup-executes"
+
 # --- dedup: second source becomes comment ---
 OUT="${TMPDIR}/dedup.sh"
 "${BUNDLER}" -o "${OUT}" "${FIXTURES}/dedup.src.sh"

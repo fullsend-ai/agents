@@ -45,6 +45,13 @@ print_sanitized_gha_log() {
   fi
 }
 
+# Emit a GitHub Actions workflow command with a sanitised message body.
+gha_echo() {
+  local level="$1"
+  shift
+  printf '::%s::%s\n' "${level}" "$(sanitize_gha_log_output "$*")"
+}
+
 _redact_multiline_pem() {
   awk '
     /-----BEGIN [A-Z ]*PRIVATE KEY-----/ {
