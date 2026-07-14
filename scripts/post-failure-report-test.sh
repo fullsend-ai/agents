@@ -270,7 +270,7 @@ run_sanitize_test "sanitize-redacts-bearer-token" \
 run_pem_redaction_test() {
   local test_name="$1"
   local pem_input="${2:-}"
-  local pem_end pem_input_default
+  local pem_end
 
   if [ -z "${pem_input}" ]; then
     pem_input="$(printf '%s\n' \
@@ -383,9 +383,11 @@ MARKER_TMP="$(mktemp -d)"
 export RUNNER_TEMP="${MARKER_TMP}"
 export GITHUB_RUN_ID="marker-run-1"
 export ISSUE_NUMBER="77"
+# shellcheck disable=SC2034
 POST_FAILURE_REPORTED=false
 marker="$(_post_failure_marker_file issue "${ISSUE_NUMBER}")"
 _mark_post_failure_reported "${marker}"
+# shellcheck disable=SC2034
 POST_FAILURE_REPORTED=false
 if _should_skip_post_failure_report "${marker}"; then
   echo "PASS: post-failure-marker-dedups-across-re-source"
