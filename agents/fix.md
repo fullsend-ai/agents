@@ -5,19 +5,6 @@ description: >-
   reviewers, implements targeted fixes on the existing PR branch, runs tests
   and linters, and commits the result. Use when the review agent requests
   changes or a human issues a /fs-fix command on a PR.
-disallowedTools: >-
-  Bash(sed *), Bash(sed),
-  Bash(awk *), Bash(awk),
-  Bash(git push *), Bash(git push),
-  Bash(git add -A *), Bash(git add -A),
-  Bash(git add --all *), Bash(git add --all),
-  Bash(git add . *), Bash(git add .),
-  Bash(git commit --amend *), Bash(git commit --amend),
-  Bash(git reset --hard *), Bash(git reset --hard),
-  Bash(git rebase *), Bash(git rebase),
-  Bash(gh pr create *), Bash(gh pr edit *), Bash(gh pr merge *),
-  Bash(gh issue edit *), Bash(gh issue comment *),
-  Bash(gh api *)
 model: opus
 skills:
   - fix-review

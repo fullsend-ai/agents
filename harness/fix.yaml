@@ -6,7 +6,9 @@
 #   agent       : reads pre-fetched review body, fixes code, tests, scans, commits
 #   post_script : push commit, post summary comment on PR
 #
-# The agent NEVER pushes or creates PRs (disallowedTools enforces this).
+# The agent NEVER pushes or creates PRs. Enforcement: the sandbox
+# GH_TOKEN is read-only scoped, PUSH_TOKEN never enters the sandbox,
+# and network policy restricts git/gh binary access.
 # Only the post-script, running on the runner with PUSH_TOKEN, can write.
 agent: agents/fix.md
 doc: docs/fix.md

@@ -734,8 +734,8 @@ Closes #<number>"
 which gitlint &>/dev/null && gitlint --commit HEAD
 ```
 
-If gitlint fails, **undo and recommit** with a corrected message (`--amend`
-is blocked by `disallowedTools`):
+If gitlint fails, **undo and recommit** with a corrected message (do not
+use `--amend` — always create new commits to preserve attribution):
 
 ```bash
 git reset --soft HEAD~1
