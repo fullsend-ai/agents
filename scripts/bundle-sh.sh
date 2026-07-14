@@ -52,6 +52,18 @@ src_base="$(basename "${src_abs}")"
 
 declare -A BUNDLE_INCLUDED=()
 
+bundle_canonical_path() {
+  local path="$1"
+
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f "${path}" 2>/dev/null && return 0
+  fi
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "${path}" 2>/dev/null && return 0
+  fi
+  printf '%s' "${path}"
+}
+
 bundle_resolve_path() {
   local ref="$1"
   local base_dir="$2"
@@ -68,6 +80,9 @@ bundle_resolve_path() {
   fi
 
   candidate="$(cd "$(dirname "${candidate}")" && pwd)/$(basename "${candidate}")"
+  if [[ -e "${candidate}" || -L "${candidate}" ]]; then
+    candidate="$(bundle_canonical_path "${candidate}")"
+  fi
   printf '%s' "${candidate}"
 }
 

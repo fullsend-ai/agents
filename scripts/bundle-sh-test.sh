@@ -102,20 +102,39 @@ else
   echo "PASS: outside-lib-should-fail"
 fi
 
-# --- check-bundle detects drift when mtimes are equal ---
+# --- symlinked lib outside scripts/lib must fail ---
+SYMLINK_ROOT="${TMPDIR}/symlink-bundle"
+mkdir -p "${SYMLINK_ROOT}/scripts/lib" "${SYMLINK_ROOT}/outside"
+printf '%s\n' 'evil_fn() { echo evil; }' > "${SYMLINK_ROOT}/outside/evil.lib.sh"
+ln -sf "../../outside/evil.lib.sh" "${SYMLINK_ROOT}/scripts/lib/evil.lib.sh"
+cat > "${SYMLINK_ROOT}/scripts/symlink.src.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/evil.lib.sh"
+evil_fn
+EOF
+if "${BUNDLER}" -o "${TMPDIR}/symlink.sh" "${SYMLINK_ROOT}/scripts/symlink.src.sh" 2>/dev/null; then
+  echo "FAIL: symlink-lib-should-fail"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: symlink-lib-should-fail"
+fi
+
+# --- check-bundle detects drift when mtimes are equal (temp copy only) ---
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CORRUPT_TARGET="${REPO_ROOT}/scripts/post-code.sh"
-CORRUPT_BACKUP="${TMPDIR}/post-code.sh.bak"
-cp "${CORRUPT_TARGET}" "${CORRUPT_BACKUP}"
-printf '\n# corrupt\n' >> "${CORRUPT_TARGET}"
-touch -r "${CORRUPT_BACKUP}" "${REPO_ROOT}/scripts/post-code.src.sh"
-if ( cd "${REPO_ROOT}" && make check-bundle >/dev/null 2>&1 ); then
+DRIFT_ROOT="${TMPDIR}/drift-check"
+mkdir -p "${DRIFT_ROOT}"
+cp "${REPO_ROOT}/Makefile" "${DRIFT_ROOT}/"
+cp -r "${REPO_ROOT}/scripts" "${DRIFT_ROOT}/"
+printf '\n# corrupt\n' >> "${DRIFT_ROOT}/scripts/post-code.sh"
+touch -r "${DRIFT_ROOT}/scripts/post-code.sh" "${DRIFT_ROOT}/scripts/post-code.src.sh"
+if ( cd "${DRIFT_ROOT}" && make check-bundle >/dev/null 2>&1 ); then
   echo "FAIL: check-bundle-should-detect-equal-mtime-drift"
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: check-bundle-detects-equal-mtime-drift"
 fi
-cp "${CORRUPT_BACKUP}" "${CORRUPT_TARGET}"
 
 # --- missing library fails ---
 if "${BUNDLER}" -o "${TMPDIR}/bad.sh" "${SCRIPT_DIR}/does-not-exist.src.sh" 2>/dev/null; then

@@ -123,18 +123,54 @@ gha_echo() {
 
 _redact_multiline_pem() {
   awk '
-    /-----BEGIN [A-Z ]*PRIVATE KEY-----/ {
+    function is_pem_begin(line) {
+      return tolower(line) ~ /-----begin .*private key-----/
+    }
+    function is_pem_end(line) {
+      return tolower(line) ~ /-----end .*private key-----/
+    }
+    is_pem_begin($0) {
       print "[REDACTED PRIVATE KEY]"
       in_pem = 1
       next
     }
-    /-----END [A-Z ]*PRIVATE KEY-----/ {
+    is_pem_end($0) {
       in_pem = 0
       next
     }
     in_pem { next }
     { print }
   '
+}
+
+_redact_literal_token() {
+  local detail="$1"
+  local token="$2"
+
+  if [ -z "${token}" ]; then
+    printf '%s' "${detail}"
+    return 0
+  fi
+
+  awk -v token="${token}" -v repl='[REDACTED]' '
+    {
+      s = $0
+      while ((i = index(s, token)) > 0) {
+        s = substr(s, 1, i - 1) repl substr(s, i + length(token))
+      }
+      print s
+    }
+  ' <<< "${detail}" | {
+    local line result=""
+    while IFS= read -r line || [ -n "${line}" ]; do
+      if [ -n "${result}" ]; then
+        result="${result}"$'\n'"${line}"
+      else
+        result="${line}"
+      fi
+    done
+    printf '%s' "${result}"
+  }
 }
 
 # Strip tokens and truncate noisy command output before posting publicly.
@@ -151,10 +187,10 @@ sanitize_failure_detail() {
     | _redact_multiline_pem)"
 
   if [ -n "${PUSH_TOKEN:-}" ]; then
-    detail="${detail//${PUSH_TOKEN}/[REDACTED]}"
+    detail="$(_redact_literal_token "${detail}" "${PUSH_TOKEN}")"
   fi
   if [ -n "${GH_TOKEN:-}" ] && [ "${GH_TOKEN}" != "${PUSH_TOKEN:-}" ]; then
-    detail="${detail//${GH_TOKEN}/[REDACTED]}"
+    detail="$(_redact_literal_token "${detail}" "${GH_TOKEN}")"
   fi
 
   detail="$(sanitize_comment_workflow_commands "${detail}")"
@@ -282,14 +318,52 @@ _post_failure_ensure_token() {
   fi
 }
 
-report_post_failure_to_issue() {
-  local exit_code="${1:-$?}"
-  local safe_issue_number
+_post_failure_marker_file() {
+  local kind="$1"
+  local id="$2"
+  local run_id="${GITHUB_RUN_ID:-}"
+
+  if [ -z "${run_id}" ]; then
+    printf ''
+    return 0
+  fi
+
+  printf '%s/post-failure-reported-%s-%s-%s' \
+    "${RUNNER_TEMP:-${TMPDIR:-/tmp}}" "${run_id}" "${kind}" "${id}"
+}
+
+_should_skip_post_failure_report() {
+  local marker="$1"
 
   if [ "${POST_FAILURE_REPORTED}" = "true" ]; then
     return 0
   fi
+  if [ -n "${marker}" ] && [ -f "${marker}" ]; then
+    return 0
+  fi
+  return 1
+}
+
+_mark_post_failure_reported() {
+  local marker="$1"
+
   POST_FAILURE_REPORTED=true
+  if [ -n "${marker}" ]; then
+    mkdir -p "$(dirname "${marker}")"
+    : > "${marker}"
+  fi
+}
+
+report_post_failure_to_issue() {
+  local exit_code="${1:-$?}"
+  local safe_issue_number
+  local marker
+
+  marker="$(_post_failure_marker_file issue "${ISSUE_NUMBER:-unknown}")"
+  if _should_skip_post_failure_report "${marker}"; then
+    return 0
+  fi
+  _mark_post_failure_reported "${marker}"
 
   _post_failure_ensure_token
 
@@ -314,11 +388,13 @@ report_post_failure_to_issue() {
 report_post_failure_to_pr() {
   local exit_code="${1:-$?}"
   local safe_pr_number
+  local marker
 
-  if [ "${POST_FAILURE_REPORTED}" = "true" ]; then
+  marker="$(_post_failure_marker_file pr "${PR_NUMBER:-unknown}")"
+  if _should_skip_post_failure_report "${marker}"; then
     return 0
   fi
-  POST_FAILURE_REPORTED=true
+  _mark_post_failure_reported "${marker}"
 
   _post_failure_ensure_token
 

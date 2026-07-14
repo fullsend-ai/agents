@@ -269,12 +269,18 @@ run_sanitize_test "sanitize-redacts-bearer-token" \
 
 run_pem_redaction_test() {
   local test_name="$1"
-  local pem_input pem_end
-  pem_input="$(printf '%s\n' \
-    "$(printf '%s%s %s %s-----' '-----' 'BEGIN RSA' 'PRIVATE' 'KEY')" \
-    "MIIEowIBAAKCAQEAfake" \
-    "$(printf '%s%s %s %s-----' '-----' 'END RSA' 'PRIVATE' 'KEY')")"
-  pem_end="MIIEowIBAAKCAQEAfake"
+  local pem_input="${2:-}"
+  local pem_end pem_input_default
+
+  if [ -z "${pem_input}" ]; then
+    pem_input="$(printf '%s\n' \
+      "$(printf '%s%s %s %s-----' '-----' 'BEGIN RSA' 'PRIVATE' 'KEY')" \
+      "MIIEowIBAAKCAQEAfake" \
+      "$(printf '%s%s %s %s-----' '-----' 'END RSA' 'PRIVATE' 'KEY')")"
+    pem_end="MIIEowIBAAKCAQEAfake"
+  else
+    pem_end="MIIEowIBAAKCAQEAfake"
+  fi
 
   local actual
   actual="$(sanitize_failure_detail "${pem_input}")"
@@ -296,6 +302,12 @@ run_pem_redaction_test() {
 }
 
 run_pem_redaction_test "sanitize-redacts-pem-block"
+
+run_pem_redaction_test "sanitize-redacts-lowercase-pem-block" \
+  "$(printf '%s\n' \
+    "-----begin rsa private key-----" \
+    "MIIEowIBAAKCAQEAfake" \
+    "-----end rsa private key-----")"
 
 run_push_token_redaction_test() {
   local test_name="$1"
@@ -320,6 +332,10 @@ run_push_token_redaction_test() {
 run_push_token_redaction_test "sanitize-redacts-literal-push-token" \
   "test-secret-token-value-12345" \
   "push failed: auth test-secret-token-value-12345 invalid"
+
+run_push_token_redaction_test "sanitize-redacts-literal-push-token-glob-chars" \
+  'tok*en?value' \
+  'push failed: tok*en?value invalid'
 
 run_report_post_failure_test() {
   local test_name="$1"
@@ -362,6 +378,24 @@ exit 0
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 run_report_post_failure_test "report-post-failure-invokes-gh-issue-comment" "${MOCK_BIN}"
+
+MARKER_TMP="$(mktemp -d)"
+export RUNNER_TEMP="${MARKER_TMP}"
+export GITHUB_RUN_ID="marker-run-1"
+export ISSUE_NUMBER="77"
+POST_FAILURE_REPORTED=false
+marker="$(_post_failure_marker_file issue "${ISSUE_NUMBER}")"
+_mark_post_failure_reported "${marker}"
+POST_FAILURE_REPORTED=false
+if _should_skip_post_failure_report "${marker}"; then
+  echo "PASS: post-failure-marker-dedups-across-re-source"
+else
+  echo "FAIL: post-failure-marker-dedups-across-re-source"
+  FAILURES=$((FAILURES + 1))
+fi
+unset RUNNER_TEMP GITHUB_RUN_ID ISSUE_NUMBER
+rm -rf "${MARKER_TMP}"
+
 rm -rf "$(dirname "${MOCK_BIN}")"
 
 echo ""
