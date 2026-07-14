@@ -54,12 +54,24 @@ declare -A BUNDLE_INCLUDED=()
 
 bundle_canonical_path() {
   local path="$1"
+  local canonical=""
 
   if command -v readlink >/dev/null 2>&1; then
-    readlink -f "${path}" 2>/dev/null && return 0
+    canonical="$(readlink -f "${path}" 2>/dev/null || true)"
+    if [ -n "${canonical}" ]; then
+      printf '%s' "${canonical}"
+      return 0
+    fi
   fi
   if command -v realpath >/dev/null 2>&1; then
-    realpath "${path}" 2>/dev/null && return 0
+    canonical="$(realpath "${path}" 2>/dev/null || true)"
+    if [ -n "${canonical}" ]; then
+      printf '%s' "${canonical}"
+      return 0
+    fi
+  fi
+  if [ -L "${path}" ]; then
+    echo "bundle-sh: warning: cannot canonicalize symlink (readlink/realpath unavailable): ${path}" >&2
   fi
   printf '%s' "${path}"
 }
@@ -126,7 +138,8 @@ bundle_expand_source() {
     -e 's/^[[:space:]]*'\''//; s/'\''[[:space:]]*$//' \
     -e 's/^\$\{SCRIPT_DIR[^}]*\}\///' \
     -e 's/^\$\{SCRIPT_DIR_POST[^}]*\}\///' \
-    -e 's/^\$\{SCRIPT_DIR[^}]*\}//')"
+    -e 's/^\$\{SCRIPT_DIR[^}]*\}//' \
+    -e 's/[[:space:]]+#.*$//')"
 
   if [[ -z "${ref}" ]]; then
     echo "bundle-sh: unsupported source expression: ${raw_expr}" >&2

@@ -100,7 +100,12 @@ _redact_literal_token() {
     return 0
   fi
 
-  awk -v token="${token}" -v repl='[REDACTED]' '
+  export REDACT_LITERAL_TOKEN="${token}"
+  awk '
+    BEGIN {
+      token = ENVIRON["REDACT_LITERAL_TOKEN"]
+      repl = "[REDACTED]"
+    }
     {
       s = $0
       while ((i = index(s, token)) > 0) {
@@ -119,6 +124,7 @@ _redact_literal_token() {
     done
     printf '%s' "${result}"
   }
+  unset REDACT_LITERAL_TOKEN
 }
 
 # Strip tokens and truncate noisy command output before posting publicly.

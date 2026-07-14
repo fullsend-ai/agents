@@ -337,6 +337,10 @@ run_push_token_redaction_test "sanitize-redacts-literal-push-token-glob-chars" \
   'tok*en?value' \
   'push failed: tok*en?value invalid'
 
+run_push_token_redaction_test "sanitize-redacts-literal-push-token-backslash" \
+  $'tok\\back' \
+  $'push failed: tok\\back invalid'
+
 run_report_post_failure_test() {
   local test_name="$1"
   local mock_bin="$2"
