@@ -68,6 +68,9 @@ POST_FAILURE_REPORT_SH_LOADED=1
 
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
+# Guard against duplicate posts within one script invocation (e.g. trap + explicit
+# call). Intentionally not deduped across workflow re-runs: the user should see
+# a fresh comment when they actively retry.
 POST_FAILURE_REPORTED=false
 POST_FAILURE_SECRET_SCAN_MESSAGE="Secret scan blocked the push. See workflow logs for details."
 
@@ -318,52 +321,14 @@ _post_failure_ensure_token() {
   fi
 }
 
-_post_failure_marker_file() {
-  local kind="$1"
-  local id="$2"
-  local run_id="${GITHUB_RUN_ID:-}"
-
-  if [ -z "${run_id}" ]; then
-    printf ''
-    return 0
-  fi
-
-  printf '%s/post-failure-reported-%s-%s-%s' \
-    "${RUNNER_TEMP:-${TMPDIR:-/tmp}}" "${run_id}" "${kind}" "${id}"
-}
-
-_should_skip_post_failure_report() {
-  local marker="$1"
+report_post_failure_to_issue() {
+  local exit_code="${1:-$?}"
+  local safe_issue_number
 
   if [ "${POST_FAILURE_REPORTED}" = "true" ]; then
     return 0
   fi
-  if [ -n "${marker}" ] && [ -f "${marker}" ]; then
-    return 0
-  fi
-  return 1
-}
-
-_mark_post_failure_reported() {
-  local marker="$1"
-
   POST_FAILURE_REPORTED=true
-  if [ -n "${marker}" ]; then
-    mkdir -p "$(dirname "${marker}")"
-    : > "${marker}"
-  fi
-}
-
-report_post_failure_to_issue() {
-  local exit_code="${1:-$?}"
-  local safe_issue_number
-  local marker
-
-  marker="$(_post_failure_marker_file issue "${ISSUE_NUMBER:-unknown}")"
-  if _should_skip_post_failure_report "${marker}"; then
-    return 0
-  fi
-  _mark_post_failure_reported "${marker}"
 
   _post_failure_ensure_token
 
@@ -388,13 +353,11 @@ report_post_failure_to_issue() {
 report_post_failure_to_pr() {
   local exit_code="${1:-$?}"
   local safe_pr_number
-  local marker
 
-  marker="$(_post_failure_marker_file pr "${PR_NUMBER:-unknown}")"
-  if _should_skip_post_failure_report "${marker}"; then
+  if [ "${POST_FAILURE_REPORTED}" = "true" ]; then
     return 0
   fi
-  _mark_post_failure_reported "${marker}"
+  POST_FAILURE_REPORTED=true
 
   _post_failure_ensure_token
 

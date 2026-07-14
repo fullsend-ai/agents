@@ -379,24 +379,22 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 run_report_post_failure_test "report-post-failure-invokes-gh-issue-comment" "${MOCK_BIN}"
 
-MARKER_TMP="$(mktemp -d)"
-export RUNNER_TEMP="${MARKER_TMP}"
-export GITHUB_RUN_ID="marker-run-1"
-export ISSUE_NUMBER="77"
+export PUSH_TOKEN="ghp_test"
+export REPO_FULL_NAME="my-org/my-repo"
+export ISSUE_NUMBER="42"
 # shellcheck disable=SC2034
 POST_FAILURE_REPORTED=false
-marker="$(_post_failure_marker_file issue "${ISSUE_NUMBER}")"
-_mark_post_failure_reported "${marker}"
-# shellcheck disable=SC2034
-POST_FAILURE_REPORTED=false
-if _should_skip_post_failure_report "${marker}"; then
-  echo "PASS: post-failure-marker-dedups-across-re-source"
+set_post_failure "push-rejected" "first"
+PATH="${MOCK_BIN}:${PATH}" report_post_failure_to_issue 1 >/dev/null
+call_count="$(PATH="${MOCK_BIN}:${PATH}" report_post_failure_to_issue 1 2>&1 | grep -c 'issue comment' || true)"
+if [ "${call_count}" -eq 0 ]; then
+  echo "PASS: post-failure-dedups-within-single-invocation"
 else
-  echo "FAIL: post-failure-marker-dedups-across-re-source"
+  echo "FAIL: post-failure-dedups-within-single-invocation"
+  echo "  expected second report_post_failure_to_issue call to be skipped"
   FAILURES=$((FAILURES + 1))
 fi
-unset RUNNER_TEMP GITHUB_RUN_ID ISSUE_NUMBER
-rm -rf "${MARKER_TMP}"
+unset PUSH_TOKEN REPO_FULL_NAME ISSUE_NUMBER
 
 rm -rf "$(dirname "${MOCK_BIN}")"
 
