@@ -149,10 +149,36 @@ case "${FIXTURE_TYPE}" in
       exit 0
     fi
 
+    # Prefer the branch tip from the git refs API: PR headRefOid can lag briefly
+    # after post-fix pushes, which falsely fails the new_commit judge.
+    head_ref=$(printf '%s' "$pr_raw" | jq -r '.headRefName // empty')
+    head_sha=$(printf '%s' "$pr_raw" | jq -r '.headRefOid // empty')
+    if [[ -n "$head_ref" ]]; then
+      if ref_sha=$(gh api "repos/${EPHEMERAL_REPO}/git/ref/heads/${head_ref}" \
+        --jq '.object.sha' 2>/dev/null); then
+        head_sha="$ref_sha"
+      fi
+      # If still equal to pre-agent baseline, poll briefly for the push to show up.
+      if [[ -n "$pre_agent_head" && "$head_sha" == "$pre_agent_head" ]]; then
+        echo "WARNING: PR/branch tip still equals pre_agent_head; polling for push..." >&2
+        for attempt in 1 2 3 4 5 6; do
+          sleep $((attempt))
+          if ref_sha=$(gh api "repos/${EPHEMERAL_REPO}/git/ref/heads/${head_ref}" \
+            --jq '.object.sha' 2>/dev/null); then
+            head_sha="$ref_sha"
+            if [[ "$head_sha" != "$pre_agent_head" ]]; then
+              break
+            fi
+          fi
+        done
+      fi
+    fi
+
     jq -n \
       --arg fixture_type "pull_request" \
       --arg fixture_url "$FIXTURE_URL" \
       --argjson pr "$pr_raw" \
+      --arg head_sha "$head_sha" \
       --arg pre_agent_head "$pre_agent_head" \
       '{
         fixture_type: $fixture_type,
@@ -167,7 +193,7 @@ case "${FIXTURE_TYPE}" in
         review_decision: $pr.reviewDecision,
         comments: [($pr.comments // [])[] | {author: .author.login, body: .body, created_at: .createdAt}],
         reviews: [($pr.reviews // [])[] | {author: .author.login, state: .state, body: .body}],
-        head_sha: $pr.headRefOid,
+        head_sha: (if $head_sha == "" then $pr.headRefOid else $head_sha end),
         head_ref: $pr.headRefName,
         files: [($pr.files // [])[] | .path],
         files_fetch_failed: false,
