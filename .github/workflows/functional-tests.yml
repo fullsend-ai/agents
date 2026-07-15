@@ -336,7 +336,7 @@ jobs:
       # Protected-path change (human review required): scrub eval artifacts before
       # upload so ::add-mask:: values (EVAL_GH_TOKEN) are not archived. See PR #184.
       - name: Scrub secrets from eval results
-        id: scrub_eval_results
+        id: scrub-eval-results
         if: always() && steps.secrets-check.outputs.available == 'true'
         run: bash eval/scripts/scrub-eval-results.sh eval/runs /tmp/agent-eval
 
@@ -345,7 +345,7 @@ jobs:
         if: >-
           always()
           && steps.secrets-check.outputs.available == 'true'
-          && steps.scrub_eval_results.outcome == 'success'
+          && steps.scrub-eval-results.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: eval-results-${{ matrix.agent }}
