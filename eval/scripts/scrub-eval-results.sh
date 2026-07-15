@@ -45,7 +45,8 @@ TOKEN_PATTERNS = [
     r"\bghs_[A-Za-z0-9_]{20,}",
     r"\bghr_[A-Za-z0-9_]{20,}",
     r"\bgithub_pat_[A-Za-z0-9_]{20,}",
-    r"x-access-token:[^@/\s]+@",
+    # Negative lookahead so redacted x-access-token:***@ does not fail closed.
+    r"x-access-token:(?!\*\*\*)[^@/\s]+@",
 ]
 TOKEN_RES = [re.compile(p) for p in TOKEN_PATTERNS]
 
