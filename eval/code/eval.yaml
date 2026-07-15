@@ -6,9 +6,8 @@ description: >
   access is read-only (reads + local commits still work; write/push stays
   on the runner).
 
-skill: code
-
 execution:
+  skill: code
   mode: case
   timeout: 2100  # code harness timeout_minutes is 35; leave headroom for setup/teardown
   parallelism: 1
