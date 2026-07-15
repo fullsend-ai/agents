@@ -54,9 +54,20 @@ git -c "credential.helper=${GH_CRED_HELPER}" \
   clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
+# Fix (and any PR-driven agent) must run on the PR branch, not main.
+if [[ "$FIXTURE_TYPE" == "pull_request" ]]; then
+  git -C "$TARGET_DIR" fetch origin "pull/${FIXTURE_NUMBER}/head:eval-pr-head"
+  git -C "$TARGET_DIR" checkout eval-pr-head
+fi
+PRE_AGENT_HEAD="$(git -C "$TARGET_DIR" rev-parse HEAD)"
+export PRE_AGENT_HEAD
+
+REVIEW_BODY_FILE=""
 cleanup() {
   # shellcheck disable=SC2317 # invoked indirectly via trap
   [[ -n "${ENV_FILE:-}" ]] && rm -f "$ENV_FILE"
+  # shellcheck disable=SC2317
+  [[ -n "${REVIEW_BODY_FILE:-}" && -f "${REVIEW_BODY_FILE:-}" ]] && rm -f "$REVIEW_BODY_FILE"
   # shellcheck disable=SC2317
   [[ -n "${EVAL_GH_WORKSPACE:-}" && -d "${EVAL_GH_WORKSPACE:-}" ]] && rm -rf "$EVAL_GH_WORKSPACE"
 }
@@ -115,6 +126,17 @@ install -m 0600 /dev/null "$ENV_FILE"
       ;;
   esac
 
+  if [[ "$AGENT" == "fix" ]]; then
+    REVIEW_BODY_FILE="$(mktemp)"
+    : > "$REVIEW_BODY_FILE"
+    emit_env "TRIGGER_SOURCE" "eval-human"
+    emit_env "HUMAN_INSTRUCTION" "calc.py's add() returns a - b instead of a + b. Change it to return a + b so the existing tests in tests/test_calc.py pass. Do not refactor beyond that fix."
+    emit_env "FIX_ITERATION" "1"
+    emit_env "TARGET_BRANCH" "main"
+    emit_env "PRE_AGENT_HEAD" "${PRE_AGENT_HEAD}"
+    emit_env "REVIEW_BODY_FILE" "${REVIEW_BODY_FILE}"
+  fi
+
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"
   [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]        && emit_env "GOOGLE_CLOUD_PROJECT" "${GOOGLE_CLOUD_PROJECT}"
   [[ -n "${CLOUD_ML_REGION:-}" ]]             && emit_env "CLOUD_ML_REGION" "${CLOUD_ML_REGION}"
@@ -125,6 +147,7 @@ FULLSEND_BIN="$(command -v fullsend)"
 EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 
 mkdir -p "$OUTPUT_DIR"
+printf '%s\n' "$PRE_AGENT_HEAD" > "${OUTPUT_DIR}/pre-agent-head.txt"
 
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \

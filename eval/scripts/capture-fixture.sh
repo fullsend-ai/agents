@@ -122,6 +122,9 @@ case "${FIXTURE_TYPE}" in
     # Optional: runner exported PRE_AGENT_HEAD into the hook env via forward-propagation
     # if we write it to .hook-outputs — for v1 read from process env if present.
     pre_agent_head="${PRE_AGENT_HEAD:-}"
+    if [[ -z "$pre_agent_head" && -f "${OUTPUT_DIR}/pre-agent-head.txt" ]]; then
+      pre_agent_head=$(cat "${OUTPUT_DIR}/pre-agent-head.txt")
+    fi
 
     jq -n \
       --arg fixture_type "pull_request" \
