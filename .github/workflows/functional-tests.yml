@@ -335,7 +335,7 @@ jobs:
 
       - name: Scrub secrets from eval results
         if: always() && steps.secrets-check.outputs.available == 'true'
-        run: find eval/runs/ -name '.eval-env' -delete 2>/dev/null || true; find /tmp/agent-eval/ -name '.eval-env' -delete 2>/dev/null || true
+        run: bash eval/scripts/scrub-eval-results.sh eval/runs /tmp/agent-eval
 
       - name: Upload eval results
         if: always() && steps.secrets-check.outputs.available == 'true'
