@@ -1,0 +1,169 @@
+name: code-eval
+description: >
+  Functional test of the fullsend code agent pipeline (pre → sandbox → post).
+  Validates the agent can implement a small issue and that the post-script
+  creates a PR. Acts as an end-to-end regression guard when sandbox GitHub
+  access is read-only (reads + local commits still work; write/push stays
+  on the runner).
+
+skill: code
+
+execution:
+  mode: case
+  timeout: 2100  # code harness timeout_minutes is 35; leave headroom for setup/teardown
+  parallelism: 1
+  env:
+    EVAL_ORG: $EVAL_ORG
+    GH_TOKEN: $GH_TOKEN
+    FULLSEND_DIR: $FULLSEND_DIR
+    EVAL_TIMEOUT: "2100"
+    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
+    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
+    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
+    CLOUD_ML_REGION: $CLOUD_ML_REGION
+
+hooks:
+  before_each:
+    - command: "setup-fixture.sh"
+      timeout: 120
+      description: "Create ephemeral repo and issue fixture"
+
+  after_each:
+    - command: "capture-fixture.sh"
+      timeout: 60
+      description: "Capture issue + PR state for judges"
+    - command: "teardown-fixture.sh"
+      timeout: 30
+      on_failure: continue
+      description: "Delete ephemeral repo"
+
+runner:
+  type: cli
+  command:
+    - "run-fullsend.sh"
+    - "{agent}"
+    - "{workspace}"
+    - "{output_dir}"
+  env:
+    FULLSEND_DIR: $FULLSEND_DIR
+    GH_TOKEN: $GH_TOKEN
+    EVAL_TIMEOUT: "2100"
+    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
+    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
+    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
+    CLOUD_ML_REGION: $CLOUD_ML_REGION
+
+models:
+  skill: claude-opus-4-6
+  judge: claude-opus-4-6
+
+dataset:
+  path: cases
+  schema: |
+    Each case directory contains:
+    - input.yaml: Issue fixture (title/body) against a small repo.
+    - annotations.yaml: Expected PR outcome and budgets.
+    - repo/: Directory (or symlink) with the git repo contents the agent sees.
+
+outputs:
+  - path: output
+    schema: |
+      fixture-state.json: Captured GitHub issue state plus any PRs opened
+      by the code post-script. Contains: state, labels, comments, pull_requests.
+
+# ---------------------------------------------------------------------------
+# Judges
+# ---------------------------------------------------------------------------
+judges:
+  - name: pr_created
+    description: Post-script must open at least one pull request (end-to-end success)
+    check: |
+      import json
+      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      prs = state.get("pull_requests") or []
+      if not prs:
+          return False, "No pull requests found — code agent/post-script did not create a PR"
+      openish = [p for p in prs if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
+      if not openish:
+          return False, f"PRs present but none open/merged: {prs}"
+      return True, f"PR created: {[p.get('url') for p in openish]}"
+
+  - name: expected_files
+    description: PR must touch files listed in annotations.expected_files (if any)
+    check: |
+      import json
+      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      expected = outputs.get("annotations", {}).get("expected_files") or []
+      if not expected:
+          return True, "No expected_files declared"
+      prs = state.get("pull_requests") or []
+      changed = set()
+      for pr in prs:
+          for path in pr.get("files") or []:
+              changed.add(path)
+      missing = [p for p in expected if p not in changed]
+      if missing:
+          return False, f"Expected files missing from PRs: {missing} (changed: {sorted(changed)})"
+      return True, f"All expected files present: {expected}"
+
+  - name: forbidden_labels
+    description: Labels listed in annotations.yaml forbidden list must NOT be present
+    check: |
+      import json
+      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      actual = [l.lower() for l in state.get("labels", [])]
+      forbidden = outputs.get("annotations", {}).get("labels", {}).get("forbidden", [])
+      if not forbidden:
+          return True, "No forbidden labels specified"
+      present = [l for l in forbidden if l.lower() in actual]
+      if present:
+          return False, f"Forbidden labels present: {present} (actual: {actual})"
+      return True, f"No forbidden labels found (checked: {forbidden})"
+
+  - name: max_turns
+    description: Agent must complete within the declared turn budget
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found"
+      metrics = json.loads(raw)
+      actual = metrics.get("num_turns")
+      if actual is None:
+          return False, "num_turns not present in metrics.json"
+      limit = outputs.get("annotations", {}).get("max_turns")
+      if limit is None:
+          return False, "max_turns not declared in annotations.yaml"
+      if int(actual) > int(limit):
+          return False, f"Exceeded max_turns: {actual} > {limit}"
+      return True, f"Turns OK: {actual} <= {limit}"
+
+  - name: max_cost
+    description: Agent must complete within the declared cost budget
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found"
+      metrics = json.loads(raw)
+      actual = metrics.get("total_cost_usd")
+      if actual is None:
+          return False, "total_cost_usd not present in metrics.json"
+      limit = outputs.get("annotations", {}).get("max_cost_usd")
+      if limit is None:
+          return False, "max_cost_usd not declared in annotations.yaml"
+      if float(actual) > float(limit):
+          return False, f"Exceeded max_cost_usd: {actual} > {limit}"
+      return True, f"Cost OK: {actual} <= {limit}"
+
+thresholds:
+  pr_created:
+    min_pass_rate: 1.0
+  expected_files:
+    min_pass_rate: 1.0
+  forbidden_labels:
+    min_pass_rate: 1.0
+  max_turns:
+    min_pass_rate: 1.0
+  max_cost:
+    min_pass_rate: 1.0
