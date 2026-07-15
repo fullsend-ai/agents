@@ -1,0 +1,31 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "feat: add basic calculator"
+  body: |
+    Adds a tiny calculator module with tests.
+
+    Note: add() currently appears wrong in review — please fix via /fs-fix if needed.
+  base: main
+  files:
+    - path: calc.py
+      content: |
+        # Tiny calculator — intentional off-by-operator bug for the fix eval.
+
+
+        def add(a: int, b: int) -> int:
+            """Return the sum of a and b."""
+            return a - b  # BUG: should be a + b
+    - path: tests/test_calc.py
+      content: |
+        """Tests for calc module."""
+
+        from calc import add
+
+
+        def test_add() -> None:
+            assert add(2, 3) == 5
+
+
+        def test_add_negative() -> None:
+            assert add(-1, -2) == -3
