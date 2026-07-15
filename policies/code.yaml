@@ -48,6 +48,14 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: read-only
+      # gh CLI uses POST /graphql for reads; protocol: graphql allows
+      # queries but blocks mutations at the AST level
+      - host: "api.github.com"
+        port: 443
+        protocol: graphql
+        enforcement: enforce
+        access: read-only
+        path: "/graphql"
       - host: "github.com"
         port: 443
         protocol: rest

@@ -176,26 +176,21 @@ in the PR diff, use this path prefix — not `/home/runner/work/` or any other p
 
 ## GitHub API
 
-The review token only has REST API permissions. **Always use `gh api`
-REST endpoints** to fetch PR and repository data. Do not use
-`gh pr view --json` or other `--json` subcommands — they use the
-GraphQL API and will fail with HTTP 403.
-
-Examples of correct usage:
+The review token has both REST and GraphQL (read-only) permissions.
+You may use `gh api` REST endpoints or `gh pr view --json` / `gh api graphql`
+for read operations. GraphQL mutations are blocked by the sandbox proxy.
 
 ```bash
-# PR metadata
+# REST examples
 gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}"
-
-# PR files (paginated, 100 per page)
 gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100"
-
-# PR diff
 gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" \
   -H "Accept: application/vnd.github.v3.diff"
-
-# Issue metadata
 gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}"
+
+# GraphQL examples
+gh pr view "${PR_NUMBER}" --json title,body,files,reviews
+gh api graphql -f query='{ repository(owner:"OWNER", name:"REPO") { pullRequest(number:123) { title } } }'
 ```
 
 ## Constraints
