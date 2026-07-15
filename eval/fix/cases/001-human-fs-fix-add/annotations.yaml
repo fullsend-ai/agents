@@ -1,0 +1,15 @@
+state: open
+
+expected_files:
+  - calc.py
+
+labels:
+  forbidden: []
+
+max_turns: 80
+max_cost_usd: 8.00
+
+fix_expectations: |
+  Human-triggered fix: HUMAN_INSTRUCTION tells the agent that add() subtracts
+  instead of adds. Success is a new commit on the existing PR branch that
+  touches calc.py (post-fix push). PRE_AGENT_HEAD is the fixture commit SHA.
