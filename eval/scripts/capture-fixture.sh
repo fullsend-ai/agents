@@ -25,18 +25,78 @@ OUTPUT_DIR="${CASE_WORKSPACE}/output"
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="${OUTPUT_DIR}/fixture-state.json"
 
+# Run a command up to 3 times; print stdout on success. Used for flaky gh calls.
+retry_cmd() {
+  local attempt out
+  for attempt in 1 2 3; do
+    if out=$("$@" 2>/dev/null); then
+      printf '%s' "$out"
+      return 0
+    fi
+    # Skip sleep after the final attempt.
+    [[ $attempt -lt 3 ]] && sleep $((attempt))
+  done
+  return 1
+}
+
+# Best-effort gh pr view for changed file paths. On persistent failure returns
+# non-zero so callers can record files_fetch_failed instead of a silent [].
+fetch_pr_files() {
+  local num="$1"
+  local files
+  if files=$(retry_cmd gh pr view "$num" --repo "$EPHEMERAL_REPO" --json files \
+    --jq '[(.files // [])[].path]'); then
+    printf '%s' "$files"
+    return 0
+  fi
+  return 1
+}
+
 case "${FIXTURE_TYPE}" in
   issue)
     issue_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
       --json state,labels,assignees,milestone,title)
     comments_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
       | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
+    # Code agent post-script opens exactly one PR today; --limit 1 is enough.
+    # Raise the limit (or filter by headRefName) if a future case opens multiple.
+    # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
+    if ! prs_json=$(gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 1 \
+      --json number,title,url,state,headRefName,baseRefName 2>/dev/null); then
+      echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO}; recording pull_requests=[]" >&2
+      prs_json='[]'
+    fi
+    if [[ -z "$prs_json" ]]; then
+      prs_json='[]'
+    fi
+
+    pr_lines=()
+    while IFS= read -r pr; do
+      [[ -z "$pr" ]] && continue
+      num=$(echo "$pr" | jq -r '.number')
+      if files=$(fetch_pr_files "$num"); then
+        pr_lines+=("$(echo "$pr" | jq -c --argjson files "$files" \
+          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false}
+           | del(.headRefName, .baseRefName)')")
+      else
+        echo "WARNING: gh pr view failed for PR #${num}; marking files_fetch_failed" >&2
+        pr_lines+=("$(echo "$pr" | jq -c \
+          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true}
+           | del(.headRefName, .baseRefName)')")
+      fi
+    done < <(echo "$prs_json" | jq -c '.[]')
+    if [[ ${#pr_lines[@]} -eq 0 ]]; then
+      prs_with_files='[]'
+    else
+      prs_with_files=$(printf '%s\n' "${pr_lines[@]}" | jq -s '.')
+    fi
 
     jq -n \
       --arg fixture_type "issue" \
       --arg fixture_url "$FIXTURE_URL" \
       --argjson issue "$issue_json" \
       --argjson comments "$comments_json" \
+      --argjson pull_requests "$prs_with_files" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
@@ -45,47 +105,59 @@ case "${FIXTURE_TYPE}" in
         labels: [($issue.labels // [])[] | .name],
         assignees: [($issue.assignees // [])[] | .login],
         milestone: ($issue.milestone.title // null),
-        comments: $comments
+        comments: $comments,
+        pull_requests: $pull_requests
       }' > "$STATE_FILE"
     ;;
 
   pull_request)
-    pr_json=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
-      --json state,labels,assignees,milestone,title,mergeable,reviewDecision,headRefOid,headRefName)
-    comments_json=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
-      | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
-    reviews_json=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json reviews \
-      | jq '[.reviews[] | {author: .author.login, state: .state, body: .body}]')
-
-    files='[]'
-    files_fetch_failed=false
-    if files_json=$(fetch_pr_files "$FIXTURE_NUMBER"); then
-      files="$files_json"
-    else
-      echo "WARNING: gh pr view failed for PR #${FIXTURE_NUMBER}; marking files_fetch_failed" >&2
-      files='null'
-      files_fetch_failed=true
-    fi
-
-    # Optional: runner exported PRE_AGENT_HEAD into the hook env via forward-propagation
-    # if we write it to .hook-outputs — for v1 read from process env if present.
+    # One retried gh call for metadata + comments + reviews + files, then shape
+    # with jq. On persistent failure still write fixture-state.json so judges
+    # fail clearly instead of the after_each hook aborting.
     pre_agent_head="${PRE_AGENT_HEAD:-}"
     if [[ -z "$pre_agent_head" && -f "${OUTPUT_DIR}/pre-agent-head.txt" ]]; then
       pre_agent_head=$(cat "${OUTPUT_DIR}/pre-agent-head.txt")
     fi
 
+    if ! pr_raw=$(retry_cmd gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
+      --json state,labels,assignees,milestone,title,mergeable,reviewDecision,headRefOid,headRefName,comments,reviews,files); then
+      echo "WARNING: gh pr view failed for PR #${FIXTURE_NUMBER} after retries; writing pr_fetch_failed state" >&2
+      jq -n \
+        --arg fixture_type "pull_request" \
+        --arg fixture_url "$FIXTURE_URL" \
+        --arg pre_agent_head "$pre_agent_head" \
+        '{
+          fixture_type: $fixture_type,
+          fixture_url: $fixture_url,
+          pr_fetch_failed: true,
+          state: null,
+          title: null,
+          labels: [],
+          assignees: [],
+          milestone: null,
+          mergeable: null,
+          review_decision: null,
+          comments: [],
+          reviews: [],
+          head_sha: null,
+          head_ref: null,
+          files: null,
+          files_fetch_failed: true,
+          pre_agent_head: (if $pre_agent_head == "" then null else $pre_agent_head end)
+        }' > "$STATE_FILE"
+      echo "Captured ${FIXTURE_TYPE} state -> ${STATE_FILE}"
+      exit 0
+    fi
+
     jq -n \
       --arg fixture_type "pull_request" \
       --arg fixture_url "$FIXTURE_URL" \
-      --argjson pr "$pr_json" \
-      --argjson comments "$comments_json" \
-      --argjson reviews "$reviews_json" \
-      --argjson files "$files" \
-      --argjson files_fetch_failed "$files_fetch_failed" \
+      --argjson pr "$pr_raw" \
       --arg pre_agent_head "$pre_agent_head" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
+        pr_fetch_failed: false,
         state: $pr.state,
         title: $pr.title,
         labels: [($pr.labels // [])[] | .name],
@@ -93,12 +165,12 @@ case "${FIXTURE_TYPE}" in
         milestone: ($pr.milestone.title // null),
         mergeable: $pr.mergeable,
         review_decision: $pr.reviewDecision,
-        comments: $comments,
-        reviews: $reviews,
+        comments: [($pr.comments // [])[] | {author: .author.login, body: .body, created_at: .createdAt}],
+        reviews: [($pr.reviews // [])[] | {author: .author.login, state: .state, body: .body}],
         head_sha: $pr.headRefOid,
         head_ref: $pr.headRefName,
-        files: $files,
-        files_fetch_failed: $files_fetch_failed,
+        files: [($pr.files // [])[] | .path],
+        files_fetch_failed: false,
         pre_agent_head: (if $pre_agent_head == "" then null else $pre_agent_head end)
       }' > "$STATE_FILE"
     ;;

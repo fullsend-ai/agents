@@ -1,4 +1,8 @@
 forge: github
+# Single-line bug description supplied to the fix agent as HUMAN_INSTRUCTION
+# (forwarded by setup-fixture.sh → run-fullsend.sh). Kept here with the
+# fixture rather than hardcoded in the shared runner.
+human_instruction: "calc.py's add() returns a - b instead of a + b. Change it to return a + b so the existing tests in tests/test_calc.py pass. Do not refactor beyond that fix."
 fixture:
   type: pull_request
   title: "feat: add basic calculator"

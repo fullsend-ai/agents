@@ -54,8 +54,10 @@ git -c "credential.helper=${GH_CRED_HELPER}" \
   clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
-# Fix (and any PR-driven agent) must run on the PR branch, not main.
-if [[ "$FIXTURE_TYPE" == "pull_request" ]]; then
+# Fix must run on the PR branch (post-script pushes onto the existing head).
+# Do not switch other PR-fixture agents (e.g. review) off main — that would
+# change what --target-repo contains for those pipelines.
+if [[ "$AGENT" == "fix" && "$FIXTURE_TYPE" == "pull_request" ]]; then
   git -C "$TARGET_DIR" fetch origin "pull/${FIXTURE_NUMBER}/head:eval-pr-head"
   git -C "$TARGET_DIR" checkout eval-pr-head
 fi
@@ -79,6 +81,10 @@ trap cleanup EXIT
 # (unquoted values strip from space-hash onward).
 emit_env() {
   local name="$1" value="$2"
+  if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "ERROR: invalid env name: ${name}" >&2
+    exit 1
+  fi
   if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
     echo "ERROR: env value for ${name} contains a newline" >&2
     exit 1
@@ -128,10 +134,17 @@ install -m 0600 /dev/null "$ENV_FILE"
   esac
 
   if [[ "$AGENT" == "fix" ]]; then
+    # HUMAN_INSTRUCTION comes from case input.yaml via setup-fixture hook-outputs.
+    # TODO: also load TRIGGER_SOURCE / FIX_ITERATION / TARGET_BRANCH from the case
+    # when a second fix scenario is added (v1 hardcodes the human /fs-fix shape).
+    if [[ -z "${HUMAN_INSTRUCTION:-}" ]]; then
+      echo "ERROR: HUMAN_INSTRUCTION is required for fix eval (set human_instruction in input.yaml)" >&2
+      exit 1
+    fi
     REVIEW_BODY_FILE="$(mktemp)"
     : > "$REVIEW_BODY_FILE"
     emit_env "TRIGGER_SOURCE" "eval-human"
-    emit_env "HUMAN_INSTRUCTION" "calc.py's add() returns a - b instead of a + b. Change it to return a + b so the existing tests in tests/test_calc.py pass. Do not refactor beyond that fix."
+    emit_env "HUMAN_INSTRUCTION" "${HUMAN_INSTRUCTION}"
     emit_env "FIX_ITERATION" "1"
     emit_env "TARGET_BRANCH" "main"
     emit_env "PRE_AGENT_HEAD" "${PRE_AGENT_HEAD}"
