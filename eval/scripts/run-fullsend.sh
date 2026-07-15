@@ -54,12 +54,19 @@ git -c "credential.helper=${GH_CRED_HELPER}" \
   clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
-# Fix must run on the PR branch (post-script pushes onto the existing head).
-# Do not switch other PR-fixture agents (e.g. review) off main — that would
-# change what --target-repo contains for those pipelines.
+# Fix must run on the PR's actual head branch (post-script pushes
+# `git branch --show-current`). A local alias like eval-pr-head would push a
+# *new* remote branch and leave the PR head unchanged — failing new_commit.
+# Do not switch other PR-fixture agents (e.g. review) off main.
 if [[ "$AGENT" == "fix" && "$FIXTURE_TYPE" == "pull_request" ]]; then
-  git -C "$TARGET_DIR" fetch origin "pull/${FIXTURE_NUMBER}/head:eval-pr-head"
-  git -C "$TARGET_DIR" checkout eval-pr-head
+  HEAD_REF=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
+    --json headRefName --jq '.headRefName')
+  if [[ ! "$HEAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    echo "ERROR: unexpected PR head ref: ${HEAD_REF}" >&2
+    exit 1
+  fi
+  git -C "$TARGET_DIR" fetch origin "pull/${FIXTURE_NUMBER}/head:${HEAD_REF}"
+  git -C "$TARGET_DIR" checkout "$HEAD_REF"
 fi
 PRE_AGENT_HEAD="$(git -C "$TARGET_DIR" rev-parse HEAD)"
 export PRE_AGENT_HEAD
