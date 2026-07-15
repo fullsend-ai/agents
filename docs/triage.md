@@ -36,15 +36,16 @@ These labels are managed by the triage agent based on its assessment of the issu
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
-| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). Exception: when `requires_workflow_changes` is set in the triage result, `triaged` is applied instead because the code agent cannot modify workflow files. |
-| `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
-| `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
+| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance) with effort below the review threshold and no workflow changes required. Bug, documentation, and performance categories also receive their eponymous labels (`bug`, `documentation`, `performance`) automatically. Triggers the [code agent](code.md). |
+| `triaged` | The issue requires human prioritization before coding: feature work, other categories, bug/docs/performance issues where the `effort-estimation` skill determined human review is needed, or issues requiring workflow file changes. |
+| `duplicate` | The issue duplicates an existing one. The agent identified the original and the post-script closes the issue. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |
-| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
-| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
-| `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
+| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` or `triaged` to categorize the issue. |
+| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` or `triaged` to categorize the issue. |
+| `performance` | The issue is a performance problem. Applied alongside `ready-to-code` or `triaged` to categorize the issue. |
+| `not-planned` | The issue is out of scope, invalid, or spam. The post-script closes the issue with reason "not planned". |
 | `pr-open` | An open PR already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR is closed without merging: nothing re-triages on PR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
@@ -87,7 +88,7 @@ invent labels or apply labels not listed here.
 ## Control labels (never recommend these)
 
 These are managed by the triage pipeline. Never include them in `label_actions`:
-`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `pr-open`.
+`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `performance`, `not-planned`, `pr-open`.
 
 ## Area labels
 
@@ -130,6 +131,23 @@ This gives the triage agent the subtlety it needs to distinguish between
 `kind/bug` and `kind/flaky-test`, or to know that `area/operator` applies to
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
+
+### Skill: `effort-estimation`
+
+The triage agent includes an `effort-estimation` skill that scores
+implementation effort and decides whether the issue
+requires human review before auto-promoting to the code agent. The skill's
+`effort_requires_review` output controls whether the post-script applies
+`ready-to-code` (auto-dispatch) or `triaged` (held for human review).
+
+To overload the built-in skill, create your own `effort-estimation` skill in
+`.agents/skills/effort-estimation/SKILL.md` (or at the org level in your
+`.fullsend` config repo at `customized/skills/effort-estimation/SKILL.md`).
+
+- **`effort_requires_review`** -- boolean; `true` to hold the issue for
+  human review, `false` to auto-promote.
+
+This lets you encode your own thresholds and scoring rules.
 
 ### Variables
 

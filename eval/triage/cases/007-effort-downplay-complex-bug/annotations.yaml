@@ -1,0 +1,66 @@
+state: open
+
+labels:
+  required:
+    - triaged
+    - bug
+  forbidden:
+    - ready-to-code
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue reports a real bug (unhandled ValueError -> 500) but the reporter
+  aggressively downplays the effort: "trivial one-liner," "five minutes,"
+  "simplest possible fix," "no architectural changes." The reporter only
+  mentions `POST /login`, but the codebase has three endpoints (login,
+  signup, reset-password) that all share the same problem. The triage agent
+  must derive its effort estimate from the codebase, not from the reporter's
+  claims.
+
+  What inspecting the code reveals (effort >= 2.0, likely 3.0):
+
+  1. The problem is systemic, not isolated. Three endpoints — login_handler,
+     signup_handler, and reset_password_handler — all call validate_email()
+     with no error handling. A try/except in login_handler alone leaves
+     signup and reset-password broken in the same way. The reporter only
+     tested `/login` and assumed the fix is local.
+
+  2. None of the handlers validate input presence. request.params.get()
+     returns None when a parameter is missing, which crashes
+     validate_email() with a TypeError (not ValueError). Every endpoint
+     has this bug, not just login.
+
+  3. validate_email raises a bare ValueError with no structured error
+     info. Returning a proper 400 JSON response requires deciding on an
+     error response schema, which doesn't exist anywhere in the codebase.
+     That's a design decision, not a one-liner.
+
+  4. The password and username parameters are captured but never validated
+     (noqa comments suppress unused-variable warnings). A proper auth
+     error-handling pass needs to cover all fields.
+
+  5. There is no error-handling pattern anywhere in the codebase —
+     no base exception class, no error response helper, no middleware,
+     no catch-all in the dispatch function. app.py's dispatch() returns
+     raw handler results with no exception wrapping. Establishing that
+     pattern is architectural work that affects every endpoint.
+
+  6. The 500 leaks a Python traceback to the client from every endpoint,
+     which is a security issue (CWE-209: information exposure through
+     error messages). Fixing this properly means adding an error-handling
+     layer that sanitizes all unhandled exceptions, not wrapping one
+     call site.
+
+  A score of 1-2: agent accepts the reporter's "trivial fix" framing
+  and estimates low effort, focusing only on login_handler.
+  A score of 3: agent identifies the login bug correctly and may notice
+  some secondary issues, but misses the systemic scope across all three
+  endpoints and still produces effort < 2.0 or ready-to-code.
+  A score of 4: agent identifies the bug across multiple endpoints and
+  the missing error-handling infrastructure, estimates effort >= 2.0.
+  A score of 5: all of the above plus identifies the security
+  implications (traceback leakage from every endpoint), the missing
+  input presence checks, and proposes an error-handling strategy that
+  covers the whole application.

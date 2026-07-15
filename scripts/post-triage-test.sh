@@ -24,7 +24,7 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "performance" "pr-open"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -177,60 +177,124 @@ run_test "insufficient-removes-pr-open-label" \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
 run_test "sufficient-posts-summary-and-labels" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 run_test "sufficient-bug-gets-ready-to-code" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
-run_test "sufficient-bug-gets-bug-label" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=bug --silent"
+run_test "sufficient-bug-low-effort-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo in error message","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Copy-paste error","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_error_message","effort":0.25,"effort_requires_review":false},"comment":"## Triage Summary\n\nTrivial fix."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
-run_test "sufficient-feature-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+run_test "sufficient-bug-high-effort-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Refactor auth middleware","severity":"high","category":"bug","problem":"Auth middleware incorrectly handles edge cases","root_cause_hypothesis":"Architectural issue","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Refactor auth middleware","proposed_test_case":"test_auth_edge_cases","effort":2.5,"effort_requires_review":true},"comment":"## Triage Summary\n\nSubstantial refactor needed."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test "sufficient-bug-boundary-effort-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix complex auth bug","severity":"high","category":"bug","problem":"Auth edge cases","root_cause_hypothesis":"Architectural issue","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Refactor auth","proposed_test_case":"test_auth","effort":2.0,"effort_requires_review":true},"comment":"## Triage Summary\n\nBoundary effort."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test "sufficient-bug-below-threshold-effort-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix moderate bug","severity":"medium","category":"bug","problem":"Moderate issue","root_cause_hypothesis":"Logic error","reproduction_steps":["step 1"],"environment":"Linux","impact":"Some users","recommended_fix":"Fix logic","proposed_test_case":"test_logic","effort":1.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nModerate fix."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+run_test_stdout "sufficient-bug-high-effort-logs-reason" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Refactor auth middleware","severity":"high","category":"bug","problem":"Auth middleware incorrectly handles edge cases","root_cause_hypothesis":"Architectural issue","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Refactor auth middleware","proposed_test_case":"test_auth_edge_cases","effort":2.5,"effort_requires_review":true},"comment":"## Triage Summary\n\nSubstantial refactor needed."}' \
+  "Effort requires review (2.5) — deferring triaged label for human review..."
+
+run_test "sufficient-documentation-high-effort-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Rewrite architecture docs","severity":"medium","category":"documentation","problem":"Outdated arch docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"N/A","impact":"Contributors","recommended_fix":"Rewrite docs","proposed_test_case":"test_docs","effort":2.0,"effort_requires_review":true},"comment":"## Triage Summary\n\nLarge documentation update."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test "sufficient-performance-high-effort-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Optimize database queries across layers","severity":"high","category":"performance","problem":"Slow queries","root_cause_hypothesis":"Missing indexes and N+1 queries","reproduction_steps":["step 1"],"environment":"Production","impact":"All users","recommended_fix":"Add indexes and refactor query patterns","proposed_test_case":"test_query_performance","effort":3.0,"effort_requires_review":true},"comment":"## Triage Summary\n\nLarge performance optimization."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test "sufficient-bug-missing-effort-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test "sufficient-bug-nonnumeric-effort-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":"high"},"comment":"## Triage Summary\n\nReady."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test "sufficient-bug-high-effort-comment-shows-effort" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Refactor auth middleware","severity":"high","category":"bug","problem":"Auth middleware incorrectly handles edge cases","root_cause_hypothesis":"Architectural issue","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Refactor auth middleware","proposed_test_case":"test_auth_edge_cases","effort":2.5,"effort_requires_review":true},"comment":"## Triage Summary\n\nSubstantial refactor needed."}' \
+  "Estimated at 2.5/3"
+
+run_test "sufficient-bug-boundary-effort-comment-shows-effort" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix complex auth bug","severity":"high","category":"bug","problem":"Auth edge cases","root_cause_hypothesis":"Architectural issue","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Refactor auth","proposed_test_case":"test_auth","effort":2.0,"effort_requires_review":true},"comment":"## Triage Summary\n\nBoundary effort."}' \
+  "Estimated at 2.0/3"
+
+run_test "sufficient-bug-missing-effort-comment-shows-notice" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  "Could not determine effort"
+
+run_test "sufficient-bug-nonnumeric-effort-comment-shows-notice" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":"high"},"comment":"## Triage Summary\n\nReady."}' \
+  "Could not determine effort"
+
+run_test "sufficient-feature-high-effort-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode","effort":2.5,"effort_requires_review":true},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+run_test "sufficient-feature-low-effort-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode","effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 run_test "sufficient-feature-gets-feature-label" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode","effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is a feature."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=feature --silent"
 
-run_test "sufficient-other-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Misc","severity":"low","category":"other","problem":"Misc","root_cause_hypothesis":"Unclear","reproduction_steps":["step 1"],"environment":"Linux","impact":"Some","recommended_fix":"Investigate","proposed_test_case":"test_misc"},"comment":"## Triage Summary\n\nMisc."}' \
+run_test "sufficient-other-high-effort-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Misc","severity":"low","category":"other","problem":"Misc","root_cause_hypothesis":"Unclear","reproduction_steps":["step 1"],"environment":"Linux","impact":"Some","recommended_fix":"Investigate","proposed_test_case":"test_misc","effort":2.0,"effort_requires_review":true},"comment":"## Triage Summary\n\nMisc."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
+run_test "sufficient-other-low-effort-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Misc","severity":"low","category":"other","problem":"Misc","root_cause_hypothesis":"Unclear","reproduction_steps":["step 1"],"environment":"Linux","impact":"Some","recommended_fix":"Investigate","proposed_test_case":"test_misc","effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nMisc."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
 run_test "sufficient-performance-gets-ready-to-code" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_query_speed"},"comment":"## Triage Summary\n\nThis is a performance issue."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_query_speed","effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is a performance issue."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 run_test "sufficient-documentation-gets-ready-to-code" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nThis is a documentation issue."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs","effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is a documentation issue."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 run_test "sufficient-documentation-gets-documentation-label" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nThis is a documentation issue."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs","effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is a documentation issue."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=documentation --silent"
 
+run_test "sufficient-bug-gets-bug-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is ready."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=bug --silent"
+
+run_test "sufficient-performance-gets-performance-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_query_speed","effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is a performance issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=performance --silent"
+
 run_test "sufficient-with-empty-info-gaps-passes" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[],"effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 run_test "sufficient-with-info-gaps-fails" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":["What label naming convention to use?"]},"comment":"## Triage Summary\n\nThis is ready."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":["What label naming convention to use?"],"effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is ready."}' \
   "" \
   "true"
 
 run_test "sufficient-appends-action-hints-footer" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is ready."}' \
   "/fs-code"
 
 run_test "sufficient-removes-blocked-label" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[],"effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
 run_test "sufficient-removes-needs-info-label" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[],"effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
 
 run_test "sufficient-removes-pr-open-label" \
@@ -435,23 +499,23 @@ run_test "invalid-json-fails" \
   "true"
 
 run_test "label-actions-applied" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API crash matches area/api label.","actions":[{"action":"add","label":"area/api"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API crash matches area/api label.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
 
 run_test_stdout "label-actions-control-label-refused" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "::warning::Refused to add control label 'ready-to-code' -- control labels are managed by the triage pipeline"
 
 run_test_stdout "label-actions-feature-control-label-refused" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set feature label.","actions":[{"action":"add","label":"feature"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set feature label.","actions":[{"action":"add","label":"feature"}]}}' \
   "::warning::Refused to add control label 'feature' -- control labels are managed by the triage pipeline"
 
 run_test_stdout "label-actions-not-planned-control-label-refused" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set not-planned label.","actions":[{"action":"add","label":"not-planned"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set not-planned label.","actions":[{"action":"add","label":"not-planned"}]}}' \
   "::warning::Refused to add control label 'not-planned' -- control labels are managed by the triage pipeline"
 
 run_test "label-actions-absent-still-posts-comment" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady."}' \
   "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-agent -->"
 
 run_test "label-actions-with-insufficient" \
@@ -459,27 +523,27 @@ run_test "label-actions-with-insufficient" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=component/parser --silent"
 
 run_test "label-actions-reason-appended-to-comment" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API crash matches area/api label.","actions":[{"action":"add","label":"area/api"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API crash matches area/api label.","actions":[{"action":"add","label":"area/api"}]}}' \
   "API crash matches area/api label."
 
 run_test "label-actions-remove" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Stale area label removed.","actions":[{"action":"remove","label":"area/cli"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Stale area label removed.","actions":[{"action":"remove","label":"area/cli"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels/area%2Fcli -X DELETE --silent"
 
 run_test "label-actions-multiple-add" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
 
 run_test "label-actions-multiple-second-label" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=priority/high --silent"
 
 run_test_stdout "label-actions-nonexistent-label-skipped" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Agent recommended a label that does not exist.","actions":[{"action":"add","label":"nonexistent-label"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Agent recommended a label that does not exist.","actions":[{"action":"add","label":"nonexistent-label"}]}}' \
   "::warning::Skipping label 'nonexistent-label' -- does not exist in repo (will not auto-create)"
 
 run_test_stdout "label-actions-invalid-characters-refused" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Injection attempt.","actions":[{"action":"add","label":"label;injection"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Injection attempt.","actions":[{"action":"add","label":"label;injection"}]}}' \
   "::warning::Refused label 'label;injection' -- contains invalid characters"
 
 # Verify that when all label actions are refused, the reason is NOT appended to the comment.
@@ -515,8 +579,12 @@ run_test_no_pattern() {
   echo "PASS: ${test_name}"
 }
 
+run_test_no_pattern "sufficient-bug-low-effort-no-effort-notice" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Copy-paste","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_typo","effort":0.25,"effort_requires_review":false},"comment":"## Triage Summary\n\nTrivial fix."}' \
+  "held for human review"
+
 run_test_no_pattern "label-actions-all-refused-no-reason" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "Should not appear."
 
 # run_test_label_order verifies that a pattern appears AFTER another pattern
@@ -576,23 +644,23 @@ run_test_label_order() {
 # Verify ready-to-code is applied AFTER informational labels from label_actions
 # to prevent the ready-to-code webhook event from being superseded (#1752).
 run_test_label_order "ready-to-code-applied-after-label-actions" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Component label.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Component label.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
   "labels[]=priority/high" \
   "labels[]=ready-to-code"
 
 # Verify ready-to-code is still applied when there are no label_actions.
 run_test "ready-to-code-applied-without-label-actions" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 # Verify label-category consistency guard strips contradicting labels (#39).
 run_test_stdout "label-category-contradiction-stripped" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nDocs issue.","label_actions":{"reason":"Reclassifying to enhancement.","actions":[{"action":"add","label":"enhancement"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs","effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nDocs issue.","label_actions":{"reason":"Reclassifying to enhancement.","actions":[{"action":"add","label":"enhancement"}]}}' \
   "::warning::Stripping label 'enhancement' from label_actions — contradicts triage_summary.category 'documentation'"
 
 # Verify non-contradicting labels pass through the consistency guard.
 run_test "label-category-consistent-passes" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
 
 # ---------------------------------------------------------------------------
@@ -602,7 +670,7 @@ run_test "label-category-consistent-passes" \
 # ---------------------------------------------------------------------------
 
 # Minimal sufficient fixture for validated-dir tests.
-VALIDATED_DIR_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+VALIDATED_DIR_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady."}'
 
 run_validated_dir_test() {
   local test_name="$1"
@@ -682,37 +750,43 @@ run_validated_dir_test "validated-dir-neither-filename" \
 
 # Bug with requires_workflow_changes=true should get triaged instead of ready-to-code.
 run_test "workflow-changes-bug-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true,"effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
 # Bug with requires_workflow_changes=true should NOT get ready-to-code.
 run_test_no_pattern "workflow-changes-bug-no-ready-to-code" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true,"effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "labels[]=ready-to-code"
 
 # Documentation with requires_workflow_changes=true should get triaged instead of ready-to-code.
 run_test "workflow-changes-documentation-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update CI docs","severity":"low","category":"documentation","problem":"Outdated CI docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update workflow and docs","proposed_test_case":"test_docs","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update CI docs","severity":"low","category":"documentation","problem":"Outdated CI docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update workflow and docs","proposed_test_case":"test_docs","requires_workflow_changes":true,"effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
 # Performance with requires_workflow_changes=true should get triaged instead of ready-to-code.
 run_test "workflow-changes-performance-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Speed up CI","severity":"medium","category":"performance","problem":"Slow CI","root_cause_hypothesis":"No parallelism","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add parallel steps","proposed_test_case":"test_speed","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Speed up CI","severity":"medium","category":"performance","problem":"Slow CI","root_cause_hypothesis":"No parallelism","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add parallel steps","proposed_test_case":"test_speed","requires_workflow_changes":true,"effort":0.5,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+# Bug with requires_workflow_changes=true AND effort_requires_review=true — workflow guard
+# takes priority and short-circuits the effort check.
+run_test "workflow-changes-overrides-effort-review" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Rewrite CI pipeline","severity":"high","category":"bug","problem":"CI pipeline broken","root_cause_hypothesis":"Stale workflow config","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Rewrite workflow","proposed_test_case":"test_ci","requires_workflow_changes":true,"effort":2.5,"effort_requires_review":true},"comment":"## Triage Summary\n\nWorkflow changes and high effort."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
 # Bug without requires_workflow_changes still gets ready-to-code (regression guard).
 run_test "no-workflow-flag-bug-still-gets-ready-to-code" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 # Bug with requires_workflow_changes=false still gets ready-to-code.
 run_test "workflow-false-bug-gets-ready-to-code" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","requires_workflow_changes":false},"comment":"## Triage Summary\n\nReady."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","requires_workflow_changes":false,"effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
 # Workflow changes warning appears in stdout.
 run_test_stdout "workflow-changes-warning-emitted" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true,"effort":1.0,"effort_requires_review":false},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
 
 # --- Summary ---

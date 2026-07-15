@@ -29,8 +29,8 @@ on issues (not PRs).
 
 | Label | Meaning |
 |-------|---------|
-| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. |
-| `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
+| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance) when the `effort-estimation` skill does not require human review and `requires_workflow_changes` is not set, or manually by a human for feature work, high-effort issues, or workflow changes after prioritization. |
+| `ready-for-review` | Applied by the code agent's post-script after pushing a PR. In per-repo installs, triggers review when applied to a PR; also marks workflow state for humans and the retro agent. |
 
 ## Configuration
 

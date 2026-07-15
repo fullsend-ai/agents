@@ -103,7 +103,14 @@
     },
     {
       "if": { "properties": { "action": { "const": "sufficient" } }, "required": ["action"] },
-      "then": { "required": ["clarity_scores", "triage_summary"] }
+      "then": {
+        "required": ["clarity_scores", "triage_summary"],
+        "properties": {
+          "triage_summary": {
+            "required": ["effort", "effort_requires_review"]
+          }
+        }
+      }
     },
     {
       "if": { "properties": { "action": { "const": "in-progress" } }, "required": ["action"] },
@@ -152,7 +159,17 @@
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
         "proposed_test_case": { "type": "string", "minLength": 1 },
-        "requires_workflow_changes": { "type": "boolean" }
+        "requires_workflow_changes": { "type": "boolean" },
+        "effort": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 3,
+          "description": "Estimated implementation effort"
+        },
+        "effort_requires_review": {
+          "type": "boolean",
+          "description": "Whether this issue requires human review before auto-promoting to the coder"
+        }
       },
       "additionalProperties": false
     },

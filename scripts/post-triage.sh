@@ -92,11 +92,9 @@ remove_label() {
 
 # Control labels managed by the triage pipeline. The post script refuses to
 # add or remove these via label_actions. pre-triage.sh resets needs-info,
-# ready-to-code, duplicate, feature, question, not-planned, and pr-open
-# before each run; the action handlers below apply the rest. pr-open is
-# also created and applied independently by the code agent's pre-check
-# (scripts/pre-code.sh) when it finds a human PR before dispatching.
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "pr-open")
+# ready-to-code, duplicate, feature, question, not-planned, triaged, and
+# pr-open before each run; the action handlers below apply the rest.
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "performance" "pr-open")
 
 is_control_label() {
   local label="$1"
@@ -378,22 +376,14 @@ ${FAILED_CREATES}"
     remove_label "blocked"
     remove_label "needs-info"
     remove_label "pr-open"
+    remove_label "triaged"
 
-    # Low-risk categories (bug, documentation, performance) auto-promote to
-    # ready-to-code, which triggers the code agent. Feature work and anything
-    # else receives the triaged label and waits for human prioritization
-    # (per #561, only feature issues should require human review before coding).
-    #
-    # Workflow-change guard (#325): if triage detected that the fix requires
-    # modifying workflow files (.github/workflows/, .fullsend/.github/workflows/,
-    # or shim workflows), skip ready-to-code regardless of category. The code
-    # agent cannot modify workflow files under current permissions.
     REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
-    echo "Category: ${CATEGORY}"
-    # Workflow-change guard: if triage detected workflow file changes and the
-    # category would normally auto-promote to ready-to-code, apply triaged
-    # instead and skip the per-category ready-to-code deferral.
+    EFFORT=$(jq -r '.triage_summary.effort // "null"' "${RESULT_FILE}")
+    EFFORT_SAFE="${EFFORT//[^0-9.]/_}"
+    REQUIRES_REVIEW=$(jq -r '.triage_summary.effort_requires_review | if type == "boolean" then tostring else "null" end' "${RESULT_FILE}")
+    echo "Category: ${CATEGORY}, Effort: ${EFFORT_SAFE}, Requires review: ${REQUIRES_REVIEW}"
     WORKFLOW_BLOCKED=false
     if [[ "${REQUIRES_WORKFLOW}" == "true" ]] && [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]]; then
       echo "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
@@ -401,39 +391,34 @@ ${FAILED_CREATES}"
       add_label "triaged"
       WORKFLOW_BLOCKED=true
     fi
+
     case "${CATEGORY}" in
-      bug)
-        echo "Applying bug label..."
-        add_label "bug"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
-          echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-          DEFERRED_LABEL="ready-to-code"
-        fi
-        ;;
-      documentation)
-        echo "Applying documentation label..."
-        add_label "documentation"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
-          echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-          DEFERRED_LABEL="ready-to-code"
-        fi
-        ;;
-      performance)
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
-          echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-          DEFERRED_LABEL="ready-to-code"
-        fi
-        ;;
-      feature)
-        echo "Applying feature + triaged labels..."
-        add_label "feature"
-        add_label "triaged"
-        ;;
-      *)
-        echo "Applying triaged label (${CATEGORY})..."
-        add_label "triaged"
-        ;;
+      bug|documentation|performance) add_label "${CATEGORY}" ;;
+      feature)                       add_label "feature" ;;
     esac
+
+    if [[ "${WORKFLOW_BLOCKED}" == "true" ]]; then
+      : # Already applied triaged above
+    elif [[ "${REQUIRES_REVIEW}" == "null" ]]; then
+      echo "Missing effort_requires_review — deferring triaged label for human review..."
+      remove_label "ready-to-code"
+      DEFERRED_LABEL="triaged"
+      COMMENT="${COMMENT}
+
+---
+**Effort:** Could not determine effort — held for human review. Apply \`ready-to-code\` to dispatch."
+    elif [[ "${REQUIRES_REVIEW}" == "true" ]]; then
+      echo "Effort requires review (${EFFORT_SAFE}) — deferring triaged label for human review..."
+      remove_label "ready-to-code"
+      DEFERRED_LABEL="triaged"
+      COMMENT="${COMMENT}
+
+---
+**Effort:** Estimated at ${EFFORT_SAFE}/3 — held for human review. Apply \`ready-to-code\` to dispatch."
+    else
+      echo "Low effort (${EFFORT_SAFE}) — deferring ready-to-code label until after label_actions..."
+      DEFERRED_LABEL="ready-to-code"
+    fi
     ;;
 
   question)
