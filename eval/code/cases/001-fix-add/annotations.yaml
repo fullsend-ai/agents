@@ -1,0 +1,20 @@
+# Expected outcome after the code agent + post-script run.
+state: open
+
+# End-to-end success: post-script opened a PR that touches the buggy file.
+expected_files:
+  - calc.py
+
+labels:
+  forbidden: []
+
+# Code agent budgets (sandbox work + retries). Tune after a baseline run.
+max_turns: 80
+max_cost_usd: 8.00
+
+code_expectations: |
+  The repo has a one-line bug in calc.py: add() subtracts instead of adds.
+  A successful run creates a PR via the post-script that fixes add() to
+  return a + b. Primary signal is pr_created — this case is an end-to-end
+  regression guard for the code pipeline when sandbox GitHub is read-only
+  (agent must still read the issue/repo and leave commits for post-script).
