@@ -28,7 +28,7 @@ FIXTURE_TYPE="${FIXTURE_TYPE:?FIXTURE_TYPE is required (set by before_each hook)
 # Clone the ephemeral repo as the target for fullsend run.
 # The hook already created it and pushed content.
 #
-# Layout mirrors GHA: harness code/fix expand
+# Layout mirrors GHA for code/fix: harness expands
 # REPO_DIR=${GITHUB_WORKSPACE}/target-repo for post-scripts.
 EPHEMERAL_REPO="${EPHEMERAL_REPO:?EPHEMERAL_REPO is required}"
 FIXTURE_NUMBER="${FIXTURE_NUMBER:?FIXTURE_NUMBER is required (set by before_each hook)}"
@@ -47,38 +47,71 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Reject newline/CR injection into the dotenv file (defense in depth).
+# Values today come from gh/mktemp; still validate shape before writing.
+emit_env() {
+  local name="$1" value="$2"
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    echo "ERROR: env value for ${name} contains a newline" >&2
+    exit 1
+  fi
+  printf '%s=%s\n' "$name" "$value"
+}
+
+# Shape checks for fixture-derived values.
+if [[ ! "$FIXTURE_URL" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
+  echo "ERROR: FIXTURE_URL has unexpected shape: ${FIXTURE_URL}" >&2
+  exit 1
+fi
+if [[ ! "$FIXTURE_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: FIXTURE_NUMBER must be a positive integer, got: ${FIXTURE_NUMBER}" >&2
+  exit 1
+fi
+if [[ ! "$EPHEMERAL_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+  echo "ERROR: EPHEMERAL_REPO must be owner/repo, got: ${EPHEMERAL_REPO}" >&2
+  exit 1
+fi
+
 # Build env file for fullsend run
 ENV_FILE="${OUTPUT_DIR}/.eval-env"
 install -m 0600 /dev/null "$ENV_FILE"
 {
-  echo "GH_TOKEN=${GH_TOKEN}"
-  echo "PUSH_TOKEN=${GH_TOKEN}"
-  echo "REVIEW_TOKEN=${GH_TOKEN}"
-  # Code/fix harness runner_env refs — mint normally sets these; eval skips mint.
-  echo "PUSH_TOKEN_SOURCE=eval"
-  echo "CODE_ALLOWED_TARGET_BRANCHES="
-  echo "GITHUB_WORKSPACE=${EVAL_GH_WORKSPACE}"
-  echo "GIT_BOT_EMAIL=fullsend-eval[bot]@users.noreply.github.com"
+  emit_env "GH_TOKEN" "${GH_TOKEN}"
+  emit_env "PUSH_TOKEN" "${GH_TOKEN}"
+  emit_env "REVIEW_TOKEN" "${GH_TOKEN}"
 
-  case "$FIXTURE_TYPE" in
-    issue)
-      echo "GITHUB_ISSUE_URL=${FIXTURE_URL}"
-      # Code (and other issue-driven agents) require these explicitly;
-      # triage derives them inside its pre-script from GITHUB_ISSUE_URL alone.
-      echo "ISSUE_NUMBER=${FIXTURE_NUMBER}"
-      echo "REPO_FULL_NAME=${EPHEMERAL_REPO}"
-      ;;
-    pull_request)
-      echo "GITHUB_PR_URL=${FIXTURE_URL}"
-      echo "PR_NUMBER=${FIXTURE_NUMBER}"
-      echo "REPO_FULL_NAME=${EPHEMERAL_REPO}"
+  # Code/fix harness runner_env refs — mint normally sets these; eval skips mint.
+  # Only override GITHUB_WORKSPACE for agents whose post-scripts expand
+  # REPO_DIR=${GITHUB_WORKSPACE}/target-repo (triage reads config.yaml from
+  # the real Actions workspace and must not be redirected to the temp clone).
+  case "$AGENT" in
+    code|fix)
+      emit_env "PUSH_TOKEN_SOURCE" "eval"
+      emit_env "CODE_ALLOWED_TARGET_BRANCHES" ""
+      emit_env "GITHUB_WORKSPACE" "${EVAL_GH_WORKSPACE}"
+      emit_env "GIT_BOT_EMAIL" "fullsend-eval[bot]@users.noreply.github.com"
       ;;
   esac
 
-  [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && echo "ANTHROPIC_VERTEX_PROJECT_ID=${ANTHROPIC_VERTEX_PROJECT_ID}"
-  [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]        && echo "GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}"
-  [[ -n "${CLOUD_ML_REGION:-}" ]]             && echo "CLOUD_ML_REGION=${CLOUD_ML_REGION}"
-  [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]] && echo "GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}"
+  case "$FIXTURE_TYPE" in
+    issue)
+      emit_env "GITHUB_ISSUE_URL" "${FIXTURE_URL}"
+      # Code (and other issue-driven agents) require these explicitly;
+      # triage derives them inside its pre-script from GITHUB_ISSUE_URL alone.
+      emit_env "ISSUE_NUMBER" "${FIXTURE_NUMBER}"
+      emit_env "REPO_FULL_NAME" "${EPHEMERAL_REPO}"
+      ;;
+    pull_request)
+      emit_env "GITHUB_PR_URL" "${FIXTURE_URL}"
+      emit_env "PR_NUMBER" "${FIXTURE_NUMBER}"
+      emit_env "REPO_FULL_NAME" "${EPHEMERAL_REPO}"
+      ;;
+  esac
+
+  [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"
+  [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]        && emit_env "GOOGLE_CLOUD_PROJECT" "${GOOGLE_CLOUD_PROJECT}"
+  [[ -n "${CLOUD_ML_REGION:-}" ]]             && emit_env "CLOUD_ML_REGION" "${CLOUD_ML_REGION}"
+  [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]] && emit_env "GOOGLE_APPLICATION_CREDENTIALS" "${GOOGLE_APPLICATION_CREDENTIALS}"
 } > "$ENV_FILE"
 
 FULLSEND_BIN="$(command -v fullsend)"

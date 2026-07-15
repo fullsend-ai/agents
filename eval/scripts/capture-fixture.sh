@@ -25,6 +25,23 @@ OUTPUT_DIR="${CASE_WORKSPACE}/output"
 mkdir -p "$OUTPUT_DIR"
 STATE_FILE="${OUTPUT_DIR}/fixture-state.json"
 
+# Best-effort gh pr view with a couple retries. On persistent failure returns
+# non-zero and leaves files unset so callers can record an explicit error
+# instead of silently treating the PR as empty.
+fetch_pr_files() {
+  local num="$1"
+  local attempt files=""
+  for attempt in 1 2 3; do
+    if files=$(gh pr view "$num" --repo "$EPHEMERAL_REPO" --json files \
+      --jq '[.files[].path]' 2>/dev/null); then
+      printf '%s' "$files"
+      return 0
+    fi
+    sleep $((attempt))
+  done
+  return 1
+}
+
 case "${FIXTURE_TYPE}" in
   issue)
     issue_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
@@ -32,21 +49,30 @@ case "${FIXTURE_TYPE}" in
     comments_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
       | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
     # Code agent post-script opens a PR; capture PRs + changed files for judges.
-    # Process substitutions avoid set -e/pipefail pitfalls with empty PR lists.
-    prs_json=$(gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 20 \
-      --json number,title,url,state,headRefName,baseRefName)
+    # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
+    if ! prs_json=$(gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 20 \
+      --json number,title,url,state,headRefName,baseRefName 2>/dev/null); then
+      echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO}; recording pull_requests=[]" >&2
+      prs_json='[]'
+    fi
+    if [[ -z "$prs_json" ]]; then
+      prs_json='[]'
+    fi
+
     pr_lines=()
     while IFS= read -r pr; do
       [[ -z "$pr" ]] && continue
       num=$(echo "$pr" | jq -r '.number')
-      files=$(gh pr view "$num" --repo "$EPHEMERAL_REPO" --json files \
-        --jq '[.files[].path]' 2>/dev/null || true)
-      if [[ -z "$files" ]]; then
-        files='[]'
+      if files=$(fetch_pr_files "$num"); then
+        pr_lines+=("$(echo "$pr" | jq -c --argjson files "$files" \
+          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false}
+           | del(.headRefName, .baseRefName)')")
+      else
+        echo "WARNING: gh pr view failed for PR #${num}; marking files_fetch_failed" >&2
+        pr_lines+=("$(echo "$pr" | jq -c \
+          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true}
+           | del(.headRefName, .baseRefName)')")
       fi
-      pr_lines+=("$(echo "$pr" | jq -c --argjson files "$files" \
-        '. + {head: .headRefName, base: .baseRefName, files: $files}
-         | del(.headRefName, .baseRefName)')")
     done < <(echo "$prs_json" | jq -c '.[]')
     if [[ ${#pr_lines[@]} -eq 0 ]]; then
       prs_with_files='[]'

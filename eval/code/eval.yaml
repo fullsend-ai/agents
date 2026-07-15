@@ -6,8 +6,9 @@ description: >
   access is read-only (reads + local commits still work; write/push stays
   on the runner).
 
+skill: code
+
 execution:
-  skill: code
   mode: case
   timeout: 2100  # code harness timeout_minutes is 35; leave headroom for setup/teardown
   parallelism: 1
@@ -96,6 +97,9 @@ judges:
       if not expected:
           return True, "No expected_files declared"
       prs = state.get("pull_requests") or []
+      if any(p.get("files_fetch_failed") for p in prs):
+          failed = [p.get("number") for p in prs if p.get("files_fetch_failed")]
+          return False, f"Could not fetch changed files for PR(s): {failed}"
       changed = set()
       for pr in prs:
           for path in pr.get("files") or []:
