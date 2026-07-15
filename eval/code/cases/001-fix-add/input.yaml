@@ -1,0 +1,22 @@
+forge: github
+fixture:
+  type: issue
+  title: "add() returns wrong result for positive integers"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    Calling `add(2, 3)` returns `-1` instead of `5`.
+
+    **Expected behavior:**
+    `add(a, b)` should return the sum of `a` and `b`.
+
+    **Steps to reproduce:**
+    1. Open `calc.py`
+    2. Run or inspect `add(2, 3)`
+    3. Observe it subtracts instead of adds
+
+    **Environment:**
+    - Python 3
+
+    Please fix `add` so it returns `a + b`, and keep the existing tests passing.

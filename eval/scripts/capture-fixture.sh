@@ -31,12 +31,35 @@ case "${FIXTURE_TYPE}" in
       --json state,labels,assignees,milestone,title)
     comments_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
       | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
+    # Code agent post-script opens a PR; capture PRs + changed files for judges.
+    # Process substitutions avoid set -e/pipefail pitfalls with empty PR lists.
+    prs_json=$(gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 20 \
+      --json number,title,url,state,headRefName,baseRefName)
+    pr_lines=()
+    while IFS= read -r pr; do
+      [[ -z "$pr" ]] && continue
+      num=$(echo "$pr" | jq -r '.number')
+      files=$(gh pr view "$num" --repo "$EPHEMERAL_REPO" --json files \
+        --jq '[.files[].path]' 2>/dev/null || true)
+      if [[ -z "$files" ]]; then
+        files='[]'
+      fi
+      pr_lines+=("$(echo "$pr" | jq -c --argjson files "$files" \
+        '. + {head: .headRefName, base: .baseRefName, files: $files}
+         | del(.headRefName, .baseRefName)')")
+    done < <(echo "$prs_json" | jq -c '.[]')
+    if [[ ${#pr_lines[@]} -eq 0 ]]; then
+      prs_with_files='[]'
+    else
+      prs_with_files=$(printf '%s\n' "${pr_lines[@]}" | jq -s '.')
+    fi
 
     jq -n \
       --arg fixture_type "issue" \
       --arg fixture_url "$FIXTURE_URL" \
       --argjson issue "$issue_json" \
       --argjson comments "$comments_json" \
+      --argjson pull_requests "$prs_with_files" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
@@ -45,7 +68,8 @@ case "${FIXTURE_TYPE}" in
         labels: [($issue.labels // [])[] | .name],
         assignees: [($issue.assignees // [])[] | .login],
         milestone: ($issue.milestone.title // null),
-        comments: $comments
+        comments: $comments,
+        pull_requests: $pull_requests
       }' > "$STATE_FILE"
     ;;
 

@@ -52,7 +52,13 @@ install -m 0600 /dev/null "$ENV_FILE"
   echo "REVIEW_TOKEN=${GH_TOKEN}"
 
   case "$FIXTURE_TYPE" in
-    issue)        echo "GITHUB_ISSUE_URL=${FIXTURE_URL}" ;;
+    issue)
+      echo "GITHUB_ISSUE_URL=${FIXTURE_URL}"
+      # Code (and other issue-driven agents) require these explicitly;
+      # triage derives them inside its pre-script from GITHUB_ISSUE_URL alone.
+      echo "ISSUE_NUMBER=${FIXTURE_NUMBER}"
+      echo "REPO_FULL_NAME=${EPHEMERAL_REPO}"
+      ;;
     pull_request)
       echo "GITHUB_PR_URL=${FIXTURE_URL}"
       echo "PR_NUMBER=${FIXTURE_NUMBER}"
