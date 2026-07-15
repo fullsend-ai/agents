@@ -27,9 +27,13 @@ FIXTURE_TYPE="${FIXTURE_TYPE:?FIXTURE_TYPE is required (set by before_each hook)
 
 # Clone the ephemeral repo as the target for fullsend run.
 # The hook already created it and pushed content.
+#
+# Layout mirrors GHA: harness code/fix expand
+# REPO_DIR=${GITHUB_WORKSPACE}/target-repo for post-scripts.
 EPHEMERAL_REPO="${EPHEMERAL_REPO:?EPHEMERAL_REPO is required}"
 FIXTURE_NUMBER="${FIXTURE_NUMBER:?FIXTURE_NUMBER is required (set by before_each hook)}"
-TARGET_DIR=$(mktemp -d)
+EVAL_GH_WORKSPACE=$(mktemp -d)
+TARGET_DIR="${EVAL_GH_WORKSPACE}/target-repo"
 GH_CRED_HELPER='!f(){ echo "password=${GH_TOKEN}"; };f'
 git -c "credential.helper=${GH_CRED_HELPER}" \
   clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
@@ -39,7 +43,7 @@ cleanup() {
   # shellcheck disable=SC2317 # invoked indirectly via trap
   [[ -n "${ENV_FILE:-}" ]] && rm -f "$ENV_FILE"
   # shellcheck disable=SC2317
-  [[ -n "${TARGET_DIR:-}" && -d "${TARGET_DIR:-}" ]] && rm -rf "$TARGET_DIR"
+  [[ -n "${EVAL_GH_WORKSPACE:-}" && -d "${EVAL_GH_WORKSPACE:-}" ]] && rm -rf "$EVAL_GH_WORKSPACE"
 }
 trap cleanup EXIT
 
@@ -50,6 +54,11 @@ install -m 0600 /dev/null "$ENV_FILE"
   echo "GH_TOKEN=${GH_TOKEN}"
   echo "PUSH_TOKEN=${GH_TOKEN}"
   echo "REVIEW_TOKEN=${GH_TOKEN}"
+  # Code/fix harness runner_env refs — mint normally sets these; eval skips mint.
+  echo "PUSH_TOKEN_SOURCE=eval"
+  echo "CODE_ALLOWED_TARGET_BRANCHES="
+  echo "GITHUB_WORKSPACE=${EVAL_GH_WORKSPACE}"
+  echo "GIT_BOT_EMAIL=fullsend-eval[bot]@users.noreply.github.com"
 
   case "$FIXTURE_TYPE" in
     issue)
