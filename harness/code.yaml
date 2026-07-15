@@ -62,3 +62,5 @@ forge:
       REPO_FULL_NAME: "${REPO_FULL_NAME}"
       ISSUE_NUMBER: "${ISSUE_NUMBER}"
       REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+      # Skips the already-performed existing-PR check (fullsend-ai/fullsend#4718)
+      CODE_SKIP_EXISTING_PR_CHECK: "true"
