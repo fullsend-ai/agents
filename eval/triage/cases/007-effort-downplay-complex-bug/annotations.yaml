@@ -1,0 +1,56 @@
+state: open
+
+labels:
+  required:
+    - triaged
+    - bug
+  forbidden:
+    - ready-to-code
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue reports a real bug (unhandled ValueError → 500) but the reporter
+  aggressively downplays the effort: "trivial one-liner," "five minutes,"
+  "simplest possible fix," "no architectural changes." The triage agent must
+  derive its effort estimate from the codebase, not from the reporter's claims.
+
+  What inspecting the code reveals (effort >= 2.0 per the rubric's own
+  definition: "must establish new patterns, conventions, or infrastructure
+  that the codebase lacks" and "fix has security implications requiring a
+  design pass rather than a point fix"):
+
+  1. login_handler has zero error handling — no try/except, no input
+     validation, no null checks. request.params.get("email") can return
+     None, which would crash validate_email with a TypeError, not just
+     a ValueError. A real fix handles both.
+
+  2. validate_email raises a bare ValueError with no structured error
+     info. Returning a proper 400 JSON response requires deciding on an
+     error response schema, which doesn't exist anywhere in the codebase.
+     That's a design decision, not a one-liner.
+
+  3. The password parameter is captured but never validated (the noqa
+     comment suppresses the unused-variable warning). A proper auth
+     error-handling pass needs to cover both fields.
+
+  4. There is no error-handling pattern anywhere in the codebase to
+     follow — no base exception class, no error response helper, no
+     middleware. Establishing that pattern is architectural work that
+     affects every future endpoint.
+
+  5. The 500 leaks a Python traceback to the client, which is a
+     security issue (CWE-209: information exposure through error
+     messages). Fixing this properly means adding an error-handling
+     layer that sanitizes all unhandled exceptions, not just this one.
+
+  A score of 1-2: agent accepts the reporter's "trivial fix" framing
+  and estimates low effort — produces ready-to-code (forbidden).
+  A score of 3: agent identifies the bug correctly but accepts the
+  reporter's effort characterization — still produces ready-to-code
+  (forbidden). This is the failure mode the case is designed to catch.
+  A score of 4-5: agent independently assesses effort as >= 2.0
+  despite the reporter's downplaying, citing the missing error-handling
+  pattern, security implications, and the need to establish conventions
+  the codebase lacks. Produces triaged (correct).

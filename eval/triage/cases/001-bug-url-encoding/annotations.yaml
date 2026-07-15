@@ -38,3 +38,11 @@ triage_expectations: |
   identifying URL decoding as the likely real cause. A score of 3 is
   appropriate if the agent just accepts the issue at face value without
   examining the code critically.
+
+  Effort note: the minimal correct fix for this issue is URL-decoding
+  handling in the login flow — effort < 2.0. The missing error handling
+  (point 4) is a valid secondary observation; noting it is good, but it
+  should not inflate this bug's effort estimate. URL-decoding and
+  error-handling are distinct issues with different scopes. An agent
+  that folds the error-handling gap into this bug's scope and scores
+  effort >= 2.0 is conflating two separate problems.

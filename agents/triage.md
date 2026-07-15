@@ -3,6 +3,7 @@ name: triage
 description: Inspect a GitHub issue, assess information sufficiency, and produce a structured triage decision.
 skills:
   - issue-labels
+  - effort-estimation
 tools: Bash(gh,jq)
 model: opus
 ---
@@ -271,6 +272,8 @@ Information is sufficient for a developer to investigate and fix.
 
 **Choosing a category:** the `feature` category covers issues that describe desired new behavior rather than a defect in existing functionality — the reporter expects something that has never been implemented. Use `feature` only when the described behavior clearly never existed in the product. If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
 
+**Estimating effort:** Use the `effort-estimation` skill to score implementation effort and determine whether the issue requires human review before auto-promoting to the coder. Only estimate effort for bug/docs/performance categories; feature issues already gate on human review.
+
 ```json
 {
   "action": "sufficient",
@@ -292,7 +295,9 @@ Information is sufficient for a developer to investigate and fix.
     "environment": "Relevant environment details",
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
-    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout."
+    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
+    "effort": 1.0,
+    "effort_requires_review": false
   },
   "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block.",
   "label_actions": {

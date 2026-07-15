@@ -91,6 +91,28 @@
       "then": { "required": ["clarity_scores", "triage_summary"] }
     },
     {
+      "if": {
+        "required": ["action", "triage_summary"],
+        "properties": {
+          "action": { "const": "sufficient" },
+          "triage_summary": {
+            "required": ["category"],
+            "properties": {
+              "category": { "enum": ["bug", "documentation", "performance"] }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": ["triage_summary"],
+        "properties": {
+          "triage_summary": {
+            "required": ["effort", "effort_requires_review"]
+          }
+        }
+      }
+    },
+    {
       "if": { "properties": { "action": { "const": "prerequisites" } }, "required": ["action"] },
       "then": {
         "required": ["prerequisites"],
@@ -132,7 +154,17 @@
         "environment": { "type": "string" },
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
-        "proposed_test_case": { "type": "string", "minLength": 1 }
+        "proposed_test_case": { "type": "string", "minLength": 1 },
+        "effort": {
+          "type": "number",
+          "minimum": 0.25,
+          "maximum": 3,
+          "description": "Estimated implementation effort"
+        },
+        "effort_requires_review": {
+          "type": "boolean",
+          "description": "Whether this issue requires human review before auto-promoting to the coder"
+        }
       },
       "additionalProperties": false
     },

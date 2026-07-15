@@ -1,0 +1,27 @@
+forge: github
+fixture:
+  type: issue
+  title: "Auth errors return 500 instead of 400 — easy try/except fix"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    Any invalid input to the login endpoint (`POST /login`) returns a raw
+    500 Internal Server Error with a Python traceback in the response body.
+    For example, submitting an empty email field or a malformed address
+    surfaces `ValueError: invalid email format` as an unhandled exception.
+
+    **Expected behavior:**
+    Should return a 400 with a JSON error body, not a 500 with a stack trace.
+
+    **Steps to reproduce:**
+    1. POST to `/login` with `email=not-an-email&password=x`
+    2. Observe 500 + traceback
+
+    **This is a trivial one-liner** — just wrap the `validate_email()` call in
+    `login_handler` with a try/except and return a 400. I'd submit a PR myself
+    but I don't have write access. Should take five minutes at most.
+
+    Honestly this is the simplest possible fix, no architectural changes needed.
+    The validation logic itself is fine, it just needs the exception caught at
+    the call site. A junior dev could knock this out in one commit.
