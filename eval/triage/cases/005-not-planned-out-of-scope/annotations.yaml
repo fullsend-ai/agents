@@ -1,0 +1,41 @@
+# The agent should close this as not-planned. The request is well-written
+# but completely unrelated to the project — a Python auth webapp has no
+# business adding a real-time chat and video calling system.
+state: closed
+
+labels:
+  required:
+    - not-planned
+  forbidden:
+    - ready-to-code
+    - needs-info
+    - triaged
+    - feature
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue requests a real-time chat and video calling system in a
+  simple Python authentication webapp. It is clearly out of scope —
+  the project handles email validation and login, not messaging or
+  video conferencing.
+
+  A good triage should:
+
+  1. Recognize that this feature has no relation to the project's
+     purpose (authentication).
+  2. Choose action "not-planned" and cite the scope mismatch.
+  3. Be respectful — the reporter wrote a clear, professional request.
+     The comment should acknowledge their effort while explaining why
+     the project is not the right place for this work.
+  4. NOT ask clarifying questions — the issue is detailed enough, the
+     problem is scope, not information.
+
+  A score of 1 means the agent triaged this as a legitimate feature
+  request or asked for more information instead of closing.
+  A score of 3 means it closed the issue but the comment was dismissive
+  or failed to explain the scope boundary.
+  A score of 5 means it closed the issue, cited the project's actual
+  scope (auth/login), was respectful to the reporter, and suggested
+  they look at purpose-built chat/video projects.

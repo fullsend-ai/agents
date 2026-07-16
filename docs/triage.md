@@ -45,6 +45,7 @@ outcome and the post-script applies the corresponding label.
 | `question` | The issue is a question rather than a bug or feature request. |
 | `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
 | `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
+| `not-planned` | The issue is out of scope, invalid, or spam. The post-script closes the issue with reason "not planned". |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.
@@ -83,7 +84,7 @@ invent labels or apply labels not listed here.
 ## Control labels (never recommend these)
 
 These are managed by the triage pipeline. Never include them in `label_actions`:
-`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`.
+`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`.
 
 ## Area labels
 

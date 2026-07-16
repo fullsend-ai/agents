@@ -152,6 +152,8 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 
 **Anti-question-bypass rule (HARD CONSTRAINT):** If the issue uses interrogative phrasing and describes no concrete defect, missing feature, or requested change, you MUST use `action: "question"`. Do NOT emit `action: "sufficient"` or `action: "insufficient"` for issues that are purely asking for information. The fact that answering a question might reveal an actionable improvement does not change the classification — the reporter asked a question, not filed a bug or feature request. Answer the question using the `question` action and let the reporter decide whether to convert it into actionable work.
 
+**Anti-premature-closure rule (HARD CONSTRAINT):** Do NOT emit `action: "not-planned"` unless the issue is unambiguously out of scope, invalid, or spam. When scope status is uncertain — e.g., an ambitious feature request that might conflict with project direction but has no clear architectural prohibition — prefer `insufficient` (ask the reporter to clarify intent) or `sufficient` (let a maintainer decide) over closing the issue. When you do use `not-planned`, cite the specific scope boundary, documented decision, or project constraint that makes the issue out of scope — vague appeals to "project goals" are not sufficient. Ambitious or unconventional requests are not inherently out of scope; only close what is clearly excluded.
+
 ## Step 4: Decide and write result
 
 Based on your assessment, choose exactly one action and write the result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
@@ -172,6 +174,29 @@ When you identify a question, attempt to answer it using the repository context 
   "action": "question",
   "reasoning": "Brief explanation of why this is a question rather than a bug or feature request",
   "comment": "Your answer to the question, followed by a prompt asking whether the reporter wants to convert this into a feature request or close the issue. Be helpful and specific — use repository context to give a substantive answer rather than a generic response."
+}
+```
+
+### Action: `not-planned`
+
+The issue is out-of-scope, invalid, spam, or should otherwise not be worked on. This action closes the issue with reason `not planned`.
+
+Use this action for:
+- Issues explicitly out of project scope (e.g., feature requests incompatible with project goals)
+- Invalid reports (e.g., user error, misconfiguration, or misunderstanding)
+- Spam or low-quality submissions
+- Issues that would introduce technical direction counter to documented architectural decisions
+
+**Do NOT use this action for:**
+- Issues that lack information (use `insufficient` instead)
+- Issues that are duplicates of existing ones (use `duplicate` instead)
+- Issues blocked on other work (use `prerequisites` instead)
+
+```json
+{
+  "action": "not-planned",
+  "reasoning": "Brief explanation of why this issue is being closed as not planned",
+  "comment": "A professional comment explaining why the issue is out of scope or invalid. Be respectful — the reporter may not have understood project boundaries. Link to relevant documentation or related discussions when applicable."
 }
 ```
 
