@@ -1,0 +1,27 @@
+---
+id: fullsend-github-code
+display_name: Fullsend GitHub (code agents)
+description: Read-only GitHub API and Git operations for code and fix agents
+category: source_control
+endpoints:
+  - host: api.github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+  - host: api.github.com
+    port: 443
+    protocol: graphql
+    access: read-only
+    enforcement: enforce
+    path: "/graphql"
+  - host: github.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - "**/gh"
+  - "**/git"
+  - "**/node"
+  - "**/pre-commit"
