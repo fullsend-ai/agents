@@ -6,7 +6,7 @@ version: 1
 # Identical to the code agent policy — the fix agent needs the same network
 # access (Vertex AI, GitHub API for gh pr view/diff, package registries)
 # because it runs tests and linters. The review body is pre-fetched by the
-# workflow; gh api is banned via disallowedTools in agents/fix.md.
+# workflow; the sandbox GH_TOKEN is read-only scoped.
 
 filesystem_policy:
   include_workdir: true

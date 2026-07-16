@@ -4,10 +4,6 @@ description: >-
   Code review orchestrator. Triages the change, dispatches specialized
   sub-agents in parallel across six review dimensions, synthesizes
   findings, and produces a structured result.
-tools: >-
-  Read, Grep, Glob, Bash, Agent
-disallowedTools: >-
-  Write, Edit, NotebookEdit
 model: opus
 skills:
   - code-review

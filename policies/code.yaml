@@ -5,8 +5,8 @@ version: 1
 #
 # Grants network access the code agent needs beyond the base sandbox:
 #   - Vertex AI (global inference + GCP auth token exchange)
-#   - GitHub API (gh/git only — curl intentionally excluded to prevent
-#     disallowedTools bypass via raw HTTP with the injected GH_TOKEN)
+#   - GitHub API (gh/git only — curl excluded from the binary allowlist
+#     to prevent raw HTTP access with the injected GH_TOKEN)
 #   - gitleaks releases (fallback download if not pre-installed in image)
 #   - npm/yarn/pnpm/PyPI/Go registries (running tests may pull dev dependencies)
 #   - pre-commit binary needs github (clone hook repos), package registries

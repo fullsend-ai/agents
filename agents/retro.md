@@ -9,10 +9,6 @@ skills:
   - finding-agent-runs
   - agent-scaffolding
   - autonomy-readiness
-tools: >-
-  Read, Grep, Glob, Bash(gh,jq)
-disallowedTools: >-
-  Write, Edit, NotebookEdit
 model: opus
 ---
 
