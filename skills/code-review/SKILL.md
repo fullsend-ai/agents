@@ -213,12 +213,15 @@ For each issue identified, record:
   `test-weakened`, `tier-mismatch`, `injection-pattern`,
   `unicode-steganography`, `data-exposure`, `naming-convention`
 - **Description:** natural-language explanation of the finding
-- **Location:** relative file path and line number(s). Verify each
-  line number: the content at the cited line must be the specific
-  code or text your finding discusses, not a nearby line in the same
-  section. Re-read the file at the line you plan to cite and confirm
-  the match. If the content does not match, find the correct line. If
-  you cannot determine the correct line, omit it rather than guessing.
+- **Location:** relative file path and line number(s). Line numbers
+  must come from reading the file, not from counting lines in the diff
+  output (diff-relative offsets differ from file-absolute line numbers).
+  Before recording a line number: (1) Read the file at that line,
+  (2) confirm the content is the specific code your finding describes —
+  not a nearby line in the same function, (3) if it does not match,
+  search the file for the correct line, (4) if you cannot locate the
+  exact line, omit it — a finding with no line is better than one
+  pointing to the wrong code.
 - **Remediation:** suggested fix or action (required for critical/high)
 - **Actionable:** whether the finding should become tracked follow-up
   work if the PR is approved. Use `true` only for concrete low/info

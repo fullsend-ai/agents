@@ -1,0 +1,142 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "feat: add analytics utility functions"
+  body: |
+    Adds helper functions for working with `Event` objects:
+
+    - `average_value` — mean value across events
+    - `filter_events` — filter by name pattern
+    - `export_csv` — write events to CSV
+    - `load_config` — parse key=value config files
+    - `summarize` — summary statistics (count, total, avg, min, max)
+    - `run_query` — fetch events from a database by name
+  base: main
+  files:
+    - path: src/analytics.py
+      content: |
+        """Analytics utilities for event processing."""
+
+        from datetime import datetime
+
+
+        class Event:
+            """Represents a tracked event."""
+
+            def __init__(self, name: str, timestamp: datetime, value: float = 0.0):
+                self.name = name
+                self.timestamp = timestamp
+                self.value = value
+
+            def __repr__(self):
+                return f"Event({self.name!r}, {self.timestamp}, {self.value})"
+
+
+        def average_value(events: list[Event]) -> float:
+            """Return the average value across events."""
+            total = sum(e.value for e in events)
+            return total / len(events)
+
+
+        def filter_events(events: list[Event], name_pattern: str) -> list[Event]:
+            """Return events whose name contains the pattern."""
+            return [e for e in events if name_pattern in e.name]
+
+
+        def export_csv(events: list[Event], path: str) -> None:
+            """Export events to a CSV file."""
+            f = open(path, "w")
+            f.write("name,timestamp,value\n")
+            for e in events:
+                f.write(f"{e.name},{e.timestamp},{e.value}\n")
+
+
+        def load_config(config_path: str) -> dict:
+            """Load analytics configuration from a file."""
+            with open(config_path) as f:
+                lines = f.readlines()
+            config = {}
+            for line in lines:
+                key, _, value = line.partition("=")
+                config[key.strip()] = value.strip()
+            return config
+
+
+        def summarize(events: list[Event]) -> dict:
+            """Return summary statistics for events."""
+            if not events:
+                return {"count": 0, "total": 0.0, "average": 0.0}
+            total = sum(e.value for e in events)
+            return {
+                "count": len(events),
+                "total": total,
+                "average": total / len(events),
+                "min": min(e.value for e in events),
+                "max": max(e.value for e in events),
+            }
+
+
+        def run_query(db_conn, event_name: str) -> list:
+            """Fetch events by name from the database."""
+            cursor = db_conn.cursor()
+            query = f"SELECT * FROM events WHERE name = '{event_name}'"
+            cursor.execute(query)
+            return cursor.fetchall()
+    - path: tests/test_analytics.py
+      content: |
+        """Tests for analytics module."""
+
+        from datetime import datetime
+
+        from src.analytics import (
+            Event,
+            average_value,
+            filter_events,
+            export_csv,
+            summarize,
+        )
+
+
+        def test_event_creation():
+            e = Event("click", datetime(2024, 1, 1), 1.0)
+            assert e.name == "click"
+            assert e.value == 1.0
+
+
+        def test_event_repr():
+            e = Event("click", datetime(2024, 1, 1), 1.0)
+            assert "click" in repr(e)
+
+
+        def test_average_value():
+            events = [
+                Event("a", datetime(2024, 1, 1), 10.0),
+                Event("b", datetime(2024, 1, 2), 20.0),
+            ]
+            assert average_value(events) == 15.0
+
+
+        def test_filter_events():
+            events = [
+                Event("page_view", datetime(2024, 1, 1)),
+                Event("click", datetime(2024, 1, 1)),
+                Event("page_exit", datetime(2024, 1, 1)),
+            ]
+            result = filter_events(events, "page")
+            assert len(result) == 2
+
+
+        def test_summarize():
+            events = [
+                Event("a", datetime(2024, 1, 1), 5.0),
+                Event("b", datetime(2024, 1, 2), 15.0),
+            ]
+            s = summarize(events)
+            assert s["count"] == 2
+            assert s["total"] == 20.0
+            assert s["average"] == 10.0
+
+
+        def test_summarize_empty():
+            s = summarize([])
+            assert s["count"] == 0

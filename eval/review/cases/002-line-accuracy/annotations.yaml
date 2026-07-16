@@ -1,0 +1,56 @@
+state: open
+
+labels:
+  forbidden:
+    - ready-for-merge
+
+max_turns: 40
+max_cost_usd: 7.00
+
+# Known bugs planted in src/analytics.py with their exact file-absolute
+# line numbers.  The line_accuracy judge uses these to verify the agent
+# cites the correct lines in its review comments.
+expected_findings:
+  - id: zero-division
+    file: src/analytics.py
+    line: 21
+    line_content: "return total / len(events)"
+    description: >
+      average_value divides by len(events) without checking for an empty
+      list, raising ZeroDivisionError.
+  - id: resource-leak
+    file: src/analytics.py
+    line: 31
+    line_content: "f = open(path, \"w\")"
+    description: >
+      export_csv opens a file with bare open() instead of a context
+      manager. The file is never closed, and exceptions during writing
+      leak the file descriptor.
+  - id: sql-injection
+    file: src/analytics.py
+    line: 65
+    line_content: "query = f\"SELECT * FROM events WHERE name = '{event_name}'\""
+    description: >
+      run_query interpolates user input directly into a SQL string via
+      f-string, allowing SQL injection. Should use parameterized queries.
+
+review_expectations: |
+  This PR adds six utility functions to the analytics module. Three of
+  them contain bugs that a good review must catch:
+
+  1. **average_value** (line 21): divides by `len(events)` without
+     guarding against an empty list — `ZeroDivisionError` at runtime.
+  2. **export_csv** (line 31): opens a file with bare `open()` instead
+     of a context manager. The handle is never closed, and an exception
+     during writes leaks the descriptor.
+  3. **run_query** (line 65): builds a SQL query via f-string
+     interpolation of user-controlled input — textbook SQL injection.
+
+  A score of 1-2 means the agent missed most bugs or approved the PR.
+  A score of 3 means it caught some bugs but missed others or gave
+  only surface-level feedback. A score of 4-5 means it caught all three
+  bugs with accurate descriptions and did not approve the PR.
+
+  Line-number accuracy is evaluated separately by the line_accuracy
+  judge — review_quality should focus on whether the agent identified
+  the right issues, not whether the line citations are exact.

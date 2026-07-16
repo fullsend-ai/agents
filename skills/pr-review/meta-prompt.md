@@ -23,15 +23,33 @@ For each finding, return a JSON array as follows
 }
 ```
 
-**Line number accuracy:** For the `line` field, cite the exact line
-number where the problematic code or text appears. After determining
-your finding, re-read the file at the line number you plan to cite and
-verify the content at that line matches what your finding describes. If
-the content at the cited line does not match, search for the correct
-line before emitting the finding. If you cannot confidently determine
-the correct line, omit the `line` field rather than guessing — a
-finding with no line number is better than one that points to the wrong
-code.
+**Line number verification (mandatory before emitting any finding
+with a `line` field):**
+
+In diff hunk headers (`@@ -X,N +Y,M @@`), `-X` is the start line in
+the old file and `+Y` is the start line in the new file. Findings
+target the PR's current head, so always use `+Y` (new-file side).
+Your position within the diff output is not file-absolute — counting
+lines from the top of a hunk gives a diff-relative offset, not a file
+line number. Always derive line numbers from the file itself, never
+from counting diff lines.
+
+Before emitting a finding with a `line` value:
+
+1. Read the file at the line you intend to cite.
+2. Confirm the content at that line is the specific code or text your
+   finding describes — not a nearby line in the same function or block.
+3. If the content does not match, grep or search the file for the
+   expected content and use the correct line number.
+4. If you cannot locate the exact line, omit the `line` field. A
+   finding with no line number is always better than one that points
+   to the wrong code.
+
+**Scope-constraint carve-out:** If your scope constraint prohibits
+reading source files (e.g. trivial/small), derive line numbers from
+the diff hunk headers (`@@ -X,N +Y,M @@` → Y + offset) on a
+best-effort basis. Omit the `line` field rather than exceeding your
+tool-call budget to verify it.
 
 ## Severity anchoring (re-reviews only)
 

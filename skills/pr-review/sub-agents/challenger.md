@@ -30,13 +30,20 @@ For each finding:
    - "Missing error handling" when the error is handled by a caller
    - "Race condition" when access is serialized by design
    - "Missing test" when the test exists in a different file
-2. **Assess severity calibration.** Is the severity proportionate to
+2. **Verify line number accuracy.** When you read the file in step 1,
+   check whether the content at the cited line is the specific code
+   the finding describes. If the line is wrong (off by a few lines,
+   pointing to a blank line or comment instead of the relevant code),
+   find the correct line and update the `line` field. If you cannot
+   determine the correct line, remove the `line` field — a finding
+   with no line is better than one pointing to the wrong code.
+3. **Assess severity calibration.** Is the severity proportionate to
    the actual risk? Downgrade findings whose severity is inflated
    relative to the codebase context.
-3. **Identify duplicates.** Findings from different dimensions that
+4. **Identify duplicates.** Findings from different dimensions that
    describe the same underlying issue should be merged. Keep the
    higher severity and the more specific remediation.
-4. **Challenge weak reasoning.** If a finding's description is vague,
+5. **Challenge weak reasoning.** If a finding's description is vague,
    speculative, or not supported by the diff, mark it for removal.
 
 ## Output format
@@ -54,8 +61,9 @@ Return a JSON object with two fields:
       "description": "<description, possibly amended>",
       "remediation": "<remediation, required for critical/high>",
       "actionable": true|false,
-      "challenger_action": "kept|downgraded|merged|removed",
-      "challenger_reason": "<why this finding was kept/changed/removed>"
+      "challenger_action": "kept|downgraded|merged|removed|line-corrected",
+      "challenger_reason": "<why this finding was kept/changed/removed>",
+      "original_line": "<original line number before correction, only when challenger_action is line-corrected>"
     }
   ],
   "removed_findings": [
