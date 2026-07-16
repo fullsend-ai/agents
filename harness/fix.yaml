@@ -14,7 +14,20 @@ agent: agents/fix.md
 doc: docs/fix.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
-policy: policies/fix.yaml
+policy: policies/base.yaml
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+openshell:
+  profiles:
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-vertex-ai.yaml#sha256=347b2d794aef43e87a3e98331321ce90e3745d8e06627e4f64490d23407adcb6"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-github-code.yaml#sha256=759c1fa0d781531c9b98306fcbcd96dd862adcf7aaf30a9cd8d1c0ade9dae57f"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-package-registries.yaml#sha256=b0215fa0954c6c6f073f633283c38403439c0d1de8bdd58ac088f7084353aa3b"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-gitleaks.yaml#sha256=8c8b209a13fb639ca5ba3904e31166097c14414f6c088856eeb2631e63130653"
+providers:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/vertex-ai.yaml#sha256=ae5ebe527e5d7b0fa6994346fde3f6ba11b632a3ba78ece96591b5ed85083ec1"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/github-code.yaml#sha256=03c5bdadeb1cb069fc1fb761ea7e95f8201a207f6b9753484215927b2dd4a8d0"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/package-registries.yaml#sha256=07df296df76b9c28322b4e66e55c462f10b583d57fd166799aef45ec996b6028"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/gitleaks.yaml#sha256=39670a6a1f76fea82abc70e6bf7f345952acf03fb074489dc9590ad54888488a"
 
 role: coder
 slug: fullsend-ai-coder
@@ -28,12 +41,11 @@ validation_loop:
   max_iterations: 2
 
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
-  - src: env/fix.env
-    dest: /sandbox/workspace/.env.d/fix.env
-    expand: true
+  - src: env/ssl-cainfo.env
+    dest: /sandbox/workspace/.env.d/ssl-cainfo.env
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
   - src: ${REVIEW_BODY_FILE}
@@ -53,6 +65,7 @@ env:
     FIX_ITERATION: "${FIX_ITERATION}"
     REVIEW_BODY_FILE: "${REVIEW_BODY_FILE}"
     PRE_AGENT_HEAD: "${PRE_AGENT_HEAD}"
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/fix-result.schema.json
     FULLSEND_OUTPUT_FILE: fix-result.json
   sandbox:
     MAX_RETRIES: "1"
@@ -82,7 +95,6 @@ forge:
         TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
         HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
         FIX_ITERATION: "${FIX_ITERATION}"
-        GH_TOKEN: "${GH_TOKEN}"
         GIT_AUTHOR_NAME: "fullsend-fix"
         GIT_AUTHOR_EMAIL: "${GIT_BOT_EMAIL}"
         GIT_COMMITTER_NAME: "fullsend-fix"

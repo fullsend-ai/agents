@@ -31,17 +31,15 @@ setup_fixture() {
   cat > "$tmpdir/harness/triage.yaml" << 'YAML'
 agent: agents/triage.md
 doc: docs/triage.md
-policy: policies/triage.yaml
+policy: policies/base.yaml
 pre_script: scripts/pre-triage.sh
 post_script: scripts/post-triage.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/triage-result.schema.json
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
-  - src: env/triage.env
-    dest: /sandbox/workspace/.env.d/triage.env
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
 skills:
@@ -51,17 +49,15 @@ YAML
   cat > "$tmpdir/harness/review.yaml" << 'YAML'
 agent: agents/review.md
 doc: docs/review.md
-policy: policies/review.yaml
+policy: policies/base.yaml
 pre_script: scripts/pre-review.sh
 post_script: scripts/post-review.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
-  - src: env/review.env
-    dest: /sandbox/workspace/.env.d/review.env
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
 skills:
@@ -75,12 +71,14 @@ YAML
   cat > "$tmpdir/harness/code.yaml" << 'YAML'
 agent: agents/code.md
 doc: docs/code.md
-policy: policies/code.yaml
+policy: policies/base.yaml
 pre_script: scripts/pre-code.sh
 post_script: scripts/post-code.sh
 host_files:
-  - src: env/code.env
-    dest: /sandbox/workspace/.env.d/code.env
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+  - src: env/ssl-cainfo.env
+    dest: /sandbox/workspace/.env.d/ssl-cainfo.env
 YAML
 
   # Minimal eval configs (just need to exist)
@@ -109,15 +107,16 @@ fi
 cleanup_fixture "$FIXTURE"
 
 # ---------------------------------------------------------------------------
-# Test: modifying env file selects agent that references it
+# Test: modifying shared policy file selects all referencing agents
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "env/triage.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
-  pass "env file change selects agent via harness reference"
+RESULT=$(echo "policies/base.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "shared policy change selects all referencing agents"
 else
-  fail "env file change selects agent via harness reference (got: '$RESULT')"
+  fail "shared policy change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
 fi
 cleanup_fixture "$FIXTURE"
 
@@ -126,7 +125,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "common/env/gcp-vertex.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+RESULT=$(echo "env/gcp-vertex.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
 EXPECTED=$(printf "review\ntriage")
 if [[ "$RESULT" == "$EXPECTED" ]]; then
   pass "shared file change selects all referencing agents"
@@ -205,7 +204,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(printf "env/triage.env\nagents/review.md\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+RESULT=$(printf "agents/triage.md\nagents/review.md\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
 EXPECTED=$(printf "review\ntriage")
 if [[ "$RESULT" == "$EXPECTED" ]]; then
   pass "multiple agents selected from mixed changes"
@@ -387,7 +386,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(printf "env/triage.env\nenv/triage.env\nenv/triage.env\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+RESULT=$(printf "agents/triage.md\nagents/triage.md\nagents/triage.md\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 LINES=$(echo "$RESULT" | grep -c "triage")
 if [[ "$LINES" -eq 1 ]]; then
   pass "duplicate file inputs produce single agent output"

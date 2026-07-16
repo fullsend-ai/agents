@@ -2,4 +2,4 @@
 name: github-code
 type: fullsend-github-code
 credentials:
-  _NOOP_GITHUB_CODE: ""
+  GH_TOKEN: "${GH_TOKEN}"

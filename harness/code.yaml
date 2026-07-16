@@ -14,18 +14,30 @@ agent: agents/code.md
 doc: docs/code.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code:latest
-policy: policies/code.yaml
+policy: policies/base.yaml
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+openshell:
+  profiles:
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-vertex-ai.yaml#sha256=347b2d794aef43e87a3e98331321ce90e3745d8e06627e4f64490d23407adcb6"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-github-code.yaml#sha256=759c1fa0d781531c9b98306fcbcd96dd862adcf7aaf30a9cd8d1c0ade9dae57f"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-package-registries.yaml#sha256=b0215fa0954c6c6f073f633283c38403439c0d1de8bdd58ac088f7084353aa3b"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-gitleaks.yaml#sha256=8c8b209a13fb639ca5ba3904e31166097c14414f6c088856eeb2631e63130653"
+providers:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/vertex-ai.yaml#sha256=ae5ebe527e5d7b0fa6994346fde3f6ba11b632a3ba78ece96591b5ed85083ec1"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/github-code.yaml#sha256=03c5bdadeb1cb069fc1fb761ea7e95f8201a207f6b9753484215927b2dd4a8d0"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/package-registries.yaml#sha256=07df296df76b9c28322b4e66e55c462f10b583d57fd166799aef45ec996b6028"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/gitleaks.yaml#sha256=39670a6a1f76fea82abc70e6bf7f345952acf03fb074489dc9590ad54888488a"
 
 role: coder
 slug: fullsend-ai-coder
 
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
-  - src: env/code.env
-    dest: /sandbox/workspace/.env.d/code.env
-    expand: true
+  - src: env/ssl-cainfo.env
+    dest: /sandbox/workspace/.env.d/ssl-cainfo.env
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
   - src: ${GCP_OIDC_TOKEN_FILE}
@@ -46,11 +58,22 @@ validation_loop:
   schema: schemas/code-result.schema.json
   max_iterations: 2
 
-# Environment variables available to pre/post scripts on the runner.
-# These are expanded from the runner environment and NEVER enter the sandbox.
-runner_env:
-  CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
-  FULLSEND_OUTPUT_FILE: code-result.json
+env:
+  runner:
+    CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/code-result.schema.json
+    FULLSEND_OUTPUT_FILE: code-result.json
+  sandbox:
+    ISSUE_NUMBER: "${ISSUE_NUMBER}"
+    GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
+    GIT_AUTHOR_NAME: "fullsend-code"
+    GIT_AUTHOR_EMAIL: "${GIT_BOT_EMAIL}"
+    GIT_COMMITTER_NAME: "fullsend-code"
+    GIT_COMMITTER_EMAIL: "${GIT_BOT_EMAIL}"
+    MAX_RETRIES: "1"
+    TIMEOUT_SECONDS: "2100"
+    GOPATH: "/sandbox/go"
+    GOMODCACHE: "/sandbox/go/pkg/mod"
 
 timeout_minutes: 35
 
@@ -58,9 +81,10 @@ forge:
   github:
     pre_script: scripts/pre-code.sh
     post_script: scripts/post-code.sh
-    runner_env:
-      PUSH_TOKEN: "${PUSH_TOKEN}"
-      PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      ISSUE_NUMBER: "${ISSUE_NUMBER}"
-      REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"
+    env:
+      runner:
+        PUSH_TOKEN: "${PUSH_TOKEN}"
+        PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+        REPO_DIR: "${GITHUB_WORKSPACE}/target-repo"

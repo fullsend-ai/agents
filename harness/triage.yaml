@@ -3,13 +3,22 @@ agent: agents/triage.md
 doc: docs/triage.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/triage.yaml
+policy: policies/base.yaml
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+openshell:
+  profiles:
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-vertex-ai.yaml#sha256=347b2d794aef43e87a3e98331321ce90e3745d8e06627e4f64490d23407adcb6"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-github-ro.yaml#sha256=c686b2ed1af272607c9e49b4c5a680fd92aef0a9e0c3fc6cfcb96519477c9d16"
+providers:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/vertex-ai.yaml#sha256=ae5ebe527e5d7b0fa6994346fde3f6ba11b632a3ba78ece96591b5ed85083ec1"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/github-ro.yaml#sha256=f4678aa328deea8653d15691d32d9f03fc9aba92ee8383bac7f4a03993739360"
 
 role: triage
 slug: fullsend-ai-triage
 
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
@@ -17,9 +26,6 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
-  - src: env/triage.env
-    dest: /sandbox/workspace/.env.d/triage.env
-    expand: true
 
 skills:
   - skills/issue-labels
@@ -31,6 +37,10 @@ validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/triage-result.schema.json
   max_iterations: 2
+
+env:
+  runner:
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/triage-result.schema.json
 
 timeout_minutes: 10
 
@@ -44,4 +54,3 @@ forge:
         GH_TOKEN: ${GH_TOKEN}
       sandbox:
         GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
-        GH_TOKEN: "${GH_TOKEN}"

@@ -3,17 +3,25 @@ agent: agents/retro.md
 doc: docs/retro.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
-policy: policies/retro.yaml
+policy: policies/base.yaml
+allowed_remote_resources:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+openshell:
+  profiles:
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-vertex-ai.yaml#sha256=347b2d794aef43e87a3e98331321ce90e3745d8e06627e4f64490d23407adcb6"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-github-ro.yaml#sha256=c686b2ed1af272607c9e49b4c5a680fd92aef0a9e0c3fc6cfcb96519477c9d16"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/profiles/fullsend-github-artifacts.yaml#sha256=c93be288aec3d07d8c68600f6c3a203d3d123a79d68a9d71b17470ffe51744e6"
+providers:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/vertex-ai.yaml#sha256=ae5ebe527e5d7b0fa6994346fde3f6ba11b632a3ba78ece96591b5ed85083ec1"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/github-ro.yaml#sha256=f4678aa328deea8653d15691d32d9f03fc9aba92ee8383bac7f4a03993739360"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/refs/pull/211/head/providers/github-artifacts.yaml#sha256=9c3f4cdab6fa20c43a179f926f88c63bc22978790196f802a550e106081cfb3d"
 
 role: retro
 slug: fullsend-ai-retro
 
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
-    expand: true
-  - src: env/retro.env
-    dest: /sandbox/workspace/.env.d/retro.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
@@ -35,13 +43,23 @@ validation_loop:
   schema: schemas/retro-result.schema.json
   max_iterations: 2
 
+env:
+  runner:
+    FULLSEND_OUTPUT_SCHEMA: ${FULLSEND_DIR}/schemas/retro-result.schema.json
+  sandbox:
+    RETRO_COMMENT: "${RETRO_COMMENT}"
+
 timeout_minutes: 30
 
 forge:
   github:
     pre_script: scripts/pre-retro.sh
     post_script: scripts/post-retro.sh
-    runner_env:
-      ORIGINATING_URL: "${ORIGINATING_URL}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      GH_TOKEN: "${GH_TOKEN}"
+    env:
+      runner:
+        ORIGINATING_URL: "${ORIGINATING_URL}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        GH_TOKEN: "${GH_TOKEN}"
+      sandbox:
+        ORIGINATING_URL: "${ORIGINATING_URL}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"

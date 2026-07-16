@@ -21,13 +21,14 @@ See [`docs/`](docs/) for detailed documentation on each agent.
 agents/      Agent system prompts (one per agent)
 docs/        User-facing documentation
 harness/     Harness configurations (sandbox image, timeout, scripts, plugins)
-policies/    Sandbox security policies (filesystem, network, binary restrictions)
-env/         Per-agent environment variables
+profiles/    Network endpoint and binary allowlist definitions (portable, URL-referenced)
+providers/   Provider bindings mapping profile types to credentials
+policies/    Shared sandbox base policy (filesystem, landlock, process — no network rules)
+env/         Shared environment snippets (GCP Vertex AI auth, SSL CA workaround)
 schemas/     JSON Schema for validating agent structured output
 scripts/     Pre-scripts (input validation) and post-scripts (GitHub mutations)
 skills/      Reusable skill definitions loaded by agents at runtime
 plugins/     Sandbox plugins (e.g. gopls LSP for the code agent)
-common/      Shared configuration (GCP Vertex AI auth)
 ```
 
 ## Architecture
