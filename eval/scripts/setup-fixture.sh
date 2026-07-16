@@ -104,6 +104,19 @@ case "${FORGE}:${FIXTURE_TYPE}" in
       --body "$FIXTURE_BODY")
     FIXTURE_NUMBER="${FIXTURE_URL##*/}"
     echo "Created issue: $FIXTURE_URL"
+
+    # Apply fixture labels if declared in input.yaml.
+    LABEL_COUNT=$(yq -r '.fixture.labels // [] | length' "$INPUT")
+    if [[ "$LABEL_COUNT" -gt 0 ]]; then
+      for i in $(seq 0 $((LABEL_COUNT - 1))); do
+        label=$(yq -r ".fixture.labels[$i]" "$INPUT")
+        gh label create "$label" --repo "$EPHEMERAL_REPO" --force 2>/dev/null || true
+      done
+      LABELS_CSV=$(yq -r '.fixture.labels | join(",")' "$INPUT")
+      gh issue edit "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
+        --add-label "$LABELS_CSV" 2>/dev/null || true
+      echo "Applied labels: $LABELS_CSV"
+    fi
     ;;
   github:pull_request)
     PR_BRANCH="${FIXTURE_HEAD:-eval-pr-$(date +%s)-$$}"

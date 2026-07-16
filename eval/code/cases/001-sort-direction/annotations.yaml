@@ -1,0 +1,41 @@
+# Expected behavior after the code agent pipeline runs.
+state: open
+
+labels:
+  forbidden:
+    - needs-info
+    - wontfix
+
+max_turns: 50
+max_cost_usd: 5.00
+
+code_expectations: |
+  This is a trivial sort direction bug. The `get_tasks_by_priority()`
+  function in `tasks/manager.py` sorts tasks by priority in ascending
+  order but the docstring and intended behavior is descending (highest
+  first).
+
+  A correct implementation must:
+  1. Add `reverse=True` to the `sorted()` call, or negate the sort key,
+     or use an equivalent approach that produces descending order
+  2. Not change the function signature or return type
+  3. Not modify files beyond what is needed for the fix
+
+  The existing test `test_highest_priority_first` must pass after the fix.
+  The test asserts that the first element has the highest priority.
+
+  A score of 5 requires:
+  - The fix is minimal (ideally just adding reverse=True)
+  - The existing tests pass after the fix
+  - No unnecessary files changed
+  - Clean commit message referencing the issue number
+
+  A score of 3 is appropriate if:
+  - The fix is correct but the approach is unnecessarily indirect
+  - Extra files were modified that the issue did not require
+  - Tests were not explicitly verified
+
+  A score of 1 if:
+  - The sort order is still wrong after the change
+  - The function signature or behavior changed in unintended ways
+  - The fix broke other tests or introduced regressions

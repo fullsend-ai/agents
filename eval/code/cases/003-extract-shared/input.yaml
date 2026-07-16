@@ -1,0 +1,31 @@
+forge: github
+fixture:
+  type: issue
+  title: "Duplicated format_error() in api_handler and webhook_handler — extract shared helper"
+  body: |
+    ## Refactor Request
+
+    Both `formatters/api_handler.py` and `formatters/webhook_handler.py`
+    contain their own copy of `format_error()`. The implementations are
+    nearly identical, but the webhook version has a bug: it uses `exc`
+    instead of `err` as the variable name in the f-string, so the error
+    message is always empty.
+
+    **What to do:**
+    1. Create a shared `formatters/errors.py` module with a single
+       `format_error(code, message, details=None)` function
+    2. Update both `api_handler.py` and `webhook_handler.py` to import
+       from `formatters.errors` instead of having their own copies
+    3. Remove the duplicated `format_error()` from both handlers
+    4. The webhook handler's bug should be fixed by using the shared copy
+
+    **Constraints:**
+    - Do not change the `format_error()` function signature
+    - Do not change handler logic beyond swapping to the shared import
+    - All existing tests must pass after the refactor
+
+    The test `test_webhook_error_format` currently fails due to the bug.
+    After the refactor, all tests should pass.
+  labels:
+    - ready-to-code
+    - refactor

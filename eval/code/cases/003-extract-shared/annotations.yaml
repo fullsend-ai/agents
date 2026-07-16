@@ -1,0 +1,40 @@
+state: open
+
+labels:
+  forbidden:
+    - needs-info
+    - wontfix
+
+max_turns: 60
+max_cost_usd: 6.00
+
+code_expectations: |
+  This is a multi-file refactor. The agent must extract duplicated
+  format_error() into a shared module and fix a bug in the process.
+
+  A correct implementation must:
+  1. Create formatters/errors.py with format_error(code, message, details=None)
+  2. Update api_handler.py to import format_error from formatters.errors
+  3. Update webhook_handler.py to import format_error from formatters.errors
+  4. Remove the inline format_error() definitions from both handlers
+  5. The webhook bug (using `exc` instead of `err`) is fixed by using
+     the shared correct implementation
+
+  A score of 5 requires:
+  - New shared module created with the correct implementation
+  - Both handlers updated to use the shared import
+  - No duplicated format_error() code remains
+  - All tests pass (including test_webhook_error_format which was failing)
+  - Clean commit message, minimal diff, no scope creep
+
+  A score of 3 is appropriate if:
+  - The shared module is created and works correctly
+  - But only one handler was updated (the other still has its own copy)
+  - Or unnecessary additional changes were made
+  - Or the tests pass but the approach was roundabout
+
+  A score of 1 if:
+  - No shared module was created
+  - The webhook bug was not fixed
+  - Tests are still failing after the change
+  - The refactor broke existing functionality

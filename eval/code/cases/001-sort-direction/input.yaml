@@ -1,0 +1,40 @@
+forge: github
+fixture:
+  type: issue
+  title: "Tasks sorted in wrong order — low priority appears first"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    When I call `get_tasks_by_priority()`, the tasks come back sorted with
+    the lowest priority first. The function's docstring says "highest first"
+    but the actual behavior is the opposite.
+
+    **Expected behavior:**
+    Tasks should be sorted with the highest priority first (priority 5 before
+    priority 1).
+
+    **Steps to reproduce:**
+    ```python
+    from tasks.manager import get_tasks_by_priority
+
+    tasks = [
+        {"name": "Fix login", "priority": 3},
+        {"name": "Update docs", "priority": 1},
+        {"name": "Security patch", "priority": 5},
+    ]
+    result = get_tasks_by_priority(tasks)
+    print([t["name"] for t in result])
+    # Prints: ['Update docs', 'Fix login', 'Security patch']
+    # Expected: ['Security patch', 'Fix login', 'Update docs']
+    ```
+
+    **Environment:**
+    - Python 3.12
+    - No external dependencies
+
+    The existing test `test_highest_priority_first` in `tests/test_manager.py`
+    also fails, confirming the bug.
+  labels:
+    - ready-to-code
+    - bug

@@ -1,0 +1,40 @@
+state: open
+
+labels:
+  forbidden:
+    - needs-info
+    - wontfix
+
+max_turns: 30
+max_cost_usd: 3.00
+
+code_expectations: |
+  This is a docs-only change. The agent must add an "## Error Handling"
+  section to AGENTS.md after the existing "## Code Style" section.
+
+  A correct implementation must:
+  1. Add a new heading "## Error Handling" in the right location
+     (after "## Code Style", before "## Testing")
+  2. Cover all four requested topics: specific exceptions, logging
+     before re-raise, traceback preservation, structured API errors
+  3. NOT modify any .go files — this is purely a docs change
+  4. Match the existing Markdown formatting style of AGENTS.md
+
+  A score of 5 requires:
+  - Section placed in exactly the right location
+  - All four topics covered concisely
+  - Zero modifications to .go files or any non-AGENTS.md file
+  - Clean commit message referencing the issue
+  - Professional tone matching the existing document
+
+  A score of 3 is appropriate if:
+  - Section is added but in the wrong location (e.g., at the end)
+  - Only 2-3 of the 4 topics are covered
+  - Minor formatting inconsistencies with existing sections
+  - Some non-docs files were touched but not meaningfully changed
+
+  A score of 1 if:
+  - No "## Error Handling" section was added
+  - Go source code was modified
+  - The content is mostly unrelated to error handling
+  - The AGENTS.md structure was damaged or rearranged

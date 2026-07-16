@@ -1,0 +1,27 @@
+forge: github
+fixture:
+  type: issue
+  title: "Add error handling guidance to AGENTS.md"
+  body: |
+    ## Enhancement Request
+
+    Our AGENTS.md is missing guidance about error handling conventions.
+    New contributors keep writing overly broad try/except blocks that
+    swallow errors silently.
+
+    **What to add:**
+    Add a section titled "## Error Handling" after the existing
+    "## Code Style" section in AGENTS.md. The section should cover:
+
+    1. Always catch specific exception types, never bare `except:`
+    2. Log errors before re-raising — use `logger.error()` not `print()`
+    3. Include the original traceback when wrapping exceptions
+    4. Return structured error responses from API handlers, not raw strings
+
+    **Constraints:**
+    - Do NOT modify any Go source files — this is a docs-only change
+    - Keep the guidance concise (aim for 10-20 lines of markdown)
+    - Match the existing tone and formatting of other AGENTS.md sections
+  labels:
+    - ready-to-code
+    - documentation

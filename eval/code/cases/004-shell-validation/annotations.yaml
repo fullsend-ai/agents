@@ -1,0 +1,41 @@
+state: open
+
+labels:
+  forbidden:
+    - needs-info
+    - wontfix
+
+max_turns: 40
+max_cost_usd: 4.00
+
+code_expectations: |
+  This is a shell script validation fix. The agent must add input
+  validation to deploy.sh following the pattern from setup.sh.
+
+  A correct implementation must:
+  1. Add a check near the top of deploy.sh that validates DEPLOY_TARGET
+     is set and non-empty
+  2. Exit with a non-zero status and clear error message if unset
+  3. The check should happen before the rsync or any deployment logic
+  4. Follow the same pattern used in setup.sh (lines 5-12)
+  5. Not change the core deployment logic
+
+  A score of 5 requires:
+  - Validation added at the top of the script, before any work
+  - Clear error message mentioning DEPLOY_TARGET by name
+  - Exits with non-zero status code
+  - Follows the setup.sh pattern (consistent style)
+  - The test_missing_vars.sh test passes after the fix
+  - No unnecessary changes to other files
+
+  A score of 3 is appropriate if:
+  - Validation is added but not at the top (e.g., right before rsync)
+  - Error message is vague ("missing variable" without naming it)
+  - Style doesn't match setup.sh pattern
+  - Validation works but uses a different approach
+
+  A score of 1 if:
+  - No validation was added for DEPLOY_TARGET
+  - The script still fails with a cryptic error when var is unset
+  - The fix broke the script's normal operation
+  - Other scripts were modified unnecessarily

@@ -52,7 +52,11 @@ install -m 0600 /dev/null "$ENV_FILE"
   echo "REVIEW_TOKEN=${GH_TOKEN}"
 
   case "$FIXTURE_TYPE" in
-    issue)        echo "GITHUB_ISSUE_URL=${FIXTURE_URL}" ;;
+    issue)
+      echo "GITHUB_ISSUE_URL=${FIXTURE_URL}"
+      echo "REPO_FULL_NAME=${EPHEMERAL_REPO}"
+      echo "ISSUE_NUMBER=${FIXTURE_NUMBER}"
+      ;;
     pull_request)
       echo "GITHUB_PR_URL=${FIXTURE_URL}"
       echo "PR_NUMBER=${FIXTURE_NUMBER}"
@@ -65,6 +69,9 @@ install -m 0600 /dev/null "$ENV_FILE"
   [[ -n "${CLOUD_ML_REGION:-}" ]]             && echo "CLOUD_ML_REGION=${CLOUD_ML_REGION}"
   [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]] && echo "GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}"
 } > "$ENV_FILE"
+
+export REPO_FULL_NAME="${EPHEMERAL_REPO}"
+export ISSUE_NUMBER="${FIXTURE_NUMBER}"
 
 FULLSEND_BIN="$(command -v fullsend)"
 EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"

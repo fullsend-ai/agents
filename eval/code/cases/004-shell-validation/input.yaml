@@ -1,0 +1,38 @@
+forge: github
+fixture:
+  type: issue
+  title: "deploy.sh fails with cryptic error when DEPLOY_TARGET is unset"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    Running `scripts/deploy.sh` without setting `DEPLOY_TARGET` produces
+    a confusing error deep in the rsync call:
+
+    ```
+    rsync: link_stat "/app/build/" failed: No such file or directory (2)
+    sending incremental file list
+    rsync error: some files/attrs were not transferred
+    ```
+
+    No mention of the missing variable — you have to read the script to
+    figure out what went wrong.
+
+    **Expected behavior:**
+    The script should validate that `DEPLOY_TARGET` is set before doing
+    anything, and exit with a clear error message like:
+    `"ERROR: DEPLOY_TARGET is not set"`.
+
+    **Reference:**
+    `scripts/setup.sh` already validates its required env vars at the top
+    (see lines 5-12). `deploy.sh` should follow the same pattern.
+
+    **Steps to reproduce:**
+    ```bash
+    unset DEPLOY_TARGET
+    bash scripts/deploy.sh
+    # Get cryptic rsync error instead of helpful validation message
+    ```
+  labels:
+    - ready-to-code
+    - bug
