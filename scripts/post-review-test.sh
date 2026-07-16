@@ -673,6 +673,213 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
+# ---------------------------------------------------------------------------
+# Partial-failure tests: fullsend post-review exits non-zero (e.g. 422 from
+# inline comment outside diff hunk) but outcome labels should still be applied.
+# Mirrors the fix in post-review.sh — keep in sync.
+# ---------------------------------------------------------------------------
+
+run_partial_failure_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local fullsend_exit="$3"
+  local expected_pattern="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  # Custom mock bin with a fullsend that exits non-zero
+  local fail_bin="${TMPDIR}/fail-bin-${test_name}"
+  mkdir -p "${fail_bin}"
+  cp "${MOCK_BIN}/gh" "${fail_bin}/gh"
+  cat > "${fail_bin}/fullsend" <<FAILEOF
+#!/usr/bin/env bash
+echo "fullsend \$*" >> "${GH_LOG}"
+exit ${fullsend_exit}
+FAILEOF
+  chmod +x "${fail_bin}/fullsend"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${fail_bin}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_partial_failure_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local fullsend_exit="$3"
+  local expected_stdout="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local fail_bin="${TMPDIR}/fail-bin-${test_name}"
+  mkdir -p "${fail_bin}"
+  cp "${MOCK_BIN}/gh" "${fail_bin}/gh"
+  cat > "${fail_bin}/fullsend" <<FAILEOF
+#!/usr/bin/env bash
+echo "fullsend \$*" >> "${GH_LOG}"
+exit ${fullsend_exit}
+FAILEOF
+  chmod +x "${fail_bin}/fullsend"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${fail_bin}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_partial_failure_test_no_pattern() {
+  local test_name="$1"
+  local json_content="$2"
+  local fullsend_exit="$3"
+  local forbidden_pattern="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local fail_bin="${TMPDIR}/fail-bin-${test_name}"
+  mkdir -p "${fail_bin}"
+  cp "${MOCK_BIN}/gh" "${fail_bin}/gh"
+  cat > "${fail_bin}/fullsend" <<FAILEOF
+#!/usr/bin/env bash
+echo "fullsend \$*" >> "${GH_LOG}"
+exit ${fullsend_exit}
+FAILEOF
+  chmod +x "${fail_bin}/fullsend"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${fail_bin}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF -- "${forbidden_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — forbidden pattern '${forbidden_pattern}' was found in gh calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Partial-failure test cases ---
+
+# approve + fullsend failure → downgrade to requires-manual-review (no false ready-for-merge)
+run_partial_failure_test "partial-failure-approve-downgrade-label" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  1 \
+  "--add-label requires-manual-review"
+
+# approve + fullsend failure → ready-for-merge must NOT be applied
+run_partial_failure_test_no_pattern "partial-failure-approve-no-ready-for-merge" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  1 \
+  "--add-label ready-for-merge"
+
+# comment + fullsend failure → requires-manual-review label still applied
+run_partial_failure_test "partial-failure-comment-labels-applied" \
+  '{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Mixed review"}' \
+  1 \
+  "--add-label requires-manual-review"
+
+# Error annotation is logged on partial failure
+run_partial_failure_test_stdout "partial-failure-error-logged" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  1 \
+  "::error::fullsend post-review failed"
+
+# reject + fullsend failure → PR must NOT be closed
+run_partial_failure_test_no_pattern "partial-failure-reject-no-close" \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Approach rejected"}' \
+  1 \
+  "pr close"
+
+# reject + fullsend failure → downgrade to requires-manual-review
+run_partial_failure_test "partial-failure-reject-downgrade-label" \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Approach rejected"}' \
+  1 \
+  "--add-label requires-manual-review"
+
+# reject + fullsend failure → stdout confirms downgrade
+run_partial_failure_test_stdout "partial-failure-reject-downgrade-logged" \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Approach rejected"}' \
+  1 \
+  "downgrading to requires-manual-review"
+
+# reject + fullsend failure → rejected label must NOT be applied
+run_partial_failure_test_no_pattern "partial-failure-reject-no-rejected-label" \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Approach rejected"}' \
+  1 \
+  "--add-label rejected"
+
 # --- Summary ---
 
 echo ""

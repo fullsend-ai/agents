@@ -344,8 +344,16 @@ ${REDISPATCH_MARKER}" || echo "::warning::Failed to post re-dispatch comment"
   # appear as a failure.
   exit 0
 elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
-  echo "::error::fullsend post-review failed with exit code ${POST_REVIEW_EXIT} (PR #${PR_NUMBER} in ${REPO_FULL_NAME})" >&2
-  exit "${POST_REVIEW_EXIT}"
+  # ASSUMPTION: non-zero/non-10 exits are treated uniformly as partial
+  # failures where the sticky comment may have posted but the formal
+  # review submission failed (e.g. 422 from inline comments outside the
+  # diff hunk — see #193). The fullsend CLI does not currently distinguish
+  # partial success from total failure (auth/network). Destructive side
+  # effects (reject→close, approve→ready-for-merge) are guarded below,
+  # but a distinct exit code for "nothing posted" would be safer.
+  # TODO(fullsend-cli): add a distinct exit code for total failure vs
+  # partial post — see #193 follow-up.
+  echo "::error::fullsend post-review failed with exit code ${POST_REVIEW_EXIT} (PR #${PR_NUMBER} in ${REPO_FULL_NAME}) — applying outcome labels then exiting 1" >&2
 fi
 
 # ---------------------------------------------------------------------------
@@ -363,32 +371,43 @@ for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
     --remove-label "${stale_label}" 2>/dev/null || true
 done
 
-if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ]; then
+LABEL_FAILED=false
+
+if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${POST_REVIEW_EXIT}" -eq 0 ]; then
   echo "Approve disposition — applying ready-for-merge label"
   gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
     --description "All reviewers approved — ready to merge" --color "0E8A16" \
     2>/dev/null || true
   gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
-    --add-label "ready-for-merge" || true
-elif { [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "true" ]; } || \
+    --add-label "ready-for-merge" || LABEL_FAILED=true
+elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${POST_REVIEW_EXIT}" -ne 0 ]; }; } || \
      [ "${ACTION}" = "comment" ]; then
   echo "Review requires human judgment — applying requires-manual-review label"
   gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
     --description "Review requires human judgment" --color "FBCA04" \
     2>/dev/null || true
   gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
-    --add-label "requires-manual-review" || true
+    --add-label "requires-manual-review" || LABEL_FAILED=true
 elif [ "${ACTION}" = "reject" ]; then
-  echo "Reject disposition — closing PR and applying label"
-  gh label create "rejected" --repo "${REPO_FULL_NAME}" \
-    --description "Approach rejected by review agent" --color "B60205" \
-    2>/dev/null || true
-  gh pr close "${PR_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --comment "Closed by review agent: approach rejected." || true
-  gh pr edit "${PR_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --add-label "rejected" || true
+  if [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
+    echo "Reject disposition but post-review failed — downgrading to requires-manual-review"
+    gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
+      --description "Review requires human judgment" --color "FBCA04" \
+      2>/dev/null || true
+    gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --add-label "requires-manual-review" || LABEL_FAILED=true
+  else
+    echo "Reject disposition — closing PR and applying label"
+    gh label create "rejected" --repo "${REPO_FULL_NAME}" \
+      --description "Approach rejected by review agent" --color "B60205" \
+      2>/dev/null || true
+    gh pr close "${PR_NUMBER}" \
+      --repo "${REPO_FULL_NAME}" \
+      --comment "Closed by review agent: approach rejected." || LABEL_FAILED=true
+    gh pr edit "${PR_NUMBER}" \
+      --repo "${REPO_FULL_NAME}" \
+      --add-label "rejected" || LABEL_FAILED=true
+  fi
 elif [ "${ACTION}" = "request-changes" ]; then
   echo "Request-changes disposition — no outcome label (fix agent triggers on event)"
 fi
@@ -409,5 +428,17 @@ for label in "${VALIDATED_LABEL_REMOVES[@]}"; do
   gh api "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/labels/${encoded}" \
     -X DELETE --silent 2>/dev/null || true
 done
+
+if [ "${LABEL_FAILED}" = "true" ]; then
+  echo "::error::Outcome label application failed on ${REPO_FULL_NAME}#${PR_NUMBER}" >&2
+fi
+
+if [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
+  exit 1
+fi
+
+if [ "${LABEL_FAILED}" = "true" ]; then
+  exit 1
+fi
 
 echo "Review posted on ${REPO_FULL_NAME}#${PR_NUMBER}"
