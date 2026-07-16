@@ -76,8 +76,7 @@ Return a JSON object with two fields:
 
 ## Constraints
 
-- Use provided source files instead of reading from disk; only read
-  additional files if you need context beyond the changed files provided
+- Use the provided source files (PR head), not disk — disk has base-branch code
 - Every removal or downgrade must cite specific evidence from the code
 - Do not add new findings — only adjudicate existing ones
 - Do not write any files
