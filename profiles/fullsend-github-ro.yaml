@@ -1,4 +1,6 @@
 ---
+# Endpoints mirror fullsend-github-code.yaml — keep both in sync.
+# This profile omits git/pre-commit binaries (API-only agents).
 id: fullsend-github-ro
 display_name: Fullsend GitHub (read-only)
 description: Read-only GitHub API access for fullsend agents

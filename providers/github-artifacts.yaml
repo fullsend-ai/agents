@@ -2,4 +2,4 @@
 name: github-artifacts
 type: fullsend-github-artifacts
 credentials:
-  _NOOP_GITHUB_ARTIFACTS: ""
+  GH_TOKEN: "${GH_TOKEN}"
