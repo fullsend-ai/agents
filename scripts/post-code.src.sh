@@ -42,12 +42,8 @@ set -euo pipefail
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/post-failure-report.lib.sh
 source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-GITLEAKS_VERSION="8.30.1"
-GITLEAKS_SHA256="551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+# shellcheck source=lib/gitleaks-install.lib.sh
+source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -201,16 +197,8 @@ fi
 # ---------------------------------------------------------------------------
 echo "Running authoritative secret scan on agent's commit..."
 
-if ! command -v gitleaks >/dev/null 2>&1; then
-  echo "Installing gitleaks v${GITLEAKS_VERSION}..."
-  mkdir -p "${HOME}/.local/bin"
-  curl -fsSL \
-    "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-    -o /tmp/gitleaks.tar.gz \
-    && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tar.gz" | sha256sum -c - \
-    && tar xzf /tmp/gitleaks.tar.gz -C "${HOME}/.local/bin" gitleaks \
-    && rm /tmp/gitleaks.tar.gz
-  export PATH="${HOME}/.local/bin:${PATH}"
+if ! install_gitleaks; then
+  post_fail_to_issue setup-error "Failed to install gitleaks v${GITLEAKS_VERSION}"
 fi
 
 if [ -n "${MERGE_BASE}" ]; then
@@ -312,7 +300,10 @@ if [ -f .pre-commit-config.yaml ]; then
   fi
 
   if command -v pre-commit >/dev/null 2>&1; then
-    mapfile -t changed_array <<< "${CHANGED_FILES}"
+    changed_array=()
+    while IFS= read -r _changed_line; do
+      changed_array+=("${_changed_line}")
+    done <<< "${CHANGED_FILES}"
     # SYNC: parallel retry block in post-fix.sh section 3 — keep structure
     #       in sync (variable names differ: CHANGED_FILES here vs
     #       BRANCH_CHANGED_FILES there; SCAN_RANGE scopes differ by design).
@@ -353,7 +344,10 @@ if [ -f .pre-commit-config.yaml ]; then
           post_fail_to_issue pre-commit-blocked \
             "Pre-commit hooks removed all changes; commit is now empty."
         fi
-        mapfile -t changed_array <<< "${CHANGED_FILES}"
+        changed_array=()
+        while IFS= read -r _changed_line; do
+          changed_array+=("${_changed_line}")
+        done <<< "${CHANGED_FILES}"
         PRECOMMIT_RETRY_OUTPUT=""
         if PRECOMMIT_RETRY_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
           print_sanitized_gha_log "${PRECOMMIT_RETRY_OUTPUT}"
