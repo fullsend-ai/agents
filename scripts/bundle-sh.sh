@@ -133,13 +133,15 @@ bundle_expand_source() {
   local resolved=""
   local rel_comment=""
 
+  # Strip trailing inline comments before quote stripping so quoted paths
+  # like `"lib/foo.lib.sh" # note` do not leave a dangling quote.
   ref="$(printf '%s' "${raw_expr}" | sed -E \
+    -e 's/[[:space:]]+#.*$//' \
     -e 's/^[[:space:]]*"//; s/"[[:space:]]*$//' \
     -e 's/^[[:space:]]*'\''//; s/'\''[[:space:]]*$//' \
     -e 's/^\$\{SCRIPT_DIR[^}]*\}\///' \
     -e 's/^\$\{SCRIPT_DIR_POST[^}]*\}\///' \
-    -e 's/^\$\{SCRIPT_DIR[^}]*\}//' \
-    -e 's/[[:space:]]+#.*$//')"
+    -e 's/^\$\{SCRIPT_DIR[^}]*\}//')"
 
   if [[ -z "${ref}" ]]; then
     echo "bundle-sh: unsupported source expression: ${raw_expr}" >&2

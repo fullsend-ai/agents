@@ -102,6 +102,9 @@ else
   echo "PASS: outside-lib-should-fail"
 fi
 
+# --- quoted source path with inline comment still bundles ---
+run_bundle_test "comment-inline" "${FIXTURES}/comment.src.sh"
+
 # --- symlinked lib outside scripts/lib must fail ---
 SYMLINK_ROOT="${TMPDIR}/symlink-bundle"
 mkdir -p "${SYMLINK_ROOT}/scripts/lib" "${SYMLINK_ROOT}/outside"
