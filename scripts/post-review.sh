@@ -210,6 +210,60 @@ if [ "${ACTION}" = "approve" ]; then
     RESULT_FILE="${MODIFIED_RESULT}"
     DOWNGRADED=true
   fi
+
+  # -------------------------------------------------------------------------
+  # Submodule-change check: git submodules appear as mode-160000 entries
+  # in the tree. A submodule bump only changes a SHA pointer — the review
+  # agent cannot inspect the submodule's internal commits. Downgrade
+  # "approve" to "comment" so a human verifies the submodule contents.
+  # -------------------------------------------------------------------------
+  if [ "${DOWNGRADED}" = "false" ]; then
+    HEAD_SHA=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+
+    if [ -n "${HEAD_SHA}" ]; then
+      SUBMODULE_PATHS=$(gh api "repos/${REPO_FULL_NAME}/git/trees/${HEAD_SHA}?recursive=1" \
+        --jq '[.tree[] | select(.mode == "160000") | .path] | join("\n")' 2>/dev/null || true)
+
+      SUBMODULE_MATCHES=""
+      if [ -n "${SUBMODULE_PATHS}" ]; then
+        while IFS= read -r file; do
+          [ -z "${file}" ] && continue
+          while IFS= read -r submod; do
+            [ -z "${submod}" ] && continue
+            if [ "${file}" = "${submod}" ]; then
+              SUBMODULE_MATCHES="${SUBMODULE_MATCHES}${file}"$'\n'
+              break
+            fi
+          done <<< "${SUBMODULE_PATHS}"
+        done <<< "${PR_FILES}"
+      fi
+
+      if [ -n "${SUBMODULE_MATCHES}" ]; then
+        echo "PR modifies submodule pointer(s) — downgrading approve to comment"
+        echo "${SUBMODULE_MATCHES}" | sed '/^$/d' | sed 's/^/  /'
+
+        SUBMODULE_NOTICE=$'\n\n---\n\n'
+        SUBMODULE_NOTICE+=$'> **Submodule change detected** — this PR modifies one or more submodule\n'
+        SUBMODULE_NOTICE+=$'> pointers. The review agent cannot inspect the contents of submodule commits.\n'
+        SUBMODULE_NOTICE+=$'> A human reviewer must verify the submodule changes.\n'
+        SUBMODULE_NOTICE+=$'>\n'
+        SUBMODULE_NOTICE+=$'> Submodule(s) modified:\n'
+        while IFS= read -r f; do
+          [ -z "${f}" ] && continue
+          SUBMODULE_NOTICE+="> - \`${f}\`"$'\n'
+        done <<< "${SUBMODULE_MATCHES}"
+
+        MODIFIED_RESULT=$(mktemp)
+        CLEANUP_FILES+=("${MODIFIED_RESULT}")
+        jq --arg notice "${SUBMODULE_NOTICE}" \
+          '.action = "comment" | .body = (.body + $notice)' \
+          "${RESULT_FILE}" > "${MODIFIED_RESULT}"
+        RESULT_FILE="${MODIFIED_RESULT}"
+        DOWNGRADED=true
+      fi
+    fi
+  fi
 fi
 
 # ---------------------------------------------------------------------------

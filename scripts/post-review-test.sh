@@ -361,9 +361,27 @@ if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* 
   exit 0
 fi
 
-# gh pr view ... --json files ... → no protected files
+# gh pr view ... --json headRefOid ... → fake HEAD SHA
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json headRefOid"* ]]; then
+  echo "abc123def456"
+  exit 0
+fi
+
+# gh pr view ... --json files ... → configurable via MOCK_PR_FILES env var
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
-  echo "src/main.go"
+  if [ -n "\${MOCK_PR_FILES:-}" ]; then
+    printf '%s\n' \${MOCK_PR_FILES}
+  else
+    echo "src/main.go"
+  fi
+  exit 0
+fi
+
+# gh api repos/.../git/trees/... → configurable via MOCK_SUBMODULE_PATHS env var
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/git/trees/"* ]]; then
+  if [ -n "\${MOCK_SUBMODULE_PATHS:-}" ]; then
+    printf '%s\n' \${MOCK_SUBMODULE_PATHS}
+  fi
   exit 0
 fi
 
@@ -672,6 +690,117 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
+
+# ---------------------------------------------------------------------------
+# Submodule-change downgrade tests
+# ---------------------------------------------------------------------------
+
+run_submodule_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local pr_files="$4"
+  local submodule_paths="$5"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export MOCK_PR_FILES="${pr_files}"
+    export MOCK_SUBMODULE_PATHS="${submodule_paths}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_submodule_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local pr_files="$4"
+  local submodule_paths="$5"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export MOCK_PR_FILES="${pr_files}"
+    export MOCK_SUBMODULE_PATHS="${submodule_paths}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Approve with submodule change → downgraded to requires-manual-review
+run_submodule_test "submodule-bump-downgraded" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "add-label requires-manual-review" \
+  "src/main.go experiments" \
+  "experiments"
+
+# Approve with submodule change → log message mentions submodule
+run_submodule_test_stdout "submodule-bump-log-message" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "PR modifies submodule pointer(s)" \
+  "src/main.go experiments" \
+  "experiments"
+
+# Approve with no submodule in tree → no downgrade (ready-for-merge)
+run_submodule_test "no-submodule-no-downgrade" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "add-label ready-for-merge" \
+  "src/main.go" \
+  ""
 
 # --- Summary ---
 
