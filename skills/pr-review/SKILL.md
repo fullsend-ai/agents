@@ -425,7 +425,7 @@ boundaries, and similar concerns receive dedicated review context
 rather than being diluted across dozens of routine changes. The
 threshold aligns with step 2's per-file diff boundary so that
 per-file diff summaries are always available for the triage prompt.
-See #2096 for the motivating incident.
+See fullsend-ai/fullsend#2096 for the motivating incident.
 
 **Procedure:**
 
@@ -456,7 +456,7 @@ See #2096 for the motivating incident.
 
    ## Diff summaries
    ### <path>
-   <first ~20 lines of the file's diff>
+   <diff excerpt: ~20 lines if path matches a classification pattern, ~50 lines otherwise>
    ...
    ```
 
@@ -566,7 +566,7 @@ it is not `"none"`, prepend it to the sub-agent prompt as:
 This section appears before the sub-agent definition so the model sees
 the constraint first.
 
-#### Security-prioritized context (large PRs with triage results)
+#### 3f. Security-prioritized context (large PRs with triage results)
 
 When step 3c-1 produced a security triage classification (i.e., the PR
 has ≥ 50 files and the triage pass succeeded), modify the context
