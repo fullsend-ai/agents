@@ -24,12 +24,12 @@ FAILURES=0
 determine_outcome_label() {
   local action="$1"
   local downgraded="$2"
+  local is_draft="${3:-false}"
 
-  if [ "${action}" = "approve" ] && [ "${downgraded}" = "false" ]; then
+  if [ "${action}" = "approve" ] && [ "${downgraded}" = "false" ] && [ "${is_draft}" != "true" ]; then
     echo "ready-for-merge"
-  elif [ "${action}" = "approve" ] && [ "${downgraded}" = "true" ]; then
-    echo "requires-manual-review"
-  elif [ "${action}" = "comment" ]; then
+  elif { [ "${action}" = "approve" ] && { [ "${downgraded}" = "true" ] || [ "${is_draft}" = "true" ]; }; } || \
+       [ "${action}" = "comment" ]; then
     echo "requires-manual-review"
   elif [ "${action}" = "request-changes" ]; then
     echo "none"
@@ -45,14 +45,16 @@ run_test() {
   local action="$2"
   local downgraded="$3"
   local expected="$4"
+  local is_draft="${5:-false}"
 
   local actual
-  actual="$(determine_outcome_label "${action}" "${downgraded}")"
+  actual="$(determine_outcome_label "${action}" "${downgraded}" "${is_draft}")"
 
   if [ "${actual}" != "${expected}" ]; then
     echo "FAIL: ${test_name}"
     echo "  action:     '${action}'"
     echo "  downgraded: '${downgraded}'"
+    echo "  is_draft:   '${is_draft}'"
     echo "  expected:   '${expected}'"
     echo "  actual:     '${actual}'"
     FAILURES=$((FAILURES + 1))
@@ -98,6 +100,24 @@ run_test "failure-action-no-label" \
 
 run_test "unknown-action-no-label" \
   "banana" "false" "none"
+
+# Draft PR tests: approve on a draft must not produce ready-for-merge
+run_test "approve-draft-no-ready-for-merge" \
+  "approve" "false" "requires-manual-review" "true"
+
+# Draft + downgraded is redundant but must still yield requires-manual-review
+run_test "approve-draft-with-downgrade" \
+  "approve" "true" "requires-manual-review" "true"
+
+# Non-approve actions on drafts are unaffected
+run_test "comment-draft-unchanged" \
+  "comment" "false" "requires-manual-review" "true"
+
+run_test "request-changes-draft-unchanged" \
+  "request-changes" "false" "none" "true"
+
+run_test "reject-draft-unchanged" \
+  "reject" "false" "rejected" "true"
 
 # ---------------------------------------------------------------------------
 # Severity-threshold filtering logic
@@ -355,9 +375,11 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock gh: handle specific subcommands, log everything else.
 
-# gh pr view ... --json state ... → OPEN
+# gh pr view ... --json state,isDraft → JSON with both fields.
+# MOCK_PR_IS_DRAFT can be set to "true" to simulate a draft PR.
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
-  echo "OPEN"
+  DRAFT="\${MOCK_PR_IS_DRAFT:-false}"
+  echo "{\"state\":\"OPEN\",\"isDraft\":\${DRAFT}}"
   exit 0
 fi
 
@@ -672,6 +694,30 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
+
+# --- Draft PR integration tests ---
+# These invoke the real post-review.sh with MOCK_PR_IS_DRAFT=true to verify
+# that draft PRs never receive the ready-for-merge label.
+
+# Approve on a draft PR → requires-manual-review, NOT ready-for-merge
+run_label_test_with_env "draft-approve-gets-manual-review" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "requires-manual-review" \
+  "MOCK_PR_IS_DRAFT" "true"
+
+# Approve on a draft PR → stdout should mention draft skip
+run_label_test_with_env_stdout "draft-approve-log-message" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "PR is a draft" \
+  "MOCK_PR_IS_DRAFT" "true"
+
+# --- No-op label cycle tests ---
+# Verify the stale-label loop skips the label we are about to apply.
+# When approve disposition is chosen, ready-for-merge must NOT appear in
+# a --remove-label call.
+run_label_test_no_pattern "no-op-skip-ready-for-merge-removal" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "--remove-label ready-for-merge"
 
 # --- Summary ---
 
