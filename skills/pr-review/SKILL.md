@@ -130,6 +130,71 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
 
+### 2b. Fetch source file contents (PR head)
+
+After fetching the diff, read the full contents of each changed file at
+the PR head revision. These will be passed to sub-agents so they do not
+need to re-read files from disk (which would read base-branch code, not
+PR-head code, and waste tokens on redundant I/O).
+
+Use `HEAD_SHA` from step 1 (already extracted from `PR_DATA`). Filter
+out removed files (they do not exist at the PR head and the contents API
+will return 404) and binary files (images, compiled artifacts — they
+waste tokens). Skip files that exceed the GitHub contents API's 1 MB
+limit (the API returns a 200 with an empty `content` field for files
+between 1–100 MB); log a warning so the orchestrator knows which files
+were omitted.
+
+```bash
+# Filter to non-removed, non-binary/generated files
+FETCH_FILES=$(echo "$PR_FILES" \
+  | jq -r '.[] | select(.status != "removed") | .filename' \
+  | grep -v -E '\.(png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot|pdf|zip|tar|gz|bin|exe|dll|so|dylib|wasm|pb\.go|lock)$')
+
+# For small PRs (≤20 files and ≤5000 lines), fetch all; for large PRs,
+# select a subset per dimension in step 3d.
+echo "$FETCH_FILES" | while IFS= read -r FILE; do
+  [ -z "$FILE" ] && continue
+  CONTENT=$(gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}" \
+    --jq '.content // empty' 2>/dev/null) || {
+    SAFE_FILE=$(printf '%s' "$FILE" | tr -d '\n\r' | sed 's/:://g')
+    echo "::warning::Skipping ${SAFE_FILE}: contents API error" >&2
+    continue
+  }
+  [ -z "$CONTENT" ] && {
+    SAFE_FILE=$(printf '%s' "$FILE" | tr -d '\n\r' | sed 's/:://g')
+    echo "::warning::Skipping ${SAFE_FILE}: empty content (file may exceed 1 MB)" >&2
+    continue
+  }
+  # Emit with per-file header and fenced code block
+  EXT="${FILE##*.}"
+  echo "#### ${FILE}"
+  echo "\`\`\`${EXT}"
+  echo "$CONTENT" | base64 --decode
+  echo ""
+  echo "\`\`\`"
+  echo ""
+done
+```
+
+**Size guard for large PRs:** If the PR exceeds 20 changed files or
+5000 total changed lines, do not fetch all files upfront. Instead,
+defer file selection to step 3d (context package assembly), where the
+orchestrator selects dimension-relevant files for each sub-agent:
+
+- **correctness:** files with the most changes, test files, and files
+  they import
+- **security:** files touching auth, permissions, secrets, config, and
+  data handling paths
+- **style-conventions:** files with the most changes
+- **other dimensions:** files most relevant to their review scope
+
+For omitted changed files in large PRs, sub-agents should fetch them
+via the GitHub contents API (using `HEAD_SHA`) rather than reading from
+disk, since disk contains base-branch code. Include `HEAD_SHA` and
+`REPO_FULL_NAME` in the context package so sub-agents can make these
+API calls.
+
 If the PR body references linked issues, fetch them for intent context:
 
 ```bash
@@ -294,6 +359,18 @@ For each selected sub-agent, assemble a context package containing:
   by a `### File: <relative-path>` header so sub-agents can identify file
   boundaries. Generated files (lockfiles, vendor/, protobuf output) are
   excluded from the concatenation.
+- `source_files`: full contents of changed files at the PR head revision,
+  fetched by the orchestrator in step 2b. Each file is preceded by a
+  `#### <relative-path>` header and wrapped in a fenced code block with
+  the appropriate language identifier. For large PRs (>20 files or >5000
+  lines), include only the files most relevant to the sub-agent's
+  dimension; the sub-agent may fetch additional changed files via the
+  GitHub contents API using `HEAD_SHA` (not from disk, which contains
+  base-branch code).
+- `head_sha`: the PR head commit SHA (from step 1), so sub-agents can
+  fetch additional files via the contents API for large PRs
+- `repo_full_name`: the full `owner/repo` string, paired with `head_sha`
+  for contents API calls
 - `changed_files`: list of relative file paths modified
 - `prior_findings`: prior findings for this dimension only (from 3a)
 - `prior_review_sha`: the SHA of the prior review (from 2a)
@@ -364,6 +441,29 @@ For each selected sub-agent:
 
    ### Diff
    <diff content>
+
+   ### Source files (PR head)
+   The following are the full contents of changed files at the PR head
+   commit. Use these instead of reading files from disk — they reflect
+   the PR head, not the base branch. Only read additional files from
+   disk if you need context beyond the changed files listed here.
+
+   #### path/to/file1.go
+   ```go
+   <full file contents at PR head>
+   ```
+
+   #### path/to/file2.go
+   ```go
+   <full file contents at PR head>
+   ```
+
+   (For large PRs where not all files are included:)
+   **Note:** Not all changed files are included above due to PR size.
+   To read additional changed files, fetch them via the GitHub contents
+   API: `gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}"
+   --jq '.content' | base64 -d`. Do not read changed files from disk —
+   disk contains base-branch code, not the PR head.
 
    ### Changed files
    <file list>
@@ -530,6 +630,10 @@ isolation.
 
    ### Diff
    <diff content>
+
+   ### Source files (PR head)
+   <same source files section as step 4 — full contents of changed
+   files at PR head, with #### headers and fenced code blocks>
 
    ### Changed files
    <file list>

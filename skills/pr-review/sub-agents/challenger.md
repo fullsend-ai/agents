@@ -76,7 +76,7 @@ Return a JSON object with two fields:
 
 ## Constraints
 
-- Read full source files, not just the diff hunks
+- Use the provided source files (PR head), not disk — disk has base-branch code
 - Every removal or downgrade must cite specific evidence from the code
 - Do not add new findings — only adjudicate existing ones
 - Do not write any files
