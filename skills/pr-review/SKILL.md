@@ -412,20 +412,25 @@ normal scope (current behavior preserved).
 
 #### 3c-1. Security-critical file triage (large PRs)
 
-When `FILE_COUNT` (from step 2) is **≥ 50**, run a lightweight triage
-pass to identify security-critical files before preparing context
-packages. For PRs under 50 files, skip this step — all files receive
-uniform attention.
+When step 2 selected **per-file mode** (the PR met both the
+`FILE_COUNT` and `LINE_COUNT` large-PR thresholds), run a lightweight
+triage pass to identify security-critical files before preparing
+context packages. For PRs handled in small-PR mode, skip this step —
+all files receive uniform attention.
 
-**Why:** On large PRs (≥ 50 files, where step 2 already produces
-per-file diffs), security-critical files compete with boilerplate for
-the review agent's context window and reasoning budget. A triage pass
-ensures files touching auth, permissions, token handling, trust
-boundaries, and similar concerns receive dedicated review context
-rather than being diluted across dozens of routine changes. The
-threshold aligns with step 2's per-file diff boundary so that
-per-file diff summaries are always available for the triage prompt.
-See fullsend-ai/fullsend#2096 for the motivating incident.
+**Why:** In per-file mode, the orchestrator has already produced
+per-file diffs and diff summaries for each changed file. Security-
+critical files compete with boilerplate for the review agent's context
+window and reasoning budget. A triage pass ensures files touching
+auth, permissions, token handling, trust boundaries, and similar
+concerns receive dedicated review context rather than being diluted
+across dozens of routine changes. The triage prompt (Part 2 below)
+requires per-file diff summaries, so this step runs only when step 2
+has produced them — gating on `FILE_COUNT` alone would trigger triage
+for PRs that have many files but few changed lines (not meeting step
+2's combined threshold for per-file mode), where per-file diffs are
+unavailable. See fullsend-ai/fullsend#2096 for the motivating
+incident.
 
 **Procedure:**
 
@@ -476,17 +481,47 @@ See fullsend-ai/fullsend#2096 for the motivating incident.
 
 5. Validate and store the classification result for use in step 3d:
 
-   - If the security-triage sub-agent fails (timeout, parse error,
-     empty response), fall back to treating **all files as
-     security-critical** — this preserves the existing
-     uniform-attention behavior as a safe default.
-   - If `security_critical_files` is empty but any changed files
-     match the path patterns from the classification criteria (e.g.,
-     `**/auth/**`, `**/mint/**`, `**/token/**`, `.claude/**`,
-     `.github/**`, `agents/**`, `scripts/**`), treat this as a
-     triage failure and apply the same fallback. An empty
-     classification when path-pattern matches exist indicates the
-     classifier missed obvious signals.
+   **Failure fallback:** If the security-triage sub-agent fails
+   (timeout, parse error, empty response), fall back to treating
+   **all files as security-critical** — this preserves the existing
+   uniform-attention behavior as a safe default.
+
+   **Structural validation:** Before accepting the classification,
+   verify the following invariants against the changed-file set from
+   step 2. If any check fails, treat as a triage failure and apply
+   the fallback above.
+
+   a. **Completeness:** The union of paths in
+      `security_critical_files` (by `file` field) and
+      `standard_files` must exactly equal the changed-file set.
+      Missing files indicate a classification gap — some files
+      would receive no triage decision. Extra files (paths not in
+      the changed-file set) indicate hallucination.
+
+   b. **No duplicates:** No file path may appear more than once
+      across both arrays combined. A path in both
+      `security_critical_files` and `standard_files`, or listed
+      twice within either array, is an invalid classification.
+
+   **Path-pattern override:** After structural validation passes,
+   enforce deterministic classification for files matching known
+   path patterns. For each file in `standard_files`, check whether
+   it matches any path pattern from the sub-agent's classification
+   criteria ("Path patterns" and "Governance and infrastructure
+   paths" sections). If it does, move it from `standard_files` to
+   `security_critical_files` with reason "path-pattern override:
+   matches `<pattern>`". The classifier may have deprioritized the
+   match based on diff content — the path-pattern match is
+   authoritative and takes precedence.
+
+   **Empty-classification guard:** If `security_critical_files` is
+   empty after the path-pattern override but any changed files
+   match the path patterns from the classification criteria (e.g.,
+   `**/auth/**`, `**/mint/**`, `**/token/**`, `.claude/**`,
+   `.github/**`, `agents/**`, `scripts/**`), treat this as a
+   triage failure and apply the fallback. An empty classification
+   when path-pattern matches exist indicates the classifier missed
+   obvious signals.
 
 **Edge cases:**
 
@@ -568,9 +603,10 @@ the constraint first.
 
 #### 3f. Security-prioritized context (large PRs with triage results)
 
-When step 3c-1 produced a security triage classification (i.e., the PR
-has ≥ 50 files and the triage pass succeeded), modify the context
-packages for the `security` and `correctness` sub-agents as follows:
+When step 3c-1 produced a security triage classification (i.e., step 2
+selected per-file mode and the triage pass succeeded), modify the
+context packages for the `security` and `correctness` sub-agents as
+follows:
 
 1. **Security sub-agent:** Provide the full per-file diffs for all
    `security_critical_files` first, clearly marked with a
@@ -601,9 +637,10 @@ packages for the `security` and `correctness` sub-agents as follows:
    Security-critical files: <list with reasons>
    ```
 
-If step 3c-1 was skipped (PR under 50 files) or the triage sub-agent
-failed (fallback to uniform attention), prepare all context packages
-using the standard format described above — no prioritization.
+If step 3c-1 was skipped (PR not in per-file mode) or the triage
+sub-agent failed (fallback to uniform attention), prepare all context
+packages using the standard format described above — no
+prioritization.
 
 ### 4. Dispatch sub-agents
 
