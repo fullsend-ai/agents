@@ -179,7 +179,7 @@ From these files, determine:
 - **Test command** — how to run the test suite (e.g., `make test`, `go test ./...`,
   `npm test`, `pytest`)
 - **Lint command** — how to run linters (e.g., `make lint`, `pre-commit run --files`)
-- **Commit conventions** — signing requirements, message format
+- **Commit conventions** — message format
 - **PR title conventions** — whether the repo enforces a title format via
   CI (e.g., `type(TICKET): description`). The post-script uses the commit
   subject as the PR title and will inject a `(#ISSUE_NUMBER)` scope if
