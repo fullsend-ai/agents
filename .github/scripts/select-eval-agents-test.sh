@@ -46,6 +46,13 @@ host_files:
     dest: /tmp/.gcp-credentials.json
 skills:
   - skills/issue-labels
+openshell:
+  profiles:
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/main/profiles/fullsend-vertex-ai.yaml#sha256=abc123"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/main/profiles/fullsend-github-ro.yaml#sha256=def456"
+providers:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/main/providers/vertex-ai.yaml#sha256=ghi789"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/main/providers/github-ro.yaml#sha256=jkl012"
 YAML
 
   cat > "$tmpdir/harness/review.yaml" << 'YAML'
@@ -69,6 +76,13 @@ skills:
   - skills/code-review
 plugins:
   - plugins/gopls-lsp
+openshell:
+  profiles:
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/main/profiles/fullsend-vertex-ai.yaml#sha256=abc123"
+    - "https://raw.githubusercontent.com/fullsend-ai/agents/main/profiles/fullsend-github-code.yaml#sha256=mno345"
+providers:
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/main/providers/vertex-ai.yaml#sha256=ghi789"
+  - "https://raw.githubusercontent.com/fullsend-ai/agents/main/providers/github-code.yaml#sha256=pqr678"
 YAML
 
   # Agent with no eval config — should never be selected
@@ -393,6 +407,60 @@ if [[ "$LINES" -eq 1 ]]; then
   pass "duplicate file inputs produce single agent output"
 else
   fail "duplicate file inputs produce single agent output (got $LINES lines: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: modifying a profile file selects agents referencing it
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "profiles/fullsend-github-ro.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "profile file change selects agent"
+else
+  fail "profile file change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: modifying a provider file selects agents referencing it
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "providers/github-code.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "review" ]]; then
+  pass "provider file change selects agent"
+else
+  fail "provider file change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: modifying a shared profile selects all agents referencing it
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "profiles/fullsend-vertex-ai.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "shared profile change selects all referencing agents"
+else
+  fail "shared profile change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: modifying a shared provider selects all agents referencing it
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "providers/vertex-ai.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "shared provider change selects all referencing agents"
+else
+  fail "shared provider change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
 fi
 cleanup_fixture "$FIXTURE"
 

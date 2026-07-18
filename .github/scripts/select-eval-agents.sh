@@ -39,9 +39,14 @@ extract_refs() {
       (.host_files[]?.src),
       (.skills[]?),
       (.plugins[]?),
-      .forge.github.pre_script, .forge.github.post_script
+      .forge.github.pre_script, .forge.github.post_script,
+      (.openshell.profiles[]?),
+      (.providers[]?)
     ] | .[] | select(. != null)
-  ' "$harness_file" | { grep -v '\$' || true; } | sort -u
+  ' "$harness_file" \
+    | { grep -v '\$' || true; } \
+    | sed -E 's/#.*//; s|^https://raw\.githubusercontent\.com/.*/(profiles/)|\1|; s|^https://raw\.githubusercontent\.com/.*/(providers/)|\1|' \
+    | sort -u
 }
 
 # For each harness file with an eval config, check if any changed file is relevant.
