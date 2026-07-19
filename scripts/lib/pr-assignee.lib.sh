@@ -137,41 +137,43 @@ resolve_pr_assignee() {
 
 # Best-effort PR assignee: skip when the PR already has assignees.
 # Requires REPO_FULL_NAME; uses gha_echo when available.
+# Note: parameter is target_pr (not pr_number) to avoid SC2153 against PR_NUMBER
+# from post-failure-report.lib.sh once both libs are bundled into post-code.sh.
 maybe_assign_pr() {
-  local pr_number="$1"
+  local target_pr="$1"
   local existing_count
-  if ! existing_count="$(gh pr view "${pr_number}" --repo "${REPO_FULL_NAME}" \
+  if ! existing_count="$(gh pr view "${target_pr}" --repo "${REPO_FULL_NAME}" \
     --json assignees --jq '.assignees | length' 2>/dev/null)"; then
     if declare -F gha_echo >/dev/null 2>&1; then
-      gha_echo warning "Could not read assignees for PR #${pr_number} — skipping assignment"
+      gha_echo warning "Could not read assignees for PR #${target_pr} — skipping assignment"
     else
-      echo "::warning::Could not read assignees for PR #${pr_number} — skipping assignment"
+      echo "::warning::Could not read assignees for PR #${target_pr} — skipping assignment"
     fi
     return 0
   fi
   if [[ "${existing_count}" != "0" ]]; then
-    echo "PR #${pr_number} already has assignees — skipping assignment"
+    echo "PR #${target_pr} already has assignees — skipping assignment"
     return 0
   fi
 
   local assignee
   assignee="$(resolve_pr_assignee || true)"
   if [[ -z "${assignee}" ]]; then
-    echo "No human assignee candidate — leaving PR #${pr_number} unassigned"
+    echo "No human assignee candidate — leaving PR #${target_pr} unassigned"
     return 0
   fi
 
-  echo "Assigning PR #${pr_number} to ${assignee}..."
+  echo "Assigning PR #${target_pr} to ${assignee}..."
   local assign_err
-  assign_err="$(gh pr edit "${pr_number}" --repo "${REPO_FULL_NAME}" \
+  assign_err="$(gh pr edit "${target_pr}" --repo "${REPO_FULL_NAME}" \
     --add-assignee "${assignee}" 2>&1)" || {
     if declare -F gha_echo >/dev/null 2>&1; then
-      gha_echo warning "Failed to assign PR #${pr_number} to ${assignee} — continuing"
+      gha_echo warning "Failed to assign PR #${target_pr} to ${assignee} — continuing"
       if [[ -n "${assign_err}" ]]; then
         gha_echo warning "${assign_err}"
       fi
     else
-      echo "::warning::Failed to assign PR #${pr_number} to ${assignee} — continuing"
+      echo "::warning::Failed to assign PR #${target_pr} to ${assignee} — continuing"
       if [[ -n "${assign_err}" ]]; then
         echo "::warning::${assign_err//::/ }"
       fi
