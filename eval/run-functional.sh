@@ -93,6 +93,15 @@ echo "Run ID:  ${RUN_ID}"
 echo "Output:  ${RUN_DIR}"
 echo ""
 
+# If no case directories exist, warn and exit successfully.
+shopt -s nullglob
+case_dirs=("${CASES_DIR}"/*/)
+shopt -u nullglob
+if [[ ${#case_dirs[@]} -eq 0 ]]; then
+  echo "WARNING: no cases found in ${CASES_DIR} — skipping functional tests for ${AGENT}"
+  exit 0
+fi
+
 # ---------------------------------------------------------------------------
 # Phase 1: Create workspaces
 # ---------------------------------------------------------------------------

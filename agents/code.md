@@ -4,19 +4,6 @@ description: >-
   Implementation specialist for GitHub issues. Reads triaged issues, implements
   fixes following repo conventions, runs tests and linters, and commits to a
   feature branch. Use when implementing a fix or feature from a triaged issue.
-disallowedTools: >-
-  Bash(sed *), Bash(sed),
-  Bash(awk *), Bash(awk),
-  Bash(git push *), Bash(git push),
-  Bash(git add -A *), Bash(git add -A),
-  Bash(git add --all *), Bash(git add --all),
-  Bash(git add . *), Bash(git add .),
-  Bash(git commit --amend *), Bash(git commit --amend),
-  Bash(git reset --hard *), Bash(git reset --hard),
-  Bash(git rebase *), Bash(git rebase),
-  Bash(gh pr create *), Bash(gh pr edit *), Bash(gh pr merge *),
-  Bash(gh issue edit *), Bash(gh issue comment *),
-  Bash(gh api *)
 model: opus
 skills:
   - code-implementation
@@ -95,10 +82,11 @@ the review agent — if the triage was wrong, your code will fail review.
 ## Structured output
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/code-result.json`
-that documents the target branch for PR creation. The `code-implementation`
-skill describes the schema and the exact step where you write it. The
-post-script reads this file to determine which branch to target the PR
-against. Without this file, the validation loop rejects the run and retries.
+with `target_branch` (required) and optionally `pr_body` for the PR
+description. The `code-implementation` skill describes the schema and
+the exact steps where you write each field. The post-script reads this
+file to determine the PR target branch and description. Without this
+file, the validation loop rejects the run and retries.
 
 After writing the file, validate it before exiting:
 

@@ -143,13 +143,47 @@ build_pr_body() {
   local issue_number="$2"
   local branch="$3"
   local scan_range="$4"
+  local pr_body_from_result="${5:-}"  # optional: agent-provided pr_body
+  local pr_body_scan_status="${6:-skipped}"  # passed|blocked|error|skipped
 
-  local description
-  if [ -z "${commit_body}" ]; then
-    description="Automated implementation for issue #${issue_number}."
-  else
-    description="${commit_body}"
+  local description=""
+  if [ -n "${pr_body_from_result}" ]; then
+    # Strip Signed-off-by globally, then trailing closing-keyword footers.
+    local pr_body_clean
+    pr_body_clean="$(printf '%s\n' "${pr_body_from_result}" | sed '/^Signed-off-by:/d')"
+    description="$(printf '%s\n' "${pr_body_clean}" | awk '
+      { lines[NR] = $0 }
+      END {
+        end = NR
+        while (end > 0) {
+          l = lines[end]
+          if (l == "" || l ~ /^[Cc]lose[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Ff]ix(e[sd])? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Rr]esolve[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/)
+            end--
+          else
+            break
+        }
+        for (i = 1; i <= end; i++)
+          print lines[i]
+      }
+    ')"
   fi
+
+  # Fall back if pr_body was absent or stripped to empty
+  if [ -z "${description}" ]; then
+    if [ -z "${commit_body}" ]; then
+      description="Automated implementation for issue #${issue_number}."
+    else
+      description="${commit_body}"
+    fi
+  fi
+
+  local pr_body_scan_line
+  case "${pr_body_scan_status}" in
+    passed)  pr_body_scan_line="- [x] PR body secret scan passed (gitleaks — no-git)" ;;
+    blocked) pr_body_scan_line="- [x] PR body secret scan: blocked, fell back to commit body" ;;
+    error)   pr_body_scan_line="- [x] PR body secret scan: error, fell back to commit body" ;;
+    *)       pr_body_scan_line="- [x] PR body secret scan: N/A (commit body path)" ;;
+  esac
 
   echo "${description}
 
@@ -161,6 +195,7 @@ Closes #${issue_number}
 
 - [x] Branch is not main/master (\`${branch}\`)
 - [x] Secret scan passed (gitleaks — \`${scan_range}\`)
+${pr_body_scan_line}
 - [x] Pre-commit hooks passed (authoritative run on runner)
 - [x] Tests ran inside sandbox"
 }
@@ -263,6 +298,164 @@ count_closes_test "single-closes-with-body" \
 
 count_closes_test "single-closes-empty-body" \
   "" "99"
+
+# Verify pr_body path strips Closes lines (agent may include them)
+count_closes_pr_body_test() {
+  local test_name="$1"
+  local pr_body="$2"
+  local issue_number="$3"
+
+  local actual
+  actual="$(build_pr_body "" "${issue_number}" "agent/${issue_number}-fix" "abc123..def456" "${pr_body}")"
+
+  local count
+  count=$(echo "${actual}" | grep -c "Closes #${issue_number}" || true)
+
+  if [ "${count}" -ne 1 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected exactly 1 'Closes #${issue_number}', found ${count}"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+count_closes_pr_body_test "single-closes-pr-body-with-closes" \
+  "## Summary
+
+Implemented widget rendering.
+
+Closes #42" "42"
+
+count_closes_pr_body_test "single-closes-pr-body-with-cross-repo-closes" \
+  "## Summary
+
+Implemented widget rendering.
+
+Closes fullsend-ai/agents#42" "42"
+
+# --- pr_body path test cases ---
+
+# Helper for pr_body tests (fifth arg is pr_body from result file)
+run_pr_body_test() {
+  local test_name="$1"
+  local pr_body="$2"
+  local issue_number="$3"
+  local branch="$4"
+  local check_pattern="$5"
+  local expect_present="$6"  # "yes" or "no"
+
+  local actual
+  actual="$(build_pr_body "" "${issue_number}" "${branch}" "abc123..def456" "${pr_body}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# pr_body provided by agent should appear in final PR body
+run_pr_body_test "pr-body-from-result" \
+  $'## Summary\n\nAdded widget rendering.\n\n## Testing\n\nManual test.' \
+  "42" "agent/42-widget" \
+  "Added widget rendering." "yes"
+
+# pr_body should NOT be word-wrapped (it's verbatim)
+run_pr_body_test "pr-body-verbatim" \
+  $'## Summary\n\nThis is a very long line that would normally be word-wrapped by the legacy commit-body awk logic but should remain intact when coming from pr_body.' \
+  "42" "agent/42-widget" \
+  "This is a very long line that would normally be word-wrapped by the legacy commit-body awk logic but should remain intact when coming from pr_body." "yes"
+
+# pr_body that strips to empty should fall back to automated description
+run_pr_body_test "pr-body-strips-to-empty" \
+  $'Closes #42' \
+  "42" "agent/42-widget" \
+  "Automated implementation for issue #42." "yes"
+
+# Cross-repo Closes in trailing footer should be stripped
+run_pr_body_test "pr-body-cross-repo-closes" \
+  $'## Summary\n\nImplemented widget rendering.\n\nCloses fullsend-ai/agents#42' \
+  "42" "agent/42-widget" \
+  "Closes fullsend-ai/agents#42" "no"
+
+# Closes-like line in body content (not footer) should be preserved
+run_pr_body_test "pr-body-closes-in-content-preserved" \
+  $'## Summary\n\nThis fixes the issue where Closes #99 was not handled.\n\n## Testing\n\nManual test.' \
+  "42" "agent/42-widget" \
+  "Closes #99 was not handled" "yes"
+
+# Multiple trailing blank lines before footer should all be stripped
+count_closes_pr_body_test "pr-body-trailing-blanks-before-footer" \
+  $'## Summary\n\nDid the thing.\n\n\n\nCloses #42' "42"
+
+# GitHub auto-close keyword variants should be stripped from footer
+run_pr_body_test "pr-body-fixes-keyword-stripped" \
+  $'## Summary\n\nFixed the bug.\n\nFixes #42' \
+  "42" "agent/42-widget" \
+  "Fixes #42" "no"
+
+run_pr_body_test "pr-body-resolves-keyword-stripped" \
+  $'## Summary\n\nResolved the issue.\n\nResolves #42' \
+  "42" "agent/42-widget" \
+  "Resolves #42" "no"
+
+# pr_body strips to empty with non-empty commit body — should fall back to
+# commit body, not the generic placeholder
+pr_body_fallback_test() {
+  local actual
+  actual="$(build_pr_body "Fix widget rendering bug in dark mode." "42" "agent/42-widget" "abc123..def456" "Closes #42")"
+
+  if echo "${actual}" | grep -qF "Automated implementation"; then
+    echo "FAIL: pr-body-strips-to-empty-falls-back-to-commit-body"
+    echo "  expected commit body, got generic placeholder"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! echo "${actual}" | grep -qF "Fix widget rendering bug in dark mode."; then
+    echo "FAIL: pr-body-strips-to-empty-falls-back-to-commit-body"
+    echo "  expected commit body content not found"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: pr-body-strips-to-empty-falls-back-to-commit-body"
+}
+pr_body_fallback_test
+
+# Signed-off-by mid-body should be stripped (global, not trailing-only)
+run_pr_body_test "pr-body-signoff-mid-body-stripped" \
+  $'## Summary\n\nDid the thing.\n\nSigned-off-by: bot <bot@noreply.github.com>\n\n## Testing\n\nManual test.' \
+  "42" "agent/42-widget" \
+  "Signed-off-by" "no"
+
+# Closing keyword with trailing prose on the same line should be preserved
+run_pr_body_test "pr-body-closes-trailing-prose-preserved" \
+  $'## Summary\n\nDid the thing.\n\nCloses #42 but leaves a follow-up needed for the migration script.' \
+  "42" "agent/42-widget" \
+  "Closes #42 but leaves a follow-up needed for the migration script." "yes"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the no-op detection logic from post-code.sh

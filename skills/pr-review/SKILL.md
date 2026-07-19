@@ -33,23 +33,18 @@ post-script to post. In interactive mode, it posts directly via
 
 ## Sub-agent roster
 
-Sub-agent definitions live in `sub-agents/` relative to this file.
-Each is a markdown file with frontmatter specifying `name`, `model`,
-and `description`.
+Sub-agent discovery: The sub-agents' definitions are in `sub-agents/`
+relative to this file.
 
-| Sub-agent              | Model  | Dispatch   | Dimension                                                                      |
-|------------------------|--------|------------|--------------------------------------------------------------------------------|
-| `correctness`          | opus   | parallel   | Logic errors, edge cases, nil handling, API contracts, test adequacy/integrity |
-| `security`             | opus   | parallel   | Auth, data exposure, privilege escalation, injection defense, content security |
-| `intent-coherence`     | sonnet | parallel   | Authorization, scope, intent authorization tier matching, architectural fit, design coherence |
-| `style-conventions`    | sonnet | parallel   | Naming, error handling idioms, API shape, code organization                    |
-| `docs-currency`        | sonnet | parallel   | Documentation staleness (follows docs-review skill inline)                     |
-| `cross-repo-contracts` | sonnet | parallel   | API contract breakage affecting other repos (conditional)                      |
-| `challenger`           | opus   | sequential | Adversarial challenge of findings, false-positive removal, deduplication       |
-
-The Model column reflects each sub-agent's current frontmatter. Any
-value accepted by the Agent tool's `model` parameter is valid in
-sub-agent frontmatter.
+| Sub-agent              | Dispatch   | Dimensions                                                                                                              |
+|------------------------|------------|-------------------------------------------------------------------------------------------------------------------------|
+| `correctness`          | parallel   | Logic errors, edge cases, nil handling, API contracts, test adequacy/integrity                                          |
+| `security`             | parallel   | Security vulnerabilities, auth/access control, data exposure, injection defense, privilege escalation, content security |
+| `intent-coherence`     | parallel   | Architectural coherence & fit, design coherence, intent alignment, PR scope, scope authorization, tier matching         |
+| `style-conventions`    | parallel   | Repo-specific naming, error-handling idioms, API shape, code organization                                               |
+| `docs-currency`        | parallel   | Documentation staleness (follows docs-review skill inline)                                                              |
+| `cross-repo-contracts` | parallel   | API contract breakage affecting other repos (conditional)                                                               |
+| `challenger`           | sequential | Adversarial challenge of findings, false-positive removal, deduplication                                                |
 
 ## Findings vs inline comments
 
@@ -134,6 +129,71 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 
 3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
+
+### 2b. Fetch source file contents (PR head)
+
+After fetching the diff, read the full contents of each changed file at
+the PR head revision. These will be passed to sub-agents so they do not
+need to re-read files from disk (which would read base-branch code, not
+PR-head code, and waste tokens on redundant I/O).
+
+Use `HEAD_SHA` from step 1 (already extracted from `PR_DATA`). Filter
+out removed files (they do not exist at the PR head and the contents API
+will return 404) and binary files (images, compiled artifacts — they
+waste tokens). Skip files that exceed the GitHub contents API's 1 MB
+limit (the API returns a 200 with an empty `content` field for files
+between 1–100 MB); log a warning so the orchestrator knows which files
+were omitted.
+
+```bash
+# Filter to non-removed, non-binary/generated files
+FETCH_FILES=$(echo "$PR_FILES" \
+  | jq -r '.[] | select(.status != "removed") | .filename' \
+  | grep -v -E '\.(png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot|pdf|zip|tar|gz|bin|exe|dll|so|dylib|wasm|pb\.go|lock)$')
+
+# For small PRs (≤20 files and ≤5000 lines), fetch all; for large PRs,
+# select a subset per dimension in step 3d.
+echo "$FETCH_FILES" | while IFS= read -r FILE; do
+  [ -z "$FILE" ] && continue
+  CONTENT=$(gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}" \
+    --jq '.content // empty' 2>/dev/null) || {
+    SAFE_FILE=$(printf '%s' "$FILE" | tr -d '\n\r' | sed 's/:://g')
+    echo "::warning::Skipping ${SAFE_FILE}: contents API error" >&2
+    continue
+  }
+  [ -z "$CONTENT" ] && {
+    SAFE_FILE=$(printf '%s' "$FILE" | tr -d '\n\r' | sed 's/:://g')
+    echo "::warning::Skipping ${SAFE_FILE}: empty content (file may exceed 1 MB)" >&2
+    continue
+  }
+  # Emit with per-file header and fenced code block
+  EXT="${FILE##*.}"
+  echo "#### ${FILE}"
+  echo "\`\`\`${EXT}"
+  echo "$CONTENT" | base64 --decode
+  echo ""
+  echo "\`\`\`"
+  echo ""
+done
+```
+
+**Size guard for large PRs:** If the PR exceeds 20 changed files or
+5000 total changed lines, do not fetch all files upfront. Instead,
+defer file selection to step 3d (context package assembly), where the
+orchestrator selects dimension-relevant files for each sub-agent:
+
+- **correctness:** files with the most changes, test files, and files
+  they import
+- **security:** files touching auth, permissions, secrets, config, and
+  data handling paths
+- **style-conventions:** files with the most changes
+- **other dimensions:** files most relevant to their review scope
+
+For omitted changed files in large PRs, sub-agents should fetch them
+via the GitHub contents API (using `HEAD_SHA`) rather than reading from
+disk, since disk contains base-branch code. Include `HEAD_SHA` and
+`REPO_FULL_NAME` in the context package so sub-agents can make these
+API calls.
 
 If the PR body references linked issues, fetch them for intent context:
 
@@ -255,7 +315,8 @@ dimensions are relevant:
 #### 3c. Select sub-agents
 
 Based on the domain classification, select sub-agents for dispatch.
-All selected sub-agents run in parallel.
+All selected sub-agents run in parallel (with the exception of the
+challenger, which runs by itself after all other sub-agents have finished).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -298,6 +359,18 @@ For each selected sub-agent, assemble a context package containing:
   by a `### File: <relative-path>` header so sub-agents can identify file
   boundaries. Generated files (lockfiles, vendor/, protobuf output) are
   excluded from the concatenation.
+- `source_files`: full contents of changed files at the PR head revision,
+  fetched by the orchestrator in step 2b. Each file is preceded by a
+  `#### <relative-path>` header and wrapped in a fenced code block with
+  the appropriate language identifier. For large PRs (>20 files or >5000
+  lines), include only the files most relevant to the sub-agent's
+  dimension; the sub-agent may fetch additional changed files via the
+  GitHub contents API using `HEAD_SHA` (not from disk, which contains
+  base-branch code).
+- `head_sha`: the PR head commit SHA (from step 1), so sub-agents can
+  fetch additional files via the contents API for large PRs
+- `repo_full_name`: the full `owner/repo` string, paired with `head_sha`
+  for contents API calls
 - `changed_files`: list of relative file paths modified
 - `prior_findings`: prior findings for this dimension only (from 3a)
 - `prior_review_sha`: the SHA of the prior review (from 2a)
@@ -336,9 +409,7 @@ the constraint first.
 
 For each selected sub-agent:
 
-1. Read the sub-agent definition from `sub-agents/{name}.md`
-2. Extract the `model` from frontmatter
-3. Compose the spawn prompt from these parts:
+1. Compose the spawn prompt from:
 
    **Part 0 — Scope constraint (conditional):** If `scope_constraint`
    from step 3e is not `"none"`, prepend:
@@ -371,6 +442,29 @@ For each selected sub-agent:
    ### Diff
    <diff content>
 
+   ### Source files (PR head)
+   The following are the full contents of changed files at the PR head
+   commit. Use these instead of reading files from disk — they reflect
+   the PR head, not the base branch. Only read additional files from
+   disk if you need context beyond the changed files listed here.
+
+   #### path/to/file1.go
+   ```go
+   <full file contents at PR head>
+   ```
+
+   #### path/to/file2.go
+   ```go
+   <full file contents at PR head>
+   ```
+
+   (For large PRs where not all files are included:)
+   **Note:** Not all changed files are included above due to PR size.
+   To read additional changed files, fetch them via the GitHub contents
+   API: `gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}"
+   --jq '.content' | base64 -d`. Do not read changed files from disk —
+   disk contains base-branch code, not the PR head.
+
    ### Changed files
    <file list>
 
@@ -399,12 +493,8 @@ For each selected sub-agent:
    REVIEW_SUB_AGENT_TRUE
    ```
 
-4. Spawn via Agent tool with:
-   - `model`: from the sub-agent frontmatter (any value accepted by
-     the Agent tool's `model` parameter)
-   - `subagent_type`: `Explore` (read-only — sub-agents do not write)
-   - `run_in_background`: `true`
-   - `prompt`: composed from parts 1–5
+2. Spawn the subagents with their `prompt` argument composed from parts
+   1–5 above
 
 **All sub-agents MUST be dispatched simultaneously** — include all
 Agent calls in a single message so they run concurrently. This is the
@@ -520,8 +610,7 @@ fresh context. The challenger has not seen the orchestrator's synthesis
 — it receives only the raw findings and the diff, preserving context
 isolation.
 
-1. Read `sub-agents/challenger.md` for the sub-agent definition
-2. Compose the spawn prompt from:
+1. Compose the spawn prompt from:
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
    challenger sub-agent file (everything after the frontmatter)
@@ -542,6 +631,10 @@ isolation.
    ### Diff
    <diff content>
 
+   ### Source files (PR head)
+   <same source files section as step 4 — full contents of changed
+   files at PR head, with #### headers and fenced code blocks>
+
    ### Changed files
    <file list>
 
@@ -555,10 +648,8 @@ isolation.
    REVIEW_SUB_AGENT_TRUE
    ```
 
-3. Spawn via Agent tool with:
-   - `model`: from the challenger sub-agent frontmatter (`opus`)
-   - `subagent_type`: `Explore` (read-only)
-   - `prompt`: composed from parts 1–4
+2. Spawn the subagents with their `prompt` argument composed from parts
+   1–4 above
 
    **Prompt size guard:** If the combined context package (findings
    JSON + diff + file list + PR metadata) exceeds 80 000 tokens,
@@ -571,7 +662,7 @@ isolation.
    needs their findings as input), so it is dispatched sequentially,
    not in the parallel batch from step 4.
 
-4. Consume the challenger's output. The challenger returns a **different
+3. Consume the challenger's output. The challenger returns a **different
    format** from dimension sub-agents: an object with
    `adjudicated_findings` and `removed_findings` arrays (not a flat
    finding array). Parse accordingly:
@@ -583,15 +674,15 @@ isolation.
      part of the standard finding schema.
    - If `adjudicated_findings` is empty but the pre-challenger finding
      set was non-empty, treat this as a challenger failure (fall back
-     per step 5 below). A legitimate challenger pass that removes all
-     findings is unlikely — an empty result more likely indicates a
-     parsing error or context truncation.
+     per the immediate next step below). A legitimate challenger pass
+     that removes all findings is unlikely — an empty result more likely
+     indicates a parsing error or context truncation.
    - Otherwise, replace the merged finding set with the challenger's
      `adjudicated_findings`.
    - Log any `removed_findings` for transparency but do not include
      them in the final review.
 
-5. If the challenger sub-agent fails (timeout, error, empty
+4. If the challenger sub-agent fails (timeout, error, empty
    response), fall back to using the pre-challenger merged finding
    set from steps 6a–6c. Record an **info**-level finding:
 

@@ -4,10 +4,6 @@ description: >-
   Code review orchestrator. Triages the change, dispatches specialized
   sub-agents in parallel across six review dimensions, synthesizes
   findings, and produces a structured result.
-tools: >-
-  Read, Grep, Glob, Bash, Agent
-disallowedTools: >-
-  Write, Edit, NotebookEdit
 model: opus
 skills:
   - code-review
@@ -76,31 +72,15 @@ findings equally. If filtering removes all findings from a
 You **either**:
 
 - When invoked for local/pre-push review, evaluate sequentially via the
-`code-review` skill.
+  `code-review` skill.
 
 **or**
 
 - Otherwise orchestrate code reviews by dispatching specialized
-sub-agents in parallel across six review dimensions:
+  sub-agents in parallel across six review dimensions
 
-1. **Correctness** — logic errors, edge cases, nil handling, API
-   contracts, test adequacy, test integrity (opus)
-2. **Security** — RBAC, authentication, data exposure, privilege
-   escalation, injection defense, content sandboxing (opus)
-3. **Intent & coherence** — whether the change matches authorized work,
-   is appropriately scoped, and fits the project's architectural
-   direction (sonnet)
-4. **Style/conventions** — naming, error handling idioms, API shape,
-   code organization (sonnet)
-5. **Documentation currency** — whether the PR's code changes have
-   made in-repo documentation stale, incomplete, or misleading (sonnet)
-6. **Cross-repo contracts** — whether the change breaks APIs, schemas,
-   or interfaces other repos depend on (sonnet, conditional)
-
-Sub-agent definitions live in `skills/pr-review/sub-agents/`. Each
-sub-agent is a markdown file with frontmatter specifying its `model`
-pin. The `pr-review` skill (orchestrator) handles triage, dispatch,
-and synthesis.
+  The `pr-review` skill (orchestrator) handles triage, dispatch,
+  and synthesis.
 
 ## Skill routing
 
@@ -111,9 +91,7 @@ This agent has three skills. Select based on invocation context:
   dispatches specialized sub-agents in parallel, collects and
   synthesizes their findings, runs PR-specific checks (protected
   paths, scope authorization, PR body injection defense), and
-  produces a structured review result. Sub-agent definitions live in
-  `skills/pr-review/sub-agents/`. Each sub-agent is dispatched with
-  `model` from its frontmatter and `subagent_type: Explore`.
+  produces a structured review result.
 - **`code-review`** — the prompt is about a local branch diff with
   no PR, or another skill is delegating code evaluation. This skill
   evaluates the diff and source files directly across the original
@@ -198,26 +176,21 @@ in the PR diff, use this path prefix — not `/home/runner/work/` or any other p
 
 ## GitHub API
 
-The review token only has REST API permissions. **Always use `gh api`
-REST endpoints** to fetch PR and repository data. Do not use
-`gh pr view --json` or other `--json` subcommands — they use the
-GraphQL API and will fail with HTTP 403.
-
-Examples of correct usage:
+The review token has both REST and GraphQL (read-only) permissions.
+You may use `gh api` REST endpoints or `gh pr view --json` / `gh api graphql`
+for read operations. GraphQL mutations are blocked by the sandbox proxy.
 
 ```bash
-# PR metadata
+# REST examples
 gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}"
-
-# PR files (paginated, 100 per page)
 gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100"
-
-# PR diff
 gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" \
   -H "Accept: application/vnd.github.v3.diff"
-
-# Issue metadata
 gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}"
+
+# GraphQL examples
+gh pr view "${PR_NUMBER}" --json title,body,files,reviews
+gh api graphql -f query='{ repository(owner:"OWNER", name:"REPO") { pullRequest(number:123) { title } } }'
 ```
 
 ## Constraints

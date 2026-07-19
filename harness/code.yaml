@@ -6,7 +6,9 @@
 #   agent       : reads the issue, implements, tests, scans, commits locally
 #   post_script : protected-path check, secret scan, push branch, create PR
 #
-# The agent NEVER pushes or creates PRs (disallowedTools enforces this).
+# The agent NEVER pushes or creates PRs. Enforcement: the sandbox
+# GH_TOKEN is read-only scoped, PUSH_TOKEN never enters the sandbox,
+# and network policy restricts git/gh binary access.
 # Only the post-script, running on the runner with PUSH_TOKEN, can write.
 agent: agents/code.md
 doc: docs/code.md

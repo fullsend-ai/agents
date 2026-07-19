@@ -34,8 +34,11 @@ export GH_TOKEN="${REVIEW_TOKEN}"
 CLEANUP_FILES=()
 trap 'rm -f "${CLEANUP_FILES[@]}"' EXIT
 
-# Refuse to post reviews on merged or closed PRs
-PR_STATE=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state --jq '.state')
+# Refuse to post reviews on merged or closed PRs.
+# Also fetch draft status — draft PRs must not receive ready-for-merge.
+PR_INFO=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state,isDraft)
+PR_STATE=$(echo "${PR_INFO}" | jq -r '.state')
+PR_IS_DRAFT=$(echo "${PR_INFO}" | jq -r '.isDraft')
 if [ "${PR_STATE}" != "OPEN" ]; then
   echo "PR is ${PR_STATE}, skipping review"
 
@@ -355,30 +358,47 @@ fi
 # Label logic is mirrored in post-review-test.sh — update both.
 # ---------------------------------------------------------------------------
 
-# Remove stale outcome labels from prior runs before applying the new one.
-# 2>/dev/null is intentional: unlike --add-label (where we want to see failures),
-# removal of a non-existent label is the common case and not worth logging.
+# Determine the target outcome label before mutating anything so we can
+# skip no-op remove/re-add cycles that generate timeline noise.
+OUTCOME_LABEL=""
+if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+  OUTCOME_LABEL="ready-for-merge"
+elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
+     [ "${ACTION}" = "comment" ]; then
+  OUTCOME_LABEL="requires-manual-review"
+elif [ "${ACTION}" = "reject" ]; then
+  OUTCOME_LABEL="rejected"
+fi
+
+# Remove stale outcome labels from prior runs, skipping the label we are
+# about to apply so we don't create a pointless unlabel/relabel cycle.
+# 2>/dev/null is intentional: removal of a non-existent label is the
+# common case and not worth logging.
 for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
+  [ "${stale_label}" = "${OUTCOME_LABEL}" ] && continue
   gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
     --remove-label "${stale_label}" 2>/dev/null || true
 done
 
-if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ]; then
+if [ "${OUTCOME_LABEL}" = "ready-for-merge" ]; then
   echo "Approve disposition — applying ready-for-merge label"
   gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
     --description "All reviewers approved — ready to merge" --color "0E8A16" \
     2>/dev/null || true
   gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
     --add-label "ready-for-merge" || true
-elif { [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "true" ]; } || \
-     [ "${ACTION}" = "comment" ]; then
-  echo "Review requires human judgment — applying requires-manual-review label"
+elif [ "${OUTCOME_LABEL}" = "requires-manual-review" ]; then
+  if [ "${PR_IS_DRAFT}" = "true" ] && [ "${ACTION}" = "approve" ]; then
+    echo "PR is a draft — skipping ready-for-merge, applying requires-manual-review"
+  else
+    echo "Review requires human judgment — applying requires-manual-review label"
+  fi
   gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
     --description "Review requires human judgment" --color "FBCA04" \
     2>/dev/null || true
   gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
     --add-label "requires-manual-review" || true
-elif [ "${ACTION}" = "reject" ]; then
+elif [ "${OUTCOME_LABEL}" = "rejected" ]; then
   echo "Reject disposition — closing PR and applying label"
   gh label create "rejected" --repo "${REPO_FULL_NAME}" \
     --description "Approach rejected by review agent" --color "B60205" \

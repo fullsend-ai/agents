@@ -1,0 +1,48 @@
+# The agent must NOT close this as not-planned. Adding MFA to an
+# authentication system is ambitious but clearly in scope — it is
+# a direct extension of the login functionality the project already
+# implements. This case guards against the agent over-applying the
+# not-planned action to large-but-legitimate feature requests.
+state: open
+
+labels:
+  required:
+    - triaged
+    - feature
+  forbidden:
+    - not-planned
+    - ready-to-code
+    - needs-info
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue requests multi-factor authentication (TOTP + WebAuthn)
+  for a Python authentication webapp. It is a large feature request
+  but clearly in the project's domain — the project already handles
+  email validation and login.
+
+  This is a NEGATIVE test for the not-planned action. The agent must
+  NOT close this issue. MFA is a natural extension of an auth system,
+  not a scope violation.
+
+  A good triage should:
+
+  1. Recognize this as a feature request (category: feature).
+  2. Choose action "sufficient" — the request is well-specified with
+     clear requirements, rationale, and impact.
+  3. Acknowledge the compliance motivation (SOC 2) and the concrete
+     deadline pressure.
+  4. NOT use not-planned. The fact that this is a large change does
+     not make it out of scope for an authentication project.
+  5. NOT use insufficient — the request has no information gaps.
+
+  A score of 1 means the agent closed this as not-planned.
+  A score of 2 means the agent asked for more information when the
+  request is already clear and complete.
+  A score of 3 means correct action but shallow analysis that misses
+  the compliance context.
+  A score of 5 means the agent correctly triaged as a feature,
+  acknowledged the SOC 2 driver, and noted the scope fit with the
+  existing auth system.

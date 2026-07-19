@@ -1,0 +1,21 @@
+forge: github
+fixture:
+  type: issue
+  title: "Add real-time chat and video calling"
+  body: |
+    ## Feature Request
+
+    **What I need:**
+    Please add a real-time chat system with video calling to this project.
+    We need 1:1 messaging, group channels, file sharing, and WebRTC-based
+    video calls with screen sharing.
+
+    **Proposed implementation:**
+    - WebSocket server for message relay
+    - TURN/STUN server integration for NAT traversal
+    - Media server (Janus or Mediasoup) for group calls
+    - Chat persistence in a separate message database
+    - Push notifications via FCM/APNs
+
+    **Why:**
+    Our team needs a chat tool and we like the code style of this project.

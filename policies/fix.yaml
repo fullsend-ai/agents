@@ -6,7 +6,7 @@ version: 1
 # Identical to the code agent policy — the fix agent needs the same network
 # access (Vertex AI, GitHub API for gh pr view/diff, package registries)
 # because it runs tests and linters. The review body is pre-fetched by the
-# workflow; gh api is banned via disallowedTools in agents/fix.md.
+# workflow; the sandbox GH_TOKEN is read-only scoped.
 
 filesystem_policy:
   include_workdir: true
@@ -44,6 +44,14 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: read-only
+      # gh CLI uses POST /graphql for reads; protocol: graphql allows
+      # queries but blocks mutations at the AST level
+      - host: "api.github.com"
+        port: 443
+        protocol: graphql
+        enforcement: enforce
+        access: read-only
+        path: "/graphql"
       - host: "github.com"
         port: 443
         protocol: rest

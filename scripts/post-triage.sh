@@ -79,7 +79,7 @@ remove_label() {
 # add or remove these via label_actions. This list covers labels that the
 # pipeline itself applies (pre-triage.sh resets the first five; the action
 # handlers apply blocked/triaged/feature).
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation")
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned")
 
 is_control_label() {
   local label="$1"
@@ -353,6 +353,16 @@ ${FAILED_CREATES}"
     add_label "question"
     ;;
 
+  not-planned)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'not-planned' but no comment provided" >&2
+      exit 1
+    fi
+    remove_label "blocked"
+    remove_label "needs-info"
+    add_label "not-planned"
+    ;;
+
   *)
     echo "ERROR: unknown action '${ACTION}' — this may be a newer action that post-triage.sh does not handle yet" >&2
     exit 1
@@ -445,10 +455,14 @@ else
   printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 fi
 
-# --- Post-action: close duplicate issues ---
+# --- Post-action: close issues ---
 
 if [[ "${ACTION}" == "duplicate" ]]; then
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "duplicate"
+fi
+
+if [[ "${ACTION}" == "not-planned" ]]; then
+  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "not planned"
 fi
 
 echo "Post-triage complete."

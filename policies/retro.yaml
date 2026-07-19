@@ -7,8 +7,8 @@ version: 1
 # and Vertex AI for inference. The sandbox token has issues:write (needed by
 # the post-script on the runner) and pull_requests:write (required by GitHub to
 # comment on PRs via the issues endpoint) but not contents:write.
-# curl intentionally excluded to prevent disallowedTools bypass via raw HTTP
-# with the injected GH_TOKEN.
+# curl excluded from the binary allowlist to prevent raw HTTP access with
+# the injected GH_TOKEN.
 
 filesystem_policy:
   include_workdir: true
@@ -46,6 +46,14 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: read-only
+      # gh CLI uses POST /graphql for reads; protocol: graphql allows
+      # queries but blocks mutations at the AST level
+      - host: "api.github.com"
+        port: 443
+        protocol: graphql
+        enforcement: enforce
+        access: read-only
+        path: "/graphql"
       - host: "github.com"
         port: 443
         protocol: rest
