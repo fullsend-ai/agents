@@ -43,6 +43,7 @@ export SCRIPT_TEST_TARGET
 script-test:
 	$(call run-timed,bash scripts/bundle-sh-test.sh)
 	$(call run-timed,bash scripts/post-failure-report-test.sh)
+	$(call run-timed,bash scripts/pr-assignee-test.sh)
 	$(call run-timed,bash scripts/post-triage-test.sh)
 	$(call run-timed,bash scripts/post-prioritize-test.sh)
 	$(call run-timed,bash scripts/post-code-test.sh)

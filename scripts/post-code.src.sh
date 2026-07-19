@@ -42,6 +42,8 @@ set -euo pipefail
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/post-failure-report.lib.sh
 source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
+# shellcheck source=lib/pr-assignee.lib.sh
+source "${SCRIPT_DIR_POST}/lib/pr-assignee.lib.sh"
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -446,6 +448,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+  maybe_assign_pr "${EXISTING_PR_NUM}"
   exit 0
 fi
 
@@ -607,3 +610,5 @@ gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \
   --add-label "ready-for-review" 2>/dev/null || \
   gha_echo warning "Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+
+maybe_assign_pr "${PR_NUMBER_FROM_URL}"
