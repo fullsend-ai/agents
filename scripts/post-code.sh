@@ -483,25 +483,36 @@ resolve_pr_assignee_from_context() {
 
   local human_assignee
   human_assignee="$(echo "${issue_json}" | jq -r '
-    [.assignees[].login | select(
+    [(.assignees // [])[]? | .login? // empty | select(
+      (. | length > 0) and
       (startswith("app/") | not) and
       (test("\\[bot\\]$") | not) and
       (. != "dependabot")
     )] | .[0] // empty
-  ')"
+  ' 2>/dev/null || true)"
   if [[ -n "${human_assignee}" ]]; then
     echo "${human_assignee}"
     return 0
   fi
 
   local author_login
-  author_login="$(echo "${issue_json}" | jq -r '.author.login // empty')"
+  author_login="$(echo "${issue_json}" | jq -r '.author.login? // empty' 2>/dev/null || true)"
   if is_human_github_user "${author_login}"; then
     echo "${author_login}"
     return 0
   fi
 
   return 1
+}
+
+# Emit a runner warning through gha_echo when available (sanitizes :: / %0A / %0D).
+# Never fall back to raw "::warning::" interpolation — that invites workflow-command injection.
+_pr_assignee_warn() {
+  if declare -F gha_echo >/dev/null 2>&1; then
+    gha_echo warning "$*"
+  else
+    echo "warning: $*" >&2
+  fi
 }
 
 # Fetch issue comments (paginated REST) as a single JSON array. Best-effort.
@@ -537,11 +548,7 @@ maybe_assign_pr() {
   local existing_count
   if ! existing_count="$(gh pr view "${target_pr}" --repo "${REPO_FULL_NAME}" \
     --json assignees --jq '.assignees | length' 2>/dev/null)"; then
-    if declare -F gha_echo >/dev/null 2>&1; then
-      gha_echo warning "Could not read assignees for PR #${target_pr} — skipping assignment"
-    else
-      echo "::warning::Could not read assignees for PR #${target_pr} — skipping assignment"
-    fi
+    _pr_assignee_warn "Could not read assignees for PR #${target_pr} — skipping assignment"
     return 0
   fi
   if [[ "${existing_count}" != "0" ]]; then
@@ -560,16 +567,9 @@ maybe_assign_pr() {
   local assign_err
   assign_err="$(gh pr edit "${target_pr}" --repo "${REPO_FULL_NAME}" \
     --add-assignee "${assignee}" 2>&1)" || {
-    if declare -F gha_echo >/dev/null 2>&1; then
-      gha_echo warning "Failed to assign PR #${target_pr} to ${assignee} — continuing"
-      if [[ -n "${assign_err}" ]]; then
-        gha_echo warning "${assign_err}"
-      fi
-    else
-      echo "::warning::Failed to assign PR #${target_pr} to ${assignee} — continuing"
-      if [[ -n "${assign_err}" ]]; then
-        echo "::warning::${assign_err//::/ }"
-      fi
+    _pr_assignee_warn "Failed to assign PR #${target_pr} to ${assignee} — continuing"
+    if [[ -n "${assign_err}" ]]; then
+      _pr_assignee_warn "${assign_err}"
     fi
   }
 }

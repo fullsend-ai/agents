@@ -165,6 +165,14 @@ run_assignee_test "dependabotb-is-human" \
 run_assignee_test "empty-context-no-assign" \
   "" "" "0" "skip:no-candidate"
 
+# Malformed / null assignees field — fall through to author (best-effort jq)
+run_assignee_test "null-assignees-uses-author" \
+  "[]" '{"assignees": null, "author": {"login": "bob"}}' "0" "assign:bob"
+
+# Missing assignees key — fall through to author
+run_assignee_test "missing-assignees-uses-author" \
+  "[]" '{"author": {"login": "bob"}}' "0" "assign:bob"
+
 echo ""
 if [ ${FAILURES} -gt 0 ]; then
   echo "${FAILURES} test(s) failed"
