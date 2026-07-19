@@ -805,7 +805,7 @@ COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
 PR_BODY_FROM_RESULT=""
 if [ -n "${RESULT_FILE}" ]; then
   if ! PR_BODY_FROM_RESULT="$(jq -r '.pr_body // empty' "${RESULT_FILE}" 2>/dev/null)"; then
-    echo "::notice::Failed to parse pr_body from result file; using commit body"
+    gha_echo notice "Failed to parse pr_body from result file; using commit body"
     PR_BODY_FROM_RESULT=""
   fi
 fi
@@ -826,11 +826,11 @@ if [ -n "${PR_BODY_FROM_RESULT}" ]; then
   if [ "${GL_RC}" -eq 0 ]; then
     PR_BODY_SCAN_STATUS="passed"
   elif [ "${GL_RC}" -eq 1 ]; then
-    echo "::warning::BLOCKED — secret detected in pr_body; falling back to commit body"
+    gha_echo warning "BLOCKED — secret detected in pr_body; falling back to commit body"
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="blocked"
   else
-    echo "::warning::gitleaks scan failed (exit ${GL_RC}); falling back to commit body"
+    gha_echo warning "gitleaks scan failed (exit ${GL_RC}); falling back to commit body"
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="error"
   fi
