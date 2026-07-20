@@ -110,7 +110,7 @@ run_test() {
     return
   fi
 
-  if ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -141,7 +141,7 @@ run_test_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
     echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
@@ -401,7 +401,7 @@ run_test_no_pattern() {
     return
   fi
 
-  if grep -qF "${forbidden_pattern}" "${GH_LOG}"; then
+  if grep -qF -- "${forbidden_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — forbidden pattern '${forbidden_pattern}' was found"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -440,8 +440,8 @@ run_test_label_order() {
   fi
 
   local before_line after_line
-  before_line=$(grep -nF "${before_pattern}" "${GH_LOG}" | head -1 | cut -d: -f1)
-  after_line=$(grep -nF "${after_pattern}" "${GH_LOG}" | head -1 | cut -d: -f1)
+  before_line=$(grep -nF -- "${before_pattern}" "${GH_LOG}" | head -1 | cut -d: -f1)
+  after_line=$(grep -nF -- "${after_pattern}" "${GH_LOG}" | head -1 | cut -d: -f1)
 
   if [[ -z "${before_line}" ]]; then
     echo "FAIL: ${test_name} — before pattern '${before_pattern}' not found"

@@ -9,7 +9,29 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+
 FAILURES=0
+
+POST_SCRIPT="$(resolve_agent_script post-fix "${SCRIPT_DIR}")"
+if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_pr' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-failure-reporting"
+  echo "  ${POST_SCRIPT} missing gha_echo or post_fail_to_pr"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-failure-reporting"
+fi
+
+if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-gitleaks-install"
+  echo "  ${POST_SCRIPT} missing install_gitleaks"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-gitleaks-install"
+fi
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the push retry logic from post-fix.sh section 5.

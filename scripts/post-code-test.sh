@@ -9,7 +9,37 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+
 FAILURES=0
+
+POST_SCRIPT="$(resolve_agent_script post-code "${SCRIPT_DIR}")"
+if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_issue' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-failure-reporting"
+  echo "  ${POST_SCRIPT} missing gha_echo or post_fail_to_issue"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-failure-reporting"
+fi
+
+if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-gitleaks-install"
+  echo "  ${POST_SCRIPT} missing install_gitleaks"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-gitleaks-install"
+fi
+
+if ! grep -q 'maybe_assign_pr' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-pr-assignee"
+  echo "  ${POST_SCRIPT} missing maybe_assign_pr"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-pr-assignee"
+fi
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
@@ -637,100 +667,6 @@ run_push_retry_test "push-rejected" \
 # Unknown error → fail
 run_push_retry_test "push-unexpected-error" \
   "1" "fatal: repository not found" "fail:unexpected-error"
-
-# ---------------------------------------------------------------------------
-# Test helper — reimplements the error reporting comment builder from
-# post-code.sh. Verifies the comment body contains expected content.
-# ---------------------------------------------------------------------------
-build_error_comment() {
-  local exit_code="$1"
-  local repo_full_name="$2"
-  local run_id="$3"
-  local github_repository="${4:-}"  # GITHUB_REPOSITORY override (org-mode)
-
-  local run_repo="${github_repository:-${repo_full_name}}"
-  local run_url="https://github.com/${run_repo}/actions/runs/${run_id}"
-  echo "⚠️ **Post-code script failed** (exit code ${exit_code})
-
-The code agent completed, but the post-code script failed while \
-pushing the branch or creating the PR.
-
-**Workflow run:** ${run_url}
-
-Please check the workflow logs for details and retry with \`/fs-code\` \
-if appropriate."
-}
-
-run_error_comment_test() {
-  local test_name="$1"
-  local exit_code="$2"
-  local repo="$3"
-  local run_id="$4"
-  local check_pattern="$5"
-  local expect_present="$6"
-  local github_repository="${7:-}"  # optional GITHUB_REPOSITORY override
-
-  local actual
-  actual="$(build_error_comment "${exit_code}" "${repo}" "${run_id}" "${github_repository}")"
-
-  if [ "${expect_present}" = "yes" ]; then
-    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
-      echo "FAIL: ${test_name}"
-      echo "  expected to find: '${check_pattern}'"
-      echo "  in body:"
-      echo "${actual}" | sed 's/^/    /'
-      FAILURES=$((FAILURES + 1))
-      return
-    fi
-  else
-    if echo "${actual}" | grep -qF "${check_pattern}"; then
-      echo "FAIL: ${test_name}"
-      echo "  expected NOT to find: '${check_pattern}'"
-      echo "  in body:"
-      echo "${actual}" | sed 's/^/    /'
-      FAILURES=$((FAILURES + 1))
-      return
-    fi
-  fi
-
-  echo "PASS: ${test_name}"
-}
-
-# --- Error comment test cases ---
-
-run_error_comment_test "error-comment-has-exit-code" \
-  "1" "my-org/my-repo" "12345" \
-  "exit code 1" "yes"
-
-run_error_comment_test "error-comment-has-workflow-link" \
-  "1" "my-org/my-repo" "12345" \
-  "https://github.com/my-org/my-repo/actions/runs/12345" "yes"
-
-run_error_comment_test "error-comment-has-retry-hint" \
-  "1" "my-org/my-repo" "12345" \
-  "/fs-code" "yes"
-
-run_error_comment_test "error-comment-has-warning-emoji" \
-  "1" "my-org/my-repo" "12345" \
-  "⚠️" "yes"
-
-# Org-mode: GITHUB_REPOSITORY differs from REPO_FULL_NAME → URL uses dispatch repo
-run_error_comment_test "error-comment-org-mode-uses-dispatch-repo" \
-  "1" "test-org/my-app" "12345" \
-  "https://github.com/test-org/.fullsend/actions/runs/12345" "yes" \
-  "test-org/.fullsend"
-
-# Org-mode: URL must NOT contain the source repo name
-run_error_comment_test "error-comment-org-mode-not-source-repo" \
-  "1" "test-org/my-app" "12345" \
-  "https://github.com/test-org/my-app/actions/runs/12345" "no" \
-  "test-org/.fullsend"
-
-# Non-org-mode: no GITHUB_REPOSITORY → falls back to REPO_FULL_NAME
-run_error_comment_test "error-comment-non-org-mode-fallback" \
-  "1" "my-org/my-repo" "67890" \
-  "https://github.com/my-org/my-repo/actions/runs/67890" "yes" \
-  ""
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the agent artifact stripping logic from

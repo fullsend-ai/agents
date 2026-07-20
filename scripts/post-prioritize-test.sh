@@ -6,7 +6,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POST_SCRIPT="${SCRIPT_DIR}/post-prioritize.sh"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+POST_SCRIPT="$(resolve_agent_script post-prioritize "${SCRIPT_DIR}")"
 FAILURES=0
 
 TEST_TMPDIR="$(mktemp -d)"
