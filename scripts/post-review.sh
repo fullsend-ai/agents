@@ -36,9 +36,10 @@ trap 'rm -f "${CLEANUP_FILES[@]}"' EXIT
 
 # Refuse to post reviews on merged or closed PRs.
 # Also fetch draft status — draft PRs must not receive ready-for-merge.
-PR_INFO=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state,isDraft)
+PR_INFO=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state,isDraft,headRefOid)
 PR_STATE=$(echo "${PR_INFO}" | jq -r '.state')
 PR_IS_DRAFT=$(echo "${PR_INFO}" | jq -r '.isDraft')
+PR_HEAD_SHA=$(echo "${PR_INFO}" | jq -r '.headRefOid')
 if [ "${PR_STATE}" != "OPEN" ]; then
   echo "PR is ${PR_STATE}, skipping review"
 
@@ -352,6 +353,24 @@ elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Human-approval check: when the agent approved but was downgraded due to
+# protected paths, check whether a human has already submitted an APPROVED
+# review on the current HEAD SHA. If so, the protected-path requirement is
+# satisfied and the outcome can be ready-for-merge.
+# ---------------------------------------------------------------------------
+HAS_HUMAN_APPROVAL=false
+if [ "${DOWNGRADED}" = "true" ]; then
+  HUMAN_APPROVALS=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" \
+    --paginate 2>/dev/null \
+    | jq -s --arg sha "${PR_HEAD_SHA}" \
+      'add // [] | [.[] | select(.state == "APPROVED" and .user.type == "User" and .commit_id == $sha)] | length') || HUMAN_APPROVALS=0
+  if [ "${HUMAN_APPROVALS}" -gt 0 ]; then
+    echo "Human APPROVED review found on HEAD SHA ${PR_HEAD_SHA} — protected-path requirement satisfied"
+    HAS_HUMAN_APPROVAL=true
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Outcome labels: apply labels based on the review action.
 # Labels are created if missing, matching the needs-human pattern in
 # post-fix.sh.
@@ -361,7 +380,7 @@ fi
 # Determine the target outcome label before mutating anything so we can
 # skip no-op remove/re-add cycles that generate timeline noise.
 OUTCOME_LABEL=""
-if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+if [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "false" ] || [ "${HAS_HUMAN_APPROVAL}" = "true" ]; } && [ "${PR_IS_DRAFT}" != "true" ]; then
   OUTCOME_LABEL="ready-for-merge"
 elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
      [ "${ACTION}" = "comment" ]; then
