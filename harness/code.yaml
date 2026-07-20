@@ -4,7 +4,7 @@
 # Flow: pre_script → sandbox (agent) → post_script
 #   pre_script  : validates inputs on the runner BEFORE sandbox creation
 #   agent       : reads the issue, implements, tests, scans, commits locally
-#   post_script : protected-path check, secret scan, push branch, create PR
+#   post_script : secret scan, pre-commit, push branch, create PR, assign human
 #
 # The agent NEVER pushes or creates PRs. Enforcement: the sandbox
 # GH_TOKEN is read-only scoped, PUSH_TOKEN never enters the sandbox,
