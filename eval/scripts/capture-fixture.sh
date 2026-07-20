@@ -37,7 +37,8 @@ fetch_pr_files() {
       printf '%s' "$files"
       return 0
     fi
-    sleep $((attempt))
+    # Skip sleep after the final attempt.
+    [[ $attempt -lt 3 ]] && sleep $((attempt))
   done
   return 1
 }
@@ -48,9 +49,10 @@ case "${FIXTURE_TYPE}" in
       --json state,labels,assignees,milestone,title)
     comments_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
       | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
-    # Code agent post-script opens a PR; capture PRs + changed files for judges.
+    # Code agent post-script opens exactly one PR today; --limit 1 is enough.
+    # Raise the limit (or filter by headRefName) if a future case opens multiple.
     # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
-    if ! prs_json=$(gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 20 \
+    if ! prs_json=$(gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 1 \
       --json number,title,url,state,headRefName,baseRefName 2>/dev/null); then
       echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO}; recording pull_requests=[]" >&2
       prs_json='[]'

@@ -32,6 +32,21 @@ FIXTURE_TYPE="${FIXTURE_TYPE:?FIXTURE_TYPE is required (set by before_each hook)
 # REPO_DIR=${GITHUB_WORKSPACE}/target-repo for post-scripts.
 EPHEMERAL_REPO="${EPHEMERAL_REPO:?EPHEMERAL_REPO is required}"
 FIXTURE_NUMBER="${FIXTURE_NUMBER:?FIXTURE_NUMBER is required (set by before_each hook)}"
+
+# Shape checks for fixture-derived values — before clone / dotenv writes.
+if [[ ! "$FIXTURE_URL" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
+  echo "ERROR: FIXTURE_URL has unexpected shape: ${FIXTURE_URL}" >&2
+  exit 1
+fi
+if [[ ! "$FIXTURE_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: FIXTURE_NUMBER must be a positive integer, got: ${FIXTURE_NUMBER}" >&2
+  exit 1
+fi
+if [[ ! "$EPHEMERAL_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+  echo "ERROR: EPHEMERAL_REPO must be owner/repo, got: ${EPHEMERAL_REPO}" >&2
+  exit 1
+fi
+
 EVAL_GH_WORKSPACE=$(mktemp -d)
 TARGET_DIR="${EVAL_GH_WORKSPACE}/target-repo"
 GH_CRED_HELPER='!f(){ echo "password=${GH_TOKEN}"; };f'
@@ -49,28 +64,18 @@ trap cleanup EXIT
 
 # Reject newline/CR injection into the dotenv file (defense in depth).
 # Values today come from gh/mktemp; still validate shape before writing.
+# Quote values so envfile.go does not treat " #" as an inline comment
+# (unquoted values strip from space-hash onward).
 emit_env() {
   local name="$1" value="$2"
   if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
     echo "ERROR: env value for ${name} contains a newline" >&2
     exit 1
   fi
-  printf '%s=%s\n' "$name" "$value"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s="%s"\n' "$name" "$value"
 }
-
-# Shape checks for fixture-derived values.
-if [[ ! "$FIXTURE_URL" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
-  echo "ERROR: FIXTURE_URL has unexpected shape: ${FIXTURE_URL}" >&2
-  exit 1
-fi
-if [[ ! "$FIXTURE_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-  echo "ERROR: FIXTURE_NUMBER must be a positive integer, got: ${FIXTURE_NUMBER}" >&2
-  exit 1
-fi
-if [[ ! "$EPHEMERAL_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-  echo "ERROR: EPHEMERAL_REPO must be owner/repo, got: ${EPHEMERAL_REPO}" >&2
-  exit 1
-fi
 
 # Build env file for fullsend run
 ENV_FILE="${OUTPUT_DIR}/.eval-env"
@@ -87,6 +92,8 @@ install -m 0600 /dev/null "$ENV_FILE"
   case "$AGENT" in
     code|fix)
       emit_env "PUSH_TOKEN_SOURCE" "eval"
+      # Empty matches production reusable-code.yml: post-code.sh treats unset/empty
+      # as fallback to the repo default branch (not "allow all"; use * for any).
       emit_env "CODE_ALLOWED_TARGET_BRANCHES" ""
       emit_env "GITHUB_WORKSPACE" "${EVAL_GH_WORKSPACE}"
       emit_env "GIT_BOT_EMAIL" "fullsend-eval[bot]@users.noreply.github.com"
