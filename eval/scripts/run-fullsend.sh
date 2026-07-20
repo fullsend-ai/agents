@@ -59,8 +59,18 @@ git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 # *new* remote branch and leave the PR head unchanged — failing new_commit.
 # Do not switch other PR-fixture agents (e.g. review) off main.
 if [[ "$AGENT" == "fix" && "$FIXTURE_TYPE" == "pull_request" ]]; then
-  HEAD_REF=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
-    --json headRefName --jq '.headRefName')
+  HEAD_REF=""
+  for attempt in 1 2 3; do
+    if HEAD_REF=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
+      --json headRefName --jq '.headRefName' 2>/dev/null); then
+      break
+    fi
+    [[ $attempt -lt 3 ]] && sleep $((attempt))
+  done
+  if [[ -z "$HEAD_REF" ]]; then
+    echo "ERROR: gh pr view failed for headRefName after retries (PR #${FIXTURE_NUMBER})" >&2
+    exit 1
+  fi
   if [[ ! "$HEAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then
     echo "ERROR: unexpected PR head ref: ${HEAD_REF}" >&2
     exit 1
@@ -147,8 +157,8 @@ install -m 0600 /dev/null "$ENV_FILE"
       echo "ERROR: HUMAN_INSTRUCTION is required for fix eval (set human_instruction in input.yaml)" >&2
       exit 1
     fi
+    # mktemp already creates an empty file (human /fs-fix path; no review body).
     REVIEW_BODY_FILE="$(mktemp)"
-    : > "$REVIEW_BODY_FILE"
     emit_env "TRIGGER_SOURCE" "eval-human"
     emit_env "HUMAN_INSTRUCTION" "${HUMAN_INSTRUCTION}"
     emit_env "FIX_ITERATION" "1"
