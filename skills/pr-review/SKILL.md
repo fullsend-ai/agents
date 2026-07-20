@@ -189,11 +189,11 @@ orchestrator selects dimension-relevant files for each sub-agent:
 - **style-conventions:** files with the most changes
 - **other dimensions:** files most relevant to their review scope
 
-For omitted changed files in large PRs, sub-agents should fetch them
-via the GitHub contents API (using `HEAD_SHA`) rather than reading from
-disk, since disk contains base-branch code. Include `HEAD_SHA` and
-`REPO_FULL_NAME` in the context package so sub-agents can make these
-API calls.
+For omitted changed files in large PRs, sub-agents should treat those
+files as unavailable for PR-head verification. Any findings about
+omitted files should note that the file contents could not be verified
+against the PR head. Sub-agents must not read omitted changed files
+from disk, since disk contains base-branch code, not the PR head.
 
 If the PR body references linked issues, fetch them for intent context:
 
@@ -364,13 +364,13 @@ For each selected sub-agent, assemble a context package containing:
   `#### <relative-path>` header and wrapped in a fenced code block with
   the appropriate language identifier. For large PRs (>20 files or >5000
   lines), include only the files most relevant to the sub-agent's
-  dimension; the sub-agent may fetch additional changed files via the
-  GitHub contents API using `HEAD_SHA` (not from disk, which contains
-  base-branch code).
-- `head_sha`: the PR head commit SHA (from step 1), so sub-agents can
-  fetch additional files via the contents API for large PRs
-- `repo_full_name`: the full `owner/repo` string, paired with `head_sha`
-  for contents API calls
+  dimension; omitted changed files should be treated as unavailable for
+  PR-head verification (sub-agents do not have Bash access to fetch them
+  via the GitHub API).
+- `head_sha`: the PR head commit SHA (from step 1), included for
+  reference in sub-agent findings and review anchoring
+- `repo_full_name`: the full `owner/repo` string, included for reference
+  in sub-agent findings
 - `changed_files`: list of relative file paths modified
 - `prior_findings`: prior findings for this dimension only (from 3a)
 - `prior_review_sha`: the SHA of the prior review (from 2a)
@@ -460,10 +460,11 @@ For each selected sub-agent:
 
    (For large PRs where not all files are included:)
    **Note:** Not all changed files are included above due to PR size.
-   To read additional changed files, fetch them via the GitHub contents
-   API: `gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}"
-   --jq '.content' | base64 -d`. Do not read changed files from disk —
-   disk contains base-branch code, not the PR head.
+   Changed files not listed here should be treated as unavailable for
+   PR-head verification. If you produce findings about files not included
+   above, note that the file contents could not be verified against the
+   PR head. Do not read changed files from disk — disk contains
+   base-branch code, not the PR head.
 
    ### Changed files
    <file list>
