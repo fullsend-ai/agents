@@ -26,15 +26,23 @@ mkdir -p "$OUTPUT_DIR"
 STATE_FILE="${OUTPUT_DIR}/fixture-state.json"
 
 # Run a command up to 3 times; print stdout on success. Used for flaky gh calls.
+# Suppress stderr on early attempts; keep it on the final attempt for diagnostics.
 retry_cmd() {
   local attempt out
   for attempt in 1 2 3; do
-    if out=$("$@" 2>/dev/null); then
-      printf '%s' "$out"
-      return 0
+    if [[ $attempt -lt 3 ]]; then
+      if out=$("$@" 2>/dev/null); then
+        printf '%s' "$out"
+        return 0
+      fi
+      sleep $((attempt))
+    else
+      if out=$("$@"); then
+        printf '%s' "$out"
+        return 0
+      fi
+      return 1
     fi
-    # Skip sleep after the final attempt.
-    [[ $attempt -lt 3 ]] && sleep $((attempt))
   done
   return 1
 }
@@ -52,17 +60,59 @@ fetch_pr_files() {
   return 1
 }
 
+# Resolve branch tip SHA via git refs API, polling if still at baseline.
+# Poll up to 6 times with linear backoff (~21s total, within 60s after_each timeout).
+# Prefer refs API over PR headRefOid — the latter can lag briefly after post-fix push.
+resolve_head_sha() {
+  local repo="$1" head_ref="$2" baseline="${3:-}" initial_sha="${4:-}"
+  local head_sha="$initial_sha" ref_sha attempt
+
+  if [[ ! "$head_ref" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    echo "ERROR: unexpected PR head ref: ${head_ref}" >&2
+    return 1
+  fi
+
+  if ref_sha=$(gh api "repos/${repo}/git/ref/heads/${head_ref}" \
+    --jq '.object.sha' 2>/dev/null); then
+    head_sha="$ref_sha"
+  fi
+
+  if [[ -n "$baseline" && "$head_sha" == "$baseline" ]]; then
+    echo "WARNING: PR/branch tip still equals pre_agent_head; polling for push..." >&2
+    for attempt in 1 2 3 4 5 6; do
+      sleep $((attempt))
+      if ref_sha=$(gh api "repos/${repo}/git/ref/heads/${head_ref}" \
+        --jq '.object.sha' 2>/dev/null); then
+        head_sha="$ref_sha"
+        if [[ "$head_sha" != "$baseline" ]]; then
+          break
+        fi
+      fi
+    done
+  fi
+
+  printf '%s' "$head_sha"
+}
+
 case "${FIXTURE_TYPE}" in
   issue)
-    issue_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
-      --json state,labels,assignees,milestone,title)
-    comments_json=$(gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" --json comments \
-      | jq '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
+    if ! issue_json=$(retry_cmd gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
+      --json state,labels,assignees,milestone,title); then
+      echo "ERROR: gh issue view failed for #${FIXTURE_NUMBER} after retries" >&2
+      exit 1
+    fi
+    if ! comments_raw=$(retry_cmd gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
+      --json comments); then
+      echo "ERROR: gh issue view (comments) failed for #${FIXTURE_NUMBER} after retries" >&2
+      exit 1
+    fi
+    comments_json=$(printf '%s' "$comments_raw" | jq \
+      '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
     # Code agent post-script opens exactly one PR today; --limit 1 is enough.
     # Raise the limit (or filter by headRefName) if a future case opens multiple.
     # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
-    if ! prs_json=$(gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 1 \
-      --json number,title,url,state,headRefName,baseRefName 2>/dev/null); then
+    if ! prs_json=$(retry_cmd gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 1 \
+      --json number,title,url,state,headRefName,baseRefName); then
       echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO}; recording pull_requests=[]" >&2
       prs_json='[]'
     fi
@@ -149,28 +199,13 @@ case "${FIXTURE_TYPE}" in
       exit 0
     fi
 
-    # Prefer the branch tip from the git refs API: PR headRefOid can lag briefly
-    # after post-fix pushes, which falsely fails the new_commit judge.
     head_ref=$(printf '%s' "$pr_raw" | jq -r '.headRefName // empty')
-    head_sha=$(printf '%s' "$pr_raw" | jq -r '.headRefOid // empty')
+    initial_sha=$(printf '%s' "$pr_raw" | jq -r '.headRefOid // empty')
+    head_sha="$initial_sha"
     if [[ -n "$head_ref" ]]; then
-      if ref_sha=$(gh api "repos/${EPHEMERAL_REPO}/git/ref/heads/${head_ref}" \
-        --jq '.object.sha' 2>/dev/null); then
-        head_sha="$ref_sha"
-      fi
-      # If still equal to pre-agent baseline, poll briefly for the push to show up.
-      if [[ -n "$pre_agent_head" && "$head_sha" == "$pre_agent_head" ]]; then
-        echo "WARNING: PR/branch tip still equals pre_agent_head; polling for push..." >&2
-        for attempt in 1 2 3 4 5 6; do
-          sleep $((attempt))
-          if ref_sha=$(gh api "repos/${EPHEMERAL_REPO}/git/ref/heads/${head_ref}" \
-            --jq '.object.sha' 2>/dev/null); then
-            head_sha="$ref_sha"
-            if [[ "$head_sha" != "$pre_agent_head" ]]; then
-              break
-            fi
-          fi
-        done
+      if ! head_sha=$(resolve_head_sha "$EPHEMERAL_REPO" "$head_ref" "$pre_agent_head" "$initial_sha"); then
+        echo "WARNING: resolve_head_sha failed for ${head_ref}; using headRefOid" >&2
+        head_sha="$initial_sha"
       fi
     fi
 

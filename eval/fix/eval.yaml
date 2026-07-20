@@ -8,13 +8,14 @@ skill: fix
 
 execution:
   mode: case
+  # Harness hard-kill. Keep slightly above runner.env.EVAL_TIMEOUT so the
+  # script-level timeout can fire first and trap cleanup EXIT still runs.
   timeout: 1800  # fix harness timeout_minutes is 25; leave headroom
   parallelism: 1
   env:
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
     FULLSEND_DIR: $FULLSEND_DIR
-    EVAL_TIMEOUT: "1800"
     GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
@@ -45,7 +46,8 @@ runner:
   env:
     FULLSEND_DIR: $FULLSEND_DIR
     GH_TOKEN: $GH_TOKEN
-    EVAL_TIMEOUT: "1800"
+    # Script-level timeout (slightly under execution.timeout) so trap cleanup runs.
+    EVAL_TIMEOUT: "1700"
     GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
@@ -69,6 +71,8 @@ outputs:
       fixture-state.json: Captured PR state including head_sha, files,
       and pre_agent_head for new_commit / expected_files judges.
 
+# forbidden_labels / max_turns / max_cost below are shared verbatim with
+# eval/code/eval.yaml and eval/review/eval.yaml — update all three if changing.
 judges:
   - name: new_commit
     description: Post-script must push at least one new commit on the PR head
