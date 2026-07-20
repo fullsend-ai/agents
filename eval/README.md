@@ -24,7 +24,7 @@ EVAL_ORG=my-org ./eval/run-functional.sh review
 
 | Variable | Description |
 |----------|-------------|
-| `GH_TOKEN` | GitHub PAT used by all eval scripts. See [required scopes](#required-token-scopes) below. Falls back to `gh auth token` if unset. |
+| `GH_TOKEN` | GitHub PAT used by all eval scripts. See [required scopes](#required-token-scopes) below. Falls back to `gh auth token` if unset. In GitHub Actions, this is populated from the `EVAL_GH_TOKEN` repository secret. |
 | `EVAL_ORG` | GitHub org or user where ephemeral repos are created (e.g. `my-test-org`). |
 
 ### Optional
@@ -59,9 +59,8 @@ passes them to the agent under test:
 | `repo` | `capture-fixture.sh` | `gh issue view`, `gh pr view` |
 | `delete_repo` | `teardown-fixture.sh` | `gh repo delete` |
 
-The `repo` scope covers read/write access to repositories and also
-includes `pull_requests:write` for creating PRs and posting comments
-during the agent run.
+The `repo` scope grants full control of repositories, which includes
+the ability to create PRs and post comments during the agent run.
 
 ## Lifecycle
 
