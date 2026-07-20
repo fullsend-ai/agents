@@ -48,6 +48,25 @@
     {
       "if": { "properties": { "action": { "const": "failure" } }, "required": ["action"] },
       "then": { "required": ["reason"] }
+    },
+    {
+      "if": {
+        "properties": { "action": { "const": "approve" } },
+        "required": ["action"]
+      },
+      "then": {
+        "not": {
+          "properties": {
+            "findings": {
+              "contains": {
+                "properties": { "category": { "const": "protected-path" } },
+                "required": ["category"]
+              }
+            }
+          },
+          "required": ["findings"]
+        }
+      }
     }
   ],
   "$defs": {
