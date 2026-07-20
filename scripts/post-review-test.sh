@@ -443,7 +443,7 @@ run_label_test() {
     return
   fi
 
-  if ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -482,7 +482,7 @@ run_label_test_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
     echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout-${test_name}.log"
@@ -521,7 +521,7 @@ run_label_test_no_pattern() {
     return
   fi
 
-  if grep -qF "${forbidden_pattern}" "${GH_LOG}"; then
+  if grep -qF -- "${forbidden_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — forbidden pattern '${forbidden_pattern}' was found in gh calls"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -631,7 +631,7 @@ run_label_test_with_env() {
     return
   fi
 
-  if ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -679,7 +679,7 @@ run_label_test_with_env_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
     echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout-${test_name}.log"

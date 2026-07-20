@@ -297,7 +297,7 @@ run_test() {
     return
   fi
 
-  if [[ -n "${expected_pattern}" ]] && ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+  if [[ -n "${expected_pattern}" ]] && ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -331,7 +331,7 @@ run_test_stdout() {
       FAILURES=$((FAILURES + 1))
       return
     fi
-    if [[ -n "${expected_stdout}" ]] && ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    if [[ -n "${expected_stdout}" ]] && ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
       echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
       echo "Actual stdout:"
       cat "${TMPDIR}/stdout.log"
@@ -349,7 +349,7 @@ run_test_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
     echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
@@ -383,7 +383,7 @@ run_test_no_gh_call() {
     return
   fi
 
-  if grep -qF "${forbidden_pattern}" "${GH_LOG}"; then
+  if grep -qF -- "${forbidden_pattern}" "${GH_LOG}"; then
     echo "FAIL: ${test_name} — forbidden gh call '${forbidden_pattern}' was made"
     echo "Actual calls:"
     cat "${GH_LOG}"
@@ -391,7 +391,7 @@ run_test_no_gh_call() {
     return
   fi
 
-  if [[ -n "${expected_stdout}" ]] && ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+  if [[ -n "${expected_stdout}" ]] && ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
     echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
@@ -424,7 +424,7 @@ run_test_stdin() {
     return
   fi
 
-  if ! grep -qF "${expected_stdin_pattern}" "${GH_STDIN_LOG}"; then
+  if ! grep -qF -- "${expected_stdin_pattern}" "${GH_STDIN_LOG}"; then
     echo "FAIL: ${test_name} — expected stdin pattern '${expected_stdin_pattern}' not found in gh api body"
     echo "Actual stdin:"
     cat "${GH_STDIN_LOG}"
@@ -458,7 +458,7 @@ run_test_stdout_absent() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
     echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
@@ -466,7 +466,7 @@ run_test_stdout_absent() {
     return
   fi
 
-  if grep -qF "${forbidden_stdout}" "${TMPDIR}/stdout.log"; then
+  if grep -qF -- "${forbidden_stdout}" "${TMPDIR}/stdout.log"; then
     echo "FAIL: ${test_name} — forbidden stdout pattern '${forbidden_stdout}' found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
