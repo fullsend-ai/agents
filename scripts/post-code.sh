@@ -659,6 +659,11 @@ maybe_assign_pr() {
     echo "No human assignee candidate — leaving PR #${target_pr} unassigned"
     return 0
   fi
+  # Defense-in-depth: only pass GitHub-login-shaped values to gh.
+  if [[ ! "${assignee}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+    _pr_assignee_warn "Unexpected assignee format '${assignee}' — skipping assignment"
+    return 0
+  fi
 
   echo "Assigning PR #${target_pr} to ${assignee}..."
   local assign_err
