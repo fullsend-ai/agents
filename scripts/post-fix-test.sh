@@ -25,6 +25,14 @@ else
   echo "PASS: bundled-script-has-failure-reporting"
 fi
 
+if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-gitleaks-install"
+  echo "  ${POST_SCRIPT} missing install_gitleaks"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-gitleaks-install"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the push retry logic from post-fix.sh section 5.
 # Given a push exit code and output, returns the action.
