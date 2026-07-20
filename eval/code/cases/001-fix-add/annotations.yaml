@@ -12,6 +12,7 @@ labels:
 max_turns: 80
 max_cost_usd: 8.00
 
+# Human reference only; not consumed by judges (unlike triage/review quality).
 code_expectations: |
   The repo has a one-line bug in calc.py: add() subtracts instead of adds.
   A successful run creates a PR via the post-script that fixes add() to

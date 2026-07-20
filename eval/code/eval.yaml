@@ -10,13 +10,14 @@ skill: code
 
 execution:
   mode: case
+  # Harness hard-kill. Keep slightly above runner.env.EVAL_TIMEOUT so the
+  # script-level timeout can fire first and trap cleanup EXIT still runs.
   timeout: 2100  # code harness timeout_minutes is 35; leave headroom for setup/teardown
   parallelism: 1
   env:
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
     FULLSEND_DIR: $FULLSEND_DIR
-    EVAL_TIMEOUT: "2100"
     GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
@@ -47,7 +48,8 @@ runner:
   env:
     FULLSEND_DIR: $FULLSEND_DIR
     GH_TOKEN: $GH_TOKEN
-    EVAL_TIMEOUT: "2100"
+    # Script-level timeout (slightly under execution.timeout) so trap cleanup runs.
+    EVAL_TIMEOUT: "2000"
     GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
