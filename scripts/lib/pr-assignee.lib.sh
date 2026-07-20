@@ -32,16 +32,10 @@ is_human_github_user() {
   return 0
 }
 
-# True when the first word of the first line is /fs-code (matches dispatch.yml).
-comment_is_fs_code() {
-  local body="${1:-}"
-  local first_word
-  first_word="$(printf '%s\n' "${body}" | head -1 | tr -d '\r' | awk '{print $1}')"
-  [[ "${first_word}" == "/fs-code" ]]
-}
-
 # From a REST comments JSON array, return the most recent human /fs-code invoker.
 # Accepts REST shape ({user.login, body}) or GraphQL-ish ({author.login, body}).
+# Matches dispatch.yml: first word of the first line is /fs-code (leading
+# whitespace ignored, same as awk '{print $1}').
 find_fs_code_invoker() {
   local comments_json="${1:-}"
   if [[ -z "${comments_json}" || "${comments_json}" == "null" ]]; then
@@ -52,8 +46,10 @@ find_fs_code_invoker() {
   login="$(echo "${comments_json}" | jq -r '
     def is_bot:
       (. == "dependabot") or startswith("app/") or test("\\[bot\\]$");
+    # Guard [0] // "" so null/missing bodies do not abort the whole filter.
     def first_word:
-      ((. // "") | split("\n")[0] | gsub("\r$"; "") | split(" ")[0]);
+      ((. // "") | split("\n")[0] // "" | gsub("\r$"; "")
+        | sub("^[[:space:]]+"; "") | split(" ")[0] // "");
     [
       .[]
       | (.user.login // .author.login // "") as $login

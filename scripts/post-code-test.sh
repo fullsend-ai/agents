@@ -33,6 +33,14 @@ else
   echo "PASS: bundled-script-has-gitleaks-install"
 fi
 
+if ! grep -q 'maybe_assign_pr' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-pr-assignee"
+  echo "  ${POST_SCRIPT} missing maybe_assign_pr"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-pr-assignee"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.

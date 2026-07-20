@@ -59,24 +59,22 @@ run_assignee_test() {
   echo "PASS: ${test_name}"
 }
 
-run_comment_match_test() {
+run_invoker_test() {
   local test_name="$1"
-  local body="$2"
-  local expect_match="$3"  # "yes" or "no"
+  local comments_json="$2"
+  local expected="$3"  # login or empty
 
-  if comment_is_fs_code "${body}"; then
-    if [ "${expect_match}" != "yes" ]; then
-      echo "FAIL: ${test_name} (expected no match)"
-      FAILURES=$((FAILURES + 1))
-      return
-    fi
-  else
-    if [ "${expect_match}" = "yes" ]; then
-      echo "FAIL: ${test_name} (expected match)"
-      FAILURES=$((FAILURES + 1))
-      return
-    fi
+  local actual=""
+  actual="$(find_fs_code_invoker "${comments_json}" || true)"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
   fi
+
   echo "PASS: ${test_name}"
 }
 
@@ -113,13 +111,24 @@ NO_FS_CODE_COMMENTS='[
   {"user": {"login": "carol"}, "body": "ready when you are"}
 ]'
 
-# Comment matching (dispatch-compatible)
-run_comment_match_test "fs-code-plain" "/fs-code" "yes"
-run_comment_match_test "fs-code-force" "/fs-code --force" "yes"
-run_comment_match_test "fs-code-crlf" $'/fs-code\r\nmore' "yes"
-run_comment_match_test "not-fs-code-midline" "please /fs-code now" "no"
-run_comment_match_test "fs-review-not-code" "/fs-review" "no"
-run_comment_match_test "empty-body" "" "no"
+# Production jq path: comment matching (dispatch-compatible)
+run_invoker_test "fs-code-plain" \
+  '[{"user":{"login":"alice"},"body":"/fs-code"}]' "alice"
+run_invoker_test "fs-code-force" \
+  '[{"user":{"login":"alice"},"body":"/fs-code --force"}]' "alice"
+run_invoker_test "fs-code-crlf" \
+  "$(jq -nc --arg b $'/fs-code\r\nmore' '[{user:{login:"alice"},body:$b}]')" "alice"
+run_invoker_test "fs-code-leading-whitespace" \
+  '[{"user":{"login":"alice"},"body":"  /fs-code"}]' "alice"
+run_invoker_test "not-fs-code-midline" \
+  '[{"user":{"login":"alice"},"body":"please /fs-code now"}]' ""
+run_invoker_test "fs-review-not-code" \
+  '[{"user":{"login":"alice"},"body":"/fs-review"}]' ""
+run_invoker_test "empty-body" \
+  '[{"user":{"login":"alice"},"body":""}]' ""
+# Null body must not abort the scan — later /fs-code still wins
+run_invoker_test "null-body-skips-later-fs-code" \
+  '[{"user":{"login":"alice"},"body":null},{"user":{"login":"bob"},"body":"/fs-code"}]' "bob"
 
 # Most recent human /fs-code invoker wins over issue assignee and author
 run_assignee_test "fs-code-invoker-wins" \
