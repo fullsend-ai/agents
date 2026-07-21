@@ -371,6 +371,7 @@ esac
 
 # --- Process label_actions (applies to all actions) ---
 
+GFI_APPLIED=false
 HAS_LABEL_ACTIONS=$(jq 'has("label_actions")' "${RESULT_FILE}")
 if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
   LABEL_REASON=$(jq -r '.label_actions.reason' "${RESULT_FILE}")
@@ -414,6 +415,9 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
         echo "Adding label '${LA_LABEL}'..."
         add_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
+        if [[ "${LA_LABEL}" == "good first issue" ]]; then
+          GFI_APPLIED=true
+        fi
         ;;
       remove)
         echo "Removing label '${LA_LABEL}'..."
@@ -433,6 +437,15 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 ---
 **Labels:** ${LABEL_REASON}"
   fi
+fi
+
+# --- Suppress ready-to-code when good-first-issue was applied (#335) ---
+# good first issue is a social contract reserving the issue for community
+# contributors. Applying ready-to-code would dispatch the code agent,
+# racing against human contributors.
+if [[ "${DEFERRED_LABEL}" == "ready-to-code" ]] && [[ "${GFI_APPLIED}" == "true" ]]; then
+  echo "Suppressing ready-to-code — 'good first issue' reserves this for community contributors"
+  DEFERRED_LABEL="triaged"
 fi
 
 # --- Apply deferred label (must be last label mutation) ---

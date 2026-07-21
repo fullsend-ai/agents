@@ -24,7 +24,7 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "good first issue"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -491,6 +491,34 @@ run_test_stdout "label-category-contradiction-stripped" \
 run_test "label-category-consistent-passes" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
+
+# --- good first issue suppresses ready-to-code (#335) ---
+
+# When label_actions applies "good first issue" on a bug, the deferred label
+# should be "triaged" instead of "ready-to-code".
+run_test "gfi-bug-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Typo in code","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_typo"},"comment":"## Triage Summary\n\nThis is a good first issue.","label_actions":{"reason":"Good for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+# Verify ready-to-code is NOT applied when good first issue suppresses it.
+run_test_no_pattern "gfi-bug-no-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Typo in code","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_typo"},"comment":"## Triage Summary\n\nThis is a good first issue.","label_actions":{"reason":"Good for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "labels[]=ready-to-code"
+
+# Verify good first issue label itself is still applied.
+run_test "gfi-bug-label-applied" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Typo in code","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_typo"},"comment":"## Triage Summary\n\nThis is a good first issue.","label_actions":{"reason":"Good for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=good first issue --silent"
+
+# Verify suppression also works for documentation category.
+run_test_no_pattern "gfi-documentation-no-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nGood first issue.","label_actions":{"reason":"Good for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "labels[]=ready-to-code"
+
+# Verify suppression message appears in stdout.
+run_test_stdout "gfi-suppression-logged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Typo in code","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_typo"},"comment":"## Triage Summary\n\nGood first issue.","label_actions":{"reason":"Good for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "Suppressing ready-to-code"
 
 # --- Summary ---
 
