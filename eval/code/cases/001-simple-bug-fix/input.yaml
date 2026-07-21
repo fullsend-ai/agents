@@ -1,0 +1,29 @@
+forge: github
+fixture:
+  type: issue
+  title: "days_until() returns wrong count — off by one"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    The `days_until()` function in `datemath/calc.py` returns a count that is
+    one less than expected. For example, `days_until("2025-01-01", "2025-01-03")`
+    returns `2` but should return `3` (Jan 1, Jan 2, Jan 3 — three days).
+
+    **Expected behavior:**
+    `days_until(start, end)` should return the number of days in the range
+    [start, end] inclusive. The docstring says "inclusive count" but the
+    implementation only subtracts the dates without adding 1.
+
+    **Steps to reproduce:**
+    ```python
+    from datemath.calc import days_until
+    print(days_until("2025-01-01", "2025-01-03"))  # prints 2, expected 3
+    ```
+
+    **Failing test:**
+    `test_calc.py::test_days_until_inclusive` fails — it expects 3 but gets 2.
+
+    **Environment:**
+    - Python 3.12
+    - No external dependencies

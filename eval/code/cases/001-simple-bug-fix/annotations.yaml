@@ -1,0 +1,38 @@
+# Expected behavior after the code agent runs on this issue.
+state: open
+
+labels:
+  required: []
+  forbidden: []
+
+max_turns: 40
+max_cost_usd: 5.00
+
+code_expectations: |
+  This is a trivial off-by-one bug in datemath/calc.py. The fix is a
+  single-character change: add `+ 1` to the return value on line 24.
+
+  The correct fix:
+    return (e - s).days + 1
+
+  What a strong implementation should do:
+
+  1. Identify that `days_until()` uses exclusive counting (subtracting dates
+     gives the delta, not the inclusive count). The docstring explicitly says
+     "inclusive count" but the code doesn't add 1.
+
+  2. Fix the off-by-one by adding `+ 1` to the return value in
+     `datemath/calc.py`. This is a one-line change.
+
+  3. Run the existing tests (`pytest`) to verify the fix. All five tests
+     in `tests/test_calc.py` should pass after the fix. Before the fix,
+     four tests fail (only `test_days_until_raises_on_reversed` passes).
+
+  4. The commit should be minimal — only `datemath/calc.py` needs to change.
+     No new files, no refactoring, no test changes needed (the tests are
+     already correct and just waiting for the code fix).
+
+  A score of 5 requires: correct one-line fix, tests passing, minimal diff.
+  A score of 3 is appropriate if the fix is correct but includes unnecessary
+  changes (e.g., refactoring, adding redundant tests, modifying unrelated code).
+  A score of 1 if no fix is attempted or the fix is wrong.
