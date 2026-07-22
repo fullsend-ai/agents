@@ -197,7 +197,7 @@ Before writing any code, understand how this repository works:
 Determine:
 - Test command (e.g., `make test`, `go test ./...`)
 - Lint command (e.g., `make lint`, `pre-commit run --files`)
-- Commit conventions (message format, signing)
+- Commit conventions (message format)
 
 ### 4. Plan fixes
 
