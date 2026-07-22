@@ -354,19 +354,44 @@ fi
 
 # ---------------------------------------------------------------------------
 # Human-approval check: when the agent approved but was downgraded due to
-# protected paths, check whether a human has already submitted an APPROVED
-# review on the current HEAD SHA. If so, the protected-path requirement is
-# satisfied and the outcome can be ready-for-merge.
+# protected paths, check whether an authorized human has already submitted
+# an APPROVED review on the current HEAD SHA. If so, the protected-path
+# requirement is satisfied and the outcome can be ready-for-merge.
+#
+# Authorization: requires author_association of OWNER, MEMBER, or
+# COLLABORATOR (i.e. the reviewer must have write access to the repo).
+# The check also excludes bot accounts and reduces to each reviewer's
+# latest review to handle "approve then request changes" workflows.
+#
+# Kill switch: set REVIEW_HUMAN_APPROVAL_OVERRIDE=false to disable.
 # ---------------------------------------------------------------------------
+REVIEW_HUMAN_APPROVAL_OVERRIDE="${REVIEW_HUMAN_APPROVAL_OVERRIDE:-true}"
 HAS_HUMAN_APPROVAL=false
-if [ "${DOWNGRADED}" = "true" ]; then
-  HUMAN_APPROVALS=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" \
-    --paginate 2>/dev/null \
-    | jq -s --arg sha "${PR_HEAD_SHA}" \
-      'add // [] | [.[] | select(.state == "APPROVED" and .user.type == "User" and (.user.login | endswith("[bot]") | not) and .commit_id == $sha)] | length') || HUMAN_APPROVALS=0
-  if [ "${HUMAN_APPROVALS}" -gt 0 ]; then
-    echo "Human APPROVED review found on HEAD SHA ${PR_HEAD_SHA} — protected-path requirement satisfied"
-    HAS_HUMAN_APPROVAL=true
+if [ "${DOWNGRADED}" = "true" ] && [ "${REVIEW_HUMAN_APPROVAL_OVERRIDE}" = "true" ]; then
+  # TOCTOU mitigation: re-fetch HEAD SHA to ensure it hasn't moved since
+  # script start. If it changed, skip the check (fall back to requires-manual-review).
+  CURRENT_HEAD_SHA=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --json headRefOid --jq '.headRefOid' 2>/dev/null) || CURRENT_HEAD_SHA=""
+  if [ -n "${CURRENT_HEAD_SHA}" ] && [ "${CURRENT_HEAD_SHA}" != "${PR_HEAD_SHA}" ]; then
+    echo "HEAD SHA changed during run (${PR_HEAD_SHA} → ${CURRENT_HEAD_SHA}) — skipping human-approval check"
+  else
+    HUMAN_APPROVALS=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" \
+      --paginate 2>/dev/null \
+      | jq -s --arg sha "${PR_HEAD_SHA}" \
+        'add // []
+        | group_by(.user.login)
+        | map(sort_by(.submitted_at) | last)
+        | [.[] | select(
+            .state == "APPROVED"
+            and (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
+            and (.user.login | endswith("[bot]") | not)
+            and .commit_id == $sha
+          )]
+        | length') || HUMAN_APPROVALS=0
+    if [ "${HUMAN_APPROVALS}" -gt 0 ]; then
+      echo "Human APPROVED review found on HEAD SHA ${PR_HEAD_SHA} — protected-path requirement satisfied"
+      HAS_HUMAN_APPROVAL=true
+    fi
   fi
 fi
 
