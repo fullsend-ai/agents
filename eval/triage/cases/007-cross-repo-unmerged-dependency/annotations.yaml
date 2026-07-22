@@ -36,9 +36,10 @@ triage_expectations: |
   3. Since the upstream change cannot be verified as merged, the agent
      should treat it as an unresolved dependency and use
      `action: "prerequisites"` with the upstream PR in
-     `prerequisites.existing`, or flag the unverified dependency in
-     the comment. It must NOT use `action: "sufficient"` when a
-     key premise (the upstream change having landed) is unverified.
+     `prerequisites.existing`, while also flagging the unverified
+     dependency explicitly in the comment text. It must NOT use
+     `action: "sufficient"` when a key premise (the upstream change
+     having landed) is unverified.
 
   4. The agent's comment should present the upstream change status as
      unverified rather than echoing the issue body's assertion that
