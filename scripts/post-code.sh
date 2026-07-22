@@ -700,7 +700,7 @@ fi
 # Resolve target branch (ADR 0053)
 #
 # Priority: agent output > allowed-list validation > auto-detect default
-# The agent writes its chosen branch to code-result.json. The post-script
+# The agent writes its chosen branch to agent-result.json. The post-script
 # validates it against CODE_ALLOWED_TARGET_BRANCHES (comma-separated list
 # or "*" for any). When unset, only the auto-detected default branch is
 # allowed. Falls back to "main" if the API call fails.
@@ -708,8 +708,8 @@ fi
 AGENT_TARGET=""
 RESULT_FILE=""
 for dir in "${RUN_DIR}"/iteration-*/output; do
-  if [ -f "${dir}/code-result.json" ]; then
-    RESULT_FILE="${dir}/code-result.json"
+  if [ -f "${dir}/agent-result.json" ]; then
+    RESULT_FILE="${dir}/agent-result.json"
   fi
 done
 if [ -n "${RESULT_FILE}" ]; then

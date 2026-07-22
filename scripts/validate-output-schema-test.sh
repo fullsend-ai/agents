@@ -108,6 +108,54 @@ run_test "prerequisites-malformed-url-in-existing" \
   '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[{"url":"not-a-url"}],"create":[]},"comment":"Blocked."}' \
   "false"
 
+# --- Fallback removal (issue #376) ---
+# Verify that "result.json" is NOT accepted as a fallback for agent-result.json.
+# The fallback was removed to enforce a single output filename.
+
+run_test_fallback_removed() {
+  local test_name="$1"
+  local json_content="$2"
+  local expect_output="${3:-}"
+
+  local test_dir="${TMPDIR}/${test_name}"
+  mkdir -p "${test_dir}/output"
+  # Write only result.json (the old fallback name), not agent-result.json
+  echo "${json_content}" > "${test_dir}/output/result.json"
+
+  local exit_code=0
+  FULLSEND_OUTPUT_SCHEMA="${SCHEMA}" \
+    bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  local passed=true
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected FAIL but got PASS (fallback should be removed)"
+    passed=false
+  fi
+
+  if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
+    echo "  actual output:"
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
+  fi
+
+  if [[ "${passed}" == "true" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_test_fallback_removed "fallback-result-json-rejected" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
+  "agent-result.json not found"
+
+# Verify that default filename (agent-result.json) works without FULLSEND_OUTPUT_FILE set
+# (this is the standard path after harness configs no longer set FULLSEND_OUTPUT_FILE)
+run_test "default-filename-without-env-override" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
+  "true"
+
 # --- FULLSEND_OUTPUT_FILE override ---
 
 run_test_custom_filename() {
