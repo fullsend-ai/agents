@@ -375,6 +375,12 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock gh: handle specific subcommands, log everything else.
 
+# gh api repos/.../pulls/.../reviews (idempotency guard in retry loop)
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/reviews"* ]] && [[ "\$*" == *"--jq"* ]]; then
+  echo "0"
+  exit 0
+fi
+
 # gh pr view ... --json state,isDraft → JSON with both fields.
 # MOCK_PR_IS_DRAFT can be set to "true" to simulate a draft PR.
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
@@ -732,8 +738,41 @@ run_label_test_no_pattern "no-op-skip-ready-for-merge-removal" \
 RETRY_MOCK_BIN="${TMPDIR}/retry-bin"
 mkdir -p "${RETRY_MOCK_BIN}"
 
-# Copy the gh mock (it has GH_LOG baked in from the heredoc expansion).
-cp "${MOCK_BIN}/gh" "${RETRY_MOCK_BIN}/gh"
+# Build retry-aware gh mock: extends the base mock with a reviews API
+# handler that returns an empty array (no existing reviews), required by
+# the idempotency guard added to the retry loop.
+cat > "${RETRY_MOCK_BIN}/gh" <<RETRYGHMOCKEOF
+#!/usr/bin/env bash
+
+# gh api repos/.../pulls/.../reviews (idempotency guard)
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/reviews"* ]] && [[ "\$*" == *"--jq"* ]]; then
+  echo "0"
+  exit 0
+fi
+
+# gh pr view ... --json state,isDraft
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
+  DRAFT="\${MOCK_PR_IS_DRAFT:-false}"
+  echo "{\"state\":\"OPEN\",\"isDraft\":\${DRAFT}}"
+  exit 0
+fi
+
+# gh pr view ... --json files
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
+  echo "src/main.go"
+  exit 0
+fi
+
+# gh api repos/.../labels --paginate (list repo labels)
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser"
+  exit 0
+fi
+
+# Log all other calls
+echo "gh \$*" >> "${GH_LOG}"
+RETRYGHMOCKEOF
+chmod +x "${RETRY_MOCK_BIN}/gh"
 
 # Retry-aware fullsend mock. Uses:
 #   MOCK_FULLSEND_COUNTER    — path to a file tracking invocation count
@@ -879,6 +918,120 @@ run_retry_test "retry-exhaustion-logging" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
   "1,1,1" "1" "3" \
   "all retries exhausted"
+
+# --- Default backoff and invalid POST_REVIEW_RETRY_DELAY tests ---
+# These tests do NOT use run_retry_test because it hardcodes
+# POST_REVIEW_RETRY_DELAY=0. Instead they run the script directly with
+# custom env to exercise the production default backoff path and the
+# validation of invalid override values.
+
+# Default backoff (POST_REVIEW_RETRY_DELAY unset): verify "retrying in 5s"
+# appears in stdout on first retry.
+_test_name="default-backoff-unset"
+_run_dir="${TMPDIR}/run-${_test_name}"
+mkdir -p "${_run_dir}/iteration-1/output"
+echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  > "${_run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+_counter_file="${TMPDIR}/counter-${_test_name}"
+rm -f "${_counter_file}"
+_exit_code=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_run_dir}"
+  export PATH="${RETRY_MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token"
+  export PR_NUMBER="99"
+  export REPO_FULL_NAME="test-org/test-repo"
+  unset POST_REVIEW_RETRY_DELAY
+  export MOCK_FULLSEND_COUNTER="${_counter_file}"
+  export MOCK_FULLSEND_EXIT_CODES="1,0"
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-${_test_name}.log" 2>&1 || _exit_code=$?
+if [ "${_exit_code}" -ne 0 ]; then
+  echo "FAIL: ${_test_name} — expected exit 0, got ${_exit_code}"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "retrying in 5s" "${TMPDIR}/stdout-${_test_name}.log"; then
+  echo "FAIL: ${_test_name} — expected 'retrying in 5s' in stdout"
+  echo "Actual stdout:"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${_test_name}"
+fi
+
+# Invalid POST_REVIEW_RETRY_DELAY (empty string): should fall through to
+# progressive default instead of crashing.
+_test_name="invalid-delay-empty-string"
+_run_dir="${TMPDIR}/run-${_test_name}"
+mkdir -p "${_run_dir}/iteration-1/output"
+echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  > "${_run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+_counter_file="${TMPDIR}/counter-${_test_name}"
+rm -f "${_counter_file}"
+_exit_code=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_run_dir}"
+  export PATH="${RETRY_MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token"
+  export PR_NUMBER="99"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export POST_REVIEW_RETRY_DELAY=""
+  export MOCK_FULLSEND_COUNTER="${_counter_file}"
+  export MOCK_FULLSEND_EXIT_CODES="1,0"
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-${_test_name}.log" 2>&1 || _exit_code=$?
+if [ "${_exit_code}" -ne 0 ]; then
+  echo "FAIL: ${_test_name} — expected exit 0, got ${_exit_code} (script crashed on empty delay)"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "retrying in 5s" "${TMPDIR}/stdout-${_test_name}.log"; then
+  echo "FAIL: ${_test_name} — expected 'retrying in 5s' in stdout (progressive default)"
+  echo "Actual stdout:"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${_test_name}"
+fi
+
+# Invalid POST_REVIEW_RETRY_DELAY (non-numeric): should fall through to
+# progressive default instead of crashing.
+_test_name="invalid-delay-non-numeric"
+_run_dir="${TMPDIR}/run-${_test_name}"
+mkdir -p "${_run_dir}/iteration-1/output"
+echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  > "${_run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+_counter_file="${TMPDIR}/counter-${_test_name}"
+rm -f "${_counter_file}"
+_exit_code=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_run_dir}"
+  export PATH="${RETRY_MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token"
+  export PR_NUMBER="99"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export POST_REVIEW_RETRY_DELAY="abc"
+  export MOCK_FULLSEND_COUNTER="${_counter_file}"
+  export MOCK_FULLSEND_EXIT_CODES="1,0"
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-${_test_name}.log" 2>&1 || _exit_code=$?
+if [ "${_exit_code}" -ne 0 ]; then
+  echo "FAIL: ${_test_name} — expected exit 0, got ${_exit_code} (script crashed on non-numeric delay)"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "retrying in 5s" "${TMPDIR}/stdout-${_test_name}.log"; then
+  echo "FAIL: ${_test_name} — expected 'retrying in 5s' in stdout (progressive default)"
+  echo "Actual stdout:"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${_test_name}"
+fi
 
 # --- Summary ---
 
