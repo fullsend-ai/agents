@@ -1,0 +1,30 @@
+forge: github
+fixture:
+  type: issue
+  title: "Update config parser to handle new upstream schema format"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    Now that the schema validation overhaul in fullsend-ai/upstream-lib#42
+    has landed, our config parser is out of date. It still expects the old
+    `v1` schema envelope (`{"version": 1, "data": {...}}`) but since
+    upstream-lib switched to the flat format in fullsend-ai/upstream-lib#42,
+    all config files using the new format fail to parse with:
+
+    ```
+    ConfigError: unexpected key "schema_version" at root level
+    ```
+
+    **Expected behavior:**
+    The config parser should accept both the old `v1` envelope and the new
+    flat format introduced by the upstream change.
+
+    **Steps to reproduce:**
+    1. Create a config file using the new flat format from upstream-lib
+    2. Run `./bin/parse-config config.yaml`
+    3. Observe `ConfigError`
+
+    **Environment:**
+    - OS: Ubuntu 22.04
+    - Version: main branch (latest)
