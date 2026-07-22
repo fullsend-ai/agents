@@ -6,10 +6,10 @@ fixture:
     ## Bug Report
 
     **What happened:**
-    Now that the schema validation overhaul in fullsend-ai/upstream-lib#42
+    Now that the schema validation overhaul in nonexistent-org-eval-fixture/upstream-lib#42
     has landed, our config parser is out of date. It still expects the old
     `v1` schema envelope (`{"version": 1, "data": {...}}`) but since
-    upstream-lib switched to the flat format in fullsend-ai/upstream-lib#42,
+    upstream-lib switched to the flat format in nonexistent-org-eval-fixture/upstream-lib#42,
     all config files using the new format fail to parse with:
 
     ```

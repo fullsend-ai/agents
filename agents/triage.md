@@ -66,30 +66,27 @@ gh pr list --repo OTHER-ORG/OTHER-REPO --state open --search "relevant keywords"
 
 If a cross-repo search fails or returns an error (e.g., due to access restrictions), note this in your reasoning as an information gap rather than concluding no blocking work exists.
 
-**Verify merge status of referenced PRs and issues (HARD CONSTRAINT):** For every PR or issue reference found in the issue body — whether cross-repo (e.g., `org/repo#N`) or same-repo (e.g., `#N`) — verify its current state before describing it as completed or landed. If a reference uses shorthand without an owner segment (e.g., `repo#N`), resolve the fully-qualified `owner/repo` before constructing the `--repo` argument — bare shorthand is not a valid `--repo` value.
+**Verify merge status of referenced PRs and issues (HARD CONSTRAINT):** For every PR or issue reference found in the issue body or its comments — whether cross-repo (e.g., `org/repo#N`) or same-repo (e.g., `#N`) — verify its current state before describing it as completed or landed. If a reference uses shorthand without an owner segment (e.g., `repo#N`), resolve the fully-qualified `owner/repo` before constructing the `--repo` argument — bare shorthand is not a valid `--repo` value.
 
 ```
 # Check state (works for both issues and PRs):
 gh issue view N --repo org/repo --json state,stateReason
-# For PR references where merge status matters, also check mergedAt:
-gh pr view N --repo org/repo --json state,mergedAt
 ```
 
-Note: `gh issue view` resolves both issues and PRs, so use it as the initial check. Only call `gh pr view` when you need the `mergedAt` timestamp. If `gh pr view` fails with a GraphQL error, the reference is likely an issue — fall back to the `gh issue view` result.
+Note: `gh issue view` resolves both issues and PRs, so use it as the single verification command. The `state` field returns `OPEN`, `CLOSED`, or `MERGED` (PRs only). The `stateReason` field distinguishes issue closure reasons (`COMPLETED`, `NOT_PLANNED`, `DUPLICATE`); it is empty for PRs.
 
 Interpret the results as follows:
 
-- **PR is `MERGED`** (mergedAt is non-null): the referenced change has landed. Proceed accordingly.
-- **PR is `OPEN`**: the referenced change is a pending blocker. Note it as a blocking dependency in your `reasoning` (and in `prerequisites.existing` if the action becomes `prerequisites`), and evaluate whether the issue should use `action: "prerequisites"` instead of `action: "sufficient"`.
-- **PR is `CLOSED` without merging** (state is CLOSED, mergedAt is null): the referenced work was abandoned. The issue body's premise about this change is contradicted, not merely unverified — flag this explicitly in your `reasoning`.
-- **Issue is `CLOSED` with `stateReason: "COMPLETED"`**: the referenced issue was resolved. Proceed accordingly.
-- **Issue is `CLOSED` with `stateReason: "NOT_PLANNED"` or `"DUPLICATE"`**: the referenced issue was abandoned or duplicated, not completed. Treat the issue body's completion claim as contradicted.
-- **Issue is `OPEN`**: the referenced work is still in progress — treat it as a potential blocker.
+- **`MERGED`**: the referenced change has landed. Proceed accordingly.
+- **`OPEN`**: the referenced work is still in progress — treat it as a potential blocker. Note it as a blocking dependency in your `reasoning` (and in `prerequisites.existing` if the action becomes `prerequisites`), and evaluate whether the issue should use `action: "prerequisites"` instead of `action: "sufficient"`.
+- **`CLOSED` with `stateReason: "COMPLETED"`**: the referenced issue was resolved. Proceed accordingly.
+- **`CLOSED` with `stateReason: "NOT_PLANNED"` or `"DUPLICATE"`**: the referenced issue was abandoned or duplicated, not completed. Treat the completion claim as contradicted.
+- **`CLOSED` with empty `stateReason`**: likely a PR closed without merging — the referenced work was abandoned. The premise about this change is contradicted, not merely unverified — flag this explicitly in your `reasoning`.
 - **Verification command fails** (e.g., due to access restrictions): note this in your `reasoning` as an information gap. A failed or inconclusive verification means the reference's status is unknown — do not treat it as sufficient grounds for `action: "sufficient"`.
 
-Do not treat any reference as a completed change based solely on the issue body's framing — independently confirm the state.
+Do not treat any reference as a completed change based solely on framing in the issue body or its comments — independently confirm the state.
 
-**Anti-parroting rule (HARD CONSTRAINT):** Do not echo the issue body's temporal framing about referenced changes without verification. Issue authors may describe unmerged or abandoned work using past tense ("since X changed…", "now that Y landed…"). Verify each such claim against the actual state of the referenced PR or issue. If you cannot verify a claim, present it as unverified rather than restating it as fact.
+**Anti-parroting rule (HARD CONSTRAINT):** Do not echo temporal framing about referenced changes from the issue body or its comments without verification. Issue authors or commenters may describe unmerged or abandoned work using past tense ("since X changed…", "now that Y landed…"). Verify each such claim against the actual state of the referenced PR or issue. If you cannot verify a claim, present it as unverified rather than restating it as fact.
 
 ### 2c. Check existing prerequisites
 

@@ -1,8 +1,8 @@
 # The issue body claims upstream-lib#42 "has landed" using past-tense
-# framing, but the agent cannot verify this claim (the referenced repo
-# does not exist in the eval org). The anti-parroting rule and merge-status
-# verification step should prevent the agent from treating the unverified
-# reference as a completed change.
+# framing, but the agent cannot verify this claim (the referenced org
+# does not exist). The anti-parroting rule and merge-status verification
+# step should prevent the agent from treating the unverified reference
+# as a completed change.
 state: open
 
 labels:
@@ -18,10 +18,10 @@ triage_expectations: |
   This case tests the cross-repo merge-status verification and
   anti-parroting rules added to address the #191 regression.
 
-  The issue body references fullsend-ai/upstream-lib#42 using past-tense
-  framing ("now that ... has landed", "since upstream-lib switched to").
-  The referenced repo/PR does not exist in the eval org, so the agent
-  cannot verify the claim via `gh pr view` or `gh issue view`.
+  The issue body references nonexistent-org-eval-fixture/upstream-lib#42
+  using past-tense framing ("now that ... has landed", "since
+  upstream-lib switched to"). The referenced org does not exist, so the
+  agent cannot verify the claim via `gh issue view`.
 
   Key observations a strong triage should surface:
 
@@ -46,8 +46,10 @@ triage_expectations: |
 
   A score of 1 means the agent accepted the past-tense framing and
   triaged as sufficient without verifying the upstream PR.
-  A score of 3 means the agent noted the cross-repo reference but
-  still concluded sufficient without attempting verification.
+  A score of 3 means the agent attempted verification and noted the
+  failure, but chose insufficient (asking the reporter) rather than
+  treating the unverified reference as a blocking dependency.
   A score of 5 means the agent attempted to verify the upstream PR,
   noted the verification failure, flagged the unverified dependency,
-  and chose prerequisites or insufficient rather than sufficient.
+  and chose prerequisites rather than sufficient — matching the
+  labels.required assertion (blocked).
