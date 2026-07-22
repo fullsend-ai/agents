@@ -66,6 +66,19 @@ gh pr list --repo OTHER-ORG/OTHER-REPO --state open --search "relevant keywords"
 
 If a cross-repo search fails or returns an error (e.g., due to access restrictions), note this in your reasoning as an information gap rather than concluding no blocking work exists.
 
+**Verify merge status of cross-repo references (MANDATORY):** For every cross-repo PR or issue reference found in the issue body (e.g., `org/repo#N`, `fullsend#N`), verify its current state before describing it as completed or landed:
+
+```
+# For PR references:
+gh pr view N --repo org/repo --json state,merged
+# For issue references:
+gh issue view N --repo org/repo --json state
+```
+
+If the referenced PR is not yet merged, note it as a potential blocking dependency in the triage summary and evaluate whether the issue should use `action: "prerequisites"` instead of `action: "sufficient"`. Do not treat a cross-repo reference as a completed change based solely on the issue body's framing — independently confirm the state. If the verification command fails (e.g., due to access restrictions), note this in your reasoning as an information gap.
+
+**Anti-parroting rule:** Do not echo the issue body's temporal framing about cross-repo changes without verification. Issue authors may describe unmerged work using past tense ("since X changed…", "now that Y landed…"). Verify each such claim against the actual state of the referenced PR or issue. If you cannot verify a claim, present it as unverified rather than restating it as fact.
+
 ### 2c. Check existing prerequisites
 
 If the issue already has a `blocked` label, check whether the previously identified prerequisites (linked in prior triage comments) are still open. Fetch the full context of each prerequisite issue or PR to understand its current state:
