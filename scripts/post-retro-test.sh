@@ -42,14 +42,27 @@ done
 
 echo "gh $*" >> "${GH_LOG}"
 
-# Label creation calls — succeed silently (mimics --force behavior).
+# Label creation calls — controlled by GH_MOCK_LABEL_FAIL.
 if [[ "$1" == "label" && "$2" == "create" ]]; then
+  if [[ "${GH_MOCK_LABEL_FAIL:-}" == "1" ]]; then
+    echo "HTTP 403: Resource not accessible by integration" >&2
+    exit 1
+  fi
   exit 0
 fi
 
 # Issue creation calls — return a fake issue URL.
 if [[ "$1" == "issue" && "$2" == "create" ]]; then
   echo "https://github.com/test-org/target-repo/issues/99"
+  exit 0
+fi
+
+# Issue view calls — return label status based on GH_MOCK_ISSUE_LABELS.
+if [[ "$1" == "issue" && "$2" == "view" ]]; then
+  if [[ "${GH_MOCK_ISSUE_LABELS:-present}" == "none" ]]; then
+    exit 0
+  fi
+  echo "ready-for-triage"
   exit 0
 fi
 
@@ -94,6 +107,8 @@ export GH_LOG="${GH_LOG}"
 export GH_STDIN_LOG="${GH_STDIN_LOG}"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export GH_TOKEN="fake-token"
+export GH_MOCK_LABEL_FAIL=""
+export GH_MOCK_ISSUE_LABELS=""
 
 # Fixture: a valid agent result with one proposal.
 FIXTURE_ONE_PROPOSAL='{
@@ -618,6 +633,37 @@ if [[ ${POSTED_LEN} -gt 65536 ]]; then
 else
   echo "PASS: comment-truncated-length"
 fi
+
+# Label creation fails → WARNING logged, issue still created.
+export GH_MOCK_LABEL_FAIL="1"
+export GH_MOCK_ISSUE_LABELS="none"
+run_test_stdout "label-create-fails-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "WARNING: failed to create/verify ready-for-triage label"
+
+run_test "label-create-fails-issue-created" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create"
+export GH_MOCK_LABEL_FAIL=""
+export GH_MOCK_ISSUE_LABELS=""
+
+# Label not applied after creation → WARNING logged.
+export GH_MOCK_ISSUE_LABELS="none"
+run_test_stdout "label-not-applied-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "WARNING: ready-for-triage label not applied to"
+export GH_MOCK_ISSUE_LABELS=""
+
+# Happy path → no WARNING lines about label failures.
+run_test_stdout_absent "happy-path-no-label-create-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete." \
+  "WARNING: failed to create/verify ready-for-triage label"
+
+run_test_stdout_absent "happy-path-no-label-not-applied-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete." \
+  "WARNING: ready-for-triage label not applied"
 
 # --- Results ---
 
