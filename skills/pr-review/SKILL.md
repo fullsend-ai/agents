@@ -775,7 +775,12 @@ Protected paths (kept in sync with `post-review.sh`):
 For each file in the PR diff, check whether its path starts with (or
 exactly matches) any entry in the list above.
 
-If **any** protected files are modified:
+If **any** protected files are modified, you MUST emit a structured
+finding with `category: "protected-path"`. This is not optional —
+the `review-result.schema.json` schema rejects `action: "approve"`
+when any finding has `category: "protected-path"`, so omitting the
+finding is the only way an approval can slip through. Always emit
+the finding.
 
 1. **Insufficient context** — the PR has no linked issue, or the PR
    description does not explain why the protected files are being
@@ -791,11 +796,13 @@ If **any** protected files are modified:
    approval is always required for protected-path changes, regardless
    of context.
 
-In either case, the presence of a `protected-path` finding at high or
-medium severity means the outcome MUST NOT be `approve`.
+In either case, the presence of a `protected-path` finding means the
+outcome MUST NOT be `approve`. The schema enforces this — validation
+will reject the result if `action` is `approve` and any finding has
+`category: "protected-path"`.
 
-- For high severity, the finding MUST be `request-changes`
-- For medium severity (with sufficient context), the finding MUST be
+- For high severity, the outcome MUST be `request-changes`
+- For medium severity (with sufficient context), the outcome MUST be
   `comment-only`
 
 The `post-review.sh` script independently downgrades approvals on

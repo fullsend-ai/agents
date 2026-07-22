@@ -374,6 +374,32 @@ run_test_custom_filename "review-approve-valid" \
   "${REVIEW_SCHEMA}" \
   "true"
 
+# --- review-result.schema.json protected-path constraint ---
+
+run_test_custom_filename "review-approve-with-protected-path-rejected" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Approved.","findings":[{"severity":"high","category":"protected-path","file":".github/workflows/ci.yml","description":"PR modifies protected path."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "review-comment-with-protected-path-valid" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Protected paths detected.","findings":[{"severity":"medium","category":"protected-path","file":"CODEOWNERS","description":"PR modifies protected path."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-request-changes-with-protected-path-valid" \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Protected paths.","findings":[{"severity":"high","category":"protected-path","file":"scripts/deploy.sh","description":"PR modifies protected path."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-approve-no-protected-path-valid" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"LGTM.","findings":[{"severity":"low","category":"style","file":"main.go","description":"Minor style nit."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
 # --- Summary ---
 
 echo ""
