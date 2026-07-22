@@ -26,7 +26,7 @@
 #   6. Iteration-cap warning label
 #   7. Summary
 #
-# After pushing, this script processes fix-result.json to:
+# After pushing, this script processes agent-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
 #   - Apply labels (needs-human) if the iteration cap is approaching
 #
@@ -95,7 +95,7 @@ BRANCH="$(git branch --show-current)"
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
   gha_echo warning "Agent did not produce a commit on a feature branch (current: '${BRANCH:-detached HEAD}')"
   gha_echo warning "Processing structured output only (no push)."
-  # Still process fix-result.json to post a summary comment.
+  # Still process agent-result.json to post a summary comment.
   NO_PUSH=true
 else
   NO_PUSH=false
@@ -349,7 +349,7 @@ ${FORCE_PUSH_OUTPUT}"
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Process structured output (fix-result.json)
+# 5. Process structured output (agent-result.json)
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
@@ -370,27 +370,20 @@ if [ ! -f "${PROCESS_SCRIPT}" ]; then
   fi
 fi
 
-# Find fix-result.json — prefer the validated iteration when set.
+# Find agent-result.json — prefer the validated iteration when set.
 # RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
 # before we cd'd into REPO_DIR. The agent writes its structured output to
-# iteration-<N>/output/fix-result.json within runDir.
+# iteration-<N>/output/agent-result.json within runDir.
 #
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
 # on the runner — not by the sandbox or the agent. No containment check
 # (realpath / prefix guard) is applied here; the value is trusted from the
 # external harness. If the trust model changes, add a realpath prefix check.
 if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
-  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/fix-result.json" ]; then
-    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/fix-result.json"
-  elif [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/result.json" ]; then
-    # NOTE: This fallback is currently unreachable in production.
-    # validate-output-schema.sh only accepts result.json when _output_file is
-    # "agent-result.json" (the default). fix.yaml sets FULLSEND_OUTPUT_FILE to
-    # "fix-result.json", so the guard is false and a bare result.json will never
-    # become the validated iteration's output. Kept as defensive code.
-    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
+  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
   else
-    gha_echo error "FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither fix-result.json nor result.json"
+    gha_echo error "FULLSEND_VALIDATED_ITERATION_DIR is set but does not contain agent-result.json"
     exit 1
   fi
 else
@@ -398,24 +391,24 @@ else
   # iteration's output (glob order = naturally ascending iteration numbers).
   RESULT_FILE=""
   for dir in "${RUN_DIR}"/iteration-*/output; do
-    if [ -f "${dir}/fix-result.json" ]; then
-      RESULT_FILE="${dir}/fix-result.json"
+    if [ -f "${dir}/agent-result.json" ]; then
+      RESULT_FILE="${dir}/agent-result.json"
     fi
   done
 fi
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
-  gha_echo warning "No fix-result.json found — skipping summary comment"
+  gha_echo warning "No agent-result.json found — skipping summary comment"
 elif [ ! -f "${PROCESS_SCRIPT}" ]; then
   gha_echo warning "process-fix-result.py not found at ${PROCESS_SCRIPT} — skipping"
 else
-  # Scan fix-result.json for secrets before posting content as a PR comment.
+  # Scan agent-result.json for secrets before posting content as a PR comment.
   # The agent could have been tricked into embedding sensitive data in the
   # structured output via prompt injection in the review body.
   if command -v gitleaks >/dev/null 2>&1; then
-    echo "Scanning fix-result.json for secrets before posting..."
+    echo "Scanning agent-result.json for secrets before posting..."
     SCAN_DIR="$(mktemp -d)"
-    cp "${RESULT_FILE}" "${SCAN_DIR}/fix-result.json"
+    cp "${RESULT_FILE}" "${SCAN_DIR}/agent-result.json"
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
       rm -rf "${SCAN_DIR}"
       post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
@@ -423,7 +416,7 @@ else
     rm -rf "${SCAN_DIR}"
   fi
 
-  echo "Processing fix-result.json: ${RESULT_FILE}"
+  echo "Processing agent-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
   python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then

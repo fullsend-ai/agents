@@ -202,7 +202,7 @@ Write the structured output file with the target branch now. Write only
 mkdir -p "${FULLSEND_OUTPUT_DIR}"
 
 jq -n --arg tb "<branch-name>" '{target_branch: $tb}' \
-  > "${FULLSEND_OUTPUT_DIR}/code-result.json"
+  > "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 The post-script validates `target_branch` against allowed branches.
@@ -231,7 +231,7 @@ gh pr list --head "<branch-name>" --json number,state --jq '.[0]'
   tells the post-script there is nothing new to push.
 
   ```bash
-  fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+  fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
   ```
 - **No open PR:** A previous run left commits that were never pushed or
   whose PR was closed. Check out the branch and review the delta:
@@ -296,7 +296,7 @@ Before planning, determine what kind of work this issue requires:
   stop cleanly:
 
   ```bash
-  fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+  fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
   ```
 
 ### 7. Verify the problem exists
@@ -313,7 +313,7 @@ Before implementing, confirm the reported behavior is still present:
    post-script to report accordingly.
 
    ```bash
-   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
    ```
 
 For feature requests and test-only tasks, skip this step — there is no bug to
@@ -599,7 +599,7 @@ If the retry limit is reached and tests or linters still fail, do not
 commit. Validate structured output, then stop:
 
 ```bash
-fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 **9d. Self-review**
@@ -734,7 +734,7 @@ Closes #<number>"
 ```
 
 Keep commit body concise (respects gitlint line-length limits). PR body
-in code-result.json holds the template-structured description if needed.
+in agent-result.json holds the template-structured description if needed.
 
 **After committing, validate the commit message if gitlint is available:**
 
@@ -799,14 +799,14 @@ pr_body=$(cat <<'PRBODY'
 PRBODY
 )
 jq --arg pb "$pr_body" '. + {pr_body: $pb}' \
-  "${FULLSEND_OUTPUT_DIR}/code-result.json" > "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" \
-  && mv "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/code-result.json"
+  "${FULLSEND_OUTPUT_DIR}/agent-result.json" > "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" \
+  && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 ### 11. Validate structured output
 
 **This step is MANDATORY.** The harness runs a validation loop that
-checks `$FULLSEND_OUTPUT_DIR/code-result.json` against
+checks `$FULLSEND_OUTPUT_DIR/agent-result.json` against
 `schemas/code-result.schema.json`. If validation fails, the harness
 retries the agent. Producing a valid output file is not optional.
 
@@ -815,7 +815,7 @@ and contains the correct target branch:
 
 ```bash
 echo "::notice::STEP 11: Validate structured output"
-cat "${FULLSEND_OUTPUT_DIR}/code-result.json"
+cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 The file must be valid JSON with `target_branch` (required) and
@@ -835,7 +835,7 @@ cause validation to fail.
 Validate the output against the schema:
 
 ```bash
-fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 If validation fails, read the error output, fix the JSON file, and

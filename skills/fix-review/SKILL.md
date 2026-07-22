@@ -97,7 +97,7 @@ echo "FIX_ITERATION=${FIX_ITERATION:-1}"
 - `PR_NUMBER` — which PR to fix (required)
 - `TRIGGER_SOURCE` — GitHub username that triggered the fix (e.g.,
   `"orgname-review[bot]"` or `"alice"`). **This is a username, not the
-  value you write to `fix-result.json`.** Derive the normalized trigger
+  value you write to `agent-result.json`.** Derive the normalized trigger
   type now — you will need it in step 9:
   - If `TRIGGER_SOURCE` ends in `[bot]` → trigger type is `"bot"`
   - Otherwise → trigger type is `"human"`
@@ -379,7 +379,7 @@ which gitlint &>/dev/null && gitlint --commit HEAD
 
 **This step is MANDATORY.** The post-script cannot function without it.
 
-Write a JSON file to `$FULLSEND_OUTPUT_DIR/fix-result.json`:
+Write a JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 
 ```json
 {
@@ -441,7 +441,7 @@ contain at least one item.
 Write the file using `Bash`:
 
 ```bash
-cat > "${FULLSEND_OUTPUT_DIR}/fix-result.json" << 'FIXEOF'
+cat > "${FULLSEND_OUTPUT_DIR}/agent-result.json" << 'FIXEOF'
 { ... your JSON ... }
 FIXEOF
 ```
@@ -449,7 +449,7 @@ FIXEOF
 Validate the output against the schema:
 
 ```bash
-fullsend-check-output "${FULLSEND_OUTPUT_DIR}/fix-result.json"
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 If validation fails, read the error output, fix the JSON file, and
