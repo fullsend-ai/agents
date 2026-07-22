@@ -336,17 +336,72 @@ complex PR that triggers all conditions legitimately needs all 6.
   schemas, or CLI args are modified. Skip entirely for PRs that don't
   touch public API surface.
 
+**Re-review dispatch (prior-finding-aware):** When
+`PRIOR_REVIEW_PROVENANCE` is `app-verified` and prior findings exist
+(step 3a), narrow dispatch based on which dimensions had findings:
+
+1. **Dimensions WITH prior findings** (other than `correctness`, which
+   is always full scope — see item 3) — dispatch at normal scope
+   (unchanged behavior). These sub-agents verify the fixes.
+2. **Conditional sub-agents WITHOUT prior findings** (`security`,
+   `intent-coherence`, `docs-currency`, `cross-repo-contracts`) — skip
+   dispatch unless the files changed since the prior review
+   (`changed_since_prior`, step 3d) independently qualify them. On
+   re-review these tests **override** step 3b's triggers for these four
+   dimensions — in particular step 3b's "any non-trivial change"
+   disjunct does NOT apply here. Each test is decided from
+   `changed_since_prior` (a file set — filenames, step 2a):
+   `docs-currency`, `security`, and `cross-repo-contracts` are
+   path/extension checks; `intent-coherence` additionally consults the
+   `diff` and `issue_context` already in the context package (step 3d),
+   since file paths alone cannot establish which changes bear on the
+   issue's claims.
+   - `intent-coherence` — re-qualifies only if `changed_since_prior`
+     includes files implementing behavior the linked issue makes claims
+     about (not merely because a linked issue exists, and not for "any
+     non-trivial change").
+   - `docs-currency` — re-qualifies only if `changed_since_prior`
+     includes documentation files (not merely because the repository
+     contains docs).
+   - `security` / `cross-repo-contracts` — re-qualify only if
+     `changed_since_prior` includes files matching their step 3b path
+     criteria (auth/permissions/secrets/config/data-handling for
+     `security`; public APIs, exported interfaces, schemas, or CLI
+     surface for `cross-repo-contracts`).
+
+   If the incremental delta cannot be enumerated — `changed_since_prior`
+   is `"all"` (the step 2a fallback for a failed compare, >250 commits,
+   or ≥300 files) or was never computed (empty `PRIOR_REVIEW_SHA`) — do
+   NOT skip; re-qualify each dimension per its base step 3b criteria
+   instead.
+3. **Always-included sub-agents WITHOUT prior findings**
+   (`correctness`, `style-conventions`) — `correctness` always
+   dispatches at full scope regardless of prior findings or change size,
+   given its Opus-tier, safety-critical status (step 5): a skipped or
+   under-scoped correctness review is worse than no review at all.
+   `style-conventions` dispatches with a `trivial` scope constraint (≤5
+   tool calls) regardless of change size. Both assignments override the
+   classification-based constraint from step 3e.
+4. **Challenger** — always dispatch (unchanged).
+
+This reuses the existing scope constraint mechanism from step 3e — no
+new infrastructure needed. When `PRIOR_REVIEW_PROVENANCE` is not
+`app-verified` or no prior findings exist, all sub-agents dispatch at
+normal scope (current behavior preserved).
+
 **Dispatch examples:**
 
-| PR type                        | Agents dispatched                                                                |
-|--------------------------------|----------------------------------------------------------------------------------|
-| Implementation plan            | correctness, style-conventions, intent-coherence, docs-currency                  |
-| Typo fix in README             | correctness, style-conventions                                                   |
-| Bug fix in auth middleware     | correctness, security, style-conventions, intent-coherence                       |
-| New API endpoint with tests    | correctness, security, style-conventions, cross-repo-contracts                   |
-| Large refactor across packages | correctness, style-conventions, intent-coherence, docs-currency                  |
-| CI/CD pipeline change          | correctness, security, style-conventions, intent-coherence                       |
-| DB migration + API change      | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
+| PR type                                                  | Agents dispatched                                                                |
+|----------------------------------------------------------|----------------------------------------------------------------------------------|
+| Implementation plan                                      | correctness, style-conventions, intent-coherence, docs-currency                  |
+| Typo fix in README                                       | correctness, style-conventions                                                   |
+| Bug fix in auth middleware                               | correctness, security, style-conventions, intent-coherence                       |
+| New API endpoint with tests                              | correctness, security, style-conventions, cross-repo-contracts                   |
+| Large refactor across packages                           | correctness, style-conventions, intent-coherence, docs-currency                  |
+| CI/CD pipeline change                                    | correctness, security, style-conventions, intent-coherence                       |
+| DB migration + API change                                | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
+| Re-review after fix (prior findings in correctness only) | correctness (full scope), style-conventions (trivial scope), challenger          |
+| Re-review after fix (prior findings in security only)    | correctness (full scope), security (normal scope), style-conventions (trivial scope), challenger |
 
 #### 3d. Prepare context packages
 
@@ -392,6 +447,16 @@ sub-agents must honor — it overrides their default exploration budget.
 | Mechanical / value-only (digest bump, version bump, hash swap, URL update, feature flag toggle) | `"trivial: ≤5 tool calls. Read ONLY the diff and linked issue. Do NOT read project docs, surrounding files, git history, or directory listings. Return findings immediately after scope verification."` |
 | Small non-mechanical (under 20 changed lines, structural)  | `"small: ≤15 tool calls. Read the diff, linked issue, and up to 3 context files directly relevant to the change."` |
 | Standard / large                                           | `"none"` (sub-agent uses its own exploration budget)                                                                                                     |
+
+**Re-review override:** When the re-review dispatch rule (step 3c)
+assigns a scope to an always-included dimension — a `trivial` constraint
+for `style-conventions` (without prior findings), or full scope for
+`correctness` (regardless of prior findings) — that assignment takes
+precedence over the
+classification-based assignment above. This holds even for
+standard/large changes (`style-conventions`) and even when the change
+classifies as mechanical/trivial (`correctness`, which must never be
+down-scoped on re-review).
 
 Include `scope_constraint` in each sub-agent's context package. When
 it is not `"none"`, prepend it to the sub-agent prompt as:
