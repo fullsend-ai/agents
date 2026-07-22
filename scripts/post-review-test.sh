@@ -879,6 +879,14 @@ run_human_approval_test "bot-approval-only-manual-review" \
   "abc123" \
   '[{"state":"APPROVED","user":{"type":"Bot","login":"github-actions[bot]"},"commit_id":"abc123"}]'
 
+# OAuth user-to-server bot (type User but login ends with [bot]) → requires-manual-review
+run_human_approval_test "oauth-bot-login-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"some-app[bot]"},"commit_id":"abc123"}]'
+
 # No approvals at all → requires-manual-review
 run_human_approval_test "no-approvals-manual-review" \
   "${APPROVE_BODY}" \

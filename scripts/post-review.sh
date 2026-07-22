@@ -363,7 +363,7 @@ if [ "${DOWNGRADED}" = "true" ]; then
   HUMAN_APPROVALS=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" \
     --paginate 2>/dev/null \
     | jq -s --arg sha "${PR_HEAD_SHA}" \
-      'add // [] | [.[] | select(.state == "APPROVED" and .user.type == "User" and .commit_id == $sha)] | length') || HUMAN_APPROVALS=0
+      'add // [] | [.[] | select(.state == "APPROVED" and .user.type == "User" and (.user.login | endswith("[bot]") | not) and .commit_id == $sha)] | length') || HUMAN_APPROVALS=0
   if [ "${HUMAN_APPROVALS}" -gt 0 ]; then
     echo "Human APPROVED review found on HEAD SHA ${PR_HEAD_SHA} — protected-path requirement satisfied"
     HAS_HUMAN_APPROVAL=true
