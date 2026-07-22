@@ -11,12 +11,47 @@ EVAL_ORG=my-org ./eval/run-functional.sh triage
 EVAL_ORG=my-org ./eval/run-functional.sh review
 ```
 
+Replace the agent name (`review`, `triage`, etc.) as needed. The
+script runs three phases:
+
+1. **Create workspaces** — sets up case directories
+2. **Execute** — creates ephemeral GitHub repos, runs the agent against
+   each test case, and tears down the repos
+3. **Score** — evaluates agent output using LLM judges and deterministic
+   checks defined in `eval.yaml`
+
+Results are written to `eval/runs/<agent>/<run-id>/`.
+
+### Linting cases
+
+Validate that all test cases have the required annotations before
+running:
+
+```bash
+bash eval/lint-cases.sh <agent>
+```
+
 ## Prerequisites
 
 - **agent-eval-harness** — `pip install -e eval/.agent-eval-harness`
 - **fullsend** — must be on `PATH`
 - **openshell** — must be on `PATH`
 - **yq**, **jq**, **gh**, **git**, **uuidgen** — used by setup/teardown hooks
+
+### Harness submodule
+
+The eval harness scripts live in `eval/.agent-eval-harness`. Initialize
+the submodule before running:
+
+```bash
+git submodule sync eval/.agent-eval-harness
+git submodule update --init eval/.agent-eval-harness
+```
+
+### GCP credentials
+
+A GCP service account with Vertex AI access is required for model
+calls during both execution and scoring.
 
 ## Environment variables
 
@@ -37,6 +72,7 @@ EVAL_ORG=my-org ./eval/run-functional.sh review
 | `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project ID for Anthropic Vertex. |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID. |
 | `CLOUD_ML_REGION` | GCP region for Cloud ML. |
+| `AGENT_EVAL_HARNESS_DIR` | Path to the agent-eval-harness checkout. Defaults to `eval/.agent-eval-harness`. |
 
 ### Derived (set automatically by the runner)
 
@@ -62,6 +98,17 @@ passes them to the agent under test:
 The `repo` scope grants full control of repositories, which includes
 the ability to create PRs and post comments during the agent run.
 
+## Test case structure
+
+Each case directory under `eval/<agent>/cases/` contains:
+
+- `input.yaml` — fixture definition (forge, fixture type, title, body,
+  PR files)
+- `annotations.yaml` — expected outcomes (labels, review expectations,
+  `max_turns`, `max_cost_usd`)
+- `repo/` (optional) — base repo contents pushed to main before the
+  fixture is created
+
 ## Lifecycle
 
 Each test case follows this lifecycle:
@@ -73,3 +120,19 @@ Each test case follows this lifecycle:
 3. **`capture-fixture.sh`** — snapshots the fixture state (labels,
    comments, reviews) into `fixture-state.json` for judges.
 4. **`teardown-fixture.sh`** — deletes the ephemeral repo.
+
+## Known issues
+
+- **Self-review 422.** The runner reuses `GH_TOKEN` as `REVIEW_TOKEN`.
+  If the token owner is also the PR author, GitHub rejects
+  `REQUEST_CHANGES` reviews on your own PR. Use a token from a
+  different account or a GitHub App installation token.
+  See [#245](https://github.com/fullsend-ai/agents/issues/245).
+
+- **fullsend `UploadFile` bug.** In fullsend v0.31.0, `UploadFile`
+  fails when the source filename matches the destination basename.
+  See [fullsend-ai/fullsend#5231](https://github.com/fullsend-ai/fullsend/issues/5231).
+
+- **`checkStatus` drops string errors.** fullsend's `checkStatus` does
+  not handle string-typed error responses from the GitHub API, causing
+  silent failures.
