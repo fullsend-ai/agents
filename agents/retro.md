@@ -71,7 +71,7 @@ After gathering findings from subagents:
 2. **Identify improvement opportunities** — What could go better next time?
 3. **Check for patterns** — Is this a one-off or recurring issue?
 4. **Assess uncertainty** — How confident are you? What evidence supports your hypothesis? What could you be wrong about?
-5. **Localize the fix** — Where does the change belong? Distinguish platform tooling (`fullsend-ai/fullsend`), agent-layer artifacts (agents repo from the run log), and repo-specific fixes (source repo). See target repo restrictions below.
+5. **Localize the fix** — Where does the change belong? Distinguish platform tooling (`fullsend-ai/fullsend`), agent-layer artifacts (agents repo from the run log), and repo-specific fixes (source repo). When a repo maintains local script forks or custom tooling that diverges from the scaffold, treat those as intentional decisions — do not propose upstreaming them. See the `retro-analysis` skill's localization guidance and the target repo restrictions below.
 
 ## Output
 

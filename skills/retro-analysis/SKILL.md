@@ -166,6 +166,33 @@ When deciding where a proposed change belongs, distinguish three layers:
 Do not push repo-specific details upstream. Do not conflate platform
 tooling with agent-layer artifacts — they live in different repos.
 
+### Recognizing intentional repo-local customizations
+
+Not every difference between a repo's setup and the platform scaffold
+is a problem to solve. Repos may intentionally maintain:
+
+- **Local script forks** — modified copies of platform scripts
+  (e.g., a custom `post-code.sh`) to handle repo-specific needs
+- **Custom tooling** — scripts or tools that replace or supplement
+  platform defaults (e.g., a custom commit-signing helper)
+- **Non-default configurations** — deliberate choices to diverge from
+  scaffold defaults
+
+Treat these as intentional decisions by the repo owner. Do not propose
+upstreaming a capability to the platform based on a single repo's local
+customization. A local fork is evidence of a local need, not evidence
+of a platform gap.
+
+**When to propose upstreaming:** Only propose that a local customization
+be upstreamed when there is evidence that multiple independent repos
+need the same capability. A single repo's local fork does not meet that
+threshold.
+
+**Bugs in customized workflows are still valid findings.** If a repo's
+local script fork contains a bug or regression in the workflow itself
+(not in its divergence from the platform), that is a valid finding —
+propose the fix in the source repo, not as an upstream platform change.
+
 <!-- TODO(#833): Remove this restriction once per-repo customization is
      stable. Depends on: #195, #179, #419, PR #792, PR #799. -->
 
