@@ -125,5 +125,7 @@ network_policies:
       - path: "**/python"
       - path: "**/python3"
       - path: "**/python3.*"
+      - path: "**/uv"
+      - path: "**/uvx"
       - path: "**/go"
       - path: "**/pre-commit"
