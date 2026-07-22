@@ -15,6 +15,16 @@
 #   ITERATION_CAP      — max bot-triggered iterations (default: 5)
 #   ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
 #   HUMAN_INSTRUCTION  — instruction text (only when TRIGGER_SOURCE doesn't end in [bot])
+#   FIX_SKIP_TOOL_INSTALL
+#                      — "true" to skip the pre-commit tool auto-install below.
+#                        Set on reusable-fix.yml's inline "Validate inputs"
+#                        step, which runs this script before GCP/agent-env
+#                        setup purely to fail fast on bad input or an
+#                        exceeded iteration cap — it has no need to install
+#                        tools onto the runner. Leave unset for the harness
+#                        pre_script invocation (inside "Run fix agent"),
+#                        which does need the tools installed before the
+#                        post-script's pre-commit run (fullsend-ai/fullsend#4718).
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
@@ -103,67 +113,71 @@ fi
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-# Ensures tools required by the target repo's pre-commit hooks are
-# available on the runner for the authoritative post-script check.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_REPO="${REPO_DIR:-${GITHUB_WORKSPACE:-}/target-repo}"
-RESOLVE_SCRIPT="${SCRIPT_DIR}/resolve-precommit-tools.py"
-INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
+if [[ "${FIX_SKIP_TOOL_INSTALL:-false}" == "true" ]]; then
+  echo "Tool auto-install deferred to the harness pre_script invocation — skipping here"
+else
+  # Ensures tools required by the target repo's pre-commit hooks are
+  # available on the runner for the authoritative post-script check.
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  TARGET_REPO="${REPO_DIR:-${GITHUB_WORKSPACE:-}/target-repo}"
+  RESOLVE_SCRIPT="${SCRIPT_DIR}/resolve-precommit-tools.py"
+  INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
 
-# Fallback: these companion scripts were never migrated into this repo
-# during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
-# always misses. The reusable workflow's "Prepare workspace" step always
-# materializes the full scripts/ directory (from fullsend's own scaffold)
-# at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
-# (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
-if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
-    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
-      if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
-         && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
-        RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
-        INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
-        break
-      fi
-    done
-  fi
-fi
-
-# Warn instead of silently skipping when the repo needs the auto-install but
-# the companions are missing everywhere — a silent skip here surfaces later
-# as a confusing "Executable X not found" pre-commit failure.
-if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
-   && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
-  echo "::warning::Pre-commit tool auto-install skipped: companion scripts not found"
-  echo "::warning::Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
-  echo "::warning::Pre-commit hooks requiring system tools (e.g. lychee) may fail"
-fi
-
-if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
-   && [ -f "${RESOLVE_SCRIPT}" ] \
-   && [ -f "${INSTALL_SCRIPT}" ]; then
-  echo "Resolving pre-commit tool dependencies..."
-  MANIFEST="$(mktemp)"
-  LOCAL_REG="$(mktemp)"
-  RESOLVE_ARGS=("${TARGET_REPO}")
-  _BASE_BR="${TARGET_BRANCH:-}"
-  if [ -z "${_BASE_BR}" ]; then
-    _BASE_BR="$(git -C "${TARGET_REPO}" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')" || _BASE_BR=""
-  fi
-  if [ -n "${_BASE_BR}" ] \
-     && git -C "${TARGET_REPO}" show "origin/${_BASE_BR}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
-    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
-  fi
-  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
-    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
-      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
-    else
-      echo "No additional pre-commit tools needed"
+  # Fallback: these companion scripts were never migrated into this repo
+  # during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
+  # always misses. The reusable workflow's "Prepare workspace" step always
+  # materializes the full scripts/ directory (from fullsend's own scaffold)
+  # at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
+  # (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
+  if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
+    if [ -n "${GITHUB_WORKSPACE:-}" ]; then
+      for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+        if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
+           && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
+          RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
+          INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
+          break
+        fi
+      done
     fi
-  else
-    echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
   fi
-  rm -f "${MANIFEST}" "${LOCAL_REG}"
+
+  # Warn instead of silently skipping when the repo needs the auto-install but
+  # the companions are missing everywhere — a silent skip here surfaces later
+  # as a confusing "Executable X not found" pre-commit failure.
+  if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
+     && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
+    echo "::warning::Pre-commit tool auto-install skipped: companion scripts not found"
+    echo "::warning::Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
+    echo "::warning::Pre-commit hooks requiring system tools (e.g. lychee) may fail"
+  fi
+
+  if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
+     && [ -f "${RESOLVE_SCRIPT}" ] \
+     && [ -f "${INSTALL_SCRIPT}" ]; then
+    echo "Resolving pre-commit tool dependencies..."
+    MANIFEST="$(mktemp)"
+    LOCAL_REG="$(mktemp)"
+    RESOLVE_ARGS=("${TARGET_REPO}")
+    _BASE_BR="${TARGET_BRANCH:-}"
+    if [ -z "${_BASE_BR}" ]; then
+      _BASE_BR="$(git -C "${TARGET_REPO}" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')" || _BASE_BR=""
+    fi
+    if [ -n "${_BASE_BR}" ] \
+       && git -C "${TARGET_REPO}" show "origin/${_BASE_BR}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
+      RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
+    fi
+    if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
+      if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
+        bash "${INSTALL_SCRIPT}" "${MANIFEST}"
+      else
+        echo "No additional pre-commit tools needed"
+      fi
+    else
+      echo "::warning::Pre-commit tool resolution failed — continuing without auto-install"
+    fi
+    rm -f "${MANIFEST}" "${LOCAL_REG}"
+  fi
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 echo "${HOME}/.local/bin" >> "${GITHUB_PATH:-/dev/null}"
