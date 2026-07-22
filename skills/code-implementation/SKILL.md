@@ -782,6 +782,14 @@ from step 6 and structure `pr_body` to match its sections. Otherwise,
 write a best-effort description covering what changed, why, testing
 approach, and any caveats.
 
+**Cross-repo ordering:** When the motivating issue references a
+different repository (e.g., a failure observed in an upstream repo),
+lead the summary with what files in **this** repository are changing
+and why. Place cross-repo references in a secondary "Context" or
+"Related" subsection — not in the opening sentence. Reviewers read
+the first line to orient themselves; leading with an external repo
+reference can mislead them about which repository the PR targets.
+
 Use a quoted heredoc to capture `pr_body` content without shell
 expansion, then pass it to `jq --arg`:
 
