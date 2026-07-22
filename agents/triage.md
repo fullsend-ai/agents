@@ -66,11 +66,11 @@ gh pr list --repo OTHER-ORG/OTHER-REPO --state open --search "relevant keywords"
 
 If a cross-repo search fails or returns an error (e.g., due to access restrictions), note this in your reasoning as an information gap rather than concluding no blocking work exists.
 
-**Verify merge status of cross-repo references (MANDATORY):** For every cross-repo PR or issue reference found in the issue body (e.g., `org/repo#N`, `fullsend#N`), verify its current state before describing it as completed or landed:
+**Verify merge status of cross-repo references (HARD CONSTRAINT):** For every cross-repo PR or issue reference found in the issue body (e.g., `org/repo#N`, `fullsend#N`), verify its current state before describing it as completed or landed:
 
 ```
 # For PR references:
-gh pr view N --repo org/repo --json state,merged
+gh pr view N --repo org/repo --json state,mergedAt
 # For issue references:
 gh issue view N --repo org/repo --json state
 ```
