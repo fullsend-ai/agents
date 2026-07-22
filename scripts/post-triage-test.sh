@@ -515,6 +515,11 @@ run_test_no_pattern "gfi-documentation-no-ready-to-code" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nGood first issue.","label_actions":{"reason":"Good for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
   "labels[]=ready-to-code"
 
+# Verify suppression also works for performance category.
+run_test_no_pattern "gfi-performance-no-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"low","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_query"},"comment":"## Triage Summary\n\nGood first issue.","label_actions":{"reason":"Good for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \
+  "labels[]=ready-to-code"
+
 # Verify suppression message appears in stdout.
 run_test_stdout "gfi-suppression-logged" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo","severity":"low","category":"bug","problem":"Typo","root_cause_hypothesis":"Typo in code","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_typo"},"comment":"## Triage Summary\n\nGood first issue.","label_actions":{"reason":"Good for newcomers.","actions":[{"action":"add","label":"good first issue"}]}}' \

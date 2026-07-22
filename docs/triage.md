@@ -37,7 +37,7 @@ outcome and the post-script applies the corresponding label.
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
-| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). |
+| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). Suppressed when `good first issue` is applied via `label_actions` during the same triage run — the issue receives `triaged` instead so it is reserved for community contributors. |
 | `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the post-script closes the issue. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |

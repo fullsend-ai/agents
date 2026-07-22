@@ -38,7 +38,7 @@ on issues (not PRs). The code agent is also triggered automatically when the
 
 | Label | Meaning |
 |-------|---------|
-| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. |
+| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Suppressed when `good first issue` is applied during triage — the issue receives `triaged` instead. |
 | `ready-for-review` | Applied by the code agent's post-script after pushing a PR. In per-repo installs, triggers review when applied to a PR; also marks workflow state for humans and the retro agent. |
 
 ## Configuration and extension
