@@ -390,20 +390,40 @@ ${REDISPATCH_MARKER}" || echo "::warning::Failed to post re-dispatch comment"
 elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
   echo "::error::fullsend post-review failed after ${POST_REVIEW_MAX_ATTEMPTS} attempts (exit ${POST_REVIEW_EXIT}, PR #${PR_NUMBER} in ${REPO_FULL_NAME})" >&2
 
-  # Degraded-mode fallback: the review comment may have been posted even
-  # though the formal review API call failed (e.g. 422 during PR
-  # transitional state). Apply the outcome label directly so the PR is
+  # Degraded-mode fallback: apply the outcome label directly so the PR is
   # not left in limbo without a label.
+  #
+  # Assumption: fullsend post-review is a two-step operation (post comment,
+  # then submit formal review). A transient API failure may occur between
+  # the steps, leaving the comment posted but the formal review missing.
+  # We cannot distinguish "comment posted, review failed" from "nothing
+  # posted" because fullsend post-review does not emit distinct exit codes
+  # for each case (see issue #159 requirement 4 — HTTP status codes and
+  # response bodies are not exposed by the CLI). Applying the label here
+  # is a best-effort measure — exit 1 still signals CI failure so a human
+  # can verify.
   echo "Attempting degraded-mode label fallback..."
   _fallback_applied=false
 
-  # Remove stale outcome labels (mirrors normal post-review flow).
+  # Determine the target fallback label so we can skip removing it
+  # (avoids a pointless unlabel/relabel cycle — mirrors normal path).
+  # Label logic mirrors the outcome-label block below — keep in sync.
+  _fallback_label=""
+  if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+    _fallback_label="ready-for-merge"
+  elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
+       [ "${ACTION}" = "comment" ]; then
+    _fallback_label="requires-manual-review"
+  elif [ "${ACTION}" = "reject" ]; then
+    _fallback_label="rejected"
+  fi
+
+  # Remove stale outcome labels, skipping the one about to be applied.
   for _stale in "ready-for-merge" "requires-manual-review" "rejected"; do
+    [ "${_stale}" = "${_fallback_label}" ] && continue
     gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
       --remove-label "${_stale}" 2>/dev/null || true
   done
-
-  # Label logic mirrors the outcome-label block below — keep in sync.
   if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
     gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
       --description "All reviewers approved — ready to merge" --color "0E8A16" \
@@ -424,6 +444,12 @@ elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
       echo "Degraded-mode fallback: applied requires-manual-review label"
     fi
   elif [ "${ACTION}" = "reject" ]; then
+    # NOTE: The normal path closes the PR before applying the rejected
+    # label (gh pr close with a comment). In degraded mode, closing is
+    # intentionally omitted as a conservative measure — without
+    # confirmation that the formal review was posted, closing the PR
+    # would be a destructive action based on uncertain state. The exit 1
+    # ensures CI failure so a human can intervene.
     gh label create "rejected" --repo "${REPO_FULL_NAME}" \
       --description "Approach rejected by review agent" --color "B60205" \
       2>/dev/null || true
@@ -434,10 +460,16 @@ elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
     fi
   fi
 
+  # Sanitize ACTION for GHA workflow command output (defense-in-depth,
+  # matches the pattern used for label-action values above).
+  _safe_action="${ACTION//$'\n'/}"
+  _safe_action="${_safe_action//$'\r'/}"
+  _safe_action="${_safe_action//::/:}"
+
   if [ "${_fallback_applied}" = "true" ]; then
     echo "::warning::Formal review failed but outcome label applied via degraded-mode fallback"
   else
-    echo "::warning::Degraded-mode label fallback not applicable (action=${ACTION})"
+    echo "::warning::Degraded-mode label fallback not applicable (action=${_safe_action})"
   fi
 
   exit 1
