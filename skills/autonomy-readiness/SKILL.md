@@ -34,6 +34,10 @@ Build two sets from the PR timeline:
 
 - **Novel** -- the agent raised something no human commented on. This is not a gap, but it is worth noting: a pattern of novel findings with no human agreement may signal false positives.
 
+**Handle silent approvals correctly:**
+
+When a human approved the PR without leaving any comments or inline feedback, classify the delta as **inconclusive**. A reviewer who reads code and finds nothing wrong has no reason to write comments. Do not treat zero human findings as zero gaps. The absence of human comments means the delta cannot be meaningfully computed for this PR — report it as inconclusive rather than treating all agent findings as unmatched novel discoveries.
+
 ## Phase 2: Diagnose root causes (for gaps)
 
 For each gap, work through the following diagnostic checklist. Stop at the first category that fits:
@@ -56,6 +60,8 @@ When agent findings fully cover human review (all findings matched, no gaps), ch
 - Change type (bug fix, feature, refactor, docs, config)
 - Complexity (lines changed, files touched, cross-cutting vs. localized)
 - Agent outcome (approved, requested changes that human agreed with)
+
+**Silent approvals are not evidence of agent success.** If the human review consisted solely of an approval without comments, do not count this PR toward autonomy-increasing proposals. The absence of human findings means the human found nothing to flag — it does not mean the agent matched or exceeded human review. Only count PRs where the human actively left findings and the agent matched all of them.
 
 Look for patterns across multiple PRs. A single success is an anecdote, not a pattern. Three or more similar PRs where the agent fully covered human review is a signal worth acting on.
 

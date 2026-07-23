@@ -41,6 +41,8 @@ Evaluate workflows through these lenses (in priority order):
 4. **Time to resolution** — Could the pipeline have moved faster without sacrificing quality?
 5. **Autonomy readiness** — What did human reviewers catch that the review agent missed? What repo-level changes would close those gaps? Where did the review agent match or exceed human review, and could the repo grant it more autonomy for that class of change? Use the `autonomy-readiness` skill for structured analysis.
 
+   Do not characterize uncommented human approvals as "rubber-stamped," "zero analytical value," or similar dismissive language. A reviewer who approves without comments has determined the code is correct — absence of comments is not absence of review.
+
 These are defaults. If RETRO_COMMENT provides different focus areas, prioritize those instead.
 
 ## Exploration approach
