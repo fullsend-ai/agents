@@ -63,9 +63,17 @@ fetch_pr_files() {
 # Resolve branch tip SHA via git refs API, polling if still at baseline.
 # Poll up to 6 times with linear backoff (~21s total, within 60s after_each timeout).
 # Prefer refs API over PR headRefOid — the latter can lag briefly after post-fix push.
+#
+# Sets globals RESOLVED_HEAD_SHA and HEAD_SHA_POLL_EXHAUSTED instead of
+# printing to stdout, so callers can distinguish "polling exhausted while
+# still at baseline" (possible push-propagation delay) from "confirmed no
+# new commit" — printing over stdout and invoking via $(...) would lose
+# HEAD_SHA_POLL_EXHAUSTED to the command-substitution subshell.
 resolve_head_sha() {
   local repo="$1" head_ref="$2" baseline="${3:-}" initial_sha="${4:-}"
-  local head_sha="$initial_sha" ref_sha attempt
+  local ref_sha attempt
+  RESOLVED_HEAD_SHA="$initial_sha"
+  HEAD_SHA_POLL_EXHAUSTED="false"
 
   if [[ ! "$head_ref" =~ ^[A-Za-z0-9._/-]+$ ]]; then
     echo "ERROR: unexpected PR head ref: ${head_ref}" >&2
@@ -74,27 +82,28 @@ resolve_head_sha() {
 
   if ref_sha=$(retry_cmd gh api "repos/${repo}/git/ref/heads/${head_ref}" \
     --jq '.object.sha'); then
-    head_sha="$ref_sha"
+    RESOLVED_HEAD_SHA="$ref_sha"
   fi
 
-  if [[ -n "$baseline" && "$head_sha" == "$baseline" ]]; then
+  if [[ -n "$baseline" && "$RESOLVED_HEAD_SHA" == "$baseline" ]]; then
     echo "WARNING: PR/branch tip still equals pre_agent_head; polling for push..." >&2
     for attempt in 1 2 3 4 5 6; do
       sleep $((attempt))
       if ref_sha=$(gh api "repos/${repo}/git/ref/heads/${head_ref}" \
         --jq '.object.sha' 2>/dev/null); then
-        head_sha="$ref_sha"
-        if [[ "$head_sha" != "$baseline" ]]; then
+        RESOLVED_HEAD_SHA="$ref_sha"
+        if [[ "$RESOLVED_HEAD_SHA" != "$baseline" ]]; then
           break
         fi
       fi
     done
-    if [[ "$head_sha" == "$baseline" ]]; then
+    if [[ "$RESOLVED_HEAD_SHA" == "$baseline" ]]; then
+      HEAD_SHA_POLL_EXHAUSTED="true"
       echo "WARNING: polling exhausted after 6 attempts; head_sha still equals pre_agent_head (${baseline}). This may be a stale/failed read rather than proof the push never happened." >&2
     fi
   fi
 
-  printf '%s' "$head_sha"
+  return 0
 }
 
 # Compare pre_agent_head...head_sha to get only the files touched by the
@@ -147,18 +156,18 @@ case "${FIXTURE_TYPE}" in
     pr_lines=()
     while IFS= read -r pr; do
       [[ -z "$pr" ]] && continue
-      num=$(echo "$pr" | jq -r '.number')
+      num=$(printf '%s' "$pr" | jq -r '.number')
       if files=$(fetch_pr_files "$num"); then
-        pr_lines+=("$(echo "$pr" | jq -c --argjson files "$files" \
+        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" \
           '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false}
            | del(.headRefName, .baseRefName)')")
       else
         echo "WARNING: gh pr view failed for PR #${num}; marking files_fetch_failed" >&2
-        pr_lines+=("$(echo "$pr" | jq -c \
+        pr_lines+=("$(printf '%s' "$pr" | jq -c \
           '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true}
            | del(.headRefName, .baseRefName)')")
       fi
-    done < <(echo "$prs_json" | jq -c '.[]')
+    done < <(printf '%s' "$prs_json" | jq -c '.[]')
     if [[ ${#pr_lines[@]} -eq 0 ]]; then
       prs_with_files='[]'
     else
@@ -215,6 +224,7 @@ case "${FIXTURE_TYPE}" in
           reviews: [],
           head_sha: null,
           head_ref: null,
+          head_sha_poll_exhausted: null,
           files: null,
           files_fetch_failed: true,
           files_changed_since_pre_agent_head: null,
@@ -228,8 +238,12 @@ case "${FIXTURE_TYPE}" in
     head_ref=$(printf '%s' "$pr_raw" | jq -r '.headRefName // empty')
     initial_sha=$(printf '%s' "$pr_raw" | jq -r '.headRefOid // empty')
     head_sha="$initial_sha"
+    head_sha_poll_exhausted="false"
     if [[ -n "$head_ref" ]]; then
-      if ! head_sha=$(resolve_head_sha "$EPHEMERAL_REPO" "$head_ref" "$pre_agent_head" "$initial_sha"); then
+      if resolve_head_sha "$EPHEMERAL_REPO" "$head_ref" "$pre_agent_head" "$initial_sha"; then
+        head_sha="$RESOLVED_HEAD_SHA"
+        head_sha_poll_exhausted="$HEAD_SHA_POLL_EXHAUSTED"
+      else
         echo "WARNING: resolve_head_sha failed for ${head_ref}; using headRefOid" >&2
         head_sha="$initial_sha"
       fi
@@ -255,6 +269,7 @@ case "${FIXTURE_TYPE}" in
       --arg pre_agent_head "$pre_agent_head" \
       --argjson files_since_pre_agent_head "$files_since" \
       --arg files_since_pre_agent_head_failed "$files_since_failed" \
+      --arg head_sha_poll_exhausted "$head_sha_poll_exhausted" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
@@ -270,6 +285,7 @@ case "${FIXTURE_TYPE}" in
         reviews: [($pr.reviews // [])[] | {author: .author.login, state: .state, body: .body}],
         head_sha: (if $head_sha == "" then $pr.headRefOid else $head_sha end),
         head_ref: $pr.headRefName,
+        head_sha_poll_exhausted: ($head_sha_poll_exhausted == "true"),
         files: [($pr.files // [])[] | .path],
         files_fetch_failed: false,
         files_changed_since_pre_agent_head: $files_since_pre_agent_head,

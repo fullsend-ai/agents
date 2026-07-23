@@ -104,6 +104,14 @@ trap cleanup EXIT
 # Values today come from gh/mktemp; still validate shape before writing.
 # Quote values so envfile.go does not treat " #" as an inline comment
 # (unquoted values strip from space-hash onward).
+#
+# Dotenv format contract: NAME="value" lines, one per line, consumed by
+# fullsend's Go dotenv parser via --env-file (internal/*/envfile.go) — NOT
+# sourced by any shell. Escaping only needs to satisfy that parser's quoted-
+# string rules (backslash, double-quote, dollar-sign, backtick), not bash's;
+# characters with special meaning only to an interactive shell (e.g. `!`
+# history expansion) are not escaped here because they are never evaluated
+# by a shell.
 emit_env() {
   local name="$1" value="$2"
   if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then

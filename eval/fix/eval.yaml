@@ -89,6 +89,12 @@ judges:
       if not baseline:
           return False, "pre_agent_head missing — cannot prove a new commit"
       if str(head) == str(baseline):
+          if state.get("head_sha_poll_exhausted"):
+              return False, (
+                  f"PR head unchanged ({head}) after polling exhausted — "
+                  "could not confirm within the polling window; this may be "
+                  "a push-propagation delay rather than a confirmed missing push"
+              )
           return False, f"PR head unchanged ({head}) — fix post-script did not push"
       return True, f"New commit on PR: {baseline} -> {head}"
 
@@ -110,7 +116,10 @@ judges:
       changed = set(state.get("files_changed_since_pre_agent_head") or [])
       missing = [p for p in expected if p not in changed]
       if missing:
-          return False, f"Expected files missing from fix commit(s): {missing} (changed since pre_agent_head: {sorted(changed)})"
+          reason = f"Expected files missing from fix commit(s): {missing} (changed since pre_agent_head: {sorted(changed)})"
+          if state.get("head_sha_poll_exhausted"):
+              reason += " — head_sha polling exhausted; this may be a push-propagation delay rather than a confirmed missing push"
+          return False, reason
       return True, f"All expected files present in fix commit(s): {expected}"
 
   - name: forbidden_labels
