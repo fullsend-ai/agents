@@ -42,7 +42,7 @@ These labels reflect the review outcome and are updated after each review.
 | `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) after pushing. In per-repo installs, triggers review when applied to a PR. |
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
-| `rejected` | The review agent rejected the PR and the PR was closed. |
+| `rejected` | The review agent rejected the PR and closed it. |
 
 When the review agent requests changes (without rejecting), no outcome label is
 applied — the `pull_request_review` event triggers the [fix agent](fix.md) directly.
@@ -76,7 +76,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are omitted. | `low` | `info`, `low`, `medium`, `high`, `critical` |
+| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
 Set this in the CI workflow `env:` block.
 

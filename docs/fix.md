@@ -117,7 +117,7 @@ None.
 
 ## How the agent works
 
-The fix agent follows the same pipeline as the [code agent](code.md):
+The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
 2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.

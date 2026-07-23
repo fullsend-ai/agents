@@ -51,6 +51,9 @@ The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 
 ## Configuration
 
+See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
+[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
+
 ### Skill: `issue-labels`
 
 The triage agent includes a built-in `issue-labels` skill that discovers your
@@ -126,6 +129,10 @@ This gives the triage agent the subtlety it needs to distinguish between
 `kind/bug` and `kind/flaky-test`, or to know that `area/operator` applies to
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
+
+### Variables
+
+None.
 
 ## How the agent works
 
