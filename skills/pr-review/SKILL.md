@@ -940,11 +940,13 @@ Merge the reconciled PR-specific findings (from 6e-1) into the
 challenger-adjudicated finding set and evaluate:
 
 - Any **critical** or **high** finding → `request-changes`
-- Multiple **medium** findings which could affect the intended outcome
-  of the PR → `request-changes`
-- One **medium** finding (but no critical/high) → `comment-only`
-  (attach findings as comments so the author sees them, but do not
-  block the PR)
+- One or more **medium** findings identifying a functional bug
+  (incorrect behavior, permission error, schema violation, or silent
+  failure) → `request-changes`
+- One or more **medium** findings that are all
+  stylistic/advisory/process-related (no functional bugs) →
+  `comment-only` (attach findings as comments so the author sees them,
+  but do not block the PR)
 - **Low** or **info** findings only (no medium+) → `approve` (attach
   findings as comments; preserve concrete follow-up work with
   `actionable: true` so the post-script can create follow-up issues)
@@ -953,6 +955,17 @@ challenger-adjudicated finding set and evaluate:
   change, or the PR should be closed/completely rethought → `reject`.
   Use `reject` only when no amount of code-level iteration will make
   the PR mergeable.
+
+**Self-consistency check.** Before emitting the final verdict, verify
+that the verdict action is consistent with the language used in the
+summary paragraph of the review body. If the summary states that
+findings "should be addressed before merge," "must be fixed," "need to
+be resolved," or uses equivalent blocking language, the verdict MUST be
+`request-changes` — not `comment`. A `comment` verdict paired with
+blocking language removes the only automated signal that the findings
+require action, because `comment` (COMMENTED review state) does not
+block the PR. When the summary language and the verdict action
+contradict each other, escalate the verdict to match the language.
 
 ### 7. Produce the review result
 
