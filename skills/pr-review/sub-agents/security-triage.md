@@ -1,5 +1,5 @@
 ---
-name: review-security-triage
+name: security-triage
 description: Lightweight classifier that identifies security-critical files in large PRs for prioritized deep review.
 model: haiku
 ---
