@@ -221,6 +221,19 @@ rm -f "$ENV_FILE"
 METRICS_FILE=$(find "$OUTPUT_DIR" -maxdepth 3 -name metrics.json -not -path "$OUTPUT_DIR/metrics.json" 2>/dev/null | head -1)
 if [[ -n "$METRICS_FILE" ]]; then
   cp "$METRICS_FILE" "$OUTPUT_DIR/metrics.json"
+  # agent-eval-harness's cli_runner.py reads a `cost_usd` key, but fullsend
+  # writes `total_cost_usd` (internal/cli/run.go's aggregateMetrics). Without
+  # this alias the harness silently reports $0.00 cost even when the run
+  # incurred real spend. Alias rather than rename so metrics.json still
+  # matches fullsend's own documented schema.
+  metrics_tmp=$(mktemp)
+  if jq '.cost_usd = (.cost_usd // .total_cost_usd // 0)' \
+    "$OUTPUT_DIR/metrics.json" > "$metrics_tmp"; then
+    mv "$metrics_tmp" "$OUTPUT_DIR/metrics.json"
+  else
+    echo "WARNING: failed to alias cost_usd in metrics.json; harness may report \$0.00 cost" >&2
+    rm -f "$metrics_tmp"
+  fi
   echo "Copied metrics -> $OUTPUT_DIR/metrics.json"
 fi
 
