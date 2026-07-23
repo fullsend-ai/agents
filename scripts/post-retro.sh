@@ -120,11 +120,13 @@ for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
   # Ensure the label exists in the target repo before applying it.
   # Follows the same pattern as post-review.sh for ready-for-merge.
   # --force makes this idempotent (no error if the label already exists).
-  gh label create "ready-for-triage" \
-    --repo "${TARGET_REPO}" \
-    --description "Retro-filed issue awaiting triage agent" \
-    --color "ededed" \
-    --force 2>/dev/null || true
+  if ! gh label create "ready-for-triage" \
+      --repo "${TARGET_REPO}" \
+      --description "Retro-filed issue awaiting triage agent" \
+      --color "ededed" \
+      --force 2>&1; then
+    echo "WARNING: failed to create/verify ready-for-triage label in ${TARGET_REPO} — issue may not be routed for triage" >&2
+  fi
 
   SAFE_TITLE="${TITLE//::/}"
   SAFE_TITLE="${SAFE_TITLE//%0A/}"
@@ -132,13 +134,28 @@ for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
   SAFE_TITLE="${SAFE_TITLE//%0D/}"
   SAFE_TITLE="${SAFE_TITLE//%0d/}"
   echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
+  ISSUE_STDERR_FILE=$(mktemp)
   if ! ISSUE_URL=$(gh issue create \
     --repo "${TARGET_REPO}" \
     --title "${TITLE}" \
     --body "${BODY}" \
-    --label "ready-for-triage" 2>&1); then
-    echo "ERROR: failed to create issue in ${TARGET_REPO} (gh issue create --repo ${TARGET_REPO}): ${ISSUE_URL}" >&2
+    --label "ready-for-triage" 2>"${ISSUE_STDERR_FILE}"); then
+    ISSUE_ERR=$(cat "${ISSUE_STDERR_FILE}")
+    rm -f "${ISSUE_STDERR_FILE}"
+    echo "ERROR: failed to create issue in ${TARGET_REPO} (gh issue create --repo ${TARGET_REPO}): ${ISSUE_URL} ${ISSUE_ERR}" >&2
     exit 1
+  fi
+  if [[ -s "${ISSUE_STDERR_FILE}" ]]; then
+    echo "WARNING: gh issue create stderr for ${TARGET_REPO}: $(cat "${ISSUE_STDERR_FILE}")" >&2
+  fi
+  rm -f "${ISSUE_STDERR_FILE}"
+
+  # Verify the label was actually applied. The gh issue create --label flag
+  # silently drops labels the token cannot manage. Detect and warn so
+  # operators can see the issue was not routed for triage.
+  CREATED_ISSUE_NUM=$(basename "${ISSUE_URL}")
+  if ! gh issue view "${CREATED_ISSUE_NUM}" --repo "${TARGET_REPO}" --json labels -q '.labels[].name' 2>/dev/null | grep -q 'ready-for-triage'; then
+    echo "WARNING: ready-for-triage label not applied to ${ISSUE_URL} — manual triage may be needed" >&2
   fi
 
   echo "Created: ${ISSUE_URL}"
