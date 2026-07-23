@@ -970,7 +970,7 @@ annotation for humans reviewing the agent's output.
 - **medium:** the challenger removed more than one finding (initial
   disagreement that was resolved), OR sub-agents flagged the same code
   with different severities, OR the verdict is one finding away from
-  flipping (e.g., one medium finding on an approve verdict)
+  flipping (e.g., one medium finding on a comment-only verdict)
 - **low:** significant sub-agent disagreement (same code flagged at
   severities two or more levels apart), OR the challenger failed and
   the pre-challenger set was used, OR the change scope is ambiguous
