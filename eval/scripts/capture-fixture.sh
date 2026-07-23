@@ -72,8 +72,8 @@ resolve_head_sha() {
     return 1
   fi
 
-  if ref_sha=$(gh api "repos/${repo}/git/ref/heads/${head_ref}" \
-    --jq '.object.sha' 2>/dev/null); then
+  if ref_sha=$(retry_cmd gh api "repos/${repo}/git/ref/heads/${head_ref}" \
+    --jq '.object.sha'); then
     head_sha="$ref_sha"
   fi
 
@@ -89,9 +89,31 @@ resolve_head_sha() {
         fi
       fi
     done
+    if [[ "$head_sha" == "$baseline" ]]; then
+      echo "WARNING: polling exhausted after 6 attempts; head_sha still equals pre_agent_head (${baseline}). This may be a stale/failed read rather than proof the push never happened." >&2
+    fi
   fi
 
   printf '%s' "$head_sha"
+}
+
+# Compare pre_agent_head...head_sha to get only the files touched by the
+# fix run itself (not the fixture PR's original files). Prints a JSON array
+# of filenames on success; returns non-zero on failure or when there is
+# nothing to compare (baseline/head missing or unchanged).
+files_changed_since() {
+  local repo="$1" baseline="$2" head_sha="$3"
+  if [[ -z "$baseline" || -z "$head_sha" || "$baseline" == "$head_sha" ]]; then
+    printf '[]'
+    return 0
+  fi
+  local files
+  if files=$(retry_cmd gh api "repos/${repo}/compare/${baseline}...${head_sha}" \
+    --jq '[(.files // [])[].filename]'); then
+    printf '%s' "$files"
+    return 0
+  fi
+  return 1
 }
 
 case "${FIXTURE_TYPE}" in
@@ -193,6 +215,8 @@ case "${FIXTURE_TYPE}" in
           head_ref: null,
           files: null,
           files_fetch_failed: true,
+          files_changed_since_pre_agent_head: null,
+          files_changed_since_pre_agent_head_failed: true,
           pre_agent_head: (if $pre_agent_head == "" then null else $pre_agent_head end)
         }' > "$STATE_FILE"
       echo "Captured ${FIXTURE_TYPE} state -> ${STATE_FILE}"
@@ -208,6 +232,18 @@ case "${FIXTURE_TYPE}" in
         head_sha="$initial_sha"
       fi
     fi
+    resolved_head_sha=$(if [[ -z "$head_sha" ]]; then printf '%s' "$initial_sha"; else printf '%s' "$head_sha"; fi)
+
+    # expected_files must prove the *fix run's own commit(s)* touched the
+    # declared paths — the PR-aggregate `files` list below already includes
+    # the fixture's original files and would pass even if the fix pushed
+    # nothing relevant. Compare pre_agent_head...head_sha instead.
+    files_since_failed="false"
+    if ! files_since=$(files_changed_since "$EPHEMERAL_REPO" "$pre_agent_head" "$resolved_head_sha"); then
+      echo "WARNING: gh api compare failed for ${pre_agent_head}...${resolved_head_sha}; marking files_changed_since_pre_agent_head_failed" >&2
+      files_since='null'
+      files_since_failed="true"
+    fi
 
     jq -n \
       --arg fixture_type "pull_request" \
@@ -215,6 +251,8 @@ case "${FIXTURE_TYPE}" in
       --argjson pr "$pr_raw" \
       --arg head_sha "$head_sha" \
       --arg pre_agent_head "$pre_agent_head" \
+      --argjson files_since_pre_agent_head "$files_since" \
+      --arg files_since_pre_agent_head_failed "$files_since_failed" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
@@ -232,6 +270,8 @@ case "${FIXTURE_TYPE}" in
         head_ref: $pr.headRefName,
         files: [($pr.files // [])[] | .path],
         files_fetch_failed: false,
+        files_changed_since_pre_agent_head: $files_since_pre_agent_head,
+        files_changed_since_pre_agent_head_failed: ($files_since_pre_agent_head_failed == "true"),
         pre_agent_head: (if $pre_agent_head == "" then null else $pre_agent_head end)
       }' > "$STATE_FILE"
     ;;

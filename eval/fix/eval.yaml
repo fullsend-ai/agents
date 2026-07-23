@@ -93,20 +93,25 @@ judges:
       return True, f"New commit on PR: {baseline} -> {head}"
 
   - name: expected_files
-    description: PR must touch files listed in annotations.expected_files
+    description: >
+      The fix run's own commit(s) — not the fixture PR's pre-existing files —
+      must touch the paths listed in annotations.expected_files. Checked via
+      files_changed_since_pre_agent_head (a compare of pre_agent_head...head_sha),
+      not the PR-aggregate files list, which would pass even if the fix agent
+      pushed nothing relevant (see PR #381 review discussion).
     check: |
       import json
       state = json.loads(outputs["files"]["output/fixture-state.json"])
       expected = outputs.get("annotations", {}).get("expected_files") or []
       if not expected:
           return True, "No expected_files declared"
-      if state.get("files_fetch_failed"):
-          return False, "Could not fetch changed files for PR"
-      changed = set(state.get("files") or [])
+      if state.get("files_changed_since_pre_agent_head_failed"):
+          return False, "Could not fetch files changed since pre_agent_head"
+      changed = set(state.get("files_changed_since_pre_agent_head") or [])
       missing = [p for p in expected if p not in changed]
       if missing:
-          return False, f"Expected files missing from PR: {missing} (changed: {sorted(changed)})"
-      return True, f"All expected files present: {expected}"
+          return False, f"Expected files missing from fix commit(s): {missing} (changed since pre_agent_head: {sorted(changed)})"
+      return True, f"All expected files present in fix commit(s): {expected}"
 
   - name: forbidden_labels
     description: Labels listed in annotations.yaml forbidden list must NOT be present

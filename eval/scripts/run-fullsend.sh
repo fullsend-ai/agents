@@ -109,6 +109,7 @@ emit_env() {
   value="${value//\\/\\\\}"
   value="${value//\"/\\\"}"
   value="${value//\$/\\\$}"
+  value="${value//\`/\\\`}"
   printf '%s="%s"\n' "$name" "$value"
 }
 
@@ -152,8 +153,9 @@ install -m 0600 /dev/null "$ENV_FILE"
 
   if [[ "$AGENT" == "fix" ]]; then
     # HUMAN_INSTRUCTION comes from case input.yaml via setup-fixture hook-outputs.
-    # TODO: also load TRIGGER_SOURCE / FIX_ITERATION / TARGET_BRANCH from the case
-    # when a second fix scenario is added (v1 hardcodes the human /fs-fix shape).
+    # TRIGGER_SOURCE / FIX_ITERATION / TARGET_BRANCH below are hardcoded for the
+    # v1 human /fs-fix scenario; move them into case input.yaml (like
+    # human_instruction) if/when a second fix scenario needs different values.
     if [[ -z "${HUMAN_INSTRUCTION:-}" ]]; then
       echo "ERROR: HUMAN_INSTRUCTION is required for fix eval (set human_instruction in input.yaml)" >&2
       exit 1
