@@ -161,6 +161,7 @@ build_pr_body() {
   local scan_range="$4"
   local pr_body_from_result="${5:-}"  # optional: agent-provided pr_body
   local pr_body_scan_status="${6:-skipped}"  # passed|blocked|error|skipped
+  local closes_issue="${7:-true}"  # optional: "true" or "false"
 
   local description=""
   if [ -n "${pr_body_from_result}" ]; then
@@ -193,6 +194,13 @@ build_pr_body() {
     fi
   fi
 
+  local issue_ref_keyword
+  if [ "${closes_issue}" = "false" ]; then
+    issue_ref_keyword="Related to"
+  else
+    issue_ref_keyword="Closes"
+  fi
+
   local pr_body_scan_line
   case "${pr_body_scan_status}" in
     passed)  pr_body_scan_line="- [x] PR body secret scan passed (gitleaks — no-git)" ;;
@@ -205,7 +213,7 @@ build_pr_body() {
 
 ---
 
-Closes #${issue_number}
+${issue_ref_keyword} #${issue_number}
 
 ### Post-script verification
 
@@ -472,6 +480,109 @@ run_pr_body_test "pr-body-closes-trailing-prose-preserved" \
   $'## Summary\n\nDid the thing.\n\nCloses #42 but leaves a follow-up needed for the migration script.' \
   "42" "agent/42-widget" \
   "Closes #42 but leaves a follow-up needed for the migration script." "yes"
+
+# ---------------------------------------------------------------------------
+# closes_issue=false test cases — partial implementations should use
+# "Related to" instead of "Closes" in the PR body footer.
+# ---------------------------------------------------------------------------
+run_closes_issue_test() {
+  local test_name="$1"
+  local commit_body="$2"
+  local issue_number="$3"
+  local closes_issue="$4"
+  local check_pattern="$5"
+  local expect_present="$6"  # "yes" or "no"
+
+  local actual
+  actual="$(build_pr_body "${commit_body}" "${issue_number}" "agent/${issue_number}-fix" "abc123..def456" "" "skipped" "${closes_issue}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Full implementation (default) — should use "Closes"
+run_closes_issue_test "closes-issue-true-uses-closes" \
+  "Fix the widget rendering." "42" "true" \
+  "Closes #42" "yes"
+
+# Full implementation — should NOT contain "Related to"
+run_closes_issue_test "closes-issue-true-no-related-to" \
+  "Fix the widget rendering." "42" "true" \
+  "Related to #42" "no"
+
+# Partial implementation — should use "Related to"
+run_closes_issue_test "closes-issue-false-uses-related-to" \
+  "Partial fix for the widget rendering." "42" "false" \
+  "Related to #42" "yes"
+
+# Partial implementation — should NOT contain "Closes"
+run_closes_issue_test "closes-issue-false-no-closes" \
+  "Partial fix for the widget rendering." "42" "false" \
+  "Closes #42" "no"
+
+# Default (omitted) — should use "Closes"
+run_closes_issue_test_default() {
+  local actual
+  actual="$(build_pr_body "Fix rendering." "99" "agent/99-fix" "abc..def")"
+
+  if ! echo "${actual}" | grep -qF "Closes #99"; then
+    echo "FAIL: closes-issue-default-uses-closes"
+    echo "  expected 'Closes #99' in body"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: closes-issue-default-uses-closes"
+}
+run_closes_issue_test_default
+
+# Partial implementation with pr_body from result — should use "Related to"
+closes_issue_pr_body_test() {
+  local actual
+  actual="$(build_pr_body "" "42" "agent/42-fix" "abc..def" \
+    $'## Summary\n\nPartial implementation.' "passed" "false")"
+
+  if ! echo "${actual}" | grep -qF "Related to #42"; then
+    echo "FAIL: closes-issue-false-with-pr-body"
+    echo "  expected 'Related to #42' in body"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if echo "${actual}" | grep -qF "Closes #42"; then
+    echo "FAIL: closes-issue-false-with-pr-body"
+    echo "  expected NO 'Closes #42' in body"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: closes-issue-false-with-pr-body"
+}
+closes_issue_pr_body_test
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the no-op detection logic from post-code.sh
