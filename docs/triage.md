@@ -128,6 +128,16 @@ This gives the triage agent the subtlety it needs to distinguish between
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
 
+### Variables
+
+| Variable | Description | Default | Valid values |
+|----------|-------------|---------|--------------|
+| `TRIAGE_AUTO_CODE` | When `true`, low-risk categories (bug, documentation, performance) automatically receive the `ready-to-code` label, triggering the [code agent](code.md). When `false`, these categories receive `triaged` instead, requiring human review before coding begins. | `true` | `true`, `false` |
+
+Set this in the CI workflow `env:` block. The env file passes it to the
+sandbox automatically, and the post-script reads it from the runner
+environment directly — no separate configuration is needed.
+
 ## Source
 
 [`harness/triage.yaml`](../harness/triage.yaml)

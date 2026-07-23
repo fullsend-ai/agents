@@ -42,6 +42,7 @@ forge:
       runner:
         GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
         GH_TOKEN: ${GH_TOKEN}
+        TRIAGE_AUTO_CODE: ${TRIAGE_AUTO_CODE}
       sandbox:
         GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
         GH_TOKEN: "${GH_TOKEN}"

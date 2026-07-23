@@ -492,6 +492,78 @@ run_test "label-category-consistent-passes" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
 
+# --- TRIAGE_AUTO_CODE=false tests ---
+
+# When TRIAGE_AUTO_CODE=false, bug category should get "triaged" instead of "ready-to-code".
+run_test_auto_code_disabled() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local forbidden_pattern="${4:-}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && TRIAGE_AUTO_CODE=false bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected '${expected_pattern}' not found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${forbidden_pattern}" ]] && grep -qF "${forbidden_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — forbidden '${forbidden_pattern}' was found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+SUFFICIENT_BUG='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+
+SUFFICIENT_DOCS='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nDocs issue."}'
+
+SUFFICIENT_PERF='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_query_speed"},"comment":"## Triage Summary\n\nPerf issue."}'
+
+run_test_auto_code_disabled "auto-code-disabled-bug-gets-triaged" \
+  "${SUFFICIENT_BUG}" \
+  "labels[]=triaged" \
+  "labels[]=ready-to-code"
+
+run_test_auto_code_disabled "auto-code-disabled-bug-still-gets-bug-label" \
+  "${SUFFICIENT_BUG}" \
+  "labels[]=bug"
+
+run_test_auto_code_disabled "auto-code-disabled-docs-gets-triaged" \
+  "${SUFFICIENT_DOCS}" \
+  "labels[]=triaged" \
+  "labels[]=ready-to-code"
+
+run_test_auto_code_disabled "auto-code-disabled-docs-still-gets-documentation-label" \
+  "${SUFFICIENT_DOCS}" \
+  "labels[]=documentation"
+
+run_test_auto_code_disabled "auto-code-disabled-perf-gets-triaged" \
+  "${SUFFICIENT_PERF}" \
+  "labels[]=triaged" \
+  "labels[]=ready-to-code"
+
 # --- Summary ---
 
 echo ""

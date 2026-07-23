@@ -312,24 +312,44 @@ ${FAILED_CREATES}"
     # ready-to-code, which triggers the code agent. Feature work and anything
     # else receives the triaged label and waits for human prioritization
     # (per #561, only feature issues should require human review before coding).
+    #
+    # Set TRIAGE_AUTO_CODE=false to disable the automatic ready-to-code
+    # promotion. When disabled, low-risk categories receive "triaged" instead,
+    # requiring human review before the code agent runs.
+    TRIAGE_AUTO_CODE="${TRIAGE_AUTO_CODE:-true}"
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
         add_label "bug"
-        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-        DEFERRED_LABEL="ready-to-code"
+        if [[ "${TRIAGE_AUTO_CODE}" == "false" ]]; then
+          echo "TRIAGE_AUTO_CODE=false — applying triaged label instead of ready-to-code (${CATEGORY})"
+          add_label "triaged"
+        else
+          echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
+          DEFERRED_LABEL="ready-to-code"
+        fi
         ;;
       documentation)
         echo "Applying documentation label..."
         add_label "documentation"
-        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-        DEFERRED_LABEL="ready-to-code"
+        if [[ "${TRIAGE_AUTO_CODE}" == "false" ]]; then
+          echo "TRIAGE_AUTO_CODE=false — applying triaged label instead of ready-to-code (${CATEGORY})"
+          add_label "triaged"
+        else
+          echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
+          DEFERRED_LABEL="ready-to-code"
+        fi
         ;;
       performance)
-        echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
-        DEFERRED_LABEL="ready-to-code"
+        if [[ "${TRIAGE_AUTO_CODE}" == "false" ]]; then
+          echo "TRIAGE_AUTO_CODE=false — applying triaged label instead of ready-to-code (${CATEGORY})"
+          add_label "triaged"
+        else
+          echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
+          DEFERRED_LABEL="ready-to-code"
+        fi
         ;;
       feature)
         echo "Applying feature + triaged labels..."
