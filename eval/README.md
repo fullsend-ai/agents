@@ -1,8 +1,8 @@
 # Eval Harness
 
 Functional tests for fullsend agents. Each agent has its own eval
-directory (`triage/`, `review/`) containing an `eval.yaml` config and a
-`cases/` directory with test case definitions.
+directory (`triage/`, `review/`, `code/`) containing an `eval.yaml`
+config and a `cases/` directory with test case definitions.
 
 ## Running evals
 
