@@ -321,6 +321,81 @@ run_resolve_test_unset "fix-unset-falls-back-to-scan" \
 
 rm -rf "${RESOLVE_TMPDIR}"
 
+# ---------------------------------------------------------------------------
+# Integration test — run the REAL post-fix.sh to verify that it exits non-zero
+# when FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither
+# fix-result.json nor result.json. This catches the fail-open bug that the
+# isolated reimplementation tests above cannot detect.
+#
+# Strategy: initialize a bare git repo on the main branch so NO_PUSH=true,
+# which skips sections 0-4 (secret scan, pre-commit, push) and goes straight
+# to the FULLSEND_VALIDATED_ITERATION_DIR check in section 5.
+# ---------------------------------------------------------------------------
+
+INTEGRATION_TMPDIR="$(mktemp -d)"
+MOCK_BIN="${INTEGRATION_TMPDIR}/bin"
+mkdir -p "${MOCK_BIN}"
+
+# Mock gh: silently accept all calls (needed for ERR trap's report_post_failure_to_pr).
+cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${MOCK_BIN}/gh"
+
+run_postfix_integration_test() {
+  local test_name="$1"
+  local expect_failure="$2"  # "true" if we expect non-zero exit
+
+  local run_dir="${INTEGRATION_TMPDIR}/run-${test_name}"
+  local validated_dir="${run_dir}/validated-output"
+  local repo_dir="${run_dir}/repo"
+  mkdir -p "${validated_dir}" "${repo_dir}"
+
+  # Initialize a minimal git repo on the main branch so the script
+  # sets NO_PUSH=true and skips sections 0-4.
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${INTEGRATION_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+      cat "${INTEGRATION_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${INTEGRATION_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# The "neither filename" case must exit non-zero (fail closed).
+run_postfix_integration_test "integration-neither-filename-fails-closed" "true"
+
+rm -rf "${INTEGRATION_TMPDIR}"
+
 # --- Summary ---
 
 echo ""

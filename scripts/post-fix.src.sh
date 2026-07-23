@@ -374,14 +374,24 @@ fi
 # RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
 # before we cd'd into REPO_DIR. The agent writes its structured output to
 # iteration-<N>/output/fix-result.json within runDir.
+#
+# Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
+# on the runner — not by the sandbox or the agent. No containment check
+# (realpath / prefix guard) is applied here; the value is trusted from the
+# external harness. If the trust model changes, add a realpath prefix check.
 if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
   if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/fix-result.json" ]; then
     RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/fix-result.json"
   elif [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/result.json" ]; then
+    # NOTE: This fallback is currently unreachable in production.
+    # validate-output-schema.sh only accepts result.json when _output_file is
+    # "agent-result.json" (the default). fix.yaml sets FULLSEND_OUTPUT_FILE to
+    # "fix-result.json", so the guard is false and a bare result.json will never
+    # become the validated iteration's output. Kept as defensive code.
     RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
   else
     gha_echo error "FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither fix-result.json nor result.json"
-    RESULT_FILE=""
+    exit 1
   fi
 else
   # Backward compatibility: scan iteration-N/ subdirectories for the last

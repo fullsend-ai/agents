@@ -20,6 +20,10 @@
 set -euo pipefail
 
 # Find the triage result JSON — prefer the validated iteration when set.
+# Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
+# on the runner — not by the sandbox or the agent. No containment check
+# (realpath / prefix guard) is applied here; the value is trusted from the
+# external harness. If the trust model changes, add a realpath prefix check.
 if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
   if [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]]; then
     RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
