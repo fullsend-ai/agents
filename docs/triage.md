@@ -37,14 +37,15 @@ outcome and the post-script applies the corresponding label.
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
-| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). |
-| `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
+| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance) with effort below the review threshold. Bug, documentation, and performance categories also receive their eponymous labels (`bug`, `documentation`, `performance`) automatically. Triggers the [code agent](code.md). |
+| `triaged` | The issue requires human prioritization before coding: feature work, other categories, or bug/docs/performance issues where the `effort-estimation` skill determined human review is needed. |
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the post-script closes the issue. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |
 | `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
 | `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
+| `performance` | The issue is a performance problem. Applied alongside `ready-to-code` or `triaged` to categorize the issue. |
 | `not-planned` | The issue is out of scope, invalid, or spam. The post-script closes the issue with reason "not planned". |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
@@ -127,6 +128,26 @@ This gives the triage agent the subtlety it needs to distinguish between
 `kind/bug` and `kind/flaky-test`, or to know that `area/operator` applies to
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
+
+### Skill: `effort-estimation`
+
+The triage agent includes an `effort-estimation` skill that scores
+implementation effort on a numeric scale and decides whether the issue
+requires human review before auto-promoting to the code agent. The skill's
+`effort_requires_review` output controls whether the post-script applies
+`ready-to-code` (auto-dispatch) or `triaged` (held for human review).
+
+To overload the built-in skill, create your own `effort-estimation` skill in
+`.agents/skills/effort-estimation/SKILL.md` (or at the org level in your
+`.fullsend` config repo at `customized/skills/effort-estimation/SKILL.md`).
+Your skill must return two fields:
+
+- **`effort`** -- numeric score on the same scale.
+- **`effort_requires_review`** -- boolean; `true` to hold the issue for
+  human review, `false` to auto-promote.
+
+This lets you encode your own thresholds, scoring rubric, or domain-specific
+signals without modifying the triage agent prompt or post-script.
 
 ## Source
 
