@@ -365,21 +365,18 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       - name: Check results
         env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
           GATE_RESULT: ${{ needs.gate.result }}
           DETECT_RESULT: ${{ needs.detect.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
-        run: |
-          if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
-            echo "::error::Gate job ${GATE_RESULT}"
-            exit 1
-          fi
-          if [ "$DETECT_RESULT" = "failure" ] || [ "$DETECT_RESULT" = "cancelled" ]; then
-            echo "::error::Detect job ${DETECT_RESULT}"
-            exit 1
-          fi
-          if [ "$TESTS_RESULT" = "failure" ] || [ "$TESTS_RESULT" = "cancelled" ]; then
-            echo "::error::One or more functional tests ${TESTS_RESULT}"
-            exit 1
-          fi
+        run: bash .github/scripts/check-rollup-result.sh
