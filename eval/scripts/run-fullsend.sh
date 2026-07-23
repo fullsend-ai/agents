@@ -61,14 +61,22 @@ git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 if [[ "$AGENT" == "fix" && "$FIXTURE_TYPE" == "pull_request" ]]; then
   HEAD_REF=""
   for attempt in 1 2 3; do
-    if HEAD_REF=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
-      --json headRefName --jq '.headRefName' 2>/dev/null); then
+    if [[ $attempt -lt 3 ]]; then
+      # Suppress stderr on early attempts (expected to be noisy/flaky);
+      # let the final attempt's stderr through so the real gh error is
+      # visible in logs instead of being swallowed entirely.
+      if HEAD_REF=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
+        --json headRefName --jq '.headRefName' 2>/dev/null); then
+        break
+      fi
+      sleep $((attempt))
+    elif HEAD_REF=$(gh pr view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
+      --json headRefName --jq '.headRefName'); then
       break
     fi
-    [[ $attempt -lt 3 ]] && sleep $((attempt))
   done
   if [[ -z "$HEAD_REF" ]]; then
-    echo "ERROR: gh pr view failed for headRefName after retries (PR #${FIXTURE_NUMBER})" >&2
+    echo "ERROR: gh pr view failed for headRefName after retries (PR #${FIXTURE_NUMBER}); see gh error above" >&2
     exit 1
   fi
   if [[ ! "$HEAD_REF" =~ ^[A-Za-z0-9._/-]+$ ]]; then

@@ -99,8 +99,10 @@ resolve_head_sha() {
 
 # Compare pre_agent_head...head_sha to get only the files touched by the
 # fix run itself (not the fixture PR's original files). Prints a JSON array
-# of filenames on success; returns non-zero on failure or when there is
-# nothing to compare (baseline/head missing or unchanged).
+# of filenames and returns 0 when there's nothing to compare — missing
+# baseline/head_sha, or head_sha still equal to baseline — since that is a
+# valid "no new files" result, not a fetch failure. Returns non-zero only
+# when the gh api compare call itself fails.
 files_changed_since() {
   local repo="$1" baseline="$2" head_sha="$3"
   if [[ -z "$baseline" || -z "$head_sha" || "$baseline" == "$head_sha" ]]; then
