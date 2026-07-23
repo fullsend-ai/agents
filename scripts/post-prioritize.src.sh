@@ -27,13 +27,25 @@ if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9
   exit 1
 fi
 
-# Find the result JSON from the last iteration.
-RESULT_FILE=""
-for dir in iteration-*/output; do
-  if [[ -f "${dir}/agent-result.json" ]]; then
-    RESULT_FILE="${dir}/agent-result.json"
+# Find the result JSON — prefer the validated iteration when set.
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
+  if [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+  elif [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/result.json" ]]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
+  else
+    echo "ERROR: FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither agent-result.json nor result.json" >&2
+    exit 1
   fi
-done
+else
+  # Backward compatibility: scan iteration-N/ subdirectories for the last one's output.
+  RESULT_FILE=""
+  for dir in iteration-*/output; do
+    if [[ -f "${dir}/agent-result.json" ]]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
 
 if [[ -z "${RESULT_FILE}" ]]; then
   echo "ERROR: agent-result.json not found in any iteration output directory" >&2
