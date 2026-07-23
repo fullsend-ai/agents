@@ -82,8 +82,13 @@ for dir in "${RUN_DIR}"/iteration-*/output; do
     RESULT_FILE="${dir}/code-result.json"
   fi
 done
+CLOSES_ISSUE="true"
 if [ -n "${RESULT_FILE}" ]; then
   AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+  AGENT_CLOSES="$(jq -r '.closes_issue // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+  if [ "${AGENT_CLOSES}" = "false" ]; then
+    CLOSES_ISSUE="false"
+  fi
 fi
 if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
   post_fail_to_issue branch-validation \
@@ -564,11 +569,17 @@ case "${PR_BODY_SCAN_STATUS}" in
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
 esac
 
+if [ "${CLOSES_ISSUE}" = "false" ]; then
+  ISSUE_REF_KEYWORD="Related to"
+else
+  ISSUE_REF_KEYWORD="Closes"
+fi
+
 PR_BODY="${DESCRIPTION}
 
 ---
 
-Closes #${ISSUE_NUMBER}
+${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}
 
 ### Post-script verification
 

@@ -16,6 +16,11 @@
       "type": "string",
       "maxLength": 60000,
       "description": "PR description used as PR body instead of commit body. Supports markdown formatting and template-compliant structure without gitlint line-length constraints."
+    },
+    "closes_issue": {
+      "type": "boolean",
+      "default": true,
+      "description": "Whether the PR should close the linked issue on merge. Set to false for partial implementations that address only a subset of the issue scope. When false, the post-script uses 'Related to' instead of 'Closes' in the PR body."
     }
   }
 }
