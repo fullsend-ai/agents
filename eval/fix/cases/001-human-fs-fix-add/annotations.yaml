@@ -1,0 +1,17 @@
+state: open
+
+expected_files:
+  - calc.py
+
+labels:
+  forbidden: []
+
+max_turns: 80
+max_cost_usd: 8.00
+
+# Human reference only; not consumed by judges (unlike triage/review quality).
+fix_expectations: |
+  Human-triggered fix (TRIGGER_SOURCE=eval-human): case input.yaml supplies
+  human_instruction describing the add() bug. Success is a new commit on the
+  existing PR branch that touches calc.py (post-fix push). PRE_AGENT_HEAD is
+  the fixture commit SHA.

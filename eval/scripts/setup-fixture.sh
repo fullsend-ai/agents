@@ -151,4 +151,17 @@ data:
   fixture_type: "${FIXTURE_TYPE}"
 YAML
 
+# Optional per-case human instruction for fix (and similar) agents. Kept in
+# input.yaml with the fixture; shared runner must not hardcode prompt text.
+human_instruction=$(yq -r '.human_instruction // ""' "$INPUT")
+if [[ -n "$human_instruction" ]]; then
+  if [[ "$human_instruction" == *$'\n'* || "$human_instruction" == *$'\r'* ]]; then
+    echo "ERROR: human_instruction in input.yaml must be a single line" >&2
+    exit 1
+  fi
+  HUMAN_INSTRUCTION="$human_instruction" yq -i \
+    '.env.HUMAN_INSTRUCTION = strenv(HUMAN_INSTRUCTION)' \
+    "$CASE_WORKSPACE/.hook-outputs.yaml"
+fi
+
 echo "Hook outputs written to $CASE_WORKSPACE/.hook-outputs.yaml"
