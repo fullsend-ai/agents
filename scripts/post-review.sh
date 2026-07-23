@@ -309,16 +309,97 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Post the review. Exit code 10 = stale-head: the PR HEAD moved after the
-# agent reviewed it. When this happens, post a /fs-review comment to
-# re-dispatch a fresh review for the current HEAD.
+# Post the review with retry logic. Transient GitHub API errors (e.g. 422
+# during PR transitional states) can cause fullsend post-review to fail even
+# though the review comment was posted successfully. Retry with backoff to
+# handle these transient failures.
+#
+# Exit code 10 = stale-head: bypasses retry, handled separately below.
+# Other non-zero exit codes are retried up to POST_REVIEW_MAX_ATTEMPTS times.
+# NOTE: fullsend does not expose distinct exit codes for transient vs.
+# permanent failures (e.g. invalid token, malformed result file). As a
+# deliberate trade-off, all non-zero/non-10 codes are retried — a permanent
+# failure wastes at most two retry attempts (~20s) before falling through to
+# the degraded-mode fallback.
+# If all retries are exhausted, attempt degraded-mode label fallback so the
+# PR is not left without an outcome label.
+#
+# Idempotency: a "failed" attempt may have actually succeeded server-side
+# (e.g. a 422/timeout after the server processed the request). Before each
+# retry, a lightweight check queries the reviews API to detect if a new
+# review appeared. If so, the retry is skipped to avoid double-posting.
+#
+# Environment:
+#   POST_REVIEW_RETRY_DELAY — override backoff seconds for all retries
+#                             (default: 5s first retry, 15s second retry;
+#                              set to 0 in tests to skip sleep). Must be a
+#                             non-negative integer; invalid values are ignored
+#                             and the progressive default is used.
 # ---------------------------------------------------------------------------
+POST_REVIEW_MAX_ATTEMPTS=3
+
+# Snapshot the latest review ID before the retry loop for idempotency.
+# If a "failed" attempt actually posted a review, the retry detects it.
+_last_review_id=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" \
+  --jq 'map(.id) | max // 0' 2>/dev/null) || true
+_last_review_id="${_last_review_id:-0}"
+
+# Temp file for capturing stderr from fullsend post-review.
+_pr_stderr=$(mktemp)
+CLEANUP_FILES+=("${_pr_stderr}")
+
 POST_REVIEW_EXIT=0
-fullsend post-review \
-  --repo "${REPO_FULL_NAME}" \
-  --pr "${PR_NUMBER}" \
-  --token "${REVIEW_TOKEN}" \
-  --result "${RESULT_FILE}" || POST_REVIEW_EXIT=$?
+for _pr_attempt in $(seq 1 "${POST_REVIEW_MAX_ATTEMPTS}"); do
+  POST_REVIEW_EXIT=0
+  fullsend post-review \
+    --repo "${REPO_FULL_NAME}" \
+    --pr "${PR_NUMBER}" \
+    --token "${REVIEW_TOKEN}" \
+    --result "${RESULT_FILE}" 2>"${_pr_stderr}" || POST_REVIEW_EXIT=$?
+
+  # Exit code 10 = stale-head: bypass retry, handle below
+  if [ "${POST_REVIEW_EXIT}" -eq 10 ]; then
+    break
+  fi
+
+  # Success: no retry needed
+  if [ "${POST_REVIEW_EXIT}" -eq 0 ]; then
+    break
+  fi
+
+  # Non-zero, non-stale-head: log and retry if attempts remain
+  # Include first line of stderr for diagnostics (fullsend prints
+  # "Error: github api: <status> <message>" on API failures).
+  _pr_err_detail=""
+  if [ -s "${_pr_stderr}" ]; then
+    _pr_err_detail=" — $(head -1 "${_pr_stderr}")"
+  fi
+
+  if [ "${_pr_attempt}" -lt "${POST_REVIEW_MAX_ATTEMPTS}" ]; then
+    # Idempotency check: if a new review appeared since the loop started,
+    # the "failed" attempt actually succeeded server-side — skip retry.
+    _current_review_id=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" \
+      --jq 'map(.id) | max // 0' 2>/dev/null) || true
+    _current_review_id="${_current_review_id:-0}"
+    if [ "${_current_review_id}" -gt "${_last_review_id}" ]; then
+      echo "::notice::Review was posted despite exit code ${POST_REVIEW_EXIT} — skipping retry (idempotency guard)"
+      POST_REVIEW_EXIT=0
+      break
+    fi
+
+    if [[ "${POST_REVIEW_RETRY_DELAY:-}" =~ ^[0-9]+$ ]]; then
+      _backoff="${POST_REVIEW_RETRY_DELAY}"
+    elif [ "${_pr_attempt}" -eq 1 ]; then
+      _backoff=5
+    else
+      _backoff=15
+    fi
+    echo "::warning::fullsend post-review attempt ${_pr_attempt}/${POST_REVIEW_MAX_ATTEMPTS} failed (exit ${POST_REVIEW_EXIT}${_pr_err_detail}) — retrying in ${_backoff}s"
+    sleep "${_backoff}"
+  else
+    echo "::warning::fullsend post-review attempt ${_pr_attempt}/${POST_REVIEW_MAX_ATTEMPTS} failed (exit ${POST_REVIEW_EXIT}${_pr_err_detail}) — all retries exhausted"
+  fi
+done
 
 if [ "${POST_REVIEW_EXIT}" -eq 10 ]; then
   echo "Stale-head detected — checking whether to re-dispatch review"
@@ -347,8 +428,92 @@ ${REDISPATCH_MARKER}" || echo "::warning::Failed to post re-dispatch comment"
   # appear as a failure.
   exit 0
 elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
-  echo "::error::fullsend post-review failed with exit code ${POST_REVIEW_EXIT} (PR #${PR_NUMBER} in ${REPO_FULL_NAME})" >&2
-  exit "${POST_REVIEW_EXIT}"
+  echo "::error::fullsend post-review failed after ${POST_REVIEW_MAX_ATTEMPTS} attempts (exit ${POST_REVIEW_EXIT}, PR #${PR_NUMBER} in ${REPO_FULL_NAME})" >&2
+
+  # Degraded-mode fallback: apply the outcome label directly so the PR is
+  # not left in limbo without a label.
+  #
+  # Assumption: fullsend post-review is a two-step operation (post comment,
+  # then submit formal review). A transient API failure may occur between
+  # the steps, leaving the comment posted but the formal review missing.
+  # We cannot distinguish "comment posted, review failed" from "nothing
+  # posted" because fullsend post-review does not emit distinct exit codes
+  # for each case. (The CLI does print diagnostic details to stderr — these
+  # are captured and included in the retry warning messages above — but exit
+  # codes do not differentiate failure modes.) Applying the label here is a
+  # best-effort measure — exit 1 still signals CI failure so a human can
+  # verify.
+  echo "Attempting degraded-mode label fallback..."
+  _fallback_applied=false
+
+  # Determine the target fallback label so we can skip removing it
+  # (avoids a pointless unlabel/relabel cycle — mirrors normal path).
+  # Label logic mirrors the outcome-label block below — keep in sync.
+  _fallback_label=""
+  if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+    _fallback_label="ready-for-merge"
+  elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
+       [ "${ACTION}" = "comment" ]; then
+    _fallback_label="requires-manual-review"
+  elif [ "${ACTION}" = "reject" ]; then
+    _fallback_label="rejected"
+  fi
+
+  # Remove stale outcome labels, skipping the one about to be applied.
+  for _stale in "ready-for-merge" "requires-manual-review" "rejected"; do
+    [ "${_stale}" = "${_fallback_label}" ] && continue
+    gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --remove-label "${_stale}" 2>/dev/null || true
+  done
+  if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+    gh label create "ready-for-merge" --repo "${REPO_FULL_NAME}" \
+      --description "All reviewers approved — ready to merge" --color "0E8A16" \
+      2>/dev/null || true
+    if gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --add-label "ready-for-merge"; then
+      _fallback_applied=true
+      echo "Degraded-mode fallback: applied ready-for-merge label"
+    fi
+  elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
+       [ "${ACTION}" = "comment" ]; then
+    gh label create "requires-manual-review" --repo "${REPO_FULL_NAME}" \
+      --description "Review requires human judgment" --color "FBCA04" \
+      2>/dev/null || true
+    if gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --add-label "requires-manual-review"; then
+      _fallback_applied=true
+      echo "Degraded-mode fallback: applied requires-manual-review label"
+    fi
+  elif [ "${ACTION}" = "reject" ]; then
+    # NOTE: The normal path closes the PR before applying the rejected
+    # label (gh pr close with a comment). In degraded mode, closing is
+    # intentionally omitted as a conservative measure — without
+    # confirmation that the formal review was posted, closing the PR
+    # would be a destructive action based on uncertain state. The exit 1
+    # ensures CI failure so a human can intervene.
+    gh label create "rejected" --repo "${REPO_FULL_NAME}" \
+      --description "Approach rejected by review agent" --color "B60205" \
+      2>/dev/null || true
+    if gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --add-label "rejected"; then
+      _fallback_applied=true
+      echo "Degraded-mode fallback: applied rejected label"
+    fi
+  fi
+
+  # Sanitize ACTION for GHA workflow command output (defense-in-depth,
+  # matches the pattern used for label-action values above).
+  _safe_action="${ACTION//$'\n'/}"
+  _safe_action="${_safe_action//$'\r'/}"
+  _safe_action="${_safe_action//::/:}"
+
+  if [ "${_fallback_applied}" = "true" ]; then
+    echo "::warning::Formal review failed but outcome label applied via degraded-mode fallback"
+  else
+    echo "::warning::Degraded-mode label fallback not applicable (action=${_safe_action})"
+  fi
+
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
