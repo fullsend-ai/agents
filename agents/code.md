@@ -81,7 +81,7 @@ the review agent — if the triage was wrong, your code will fail review.
 
 ## Structured output
 
-You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/code-result.json`
+You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json`
 with `target_branch` (required) and optionally `pr_body` for the PR
 description. The `code-implementation` skill describes the schema and
 the exact steps where you write each field. The post-script reads this
@@ -91,7 +91,7 @@ file, the validation loop rejects the run and retries.
 After writing the file, validate it before exiting:
 
 ```bash
-fullsend-check-output "${FULLSEND_OUTPUT_DIR}/code-result.json"
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 If validation fails, read the error output, fix the JSON file, and
