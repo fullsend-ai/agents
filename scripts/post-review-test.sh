@@ -25,8 +25,9 @@ determine_outcome_label() {
   local action="$1"
   local downgraded="$2"
   local is_draft="${3:-false}"
+  local has_human_approval="${4:-false}"
 
-  if [ "${action}" = "approve" ] && [ "${downgraded}" = "false" ] && [ "${is_draft}" != "true" ]; then
+  if [ "${action}" = "approve" ] && { [ "${downgraded}" = "false" ] || [ "${has_human_approval}" = "true" ]; } && [ "${is_draft}" != "true" ]; then
     echo "ready-for-merge"
   elif { [ "${action}" = "approve" ] && { [ "${downgraded}" = "true" ] || [ "${is_draft}" = "true" ]; }; } || \
        [ "${action}" = "comment" ]; then
@@ -46,9 +47,10 @@ run_test() {
   local downgraded="$3"
   local expected="$4"
   local is_draft="${5:-false}"
+  local has_human_approval="${6:-false}"
 
   local actual
-  actual="$(determine_outcome_label "${action}" "${downgraded}" "${is_draft}")"
+  actual="$(determine_outcome_label "${action}" "${downgraded}" "${is_draft}" "${has_human_approval}")"
 
   if [ "${actual}" != "${expected}" ]; then
     echo "FAIL: ${test_name}"
@@ -118,6 +120,24 @@ run_test "request-changes-draft-unchanged" \
 
 run_test "reject-draft-unchanged" \
   "reject" "false" "rejected" "true"
+
+# --- Human-approval override tests ---
+
+# Approve + downgraded + existing human approval → ready-for-merge
+run_test "approve-downgraded-human-approval" \
+  "approve" "true" "ready-for-merge" "false" "true"
+
+# Approve + downgraded + no human approval → requires-manual-review
+run_test "approve-downgraded-no-human-approval" \
+  "approve" "true" "requires-manual-review" "false" "false"
+
+# Draft + downgraded + human approval → still requires-manual-review
+run_test "approve-draft-downgraded-human-approval" \
+  "approve" "true" "requires-manual-review" "true" "true"
+
+# Approve (no downgrade) + human approval → ready-for-merge (unchanged)
+run_test "approve-no-downgrade-human-approval" \
+  "approve" "false" "ready-for-merge" "false" "true"
 
 # ---------------------------------------------------------------------------
 # Severity-threshold filtering logic
@@ -377,15 +397,38 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 
 # gh pr view ... --json state,isDraft → JSON with both fields.
 # MOCK_PR_IS_DRAFT can be set to "true" to simulate a draft PR.
+# MOCK_PR_HEAD_SHA can be set to control the HEAD SHA.
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
   DRAFT="\${MOCK_PR_IS_DRAFT:-false}"
-  echo "{\"state\":\"OPEN\",\"isDraft\":\${DRAFT}}"
+  HEAD="\${MOCK_PR_HEAD_SHA:-abc123}"
+  echo "{\"state\":\"OPEN\",\"isDraft\":\${DRAFT},\"headRefOid\":\"\${HEAD}\"}"
   exit 0
 fi
 
-# gh pr view ... --json files ... → no protected files
+# TOCTOU re-fetch: gh pr view ... --json headRefOid (without state)
+# MOCK_PR_HEAD_SHA_REFETCH overrides the re-fetched SHA to simulate a
+# HEAD change between script start and the human-approval check.
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json headRefOid"* ]] && [[ "\$*" != *"state"* ]]; then
+  REFETCH="\${MOCK_PR_HEAD_SHA_REFETCH:-\${MOCK_PR_HEAD_SHA:-abc123}}"
+  echo "\${REFETCH}"
+  exit 0
+fi
+
+# gh pr view ... --json files ... → file list (default: non-protected)
+# MOCK_PR_FILES can be set to return protected paths.
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
-  echo "src/main.go"
+  echo "\${MOCK_PR_FILES:-src/main.go}"
+  exit 0
+fi
+
+# gh api repos/.../pulls/.../reviews --paginate (list PR reviews)
+# MOCK_REVIEWS_JSON can be set to return review data.
+# MOCK_REVIEWS_FAIL=true simulates an API failure (fail-closed test).
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/reviews" ]] && [[ "\$*" == *"--paginate"* ]]; then
+  if [[ "\${MOCK_REVIEWS_FAIL:-}" == "true" ]]; then
+    exit 1
+  fi
+  echo "\${MOCK_REVIEWS_JSON:-[]}"
   exit 0
 fi
 
@@ -718,6 +761,391 @@ run_label_test_with_env_stdout "draft-approve-log-message" \
 run_label_test_no_pattern "no-op-skip-ready-for-merge-removal" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
   "--remove-label ready-for-merge"
+
+# --- Human-approval integration tests ---
+# These invoke the real post-review.sh with protected-path files and mock
+# reviews to verify that existing human approvals on the HEAD SHA override
+# the requires-manual-review downgrade.
+
+run_human_approval_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local pr_files="$4"
+  local pr_head_sha="$5"
+  local reviews_json="$6"
+  local is_draft="${7:-false}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export MOCK_PR_FILES="${pr_files}"
+    export MOCK_PR_HEAD_SHA="${pr_head_sha}"
+    export MOCK_REVIEWS_JSON="${reviews_json}"
+    export MOCK_PR_IS_DRAFT="${is_draft}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_human_approval_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local pr_files="$4"
+  local pr_head_sha="$5"
+  local reviews_json="$6"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export MOCK_PR_FILES="${pr_files}"
+    export MOCK_PR_HEAD_SHA="${pr_head_sha}"
+    export MOCK_REVIEWS_JSON="${reviews_json}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+APPROVE_BODY='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+
+# Human approval on current HEAD (authorized MEMBER) → ready-for-merge
+run_human_approval_test "human-approval-on-head-ready-for-merge" \
+  "${APPROVE_BODY}" \
+  "--add-label ready-for-merge" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"human"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]'
+
+run_human_approval_test_stdout "human-approval-on-head-log" \
+  "${APPROVE_BODY}" \
+  "Human APPROVED review found on HEAD SHA abc123" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"human"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]'
+
+# Human approval on stale SHA → requires-manual-review
+run_human_approval_test "human-approval-stale-sha-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"human"},"commit_id":"old-sha","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]'
+
+# Only bot approvals on HEAD → requires-manual-review
+run_human_approval_test "bot-approval-only-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"Bot","login":"github-actions[bot]"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]'
+
+# OAuth user-to-server bot (type User but login ends with [bot]) → requires-manual-review
+run_human_approval_test "oauth-bot-login-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"some-app[bot]"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]'
+
+# No approvals at all → requires-manual-review
+run_human_approval_test "no-approvals-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[]'
+
+# Draft + protected paths + human approval → still requires-manual-review
+run_human_approval_test "draft-human-approval-still-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"human"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]' \
+  "true"
+
+# --- Additional human-approval tests (authorization, latest-per-reviewer, TOCTOU, failure) ---
+
+# Unauthorized user (author_association=NONE) → requires-manual-review
+run_human_approval_test "unauthorized-user-approval-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"random-person"},"commit_id":"abc123","author_association":"NONE","submitted_at":"2024-01-01T00:00:00Z"}]'
+
+# CONTRIBUTOR (has committed before but not a collaborator) → requires-manual-review
+run_human_approval_test "contributor-not-collaborator-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"contributor"},"commit_id":"abc123","author_association":"CONTRIBUTOR","submitted_at":"2024-01-01T00:00:00Z"}]'
+
+# Reviewer approved then requested changes (same commit) → requires-manual-review
+run_human_approval_test "reviewer-changed-mind-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"maintainer"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"},{"state":"CHANGES_REQUESTED","user":{"type":"User","login":"maintainer"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T01:00:00Z"}]'
+
+# Reviews API failure → fail-closed (requires-manual-review)
+run_human_approval_test "reviews-api-failure-fail-closed" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[]'
+
+# Override the test to also set MOCK_REVIEWS_FAIL — use the _with_env variant
+run_human_approval_test_with_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local pr_files="$4"
+  local pr_head_sha="$5"
+  local reviews_json="$6"
+  local env_var="$7"
+  local env_val="$8"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export MOCK_PR_FILES="${pr_files}"
+    export MOCK_PR_HEAD_SHA="${pr_head_sha}"
+    export MOCK_REVIEWS_JSON="${reviews_json}"
+    export "${env_var}=${env_val}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Reviews API failure (MOCK_REVIEWS_FAIL=true) → requires-manual-review
+run_human_approval_test_with_env "reviews-api-failure-mock-fail-closed" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[]' \
+  "MOCK_REVIEWS_FAIL" "true"
+
+# TOCTOU: HEAD SHA changed between script start and human-approval check
+run_human_approval_test_toctou() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local pr_files="$4"
+  local pr_head_sha="$5"
+  local reviews_json="$6"
+  local refetch_sha="$7"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export MOCK_PR_FILES="${pr_files}"
+    export MOCK_PR_HEAD_SHA="${pr_head_sha}"
+    export MOCK_PR_HEAD_SHA_REFETCH="${refetch_sha}"
+    export MOCK_REVIEWS_JSON="${reviews_json}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in gh calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_human_approval_test_toctou_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local pr_files="$4"
+  local pr_head_sha="$5"
+  local reviews_json="$6"
+  local refetch_sha="$7"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export MOCK_PR_FILES="${pr_files}"
+    export MOCK_PR_HEAD_SHA="${pr_head_sha}"
+    export MOCK_PR_HEAD_SHA_REFETCH="${refetch_sha}"
+    export MOCK_REVIEWS_JSON="${reviews_json}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# HEAD SHA changed → requires-manual-review (human approval ignored)
+run_human_approval_test_toctou "toctou-head-sha-changed-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"human"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]' \
+  "new-sha-456"
+
+# Verify TOCTOU stdout message
+run_human_approval_test_toctou_stdout "toctou-head-sha-changed-log" \
+  "${APPROVE_BODY}" \
+  "HEAD SHA changed during run" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"human"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]' \
+  "new-sha-456"
+
+# Kill switch disabled → requires-manual-review (even with valid human approval)
+run_human_approval_test_with_env "kill-switch-disabled-manual-review" \
+  "${APPROVE_BODY}" \
+  "--add-label requires-manual-review" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"human"},"commit_id":"abc123","author_association":"MEMBER","submitted_at":"2024-01-01T00:00:00Z"}]' \
+  "REVIEW_HUMAN_APPROVAL_OVERRIDE" "false"
+
+# OWNER author_association → ready-for-merge (verify all allowed associations)
+run_human_approval_test "owner-approval-ready-for-merge" \
+  "${APPROVE_BODY}" \
+  "--add-label ready-for-merge" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"owner"},"commit_id":"abc123","author_association":"OWNER","submitted_at":"2024-01-01T00:00:00Z"}]'
+
+# COLLABORATOR author_association → ready-for-merge
+run_human_approval_test "collaborator-approval-ready-for-merge" \
+  "${APPROVE_BODY}" \
+  "--add-label ready-for-merge" \
+  "scripts/post-review.sh" \
+  "abc123" \
+  '[{"state":"APPROVED","user":{"type":"User","login":"collab"},"commit_id":"abc123","author_association":"COLLABORATOR","submitted_at":"2024-01-01T00:00:00Z"}]'
 
 # --- Summary ---
 

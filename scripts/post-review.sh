@@ -36,9 +36,10 @@ trap 'rm -f "${CLEANUP_FILES[@]}"' EXIT
 
 # Refuse to post reviews on merged or closed PRs.
 # Also fetch draft status — draft PRs must not receive ready-for-merge.
-PR_INFO=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state,isDraft)
+PR_INFO=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json state,isDraft,headRefOid)
 PR_STATE=$(echo "${PR_INFO}" | jq -r '.state')
 PR_IS_DRAFT=$(echo "${PR_INFO}" | jq -r '.isDraft')
+PR_HEAD_SHA=$(echo "${PR_INFO}" | jq -r '.headRefOid')
 if [ "${PR_STATE}" != "OPEN" ]; then
   echo "PR is ${PR_STATE}, skipping review"
 
@@ -352,6 +353,49 @@ elif [ "${POST_REVIEW_EXIT}" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Human-approval check: when the agent approved but was downgraded due to
+# protected paths, check whether an authorized human has already submitted
+# an APPROVED review on the current HEAD SHA. If so, the protected-path
+# requirement is satisfied and the outcome can be ready-for-merge.
+#
+# Authorization: requires author_association of OWNER, MEMBER, or
+# COLLABORATOR (i.e. the reviewer must have write access to the repo).
+# The check also excludes bot accounts and reduces to each reviewer's
+# latest review to handle "approve then request changes" workflows.
+#
+# Kill switch: set REVIEW_HUMAN_APPROVAL_OVERRIDE=false to disable.
+# ---------------------------------------------------------------------------
+REVIEW_HUMAN_APPROVAL_OVERRIDE="${REVIEW_HUMAN_APPROVAL_OVERRIDE:-true}"
+HAS_HUMAN_APPROVAL=false
+if [ "${DOWNGRADED}" = "true" ] && [ "${REVIEW_HUMAN_APPROVAL_OVERRIDE}" = "true" ]; then
+  # TOCTOU mitigation: re-fetch HEAD SHA to ensure it hasn't moved since
+  # script start. If it changed, skip the check (fall back to requires-manual-review).
+  CURRENT_HEAD_SHA=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --json headRefOid --jq '.headRefOid' 2>/dev/null) || CURRENT_HEAD_SHA=""
+  if [ -n "${CURRENT_HEAD_SHA}" ] && [ "${CURRENT_HEAD_SHA}" != "${PR_HEAD_SHA}" ]; then
+    echo "HEAD SHA changed during run (${PR_HEAD_SHA} → ${CURRENT_HEAD_SHA}) — skipping human-approval check"
+  else
+    HUMAN_APPROVALS=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" \
+      --paginate 2>/dev/null \
+      | jq -s --arg sha "${PR_HEAD_SHA}" \
+        'add // []
+        | group_by(.user.login)
+        | map(sort_by(.submitted_at) | last)
+        | [.[] | select(
+            .state == "APPROVED"
+            and (.author_association == "OWNER" or .author_association == "MEMBER" or .author_association == "COLLABORATOR")
+            and (.user.login | endswith("[bot]") | not)
+            and .commit_id == $sha
+          )]
+        | length') || HUMAN_APPROVALS=0
+    if [ "${HUMAN_APPROVALS}" -gt 0 ]; then
+      echo "Human APPROVED review found on HEAD SHA ${PR_HEAD_SHA} — protected-path requirement satisfied"
+      HAS_HUMAN_APPROVAL=true
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Outcome labels: apply labels based on the review action.
 # Labels are created if missing, matching the needs-human pattern in
 # post-fix.sh.
@@ -361,7 +405,7 @@ fi
 # Determine the target outcome label before mutating anything so we can
 # skip no-op remove/re-add cycles that generate timeline noise.
 OUTCOME_LABEL=""
-if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+if [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "false" ] || [ "${HAS_HUMAN_APPROVAL}" = "true" ]; } && [ "${PR_IS_DRAFT}" != "true" ]; then
   OUTCOME_LABEL="ready-for-merge"
 elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
      [ "${ACTION}" = "comment" ]; then
