@@ -9,3 +9,4 @@ agents:
   - source: harness/review.yaml
   - source: harness/retro.yaml
   - source: harness/prioritize.yaml
+  - source: harness/critique.yaml
