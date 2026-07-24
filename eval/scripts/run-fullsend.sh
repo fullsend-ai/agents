@@ -135,7 +135,18 @@ install -m 0600 /dev/null "$ENV_FILE"
 {
   emit_env "GH_TOKEN" "${GH_TOKEN}"
   emit_env "PUSH_TOKEN" "${GH_TOKEN}"
-  emit_env "REVIEW_TOKEN" "${GH_TOKEN}"
+
+  # Mint a separate REVIEW_TOKEN so the reviewer identity differs from the
+  # PR author (GitHub rejects REQUEST_CHANGES on your own PR). Falls back
+  # to GH_TOKEN when the mint is unavailable.
+  if [[ "$FIXTURE_TYPE" == "pull_request" && -n "${FULLSEND_MINT_URL:-}" ]]; then
+    REPO_NAME="${EPHEMERAL_REPO#*/}"
+    MINTED=$(fullsend mint token --role review --repos "$REPO_NAME" \
+               --mint-url "$FULLSEND_MINT_URL" 2>&1) && \
+      REVIEW_TOKEN="$MINTED" || \
+      echo "WARNING: mint failed, falling back to GH_TOKEN for REVIEW_TOKEN: $MINTED" >&2
+  fi
+  emit_env "REVIEW_TOKEN" "${REVIEW_TOKEN:-${GH_TOKEN}}"
 
   # Code/fix harness runner_env refs — mint normally sets these; eval skips mint.
   # Only override GITHUB_WORKSPACE for agents whose post-scripts expand
