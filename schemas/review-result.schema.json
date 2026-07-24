@@ -72,7 +72,7 @@
   "$defs": {
     "finding": {
       "type": "object",
-      "required": ["severity", "category", "file", "description"],
+      "required": ["severity", "category", "file", "description", "verified_variables", "unchecked_variables"],
       "properties": {
         "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
         "category": { "type": "string", "minLength": 1 },
@@ -83,6 +83,16 @@
         "actionable": {
           "type": "boolean",
           "description": "True when this non-blocking finding should be tracked as a follow-up issue if the review approves."
+        },
+        "verified_variables": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Variables in the security-sensitive context that were verified as having the security control applied."
+        },
+        "unchecked_variables": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Variables in the security-sensitive context that were not verified as having the security control applied."
         }
       },
       "additionalProperties": false
