@@ -11,6 +11,7 @@ First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) p
 | **Review** | Dispatches parallel sub-agents across six review dimensions | PR events, `/fs-review` |
 | **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` |
 | **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` |
+| **Critique** | Adversarial reviewer and quality gate for refinement plans | `ready-to-critique` label |
 | **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` |
 
 See [`docs/`](docs/) for detailed documentation on each agent.
