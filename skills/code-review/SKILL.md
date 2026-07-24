@@ -61,6 +61,21 @@ git log --oneline -10 -- <test-file-path>
 
 ### 3. Evaluate each dimension
 
+#### Complexity calibration
+
+Before evaluating dimensions, classify the change complexity:
+
+**Simple** — ALL of the following hold: the diff is purely subtractive
+(deletion-only) OR touches only CI/CD configuration or documentation
+files; affects 2 or fewer files; does not modify production logic; does
+not touch security-sensitive paths. For simple changes, evaluate only
+**Correctness** and **Style/conventions** — skip the other four
+dimensions. Produce a brief 2-3 sentence assessment rather than a
+per-dimension breakdown. If a simple change reveals unexpected
+concerns (e.g., a deletion removes a security guard), reclassify as
+standard and evaluate all dimensions.
+
+**Standard** — any change that does not meet all simple criteria.
 Evaluate all six dimensions independently. Do not let confidence in one
 dimension carry over to another — each requires its own scrutiny.
 
