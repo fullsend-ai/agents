@@ -1,0 +1,23 @@
+# The agent should find the resource leak and the SQL injection, and
+# request changes.
+state: open
+
+labels:
+  required:
+    - requires-manual-review
+  forbidden:
+    - ready-for-merge
+
+max_turns: 30
+max_cost_usd: 3.00
+
+review_expectations: |
+  The PR has two clear issues the agent should flag:
+
+  1. Resource leak in export_users: open() without a context manager.
+     The file handle is never closed.
+  2. SQL injection in find_user: f-string interpolation into a query.
+
+  A score of 1 means the agent missed both issues or approved.
+  A score of 3 means it found one of the two issues.
+  A score of 5 means it found both and explained the risk clearly.
