@@ -132,7 +132,8 @@
         "environment": { "type": "string" },
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
-        "proposed_test_case": { "type": "string", "minLength": 1 }
+        "proposed_test_case": { "type": "string", "minLength": 1 },
+        "requires_workflow_changes": { "type": "boolean" }
       },
       "additionalProperties": false
     },

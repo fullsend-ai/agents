@@ -130,6 +130,7 @@ Before forming any clarifying question, classify it:
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
 - **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
+- **Would resolving this issue require modifying workflow files?** Scan the issue title, body, referenced files, and labels for signals that the fix involves changes under `.github/workflows/`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows. Prefer deterministic signals — explicit path references, CI/workflow-scoped labels, mentions of GitHub Actions workflow configuration — over vague mentions of "workflow" in non-GHA contexts (e.g., "user onboarding workflow"). If the fix likely requires workflow file changes, set `requires_workflow_changes: true` in `triage_summary` and include a warning in the triage comment that the code agent cannot modify workflow files under current permissions. Reference the least-privilege workflow-change epic and note that manual intervention (human PR or maintainer action) is required.
 
 ### Clarity scoring
 
@@ -292,7 +293,8 @@ Information is sufficient for a developer to investigate and fix.
     "environment": "Relevant environment details",
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
-    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout."
+    "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
+    "requires_workflow_changes": false
   },
   "comment": "A triage summary comment formatted in markdown, presenting the assessment to the maintainers. Include the proposed test case as a fenced code block.",
   "label_actions": {
@@ -304,6 +306,8 @@ Information is sufficient for a developer to investigate and fix.
   }
 }
 ```
+
+**Workflow change detection (optional):** If the issue likely requires modifying GitHub Actions workflow files (`.github/workflows/`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows), set `requires_workflow_changes: true` in `triage_summary`. When set, the post-triage script skips auto-triggering the code agent because the code agent cannot modify workflow files under current permissions. The triage comment should warn about this limitation and note that manual intervention is required. When `requires_workflow_changes` is not set or is `false`, auto-triggering proceeds normally.
 
 **Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
 
