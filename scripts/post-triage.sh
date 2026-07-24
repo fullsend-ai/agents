@@ -442,6 +442,17 @@ if [[ -n "${DEFERRED_LABEL}" ]]; then
   add_label "${DEFERRED_LABEL}"
 fi
 
+# --- Append action-hints footer (sufficient only) ---
+
+if [[ "${ACTION}" == "sufficient" ]]; then
+  COMMENT="${COMMENT}
+
+---
+**Next steps:**
+- \`/fs-code\` — agent creates a PR to implement this issue
+- \`/fs-code <your instruction>\` — agent implements with your specific guidance"
+fi
+
 # --- Post comment ---
 
 echo "Posting comment..."
