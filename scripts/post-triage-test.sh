@@ -492,6 +492,89 @@ run_test "label-category-consistent-passes" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
 
+# ---------------------------------------------------------------------------
+# FULLSEND_VALIDATED_ITERATION_DIR tests
+# Verify that when FULLSEND_VALIDATED_ITERATION_DIR is set, the script reads
+# from that directory instead of scanning iteration-*/output.
+# ---------------------------------------------------------------------------
+
+# Minimal sufficient fixture for validated-dir tests.
+VALIDATED_DIR_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+
+run_validated_dir_test() {
+  local test_name="$1"
+  local validated_dir_file="$2"   # "agent-result.json", "result.json", or "none"
+  local expected_pattern="$3"
+  local expect_failure="${4:-false}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local validated_dir="${run_dir}/validated-output"
+  mkdir -p "${validated_dir}"
+
+  # Place the fixture in the validated dir under the specified filename.
+  if [[ "${validated_dir_file}" != "none" ]]; then
+    echo "${VALIDATED_DIR_FIXTURE}" > "${validated_dir}/${validated_dir_file}"
+  fi
+
+  # Also place a DIFFERENT result in iteration-2 to verify it's NOT used
+  # when the validated dir is set.
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo '{"action":"not_a_bug","reasoning":"wrong","comment":"Should not be used."}' \
+    > "${run_dir}/iteration-2/output/agent-result.json"
+
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure)"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_pattern}" ]] && ! grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_pattern}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Validated dir has agent-result.json → used
+run_validated_dir_test "validated-dir-expected-filename" \
+  "agent-result.json" \
+  "Reading triage result from: ${TMPDIR}/run-validated-dir-expected-filename/validated-output/agent-result.json"
+
+# Validated dir has only result.json → used as fallback
+run_validated_dir_test "validated-dir-fallback-filename" \
+  "result.json" \
+  "Reading triage result from: ${TMPDIR}/run-validated-dir-fallback-filename/validated-output/result.json"
+
+# Validated dir has neither filename → fails closed
+run_validated_dir_test "validated-dir-neither-filename" \
+  "none" \
+  "" \
+  "true"
+
 # --- Summary ---
 
 echo ""

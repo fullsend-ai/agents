@@ -17,13 +17,29 @@ set -euo pipefail
 : "${GH_TOKEN:?GH_TOKEN is required}"
 echo "::add-mask::${GH_TOKEN}"
 
-# Find the retro result JSON (same pattern as post-triage.sh).
-RESULT_FILE=""
-for dir in iteration-*/output; do
-  if [[ -f "${dir}/agent-result.json" ]]; then
-    RESULT_FILE="${dir}/agent-result.json"
+# Find the retro result JSON — prefer the validated iteration when set.
+# Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
+# on the runner — not by the sandbox or the agent. No containment check
+# (realpath / prefix guard) is applied here; the value is trusted from the
+# external harness. If the trust model changes, add a realpath prefix check.
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
+  if [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+  elif [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/result.json" ]]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
+  else
+    echo "ERROR: FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither agent-result.json nor result.json" >&2
+    exit 1
   fi
-done
+else
+  # Backward compatibility: scan iteration-N/ subdirectories for the last one's output.
+  RESULT_FILE=""
+  for dir in iteration-*/output; do
+    if [[ -f "${dir}/agent-result.json" ]]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
 
 if [[ -z "${RESULT_FILE}" ]]; then
   echo "ERROR: agent-result.json not found in any iteration output directory" >&2
@@ -54,97 +70,105 @@ PROPOSAL_COUNT=$(jq '.proposals | length' "${RESULT_FILE}")
 echo "Found ${PROPOSAL_COUNT} proposal(s)"
 
 # Validate all proposals before filing any to avoid partial state.
-for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
-  TR=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
-  if [[ ! "${TR}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
-    echo "ERROR: proposal[$i].target_repo is not a valid owner/repo: ${TR}" >&2
-    exit 1
-  fi
-  TI=$(jq -r ".proposals[$i].title // empty" "${RESULT_FILE}")
-  if [[ -z "${TI}" ]]; then
-    echo "ERROR: proposal[$i].title is missing or empty" >&2
-    exit 1
-  fi
-  jq -e ".proposals[$i] | .what_happened and .what_could_go_better and .proposed_change and .validation_criteria" "${RESULT_FILE}" >/dev/null 2>&1 || {
-    echo "ERROR: proposal[$i] is missing required fields" >&2
-    exit 1
-  }
-done
+# Guard on PROPOSAL_COUNT > 0: `seq 0 $((PROPOSAL_COUNT - 1))` with
+# PROPOSAL_COUNT=0 becomes `seq 0 -1`, which some seq implementations treat
+# as a descending range (0, -1) rather than empty, causing an out-of-bounds
+# proposals[0] access when there are no proposals.
+if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
+    TR=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
+    if [[ ! "${TR}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+      echo "ERROR: proposal[$i].target_repo is not a valid owner/repo: ${TR}" >&2
+      exit 1
+    fi
+    TI=$(jq -r ".proposals[$i].title // empty" "${RESULT_FILE}")
+    if [[ -z "${TI}" ]]; then
+      echo "ERROR: proposal[$i].title is missing or empty" >&2
+      exit 1
+    fi
+    jq -e ".proposals[$i] | .what_happened and .what_could_go_better and .proposed_change and .validation_criteria" "${RESULT_FILE}" >/dev/null 2>&1 || {
+      echo "ERROR: proposal[$i] is missing required fields" >&2
+      exit 1
+    }
+  done
+fi
 echo "All ${PROPOSAL_COUNT} proposal(s) validated"
 
 ISSUE_LINKS=""
 EVIDENCE_NOTES=""
 FILTERED_COUNT=0
-for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
-  TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
-  TITLE=$(jq -r ".proposals[$i].title" "${RESULT_FILE}")
+if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
+    TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
+    TITLE=$(jq -r ".proposals[$i].title" "${RESULT_FILE}")
 
-  # Deterministic gate: reject "Evidence for" proposals.
-  # The retro-analysis skill instructs the agent not to file these, but the
-  # agent ignores the instruction frequently enough that a post-script gate
-  # is needed. See fullsend-ai/fullsend#3881.
-  TITLE_LOWER=$(printf '%s' "${TITLE}" | tr '[:upper:]' '[:lower:]')
-  if [[ "${TITLE_LOWER}" =~ ^evidence[[:space:]]+(for|of)[[:space:]]+\# ]] || \
-     [[ "${TITLE_LOWER}" =~ ^evidence: ]] || \
-     [[ "${TITLE_LOWER}" =~ ^additional[[:space:]]+evidence ]]; then
-    SAFE_TITLE="${TITLE//$'\n'/}"
-    SAFE_TITLE="${SAFE_TITLE//$'\r'/}"
-    SAFE_TITLE="${SAFE_TITLE//::/:}"
+    # Deterministic gate: reject "Evidence for" proposals.
+    # The retro-analysis skill instructs the agent not to file these, but the
+    # agent ignores the instruction frequently enough that a post-script gate
+    # is needed. See fullsend-ai/fullsend#3881.
+    TITLE_LOWER=$(printf '%s' "${TITLE}" | tr '[:upper:]' '[:lower:]')
+    if [[ "${TITLE_LOWER}" =~ ^evidence[[:space:]]+(for|of)[[:space:]]+\# ]] || \
+       [[ "${TITLE_LOWER}" =~ ^evidence: ]] || \
+       [[ "${TITLE_LOWER}" =~ ^additional[[:space:]]+evidence ]]; then
+      SAFE_TITLE="${TITLE//$'\n'/}"
+      SAFE_TITLE="${SAFE_TITLE//$'\r'/}"
+      SAFE_TITLE="${SAFE_TITLE//::/:}"
+      SAFE_TITLE="${SAFE_TITLE//%0A/}"
+      SAFE_TITLE="${SAFE_TITLE//%0a/}"
+      SAFE_TITLE="${SAFE_TITLE//%0D/}"
+      SAFE_TITLE="${SAFE_TITLE//%0d/}"
+      echo "::warning::proposal[$i] rejected — title matches evidence-for pattern: ${SAFE_TITLE}. Folding into summary."
+      EVIDENCE_NOTES="${EVIDENCE_NOTES}
+- **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
+      FILTERED_COUNT=$((FILTERED_COUNT + 1))
+      continue
+    fi
+
+    # Build the issue body from the four sections.
+    BODY=$(jq -r --arg url "${ORIGINATING_URL}" "
+      .proposals[$i] |
+      \"## What happened\n\n\" + .what_happened +
+      \"\n\n## What could go better\n\n\" + .what_could_go_better +
+      \"\n\n## Proposed change\n\n\" + .proposed_change +
+      \"\n\n## Validation criteria\n\n\" + .validation_criteria +
+      \"\n\n---\n_Generated by retro agent from \" + \$url + \"_\"
+    " "${RESULT_FILE}")
+
+    # TODO(#833): Remove this warning once per-repo customization is stable.
+    # Depends on: #195, #179, #419, PR #792, PR #799.
+    if [[ "${TARGET_REPO}" == */.fullsend ]]; then
+      echo "::warning::proposal[$i] targets a .fullsend repo (${TARGET_REPO}). Filing in .fullsend repos is discouraged until per-repo customization patterns are stable. Consider filing in the source repo or fullsend-ai/fullsend upstream instead."
+    fi
+
+    # Ensure the label exists in the target repo before applying it.
+    # Follows the same pattern as post-review.sh for ready-for-merge.
+    # --force makes this idempotent (no error if the label already exists).
+    gh label create "ready-for-triage" \
+      --repo "${TARGET_REPO}" \
+      --description "Retro-filed issue awaiting triage agent" \
+      --color "ededed" \
+      --force 2>/dev/null || true
+
+    SAFE_TITLE="${TITLE//::/}"
     SAFE_TITLE="${SAFE_TITLE//%0A/}"
     SAFE_TITLE="${SAFE_TITLE//%0a/}"
     SAFE_TITLE="${SAFE_TITLE//%0D/}"
     SAFE_TITLE="${SAFE_TITLE//%0d/}"
-    echo "::warning::proposal[$i] rejected — title matches evidence-for pattern: ${SAFE_TITLE}. Folding into summary."
-    EVIDENCE_NOTES="${EVIDENCE_NOTES}
-- **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
-    FILTERED_COUNT=$((FILTERED_COUNT + 1))
-    continue
-  fi
+    echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
+    if ! ISSUE_URL=$(gh issue create \
+      --repo "${TARGET_REPO}" \
+      --title "${TITLE}" \
+      --body "${BODY}" \
+      --label "ready-for-triage" 2>&1); then
+      echo "ERROR: failed to create issue in ${TARGET_REPO} (gh issue create --repo ${TARGET_REPO}): ${ISSUE_URL}" >&2
+      exit 1
+    fi
 
-  # Build the issue body from the four sections.
-  BODY=$(jq -r --arg url "${ORIGINATING_URL}" "
-    .proposals[$i] |
-    \"## What happened\n\n\" + .what_happened +
-    \"\n\n## What could go better\n\n\" + .what_could_go_better +
-    \"\n\n## Proposed change\n\n\" + .proposed_change +
-    \"\n\n## Validation criteria\n\n\" + .validation_criteria +
-    \"\n\n---\n_Generated by retro agent from \" + \$url + \"_\"
-  " "${RESULT_FILE}")
-
-  # TODO(#833): Remove this warning once per-repo customization is stable.
-  # Depends on: #195, #179, #419, PR #792, PR #799.
-  if [[ "${TARGET_REPO}" == */.fullsend ]]; then
-    echo "::warning::proposal[$i] targets a .fullsend repo (${TARGET_REPO}). Filing in .fullsend repos is discouraged until per-repo customization patterns are stable. Consider filing in the source repo or fullsend-ai/fullsend upstream instead."
-  fi
-
-  # Ensure the label exists in the target repo before applying it.
-  # Follows the same pattern as post-review.sh for ready-for-merge.
-  # --force makes this idempotent (no error if the label already exists).
-  gh label create "ready-for-triage" \
-    --repo "${TARGET_REPO}" \
-    --description "Retro-filed issue awaiting triage agent" \
-    --color "ededed" \
-    --force 2>/dev/null || true
-
-  SAFE_TITLE="${TITLE//::/}"
-  SAFE_TITLE="${SAFE_TITLE//%0A/}"
-  SAFE_TITLE="${SAFE_TITLE//%0a/}"
-  SAFE_TITLE="${SAFE_TITLE//%0D/}"
-  SAFE_TITLE="${SAFE_TITLE//%0d/}"
-  echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
-  if ! ISSUE_URL=$(gh issue create \
-    --repo "${TARGET_REPO}" \
-    --title "${TITLE}" \
-    --body "${BODY}" \
-    --label "ready-for-triage" 2>&1); then
-    echo "ERROR: failed to create issue in ${TARGET_REPO} (gh issue create --repo ${TARGET_REPO}): ${ISSUE_URL}" >&2
-    exit 1
-  fi
-
-  echo "Created: ${ISSUE_URL}"
-  ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${ISSUE_URL}) (in \`${TARGET_REPO}\`)
+    echo "Created: ${ISSUE_URL}"
+    ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${ISSUE_URL}) (in \`${TARGET_REPO}\`)
 "
-done
+  done
+fi
 
 # Post summary comment on the originating PR/issue.
 # Uses REST API (not gh issue comment) for consistency. Note: despite being

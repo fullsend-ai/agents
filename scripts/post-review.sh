@@ -55,8 +55,23 @@ The \`/fs-review\` command only reviews open pull requests.
   exit 0
 fi
 
-# Find the agent result from the last iteration
-RESULT_FILE=$(find .  -maxdepth 4 -path '*/iteration-*/output/agent-result.json' | sort -V | tail -1)
+# Find the agent result — prefer the validated iteration when set.
+# Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
+# on the runner — not by the sandbox or the agent. No containment check
+# (realpath / prefix guard) is applied here; the value is trusted from the
+# external harness. If the trust model changes, add a realpath prefix check.
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
+  if [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+  elif [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/result.json" ]]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
+  else
+    echo "::error::FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither agent-result.json nor result.json" >&2
+    exit 1
+  fi
+else
+  RESULT_FILE=$(find .  -maxdepth 4 -path '*/iteration-*/output/agent-result.json' | sort -V | tail -1)
+fi
 
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   echo "::error::No agent-result.json found — posting failure notice"

@@ -56,15 +56,36 @@ case "${SCRIBE_MODE}" in
 esac
 echo "Mode: ${SCRIBE_MODE}"
 
-# Find the agent result JSON
-RESULT_FILE=""
-for dir in iteration-*/output; do
-  if [[ -f "${dir}/agent-result.json" ]]; then
-    RESULT_FILE="${dir}/agent-result.json"
+# Find the agent result JSON — prefer the validated iteration when set.
+# Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
+# on the runner — not by the sandbox or the agent. No containment check
+# (realpath / prefix guard) is applied here; the value is trusted from the
+# external harness. If the trust model changes, add a realpath prefix check.
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]]; then
+  if [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+  elif [[ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/result.json" ]]; then
+    # Agents sometimes write "result.json" instead of "agent-result.json";
+    # validate-output-schema.sh accepts that filename as a fallback without
+    # renaming it (scribe.yaml uses the default agent-result.json filename,
+    # so this fallback is reachable in practice).
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
+  else
+    echo "ERROR: FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither agent-result.json nor result.json"
+    exit 1
   fi
-done
+else
+  # Backward compatibility: scan iteration-N/ subdirectories for the last
+  # iteration's output (glob order = naturally ascending iteration numbers).
+  RESULT_FILE=""
+  for dir in iteration-*/output; do
+    if [[ -f "${dir}/agent-result.json" ]]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
 
-if [[ -z "${RESULT_FILE}" ]]; then
+if [[ -z "${RESULT_FILE}" ]] || [[ ! -f "${RESULT_FILE}" ]]; then
   echo "ERROR: agent-result.json not found in any iteration output directory"
   exit 1
 fi

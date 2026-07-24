@@ -636,6 +636,88 @@ export GITHUB_CSMA_MAX_ATTEMPTS=3
 run_test_failure_stderr "exit0-rate-limit-exhausted" "100" "rate limit exceeded" "exit0-ratelimit"
 unset GITHUB_CSMA_MAX_ATTEMPTS
 
+# ---------------------------------------------------------------------------
+# FULLSEND_VALIDATED_ITERATION_DIR tests
+# Verify that when FULLSEND_VALIDATED_ITERATION_DIR is set, the script reads
+# from that directory instead of scanning iteration-*/output.
+# ---------------------------------------------------------------------------
+
+run_validated_dir_test() {
+  local test_name="$1"
+  local validated_dir_file="$2"   # "agent-result.json", "result.json", or "none"
+  local expected_stdout="$3"
+  local expect_failure="${4:-false}"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  local validated_dir="${run_dir}/validated-output"
+  mkdir -p "${validated_dir}"
+
+  # Place the fixture in the validated dir under the specified filename.
+  if [[ "${validated_dir_file}" != "none" ]]; then
+    echo "${FIXTURE_JSON}" > "${validated_dir}/${validated_dir_file}"
+  fi
+
+  # Also place a DIFFERENT result in iteration-2 to ensure the script does
+  # NOT fall back to scanning when the validated dir is set.
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo '{"reach":0,"impact":0,"confidence":0,"effort":1,"reasoning":{"reach":"wrong","impact":"wrong","confidence":"wrong","effort":"wrong"}}' \
+    > "${run_dir}/iteration-2/output/agent-result.json"
+
+  : > "${GH_LOG}"
+  rm -f "${GH_FAIL_COUNT}"
+  unset GH_CSMA_FAIL_UNTIL GH_CSMA_FAIL_MODE 2>/dev/null || true
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure)"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_stdout}" ]] && ! grep -qF -- "${expected_stdout}" "${TEST_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Validated dir has agent-result.json → used
+run_validated_dir_test "validated-dir-expected-filename" \
+  "agent-result.json" \
+  "Reading RICE result from: ${TEST_TMPDIR}/run-validated-dir-expected-filename/validated-output/agent-result.json"
+
+# Validated dir has only result.json → used as fallback
+run_validated_dir_test "validated-dir-fallback-filename" \
+  "result.json" \
+  "Reading RICE result from: ${TEST_TMPDIR}/run-validated-dir-fallback-filename/validated-output/result.json"
+
+# Validated dir has neither filename → fails closed
+run_validated_dir_test "validated-dir-neither-filename" \
+  "none" \
+  "" \
+  "true"
+
 if [[ ${FAILURES} -gt 0 ]]; then
   echo ""
   echo "${FAILURES} test(s) failed."

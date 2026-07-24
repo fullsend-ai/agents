@@ -711,6 +711,109 @@ run_label_test_with_env_stdout "draft-approve-log-message" \
   "PR is a draft" \
   "MOCK_PR_IS_DRAFT" "true"
 
+# ---------------------------------------------------------------------------
+# FULLSEND_VALIDATED_ITERATION_DIR tests
+# Verify that when FULLSEND_VALIDATED_ITERATION_DIR is set, the script reads
+# from that directory instead of scanning iteration-*/output.
+# ---------------------------------------------------------------------------
+
+run_validated_dir_test() {
+  local test_name="$1"
+  local setup_fn="$2"
+  local expected_pattern="$3"
+  local expect_failure="${4:-false}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}"
+  : > "${GH_LOG}"
+
+  # Let the setup function arrange files and set env vars.
+  local validated_dir="${run_dir}/validated-output"
+  ${setup_fn} "${run_dir}" "${validated_dir}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure)"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_pattern}" ]] && ! grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_pattern}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Setup: validated dir has agent-result.json
+setup_validated_dir_expected_filename() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+    > "${validated_dir}/agent-result.json"
+  # Also put a DIFFERENT result in iteration-2 to verify it's NOT used.
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"BAD"}' \
+    > "${run_dir}/iteration-2/output/agent-result.json"
+}
+
+# Setup: validated dir has only result.json (fallback filename)
+setup_validated_dir_fallback_filename() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+    > "${validated_dir}/result.json"
+}
+
+# Setup: validated dir has neither filename
+setup_validated_dir_neither_filename() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+  # Empty directory — no result files at all.
+}
+
+run_validated_dir_test "validated-dir-expected-filename" \
+  setup_validated_dir_expected_filename \
+  "Using result: ${TMPDIR}/run-validated-dir-expected-filename/validated-output/agent-result.json"
+
+run_validated_dir_test "validated-dir-fallback-filename" \
+  setup_validated_dir_fallback_filename \
+  "Using result: ${TMPDIR}/run-validated-dir-fallback-filename/validated-output/result.json"
+
+run_validated_dir_test "validated-dir-neither-filename" \
+  setup_validated_dir_neither_filename \
+  "" \
+  "true"
+
 # --- No-op label cycle tests ---
 # Verify the stale-label loop skips the label we are about to apply.
 # When approve disposition is chosen, ready-for-merge must NOT appear in

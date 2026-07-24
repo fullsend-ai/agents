@@ -179,6 +179,227 @@ run_precommit_retry_test "precommit-passes-with-unstaged" \
 run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
   "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the FULLSEND_VALIDATED_ITERATION_DIR selection
+# logic from post-fix.sh section 5. Given an env var value and a set of files
+# on disk, returns which result file would be selected.
+#
+# Mirrors the three-branch logic: expected filename → result.json fallback →
+# fail closed with error (no silent rescan).
+# ---------------------------------------------------------------------------
+resolve_fix_result() {
+  local validated_dir="$1"    # value of FULLSEND_VALIDATED_ITERATION_DIR ("" = unset)
+  local run_dir="$2"          # directory containing iteration-*/output/
+
+  if [ -n "${validated_dir}" ]; then
+    if [ -f "${validated_dir}/fix-result.json" ]; then
+      echo "${validated_dir}/fix-result.json"
+    elif [ -f "${validated_dir}/result.json" ]; then
+      echo "${validated_dir}/result.json"
+    else
+      echo "error:neither-filename"
+    fi
+  else
+    local result=""
+    for dir in "${run_dir}"/iteration-*/output; do
+      if [ -f "${dir}/fix-result.json" ]; then
+        result="${dir}/fix-result.json"
+      fi
+    done
+    if [ -z "${result}" ]; then
+      echo "error:not-found"
+    else
+      echo "${result}"
+    fi
+  fi
+}
+
+RESOLVE_TMPDIR="$(mktemp -d)"
+
+run_resolve_test() {
+  local test_name="$1"
+  local setup_fn="$2"
+  local expected="$3"
+
+  local run_dir="${RESOLVE_TMPDIR}/${test_name}"
+  local validated_dir="${run_dir}/validated-output"
+  mkdir -p "${run_dir}"
+
+  # Let the setup function create the directory structure.
+  ${setup_fn} "${run_dir}" "${validated_dir}"
+
+  local actual
+  actual="$(resolve_fix_result "${validated_dir}" "${run_dir}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_resolve_test_unset() {
+  local test_name="$1"
+  local setup_fn="$2"
+  local expected="$3"
+
+  local run_dir="${RESOLVE_TMPDIR}/${test_name}"
+  mkdir -p "${run_dir}"
+
+  ${setup_fn} "${run_dir}" ""
+
+  local actual
+  actual="$(resolve_fix_result "" "${run_dir}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Setup: validated dir has fix-result.json
+setup_fix_expected() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+  echo '{}' > "${validated_dir}/fix-result.json"
+  # Also place a file in iteration-2 to verify it's NOT used.
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo '{}' > "${run_dir}/iteration-2/output/fix-result.json"
+}
+
+# Setup: validated dir has only result.json
+setup_fix_fallback() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+  echo '{}' > "${validated_dir}/result.json"
+}
+
+# Setup: validated dir has neither filename
+setup_fix_neither() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+}
+
+# Setup: env var unset, iteration dirs present (backward compat)
+setup_fix_iteration_scan() {
+  local run_dir="$1"
+  mkdir -p "${run_dir}/iteration-1/output"
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo '{}' > "${run_dir}/iteration-1/output/fix-result.json"
+  echo '{}' > "${run_dir}/iteration-2/output/fix-result.json"
+}
+
+# --- FULLSEND_VALIDATED_ITERATION_DIR test cases ---
+
+run_resolve_test "fix-validated-dir-expected-filename" \
+  setup_fix_expected \
+  "${RESOLVE_TMPDIR}/fix-validated-dir-expected-filename/validated-output/fix-result.json"
+
+run_resolve_test "fix-validated-dir-fallback-filename" \
+  setup_fix_fallback \
+  "${RESOLVE_TMPDIR}/fix-validated-dir-fallback-filename/validated-output/result.json"
+
+run_resolve_test "fix-validated-dir-neither-filename" \
+  setup_fix_neither \
+  "error:neither-filename"
+
+run_resolve_test_unset "fix-unset-falls-back-to-scan" \
+  setup_fix_iteration_scan \
+  "${RESOLVE_TMPDIR}/fix-unset-falls-back-to-scan/iteration-2/output/fix-result.json"
+
+rm -rf "${RESOLVE_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Integration test — run the REAL post-fix.sh to verify that it exits non-zero
+# when FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither
+# fix-result.json nor result.json. This catches the fail-open bug that the
+# isolated reimplementation tests above cannot detect.
+#
+# Strategy: initialize a bare git repo on the main branch so NO_PUSH=true,
+# which skips sections 0-4 (secret scan, pre-commit, push) and goes straight
+# to the FULLSEND_VALIDATED_ITERATION_DIR check in section 5.
+# ---------------------------------------------------------------------------
+
+INTEGRATION_TMPDIR="$(mktemp -d)"
+MOCK_BIN="${INTEGRATION_TMPDIR}/bin"
+mkdir -p "${MOCK_BIN}"
+
+# Mock gh: silently accept all calls (needed for ERR trap's report_post_failure_to_pr).
+cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${MOCK_BIN}/gh"
+
+run_postfix_integration_test() {
+  local test_name="$1"
+  local expect_failure="$2"  # "true" if we expect non-zero exit
+
+  local run_dir="${INTEGRATION_TMPDIR}/run-${test_name}"
+  local validated_dir="${run_dir}/validated-output"
+  local repo_dir="${run_dir}/repo"
+  mkdir -p "${validated_dir}" "${repo_dir}"
+
+  # Initialize a minimal git repo on the main branch so the script
+  # sets NO_PUSH=true and skips sections 0-4. Set a local (repo-scoped)
+  # identity explicitly — CI runners often have no global git config,
+  # so `git commit` fails with "Author identity unknown" otherwise.
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${INTEGRATION_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+      cat "${INTEGRATION_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${INTEGRATION_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# The "neither filename" case must exit non-zero (fail closed).
+run_postfix_integration_test "integration-neither-filename-fails-closed" "true"
+
+rm -rf "${INTEGRATION_TMPDIR}"
+
 # --- Summary ---
 
 echo ""

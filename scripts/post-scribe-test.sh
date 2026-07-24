@@ -192,6 +192,72 @@ run_test "live-mode-uses-paginate-for-idempotency" \
   "api --paginate repos/mock-org/mock-repo/issues/42/comments"
 export SCRIBE_DRY_RUN="true"
 
+# ---------------------------------------------------------------------------
+# FULLSEND_VALIDATED_ITERATION_DIR tests
+# Verify that when FULLSEND_VALIDATED_ITERATION_DIR is set, the script reads
+# from that directory instead of scanning iteration-*/output.
+# ---------------------------------------------------------------------------
+
+VALIDATED_DIR_FIXTURE='{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}'
+WRONG_ITERATION_FIXTURE='{"topics":[{"topic":"WRONG_ITERATION_MARKER","summary":"should not be used","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}'
+
+run_validated_dir_test() {
+  local test_name="$1"
+  local validated_dir_file="$2"   # "agent-result.json", "result.json", or "none"
+  local expect_failure="${3:-false}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local validated_dir="${run_dir}/validated-output"
+  mkdir -p "${validated_dir}"
+
+  if [[ "${validated_dir_file}" != "none" ]]; then
+    echo "${VALIDATED_DIR_FIXTURE}" > "${validated_dir}/${validated_dir_file}"
+  fi
+
+  # A later iteration with different, distinguishable content — must never
+  # be used when FULLSEND_VALIDATED_ITERATION_DIR is set.
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo "${WRONG_ITERATION_FIXTURE}" > "${run_dir}/iteration-2/output/agent-result.json"
+
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit code ${exit_code})"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "WRONG_ITERATION_MARKER" "${TMPDIR}/stdout.log" "${GH_LOG}" 2>/dev/null; then
+    echo "FAIL: ${test_name} — used iteration-2's output instead of the validated iteration"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_validated_dir_test "validated-dir-expected-filename" "agent-result.json"
+run_validated_dir_test "validated-dir-fallback-filename" "result.json"
+run_validated_dir_test "validated-dir-neither-filename" "none" "true"
+
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
