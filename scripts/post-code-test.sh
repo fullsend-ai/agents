@@ -41,6 +41,14 @@ else
   echo "PASS: bundled-script-has-pr-assignee"
 fi
 
+if ! grep -q 'git fetch origin "\${BRANCH}"' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-fetches-before-force-with-lease"
+  echo "  ${POST_SCRIPT} missing git fetch before --force-with-lease retry"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-fetches-before-force-with-lease"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
