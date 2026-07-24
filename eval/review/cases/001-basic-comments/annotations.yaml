@@ -8,8 +8,8 @@ labels:
   forbidden:
     - ready-for-merge
 
-max_turns: 30
-max_cost_usd: 3.00
+max_turns: 40
+max_cost_usd: 5.00
 
 review_expectations: |
   The PR has two clear issues the agent should flag:
