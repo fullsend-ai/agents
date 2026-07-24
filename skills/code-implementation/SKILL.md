@@ -680,7 +680,13 @@ The commit message must:
 - **Fall back to `<type>(#<number>): <description>` if no convention was
   found.** The `(#<number>)` scope ensures the PR title passes most
   title-check CI jobs.
-- Reference the issue number with `Closes #<number>` in the body.
+- **Reference the issue number in the body.** If your implementation
+  fully addresses the issue scope, use `Closes #<number>`. If your
+  implementation addresses only a subset of the issue (e.g., the triage
+  identified 4 components but you implemented 2), use
+  `Related to #<number>` instead — premature closure loses the remaining
+  work items. Use the same keyword in both the commit body and `pr_body`
+  for consistency.
 
 **Title length — check `.gitlint` if it exists:**
 
@@ -774,8 +780,9 @@ and failure reporting.
 
 Now that implementation is complete, add `pr_body` to the result file.
 The post-script uses `pr_body` as the PR description (no gitlint
-line-length constraints) and automatically appends
-`Closes #<issue-number>` — do not include closing references in pr_body.
+line-length constraints) and automatically appends the closing
+reference (`Closes` or `Related to`) — do not include closing
+references in pr_body.
 
 If step 3 found PR template(s), select the one matching the task type
 from step 6 and structure `pr_body` to match its sections. Otherwise,
@@ -803,6 +810,19 @@ jq --arg pb "$pr_body" '. + {pr_body: $pb}' \
   && mv "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/code-result.json"
 ```
 
+**Closing reference:** If your implementation addresses only a subset of
+the issue scope, add `closes_issue: false` to the result file so the
+post-script uses `Related to` instead of `Closes` in the PR body:
+
+```bash
+jq '. + {closes_issue: false}' \
+  "${FULLSEND_OUTPUT_DIR}/code-result.json" > "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" \
+  && mv "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/code-result.json"
+```
+
+If your implementation fully addresses the issue, omit this field — the
+default is `true` (the post-script appends `Closes`).
+
 ### 11. Validate structured output
 
 **This step is MANDATORY.** The harness runs a validation loop that
@@ -819,7 +839,7 @@ cat "${FULLSEND_OUTPUT_DIR}/code-result.json"
 ```
 
 The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body`:
+optionally `pr_body` and `closes_issue`:
 
 ```json
 {
@@ -829,8 +849,8 @@ optionally `pr_body`:
 ```
 
 **Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch` and `pr_body` are allowed. Any other fields will
-cause validation to fail.
+Only `target_branch`, `pr_body`, and `closes_issue` are allowed. Any
+other fields will cause validation to fail.
 
 Validate the output against the schema:
 
@@ -848,8 +868,10 @@ If you hit a token limit or context window boundary before completing the
 implementation, and the tests pass on the partial work: commit what you have.
 The review agent downstream will evaluate completeness — incomplete-but-passing
 code is caught at the review stage, not the implementation stage. The commit
-message should note that the work is partial (e.g., "partial implementation"
-in the description) so the review agent and post-script can act accordingly.
+message should note that the work is partial (e.g., "partial
+implementation" in the description) and use `Related to #<number>`
+instead of `Closes #<number>`. Set `closes_issue: false` in the result
+file so the post-script uses the same keyword in the PR body.
 
 **Structured output is still required for partial work.** The output file
 written in step 3 must exist and be valid. Run `fullsend-check-output`
