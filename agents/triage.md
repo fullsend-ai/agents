@@ -50,7 +50,7 @@ issue may fall outside the window. Also run a targeted search so the Existing
 PR gate below cannot silently miss it:
 
 ```
-gh pr list --repo OWNER/REPO --state open --search "ISSUE_NUMBER in:body,title" --json number,title,body,isDraft,author --limit 30
+gh pr list --repo OWNER/REPO --state open --search "ISSUE_NUMBER in:body,title" --json number,url,title,body,isDraft,author --limit 30
 ```
 
 A PR authored by the pipeline's own coder bot counts for this gate the same as
@@ -104,7 +104,7 @@ Use `gh issue view` for `/issues/` URLs and `gh pr view` for `/pull/` URLs. Revi
 
 ### 2d. Review prior triage analysis
 
-Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` in its body, or be posted by a user whose login ends in `-triage[bot]`.
+Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` or `<!-- fullsend:triage-in-progress -->` in its body, or be posted by a user whose login ends in `-triage[bot]`.
 
 If a prior triage comment exists, **accumulate — do not replace:**
 

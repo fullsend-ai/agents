@@ -339,6 +339,16 @@ run_test "in-progress-missing-pull-requests-fails" \
   "" \
   "true"
 
+run_test "in-progress-malformed-pull-requests-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":["https://github.com/test-org/test-repo/pull/50"],"comment":"An open PR is already addressing this issue."}' \
+  "" \
+  "true"
+
+run_test "in-progress-null-url-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":null}],"comment":"An open PR is already addressing this issue."}' \
+  "" \
+  "true"
+
 run_test_stdout "in-progress-warns-on-dropped-prerequisites" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"An open PR is already addressing this issue."}' \
   "::warning::Ignoring 'prerequisites' on an 'in-progress' result"
@@ -438,7 +448,7 @@ run_test_stdout "label-actions-not-planned-control-label-refused" \
 
 run_test "label-actions-absent-still-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
-  "fullsend post-comment --repo test-org/test-repo --number 42"
+  "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-agent -->"
 
 run_test "label-actions-with-insufficient" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?","label_actions":{"reason":"Component label applies regardless of triage outcome.","actions":[{"action":"add","label":"component/parser"}]}}' \

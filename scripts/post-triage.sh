@@ -267,16 +267,22 @@ ${FAILED_CREATES}"
     # The prompt tells the agent to note separate blockers in comment rather
     # than populating prerequisites alongside pull_requests. Nothing enforces
     # that, so warn when we drop it instead of discarding it silently.
-    if [[ "$(jq 'has("prerequisites")' "${RESULT_FILE}")" == "true" ]]; then
+    DROPPED_PREREQS=$(jq '((.prerequisites.existing // []) + (.prerequisites.create // [])) | length' "${RESULT_FILE}")
+    if [[ "${DROPPED_PREREQS}" -gt 0 ]]; then
       echo "::warning::Ignoring 'prerequisites' on an 'in-progress' result -- mention separate blockers in 'comment' instead"
     fi
 
-    # Collect PR URLs from pull_requests array.
+    # Collect PR URLs from pull_requests array. Capture via command
+    # substitution rather than process substitution so a jq failure — a
+    # pull_requests that passed the count check but is not an array of
+    # objects, e.g. a bare string — still trips set -e instead of silently
+    # rendering an empty list. -e also rejects a null url.
+    PR_URLS=$(jq -er '.pull_requests[].url' "${RESULT_FILE}")
     PR_LIST=""
     while IFS= read -r url; do
       PR_LIST="${PR_LIST}
 - ${url}"
-    done < <(jq -r '.pull_requests[].url' "${RESULT_FILE}")
+    done <<< "${PR_URLS}"
 
     COMMENT="${COMMENT}
 
