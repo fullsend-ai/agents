@@ -36,6 +36,9 @@ ROOTS = [Path(p) for p in os.environ["EVAL_SCRUB_ROOTS"].splitlines() if p]
 TEXT_SUFFIXES = {".log", ".txt", ".json", ".jsonl", ".yaml", ".yml", ".md"}
 # Actions masks everything to end-of-line (not only \S+).
 ADD_MASK_RE = re.compile(r"::add-mask::(.+)$", re.MULTILINE)
+# Reject trivially short mask values that would over-redact (e.g. single
+# characters applied via str.replace corrupt all text).
+MIN_MASK_LEN = 4
 # Defense in depth — tokens that never went through ::add-mask::.
 # Keep TOKEN_RES and leak_re in sync (single pattern source).
 TOKEN_PATTERNS = [
@@ -94,7 +97,7 @@ for root in ROOTS:
             continue
         for match in ADD_MASK_RE.finditer(text):
             value = match.group(1).strip()
-            if value in ("***", "[REDACTED]", ""):
+            if value in ("***", "[REDACTED]", "") or len(value) < MIN_MASK_LEN:
                 continue
             secrets.add(value)
 
