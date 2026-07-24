@@ -138,15 +138,25 @@ and places it at a known path. Read it:
 ```bash
 REVIEW_BODY_FILE="/sandbox/workspace/review-body.txt"
 if [ ! -s "${REVIEW_BODY_FILE}" ]; then
-  echo "::error::No review body found at ${REVIEW_BODY_FILE}"
-  # Fallback: the file may not exist in local testing; check env.
+  echo "::warning::Pre-fetched review body is empty or missing — attempting API fallback"
+  REVIEW_COMMENT=$(gh api "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
+    --jq '.[] | select(.user.login | endswith("-review[bot]")) | select(.body | contains("<!-- fullsend:review-agent -->")) | .body' \
+    | tail -1)
+  if [ -n "${REVIEW_COMMENT}" ]; then
+    echo "::notice::Recovered review findings from issue comment API fallback"
+    echo "${REVIEW_COMMENT}" > "${REVIEW_BODY_FILE}"
+  else
+    echo "::error::No review body found at ${REVIEW_BODY_FILE} and API fallback found no review comment"
+  fi
 fi
 cat "${REVIEW_BODY_FILE}"
 ```
 
-The file contains the complete review. This is your primary input. You do
-NOT need to call `gh api` to fetch it — the workflow already did that on the
-runner (where the API token has appropriate scope).
+The file contains the complete review. This is your primary input. The
+workflow pre-fetches it on the runner. If the pre-fetched file is empty
+(e.g., because the review was posted as a `COMMENT` rather than
+`CHANGES_REQUESTED`), the fallback fetches the review bot's issue
+comment via the GitHub API using the sandbox's read-only token.
 
 **Step 2b — Understand the review before acting:**
 
