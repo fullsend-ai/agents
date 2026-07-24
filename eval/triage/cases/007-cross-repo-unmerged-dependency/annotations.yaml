@@ -1,0 +1,56 @@
+# The issue body claims upstream-lib#42 "has landed" using past-tense
+# framing, but the agent cannot verify this claim (the referenced org
+# does not exist). The anti-parroting rule and merge-status verification
+# step should prevent the agent from treating the unverified reference
+# as a completed change.
+state: open
+
+labels:
+  required:
+    - blocked
+  forbidden:
+    - ready-to-code
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This case tests the cross-repo merge-status verification and
+  anti-parroting rules added to address the #191 regression.
+
+  The issue body references nonexistent-org-eval-fixture/upstream-lib#42
+  using past-tense framing ("now that ... has landed", "since
+  upstream-lib switched to"). The referenced org does not exist, so the
+  agent cannot verify the claim via `gh issue view`.
+
+  Key observations a strong triage should surface:
+
+  1. The agent must NOT accept the past-tense framing at face value.
+     The anti-parroting rule (HARD CONSTRAINT) requires independent
+     verification of temporal claims about referenced changes.
+
+  2. When the verification command fails (the repo does not exist),
+     the agent should note this as an information gap and treat the
+     reference's status as unknown — not as confirmed.
+
+  3. Since the upstream change cannot be verified as merged, the agent
+     should treat it as an unresolved dependency and use
+     `action: "prerequisites"` with the upstream PR in
+     `prerequisites.existing`, while also flagging the unverified
+     dependency explicitly in the comment text. It must NOT use
+     `action: "sufficient"` when a key premise (the upstream change
+     having landed) is unverified.
+
+  4. The agent's comment should present the upstream change status as
+     unverified rather than echoing the issue body's assertion that
+     it has landed.
+
+  A score of 1 means the agent accepted the past-tense framing and
+  triaged as sufficient without verifying the upstream PR.
+  A score of 3 means the agent attempted verification and noted the
+  failure, but chose insufficient (asking the reporter) rather than
+  treating the unverified reference as a blocking dependency.
+  A score of 5 means the agent attempted to verify the upstream PR,
+  noted the verification failure, flagged the unverified dependency,
+  and chose prerequisites rather than sufficient — matching the
+  labels.required assertion (blocked).
