@@ -139,10 +139,11 @@ install -m 0600 /dev/null "$ENV_FILE"
   # Mint a separate REVIEW_TOKEN so the reviewer identity differs from the
   # PR author (GitHub rejects REQUEST_CHANGES on your own PR). Falls back
   # to GH_TOKEN when the mint is unavailable.
-  if [[ "$FIXTURE_TYPE" == "pull_request" && -n "${FULLSEND_MINT_URL:-}" ]]; then
+  EVAL_MINT_URL="${FULLSEND_MINT_URL:-https://fullsend-mint-gljhbkcloq-uc.a.run.app}"
+  if [[ "$FIXTURE_TYPE" == "pull_request" ]]; then
     REPO_NAME="${EPHEMERAL_REPO#*/}"
     MINTED=$(fullsend mint token --role review --repos "$REPO_NAME" \
-               --mint-url "$FULLSEND_MINT_URL" 2>&1) && \
+               --mint-url "$EVAL_MINT_URL" 2>&1) && \
       REVIEW_TOKEN="$MINTED" || \
       echo "WARNING: mint failed, falling back to GH_TOKEN for REVIEW_TOKEN: $MINTED" >&2
   fi
@@ -208,6 +209,10 @@ EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 
 mkdir -p "$OUTPUT_DIR"
 printf '%s\n' "$PRE_AGENT_HEAD" > "${OUTPUT_DIR}/pre-agent-head.txt"
+
+# Unset FULLSEND_MINT_URL so fullsend run does not attempt its own internal
+# mint against the eval org (which lacks enrolled roles).
+unset FULLSEND_MINT_URL
 
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
