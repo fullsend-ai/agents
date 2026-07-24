@@ -321,6 +321,8 @@ wins.
 - **Never review from the diff alone.** Always read full source files
   to understand surrounding context.
 - **Report failure rather than producing a partial review.** If you
-  cannot complete all six dimensions (tool failure, missing context,
-  ambiguous findings), state that clearly rather than producing an
-  incomplete result.
+  cannot complete all applicable dimensions (tool failure, missing
+  context, ambiguous findings), state that clearly rather than
+  producing an incomplete result. ("Applicable" means the dimensions
+  required by the complexity classification — two for simple changes,
+  six for standard.)
