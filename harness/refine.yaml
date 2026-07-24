@@ -1,0 +1,76 @@
+---
+agent: agents/refine.md
+doc: docs/refine.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+policy: policies/refine.yaml
+
+role: refine
+slug: fullsend-ai-refine
+
+host_files:
+  - src: common/env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/refine.env
+    dest: /sandbox/workspace/.env.d/refine.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+  - src: /tmp/workspace/issue-context.json
+    dest: /sandbox/workspace/issue-context.json
+    optional: true
+  - src: /tmp/workspace/exploration_context.json
+    dest: /sandbox/workspace/exploration_context.json
+    optional: true
+  - src: /tmp/workspace/critique-feedback.json
+    dest: /sandbox/workspace/critique-feedback.json
+    optional: true
+  - src: /tmp/workspace/routing-skill.md
+    dest: /sandbox/workspace/routing-skill.md
+    optional: true
+  - src: /tmp/workspace/platform-context.md
+    dest: /sandbox/workspace/platform-context.md
+    optional: true
+  - src: /tmp/workspace/human-directive.txt
+    dest: /sandbox/workspace/human-directive.txt
+    optional: true
+
+pre_script: scripts/pre-refine.sh
+post_script: scripts/post-refine.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/refine-result.schema.json
+  max_iterations: 2
+
+timeout_minutes: 25
+
+env:
+  runner:
+    ISSUE_KEY: "${ISSUE_KEY}"
+    ISSUE_SOURCE: "${ISSUE_SOURCE}"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    EXPLORE_RUN_ID: "${EXPLORE_RUN_ID}"
+    EXPLORE_CONTEXT_REF: "${EXPLORE_CONTEXT_REF}"
+    CRITIQUE_RUN_ID: "${CRITIQUE_RUN_ID}"
+    REVIEW_ROUND: "${REVIEW_ROUND}"
+    MAX_REVIEW_ROUNDS: "${MAX_REVIEW_ROUNDS}"
+    AUTO_CREATE: "${AUTO_CREATE}"
+    GITHUB_ISSUE_NUMBER: "${GITHUB_ISSUE_NUMBER}"
+    HUMAN_DIRECTIVE: "${HUMAN_DIRECTIVE}"
+  sandbox:
+    REVIEW_ROUND: "${REVIEW_ROUND}"
+    HUMAN_DIRECTIVE_FILE: "/sandbox/workspace/human-directive.txt"
+
+forge:
+  github:
+    pre_script: scripts/pre-refine.sh
+    post_script: scripts/post-refine.sh
+    env:
+      runner:
+        GH_TOKEN: "${GH_TOKEN}"
+        PUSH_TOKEN: "${PUSH_TOKEN}"
