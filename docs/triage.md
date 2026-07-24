@@ -2,19 +2,23 @@
 
 <img src="icons/triage.png" alt="Triage agent icon" width="80">
 
-Inspects a GitHub issue, assesses information sufficiency, asks clarifying questions when needed, and produces a structured triage decision that determines whether the issue is ready for implementation.
-
-## How the agent works
-
-The triage agent is triggered when a new issue is opened or when an existing issue is updated. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
-
-The agent runs in a read-only sandbox. It cannot modify issues, push code, or interact with external services. Its only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
+Inspects a GitHub issue, assesses information sufficiency, asks clarifying questions when needed, and produces a triage decision that determines whether the issue is ready for implementation.
 
 ## How it helps
 
 - New issues get a response within minutes instead of waiting for a human to notice them.
 - Issues missing critical information get a clarification request immediately, shortening the feedback loop with the reporter.
 - Well-specified issues are labeled and ready for the [code agent](code.md) without human intervention.
+
+## Triggers
+
+The triage agent runs automatically when:
+
+- A new issue is opened
+- An existing issue is edited
+- Someone comments on an issue labeled `needs-info` (to re-evaluate after the reporter provides clarification)
+
+It can also be triggered manually with the `/fs-triage` command.
 
 ## Commands
 
@@ -25,32 +29,30 @@ The agent runs in a read-only sandbox. It cannot modify issues, push code, or in
 The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
 
-Triage also runs automatically when a new issue is opened, when an issue is
-edited, and when someone comments on an issue labeled `needs-info` (to
-re-evaluate after the reporter provides clarification).
-
 ## Control labels
 
-These labels are managed by the triage agent. It decides the triage
-outcome and the post-script applies the corresponding label.
+These labels are managed by the triage agent based on its assessment of the issue.
 
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
 | `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). |
 | `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
-| `duplicate` | The issue duplicates an existing one. The agent identified the original and the post-script closes the issue. |
+| `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |
 | `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
 | `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
-| `not-planned` | The issue is out of scope, invalid, or spam. The post-script closes the issue with reason "not planned". |
+| `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.
 
-## Configuration and extension
+## Configuration
+
+See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
+[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
 
 ### Skill: `issue-labels`
 
@@ -127,6 +129,16 @@ This gives the triage agent the subtlety it needs to distinguish between
 `kind/bug` and `kind/flaky-test`, or to know that `area/operator` applies to
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
+
+### Variables
+
+None.
+
+## How the agent works
+
+The triage agent runs in a read-only sandbox. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
+
+The agent's only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
 
 ## Source
 

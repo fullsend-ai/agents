@@ -2,19 +2,19 @@
 
 ![Prioritize agent icon](icons/prioritize.png)
 
-Scores a GitHub issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces structured scores with reasoning for project board ranking.
-
-## How the agent works
-
-Triggered on a schedule (the prioritize scheduler polls the project board for unscored or stale issues) or on-demand via `/fs-prioritize`.
-
-The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update the project board.
+Scores a GitHub issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces scores with reasoning for project board ranking.
 
 ## How it helps
 
 - Issues are ranked consistently using the same framework, reducing bias from whoever happens to see them first.
 - Scoring reasoning is transparent and auditable — anyone can read why an issue was ranked the way it was.
 - Project boards stay sorted by value, so humans can focus on the highest-impact work first.
+
+## Triggers
+
+The prioritize agent runs on a schedule, polling the project board for unscored or stale issues.
+
+It can also be triggered manually with the `/fs-prioritize` command.
 
 ## Commands
 
@@ -31,10 +31,9 @@ skill data.
 ## Control labels
 
 The prioritize agent does not apply or consume control labels. It reads the
-issue content and produces a structured score — the post-script updates the
-project board directly.
+issue content and produces a score — the project board is updated directly.
 
-## Configuration and extension
+## Configuration
 
 ### Skill: `customer-research`
 
@@ -60,6 +59,10 @@ about it" (Reach 2.0), instead of guessing from the issue text alone.
 ### Variables
 
 None.
+
+## How the agent works
+
+The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update the project board.
 
 ## Source
 
