@@ -116,6 +116,14 @@ run_test "in-progress-missing-pull-requests" \
   '{"action":"in-progress","reasoning":"PR #123 fixes this issue","comment":"An open PR already addresses this issue."}' \
   "false"
 
+run_test "in-progress-empty-pull-requests" \
+  '{"action":"in-progress","reasoning":"PR #123 fixes this issue","pull_requests":[],"comment":"An open PR already addresses this issue."}' \
+  "false"
+
+run_test "in-progress-malformed-pr-url" \
+  '{"action":"in-progress","reasoning":"PR #123 fixes this issue","pull_requests":[{"url":"https://github.com/org/repo/issues/123"}],"comment":"An open PR already addresses this issue."}' \
+  "false"
+
 # --- FULLSEND_OUTPUT_FILE override ---
 
 run_test_custom_filename() {

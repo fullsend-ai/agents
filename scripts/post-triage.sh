@@ -76,9 +76,11 @@ remove_label() {
 }
 
 # Control labels managed by the triage pipeline. The post script refuses to
-# add or remove these via label_actions. This list covers labels that the
-# pipeline itself applies (pre-triage.sh resets the first five; the action
-# handlers apply blocked/triaged/feature).
+# add or remove these via label_actions. pre-triage.sh resets needs-info,
+# ready-to-code, duplicate, feature, question, not-planned, and pr-open
+# before each run; the action handlers below apply the rest. pr-open is
+# also created and applied independently by the code agent's pre-check
+# (scripts/pre-code.sh) when it finds a human PR before dispatching.
 CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "pr-open")
 
 is_control_label() {
