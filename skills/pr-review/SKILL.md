@@ -360,10 +360,11 @@ challenger, which runs by itself after all other sub-agents have finished).
 (step 3b-1), dispatch ONLY `correctness` and `style-conventions`.
 Do not dispatch conditional sub-agents (`security`,
 `intent-coherence`, `docs-currency`, `cross-repo-contracts`)
-regardless of step 3b's domain classification. Skip the challenger
-pass (step 6d) — there are not enough findings to warrant adversarial
-challenge on a simple change. This prevents multi-dimension analysis
-noise on deletion-only diffs, README edits, and CI config tweaks.
+regardless of step 3b's domain classification. The challenger pass
+(step 6d) still runs after dimension sub-agents complete — it is
+never skipped. This prevents multi-dimension analysis noise on
+deletion-only diffs, README edits, and CI config tweaks while
+preserving adversarial challenge of all findings.
 
 **Standard change dispatch:** For standard changes, dispatch
 sub-agents based on the classification — typically 3-6.
@@ -441,9 +442,9 @@ normal scope (current behavior preserved).
 
 | PR type                                                  | Complexity | Agents dispatched                                                                |
 |----------------------------------------------------------|------------|----------------------------------------------------------------------------------|
-| Deletion of CI config + README edit (2 files)            | simple     | correctness, style-conventions (trivial scope, no challenger)                    |
-| Deletion-only removal of a build task                    | simple     | correctness, style-conventions (trivial scope, no challenger)                    |
-| Typo fix in README                                       | simple     | correctness, style-conventions (trivial scope, no challenger)                    |
+| Deletion of CI config + README edit (2 files)            | simple     | correctness, style-conventions (trivial scope), challenger                       |
+| Deletion-only removal of a build task                    | simple     | correctness, style-conventions (trivial scope), challenger                       |
+| Typo fix in README                                       | simple     | correctness, style-conventions (trivial scope), challenger                       |
 | Implementation plan                                      | standard   | correctness, style-conventions, intent-coherence, docs-currency                  |
 | Bug fix in auth middleware                               | standard   | correctness, security, style-conventions, intent-coherence                       |
 | New API endpoint with tests                              | standard   | correctness, security, style-conventions, cross-repo-contracts                   |
@@ -888,11 +889,6 @@ and an auth bypass on the same line are two distinct findings.
 
 #### 6d. Challenger pass (dedicated sub-agent)
 
-**Skip this step for simple changes** (step 3b-1). Simple changes
-dispatch only `correctness` and `style-conventions` with trivial scope
-— the finding set is too small to warrant adversarial challenge.
-Proceed directly to step 6e.
-
 After steps 6a–6c produce a merged finding set, dispatch the
 `challenger` sub-agent to adversarially challenge the findings with
 fresh context. The challenger has not seen the orchestrator's synthesis
@@ -1230,9 +1226,21 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 
 ...
 
-#### Medium / Low / Info
+#### Medium
 
 ...
+
+#### Low
+
+...
+
+<details>
+<summary>Info findings</summary>
+
+- **[<category>]** `<file>:<line>` — <description>
+- ...
+
+</details>
 ```
 
 **Formatting rules:**
@@ -1252,6 +1260,13 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   section. If there are no findings at all, set the body to
   the hidden SHA comment followed by a newline and "Looks good to me"
   — omit the `## Review` header and `### Findings` section entirely.
+- **Info-level findings in collapsed section.** When info-level
+  findings are present, render them inside a collapsed `<details>`
+  block with `<summary>Info findings</summary>`. This keeps the
+  review focused on actionable findings while preserving info-level
+  observations for readers who expand the section. If info is the
+  only severity present, the `<details>` block appears directly
+  under `### Findings` (no other severity sub-headings).
 - **No footer.** Do not repeat the outcome or include boilerplate
   about pushes clearing the review.
 
