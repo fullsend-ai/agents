@@ -1,6 +1,6 @@
 # Scribe Agent
 
-Reads Google Drive meeting notes, maps discussion topics to the GitHub issue backlog, and posts comments or new issues.
+Reads Google Drive meeting notes, maps discussion topics to the GitHub issue backlog, and adds comments to relevant issues or creates new issues.
 
 ## How it helps
 

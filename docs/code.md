@@ -12,9 +12,7 @@ Implementation specialist that reads triaged GitHub issues, implements fixes or 
 
 ## Triggers
 
-The code agent runs automatically when the `ready-to-code` label is applied to an issue.
-
-It can also be triggered manually with the `/fs-code` command.
+The code agent is triggered when the `ready-to-code` label is applied to an issue, or via the `/fs-code` command.
 
 ## Commands
 
