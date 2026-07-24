@@ -353,8 +353,12 @@ run_postfix_integration_test() {
   mkdir -p "${validated_dir}" "${repo_dir}"
 
   # Initialize a minimal git repo on the main branch so the script
-  # sets NO_PUSH=true and skips sections 0-4.
+  # sets NO_PUSH=true and skips sections 0-4. Set a local (repo-scoped)
+  # identity explicitly — CI runners often have no global git config,
+  # so `git commit` fails with "Author identity unknown" otherwise.
   git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
   git -C "${repo_dir}" commit --allow-empty -m "init" -q
 
   local exit_code=0
