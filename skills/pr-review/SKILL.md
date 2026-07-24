@@ -319,13 +319,54 @@ dimensions are relevant:
 - Repository has documentation files → `docs-currency`
 - Always included → `style-conventions`
 
+#### 3b-1. Classify change complexity
+
+After classifying change domains, classify the overall change
+complexity as **simple** or **standard**:
+
+**Simple** — ALL of the following must hold:
+
+- The diff is purely subtractive (deletion-only with no added lines),
+  OR the change touches only CI/CD configuration files (workflows,
+  pipeline definitions, `.pre-commit-config.yaml`) or documentation
+  files (`.md`, `.adoc`, `.rst`, `README`, `CHANGELOG`)
+- The change affects 2 or fewer files
+- The change does not modify production logic (application code,
+  library code, controllers, handlers, models)
+- The change does not touch security-sensitive paths (auth,
+  permissions, secrets, RBAC, token handling)
+
+**Standard** — any change that does not meet ALL simple criteria.
+
+Record the classification for use in steps 3c, 3e, and 7.
+
+**Edge cases:**
+
+- A deletion that removes a security check or auth guard is NOT
+  simple — removing security controls requires full analysis
+- A CI config change that modifies permissions blocks, secret
+  references, or token scoping is NOT simple — these are
+  security-sensitive
+- Mostly deletions with even 1 line of new logic → standard
+- 3+ files even if all are mechanical renames → standard
+
 #### 3c. Select sub-agents
 
 Based on the domain classification, select sub-agents for dispatch.
 All selected sub-agents run in parallel (with the exception of the
 challenger, which runs by itself after all other sub-agents have finished).
 
-**Dispatch sub-agents based on the classification — typically 3-6.**
+**Simple change dispatch:** When the change is classified as simple
+(step 3b-1), dispatch ONLY `correctness` and `style-conventions`.
+Do not dispatch conditional sub-agents (`security`,
+`intent-coherence`, `docs-currency`, `cross-repo-contracts`)
+regardless of step 3b's domain classification. Skip the challenger
+pass (step 6d) — there are not enough findings to warrant adversarial
+challenge on a simple change. This prevents multi-dimension analysis
+noise on deletion-only diffs, README edits, and CI config tweaks.
+
+**Standard change dispatch:** For standard changes, dispatch
+sub-agents based on the classification — typically 3-6.
 The orchestrator should auto-select which sub-agents are relevant for
 the specific change rather than dispatching all agents by default. A
 complex PR that triggers all conditions legitimately needs all 6.
@@ -398,17 +439,19 @@ normal scope (current behavior preserved).
 
 **Dispatch examples:**
 
-| PR type                                                  | Agents dispatched                                                                |
-|----------------------------------------------------------|----------------------------------------------------------------------------------|
-| Implementation plan                                      | correctness, style-conventions, intent-coherence, docs-currency                  |
-| Typo fix in README                                       | correctness, style-conventions                                                   |
-| Bug fix in auth middleware                               | correctness, security, style-conventions, intent-coherence                       |
-| New API endpoint with tests                              | correctness, security, style-conventions, cross-repo-contracts                   |
-| Large refactor across packages                           | correctness, style-conventions, intent-coherence, docs-currency                  |
-| CI/CD pipeline change                                    | correctness, security, style-conventions, intent-coherence                       |
-| DB migration + API change                                | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
-| Re-review after fix (prior findings in correctness only) | correctness (full scope), style-conventions (trivial scope), challenger          |
-| Re-review after fix (prior findings in security only)    | correctness (full scope), security (normal scope), style-conventions (trivial scope), challenger |
+| PR type                                                  | Complexity | Agents dispatched                                                                |
+|----------------------------------------------------------|------------|----------------------------------------------------------------------------------|
+| Deletion of CI config + README edit (2 files)            | simple     | correctness, style-conventions (trivial scope, no challenger)                    |
+| Deletion-only removal of a build task                    | simple     | correctness, style-conventions (trivial scope, no challenger)                    |
+| Typo fix in README                                       | simple     | correctness, style-conventions (trivial scope, no challenger)                    |
+| Implementation plan                                      | standard   | correctness, style-conventions, intent-coherence, docs-currency                  |
+| Bug fix in auth middleware                               | standard   | correctness, security, style-conventions, intent-coherence                       |
+| New API endpoint with tests                              | standard   | correctness, security, style-conventions, cross-repo-contracts                   |
+| Large refactor across packages                           | standard   | correctness, style-conventions, intent-coherence, docs-currency                  |
+| CI/CD pipeline change                                    | standard   | correctness, security, style-conventions, intent-coherence                       |
+| DB migration + API change                                | standard   | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
+| Re-review after fix (prior findings in correctness only) | standard   | correctness (full scope), style-conventions (trivial scope), challenger          |
+| Re-review after fix (prior findings in security only)    | standard   | correctness (full scope), security (normal scope), style-conventions (trivial scope), challenger |
 
 #### 3c-1. Security-critical file triage (large PRs)
 
@@ -575,6 +618,7 @@ sub-agents must honor — it overrides their default exploration budget.
 
 | Change classification                                      | `scope_constraint`                                                                                                                                      |
 |------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Simple (step 3b-1)                                         | `"trivial: ≤5 tool calls. Read ONLY the diff and linked issue. Do NOT read project docs, surrounding files, git history, or directory listings. Return findings immediately after scope verification."` |
 | Mechanical / value-only (digest bump, version bump, hash swap, URL update, feature flag toggle) | `"trivial: ≤5 tool calls. Read ONLY the diff and linked issue. Do NOT read project docs, surrounding files, git history, or directory listings. Return findings immediately after scope verification."` |
 | Small non-mechanical (under 20 changed lines, structural)  | `"small: ≤15 tool calls. Read the diff, linked issue, and up to 3 context files directly relevant to the change."` |
 | Standard / large                                           | `"none"` (sub-agent uses its own exploration budget)                                                                                                     |
@@ -843,6 +887,11 @@ keep both** — they serve different remediation audiences. A logic error
 and an auth bypass on the same line are two distinct findings.
 
 #### 6d. Challenger pass (dedicated sub-agent)
+
+**Skip this step for simple changes** (step 3b-1). Simple changes
+dispatch only `correctness` and `style-conventions` with trivial scope
+— the finding set is too small to warrant adversarial challenge.
+Proceed directly to step 6e.
 
 After steps 6a–6c produce a merged finding set, dispatch the
 `challenger` sub-agent to adversarially challenge the findings with
@@ -1130,7 +1179,30 @@ challenger-adjudicated finding set and evaluate:
 
 ### 7. Produce the review result
 
-Compose the review comment using this structure:
+#### 7a. Brief format (simple changes)
+
+When the change was classified as **simple** (step 3b-1) AND the
+outcome is `approve` (no medium+ findings), produce a brief review
+body: the hidden SHA comment followed by a 2-3 sentence summary of
+what was checked and the result. Do not use the `## Review` header,
+`### Findings` section, or severity sub-headings. Example:
+
+```markdown
+Deletion of the Tekton task definition and corresponding README
+reference. No logic or security implications — the removal is
+clean with no remaining references to the deleted task. Looks
+good.
+```
+
+If a simple change produces medium+ findings (unexpected for a
+genuinely simple change — consider whether the complexity
+classification was wrong), fall through to the standard format
+below.
+
+#### 7b. Standard format
+
+For standard changes (or simple changes with medium+ findings),
+compose the review comment using this structure:
 
 The first line must be an HTML comment embedding the head SHA.
 Construct it by concatenating: the HTML comment open delimiter,
