@@ -24,7 +24,7 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -33,7 +33,13 @@ if [[ "\$1" == "issue" ]] && [[ "\$2" == "create" ]]; then
   echo "https://github.com/mock-org/mock-repo/issues/999"
   exit 0
 fi
-echo "gh \$*" >> "${GH_LOG}"
+# Capture stdin when --body-file - is used (e.g., gh issue comment).
+if echo "\$*" | grep -q -- "--body-file -"; then
+  BODY=\$(cat)
+  echo "gh \$* <<BODY:\${BODY}:BODY>>" >> "${GH_LOG}"
+else
+  echo "gh \$*" >> "${GH_LOG}"
+fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
@@ -265,6 +271,39 @@ run_test "prerequisites-no-github-workspace-fallback" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"
 export GITHUB_WORKSPACE="${WORKSPACE}"
+
+run_test "in-progress-posts-comment" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "in-progress-applies-pr-open-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=pr-open --silent"
+
+run_test "in-progress-removes-blocked-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "in-progress-removes-ready-to-code-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-to-code -X DELETE --silent"
+
+run_test "in-progress-removes-needs-info-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "in-progress-appends-pr-links" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "Addressed by:"
+
+run_test "in-progress-missing-comment-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}]}' \
+  "" \
+  "true"
+
+run_test_stdout "in-progress-control-label-refused" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue.","label_actions":{"reason":"Tried to set pr-open label.","actions":[{"action":"add","label":"pr-open"}]}}' \
+  "::warning::Refused to add control label 'pr-open' -- control labels are managed by the triage pipeline"
 
 run_test "question-posts-comment" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported.\n\nDid this answer your question, or would you like to open a feature request for Python 4 support?"}' \

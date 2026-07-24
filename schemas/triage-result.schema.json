@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "question", "not-planned"]
+      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "in-progress", "question", "not-planned"]
     },
     "reasoning": {
       "type": "string",
@@ -29,6 +29,21 @@
     },
     "triage_summary": {
       "$ref": "#/$defs/triage_summary"
+    },
+    "pull_requests": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["url"],
+        "properties": {
+          "url": {
+            "type": "string",
+            "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$"
+          }
+        },
+        "additionalProperties": false
+      }
     },
     "prerequisites": {
       "type": "object",
@@ -89,6 +104,10 @@
     {
       "if": { "properties": { "action": { "const": "sufficient" } }, "required": ["action"] },
       "then": { "required": ["clarity_scores", "triage_summary"] }
+    },
+    {
+      "if": { "properties": { "action": { "const": "in-progress" } }, "required": ["action"] },
+      "then": { "required": ["pull_requests"] }
     },
     {
       "if": { "properties": { "action": { "const": "prerequisites" } }, "required": ["action"] },

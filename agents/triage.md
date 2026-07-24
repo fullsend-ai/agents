@@ -55,7 +55,12 @@ Also look for **blocking relationships** — open issues or PRs that must be res
 - An open PR already addresses this issue, even partially — the work is already in progress
 - The issue's fix requires a design decision that is being discussed in another issue
 
-**Existing PR gate (HARD CONSTRAINT):** If an open PR already addresses this issue — even partially — treat it as a prerequisite. Use `action: "prerequisites"` with the PR URL in the `existing` array. Do not emit `action: "sufficient"` when an open PR covers the reported problem; dispatching a second implementation would create duplicates. Only skip this rule if the PR is closed without merging (the work was abandoned) or if the PR is clearly unrelated despite mentioning the issue number.
+**Existing PR gate (HARD CONSTRAINT):** If an open PR already addresses this issue — even partially — do not emit `action: "sufficient"`; dispatching a second implementation would create duplicates. Distinguish between two cases:
+
+- **PR fixes the issue** — the PR directly resolves the reported problem. Use `action: "in-progress"` with the PR URL(s) in the `pull_requests` array. This signals that work is already underway, not that the issue is blocked.
+- **PR is a true prerequisite** — the PR covers infrastructure, API, or design changes that must land before this issue can be worked on, but does not itself fix the issue. Use `action: "prerequisites"` with the PR URL in the `existing` array.
+
+Only skip this rule if the PR is closed without merging (the work was abandoned) or if the PR is clearly unrelated despite mentioning the issue number.
 
 If the issue mentions other repositories, libraries, or upstream projects, search those too:
 
@@ -262,6 +267,21 @@ At least one of the two arrays must have entries.
     ]
   },
   "comment": "A professional comment explaining the blocking dependencies. Link to existing blockers and describe what new issues need to be created upstream. Be specific about why each dependency must be resolved before this issue can proceed."
+}
+```
+
+### Action: `in-progress`
+
+An open PR already addresses this issue. The work is in flight — the issue is not blocked, it is being resolved. Use this instead of `prerequisites` when the PR directly fixes the reported problem.
+
+```json
+{
+  "action": "in-progress",
+  "reasoning": "Brief explanation of how the PR addresses this issue",
+  "pull_requests": [
+    { "url": "https://github.com/org/repo/pull/123" }
+  ],
+  "comment": "A professional comment explaining that existing work is already addressing this issue. Link to the PR(s) and summarize what they cover. Do not use 'blocked' framing — the issue is being resolved, not blocked."
 }
 ```
 
