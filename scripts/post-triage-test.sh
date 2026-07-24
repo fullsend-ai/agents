@@ -288,9 +288,9 @@ run_test "prerequisites-no-github-workspace-fallback" \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
-run_test "in-progress-posts-comment" \
+run_test "in-progress-posts-sticky-comment" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
-  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+  "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-in-progress -->"
 
 run_test "in-progress-applies-pr-open-label" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
@@ -328,6 +328,20 @@ run_test "in-progress-missing-comment-fails" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}]}' \
   "" \
   "true"
+
+run_test "in-progress-empty-pull-requests-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[],"comment":"An open PR is already addressing this issue."}' \
+  "" \
+  "true"
+
+run_test "in-progress-missing-pull-requests-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","comment":"An open PR is already addressing this issue."}' \
+  "" \
+  "true"
+
+run_test_stdout "in-progress-warns-on-dropped-prerequisites" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"An open PR is already addressing this issue."}' \
+  "::warning::Ignoring 'prerequisites' on an 'in-progress' result"
 
 run_test_stdout "in-progress-control-label-refused" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue.","label_actions":{"reason":"Tried to set pr-open label.","actions":[{"action":"add","label":"pr-open"}]}}' \

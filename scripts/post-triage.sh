@@ -253,25 +253,34 @@ ${FAILED_CREATES}"
       exit 1
     fi
 
-    # Collect PR URLs from pull_requests array.
+    # Guard: an in-progress result with no PR to point at is useless — it would
+    # apply pr-open and claim a PR addresses the issue without linking one. The
+    # schema requires pull_requests here, but re-check rather than trust that
+    # validation gated us (the agent is told to emit its best JSON after 3
+    # failed validation attempts).
     PR_COUNT=$(jq '.pull_requests // [] | length' "${RESULT_FILE}")
-    PR_URLS=""
-    for i in $(seq 0 $((PR_COUNT - 1))); do
-      URL=$(jq -r ".pull_requests[${i}].url" "${RESULT_FILE}")
-      PR_URLS="${PR_URLS} ${URL}"
-    done
-    PR_URLS=$(echo "${PR_URLS}" | xargs)  # trim whitespace
+    if [[ "${PR_COUNT}" -eq 0 ]]; then
+      echo "ERROR: action is 'in-progress' but no pull_requests provided" >&2
+      exit 1
+    fi
 
-    if [[ -n "${PR_URLS}" ]]; then
-      PR_LIST=""
-      for url in ${PR_URLS}; do
-        PR_LIST="${PR_LIST}
+    # The prompt tells the agent to note separate blockers in comment rather
+    # than populating prerequisites alongside pull_requests. Nothing enforces
+    # that, so warn when we drop it instead of discarding it silently.
+    if [[ "$(jq 'has("prerequisites")' "${RESULT_FILE}")" == "true" ]]; then
+      echo "::warning::Ignoring 'prerequisites' on an 'in-progress' result -- mention separate blockers in 'comment' instead"
+    fi
+
+    # Collect PR URLs from pull_requests array.
+    PR_LIST=""
+    while IFS= read -r url; do
+      PR_LIST="${PR_LIST}
 - ${url}"
-      done
-      COMMENT="${COMMENT}
+    done < <(jq -r '.pull_requests[].url' "${RESULT_FILE}")
+
+    COMMENT="${COMMENT}
 
 **Addressed by:**${PR_LIST}"
-    fi
 
     remove_label "blocked"
     remove_label "ready-to-code"
@@ -492,6 +501,12 @@ if [[ "${ACTION}" == "sufficient" ]]; then
   # Summaries use sticky comments — there's one logical summary per issue and
   # updating it in-place avoids flooding. See #602.
   printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
+elif [[ "${ACTION}" == "in-progress" ]]; then
+  # in-progress is a durable status, not an interactive prompt: it holds for the
+  # whole life of the PR while triage re-runs on every issue edit. Stick it to
+  # its own marker so re-runs update in place instead of re-posting. Distinct
+  # from the triage-agent marker so it does not clobber the summary comment.
+  printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-in-progress -->" --token "${GH_TOKEN}" --result -
 else
   # Interactive comments (needs-info questions, blocked notices, duplicates)
   # post as new comments so the conversation reads chronologically.

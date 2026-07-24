@@ -45,7 +45,7 @@ These labels are managed by the triage agent based on its assessment of the issu
 | `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
 | `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
 | `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
-| `pr-open` | An open PR already addresses this issue — applied either by the triage agent's `in-progress` action or by the code agent's pre-check when it finds a human PR before dispatching. Stale if the linked PR is later abandoned; re-run `/fs-triage` manually to refresh. |
+| `pr-open` | An open PR already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR is closed without merging: nothing re-triages on PR close, so the issue keeps `pr-open` and is not re-evaluated until someone runs `/fs-triage` on it. |
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.
