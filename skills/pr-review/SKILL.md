@@ -442,17 +442,19 @@ normal scope (current behavior preserved).
 
 | PR type                                                  | Complexity | Agents dispatched                                                                |
 |----------------------------------------------------------|------------|----------------------------------------------------------------------------------|
-| Deletion of CI config + README edit (2 files)            | simple     | correctness (trivial scope), style-conventions (trivial scope), challenger       |
-| Deletion-only removal of a build task                    | simple     | correctness (trivial scope), style-conventions (trivial scope), challenger       |
-| Typo fix in README                                       | simple     | correctness (trivial scope), style-conventions (trivial scope), challenger       |
+| Deletion of CI config + README edit (2 files)            | simple     | correctness (trivial scope), style-conventions (trivial scope)                   |
+| Deletion-only removal of a build task                    | simple     | correctness (trivial scope), style-conventions (trivial scope)                   |
+| Typo fix in README                                       | simple     | correctness (trivial scope), style-conventions (trivial scope)                   |
 | Implementation plan                                      | standard   | correctness, style-conventions, intent-coherence, docs-currency                  |
 | Bug fix in auth middleware                               | standard   | correctness, security, style-conventions, intent-coherence                       |
 | New API endpoint with tests                              | standard   | correctness, security, style-conventions, cross-repo-contracts                   |
 | Large refactor across packages                           | standard   | correctness, style-conventions, intent-coherence, docs-currency                  |
 | CI/CD pipeline change                                    | standard   | correctness, security, style-conventions, intent-coherence                       |
 | DB migration + API change                                | standard   | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
-| Re-review after fix (prior findings in correctness only) | standard   | correctness (full scope), style-conventions (trivial scope), challenger          |
-| Re-review after fix (prior findings in security only)    | standard   | correctness (full scope), security (normal scope), style-conventions (trivial scope), challenger |
+| Re-review after fix (prior findings in correctness only) | standard   | correctness (full scope), style-conventions (trivial scope)                      |
+| Re-review after fix (prior findings in security only)    | standard   | correctness (full scope), security (normal scope), style-conventions (trivial scope) |
+
+The challenger always runs after all dimension sub-agents complete (step 6d) — it is not listed per row because it is never conditional.
 
 #### 3c-1. Security-critical file triage (large PRs)
 
