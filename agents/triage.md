@@ -42,7 +42,7 @@ Search open issues and pull requests for related work:
 
 ```
 gh issue list --repo OWNER/REPO --state open --json number,title,body --limit 100
-gh pr list --repo OWNER/REPO --state open --json number,title,body --limit 50
+gh pr list --repo OWNER/REPO --state open --json number,title,body,isDraft --limit 50
 ```
 
 Compare issue titles and descriptions for semantic overlap. An issue is a duplicate if it describes the same root problem, even if the symptoms or wording differ.
@@ -59,6 +59,8 @@ Also look for **blocking relationships** — open issues or PRs that must be res
 
 - **PR fixes the issue** — the PR directly resolves the reported problem. Use `action: "in-progress"` with the PR URL(s) in the `pull_requests` array. This signals that work is already underway, not that the issue is blocked.
 - **PR is a true prerequisite** — the PR covers infrastructure, API, or design changes that must land before this issue can be worked on, but does not itself fix the issue. Use `action: "prerequisites"` with the PR URL in the `existing` array.
+
+A PR that only **partially** fixes the issue is still `in-progress` if the remaining scope is trivial (the open PR resolves the core problem and what's left is minor polish); if the remaining gap is substantial, list it as a `prerequisites` entry instead. A **draft** PR still counts as work in progress — use `in-progress` and note the draft status in `reasoning` so maintainers know it may need more time before it is ready for review.
 
 Only skip this rule if the PR is closed without merging (the work was abandoned) or if the PR is clearly unrelated despite mentioning the issue number.
 
@@ -154,6 +156,8 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 **Anti-premature-resolution rule (HARD CONSTRAINT):** If your assessment identifies ANY open *user-facing* questions or information gaps — regardless of whether they seem minor — you MUST use `action: "insufficient"` and ask a clarifying question. Do NOT emit `action: "sufficient"` with user-facing information gaps. The `sufficient` action means there are zero open user-facing questions that could affect implementation. When in doubt, ask. Implementation-facing questions that cannot be self-resolved from repository context should be noted in `reasoning` but do not require `action: "insufficient"` unless they materially prevent triage — see the question classification rules above.
 
 **Anti-premature-prerequisites rule (HARD CONSTRAINT):** If your assessment identifies unresolved prerequisites — dependencies on work in other repos or unmerged changes that must land first — you MUST use `action: "prerequisites"`. Do NOT emit `action: "sufficient"` when prerequisites exist. The `sufficient` action means there are zero blockers and zero open questions.
+
+**Anti-premature-in-progress rule (HARD CONSTRAINT):** If an open PR already addresses this issue, you MUST use `action: "in-progress"` (or `action: "prerequisites"` if the PR is a true prerequisite rather than a fix — see the Existing PR gate in Step 2b). Do NOT emit `action: "sufficient"` when a fixing PR is already open — dispatching a second implementation would create duplicates.
 
 **Anti-question-bypass rule (HARD CONSTRAINT):** If the issue uses interrogative phrasing and describes no concrete defect, missing feature, or requested change, you MUST use `action: "question"`. Do NOT emit `action: "sufficient"` or `action: "insufficient"` for issues that are purely asking for information. The fact that answering a question might reveal an actionable improvement does not change the classification — the reporter asked a question, not filed a bug or feature request. Answer the question using the `question` action and let the reporter decide whether to convert it into actionable work.
 

@@ -105,6 +105,7 @@ case "${ACTION}" in
       exit 1
     fi
     remove_label "blocked"
+    remove_label "pr-open"
     add_label "needs-info"
     ;;
 
@@ -119,6 +120,7 @@ case "${ACTION}" in
       exit 1
     fi
     remove_label "blocked"
+    remove_label "pr-open"
     add_label "duplicate"
     ;;
 
@@ -239,6 +241,7 @@ ${FAILED_CREATES}"
 
     remove_label "ready-to-code"
     remove_label "needs-info"
+    remove_label "pr-open"
     add_label "blocked"
     ;;
 
@@ -271,6 +274,9 @@ ${FAILED_CREATES}"
     remove_label "blocked"
     remove_label "ready-to-code"
     remove_label "needs-info"
+    gh label create "pr-open" --repo "${REPO}" \
+      --description "An open PR already addresses this issue" --color "D4C5F9" \
+      --force 2>/dev/null || true
     add_label "pr-open"
     ;;
 
@@ -339,6 +345,7 @@ ${FAILED_CREATES}"
 
     remove_label "blocked"
     remove_label "needs-info"
+    remove_label "pr-open"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
@@ -382,6 +389,7 @@ ${FAILED_CREATES}"
     fi
     remove_label "blocked"
     remove_label "needs-info"
+    remove_label "pr-open"
     add_label "question"
     ;;
 
@@ -392,6 +400,7 @@ ${FAILED_CREATES}"
     fi
     remove_label "blocked"
     remove_label "needs-info"
+    remove_label "pr-open"
     add_label "not-planned"
     ;;
 
