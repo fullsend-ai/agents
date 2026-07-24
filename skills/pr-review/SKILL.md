@@ -343,6 +343,14 @@ complex PR that triggers all conditions legitimately needs all 6.
   schemas, or CLI args are modified. Skip entirely for PRs that don't
   touch public API surface.
 
+**Security triage auto-inclusion:** When step 3c-1 produces a
+non-empty `security_critical_files` list, auto-include the `security`
+sub-agent even if the domain classification in step 3b did not
+independently select it. If triage identifies security-critical files,
+they must receive dedicated security review regardless of the domain
+signals. This auto-inclusion takes precedence over re-review dispatch
+rules that would otherwise skip the `security` sub-agent.
+
 **Re-review dispatch (prior-finding-aware):** When
 `PRIOR_REVIEW_PROVENANCE` is `app-verified` and prior findings exist
 (step 3a), narrow dispatch based on which dimensions had findings:
@@ -370,11 +378,16 @@ complex PR that triggers all conditions legitimately needs all 6.
    - `docs-currency` — re-qualifies only if `changed_since_prior`
      includes documentation files (not merely because the repository
      contains docs).
-   - `security` / `cross-repo-contracts` — re-qualify only if
-     `changed_since_prior` includes files matching their step 3b path
-     criteria (auth/permissions/secrets/config/data-handling for
-     `security`; public APIs, exported interfaces, schemas, or CLI
-     surface for `cross-repo-contracts`).
+   - `security` — re-qualifies if `changed_since_prior` includes
+     files matching step 3b path criteria
+     (auth/permissions/secrets/config/data-handling), OR if step 3c-1
+     produced a non-empty `security_critical_files` list (the security
+     triage auto-inclusion rule above takes precedence over the
+     re-review skip rule).
+   - `cross-repo-contracts` — re-qualifies only if
+     `changed_since_prior` includes files matching its step 3b path
+     criteria (public APIs, exported interfaces, schemas, or CLI
+     surface).
 
    If the incremental delta cannot be enumerated — `changed_since_prior`
    is `"all"` (the step 2a fallback for a failed compare, >250 commits,
@@ -605,10 +618,16 @@ the constraint first.
 
 When step 3c-1 produced a security triage classification (i.e., step 2
 selected per-file mode and the triage pass succeeded), modify the
-context packages for the `security` and `correctness` sub-agents as
-follows:
+context packages for the `correctness` sub-agent and, if selected in
+step 3c, the `security` sub-agent as follows. If the `security`
+sub-agent was not selected in step 3c (which should not occur when
+`security_critical_files` is non-empty, due to the auto-inclusion
+rule), skip the security-specific context modifications (items 1 and
+the security portion of item 4) and apply only the correctness
+modifications.
 
-1. **Security sub-agent:** Provide the full per-file diffs for all
+1. **Security sub-agent (skip if not selected in step 3c):** Provide
+   the full per-file diffs for all
    `security_critical_files` first, clearly marked with a
    `### Security-critical file: <path>` header and the triage reason.
    Include standard files' diffs after, under a
@@ -628,8 +647,8 @@ follows:
    context package without prioritization. These dimensions are not
    affected by the security triage classification.
 
-4. **Include the triage summary** in the context package for both
-   `security` and `correctness` sub-agents:
+4. **Include the triage summary** in the context package for the
+   `correctness` sub-agent and, if selected, the `security` sub-agent:
 
    ```markdown
    ### Security triage classification
