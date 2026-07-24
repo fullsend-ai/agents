@@ -76,12 +76,40 @@ fi
 # allowed. Falls back to "main" if the API call fails.
 # ---------------------------------------------------------------------------
 AGENT_TARGET=""
-RESULT_FILE=""
-for dir in "${RUN_DIR}"/iteration-*/output; do
-  if [ -f "${dir}/code-result.json" ]; then
-    RESULT_FILE="${dir}/code-result.json"
+# Prefer the validated iteration when set. Trust boundary:
+# FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI on the runner —
+# not by the sandbox or the agent. No containment check (realpath / prefix
+# guard) is applied here; the value is trusted from the external harness.
+# If the trust model changes, add a realpath prefix check.
+if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
+  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/code-result.json" ]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/code-result.json"
+  elif [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/result.json" ]; then
+    # NOTE: This fallback is currently unreachable in production.
+    # validate-output-schema.sh only accepts result.json when _output_file is
+    # "agent-result.json" (the default). code.yaml sets FULLSEND_OUTPUT_FILE
+    # to "code-result.json", so a bare result.json will never become the
+    # validated iteration's output. Kept as defensive code.
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
+  else
+    # No silent rescan: an env var pointing at a dir with neither filename
+    # must not fall back to scanning other iterations, which could pick up
+    # a different (possibly invalid) iteration's output. Degrade to no
+    # result the same as the "nothing found" case below — this script
+    # already falls back to the auto-detected default branch when
+    # RESULT_FILE is empty, so this isn't a hard failure.
+    RESULT_FILE=""
   fi
-done
+else
+  # Backward compatibility: scan iteration-N/ subdirectories for the last
+  # iteration's output (glob order = naturally ascending iteration numbers).
+  RESULT_FILE=""
+  for dir in "${RUN_DIR}"/iteration-*/output; do
+    if [ -f "${dir}/code-result.json" ]; then
+      RESULT_FILE="${dir}/code-result.json"
+    fi
+  done
+fi
 if [ -n "${RESULT_FILE}" ]; then
   AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
 fi

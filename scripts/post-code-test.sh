@@ -907,6 +907,143 @@ run_precommit_retry_test "precommit-passes-with-unstaged" \
 run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
   "1" "yes" "0" "blocked:retry-left-unstaged" "yes"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the FULLSEND_VALIDATED_ITERATION_DIR selection
+# logic from post-code.src.sh's target-branch resolution. Given an env var
+# value and a set of files on disk, returns which result file (if any) would
+# be selected.
+#
+# Mirrors the three-branch logic: expected filename -> result.json fallback
+# -> no silent rescan (degrades to empty, matching this script's existing
+# soft-fallback-to-default-branch behavior rather than a hard failure).
+# ---------------------------------------------------------------------------
+resolve_code_result() {
+  local validated_dir="$1"  # value of FULLSEND_VALIDATED_ITERATION_DIR ("" = unset)
+  local run_dir="$2"        # directory containing iteration-*/output/
+
+  if [ -n "${validated_dir}" ]; then
+    if [ -f "${validated_dir}/code-result.json" ]; then
+      echo "${validated_dir}/code-result.json"
+    elif [ -f "${validated_dir}/result.json" ]; then
+      echo "${validated_dir}/result.json"
+    else
+      echo ""
+    fi
+  else
+    local result=""
+    for dir in "${run_dir}"/iteration-*/output; do
+      if [ -f "${dir}/code-result.json" ]; then
+        result="${dir}/code-result.json"
+      fi
+    done
+    echo "${result}"
+  fi
+}
+
+RESOLVE_TMPDIR="$(mktemp -d)"
+
+run_resolve_code_test() {
+  local test_name="$1"
+  local setup_fn="$2"
+  local expected="$3"
+
+  local run_dir="${RESOLVE_TMPDIR}/${test_name}"
+  local validated_dir="${run_dir}/validated-output"
+  mkdir -p "${run_dir}"
+
+  ${setup_fn} "${run_dir}" "${validated_dir}"
+
+  local actual
+  actual="$(resolve_code_result "${validated_dir}" "${run_dir}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_resolve_code_test_unset() {
+  local test_name="$1"
+  local setup_fn="$2"
+  local expected="$3"
+
+  local run_dir="${RESOLVE_TMPDIR}/${test_name}"
+  mkdir -p "${run_dir}"
+
+  ${setup_fn} "${run_dir}" ""
+
+  local actual
+  actual="$(resolve_code_result "" "${run_dir}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Setup: validated dir has code-result.json
+setup_code_expected() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+  echo '{}' > "${validated_dir}/code-result.json"
+  # Also place a file in iteration-2 to verify it's NOT used.
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo '{}' > "${run_dir}/iteration-2/output/code-result.json"
+}
+
+# Setup: validated dir has only result.json
+setup_code_fallback() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+  echo '{}' > "${validated_dir}/result.json"
+}
+
+# Setup: validated dir has neither filename
+setup_code_neither() {
+  local run_dir="$1"
+  local validated_dir="$2"
+  mkdir -p "${validated_dir}"
+}
+
+# Setup: env var unset, iteration dirs present (backward compat)
+setup_code_iteration_scan() {
+  local run_dir="$1"
+  mkdir -p "${run_dir}/iteration-1/output"
+  mkdir -p "${run_dir}/iteration-2/output"
+  echo '{}' > "${run_dir}/iteration-1/output/code-result.json"
+  echo '{}' > "${run_dir}/iteration-2/output/code-result.json"
+}
+
+run_resolve_code_test "code-validated-dir-expected-filename" \
+  setup_code_expected \
+  "${RESOLVE_TMPDIR}/code-validated-dir-expected-filename/validated-output/code-result.json"
+
+run_resolve_code_test "code-validated-dir-fallback-filename" \
+  setup_code_fallback \
+  "${RESOLVE_TMPDIR}/code-validated-dir-fallback-filename/validated-output/result.json"
+
+run_resolve_code_test "code-validated-dir-neither-filename-degrades-to-empty" \
+  setup_code_neither \
+  ""
+
+run_resolve_code_test_unset "code-unset-falls-back-to-scan" \
+  setup_code_iteration_scan \
+  "${RESOLVE_TMPDIR}/code-unset-falls-back-to-scan/iteration-2/output/code-result.json"
+
+rm -rf "${RESOLVE_TMPDIR}"
+
 # --- Summary ---
 
 echo ""
