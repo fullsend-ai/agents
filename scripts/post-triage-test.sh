@@ -24,7 +24,7 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -33,7 +33,13 @@ if [[ "\$1" == "issue" ]] && [[ "\$2" == "create" ]]; then
   echo "https://github.com/mock-org/mock-repo/issues/999"
   exit 0
 fi
-echo "gh \$*" >> "${GH_LOG}"
+# Capture stdin when --body-file - is used (e.g., gh issue comment).
+if echo "\$*" | grep -q -- "--body-file -"; then
+  BODY=\$(cat)
+  echo "gh \$* <<BODY:\${BODY}:BODY>>" >> "${GH_LOG}"
+else
+  echo "gh \$*" >> "${GH_LOG}"
+fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
@@ -166,6 +172,10 @@ run_test "insufficient-removes-blocked-label" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
+run_test "insufficient-removes-pr-open-label" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
+
 run_test "sufficient-posts-summary-and-labels" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
@@ -219,6 +229,10 @@ run_test "sufficient-removes-needs-info-label" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
 
+run_test "sufficient-removes-pr-open-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
+
 run_test "duplicate-labels" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=duplicate --silent"
@@ -226,6 +240,10 @@ run_test "duplicate-labels" \
 run_test "duplicate-removes-blocked-label" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "duplicate-removes-pr-open-label" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
 run_test "duplicate-closes-issue" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
@@ -243,6 +261,10 @@ run_test "prerequisites-posts-comment-and-labels" \
 run_test "prerequisites-applies-blocked-label" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=blocked --silent"
+
+run_test "prerequisites-removes-pr-open-label" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
 run_test "prerequisites-missing-comment-fails" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]}}' \
@@ -266,6 +288,75 @@ run_test "prerequisites-no-github-workspace-fallback" \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
+run_test "in-progress-posts-sticky-comment" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-in-progress -->"
+
+run_test "in-progress-applies-pr-open-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=pr-open --silent"
+
+run_test "in-progress-removes-blocked-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "in-progress-removes-ready-to-code-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-to-code -X DELETE --silent"
+
+run_test "in-progress-removes-needs-info-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "in-progress-appends-pr-links" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "Addressed by:"
+
+run_test "in-progress-multiple-prs-both-linked" \
+  '{"action":"in-progress","reasoning":"PR #50 and #51 together fix the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"},{"url":"https://github.com/test-org/test-repo/pull/51"}],"comment":"Open PRs are already addressing this issue."}' \
+  "- https://github.com/test-org/test-repo/pull/50"
+
+run_test "in-progress-multiple-prs-second-linked" \
+  '{"action":"in-progress","reasoning":"PR #50 and #51 together fix the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"},{"url":"https://github.com/test-org/test-repo/pull/51"}],"comment":"Open PRs are already addressing this issue."}' \
+  "- https://github.com/test-org/test-repo/pull/51"
+
+run_test "in-progress-creates-pr-open-label" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "gh label create pr-open --repo test-org/test-repo --description An open PR already addresses this issue --color D4C5F9 --force"
+
+run_test "in-progress-missing-comment-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}]}' \
+  "" \
+  "true"
+
+run_test "in-progress-empty-pull-requests-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[],"comment":"An open PR is already addressing this issue."}' \
+  "" \
+  "true"
+
+run_test "in-progress-missing-pull-requests-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","comment":"An open PR is already addressing this issue."}' \
+  "" \
+  "true"
+
+run_test "in-progress-malformed-pull-requests-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":["https://github.com/test-org/test-repo/pull/50"],"comment":"An open PR is already addressing this issue."}' \
+  "" \
+  "true"
+
+run_test "in-progress-null-url-fails" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":null}],"comment":"An open PR is already addressing this issue."}' \
+  "" \
+  "true"
+
+run_test_stdout "in-progress-warns-on-dropped-prerequisites" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"An open PR is already addressing this issue."}' \
+  "::warning::Ignoring 'prerequisites' on an 'in-progress' result"
+
+run_test_stdout "in-progress-control-label-refused" \
+  '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue.","label_actions":{"reason":"Tried to set pr-open label.","actions":[{"action":"add","label":"pr-open"}]}}' \
+  "::warning::Refused to add control label 'pr-open' -- control labels are managed by the triage pipeline"
+
 run_test "question-posts-comment" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported.\n\nDid this answer your question, or would you like to open a feature request for Python 4 support?"}' \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"
@@ -281,6 +372,10 @@ run_test "question-removes-blocked-label" \
 run_test "question-removes-needs-info-label" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "question-removes-pr-open-label" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
 run_test "question-missing-comment-fails" \
   '{"action":"question","reasoning":"issue is asking a question"}' \
@@ -302,6 +397,10 @@ run_test "not-planned-removes-blocked-label" \
 run_test "not-planned-removes-needs-info-label" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "not-planned-removes-pr-open-label" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
 run_test "not-planned-closes-issue" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope for the project goals."}' \
@@ -349,7 +448,7 @@ run_test_stdout "label-actions-not-planned-control-label-refused" \
 
 run_test "label-actions-absent-still-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
-  "fullsend post-comment --repo test-org/test-repo --number 42"
+  "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-agent -->"
 
 run_test "label-actions-with-insufficient" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?","label_actions":{"reason":"Component label applies regardless of triage outcome.","actions":[{"action":"add","label":"component/parser"}]}}' \

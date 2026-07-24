@@ -91,10 +91,12 @@ remove_label() {
 }
 
 # Control labels managed by the triage pipeline. The post script refuses to
-# add or remove these via label_actions. This list covers labels that the
-# pipeline itself applies (pre-triage.sh resets the first five; the action
-# handlers apply blocked/triaged/feature).
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned")
+# add or remove these via label_actions. pre-triage.sh resets needs-info,
+# ready-to-code, duplicate, feature, question, not-planned, and pr-open
+# before each run; the action handlers below apply the rest. pr-open is
+# also created and applied independently by the code agent's pre-check
+# (scripts/pre-code.sh) when it finds a human PR before dispatching.
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "pr-open")
 
 is_control_label() {
   local label="$1"
@@ -120,6 +122,7 @@ case "${ACTION}" in
       exit 1
     fi
     remove_label "blocked"
+    remove_label "pr-open"
     add_label "needs-info"
     ;;
 
@@ -134,6 +137,7 @@ case "${ACTION}" in
       exit 1
     fi
     remove_label "blocked"
+    remove_label "pr-open"
     add_label "duplicate"
     ;;
 
@@ -254,7 +258,58 @@ ${FAILED_CREATES}"
 
     remove_label "ready-to-code"
     remove_label "needs-info"
+    remove_label "pr-open"
     add_label "blocked"
+    ;;
+
+  in-progress)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'in-progress' but no comment provided" >&2
+      exit 1
+    fi
+
+    # Guard: an in-progress result with no PR to point at is useless — it would
+    # apply pr-open and claim a PR addresses the issue without linking one. The
+    # schema requires pull_requests here, but re-check rather than trust that
+    # validation gated us (the agent is told to emit its best JSON after 3
+    # failed validation attempts).
+    PR_COUNT=$(jq '.pull_requests // [] | length' "${RESULT_FILE}")
+    if [[ "${PR_COUNT}" -eq 0 ]]; then
+      echo "ERROR: action is 'in-progress' but no pull_requests provided" >&2
+      exit 1
+    fi
+
+    # The prompt tells the agent to note separate blockers in comment rather
+    # than populating prerequisites alongside pull_requests. Nothing enforces
+    # that, so warn when we drop it instead of discarding it silently.
+    DROPPED_PREREQS=$(jq '((.prerequisites.existing // []) + (.prerequisites.create // [])) | length' "${RESULT_FILE}")
+    if [[ "${DROPPED_PREREQS}" -gt 0 ]]; then
+      echo "::warning::Ignoring 'prerequisites' on an 'in-progress' result -- mention separate blockers in 'comment' instead"
+    fi
+
+    # Collect PR URLs from pull_requests array. Capture via command
+    # substitution rather than process substitution so a jq failure — a
+    # pull_requests that passed the count check but is not an array of
+    # objects, e.g. a bare string — still trips set -e instead of silently
+    # rendering an empty list. -e also rejects a null url.
+    PR_URLS=$(jq -er '.pull_requests[].url' "${RESULT_FILE}")
+    PR_LIST=""
+    while IFS= read -r url; do
+      PR_LIST="${PR_LIST}
+- ${url}"
+    done <<< "${PR_URLS}"
+
+    COMMENT="${COMMENT}
+
+**Addressed by:**${PR_LIST}"
+
+    remove_label "blocked"
+    remove_label "ready-to-code"
+    remove_label "needs-info"
+    gh label create "pr-open" --repo "${REPO}" \
+      --description "An open PR already addresses this issue" --color "D4C5F9" \
+      --force 2>/dev/null || true
+    add_label "pr-open"
     ;;
 
   sufficient)
@@ -322,6 +377,7 @@ ${FAILED_CREATES}"
 
     remove_label "blocked"
     remove_label "needs-info"
+    remove_label "pr-open"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
@@ -365,6 +421,7 @@ ${FAILED_CREATES}"
     fi
     remove_label "blocked"
     remove_label "needs-info"
+    remove_label "pr-open"
     add_label "question"
     ;;
 
@@ -375,6 +432,7 @@ ${FAILED_CREATES}"
     fi
     remove_label "blocked"
     remove_label "needs-info"
+    remove_label "pr-open"
     add_label "not-planned"
     ;;
 
@@ -464,6 +522,12 @@ if [[ "${ACTION}" == "sufficient" ]]; then
   # Summaries use sticky comments — there's one logical summary per issue and
   # updating it in-place avoids flooding. See #602.
   printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
+elif [[ "${ACTION}" == "in-progress" ]]; then
+  # in-progress is a durable status, not an interactive prompt: it holds for the
+  # whole life of the PR while triage re-runs on every issue edit. Stick it to
+  # its own marker so re-runs update in place instead of re-posting. Distinct
+  # from the triage-agent marker so it does not clobber the summary comment.
+  printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-in-progress -->" --token "${GH_TOKEN}" --result -
 else
   # Interactive comments (needs-info questions, blocked notices, duplicates)
   # post as new comments so the conversation reads chronologically.
