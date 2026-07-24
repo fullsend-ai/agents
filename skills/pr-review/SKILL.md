@@ -442,9 +442,9 @@ normal scope (current behavior preserved).
 
 | PR type                                                  | Complexity | Agents dispatched                                                                |
 |----------------------------------------------------------|------------|----------------------------------------------------------------------------------|
-| Deletion of CI config + README edit (2 files)            | simple     | correctness, style-conventions (trivial scope), challenger                       |
-| Deletion-only removal of a build task                    | simple     | correctness, style-conventions (trivial scope), challenger                       |
-| Typo fix in README                                       | simple     | correctness, style-conventions (trivial scope), challenger                       |
+| Deletion of CI config + README edit (2 files)            | simple     | correctness (trivial scope), style-conventions (trivial scope), challenger       |
+| Deletion-only removal of a build task                    | simple     | correctness (trivial scope), style-conventions (trivial scope), challenger       |
+| Typo fix in README                                       | simple     | correctness (trivial scope), style-conventions (trivial scope), challenger       |
 | Implementation plan                                      | standard   | correctness, style-conventions, intent-coherence, docs-currency                  |
 | Bug fix in auth middleware                               | standard   | correctness, security, style-conventions, intent-coherence                       |
 | New API endpoint with tests                              | standard   | correctness, security, style-conventions, cross-repo-contracts                   |
@@ -1184,6 +1184,7 @@ what was checked and the result. Do not use the `## Review` header,
 `### Findings` section, or severity sub-headings. Example:
 
 ```markdown
+<!-- **Head SHA:** abc1234 -->
 Deletion of the Tekton task definition and corresponding README
 reference. No logic or security implications — the removal is
 clean with no remaining references to the deleted task. Looks
