@@ -9,9 +9,12 @@ labels:
   forbidden: []
 
 # Code agent budgets (sandbox work + retries).
-# Baseline on f7408a6 (CI run 29424512121): 12 turns / $2.12. ~2x headroom
-# for model variance.
-max_turns: 30
+# Observed baselines: 12 turns / $2.12 (CI run 29424512121), then 35 turns /
+# $0.98 (CI run 30166455238) for the same trivial fixture — turn count is
+# noisy run-to-run even though cost stays low, so max_turns carries most of
+# the headroom here (~1.7x over the higher observed value) while
+# max_cost_usd keeps ~2x over the higher observed cost.
+max_turns: 60
 max_cost_usd: 4.00
 
 # Human reference only; not consumed by judges (unlike triage/review quality).
