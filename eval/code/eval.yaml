@@ -1,26 +1,37 @@
 name: code-eval
 description: >
   Functional test of the fullsend code agent pipeline (pre → sandbox → post).
-  Validates the agent can implement a small issue and that the post-script
-  creates a PR. Acts as an end-to-end regression guard when sandbox GitHub
-  access is read-only (reads + local commits still work; write/push stays
-  on the runner).
+  Validates that the post-script opens a PR touching the expected files for
+  a small issue — an end-to-end pipeline guard, not a correctness check.
+  No judge inspects the PR's diff content or runs the fixture's tests
+  against it (see annotations.yaml: "Primary signal is pr_created"), so a PR
+  that opens but contains a cosmetic or outright wrong fix still passes.
+  Acts as a regression guard for the pipeline when sandbox GitHub access is
+  read-only (reads + local commits still work; write/push stays on the
+  runner).
 
 skill: code
 
 execution:
   mode: case
   # Harness hard-kill for the whole run-fullsend.sh invocation (git clone +
-  # `fullsend run` + metrics copy). Must clear runner.env.EVAL_TIMEOUT below
-  # with headroom for run-fullsend.sh's own pre/post work (clone, metrics
-  # copy, trap cleanup) — not the ~5min eval/fix/eval.yaml affords relative
-  # to the fix harness's smaller 25min budget. That much headroom doesn't fit
-  # here: the code agent's real per-run budget is already 2100s (see
-  # EVAL_TIMEOUT below), and this whole pipeline must land inside the CI
-  # job's 45-minute cap (.github/workflows/functional-tests.yml), alongside
-  # before_each (120s) and after_each (90s) hook budgets.
-  timeout: 2300
+  # `fullsend run` + metrics copy). Deliberately NOT sized to the code
+  # agent's real production budget — see EVAL_TIMEOUT below for why that
+  # budget (up to ~4200s across validation_loop's 2 iterations) cannot fit
+  # inside this CI job's 45-minute cap
+  # (.github/workflows/functional-tests.yml) alongside before_each (120s),
+  # after_each (90s), and the job's own setup overhead (checkout, python/uv,
+  # harness install, fullsend download, OpenShell + podman install — podman
+  # alone routinely takes ~190s). 1800 matches eval/fix/eval.yaml rather
+  # than deriving from harness/code.yaml, since no headroom choice derived
+  # from the real budget fits regardless.
+  timeout: 1800
   parallelism: 1
+  # Advisory only — the opaque-CLI-runner contract does not enforce this for
+  # our runner type; a runaway run still spends what it spends and only
+  # fails max_cost afterward. Set to match annotations.yaml's max_cost_usd
+  # so the harness's own reporting agrees with the judge threshold.
+  max_budget_usd: 4.00
   env:
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
@@ -55,22 +66,30 @@ runner:
   env:
     FULLSEND_DIR: $FULLSEND_DIR
     GH_TOKEN: $GH_TOKEN
-    # Must exceed 2100s — the code agent's real per-run budget
+    # Deliberately far below the code agent's real production budget: each
+    # validation_loop iteration is re-armed with its own fresh 2100s
     # (harness/code.yaml timeout_minutes: 35, mirrored as TIMEOUT_SECONDS in
-    # env/code.env for the agent's own self-monitoring, and enforced as a Go
-    # context timeout around the sandbox run in internal/cli/run.go). On that
-    # internal timeout, `fullsend run` writes a partial metrics.json before
-    # returning (see writeMetricsJSON call in run.go's error path) but never
-    # reaches post_script, so pr_created legitimately fails while
-    # max_turns/max_cost still get real numbers to check. If this outer
-    # `timeout` fires first instead (as it did at 2000s, below the 2100s
-    # internal budget), the whole `fullsend run` process is SIGTERM'd before
-    # any of that graceful handling runs, so judges see "metrics.json not
-    # found" instead. 2250 gives fullsend ~150s to finish that handling after
-    # its own 2100s timeout fires. In practice this fixture is a tiny
-    # arithmetic fix that completes in well under a minute — these numbers
-    # are a safety net for a genuine agent hang, not the expected path.
-    EVAL_TIMEOUT: "2250"
+    # env/code.env for the agent's own self-monitoring; internal/cli/run.go
+    # re-derives the context.WithTimeout from h.TimeoutMinutes inside the
+    # iteration loop), and harness/code.yaml allows up to 2 iterations
+    # (validation_loop.max_iterations: 2) — worst case ~4200s of agent time,
+    # on top of sandbox creation/image pull/pre_script/post_script, none of
+    # which timeout_minutes bounds. None of that fits inside this CI job's
+    # 45-minute cap with any safety margin, so this eval does not attempt to
+    # reproduce the full production timeout envelope; matches
+    # eval/fix/eval.yaml's value instead (see execution.timeout above).
+    #
+    # This fixture is a 2-line arithmetic bug and completes in well under a
+    # minute in practice, so this number essentially never fires. If a
+    # genuine hang did occur: a single-iteration hang gets caught here and
+    # fullsend still writes a partial metrics.json before returning (see
+    # writeMetricsJSON in run.go's error path), giving an inconclusive but
+    # readable "metrics.json not found"-adjacent judge failure; a
+    # multi-iteration hang, or CI overhead pushing total time past 45min,
+    # gets a hard GitHub Actions job timeout with no artifacts at all. This
+    # ladder is a best-effort local-run affordance, not a guaranteed
+    # graceful-degradation path in CI.
+    EVAL_TIMEOUT: "1700"
     GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
@@ -102,7 +121,10 @@ judges:
     description: Post-script must open at least one pull request (end-to-end success)
     check: |
       import json
-      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
       prs = state.get("pull_requests") or []
       if not prs:
           return False, "No pull requests found — code agent/post-script did not create a PR"
@@ -112,14 +134,21 @@ judges:
       return True, f"PR created: {[p.get('url') for p in openish]}"
 
   - name: expected_files
-    description: PR must touch files listed in annotations.expected_files (if any)
+    description: An open/merged PR must touch files listed in annotations.expected_files (if any)
     check: |
       import json
-      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
       expected = outputs.get("annotations", {}).get("expected_files") or []
       if not expected:
           return True, "No expected_files declared"
-      prs = state.get("pull_requests") or []
+      # Filter to OPEN/MERGED like pr_created — a closed/superseded PR's
+      # files shouldn't count toward "the fix landed" any more than it
+      # counts as PR creation succeeding.
+      prs = [p for p in (state.get("pull_requests") or [])
+             if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
       if any(p.get("files_fetch_failed") for p in prs):
           failed = [p.get("number") for p in prs if p.get("files_fetch_failed")]
           return False, f"Could not fetch changed files for PR(s): {failed}"
@@ -136,7 +165,10 @@ judges:
     description: Labels listed in annotations.yaml forbidden list must NOT be present
     check: |
       import json
-      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
       actual = [l.lower() for l in state.get("labels", [])]
       forbidden = outputs.get("annotations", {}).get("labels", {}).get("forbidden", [])
       if not forbidden:

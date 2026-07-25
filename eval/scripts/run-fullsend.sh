@@ -90,6 +90,7 @@ PRE_AGENT_HEAD="$(git -C "$TARGET_DIR" rev-parse HEAD)"
 export PRE_AGENT_HEAD
 
 REVIEW_BODY_FILE=""
+METRICS_TMP=""
 cleanup() {
   # shellcheck disable=SC2317 # invoked indirectly via trap
   [[ -n "${ENV_FILE:-}" ]] && rm -f "$ENV_FILE"
@@ -97,6 +98,8 @@ cleanup() {
   [[ -n "${REVIEW_BODY_FILE:-}" && -f "${REVIEW_BODY_FILE:-}" ]] && rm -f "$REVIEW_BODY_FILE"
   # shellcheck disable=SC2317
   [[ -n "${EVAL_GH_WORKSPACE:-}" && -d "${EVAL_GH_WORKSPACE:-}" ]] && rm -rf "$EVAL_GH_WORKSPACE"
+  # shellcheck disable=SC2317
+  [[ -n "${METRICS_TMP:-}" && -f "${METRICS_TMP:-}" ]] && rm -f "$METRICS_TMP"
 }
 trap cleanup EXIT
 
@@ -222,17 +225,25 @@ METRICS_FILE=$(find "$OUTPUT_DIR" -maxdepth 3 -name metrics.json -not -path "$OU
 if [[ -n "$METRICS_FILE" ]]; then
   cp "$METRICS_FILE" "$OUTPUT_DIR/metrics.json"
   # agent-eval-harness's cli_runner.py reads a `cost_usd` key, but fullsend
-  # writes `total_cost_usd` (internal/cli/run.go's aggregateMetrics). Without
-  # this alias the harness silently reports $0.00 cost even when the run
-  # incurred real spend. Alias rather than rename so metrics.json still
-  # matches fullsend's own documented schema.
-  metrics_tmp=$(mktemp)
-  if jq '.cost_usd = (.cost_usd // .total_cost_usd // 0)' \
-    "$OUTPUT_DIR/metrics.json" > "$metrics_tmp"; then
-    mv "$metrics_tmp" "$OUTPUT_DIR/metrics.json"
+  # writes `total_cost_usd` (internal/cli/run.go's aggregateMetrics struct,
+  # written by writeMetricsJSON). Without this alias the harness silently
+  # reports $0.00 cost even when the run incurred real spend. Alias rather
+  # than rename so metrics.json still matches fullsend's own documented
+  # schema.
+  #
+  # mktemp/jq/mv are chained through the if-condition (not run as bare
+  # statements) so a failure here — e.g. /tmp unwritable, disk full, a
+  # cross-filesystem mv — only warns instead of tripping set -e and turning
+  # an otherwise-successful run (rc=0, PR created) into a reported failure.
+  if ! METRICS_TMP=$(mktemp); then
+    echo "WARNING: mktemp failed; skipping cost_usd alias" >&2
+  elif jq '.cost_usd = (.cost_usd // .total_cost_usd // 0)' \
+    "$OUTPUT_DIR/metrics.json" > "$METRICS_TMP"; then
+    mv "$METRICS_TMP" "$OUTPUT_DIR/metrics.json" \
+      || echo "WARNING: failed to install aliased metrics.json" >&2
   else
     echo "WARNING: failed to alias cost_usd in metrics.json; harness may report \$0.00 cost" >&2
-    rm -f "$metrics_tmp"
+    rm -f "$METRICS_TMP"
   fi
   echo "Copied metrics -> $OUTPUT_DIR/metrics.json"
 fi

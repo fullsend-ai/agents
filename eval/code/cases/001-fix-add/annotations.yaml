@@ -8,9 +8,11 @@ expected_files:
 labels:
   forbidden: []
 
-# Code agent budgets (sandbox work + retries). Tune after a baseline run.
-max_turns: 80
-max_cost_usd: 8.00
+# Code agent budgets (sandbox work + retries).
+# Baseline on f7408a6 (CI run 29424512121): 12 turns / $2.12. ~2x headroom
+# for model variance.
+max_turns: 30
+max_cost_usd: 4.00
 
 # Human reference only; not consumed by judges (unlike triage/review quality).
 code_expectations: |
