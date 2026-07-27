@@ -1,13 +1,43 @@
 # Scribe Agent
 
-Reads Google Drive meeting notes, maps discussion topics to the GitHub issue backlog, and adds comments to relevant issues or creates new issues.
+Reads Google Meet meeting notes, maps discussion topics to the
+GitHub issue backlog, and adds comments to relevant issues or
+creates new issues.
+
+## The core idea
+
+If you want to give autonomous agents access to your meeting notes, you
+immediately face a trust problem: how do you prevent the agent from reading
+notes it shouldn't have access to and then happily exposing that information
+in public GitHub issues?
+
+The answer is a **dedicated GCP service account**. You create it in Google
+Cloud, and by default it has access to *zero* meeting notes. You then
+**invite** the service account's email address to the Google Calendar events
+you want it to scribe. (In the calendar event settings you also need to
+enable Gemini notes and grant read access to attendees outside your
+organization.) Because the service account is an invited attendee, it can
+read the notes for that event — and *only* that event. Every other meeting
+in your organization remains invisible to it.
+
+Scribe wakes up on a schedule, uses the service account credentials to read
+the notes it has been granted access to, and processes them: it files new
+GitHub issues on your repo or comments on existing ones, noting that the
+team discussed the topic in their meeting. This is an important bridge
+between the team's life of human interaction and the fullsend agentic
+system — the filed and commented-on issues serve as fodder for the triage
+agent, coding agent, and others.
 
 ## How it helps
 
-- Meeting decisions and action items reach the issue backlog without manual copy-paste.
-- Topics are matched to existing issues by title and body content, not just keywords.
-- Public-safety and PII gates prevent confidential meeting content from reaching GitHub.
-- Idempotency checks avoid duplicate comments when the same notes URL was already posted.
+- Meeting decisions and action items reach the issue backlog
+  without manual copy-paste.
+- Topics are matched to existing issues by title and body
+  content, not just keywords.
+- Public-safety and PII gates prevent confidential meeting
+  content from reaching GitHub.
+- Idempotency checks avoid duplicate comments when the same
+  notes URL was already posted.
 
 ## Triggers
 
