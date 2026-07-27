@@ -46,3 +46,9 @@ repos:
         language: system
         files: ^\.github/workflows/lint\.yml$
         pass_filenames: false
+      - id: lint-agent-docs
+        name: lint agent doc references and structure
+        entry: ./hack/lint-agent-docs
+        language: script
+        files: ^(harness/|docs/)
+        pass_filenames: false

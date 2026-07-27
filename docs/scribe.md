@@ -13,6 +13,14 @@ Reads Google Drive meeting notes, maps discussion topics to the GitHub issue bac
 
 The scribe agent runs on a schedule or via manual trigger.
 
+## Commands
+
+The scribe agent does not accept slash commands.
+
+## Control labels
+
+The scribe agent does not use control labels.
+
 ## Configuration
 
 Register the agent in your `.fullsend` config (ADR 0058):
@@ -24,7 +32,7 @@ fullsend agent add \
   --fullsend-dir .
 ```
 
-### Environment variables
+### Variables
 
 Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 

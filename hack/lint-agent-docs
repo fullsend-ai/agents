@@ -1,0 +1,139 @@
+#!/bin/bash
+# Lint: every harness YAML must have a doc: field pointing to an existing file.
+# Also checks that agent docs follow a consistent structure.
+set -euo pipefail
+shopt -s nullglob
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+HARNESS_DIR="$REPO_ROOT/harness"
+
+errors=0
+
+echo "Checking harness files for doc: field..."
+echo "================================================"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    name="$(basename "$yaml_file")"
+    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+
+    if [[ -z "$doc_value" ]]; then
+        echo "  ERROR: $name: missing 'doc:' field"
+        errors=$((errors + 1))
+        continue
+    fi
+
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        echo "  ERROR: $name: doc '$doc_value' does not exist"
+        errors=$((errors + 1))
+        continue
+    fi
+
+    echo "  $name: OK ($doc_value)"
+done
+
+echo ""
+echo "Checking agent doc structure..."
+echo "================================================"
+
+REQUIRED_SECTIONS="How it helps|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
+IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+    if [[ -z "$doc_value" ]]; then
+        continue
+    fi
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        continue
+    fi
+    doc_basename="$(basename "$doc_value")"
+
+    # Check that the top-level heading ends with " Agent"
+    h1="$(awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^# [^#]/{sub(/^# /,""); print; exit}' "$doc_path")"
+    if [[ -n "$h1" ]] && [[ "$h1" != *" Agent" ]]; then
+        echo "  $doc_basename: top heading \"# $h1\" must end with \" Agent\" (e.g. \"# ${h1} Agent\")"
+        errors=$((errors + 1))
+    fi
+
+    # Extract ## headers outside fenced code blocks
+    actual_sections="$(awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^## /{sub(/^## /,""); print}' "$doc_path")"
+
+    missing=()
+    extra=()
+    for section in "${SECTION_LIST[@]}"; do
+        if ! echo "$actual_sections" | grep -Fqx "$section"; then
+            missing+=("$section")
+        fi
+    done
+
+    while IFS= read -r section; do
+        [[ -z "$section" ]] && continue
+        found=false
+        for required in "${SECTION_LIST[@]}"; do
+            if [[ "$section" == "$required" ]]; then
+                found=true
+                break
+            fi
+        done
+        if [[ "$found" == "false" ]]; then
+            extra+=("$section")
+        fi
+    done <<< "$actual_sections"
+
+    if [[ ${#missing[@]} -gt 0 || ${#extra[@]} -gt 0 ]]; then
+        if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "  $doc_basename: FAIL"
+        else
+            echo "  $doc_basename: OK (with extra sections)"
+        fi
+        for s in "${missing[@]+"${missing[@]}"}"; do
+            echo "    missing: \"## $s\""
+            errors=$((errors + 1))
+        done
+        for s in "${extra[@]+"${extra[@]}"}"; do
+            echo "    info: extra section \"## $s\" — consider adding to REQUIRED_SECTIONS in hack/lint-agent-docs if all agent docs should have it"
+        done
+    else
+        echo "  $doc_basename: OK"
+    fi
+done
+
+echo ""
+echo "Checking for ### Variables subsection..."
+echo "================================================"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+    if [[ -z "$doc_value" ]]; then
+        continue
+    fi
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        continue
+    fi
+    doc_basename="$(basename "$doc_value")"
+
+    # Only check docs that have the Configuration section
+    if ! awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^## Configuration/{found=1} END{exit !found}' "$doc_path"; then
+        continue
+    fi
+
+    # Look for ### Variables under ## Configuration (not just anywhere)
+    if ! awk 'BEGIN{f=0;c=0} /^```/{f=1-f;next} f{next} /^## Configuration/{c=1;next} /^## /{c=0} c && /^### Variables/{found=1} END{exit !found}' "$doc_path"; then
+        echo "  $doc_basename: missing \"### Variables\" subsection under \"## Configuration\""
+        errors=$((errors + 1))
+    else
+        echo "  $doc_basename: OK"
+    fi
+done
+
+echo ""
+echo "================================================"
+if [[ $errors -gt 0 ]]; then
+    echo "FAILED: $errors error(s) found"
+    exit 1
+else
+    echo "OK: All harness files have valid doc references and structure"
+fi
