@@ -192,18 +192,16 @@ resolve_fix_result() {
   local run_dir="$2"          # directory containing iteration-*/output/
 
   if [ -n "${validated_dir}" ]; then
-    if [ -f "${validated_dir}/fix-result.json" ]; then
-      echo "${validated_dir}/fix-result.json"
-    elif [ -f "${validated_dir}/result.json" ]; then
-      echo "${validated_dir}/result.json"
+    if [ -f "${validated_dir}/agent-result.json" ]; then
+      echo "${validated_dir}/agent-result.json"
     else
       echo "error:neither-filename"
     fi
   else
     local result=""
     for dir in "${run_dir}"/iteration-*/output; do
-      if [ -f "${dir}/fix-result.json" ]; then
-        result="${dir}/fix-result.json"
+      if [ -f "${dir}/agent-result.json" ]; then
+        result="${dir}/agent-result.json"
       fi
     done
     if [ -z "${result}" ]; then
@@ -266,23 +264,15 @@ run_resolve_test_unset() {
   echo "PASS: ${test_name}"
 }
 
-# Setup: validated dir has fix-result.json
+# Setup: validated dir has agent-result.json
 setup_fix_expected() {
   local run_dir="$1"
   local validated_dir="$2"
   mkdir -p "${validated_dir}"
-  echo '{}' > "${validated_dir}/fix-result.json"
+  echo '{}' > "${validated_dir}/agent-result.json"
   # Also place a file in iteration-2 to verify it's NOT used.
   mkdir -p "${run_dir}/iteration-2/output"
-  echo '{}' > "${run_dir}/iteration-2/output/fix-result.json"
-}
-
-# Setup: validated dir has only result.json
-setup_fix_fallback() {
-  local run_dir="$1"
-  local validated_dir="$2"
-  mkdir -p "${validated_dir}"
-  echo '{}' > "${validated_dir}/result.json"
+  echo '{}' > "${run_dir}/iteration-2/output/agent-result.json"
 }
 
 # Setup: validated dir has neither filename
@@ -297,19 +287,15 @@ setup_fix_iteration_scan() {
   local run_dir="$1"
   mkdir -p "${run_dir}/iteration-1/output"
   mkdir -p "${run_dir}/iteration-2/output"
-  echo '{}' > "${run_dir}/iteration-1/output/fix-result.json"
-  echo '{}' > "${run_dir}/iteration-2/output/fix-result.json"
+  echo '{}' > "${run_dir}/iteration-1/output/agent-result.json"
+  echo '{}' > "${run_dir}/iteration-2/output/agent-result.json"
 }
 
 # --- FULLSEND_VALIDATED_ITERATION_DIR test cases ---
 
 run_resolve_test "fix-validated-dir-expected-filename" \
   setup_fix_expected \
-  "${RESOLVE_TMPDIR}/fix-validated-dir-expected-filename/validated-output/fix-result.json"
-
-run_resolve_test "fix-validated-dir-fallback-filename" \
-  setup_fix_fallback \
-  "${RESOLVE_TMPDIR}/fix-validated-dir-fallback-filename/validated-output/result.json"
+  "${RESOLVE_TMPDIR}/fix-validated-dir-expected-filename/validated-output/agent-result.json"
 
 run_resolve_test "fix-validated-dir-neither-filename" \
   setup_fix_neither \
@@ -317,14 +303,14 @@ run_resolve_test "fix-validated-dir-neither-filename" \
 
 run_resolve_test_unset "fix-unset-falls-back-to-scan" \
   setup_fix_iteration_scan \
-  "${RESOLVE_TMPDIR}/fix-unset-falls-back-to-scan/iteration-2/output/fix-result.json"
+  "${RESOLVE_TMPDIR}/fix-unset-falls-back-to-scan/iteration-2/output/agent-result.json"
 
 rm -rf "${RESOLVE_TMPDIR}"
 
 # ---------------------------------------------------------------------------
 # Integration test — run the REAL post-fix.sh to verify that it exits non-zero
-# when FULLSEND_VALIDATED_ITERATION_DIR is set but contains neither
-# fix-result.json nor result.json. This catches the fail-open bug that the
+# when FULLSEND_VALIDATED_ITERATION_DIR is set but does not contain
+# agent-result.json. This catches the fail-open bug that the
 # isolated reimplementation tests above cannot detect.
 #
 # Strategy: initialize a bare git repo on the main branch so NO_PUSH=true,
