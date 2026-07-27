@@ -1180,8 +1180,9 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   section. If there are no findings at all, set the body to
   the hidden SHA comment followed by a newline and "Looks good to me"
   — omit the `## Review` header and `### Findings` section entirely.
-- **No footer.** Do not repeat the outcome or include boilerplate
-  about pushes clearing the review.
+- **No footer.** Do not append any footer, action-hints block, or
+  boilerplate after findings. The post-review pipeline appends
+  action hints deterministically when appropriate.
 
 If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
 info-level finding in the review output:

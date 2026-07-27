@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Process fix-result.json and post a summary comment on the PR.
+
+Reads the structured output from the fix agent and posts a summary comment
+documenting what was fixed and what was disagreed with.
+
+Usage:
+    process-fix-result.py <fix-result.json> <owner/repo> <pr-number> [--dry-run]
+
+Exit codes:
+    0 — summary posted (or dry-run completed)
+    1 — invalid arguments or unreadable input file
+    2 — failed to post summary comment (push may have already succeeded)
+"""
+
+import json
+import os
+import subprocess
+import sys
+
+try:
+    import jsonschema
+except ImportError:
+    jsonschema = None
+
+
+def build_summary_body(data):
+    """Build the markdown summary comment body."""
+    summary = data.get("summary", "Fix agent completed.")
+    decision_points = data.get("decision_points", [])
+    tests_passed = data.get("tests_passed", False)
+    trigger = data.get("trigger_source", "unknown")
+    iteration = data.get("iteration", 1)
+    actions = data.get("actions", [])
+
+    fixed = [a for a in actions if a.get("type") == "fix"]
+    disagreed = [a for a in actions if a.get("type") == "disagree"]
+
+    fixes_text = ""
+    if fixed:
+        items = []
+        for i, a in enumerate(fixed, 1):
+            finding = a.get("finding", "unknown")
+            desc = a.get("description", "")
+            path = a.get("path", "")
+            path_suffix = f" (`{path}`)" if path else ""
+            items.append(f"{i}. **{finding}**{path_suffix}: {desc}")
+        fixes_text = "\n".join(items)
+
+    disagree_text = ""
+    if disagreed:
+        items = []
+        for i, a in enumerate(disagreed, 1):
+            finding = a.get("finding", "unknown")
+            reason = a.get("reason", "No reason provided.")
+            items.append(f"{i}. **{finding}**: {reason}")
+        disagree_text = "\n".join(items)
+
+    dp_text = ""
+    if decision_points:
+        dp_items = []
+        for dp in decision_points:
+            desc = dp.get("description", "")
+            rationale = dp.get("rationale", "")
+            alts = dp.get("alternatives", [])
+            alt_text = ", ".join(alts) if alts else "none considered"
+            dp_items.append(f"- {desc} (alternatives: {alt_text}; rationale: {rationale})")
+        dp_text = (
+            "\n<details>\n<summary>Decision points</summary>\n\n"
+            + "\n".join(dp_items)
+            + "\n</details>\n"
+        )
+
+    tests_str = "passed" if tests_passed else "**failed**"
+
+    sections = [f"### \U0001f527 Fix agent — iteration {iteration} ({trigger}-triggered)\n"]
+    sections.append(f"{summary}\n")
+
+    if fixes_text:
+        sections.append(f"**Fixed ({len(fixed)}):**\n{fixes_text}\n")
+
+    if disagree_text:
+        sections.append(f"**Disagreed ({len(disagreed)}):**\n{disagree_text}\n")
+
+    sections.append(f"**Tests:** {tests_str}")
+
+    strategy_change = data.get("strategy_change", "")
+    if strategy_change:
+        sections.append(f"\n> **Strategy change:** {strategy_change}")
+
+    if dp_text:
+        sections.append(dp_text)
+
+    return "\n".join(sections)
+
+
+# GitHub API limit is 65536 chars; buffer for byte/char encoding discrepancies
+MAX_COMMENT_LENGTH = 62000
+
+FOOTER = (
+    "\n---\n"
+    "**Next steps:**\n"
+    "- `/fs-review` — request a re-review of the changes\n"
+    "- `/fs-fix <your instruction>` — run another fix pass with specific guidance\n"
+    "- Push commits directly — review re-runs automatically on push"
+)
+
+ATTRIBUTION = (
+    '\n<sub>Updated by <a href="https://github.com/fullsend-ai/fullsend">'
+    "fullsend</a> fix agent</sub>"
+)
+
+
+def post_summary(repo, pr_number, body, suffix="", dry_run=False):
+    """Post a summary comment on the PR."""
+    full = body + suffix
+    if len(full) > MAX_COMMENT_LENGTH:
+        truncation_notice = "\n\n*[truncated — output exceeded comment size limit]*"
+        original_len = len(full)
+        budget = MAX_COMMENT_LENGTH - len(suffix) - len(truncation_notice)
+        full = body[:budget] + truncation_notice + suffix
+        print(
+            f"::warning::Comment body truncated from {original_len} to {MAX_COMMENT_LENGTH} chars"
+        )
+    if dry_run:
+        print(f"  [dry-run] Would post PR summary ({len(full)} chars)")
+        return True
+    try:
+        subprocess.run(
+            ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body-file", "-"],
+            input=full,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        sanitized = e.stderr.replace("\r", "").replace("\n", " ").replace("::", ": :")
+        print(
+            f"::warning::Failed to post PR summary: {sanitized}",
+            file=sys.stderr,
+        )
+        return False
+
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if len(argv) < 3:
+        print(
+            "Usage: process-fix-result.py <fix-result.json> <owner/repo> <pr-number> [--dry-run]",
+            file=sys.stderr,
+        )
+        return 1
+
+    result_file = argv[0]
+    repo = argv[1]
+    pr_number = argv[2]
+    dry_run = "--dry-run" in argv
+
+    try:
+        with open(result_file) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"::error::Cannot read {result_file}: {e}", file=sys.stderr)
+        return 1
+
+    if jsonschema is not None:
+        schema_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..",
+            "schemas",
+            "fix-result.schema.json",
+        )
+        try:
+            with open(schema_path) as f:
+                schema = json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"::error::Cannot read schema {schema_path}: {e}", file=sys.stderr)
+            return 1
+
+        try:
+            jsonschema.validate(instance=data, schema=schema)
+        except jsonschema.ValidationError as e:
+            msg = e.message.replace("\r", "").replace("\n", " ").replace("::", ": :")
+            print(f"::error::fix-result.json failed schema validation: {msg}", file=sys.stderr)
+            return 1
+    else:
+        print("::warning::jsonschema not installed — skipping schema validation")
+
+    actions = data.get("actions", [])
+    valid_types = {"fix", "disagree"}
+    for a in actions:
+        atype = a.get("type", "")
+        if atype not in valid_types:
+            safe_atype = atype.replace("\r", "").replace("\n", " ").replace("::", ": :")
+            print(f"::warning::Unknown action type '{safe_atype}' — ignored", file=sys.stderr)
+    fixed = sum(1 for a in actions if a.get("type") == "fix")
+    disagreed = sum(1 for a in actions if a.get("type") == "disagree")
+    print(f"Processed: {fixed} fixed, {disagreed} disagreed")
+
+    summary_body = build_summary_body(data)
+    suffix = FOOTER + ATTRIBUTION
+    success = post_summary(repo, pr_number, summary_body, suffix=suffix, dry_run=dry_run)
+
+    return 0 if success else 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
