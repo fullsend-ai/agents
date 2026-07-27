@@ -9,10 +9,6 @@ Code review specialist that evaluates pull requests for correctness, security, i
 - Every PR gets a thorough review within minutes, regardless of team availability.
 - Reviews cover security, correctness, intent & coherence, style, and docs currency — dimensions humans sometimes skip under time pressure.
 
-## Setup
-
-No additional setup required beyond standard configuration.
-
 ## Triggers
 
 The review agent runs automatically when:

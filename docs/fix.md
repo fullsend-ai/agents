@@ -10,10 +10,6 @@ Review-feedback specialist that reads review comments on open PRs, implements ta
 - Fixes are scoped to exactly what the review requested, reducing churn.
 - The iteration cap prevents the fix and [review](review.md) agents from looping indefinitely.
 
-## Setup
-
-No additional setup required beyond standard configuration.
-
 ## Triggers
 
 The fix agent runs automatically when the [review agent](review.md) submits a

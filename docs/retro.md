@@ -10,10 +10,6 @@ Performs retrospectives on agent workflows — analyzes what happened, identifie
 - Improvement proposals are filed as issues with context, so they enter the normal triage/prioritize pipeline.
 - Patterns across multiple retros surface systemic issues (e.g., a skill that consistently underperforms).
 
-## Setup
-
-No additional setup required beyond standard configuration.
-
 ## Triggers
 
 The retro agent runs automatically when a PR is closed (merged or not).

@@ -36,8 +36,10 @@ echo ""
 echo "Checking agent doc structure..."
 echo "================================================"
 
-REQUIRED_SECTIONS="How it helps|Setup|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
+REQUIRED_SECTIONS="How it helps|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
+OPTIONAL_SECTIONS="Setup"
 IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
+IFS='|' read -ra OPTIONAL_LIST <<< "$OPTIONAL_SECTIONS"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
     doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
@@ -77,6 +79,14 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
                 break
             fi
         done
+        if [[ "$found" == "false" ]]; then
+            for optional in "${OPTIONAL_LIST[@]}"; do
+                if [[ "$section" == "$optional" ]]; then
+                    found=true
+                    break
+                fi
+            done
+        fi
         if [[ "$found" == "false" ]]; then
             extra+=("$section")
         fi

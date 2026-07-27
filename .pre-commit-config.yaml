@@ -50,5 +50,5 @@ repos:
         name: lint agent doc references and structure
         entry: ./hack/lint-agent-docs
         language: script
-        files: ^(harness/|docs/)
+        files: ^(harness/|docs/|hack/lint-agent-docs)
         pass_filenames: false
