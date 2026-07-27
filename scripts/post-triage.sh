@@ -391,17 +391,21 @@ ${FAILED_CREATES}"
     REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
+    # Workflow-change guard: if triage detected workflow file changes and the
+    # category would normally auto-promote to ready-to-code, apply triaged
+    # instead and skip the per-category ready-to-code deferral.
+    WORKFLOW_BLOCKED=false
     if [[ "${REQUIRES_WORKFLOW}" == "true" ]] && [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]]; then
       echo "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
+      echo "Applying triaged label (workflow changes required)..."
+      add_label "triaged"
+      WORKFLOW_BLOCKED=true
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
         add_label "bug"
-        if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
-          echo "Applying triaged label (workflow changes required)..."
-          add_label "triaged"
-        else
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         fi
@@ -409,19 +413,13 @@ ${FAILED_CREATES}"
       documentation)
         echo "Applying documentation label..."
         add_label "documentation"
-        if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
-          echo "Applying triaged label (workflow changes required)..."
-          add_label "triaged"
-        else
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         fi
         ;;
       performance)
-        if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
-          echo "Applying triaged label (workflow changes required)..."
-          add_label "triaged"
-        else
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         fi
