@@ -391,7 +391,7 @@ ${FAILED_CREATES}"
     REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
-    if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
+    if [[ "${REQUIRES_WORKFLOW}" == "true" ]] && [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]]; then
       echo "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
     fi
     case "${CATEGORY}" in
