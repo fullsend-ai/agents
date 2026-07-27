@@ -10,6 +10,10 @@ Inspects a GitHub issue, assesses information sufficiency, asks clarifying quest
 - Issues missing critical information get a clarification request immediately, shortening the feedback loop with the reporter.
 - Well-specified issues are labeled and ready for the [code agent](code.md) without human intervention.
 
+## Setup
+
+No additional setup required beyond standard configuration.
+
 ## Triggers
 
 The triage agent runs automatically when:

@@ -36,7 +36,7 @@ echo ""
 echo "Checking agent doc structure..."
 echo "================================================"
 
-REQUIRED_SECTIONS="How it helps|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
+REQUIRED_SECTIONS="How it helps|Setup|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
 IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
@@ -83,17 +83,14 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
     done <<< "$actual_sections"
 
     if [[ ${#missing[@]} -gt 0 || ${#extra[@]} -gt 0 ]]; then
-        if [[ ${#missing[@]} -gt 0 ]]; then
-            echo "  $doc_basename: FAIL"
-        else
-            echo "  $doc_basename: OK (with extra sections)"
-        fi
+        echo "  $doc_basename: FAIL"
         for s in "${missing[@]+"${missing[@]}"}"; do
             echo "    missing: \"## $s\""
             errors=$((errors + 1))
         done
         for s in "${extra[@]+"${extra[@]}"}"; do
-            echo "    info: extra section \"## $s\" — consider adding to REQUIRED_SECTIONS in hack/lint-agent-docs if all agent docs should have it"
+            echo "    unexpected: \"## $s\" — adding new sections is fine, but please add them to the REQUIRED_SECTIONS list in hack/lint-agent-docs so all agent docs stay consistent"
+            errors=$((errors + 1))
         done
     else
         echo "  $doc_basename: OK"

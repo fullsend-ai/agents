@@ -10,6 +10,10 @@ Scores a GitHub issue using the RICE framework (Reach, Impact, Confidence, Effor
 - Scoring reasoning is transparent and auditable — anyone can read why an issue was ranked the way it was.
 - Project boards stay sorted by value, so humans can focus on the highest-impact work first.
 
+## Setup
+
+No additional setup required beyond standard configuration.
+
 ## Triggers
 
 The prioritize agent runs on a schedule, polling the project board for unscored or stale issues.

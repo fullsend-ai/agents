@@ -10,6 +10,10 @@ Implementation specialist that reads triaged GitHub issues, implements fixes or 
 - Implementation follows repo conventions because the agent reads existing code, tests, and linter configs before writing.
 - The agent cannot push arbitrary code — all changes are gated before reaching the repository.
 
+## Setup
+
+No additional setup required beyond standard configuration.
+
 ## Triggers
 
 The code agent is triggered when the `ready-to-code` label is applied to an issue, or via the `/fs-code` command.

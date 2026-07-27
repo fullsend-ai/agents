@@ -10,6 +10,10 @@ Review-feedback specialist that reads review comments on open PRs, implements ta
 - Fixes are scoped to exactly what the review requested, reducing churn.
 - The iteration cap prevents the fix and [review](review.md) agents from looping indefinitely.
 
+## Setup
+
+No additional setup required beyond standard configuration.
+
 ## Triggers
 
 The fix agent runs automatically when the [review agent](review.md) submits a
@@ -39,7 +43,32 @@ command. The text gives you direct control over what to fix:
 further automatic fix runs. Manual `/fs-fix` commands still work.
 Remove the label or use `/fs-fix` to re-engage.
 
-## What the agent acts on
+## Control labels
+
+| Label | Meaning |
+|-------|---------|
+| `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
+| `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
+
+## Configuration
+
+See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
+[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
+
+### Variables
+
+None.
+
+## How the agent works
+
+The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
+
+1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
+2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
+3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
+4. **Post-script** pushes the commit and posts a summary comment on the PR.
+
+### What the agent acts on
 
 **When triggered by a review:** the agent reads the review body, the PR diff,
 and the full repository checkout.
@@ -98,39 +127,6 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   `needs-human` label.
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
-
-## Control labels
-
-| Label | Meaning |
-|-------|---------|
-| `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
-| `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
-
-## Configuration
-
-See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
-[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
-
-### Variables
-
-None.
-
-## Custom sandbox image
-
-The fix agent shares the same sandbox image as the code agent. If your
-project requires tools not in the universal image, see
-[Custom sandbox image](code.md#custom-sandbox-image) in the code agent
-docs. Remember to update the `image` field in both `harness/code.yaml`
-and `harness/fix.yaml`.
-
-## How the agent works
-
-The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
-
-1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
-2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
-3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** pushes the commit and posts a summary comment on the PR.
 
 ### Input details
 

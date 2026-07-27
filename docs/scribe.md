@@ -4,7 +4,7 @@ Reads Google Meet meeting notes, maps discussion topics to the
 GitHub issue backlog, and adds comments to relevant issues or
 creates new issues.
 
-## The core idea
+## Setup
 
 If you want to give autonomous agents access to your meeting notes, you
 immediately face a trust problem: how do you prevent the agent from reading
