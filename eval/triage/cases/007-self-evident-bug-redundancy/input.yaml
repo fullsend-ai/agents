@@ -1,0 +1,40 @@
+forge: github
+fixture:
+  type: issue
+  title: "TypeError crash when login form submitted with missing email field"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    Submitting the login form without filling in the email field causes the
+    server to crash with a `TypeError`. The password field is filled in but
+    the email input is left blank or removed from the DOM entirely (e.g. by a
+    browser extension or automated test).
+
+    **Root cause:**
+    `login_handler` in `src/auth/views.py` calls `request.params.get("email")`
+    which returns `None` when the key is absent, then passes that `None`
+    directly to `validate_email()`. Inside `validate_email`
+    (`src/auth/validators.py`), `re.match(pattern, None)` raises `TypeError`
+    because the second argument must be a string.
+
+    **Steps to reproduce:**
+    1. Open the login page.
+    2. Leave the email field empty (or remove it via DevTools).
+    3. Enter any password and submit the form.
+    4. Server returns 500 — `TypeError: expected string or bytes-like object`.
+
+    **Expected behavior:**
+    The server should return a 400 response with a validation error message,
+    not crash with an unhandled exception.
+
+    **Suggested fix:**
+    Add a guard in `login_handler` before calling `validate_email`:
+    ```python
+    if not email:
+        return {"status": "error", "message": "email is required"}, 400
+    ```
+
+    **Environment:**
+    - Python 3.12
+    - OS: Ubuntu 24.04 (production)
