@@ -4,6 +4,10 @@
 
 Inspects a GitHub issue, assesses information sufficiency, asks clarifying questions when needed, and produces a triage decision that determines whether the issue is ready for implementation.
 
+## Setup
+
+No additional setup is required beyond the standard fullsend configuration.
+
 ## How it helps
 
 - New issues get a response within minutes instead of waiting for a human to notice them.

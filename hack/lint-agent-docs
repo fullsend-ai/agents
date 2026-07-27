@@ -36,8 +36,8 @@ echo ""
 echo "Checking agent doc structure..."
 echo "================================================"
 
-REQUIRED_SECTIONS="How it helps|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
-OPTIONAL_SECTIONS="Setup"
+REQUIRED_SECTIONS="How it helps|Setup|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
+OPTIONAL_SECTIONS=""
 IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
 IFS='|' read -ra OPTIONAL_LIST <<< "$OPTIONAL_SECTIONS"
 

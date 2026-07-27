@@ -4,6 +4,10 @@
 
 Review-feedback specialist that reads review comments on open PRs, implements targeted fixes, runs tests and linters, and commits the result.
 
+## Setup
+
+No additional setup is required beyond the standard fullsend configuration.
+
 ## How it helps
 
 - Review feedback is addressed quickly — often before the reviewer checks back.

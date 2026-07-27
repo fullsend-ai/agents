@@ -4,6 +4,10 @@
 
 Scores a GitHub issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces scores with reasoning for project board ranking.
 
+## Setup
+
+No additional setup is required beyond the standard fullsend configuration.
+
 ## How it helps
 
 - Issues are ranked consistently using the same framework, reducing bias from whoever happens to see them first.
