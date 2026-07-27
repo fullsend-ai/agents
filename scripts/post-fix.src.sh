@@ -22,9 +22,10 @@
 #   2. Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
 #   3. Authoritative pre-commit check
 #   4. Push branch
-#   5. Process structured output
-#   6. Iteration-cap warning label
-#   7. Summary
+#   5. Re-trigger review via ready-for-review label
+#   6. Process structured output
+#   7. Iteration-cap warning label
+#   8. Summary
 #
 # After pushing, this script processes agent-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
@@ -55,6 +56,8 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 # shellcheck source=lib/gitleaks-install.lib.sh
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
+# shellcheck source=lib/relabel-retrigger.lib.sh
+source "${SCRIPT_DIR_POST}/lib/relabel-retrigger.lib.sh"
 
 # ---------------------------------------------------------------------------
 # Helper: Bot user detection
@@ -349,7 +352,30 @@ ${FORCE_PUSH_OUTPUT}"
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Process structured output (agent-result.json)
+# 5. Re-trigger review via ready-for-review label (only if we pushed)
+#
+# pull_request_target.synchronize also fires on this push, but its
+# actor-identity authorization check is gated on the PR's original author,
+# which for agent-authored PRs is the code agent's bot account regardless of
+# who triggered this fix run — and GitHub App bots have no collaborator
+# role, so that check always fails closed. Re-triggering via the label path
+# sidesteps the identity question entirely: label application itself
+# requires write access, so the labeled-event dispatch has no separate
+# actor-authorization gate (see post-code.src.sh's identical rationale for
+# the PR-open case).
+#
+# Concurrency note: if a second fix run is dispatched for the same PR while
+# this call is between the remove and add, cancellation could leave the
+# label removed with nothing to re-add it. No unlabeled handler exists to
+# recover automatically; the next successful fix push re-adds the label and
+# self-heals. This is a narrow, accepted window, not engineered around here.
+# ---------------------------------------------------------------------------
+if [ "${NO_PUSH}" = "false" ]; then
+  retrigger_via_label "${REPO_FULL_NAME}" "${PR_NUMBER}" "ready-for-review" "${PUSH_TOKEN}"
+fi
+
+# ---------------------------------------------------------------------------
+# 6. Process structured output (agent-result.json)
 # ---------------------------------------------------------------------------
 export GH_TOKEN="${PUSH_TOKEN}"
 
@@ -428,7 +454,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Iteration-cap warning label
+# 7. Iteration-cap warning label
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
@@ -447,7 +473,7 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
 fi
 
 # ---------------------------------------------------------------------------
-# 7. Summary
+# 8. Summary
 # ---------------------------------------------------------------------------
 echo ""
 echo "Fix post-script complete:"

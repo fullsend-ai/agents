@@ -33,8 +33,16 @@ else
   echo "PASS: bundled-script-has-gitleaks-install"
 fi
 
+if ! grep -q 'retrigger_via_label' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-relabel-retrigger"
+  echo "  ${POST_SCRIPT} missing retrigger_via_label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-relabel-retrigger"
+fi
+
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the push retry logic from post-fix.sh section 5.
+# Test helper — reimplements the push retry logic from post-fix.sh section 4.
 # Given a push exit code and output, returns the action.
 # ---------------------------------------------------------------------------
 decide_push_retry() {
@@ -181,7 +189,7 @@ run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the FULLSEND_VALIDATED_ITERATION_DIR selection
-# logic from post-fix.sh section 5. Given an env var value and a set of files
+# logic from post-fix.sh section 6. Given an env var value and a set of files
 # on disk, returns which result file would be selected.
 #
 # Mirrors the three-branch logic: expected filename → result.json fallback →
@@ -314,8 +322,8 @@ rm -rf "${RESOLVE_TMPDIR}"
 # isolated reimplementation tests above cannot detect.
 #
 # Strategy: initialize a bare git repo on the main branch so NO_PUSH=true,
-# which skips sections 0-4 (secret scan, pre-commit, push) and goes straight
-# to the FULLSEND_VALIDATED_ITERATION_DIR check in section 5.
+# which skips sections 0-5 (secret scan, pre-commit, push, relabel retrigger)
+# and goes straight to the FULLSEND_VALIDATED_ITERATION_DIR check in section 6.
 # ---------------------------------------------------------------------------
 
 INTEGRATION_TMPDIR="$(mktemp -d)"
@@ -339,7 +347,7 @@ run_postfix_integration_test() {
   mkdir -p "${validated_dir}" "${repo_dir}"
 
   # Initialize a minimal git repo on the main branch so the script
-  # sets NO_PUSH=true and skips sections 0-4. Set a local (repo-scoped)
+  # sets NO_PUSH=true and skips sections 0-5. Set a local (repo-scoped)
   # identity explicitly — CI runners often have no global git config,
   # so `git commit` fails with "Author identity unknown" otherwise.
   git init -q -b main "${repo_dir}"
@@ -348,6 +356,7 @@ run_postfix_integration_test() {
   git -C "${repo_dir}" commit --allow-empty -m "init" -q
 
   local exit_code=0
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${MOCK_BIN}:${PATH}"
@@ -383,6 +392,133 @@ run_postfix_integration_test() {
 
 # The "neither filename" case must exit non-zero (fail closed).
 run_postfix_integration_test "integration-neither-filename-fails-closed" "true"
+
+# ---------------------------------------------------------------------------
+# Integration test — run the REAL post-fix.sh through the NO_PUSH=false path
+# (a genuine feature-branch commit) and confirm retrigger_via_label's gh
+# calls actually fire with the correct repo, PR number, and token.
+#
+# The existing integration test above forces NO_PUSH=true (main branch, no
+# commits) specifically to skip sections 0-5 and reach the
+# FULLSEND_VALIDATED_ITERATION_DIR check — it structurally never exercises
+# the call site at section 5 that invokes retrigger_via_label. Nothing in
+# `make script-test` would catch a transposed PR_NUMBER/REPO_FULL_NAME, a
+# wrong token variable, the NO_PUSH guard flipped to the wrong polarity, or
+# this call being silently deleted — every existing suite would still pass.
+#
+# Strategy: push a real feature-branch commit through git against a local
+# bare repo standing in for GitHub. The script forcibly rewrites `origin` to
+# an https://x-access-token:...@github.com/... URL before pushing (real
+# credential isolation — PUSH_TOKEN never touches the sandbox) — a `git`
+# wrapper here redirects only that one `remote set-url origin` call to the
+# local bare repo instead, then delegates every other git invocation
+# (including the actual `push`) to the real git binary, so this exercises
+# genuine git plumbing rather than mocking git itself.
+# ---------------------------------------------------------------------------
+run_postfix_push_integration_test() {
+  local test_name="integration-retrigger-fires-on-push"
+
+  local run_dir="${INTEGRATION_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local remote_dir="${INTEGRATION_TMPDIR}/remote-${test_name}.git"
+  local push_mock_bin="${INTEGRATION_TMPDIR}/bin-${test_name}"
+  local gh_call_log="${INTEGRATION_TMPDIR}/gh-calls-${test_name}.log"
+  mkdir -p "${run_dir}" "${push_mock_bin}"
+  : > "${gh_call_log}"
+
+  git init -q --bare "${remote_dir}"
+  git clone -q "${remote_dir}" "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -q -m "init"
+  git -C "${repo_dir}" push -q origin HEAD:main
+  git -C "${repo_dir}" checkout -q -b agent/test-feature
+  mkdir -p "${repo_dir}/testdata"
+  echo "change" > "${repo_dir}/testdata/file.txt"
+  git -C "${repo_dir}" add testdata/file.txt
+  git -C "${repo_dir}" commit -q -m "agent change"
+
+  local real_git
+  real_git="$(command -v git)"
+
+  cat > "${push_mock_bin}/git" <<GITMOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" && "\$3" == "origin" ]]; then
+  exec "${real_git}" remote set-url origin "${remote_dir}"
+fi
+exec "${real_git}" "\$@"
+GITMOCKEOF
+  chmod +x "${push_mock_bin}/git"
+
+  cat > "${push_mock_bin}/gh" <<GHMOCKEOF
+#!/usr/bin/env bash
+echo "\${GH_TOKEN:-<unset>} \$*" >> "${gh_call_log}"
+[[ "\$*" == *"pr view"* ]] && echo "ready-for-review"
+exit 0
+GHMOCKEOF
+  chmod +x "${push_mock_bin}/gh"
+
+  cat > "${push_mock_bin}/gitleaks" <<'GLMOCKEOF'
+#!/usr/bin/env bash
+exit 0
+GLMOCKEOF
+  chmod +x "${push_mock_bin}/gitleaks"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${push_mock_bin}:${PATH}"
+    export PUSH_TOKEN="sentinel-push-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export TARGET_BRANCH="main"
+    bash "${POST_SCRIPT}"
+  ) > "${INTEGRATION_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${INTEGRATION_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local gh_calls
+  gh_calls="$(cat "${gh_call_log}")"
+
+  if ! echo "${gh_calls}" | grep -qF "sentinel-push-token pr view 99 --repo test-org/test-repo --json labels --jq .labels[].name"; then
+    echo "FAIL: ${test_name} (missing/wrong pr view precheck call)"
+    echo "  gh calls: ${gh_calls}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! echo "${gh_calls}" | grep -qF "sentinel-push-token pr edit 99 --repo test-org/test-repo --remove-label ready-for-review"; then
+    echo "FAIL: ${test_name} (missing/wrong --remove-label call)"
+    echo "  gh calls: ${gh_calls}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! echo "${gh_calls}" | grep -qF "sentinel-push-token pr edit 99 --repo test-org/test-repo --add-label ready-for-review"; then
+    echo "FAIL: ${test_name} (missing/wrong --add-label call)"
+    echo "  gh calls: ${gh_calls}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! git -C "${remote_dir}" show-ref --quiet refs/heads/agent/test-feature; then
+    echo "FAIL: ${test_name} (agent/test-feature branch was not actually pushed to the remote)"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_postfix_push_integration_test
 
 rm -rf "${INTEGRATION_TMPDIR}"
 

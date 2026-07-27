@@ -101,10 +101,14 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 
 ## Control labels
 
+Most of these are gating inputs the fix agent reads. `ready-for-review` is the
+exception — the fix agent produces it as an output side effect, not a gate.
+
 | Label | Meaning |
 |-------|---------|
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
+| `ready-for-review` | Removed then re-applied by the fix agent's post-script after each successful push, to re-trigger the [review agent](review.md). |
 
 ## Configuration
 
@@ -130,7 +134,7 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
 2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** pushes the commit and posts a summary comment on the PR.
+4. **Post-script** pushes the commit, re-applies the `ready-for-review` label to re-trigger the review agent, and posts a summary comment on the PR.
 
 ### Input details
 

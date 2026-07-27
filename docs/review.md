@@ -19,6 +19,14 @@ The review agent runs automatically when:
 
 In per-repo installs, it also triggers when the `ready-for-review` label is applied to a PR.
 
+The synchronize trigger does not fire for agent-authored PRs: its
+actor-authorization check is gated on the PR's original author, and GitHub
+App bots have no collaborator role. The [fix agent](fix.md) works around
+this by re-applying the `ready-for-review` label after each push instead,
+which re-triggers review via the label path above — label application
+itself already requires write access, so it needs no separate
+actor-authorization check.
+
 All automatic triggers require the actor to have write-level repository permission (admin, maintain, or write).
 
 It can also be triggered manually with the `/fs-review` command.
@@ -39,7 +47,7 @@ These labels reflect the review outcome and are updated after each review.
 
 | Label | Meaning |
 |-------|---------|
-| `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) after pushing. In per-repo installs, triggers review when applied to a PR. |
+| `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) after pushing, and re-applied by the [fix agent](fix.md) after each fix push to re-trigger review. In per-repo installs, triggers review when applied to a PR. |
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
 | `rejected` | The review agent rejected the PR and closed it. |
