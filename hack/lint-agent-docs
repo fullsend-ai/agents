@@ -62,6 +62,15 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
     # Extract ## headers outside fenced code blocks
     actual_sections="$(awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^## /{sub(/^## /,""); print}' "$doc_path")"
 
+    # Check for duplicate ## headings
+    duplicates="$(echo "$actual_sections" | sort | uniq -d)"
+    if [[ -n "$duplicates" ]]; then
+        while IFS= read -r dup; do
+            echo "  $doc_basename: duplicate section \"## $dup\""
+            errors=$((errors + 1))
+        done <<< "$duplicates"
+    fi
+
     missing=()
     extra=()
     for section in "${SECTION_LIST[@]}"; do
