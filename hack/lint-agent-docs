@@ -14,7 +14,7 @@ echo "================================================"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
     name="$(basename "$yaml_file")"
-    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+    doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
 
     if [[ -z "$doc_value" ]]; then
         echo "  ERROR: $name: missing 'doc:' field"
@@ -40,7 +40,7 @@ REQUIRED_SECTIONS="How it helps|Setup|Triggers|Commands|Control labels|Configura
 IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
-    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+    doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
     if [[ -z "$doc_value" ]]; then
         continue
     fi
@@ -102,7 +102,7 @@ echo "Checking for ### Variables subsection..."
 echo "================================================"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
-    doc_value="$(grep -E '^doc:' "$yaml_file" | sed 's/^doc:[[:space:]]*//' || true)"
+    doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
     if [[ -z "$doc_value" ]]; then
         continue
     fi
