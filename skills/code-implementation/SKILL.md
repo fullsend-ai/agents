@@ -194,15 +194,15 @@ these commands in order until one succeeds:
 ```bash
 # Try each discovery method; use the first that returns a non-empty value.
 DEFAULT_BRANCH=""
-DEFAULT_BRANCH="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null \
-  | sed 's|^origin/||')" || true
+DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef \
+  --jq '.defaultBranchRef.name' 2>/dev/null)" || true
+if [ -z "${DEFAULT_BRANCH}" ]; then
+  DEFAULT_BRANCH="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null \
+    | sed 's|^origin/||')" || true
+fi
 if [ -z "${DEFAULT_BRANCH}" ] || [ "${DEFAULT_BRANCH}" = "HEAD" ]; then
   DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
     | sed 's|^refs/remotes/origin/||')" || true
-fi
-if [ -z "${DEFAULT_BRANCH}" ]; then
-  DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef \
-    --jq '.defaultBranchRef.name' 2>/dev/null)" || true
 fi
 ```
 
