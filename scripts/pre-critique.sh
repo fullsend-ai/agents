@@ -267,11 +267,25 @@ for search_root in \
   fi
 done
 
-if [[ -n "$PLATFORM_CONTEXT_FILE" ]]; then
+if [[ -z "$PLATFORM_CONTEXT_FILE" ]]; then
+  case "${ISSUE_SOURCE}" in
+    jira)   _plat="platform-jira.md" ;;
+    github) _plat="platform-github.md" ;;
+    gitlab) _plat="platform-gitlab.md" ;;
+    *)      _plat="" ;;
+  esac
+  if [[ -n "$_plat" ]] && PLATFORM_CONTEXT_FILE="$(_resolve_companion "$_plat" 2>/dev/null)"; then
+    :
+  fi
+fi
+if [[ -n "$PLATFORM_CONTEXT_FILE" && -f "$PLATFORM_CONTEXT_FILE" ]]; then
   cp "$PLATFORM_CONTEXT_FILE" "$WORKSPACE/platform-context.md"
   echo "PLATFORM_CONTEXT=$WORKSPACE/platform-context.md" >> "${GITHUB_ENV:-/dev/null}"
   echo "::notice::Platform context loaded for critique: ${ISSUE_SOURCE}"
+else
+  echo "::warning::No platform context template found for source=${ISSUE_SOURCE}"
 fi
+unset _plat
 
 # --- Export paths ---
 {
