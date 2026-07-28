@@ -5,9 +5,9 @@
 
 Forge background (prefer these over inventing process):
 
-- [Epics](https://docs.gitlab.com/ee/user/group/epics/) (Premium+ for many epic features)
-- [Issues](https://docs.gitlab.com/ee/user/project/issues/)
-- [Issue relations](https://docs.gitlab.com/ee/user/project/issues/related_issues.html)
+- [Epics](https://docs.gitlab.com/user/group/epics/) (Premium+ for many epic features)
+- [Issues](https://docs.gitlab.com/user/project/issues/)
+- [Issue relations](https://docs.gitlab.com/user/project/issues/related_issues/)
 
 ## Org / program process
 
