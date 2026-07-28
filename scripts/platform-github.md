@@ -2,7 +2,7 @@
 
 Forge background (prefer these over inventing process):
 
-- [About issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/about-issues)
+- [About issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/learning-about-issues/about-issues)
 - [Adding sub-issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/adding-sub-issues)
 - [Managing labels](https://docs.github.com/en/issues/using-labels-and-milestones-to-track-work/managing-labels)
 
