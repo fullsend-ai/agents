@@ -39,7 +39,20 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 ### Variables
 
-None.
+#### `CODE_ALLOWED_TARGET_BRANCHES`
+
+Restricts which branches the code agent can target when pushing.
+The post-code script (`scripts/post-code.src.sh`) validates the
+agent's chosen target branch against this variable before pushing.
+
+| Aspect | Detail |
+|--------|--------|
+| **Format** | Comma-separated branch names (e.g. `main,develop`) or `*` to allow any branch |
+| **Default** | The repo's default branch, auto-detected via the GitHub API (falls back to `main` if the API call fails) |
+| **Where to set** | Runner environment variable — passed through `runner_env` in `harness/code.yaml`, never injected into the sandbox |
+
+When a branch is not in the allowed list, the post-code script
+rejects the agent's output and reports a branch-validation failure.
 
 ## How the agent works
 
