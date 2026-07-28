@@ -1097,6 +1097,62 @@ run_noop_comment_test() {
   echo "PASS: ${test_name}"
 }
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the branch validation logic from post-code.src.sh
+# to test the auto-correct vs hard-fail behavior. Given an agent target, a
+# default branch, and an optional allowed list, returns the decision.
+# ---------------------------------------------------------------------------
+validate_target_branch() {
+  local agent_target="$1"
+  local default_branch="$2"
+  local allowed_list="$3"  # empty string means unset
+
+  if [ -n "${agent_target}" ]; then
+    if [ -n "${allowed_list}" ]; then
+      # Explicit allowed list — hard-fail if not in it.
+      if [ "${allowed_list}" = "*" ] \
+         || echo ",${allowed_list}," | grep -qF ",${agent_target},"; then
+        echo "accept:${agent_target}"
+      else
+        echo "reject:${agent_target}:allowed=${allowed_list}"
+      fi
+    else
+      # No explicit list — auto-correct to default when mismatched.
+      if [ "${agent_target}" = "${default_branch}" ]; then
+        echo "accept:${agent_target}"
+      else
+        echo "auto-correct:${default_branch}"
+      fi
+    fi
+  else
+    echo "default:${default_branch}"
+  fi
+}
+
+run_branch_validation_test() {
+  local test_name="$1"
+  local agent_target="$2"
+  local default_branch="$3"
+  local allowed_list="$4"
+  local expected_prefix="$5"
+
+  local actual
+  actual="$(validate_target_branch "${agent_target}" "${default_branch}" "${allowed_list}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  agent_target:    '${agent_target}'"
+    echo "  default_branch:  '${default_branch}'"
+    echo "  allowed_list:    '${allowed_list}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- No-op comment test cases ---
 
 # Comment should include the reason for no feature branch
@@ -1169,6 +1225,40 @@ if ! grep -q 'post_noop_comment' "${POST_SCRIPT}"; then
 else
   echo "PASS: script-has-noop-comment"
 fi
+
+# --- Branch validation test cases ---
+
+# Auto-correct: agent writes main, default is master, no allowed list → corrected
+run_branch_validation_test "auto-correct-to-default" \
+  "main" "master" "" "auto-correct:master"
+
+# Explicit list enforced: agent writes main, allowed=release-1,release-2 → reject
+run_branch_validation_test "explicit-list-rejects-mismatch" \
+  "main" "master" "release-1,release-2" "reject:main"
+
+# Match: agent matches default, no allowed list → accepted
+run_branch_validation_test "agent-matches-default" \
+  "main" "main" "" "accept:main"
+
+# Wildcard: allowed=*, agent writes develop → accepted
+run_branch_validation_test "wildcard-allows-any" \
+  "develop" "main" "*" "accept:develop"
+
+# No agent target: falls back to default
+run_branch_validation_test "no-agent-target-uses-default" \
+  "" "master" "" "default:master"
+
+# Agent matches explicit list
+run_branch_validation_test "explicit-list-accepts-match" \
+  "release-1" "main" "release-1,release-2" "accept:release-1"
+
+# Agent matches default with explicit list that also includes default
+run_branch_validation_test "explicit-list-includes-default" \
+  "main" "main" "main,develop" "accept:main"
+
+# No agent target with explicit list still uses default
+run_branch_validation_test "no-agent-target-ignores-allowed-list" \
+  "" "main" "release-1,release-2" "default:main"
 
 # --- Summary ---
 
