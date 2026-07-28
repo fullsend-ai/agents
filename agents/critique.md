@@ -89,7 +89,7 @@ Environment variables set by the pre-script:
   (or absent): **still critique** coverage/implementability/etc.; omit
   `program_grounding`; prefer revise/`needs_input` only when refine invented
   ownership without evidence — not merely because a pack was missing.
-- `PLATFORM_CONTEXT` — path to platform-specific context file (hierarchy rules, formatting constraints)
+- `PLATFORM_CONTEXT` — thin forge context (official doc links + Fullsend child-shape contract). Org process stays in `ORG_KNOWLEDGE` / `PROJECT_ROUTING` when present.
 - `FULLSEND_OUTPUT_DIR` — where to write your result
 
 ## Process
