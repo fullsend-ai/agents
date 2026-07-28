@@ -383,6 +383,20 @@ fi
 echo "Issue context written to $WORKSPACE/issue-context.json"
 echo "::notice::Issue: ${ISSUE_KEY} (${ISSUE_SOURCE}, level=$(jq -r .level "$WORKSPACE/issue-context.json"))"
 
+# --- Install overlay: ORG_KNOWLEDGE pack (optional; before repo clone so knowledge can seed clones) ---
+for _install_scripts in \
+  "$(git rev-parse --show-toplevel 2>/dev/null || echo ".")/.fullsend/scripts" \
+  ${GITHUB_WORKSPACE:+"${GITHUB_WORKSPACE}/.fullsend/scripts"} \
+  ${FULLSEND_DIR:+"${FULLSEND_DIR}/scripts"}; do
+  if [[ -n "${_install_scripts}" && -f "${_install_scripts}/pack-org-knowledge.sh" ]]; then
+    # shellcheck source=/dev/null
+    source "${_install_scripts}/pack-org-knowledge.sh"
+    pack_org_knowledge || echo "::warning::pack_org_knowledge soft-failed — continuing without rich ORG_KNOWLEDGE"
+    break
+  fi
+done
+unset _install_scripts
+
 # --- Phase 2: Clone referenced GitHub repos for deep exploration ---
 #
 # Discovers repo references from three sources:
@@ -508,16 +522,106 @@ validate_repo() {
   [[ "$http_code" == "200" ]]
 }
 
+# Seed clone candidates from ORG_KNOWLEDGE / curated knowledge GitHub URLs.
+# PMs do not pass TARGET_REPO_DIR — infer likely codebases from install knowledge
+# scored against the issue summary/description (keyword overlap).
+extract_repo_refs_from_org_knowledge() {
+  local knowledge_files=()
+  local f
+  shopt -s nullglob
+  for f in \
+    "${ORG_KNOWLEDGE:-}" \
+    "$WORKSPACE/org-knowledge.md" \
+    "$(git rev-parse --show-toplevel 2>/dev/null || echo ".")/.fullsend/knowledge/curated/"*.md; do
+    [[ -n "$f" && -f "$f" ]] && knowledge_files+=("$f")
+  done
+  shopt -u nullglob
+  if [[ ${#knowledge_files[@]} -eq 0 ]]; then
+    return 0
+  fi
+
+  local issue_text
+  issue_text=$(jq -r '[.summary // "", .description // ""] | join("\n")' \
+    "$WORKSPACE/issue-context.json" 2>/dev/null || echo "")
+
+  python3 -c '
+import re, sys
+from pathlib import Path
+
+issue = sys.argv[1].lower()
+files = sys.argv[2:]
+lines = []
+for p in files:
+    path = Path(p)
+    if path.is_file():
+        lines.extend(path.read_text(encoding="utf-8", errors="ignore").splitlines())
+
+# Map repo -> nearby knowledge context (ownership rows, bullets, etc.)
+url_re = re.compile(r"https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)")
+ctx = {}
+for i, line in enumerate(lines):
+    found = {m.rstrip("/") for m in url_re.findall(line)}
+    for repo in found:
+        window = "\n".join(lines[max(0, i - 1) : min(len(lines), i + 2)])
+        ctx.setdefault(repo, [])
+        ctx[repo].append(window)
+
+repos = sorted(ctx)
+stop = {
+    "the", "and", "for", "with", "this", "that", "from", "into", "your", "our",
+    "are", "was", "feature", "issue", "epic", "story", "team", "data", "using",
+    "when", "will", "can", "signal", "status", "level", "view", "into",
+}
+# Keep short product cues (ui/api) — PMs write "Konflux UI" without long repo names.
+long_tokens = {t for t in re.findall(r"[a-z0-9]{3,}", issue) if t not in stop}
+short_tokens = {t for t in re.findall(r"\b(?:ui|ux|api|ci|cd|sbom)\b", issue)}
+tokens = long_tokens | short_tokens
+if not tokens:
+    sys.exit(0)
+
+scored = []
+for repo in repos:
+    owner, _, name = repo.partition("/")
+    name_l = name.lower().replace("-", " ").replace("_", " ")
+    name_tokens = set(re.findall(r"[a-z0-9]{2,}", name_l))
+    owner_tokens = set(re.findall(r"[a-z0-9]{3,}", owner.lower().replace("-", " ")))
+    context = "\n".join(ctx.get(repo, [])).lower()
+    context_tokens = set(re.findall(r"[a-z0-9]{2,}", context))
+
+    # Name hits matter most; owner hits are weak (every konflux-ci/* matches "konflux").
+    score = len(tokens & name_tokens) * 8
+    score += len(tokens & (context_tokens - owner_tokens)) * 3
+    score += len(tokens & owner_tokens)  # weak
+    # Exact substring boosts for multi-word product phrases in repo name
+    for t in tokens:
+        if len(t) >= 3 and t in name.lower():
+            score += 4
+        if t in {"ui", "ux"} and (name.lower().endswith("-ui") or name.lower() == "ui"
+                                  or " ui " in f" {context} " or "| ui |" in context):
+            score += 10
+    if score >= 8:  # require a real name/context hit, not owner-only
+        scored.append((score, repo))
+
+scored.sort(key=lambda x: (-x[0], x[1]))
+for _score, repo in scored[:5]:
+    print(repo)
+' "$issue_text" "${knowledge_files[@]}"
+}
+
+
 SELF_REPO="${GITHUB_REPOSITORY:-}"
 TARGET="${REPO_FULL_NAME:-}"
 
 echo "::group::Clone referenced repos"
 
-# Gather candidates from all sources
+# Gather candidates from all sources.
+# Order: knowledge-seeded (relevance-ranked) first, then issue text, then prior explore.
 TEXT_REFS=$(extract_repo_refs_from_text)
 PREV_REFS=$(extract_repo_refs_from_previous_explore)
+KNOWLEDGE_REFS=$(extract_repo_refs_from_org_knowledge)
 
-REPO_REFS=$(printf '%s\n%s' "$TEXT_REFS" "$PREV_REFS" | sort -u | grep -v '^$' || true)
+REPO_REFS=$(printf '%s\n%s\n%s' "$KNOWLEDGE_REFS" "$TEXT_REFS" "$PREV_REFS" \
+  | awk 'NF && !seen[$0]++' | grep -v '^$' || true)
 
 CLONED=()
 SKIPPED=()
@@ -744,16 +848,3 @@ fi
 # Export paths for the agent
 echo "ISSUE_CONTEXT=$WORKSPACE/issue-context.json" >> "${GITHUB_ENV:-/dev/null}"
 
-# --- Install overlay: ORG_KNOWLEDGE pack (optional) ---
-for _install_scripts in \
-  "$(git rev-parse --show-toplevel 2>/dev/null || echo ".")/.fullsend/scripts" \
-  ${GITHUB_WORKSPACE:+"${GITHUB_WORKSPACE}/.fullsend/scripts"} \
-  ${FULLSEND_DIR:+"${FULLSEND_DIR}/scripts"}; do
-  if [[ -n "${_install_scripts}" && -f "${_install_scripts}/pack-org-knowledge.sh" ]]; then
-    # shellcheck source=/dev/null
-    source "${_install_scripts}/pack-org-knowledge.sh"
-    pack_org_knowledge || echo "::warning::pack_org_knowledge soft-failed — continuing without rich ORG_KNOWLEDGE"
-    break
-  fi
-done
-unset _install_scripts
