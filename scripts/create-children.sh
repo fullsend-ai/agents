@@ -25,6 +25,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=jira-project-schema.sh
+source "${SCRIPT_DIR}/jira-project-schema.sh"
 
 if [[ -z "${RESULT_FILE:-}" ]]; then
   echo "ERROR: RESULT_FILE env var not set"
@@ -49,34 +51,82 @@ elif [[ "${ISSUE_SOURCE:-}" == "github" ]]; then
   GITHUB_ISSUE_NUMBER="${ISSUE_KEY}"
 fi
 
-ADF_SCRIPT="${SCRIPT_DIR}/markdown-to-adf.py"
-if [[ ! -f "$ADF_SCRIPT" ]]; then
-  echo "ERROR: markdown-to-adf.py not found (requires PR #11 explore agent)"
-  exit 1
+# Optional project-field-config (allowlist + type preferences)
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
+FIELD_CONFIG_PATH="${PROJECT_FIELD_CONFIG:-}"
+if [[ -z "$FIELD_CONFIG_PATH" ]]; then
+  FIELD_CONFIG_PATH=$(jira_schema_find_field_config "$REPO_ROOT")
+fi
+FIELD_CONFIG_JSON='{}'
+if [[ -n "$FIELD_CONFIG_PATH" ]]; then
+  if FIELD_CONFIG_JSON=$(jira_schema_load_config "$FIELD_CONFIG_PATH"); then
+    echo "::notice::Loaded project field config from ${FIELD_CONFIG_PATH}"
+  else
+    FIELD_CONFIG_JSON='{}'
+    # load_config already emitted a warning for missing/invalid paths
+  fi
 fi
 
-# --- Helper functions ---
-
-resolve_github_parent_number() {
-  local parent_key="$1"
-
-  if [[ "$parent_key" =~ ^[0-9]+$ ]]; then
-    echo "$parent_key"
-    return
-  fi
-
-  if [[ "$parent_key" =~ ^#[0-9]+$ ]]; then
-    echo "${parent_key#\#}"
-    return
-  fi
-
-  if [[ "$parent_key" == "$ISSUE_KEY" && -n "${GITHUB_ISSUE_NUMBER:-}" && "${GITHUB_ISSUE_NUMBER}" != "N/A" ]]; then
-    echo "$GITHUB_ISSUE_NUMBER"
-    return
-  fi
-
-  echo ""
+# Map an optional plan priority token to a Jira priority name.
+# Empty input → empty output (do not invent a default for the API).
+map_jira_priority() {
+  jira_schema_map_priority "$@"
 }
+
+# Cache of live(+filtered) issue types per project key
+declare -A PROJECT_TYPES_CACHE=()
+
+get_usable_types_for_project() {
+  local project_key="$1"
+  if ! jira_schema_valid_project_key "$project_key"; then
+    echo "::warning::Invalid target_project key: ${project_key}" >&2
+    echo '[]'
+    return 0
+  fi
+  if [[ -n "${PROJECT_TYPES_CACHE[$project_key]:-}" ]]; then
+    echo "${PROJECT_TYPES_CACHE[$project_key]}"
+    return 0
+  fi
+
+  local live allowed usable=""
+  # Prefer routable_projects from issue-context when present
+  local issue_context_file="/tmp/workspace/issue-context.json"
+  live='[]'
+  if [[ -f "$issue_context_file" ]]; then
+    live=$(jq -c --arg p "$project_key" '
+      .routable_projects[$p].available_issue_types
+      // (if .project.key == $p then .project.available_issue_types else null end)
+      // []
+    ' "$issue_context_file")
+  fi
+  if [[ "$live" == "[]" || "$live" == "null" ]]; then
+    live=$(jira_schema_fetch_project_issue_types "$project_key")
+  fi
+
+  allowed=$(jira_schema_allowed_types_for_project "$FIELD_CONFIG_JSON" "$project_key")
+  if [[ -z "$allowed" || "$allowed" == "null" ]]; then
+    # Also prefer precomputed usable list from context
+    if [[ -f "$issue_context_file" ]]; then
+      usable=$(jq -c --arg p "$project_key" '
+        .routable_projects[$p].usable_issue_types // empty
+      ' "$issue_context_file")
+    fi
+    if [[ -z "${usable:-}" || "$usable" == "null" ]]; then
+      usable=$(jira_schema_intersect_issue_types "$live" "")
+    fi
+  else
+    usable=$(jira_schema_intersect_issue_types "$live" "$allowed")
+  fi
+
+  if [[ "$usable" == "[]" ]]; then
+    echo "::warning::No usable issue types for project ${project_key} after applying team preferences" >&2
+  fi
+
+  PROJECT_TYPES_CACHE[$project_key]="$usable"
+  echo "$usable"
+}
+
+# --- Helper functions ---
 
 github_create_issue() {
   local repo="$1" title="$2" body="$3" labels="$4" parent_number="${5:-}"
@@ -113,14 +163,64 @@ github_create_issue() {
   echo "$issue_number"
 }
 
+# Resolve a Jira issue-link type name that exists on this site.
+# Caches the resolved name in JIRA_RESOLVED_LINK_TYPE.
+jira_resolve_link_type() {
+  local preferred="${1:-Relates}"
+  if [[ -n "${JIRA_RESOLVED_LINK_TYPE:-}" ]]; then
+    echo "$JIRA_RESOLVED_LINK_TYPE"
+    return 0
+  fi
+
+  local auth types_json resolved=""
+  auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+  types_json=$(curl -sf \
+    -H "Authorization: Basic $auth" \
+    -H "Accept: application/json" \
+    "https://${JIRA_HOST}/rest/api/3/issueLinkType" 2>/dev/null || echo '{"issueLinkTypes":[]}')
+
+  # Prefer exact name, then case-insensitive Relates/Related, then first type whose
+  # name/inward/outward contains "relat".
+  resolved=$(echo "$types_json" | jq -r --arg pref "$preferred" '
+    .issueLinkTypes // []
+    | (map(select(.name == $pref))[0].name)
+      // (map(select((.name // "") | ascii_downcase == ($pref | ascii_downcase)))[0].name)
+      // (map(select(
+            ((.name // "") | test("relat"; "i"))
+            or ((.inward // "") | test("relat"; "i"))
+            or ((.outward // "") | test("relat"; "i"))
+          ))[0].name)
+      // empty
+  ' 2>/dev/null || true)
+
+  if [[ -z "$resolved" ]]; then
+    # Last resort: first available link type
+    resolved=$(echo "$types_json" | jq -r '.issueLinkTypes[0].name // empty' 2>/dev/null || true)
+  fi
+
+  if [[ -z "$resolved" ]]; then
+    echo "::warning::Could not discover any Jira issue link types; using '${preferred}'" >&2
+    resolved="$preferred"
+  else
+    echo "::notice::Resolved Jira link type '${preferred}' → '${resolved}'" >&2
+  fi
+
+  JIRA_RESOLVED_LINK_TYPE="$resolved"
+  export JIRA_RESOLVED_LINK_TYPE
+  echo "$resolved"
+}
+
 jira_link_issues() {
   local from_key="$1" to_key="$2" link_type="${3:-Relates}"
   local auth
   auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
 
-  local payload
+  local resolved_type
+  resolved_type=$(jira_resolve_link_type "$link_type")
+
+  local payload response http_code body
   payload=$(jq -n \
-    --arg type "$link_type" \
+    --arg type "$resolved_type" \
     --arg inward "$from_key" \
     --arg outward "$to_key" \
     '{
@@ -129,28 +229,59 @@ jira_link_issues() {
       outwardIssue: {key: $outward}
     }')
 
-  local http_code
-  http_code=$(curl -sS -o /dev/null -w "%{http_code}" -X POST \
+  response=$(curl -sS -w "\n%{http_code}" -X POST \
     -H "Authorization: Basic $auth" \
     -H "Content-Type: application/json" \
     -d "$payload" \
     "https://${JIRA_HOST}/rest/api/3/issueLink")
+  http_code=$(echo "$response" | tail -1)
+  body=$(echo "$response" | sed '$d')
+
+  # Some sites reject one direction — swap inward/outward once
+  if [[ "$http_code" -ge 400 ]]; then
+    echo "::warning::Link ${from_key} → ${to_key} as '${resolved_type}' failed (HTTP ${http_code}): ${body}" >&2
+    payload=$(jq -n \
+      --arg type "$resolved_type" \
+      --arg inward "$to_key" \
+      --arg outward "$from_key" \
+      '{
+        type: {name: $type},
+        inwardIssue: {key: $inward},
+        outwardIssue: {key: $outward}
+      }')
+    response=$(curl -sS -w "\n%{http_code}" -X POST \
+      -H "Authorization: Basic $auth" \
+      -H "Content-Type: application/json" \
+      -d "$payload" \
+      "https://${JIRA_HOST}/rest/api/3/issueLink")
+    http_code=$(echo "$response" | tail -1)
+    body=$(echo "$response" | sed '$d')
+  fi
 
   if [[ "$http_code" -ge 400 ]]; then
-    echo "::warning::Failed to link ${from_key} → ${to_key} (type: ${link_type}, HTTP ${http_code})" >&2
+    echo "::warning::Failed to link ${from_key} ↔ ${to_key} (type: ${resolved_type}, HTTP ${http_code}): ${body}" >&2
     return 1
   fi
-  echo "  Linked ${from_key} → ${to_key} (${link_type})"
+  # stdout is reserved for callers that capture issue keys via $(jira_create_issue …)
+  echo "  Linked ${from_key} ↔ ${to_key} (${resolved_type})" >&2
   return 0
 }
 
 jira_create_issue() {
   local project="$1" type="$2" summary="$3" description="$4" parent_key="${5:-}"
+  local labels_json="${6:-[]}"
+  local priority="${7:-}"
+  local custom_fields_json="${8:-{}}"
   local auth
   auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
 
   local adf_desc
-  adf_desc=$(printf '%s' "$description" | python3 "${ADF_SCRIPT}" | jq '.body')
+  adf_desc=$(printf '%s' "$description" | python3 "${SCRIPT_DIR}/markdown-to-adf.py" | jq '.body')
+
+  # Filter custom fields against allowlist for this project
+  local allow_keys filtered_customs
+  allow_keys=$(jira_schema_allowlist_keys_for_project "$FIELD_CONFIG_JSON" "$project")
+  filtered_customs=$(jira_schema_filter_custom_fields "$custom_fields_json" "$allow_keys")
 
   local payload
   payload=$(jq -n \
@@ -159,13 +290,22 @@ jira_create_issue() {
     --arg summary "$summary" \
     --argjson desc "$adf_desc" \
     --arg parent "$parent_key" \
+    --argjson labels "$labels_json" \
+    --arg priority "$priority" \
+    --argjson customs "$filtered_customs" \
     '{
-      fields: ({
-        project: {key: $proj},
-        issuetype: {name: $type},
-        summary: $summary,
-        description: $desc
-      } + (if $parent != "" then {parent: {key: $parent}} else {} end))
+      fields: (
+        {
+          project: {key: $proj},
+          issuetype: {name: $type},
+          summary: $summary,
+          description: $desc
+        }
+        + (if $parent != "" then {parent: {key: $parent}} else {} end)
+        + (if ($labels | length) > 0 then {labels: $labels} else {} end)
+        + (if $priority != "" and $priority != "null" then {priority: {name: $priority}} else {} end)
+        + $customs
+      )
     }')
 
   local response http_code
@@ -181,6 +321,46 @@ jira_create_issue() {
 
   if [[ "$http_code" -ge 400 ]]; then
     echo "::warning::Jira API returned ${http_code} creating '${summary}' (type: ${type}, parent: ${parent_key}): ${body}" >&2
+
+    # Priority schemes vary by project — drop priority and retry once
+    if [[ "$http_code" == "400" && -n "$priority" && "$body" == *'"priority"'* ]]; then
+      echo "  Retrying without priority..." >&2
+      priority=""
+      payload=$(jq -n \
+        --arg proj "$project" \
+        --arg type "$type" \
+        --arg summary "$summary" \
+        --argjson desc "$adf_desc" \
+        --arg parent "$parent_key" \
+        --argjson labels "$labels_json" \
+        --argjson customs "$filtered_customs" \
+        '{
+          fields: (
+            {
+              project: {key: $proj},
+              issuetype: {name: $type},
+              summary: $summary,
+              description: $desc
+            }
+            + (if $parent != "" then {parent: {key: $parent}} else {} end)
+            + (if ($labels | length) > 0 then {labels: $labels} else {} end)
+            + $customs
+          )
+        }')
+      response=$(curl -sS -w "\n%{http_code}" -X POST \
+        -H "Authorization: Basic $auth" \
+        -H "Content-Type: application/json" \
+        -d "$payload" \
+        "https://${JIRA_HOST}/rest/api/3/issue")
+      http_code=$(echo "$response" | tail -1)
+      body=$(echo "$response" | sed '$d')
+      if [[ "$http_code" -lt 400 ]]; then
+        echo "$body" | jq -r '.key'
+        return 0
+      fi
+      echo "::warning::Retry without priority also failed (${http_code}): ${body}" >&2
+    fi
+
     if [[ -n "$parent_key" && "$http_code" == "400" ]]; then
       echo "  Retrying without parent (will link instead)..." >&2
       payload=$(jq -n \
@@ -188,13 +368,21 @@ jira_create_issue() {
         --arg type "$type" \
         --arg summary "$summary" \
         --argjson desc "$adf_desc" \
+        --argjson labels "$labels_json" \
+        --arg priority "$priority" \
+        --argjson customs "$filtered_customs" \
         '{
-          fields: {
-            project: {key: $proj},
-            issuetype: {name: $type},
-            summary: $summary,
-            description: $desc
-          }
+          fields: (
+            {
+              project: {key: $proj},
+              issuetype: {name: $type},
+              summary: $summary,
+              description: $desc
+            }
+            + (if ($labels | length) > 0 then {labels: $labels} else {} end)
+            + (if $priority != "" and $priority != "null" then {priority: {name: $priority}} else {} end)
+            + $customs
+          )
         }')
       response=$(curl -sS -w "\n%{http_code}" -X POST \
         -H "Authorization: Basic $auth" \
@@ -262,22 +450,7 @@ resolve_jira_type() {
   echo "$fallback"
 }
 
-# Load available issue types — prefer issue-context.json, fall back to API
-AVAILABLE_TYPES="[]"
-ISSUE_CONTEXT_FILE="/tmp/workspace/issue-context.json"
-if [[ -f "$ISSUE_CONTEXT_FILE" ]]; then
-  AVAILABLE_TYPES=$(jq -c '.project.available_issue_types // []' "$ISSUE_CONTEXT_FILE")
-fi
-if [[ "$AVAILABLE_TYPES" == "[]" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" ]]; then
-  PROJECT_KEY_FOR_TYPES=$(echo "$ISSUE_KEY" | sed 's/-.*//')
-  _auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
-  AVAILABLE_TYPES=$(curl -sf \
-    -H "Authorization: Basic $_auth" \
-    -H "Accept: application/json" \
-    "https://${JIRA_HOST}/rest/api/3/issue/createmeta/${PROJECT_KEY_FOR_TYPES}/issuetypes" \
-    | jq -c '[.issueTypes // [] | .[] | {name, subtask, hierarchyLevel}]' 2>/dev/null || echo "[]")
-  echo "Fetched ${#AVAILABLE_TYPES} bytes of issue type metadata from API"
-fi
+# Legacy single-project type list removed — use get_usable_types_for_project per child.
 
 # --- Fetch existing children for deduplication ---
 
@@ -306,21 +479,11 @@ if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-
     [[ -n "$_lk" && -z "${EXISTING_TITLES[$_ls]:-}" ]] && EXISTING_TITLES["$_ls"]="$_lk"
   done < <(echo "$_links_json" | jq -r '.fields.issuelinks[]? | (.outwardIssue // .inwardIssue) | "\(.key)|\(.fields.summary)"')
 
-  echo "Found ${#EXISTING_TITLES[@]} existing child/linked issue(s) for dedup"
-fi
-
-if $USE_GITHUB && [[ -n "${REPO_FULL_NAME:-}" ]]; then
-  _gh_parent="${GITHUB_ISSUE_NUMBER:-}"
-  if [[ -z "$_gh_parent" && "${ISSUE_SOURCE:-}" == "github" ]]; then
-    _gh_parent="$ISSUE_KEY"
-  fi
-
-  if [[ -n "$_gh_parent" && "$_gh_parent" =~ ^[0-9]+$ ]]; then
-    while IFS='|' read -r _num _title; do
-      [[ -n "$_title" && -n "$_num" && -z "${EXISTING_TITLES[$_title]:-}" ]] && EXISTING_TITLES["$_title"]="#${_num}"
-    done < <(gh api "repos/${REPO_FULL_NAME}/issues/${_gh_parent}/sub_issues" --paginate --jq '.[] | "\(.number)|\(.title)"' 2>/dev/null || true)
-    echo "GitHub dedup index contains ${#EXISTING_TITLES[@]} title(s)"
-  fi
+  # Empty assoc arrays trip `set -u` on ${#arr[@]} in some bash builds
+  set +u
+  _dedup_n=${#EXISTING_TITLES[@]}
+  set -u
+  echo "Found ${_dedup_n} existing child/linked issue(s) for dedup"
 fi
 
 # --- Create children in topological order ---
@@ -361,9 +524,11 @@ while [[ $CREATED_COUNT -lt $CHILD_COUNT && $PASS -lt $MAX_PASSES ]]; do
     CHILD_PARENT_TITLE=$(jq -r ".children[${i}].parent_title // \"\"" "${RESULT_FILE}")
     CHILD_TYPE=$(jq -r ".children[${i}].type" "${RESULT_FILE}")
     CHILD_DESC=$(jq -r ".children[${i}].description" "${RESULT_FILE}")
-    CHILD_AC=$(jq -r ".children[${i}].acceptance_criteria // [] | map(\"- [ ] \" + .) | join(\"\n\")" "${RESULT_FILE}")
+    CHILD_AC=$(jq -r ".children[${i}].acceptance_criteria | map(\"- [ ] \" + .) | join(\"\n\")" "${RESULT_FILE}")
     CHILD_LABELS=$(jq -c ".children[${i}].labels // []" "${RESULT_FILE}")
-    CHILD_PRIORITY=$(jq -r ".children[${i}].priority // \"medium\"" "${RESULT_FILE}")
+    # Description footer may default; Jira API only gets an explicit plan priority
+    CHILD_PRIORITY_RAW=$(jq -r ".children[${i}].priority // empty" "${RESULT_FILE}")
+    CHILD_PRIORITY_TEXT="${CHILD_PRIORITY_RAW:-medium}"
     CHILD_SCOPE=$(jq -r ".children[${i}].estimated_scope // \"M\"" "${RESULT_FILE}")
 
     PARENT_KEY_FOR_CHILD=""
@@ -382,7 +547,7 @@ while [[ $CREATED_COUNT -lt $CHILD_COUNT && $PASS -lt $MAX_PASSES ]]; do
 ${CHILD_AC}
 
 ---
-*Priority: ${CHILD_PRIORITY} | Scope: ${CHILD_SCOPE} | Generated by fullsend refine agent*"
+*Priority: ${CHILD_PRIORITY_TEXT} | Scope: ${CHILD_SCOPE} | Generated by fullsend refine agent*"
 
     # Determine which platform to create this child on (per-child override)
     CHILD_TARGET_PLATFORM=$(jq -r ".children[${i}].target_platform // \"\"" "${RESULT_FILE}")
@@ -399,31 +564,34 @@ ${CHILD_AC}
     if $USE_GITHUB_FOR_CHILD; then
       TYPE_LABEL="$CHILD_TYPE"
       COMBINED_LABELS=$(echo "$CHILD_LABELS" | jq --arg t "$TYPE_LABEL" '. + [$t]')
-      GITHUB_PARENT=$(resolve_github_parent_number "$PARENT_KEY_FOR_CHILD")
-      if [[ -z "$GITHUB_PARENT" && -n "$PARENT_KEY_FOR_CHILD" ]]; then
-        echo "::warning::Skipping sub-issue link for '${CHILD_TITLE}' — parent '${PARENT_KEY_FOR_CHILD}' is not a GitHub issue number"
-      fi
-      NEW_ISSUE=$(github_create_issue "${REPO_FULL_NAME}" "$CHILD_TITLE" "$FULL_BODY" "$COMBINED_LABELS" "$GITHUB_PARENT")
+      NEW_ISSUE=$(github_create_issue "${REPO_FULL_NAME}" "$CHILD_TITLE" "$FULL_BODY" "$COMBINED_LABELS" "$PARENT_KEY_FOR_CHILD")
       if [[ -z "$NEW_ISSUE" || "$NEW_ISSUE" == "FAILED" ]]; then
         echo "  [pass ${PASS}] FAILED to create ${CHILD_TYPE}: ${CHILD_TITLE}"
         continue
       fi
-      if [[ -n "$GITHUB_PARENT" ]]; then
-        echo "  [pass ${PASS}] Created ${CHILD_TYPE} #${NEW_ISSUE} under #${GITHUB_PARENT}"
-      else
-        echo "  [pass ${PASS}] Created ${CHILD_TYPE} #${NEW_ISSUE} (no parent link)"
-      fi
+      echo "  [pass ${PASS}] Created ${CHILD_TYPE} #${NEW_ISSUE} under #${PARENT_KEY_FOR_CHILD}"
       TITLE_TO_KEY["$CHILD_TITLE"]="$NEW_ISSUE"
       CREATED_KEYS+=("#$NEW_ISSUE")
     else
       CHILD_TARGET_PROJECT=$(jq -r ".children[${i}].target_project // \"\"" "${RESULT_FILE}")
       PROJECT_KEY="${CHILD_TARGET_PROJECT:-$(echo "$ISSUE_KEY" | sed 's/-.*//')}"
-      JIRA_TYPE=$(resolve_jira_type "$CHILD_TYPE" "$AVAILABLE_TYPES")
+      if ! jira_schema_valid_project_key "$PROJECT_KEY"; then
+        echo "  [pass ${PASS}] SKIP '${CHILD_TITLE}' — invalid target_project '${PROJECT_KEY}'"
+        continue
+      fi
+      PROJECT_TYPES=$(get_usable_types_for_project "$PROJECT_KEY")
+      if [[ "$PROJECT_TYPES" == "[]" ]]; then
+        echo "  [pass ${PASS}] SKIP '${CHILD_TITLE}' — no usable issue types for ${PROJECT_KEY}"
+        continue
+      fi
+      JIRA_TYPE=$(resolve_jira_type "$CHILD_TYPE" "$PROJECT_TYPES")
+      CHILD_CUSTOM_FIELDS=$(jq -c ".children[${i}].custom_fields // {}" "${RESULT_FILE}")
+      JIRA_PRIORITY=$(map_jira_priority "$CHILD_PRIORITY_RAW")
       # Always try with parent first -- jira_create_issue retries without
       # parent and adds a "Relates" link if Jira rejects the hierarchy
       # (e.g., Task directly under Feature). Cross-project parent-child
       # works for Feature→Epic in Jira Cloud.
-      NEW_KEY=$(jira_create_issue "$PROJECT_KEY" "$JIRA_TYPE" "$CHILD_TITLE" "$FULL_BODY" "$PARENT_KEY_FOR_CHILD")
+      NEW_KEY=$(jira_create_issue "$PROJECT_KEY" "$JIRA_TYPE" "$CHILD_TITLE" "$FULL_BODY" "$PARENT_KEY_FOR_CHILD" "$CHILD_LABELS" "$JIRA_PRIORITY" "$CHILD_CUSTOM_FIELDS")
       if [[ -z "$NEW_KEY" ]]; then
         echo "  [pass ${PASS}] FAILED to create ${JIRA_TYPE}: ${CHILD_TITLE}"
         continue
@@ -462,9 +630,10 @@ if [[ $CREATED_COUNT -lt $CHILD_COUNT ]]; then
 
     CHILD_TYPE=$(jq -r ".children[${i}].type" "${RESULT_FILE}")
     CHILD_DESC=$(jq -r ".children[${i}].description" "${RESULT_FILE}")
-    CHILD_AC=$(jq -r ".children[${i}].acceptance_criteria // [] | map(\"- [ ] \" + .) | join(\"\n\")" "${RESULT_FILE}")
+    CHILD_AC=$(jq -r ".children[${i}].acceptance_criteria | map(\"- [ ] \" + .) | join(\"\n\")" "${RESULT_FILE}")
     CHILD_LABELS=$(jq -c ".children[${i}].labels // []" "${RESULT_FILE}")
-    CHILD_PRIORITY=$(jq -r ".children[${i}].priority // \"medium\"" "${RESULT_FILE}")
+    CHILD_PRIORITY_RAW=$(jq -r ".children[${i}].priority // empty" "${RESULT_FILE}")
+    CHILD_PRIORITY_TEXT="${CHILD_PRIORITY_RAW:-medium}"
     CHILD_SCOPE=$(jq -r ".children[${i}].estimated_scope // \"M\"" "${RESULT_FILE}")
 
     FULL_BODY="${CHILD_DESC}
@@ -474,7 +643,7 @@ if [[ $CREATED_COUNT -lt $CHILD_COUNT ]]; then
 ${CHILD_AC}
 
 ---
-*Priority: ${CHILD_PRIORITY} | Scope: ${CHILD_SCOPE} | Generated by fullsend refine agent*"
+*Priority: ${CHILD_PRIORITY_TEXT} | Scope: ${CHILD_SCOPE} | Generated by fullsend refine agent*"
 
     # Determine platform for orphan (same logic as main loop)
     CHILD_TARGET_PLATFORM=$(jq -r ".children[${i}].target_platform // \"\"" "${RESULT_FILE}")
@@ -488,11 +657,7 @@ ${CHILD_AC}
     if $USE_GITHUB_FOR_CHILD; then
       TYPE_LABEL="$CHILD_TYPE"
       COMBINED_LABELS=$(echo "$CHILD_LABELS" | jq --arg t "$TYPE_LABEL" '. + [$t]')
-      GITHUB_PARENT=$(resolve_github_parent_number "$ISSUE_KEY")
-      if [[ -z "$GITHUB_PARENT" ]]; then
-        echo "::warning::Skipping sub-issue link for orphan '${CHILD_TITLE}' — no GitHub parent issue number available"
-      fi
-      NEW_ISSUE=$(github_create_issue "${REPO_FULL_NAME}" "$CHILD_TITLE" "$FULL_BODY" "$COMBINED_LABELS" "$GITHUB_PARENT")
+      NEW_ISSUE=$(github_create_issue "${REPO_FULL_NAME}" "$CHILD_TITLE" "$FULL_BODY" "$COMBINED_LABELS" "$ISSUE_KEY")
       if [[ -z "$NEW_ISSUE" || "$NEW_ISSUE" == "FAILED" ]]; then
         echo "  [orphan] FAILED to create: ${CHILD_TITLE}"
         continue
@@ -502,8 +667,19 @@ ${CHILD_AC}
     else
       CHILD_TARGET_PROJECT=$(jq -r ".children[${i}].target_project // \"\"" "${RESULT_FILE}")
       PROJECT_KEY="${CHILD_TARGET_PROJECT:-$(echo "$ISSUE_KEY" | sed 's/-.*//')}"
-      JIRA_TYPE=$(resolve_jira_type "$CHILD_TYPE" "$AVAILABLE_TYPES")
-      NEW_KEY=$(jira_create_issue "$PROJECT_KEY" "$JIRA_TYPE" "$CHILD_TITLE" "$FULL_BODY" "")
+      if ! jira_schema_valid_project_key "$PROJECT_KEY"; then
+        echo "  [orphan] SKIP '${CHILD_TITLE}' — invalid target_project '${PROJECT_KEY}'"
+        continue
+      fi
+      PROJECT_TYPES=$(get_usable_types_for_project "$PROJECT_KEY")
+      if [[ "$PROJECT_TYPES" == "[]" ]]; then
+        echo "  [orphan] SKIP '${CHILD_TITLE}' — no usable issue types for ${PROJECT_KEY}"
+        continue
+      fi
+      JIRA_TYPE=$(resolve_jira_type "$CHILD_TYPE" "$PROJECT_TYPES")
+      CHILD_CUSTOM_FIELDS=$(jq -c ".children[${i}].custom_fields // {}" "${RESULT_FILE}")
+      JIRA_PRIORITY=$(map_jira_priority "$CHILD_PRIORITY_RAW")
+      NEW_KEY=$(jira_create_issue "$PROJECT_KEY" "$JIRA_TYPE" "$CHILD_TITLE" "$FULL_BODY" "" "$CHILD_LABELS" "$JIRA_PRIORITY" "$CHILD_CUSTOM_FIELDS")
       if [[ -z "$NEW_KEY" ]]; then
         echo "  [orphan] FAILED to create ${JIRA_TYPE}: ${CHILD_TITLE}"
         continue

@@ -52,15 +52,11 @@ _resolve_companion() {
     fi
   done
   echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]} or under install .fullsend/scripts." >&2
-  echo "Installs using harness base: should override pre_script/post_script locally, or vendor companions into .fullsend/scripts/." >&2
+  echo "Installs using harness base: should vendor companions (comment-helpers.sh, markdown-to-adf.py) into .fullsend/scripts/." >&2
   return 1
 }
 
 
-if [[ ! -f "${SCRIPT_DIR}/comment-helpers.sh" ]]; then
-  echo "ERROR: comment-helpers.sh not found (requires PR #11 explore agent)"
-  exit 1
-fi
 # shellcheck disable=SC1090
 source "$(_resolve_companion comment-helpers.sh)"
 
@@ -113,6 +109,11 @@ AGENT_HEADER="## Critique Agent — Round ${REVIEW_ROUND}
 echo "Reply target: $(if $USE_GITHUB; then echo "GitHub #${GITHUB_ISSUE_NUMBER}"; else echo "Jira ${ISSUE_KEY}"; fi)"
 
 init_comment_helpers "critique" "$USE_GITHUB"
+
+ASSESSMENT_TABLE=$(format_assessment_table_md "${RESULT_FILE}")
+REVISIONS_TABLE=$(format_revisions_table_md "${RESULT_FILE}")
+BRIEF=$(format_brief_blurb_md "${COMMENT}" 280)
+[[ -z "$BRIEF" ]] && BRIEF="See assessment table and critique-feedback.json attachment."
 
 # --- Update critique history ---
 CRITIQUE_HISTORY_FILE="/tmp/workspace/critique-history.json"
@@ -185,9 +186,12 @@ if [[ "${VERDICT}" == "approved" ]]; then
 
 ---
 
-### Assessment
+### Highlights
 
-${COMMENT}"
+${BRIEF}
+
+${ASSESSMENT_TABLE}
+> Full critique JSON: \`critique-feedback.json\` attachment."
 
   if [[ "${AUTO_CREATE}" == "true" ]]; then
     echo "Auto-create enabled — creating child issues..."
@@ -201,7 +205,7 @@ ${COMMENT}"
     fi
 
     export RESULT_FILE="$REFINE_RESULT_FILE"
-    source "${SCRIPT_DIR}/create-children.sh"
+    source "$(_resolve_companion create-children.sh)"
 
     CHILD_SUMMARY="Created ${CREATED_CHILD_COUNT:-0} child issue(s): ${CREATED_CHILD_KEYS:-none}"
     echo "::notice::${CHILD_SUMMARY}"
@@ -251,7 +255,9 @@ elif [[ "${VERDICT}" == "revise" ]]; then
 
 ### Assessment
 
-${COMMENT}
+${BRIEF}
+
+${ASSESSMENT_TABLE}
 
 ---
 
@@ -287,13 +293,15 @@ ${COMMENT}
 
 ---
 
-### Feedback
+### Highlights
 
-${COMMENT}
+${BRIEF}
 
----
+$(join_md_sections "$ASSESSMENT_TABLE" "$REVISIONS_TABLE")
 
-> Issue labeled \`ready-to-refine\` for revision round ${NEXT_ROUND}."
+> Issue labeled \`ready-to-refine\` for revision round ${NEXT_ROUND}.
+>
+> Full critique JSON: \`critique-feedback.json\` attachment."
 
     sticky_comment "$REVISION_COMMENT"
 
@@ -332,17 +340,13 @@ elif [[ "${VERDICT}" == "needs_input" ]]; then
 
 ---
 
-### Assessment
-
-${COMMENT}
-
----
-
+${ASSESSMENT_TABLE}
 ### Question
 
-**${QUESTION_DIM}**: ${QUESTION_TEXT}
-
-**Why this matters**: ${QUESTION_IMPACT}
+| | |
+|---|---|
+| **Ask** | ${QUESTION_TEXT} |
+| **Why it matters** | ${QUESTION_IMPACT} |
 
 > Reply with your answer, then comment \`/fs-refine\` to restart the pipeline with the new context."
 
