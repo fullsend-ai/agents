@@ -1,0 +1,9 @@
+name: test-label-refire
+on:
+  issues:
+    types: [labeled]
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "labeled event fired for label ${{ github.event.label.name }} on issue #${{ github.event.issue.number }} at $(date -u)"
