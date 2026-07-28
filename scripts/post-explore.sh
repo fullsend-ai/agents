@@ -34,7 +34,7 @@ _resolve_companion() {
     fi
   done
   echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]} or under install .fullsend/scripts." >&2
-  echo "Installs using harness base: should override pre_script/post_script locally, or vendor companions into .fullsend/scripts/." >&2
+  echo "Installs using harness base: should vendor companions (comment-helpers.sh, markdown-to-adf.py) into .fullsend/scripts/." >&2
   return 1
 }
 
@@ -188,74 +188,60 @@ fi
 # Extract structured data from result JSON
 GAPS_SECTION=""
 if [[ "$GAP_COUNT" -gt 0 ]]; then
-  GAPS_LIST=$(jq -r '(.gaps // [])[] | if type == "object" then "- **\(.dimension // "definition gap")**: \(.description // .text // tostring)" else "- \(tostring)" end' "${RESULT_FILE}" 2>/dev/null | head -8 || true)
+  GAPS_LIST=$(jq -r '
+    (.gaps // [])[]
+    | if type == "object" then
+        "| \(.dimension // "gap") | \((.description // .text // tostring) | gsub("\\|"; "/") | gsub("\n"; " ") | .[0:160]) |"
+      else
+        "| — | \(tostring | gsub("\\|"; "/") | .[0:160]) |"
+      end
+  ' "${RESULT_FILE}" 2>/dev/null | head -12 || true)
   if [[ -n "$GAPS_LIST" ]]; then
     GAPS_SECTION="
-### Definition Gaps Identified (${GAP_COUNT})
+### Definition Gaps (${GAP_COUNT})
 
+| Dimension | Gap |
+|---|---|
 ${GAPS_LIST}"
   fi
 fi
 
 RELATED_SECTION=""
-if [[ "$RELATED_COUNT" -gt 0 ]]; then
-  JIRA_BROWSE="${JIRA_HOST:+https://${JIRA_HOST}/browse/}"
-  RELATED_LIST=$(jq -r --arg browse "${JIRA_BROWSE:-}" '(.related_work // [])[] | if type == "object" then
-    (if $browse != "" and (.key // "" | test("^[A-Z]+-[0-9]+$")) then
-      "- [\(.key)](\($browse)\(.key)): \(.summary // .title // .description // tostring)"
-    else
-      "- **\(.key // .id // "item")**: \(.summary // .title // .description // tostring)"
-    end)
-  else "- \(tostring)" end' "${RESULT_FILE}" 2>/dev/null | head -6 || true)
-  if [[ -n "$RELATED_LIST" ]]; then
-    RELATED_SECTION="
-### Related Work (${RELATED_COUNT})
+JIRA_BROWSE="${JIRA_HOST:+https://${JIRA_HOST}/browse/}"
+RELATED_SECTION=$(format_related_work_md "${RESULT_FILE}" "${JIRA_BROWSE:-}")
 
-${RELATED_LIST}"
-  fi
-fi
+DATA_SOURCES_SECTION=$(format_data_sources_md "${RESULT_FILE}" "${JIRA_BROWSE:-}")
 
-DATA_SOURCES_SECTION=""
-ACCESSED_CSV=$(jq -r '(.data_sources.accessed // []) | join(", ")' "${RESULT_FILE}" 2>/dev/null || true)
-NOT_ACCESSED_CSV=$(jq -r '(.data_sources.not_accessed // []) | join(", ")' "${RESULT_FILE}" 2>/dev/null || true)
+# Keep summary short for humans; full prose is in exploration_context.json
+SUMMARY_BLURB=$(format_brief_blurb_md "${EXPLORE_SUMMARY}" 500)
+[[ -z "$SUMMARY_BLURB" ]] && SUMMARY_BLURB="${EXPLORE_SUMMARY}"
 
-if [[ -n "$ACCESSED_CSV" || -n "$NOT_ACCESSED_CSV" ]]; then
-  DATA_SOURCES_SECTION="
+EXPLORE_BODY=$(join_md_sections \
+  "$SUMMARY_BLURB" \
+  "$GAPS_SECTION" \
+  "$RELATED_SECTION" \
+  "$DATA_SOURCES_SECTION")
 
-### Data Sources
-
-"
-  if [[ -n "$ACCESSED_CSV" ]]; then
-    DATA_SOURCES_SECTION+="**Accessed:** ${ACCESSED_CSV}
-"
-  fi
-  if [[ -n "$NOT_ACCESSED_CSV" ]]; then
-    DATA_SOURCES_SECTION+="
-**Not available:** ${NOT_ACCESSED_CSV}"
-  fi
-fi
-
-EXPLORE_COMMENT="## 🔍 Explore Agent
+EXPLORE_COMMENT="## Explore Agent
 
 | | |
 |---|---|
 | **Run** | ${RUN_LINK} |
 | **Confidence** | ${OVERALL_CONFIDENCE}/100 |
-| **Definition Gaps** | ${GAP_COUNT} identified |
-| **Related Work** | ${RELATED_COUNT} items |
+| **Definition Gaps** | ${GAP_COUNT} |
+| **Related Work** | ${RELATED_COUNT} |
 
 ---
 
 ### Summary
 
-${EXPLORE_SUMMARY}
-${GAPS_SECTION}
-${RELATED_SECTION}
-${DATA_SOURCES_SECTION}
+${EXPLORE_BODY}
 
 ---
 
-> ${STATUS_MSG}"
+> ${STATUS_MSG}
+>
+> Full structured output: \`exploration_context.json\` attachment."
 
 sticky_comment "$EXPLORE_COMMENT"
 
