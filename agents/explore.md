@@ -361,8 +361,7 @@ been useful but were unavailable (GitLab repos, internal docs, Slack, CI data).
     "not_accessed": [
       "GitLab repos (no access configured)",
       "Internal documentation (Google Drive, Confluence)",
-      "Slack conversations",
-      "CI/CD pipeline data"
+      "Slack conversations"
     ]
   },
   "summary": "Concise paragraph summarizing the exploration findings and key definition gaps."
@@ -392,3 +391,37 @@ been useful but were unavailable (GitLab repos, internal docs, Slack, CI data).
 
 
 **Schema note:** `impact_radius.recent_commits` must be an integer ≥ 0. Use `0` when unknown or not applicable — never `-1`.
+
+## Repo access without TARGET_REPO_DIR
+
+PMs often omit `repo_full_name` / `TARGET_REPO_DIR`. That is normal.
+
+1. Prefer **pre-cloned** repos under `$REFERENCED_REPOS_DIR` (from issue URLs **and**
+   org-knowledge ownership maps scored against this issue).
+2. If none were cloned, use public GitHub API/`curl` — and list that under
+   `data_sources.accessed` as "GitHub API", **not** as a blocking gap.
+3. Only put "full local clone …" under `not_accessed` when you truly could not
+   inspect the code by either path.
+
+## Jira related projects
+
+Sandbox has read-only `JIRA_HOST` / `JIRA_EMAIL` / `JIRA_API_TOKEN` when the
+install configured them. For related work in sibling projects (e.g. KFLUXUI,
+STONEINTG on the same site), query Jira with curl+Basic auth rather than listing
+"Internal Red Hat Jira" under `not_accessed` without trying.
+
+```bash
+AUTH=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+curl -sf -H "Authorization: Basic $AUTH" -H "Accept: application/json" \
+  "https://${JIRA_HOST}/rest/api/3/search?jql=project=KFLUXUI%20AND%20text~%22SBOM%22&maxResults=10"
+```
+
+If credentials are missing or the call 401/403, then list it under `not_accessed`.
+
+## data_sources.not_accessed hygiene
+
+Do **not** invent unavailable sources from the schema example. Especially:
+- Do not list `CI/CD pipeline data` unless you actually needed a specific CI
+  system and could not reach it (and never format it as a GitHub `owner/repo`).
+- Do not treat missing `TARGET_REPO_DIR` alone as a gap when referenced repos
+  or GitHub API inspection succeeded.

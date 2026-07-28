@@ -316,9 +316,19 @@ def linkify(line: str) -> str:
         repo = mo.group(0)
         if "..." in repo:
             return repo
+        owner, _, name = repo.partition("/")
+        # Reject non-repo path-like tokens (e.g. "CI/CD", "docs/guides").
+        if owner.upper() in {"CI", "CD", "HTTP", "HTTPS", "WWW"}:
+            return repo
+        if name.upper() in {"CD", "CI"}:
+            return repo
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", owner):
+            return repo
+        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", name):
+            return repo
         return f"[{repo}](https://github.com/{repo})"
 
-    return re.sub(r"\b[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\b", repl_repo, out)
+    return re.sub(r"\b[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\b", repl_repo, out)
 
 print("### Data Sources")
 print()
@@ -500,6 +510,106 @@ PY
 }
 
 # Children plan table from refine-result.json
+# Partition refine open_questions by resolution for human stickies.
+# Prints markdown sections; empty if no questions. Does not print reply
+# instructions for research_spike / assumed_default.
+format_open_questions_md() {
+  local result_file="$1"
+  [[ -f "$result_file" ]] || return 0
+  python3 - "$result_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+data = json.loads(Path(sys.argv[1]).read_text())
+raw = data.get("open_questions") or []
+items = []
+for q in raw:
+    if isinstance(q, str) and q.strip():
+        items.append({
+            "dimension": "general",
+            "question": q.strip(),
+            "impact": "—",
+            "resolution": "needs_human",
+            "spike_title": "",
+            "assumption_used": "",
+        })
+    elif isinstance(q, dict):
+        text = q.get("question") or q.get("text") or q.get("description")
+        if not text:
+            continue
+        res = q.get("resolution") or "needs_human"
+        if res not in {"needs_human", "research_spike", "assumed_default"}:
+            res = "needs_human"
+        items.append({
+            "dimension": q.get("dimension") or "general",
+            "question": str(text).replace("|", "/").replace("\n", " ").strip(),
+            "impact": str(q.get("impact") or "—").replace("|", "/").replace("\n", " ").strip(),
+            "resolution": res,
+            "spike_title": str(q.get("spike_title") or "").replace("|", "/").replace("\n", " ").strip(),
+            "assumption_used": str(q.get("assumption_used") or "").replace("|", "/").replace("\n", " ").strip(),
+        })
+
+needs = [i for i in items if i["resolution"] == "needs_human"]
+spikes = [i for i in items if i["resolution"] == "research_spike"]
+defaults = [i for i in items if i["resolution"] == "assumed_default"]
+
+def trunc(s, n=140):
+    s = s or "—"
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+sections = []
+if needs:
+    rows = "\n".join(
+        f"| {trunc(i['dimension'], 40)} | {trunc(i['question'])} | {trunc(i['impact'])} |"
+        for i in needs
+    )
+    sections.append(
+        f"### Needs your input ({len(needs)})\n\n"
+        "Reply with answers, then comment `/fs-refine` to re-run.\n\n"
+        "| Dimension | Question | Impact |\n|---|---|---|\n"
+        f"{rows}"
+    )
+if defaults:
+    rows = "\n".join(
+        f"| {trunc(i['dimension'], 40)} | {trunc(i['question'])} | {trunc(i['assumption_used'] or i['impact'])} |"
+        for i in defaults
+    )
+    sections.append(
+        f"### Proposed defaults (confirm or correct) ({len(defaults)})\n\n"
+        "Plan proceeds on these defaults. Reply only if you want a different choice.\n\n"
+        "| Dimension | Question | Default used |\n|---|---|---|\n"
+        f"{rows}"
+    )
+if spikes:
+    rows = "\n".join(
+        f"| {trunc(i['question'])} | {trunc(i['spike_title'] or '—', 80)} |"
+        for i in spikes
+    )
+    sections.append(
+        f"### Deferred to research spikes ({len(spikes)})\n\n"
+        "These are owned by Spike children — not blocking on a human reply.\n\n"
+        "| Question | Spike |\n|---|---|\n"
+        f"{rows}"
+    )
+
+print("\n\n".join(sections))
+PY
+}
+
+# Count only human-blocking open questions (needs_human). Legacy items
+# without resolution are treated as needs_human.
+count_needs_human_questions() {
+  local result_file="$1"
+  [[ -f "$result_file" ]] || { echo 0; return 0; }
+  jq '
+    [.open_questions[]?
+      | if type == "object" then
+          (if (.resolution // "needs_human") == "needs_human" then 1 else 0 end)
+        else 1 end
+    ] | add // 0
+  ' "$result_file" 2>/dev/null || echo 0
+}
+
 format_children_table_md() {
   local file="$1"
   local default_project="${2:-$(_default_child_project)}"

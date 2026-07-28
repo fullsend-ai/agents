@@ -61,5 +61,9 @@ env:
     ISSUE_KEY: "${ISSUE_KEY}"
     ISSUE_SOURCE: "${ISSUE_SOURCE}"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    # Read-only Jira lookups for related projects (KFLUXUI/STONEINTG/etc.).
+    JIRA_HOST: "${JIRA_HOST}"
+    JIRA_EMAIL: "${JIRA_EMAIL}"
+    JIRA_API_TOKEN: "${JIRA_API_TOKEN}"
 
 timeout_minutes: 20
