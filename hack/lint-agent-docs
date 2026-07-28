@@ -8,11 +8,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARNESS_DIR="$REPO_ROOT/harness"
 
 errors=0
+harness_count=0
 
 echo "Checking harness files for doc: field..."
 echo "================================================"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    harness_count=$((harness_count + 1))
     name="$(basename "$yaml_file")"
     doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
 
@@ -32,14 +34,17 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
     echo "  $name: OK ($doc_value)"
 done
 
+if [[ $harness_count -eq 0 ]]; then
+    echo "  ERROR: no harness/*.yaml files found — expected at least one"
+    errors=$((errors + 1))
+fi
+
 echo ""
 echo "Checking agent doc structure..."
 echo "================================================"
 
 REQUIRED_SECTIONS="How it helps|Setup|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
-OPTIONAL_SECTIONS=""
 IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
-IFS='|' read -ra OPTIONAL_LIST <<< "$OPTIONAL_SECTIONS"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
     doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
@@ -88,14 +93,6 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
                 break
             fi
         done
-        if [[ "$found" == "false" ]]; then
-            for optional in "${OPTIONAL_LIST[@]}"; do
-                if [[ "$section" == "$optional" ]]; then
-                    found=true
-                    break
-                fi
-            done
-        fi
         if [[ "$found" == "false" ]]; then
             extra+=("$section")
         fi

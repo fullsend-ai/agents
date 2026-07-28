@@ -1,8 +1,9 @@
 # Scribe Agent
 
-Reads Google Meet meeting notes, maps discussion topics to the
-GitHub issue backlog, and adds comments to relevant issues or
-creates new issues.
+Reads meeting notes that Gemini saves to Google Drive after a
+Google Meet call, maps discussion topics to the GitHub issue
+backlog, and adds comments to relevant issues or creates new
+issues.
 
 ## Setup
 
@@ -12,21 +13,28 @@ notes it shouldn't have access to and then happily exposing that information
 in public GitHub issues?
 
 The answer is a **dedicated GCP service account**. You create it in Google
-Cloud, and by default it has access to *zero* meeting notes. You then
+Cloud, and by default it has access to *zero* Drive files. You then
 **invite** the service account's email address to the Google Calendar events
 you want it to scribe. (In the calendar event settings you also need to
 enable Gemini notes and grant read access to attendees outside your
-organization.) Because the service account is an invited attendee, it can
-read the notes for that event — and *only* that event. Every other meeting
-in your organization remains invisible to it.
+organization.) This calendar invite is how the resulting notes document
+becomes visible to the service account's Drive access.
 
-Scribe wakes up on a schedule, uses the service account credentials to read
-the notes it has been granted access to, and processes them: it files new
-GitHub issues on your repo or comments on existing ones, noting that the
-team discussed the topic in their meeting. This is an important bridge
-between the team's life of human interaction and the fullsend agentic
-system — the filed and commented-on issues serve as fodder for the triage
-agent, coding agent, and others.
+At runtime, the pre-script queries the Drive API using a keyword search
+(`SCRIBE_SEARCH_QUERY`) over a rolling time window (`SCRIBE_LOOKBACK_HOURS`,
+default 3 hours) across everything the service account can see — including
+Shared Drives if the account has been added to any. This means the service
+account can read notes from *any* meeting it has been invited to, not just a
+single event. To keep the blast radius small, use a distinctive search query
+and avoid adding the service account to unrelated Shared Drives.
+
+Scribe wakes up on a schedule, uses the service account credentials to
+search Drive for matching notes, and processes them: it files new GitHub
+issues on your repo or comments on existing ones, noting that the team
+discussed the topic in their meeting. This is an important bridge between
+the team's life of human interaction and the fullsend agentic system — the
+filed and commented-on issues serve as fodder for the triage agent, coding
+agent, and others.
 
 ## How it helps
 
