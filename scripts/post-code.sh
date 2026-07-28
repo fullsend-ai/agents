@@ -1265,6 +1265,16 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+
+  # Auto-merge (optional)
+  if [ "${CODE_AUTO_MERGE:-}" = "true" ]; then
+    echo "Auto-merge enabled — enabling auto-merge on PR #${EXISTING_PR_NUM}..."
+    if ! gh pr merge "${EXISTING_PR_NUM}" --auto \
+      --repo "${REPO_FULL_NAME}" 2>&1; then
+      gha_echo warning "Failed to enable auto-merge on PR #${EXISTING_PR_NUM} — continuing"
+    fi
+  fi
+
   maybe_assign_pr "${EXISTING_PR_NUM}"
   exit 0
 fi
