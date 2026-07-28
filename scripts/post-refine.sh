@@ -54,15 +54,11 @@ _resolve_companion() {
     fi
   done
   echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]} or under install .fullsend/scripts." >&2
-  echo "Installs using harness base: should override pre_script/post_script locally, or vendor companions into .fullsend/scripts/." >&2
+  echo "Installs using harness base: should vendor companions (comment-helpers.sh, markdown-to-adf.py) into .fullsend/scripts/." >&2
   return 1
 }
 
 
-if [[ ! -f "${SCRIPT_DIR}/comment-helpers.sh" ]]; then
-  echo "ERROR: comment-helpers.sh not found (requires PR #11 explore agent)"
-  exit 1
-fi
 # shellcheck disable=SC1090
 source "$(_resolve_companion comment-helpers.sh)"
 
@@ -168,14 +164,22 @@ ARTIFACT_URL="https://github.com/${WORKFLOW_REPO}/actions/runs/${GITHUB_RUN_ID:-
 
 QUESTIONS_SECTION=""
 if [[ "$OPEN_QUESTION_COUNT" -gt 0 ]]; then
-  QUESTIONS_LIST=$(jq -r '.open_questions[]? | if type == "object" then "- **\(.dimension // "general")**: \(.question // .text // .description // tostring) — *Impact: \(.impact // "Unknown")*" else "- \(tostring)" end' "${RESULT_FILE}" 2>/dev/null || true)
+  QUESTIONS_LIST=$(jq -r '
+    .open_questions[]?
+    | if type == "object" then
+        "| \(.dimension // "general") | \((.question // .text // .description // tostring) | gsub("\\|"; "/") | gsub("\n"; " ") | .[0:140]) | \(.impact // "—") |"
+      else
+        "| — | \(tostring | gsub("\\|"; "/") | .[0:140]) | — |"
+      end
+  ' "${RESULT_FILE}" 2>/dev/null || true)
   if [[ -n "$QUESTIONS_LIST" ]]; then
     QUESTIONS_SECTION="
-
 ### Open Questions (${OPEN_QUESTION_COUNT})
 
 Reply with answers, then comment \`/fs-refine\` to re-run.
 
+| Dimension | Question | Impact |
+|---|---|---|
 ${QUESTIONS_LIST}"
   fi
 fi
@@ -183,36 +187,33 @@ fi
 EXPLORE_CONTEXT_FILE="/tmp/workspace/exploration_context.json"
 DATA_SOURCES_FOOTER=""
 if [[ -f "$EXPLORE_CONTEXT_FILE" ]]; then
-  ACCESSED=$(jq -r '(.data_sources.accessed // []) | join(", ")' "$EXPLORE_CONTEXT_FILE" 2>/dev/null || true)
-  NOT_ACCESSED=$(jq -r '(.data_sources.not_accessed // []) | join(", ")' "$EXPLORE_CONTEXT_FILE" 2>/dev/null || true)
-  if [[ -n "$ACCESSED" || -n "$NOT_ACCESSED" ]]; then
-    DATA_SOURCES_FOOTER="
-### Data Sources
-
-**Accessed:** ${ACCESSED:-None reported}"
-    if [[ -n "$NOT_ACCESSED" ]]; then
-      DATA_SOURCES_FOOTER+="
-**Not available:** ${NOT_ACCESSED}"
-    fi
-    DATA_SOURCES_FOOTER+="
-
-"
-  fi
+  DATA_SOURCES_FOOTER=$(format_data_sources_md "$EXPLORE_CONTEXT_FILE" "${JIRA_HOST:+https://${JIRA_HOST}/browse/}")
 fi
 
 ASSUMPTIONS_SECTION=""
 ASSUMPTION_COUNT=$(jq '.uncited_assumptions // [] | length' "${RESULT_FILE}" 2>/dev/null || echo "0")
 if [[ "$ASSUMPTION_COUNT" -gt 0 ]]; then
-  ASSUMPTIONS_LIST=$(jq -r '(.uncited_assumptions // [])[:5][] | "- \(.)"' "${RESULT_FILE}" 2>/dev/null || true)
+  ASSUMPTIONS_LIST=$(jq -r '(.uncited_assumptions // [])[:8][] | "- \(.)"' "${RESULT_FILE}" 2>/dev/null || true)
   if [[ -n "$ASSUMPTIONS_LIST" ]]; then
     ASSUMPTIONS_SECTION="
 ### Assumptions (not verified)
 
 ${ASSUMPTIONS_LIST}
-
 "
   fi
 fi
+
+CHILDREN_TABLE=$(format_children_table_md "${RESULT_FILE}")
+ROUTING_TABLE=$(format_routing_table_md "${RESULT_FILE}")
+BRIEF=$(format_brief_blurb_md "${COMMENT}" 350)
+[[ -z "$BRIEF" ]] && BRIEF="Proposed ${CHILD_COUNT} child work items for critique."
+
+DETAIL_BODY=$(join_md_sections \
+  "$CHILDREN_TABLE" \
+  "$ROUTING_TABLE" \
+  "$ASSUMPTIONS_SECTION" \
+  "$QUESTIONS_SECTION" \
+  "$DATA_SOURCES_FOOTER")
 
 PLAN_COMMENT="${AGENT_HEADER}
 
@@ -223,31 +224,30 @@ PLAN_COMMENT="${AGENT_HEADER}
 
 ---
 
-### Plan Summary
+### Highlights
 
-${COMMENT}
-${ASSUMPTIONS_SECTION}
+${BRIEF}
 
----
-
-[**Full plan details** — download \`fullsend-refine\` artifact](${ARTIFACT_URL}) for the complete \`refine-result.json\` with all epics, stories, tasks, and acceptance criteria.
-${QUESTIONS_SECTION}
-${DATA_SOURCES_FOOTER}
+${DETAIL_BODY}
 
 ---
+
+[**Full plan** — \`refine-result.json\` in run artifacts](${ARTIFACT_URL})
 
 > Issue labeled \`ready-to-critique\` for the Critique Agent."
 
 sticky_comment "$PLAN_COMMENT"
 
-# Update issue description if proposed_description is present
+# Update issue description if proposed_description is present.
+# Plan Summary / Routing stay in the sticky comment only — not unhidden in description.
 PROPOSED_DESC=$(jq -r '.proposed_description // ""' "${RESULT_FILE}")
 if [[ -n "$PROPOSED_DESC" && "$PROPOSED_DESC" != "null" ]]; then
+  PROPOSED_DESC=$(sanitize_proposed_description_md "$PROPOSED_DESC")
   if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_API_TOKEN:-}" ]]; then
     AUTH_DESC=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
-    ADF_FLAGS=""
+    ADF_FLAGS="--wrap-detail"
     if [[ "$JIRA_HOST" != *"atlassian.net"* ]]; then
-      ADF_FLAGS="--no-expand"
+      ADF_FLAGS="--wrap-detail --no-expand"
     fi
     DESC_ADF=$(printf '%s' "$PROPOSED_DESC" | python3 "$(_resolve_companion markdown-to-adf.py)" $ADF_FLAGS | jq '.body')
 
