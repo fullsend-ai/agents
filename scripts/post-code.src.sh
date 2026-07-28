@@ -130,12 +130,63 @@ fi
 echo "::add-mask::${PUSH_TOKEN}"
 
 # ---------------------------------------------------------------------------
+# No-op comment helper
+#
+# Posts an informational comment on the source issue when the agent
+# determines no changes are needed (no-op exit path). Best-effort —
+# a failure to post does not change the exit code.
+# ---------------------------------------------------------------------------
+post_noop_comment() {
+  local reason="$1"
+
+  _post_failure_ensure_token
+
+  local run_url
+  run_url="$(post_failure_workflow_run_url "${REPO_FULL_NAME}")"
+
+  # Try to extract agent reasoning from result file
+  local agent_context=""
+  if [ -n "${RESULT_FILE:-}" ] && [ -f "${RESULT_FILE}" ]; then
+    agent_context="$(jq -r '.pr_body // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+  fi
+
+  local detail_block=""
+  if [ -n "${agent_context}" ]; then
+    local sanitized_context
+    sanitized_context="$(sanitize_failure_detail "${agent_context}")"
+    detail_block="
+
+**Agent context:**
+${sanitized_context}"
+  fi
+
+  local body
+  body="ℹ️ **No PR created** — agent determined no changes needed
+
+The code agent ran and evaluated issue #${ISSUE_NUMBER}, but did not produce changes to submit as a pull request.
+
+**Reason:** ${reason}
+${detail_block}
+
+**Workflow run:** ${run_url}
+
+Retry with \`/fs-code\` if appropriate."
+
+  if ! gh issue comment "${ISSUE_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" \
+    --body "${body}" 2>/dev/null; then
+    gha_echo warning "Failed to post no-op comment to issue #${ISSUE_NUMBER}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # 1. Verify feature branch
 # ---------------------------------------------------------------------------
 BRANCH="$(git branch --show-current)"
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
   gha_echo notice "Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}') — nothing to do"
+  post_noop_comment "Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}')"
   exit 0
 fi
 
@@ -156,6 +207,7 @@ fi
 
 if [ -z "${CHANGED_FILES}" ]; then
   gha_echo notice "No changed files in agent's commit(s) — nothing to do"
+  post_noop_comment "No changed files in agent's commit(s)"
   exit 0
 fi
 
@@ -211,6 +263,7 @@ if [ -n "${STRIPPED_FILES}" ]; then
 
   if [ -z "${CHANGED_FILES}" ]; then
     gha_echo notice "All changed files were agent artifacts — nothing to push"
+    post_noop_comment "All changed files were agent artifacts — only working directory files were present"
     exit 0
   fi
 fi

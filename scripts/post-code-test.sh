@@ -1030,6 +1030,146 @@ run_resolve_code_test_unset "code-unset-falls-back-to-scan" \
 
 rm -rf "${RESOLVE_TMPDIR}"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the no-op comment body construction from
+# post-code.sh so we can test it without a GitHub API.
+# ---------------------------------------------------------------------------
+build_noop_comment() {
+  local reason="$1"
+  local issue_number="$2"
+  local repo_full_name="$3"
+  local agent_context="${4:-}"
+
+  local detail_block=""
+  if [ -n "${agent_context}" ]; then
+    detail_block="
+
+**Agent context:**
+${agent_context}"
+  fi
+
+  cat <<EOF
+ℹ️ **No PR created** — agent determined no changes needed
+
+The code agent ran and evaluated issue #${issue_number}, but did not produce changes to submit as a pull request.
+
+**Reason:** ${reason}
+${detail_block}
+
+**Workflow run:** https://github.com/${repo_full_name}/actions/runs/unknown
+
+Retry with \`/fs-code\` if appropriate.
+EOF
+}
+
+run_noop_comment_test() {
+  local test_name="$1"
+  local reason="$2"
+  local issue_number="$3"
+  local repo_full_name="$4"
+  local check_pattern="$5"
+  local expect_present="$6"  # "yes" or "no"
+  local agent_context="${7:-}"
+
+  local actual
+  actual="$(build_noop_comment "${reason}" "${issue_number}" "${repo_full_name}" "${agent_context}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- No-op comment test cases ---
+
+# Comment should include the reason for no feature branch
+run_noop_comment_test "noop-comment-includes-branch-reason" \
+  "Agent did not create a feature branch (current: 'main')" \
+  "42" "my-org/my-repo" \
+  "Agent did not create a feature branch" "yes"
+
+# Comment should include the reason for no changed files
+run_noop_comment_test "noop-comment-includes-files-reason" \
+  "No changed files in agent's commit(s)" \
+  "42" "my-org/my-repo" \
+  "No changed files" "yes"
+
+# Comment should include issue number
+run_noop_comment_test "noop-comment-includes-issue-number" \
+  "No changed files in agent's commit(s)" \
+  "505" "my-org/my-repo" \
+  "#505" "yes"
+
+# Comment should include workflow run URL
+run_noop_comment_test "noop-comment-includes-run-url" \
+  "No changed files" \
+  "42" "my-org/my-repo" \
+  "my-org/my-repo/actions/runs/" "yes"
+
+# Comment should include agent context when provided
+run_noop_comment_test "noop-comment-includes-agent-context" \
+  "No changed files" \
+  "42" "my-org/my-repo" \
+  "Issue is already fixed by recent commit abc123" "yes" \
+  "Issue is already fixed by recent commit abc123"
+
+# Comment should include "Agent context:" header when context provided
+run_noop_comment_test "noop-comment-has-context-header" \
+  "No changed files" \
+  "42" "my-org/my-repo" \
+  "Agent context:" "yes" \
+  "The bug was already fixed."
+
+# Comment should NOT include "Agent context:" section when none provided
+run_noop_comment_test "noop-comment-no-context-when-empty" \
+  "No changed files" \
+  "42" "my-org/my-repo" \
+  "Agent context:" "no"
+
+# Comment should NOT contain PUSH_TOKEN reference
+run_noop_comment_test "noop-comment-no-token-leak" \
+  "No changed files" \
+  "42" "my-org/my-repo" \
+  "PUSH_TOKEN" "no"
+
+# Comment should include retry instruction
+run_noop_comment_test "noop-comment-includes-retry" \
+  "No changed files" \
+  "42" "my-org/my-repo" \
+  "/fs-code" "yes"
+
+# Comment for all-artifacts case should include the right reason
+run_noop_comment_test "noop-comment-artifacts-reason" \
+  "All changed files were agent artifacts — only working directory files were present" \
+  "42" "my-org/my-repo" \
+  "agent artifacts" "yes"
+
+# Verify post_noop_comment is present in the post-code script
+if ! grep -q 'post_noop_comment' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-noop-comment"
+  echo "  ${POST_SCRIPT} missing post_noop_comment"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-noop-comment"
+fi
+
 # --- Summary ---
 
 echo ""
