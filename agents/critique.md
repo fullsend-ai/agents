@@ -188,24 +188,41 @@ at 78%, you must explain what evidence supports the higher score.
 
 #### Step 4b: Evaluate each open question
 
+Refine classifies each open question with `resolution`:
+
+| `resolution` | Critique treatment |
+|---|---|
+| `assumed_default` | Treat as **Reasonable default** / **Grounded assumption** unless the default is dangerous. Do **not** escalate to `needs_input`. |
+| `research_spike` | Must have a matching Spike child (`spike_title`). If present → no human block. If missing → **Revise** (add spike or reclassify). Never convert a covered spike into `needs_input`. |
+| `needs_human` | Only path to `needs_input`, and only when the answer would materially change plan structure. |
+| missing / legacy | Infer: if a Spike clearly covers it → treat as `research_spike`; if `assumption_used` is a safe default → `assumed_default`; else evaluate with the rules below. |
+
 For each open question, decide:
 
 1. **Grounded assumption** — the exploration context contains evidence that
    supports the assumption. Cite the specific evidence. No action needed.
 2. **Reasonable default** — the assumption is a safe industry-standard default
    that wouldn't change the plan structure even if wrong (e.g., "assumed Go
-   for a Go-dominated org"). No action needed, but note it.
+   for a Go-dominated org"), or `resolution` is `assumed_default`. No action
+   needed, but note it.
 3. **Fixable by refine** — the refine agent could resolve this with a different
-   approach or by using information already in the exploration context.
+   approach, code/Jira research, or by using information already in the
+   exploration context — including mis-tagged `needs_human` that should have
+   been `research_spike` / `assumed_default`.
    → Add to your revisions.
-4. **Requires human input** — only the stakeholder can answer this, AND the
-   answer would materially change the plan structure (not just details).
+4. **Requires human input** — `resolution` is `needs_human` (or equivalent),
+   only the stakeholder can answer, AND the answer would materially change
+   the plan structure (not just details).
    → This pushes toward a `needs_input` verdict.
 5. **Dangerous assumption** — the assumption is unverified AND the plan's
    architecture depends on it (e.g., "assumed a new repo" when the answer
    might be "extend an existing repo" — this changes deployment, CI/CD,
    code review ownership, and multiple stories). → Either `revise` (if
    refine could research this) or `needs_input` (if only a human knows).
+
+**Anti-triple-booking:** If refine both assumed a default and created a Spike
+and still set `needs_human` for the same question → **Revise** and require
+reclassification (spike XOR default XOR human).
 
 #### Step 4c: Evaluate uncited assumptions
 
@@ -227,7 +244,9 @@ echo "::notice::PHASE 5: Decide verdict"
 - No critical definition gaps (missing entire requirement dimensions)
 - No dependency cycles
 - Children are specific enough to be actionable
-- Open questions have grounded or reasonable-default assumptions
+- Remaining uncertainties are `assumed_default` / `research_spike` (with
+  matching Spike), or open questions have grounded / reasonable-default
+  assumptions — not unresolved `needs_human` that would change structure
 - No structurally significant uncited assumptions (ones that would change
   3+ children if wrong)
 
@@ -244,11 +263,15 @@ echo "::notice::PHASE 5: Decide verdict"
   verify the assumptions that drove the low confidence
 
 **Needs Input** if:
-- One or more open questions can ONLY be resolved by a human stakeholder
+- One or more open questions have `resolution: needs_human` (or equivalent)
+  that can ONLY be resolved by a human stakeholder
 - The answer would materially change the plan structure (not just details)
-- The refine agent has already exhausted available context
+- The refine agent has already exhausted available context (no Spike can
+  own it; no safe default)
 - Use sparingly — only when proceeding would produce a fundamentally
   wrong decomposition, not just an imperfect one
+- Do **not** use Needs Input for stage-routing notes, missing
+  TARGET_REPO_DIR, or questions already covered by Spike children
 - Dangerous assumptions exist that neither refine nor you can verify —
   only the team or stakeholder knows the answer
 
