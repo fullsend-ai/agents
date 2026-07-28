@@ -206,11 +206,11 @@ if [ -z "${DEFAULT_BRANCH}" ] || [ "${DEFAULT_BRANCH}" = "HEAD" ]; then
 fi
 ```
 
-**Do not hardcode `"main"` as a fallback.** If all discovery methods fail,
-leave `target_branch` set to `"main"` — the post-script will auto-correct
-it to the API-discovered default branch when no explicit allowed list is
-configured. However, getting discovery right here avoids an unnecessary
-correction and the warning that goes with it.
+**Do not skip discovery and assume `"main"`.** If all discovery methods
+fail, `${DEFAULT_BRANCH:-main}` provides a last-resort fallback — but
+the post-script will auto-correct it to the API-discovered default branch
+when no explicit allowed list is configured. Getting discovery right here
+avoids an unnecessary correction and the warning that goes with it.
 
 Write the structured output file with the target branch now. Write only
 `target_branch` at this stage — `pr_body` is added after implementation

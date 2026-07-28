@@ -1260,6 +1260,11 @@ run_branch_validation_test "explicit-list-includes-default" \
 run_branch_validation_test "no-agent-target-ignores-allowed-list" \
   "" "main" "release-1,release-2" "default:main"
 
+# Substring mismatch: agent writes "release" but only "release-1","release-2"
+# are allowed — comma-wrapping must reject the partial match.
+run_branch_validation_test "substring-not-accepted" \
+  "release" "main" "release-1,release-2" "reject:release"
+
 # --- Summary ---
 
 echo ""
