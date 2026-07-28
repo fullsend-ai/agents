@@ -70,7 +70,7 @@ fi
 # Resolve target branch (ADR 0053)
 #
 # Priority: agent output > allowed-list validation > auto-detect default
-# The agent writes its chosen branch to code-result.json. The post-script
+# The agent writes its chosen branch to agent-result.json. The post-script
 # validates it against CODE_ALLOWED_TARGET_BRANCHES (comma-separated list
 # or "*" for any). When unset, only the auto-detected default branch is
 # allowed. Falls back to "main" if the API call fails.
@@ -82,20 +82,13 @@ AGENT_TARGET=""
 # guard) is applied here; the value is trusted from the external harness.
 # If the trust model changes, add a realpath prefix check.
 if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
-  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/code-result.json" ]; then
-    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/code-result.json"
-  elif [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/result.json" ]; then
-    # NOTE: This fallback is currently unreachable in production.
-    # validate-output-schema.sh only accepts result.json when _output_file is
-    # "agent-result.json" (the default). code.yaml sets FULLSEND_OUTPUT_FILE
-    # to "code-result.json", so a bare result.json will never become the
-    # validated iteration's output. Kept as defensive code.
-    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/result.json"
+  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
   else
-    # No silent rescan: an env var pointing at a dir with neither filename
-    # must not fall back to scanning other iterations, which could pick up
-    # a different (possibly invalid) iteration's output. Degrade to no
-    # result the same as the "nothing found" case below — this script
+    # No silent rescan: an env var pointing at a dir without the expected
+    # filename must not fall back to scanning other iterations, which could
+    # pick up a different (possibly invalid) iteration's output. Degrade to
+    # no result the same as the "nothing found" case below — this script
     # already falls back to the auto-detected default branch when
     # RESULT_FILE is empty, so this isn't a hard failure.
     RESULT_FILE=""
@@ -105,8 +98,8 @@ else
   # iteration's output (glob order = naturally ascending iteration numbers).
   RESULT_FILE=""
   for dir in "${RUN_DIR}"/iteration-*/output; do
-    if [ -f "${dir}/code-result.json" ]; then
-      RESULT_FILE="${dir}/code-result.json"
+    if [ -f "${dir}/agent-result.json" ]; then
+      RESULT_FILE="${dir}/agent-result.json"
     fi
   done
 fi

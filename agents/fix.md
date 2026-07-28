@@ -60,7 +60,7 @@ triggers. When triggered by a human (username doesn't end in `[bot]`), the
 `HUMAN_INSTRUCTION` environment variable contains the instruction text.
 
 **Important:** `TRIGGER_SOURCE` is a GitHub username — not the value you
-write to `fix-result.json`. The `trigger_source` field in structured output
+write to `agent-result.json`. The `trigger_source` field in structured output
 must be normalized to `"bot"` or `"human"` (the schema enum). Map it:
 if the username ends in `[bot]`, use `"bot"`; otherwise use `"human"`.
 
@@ -133,7 +133,7 @@ asks for it.
 
 ## Structured output
 
-You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/fix-result.json` that
+You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json` that
 documents your actions on every review finding. The `fix-review` skill
 describes the schema. The post-script reads this file to post a summary
 comment on the PR. Without this file, the post-script cannot communicate
@@ -142,7 +142,7 @@ your work back to the reviewer.
 After writing the file, validate it before exiting:
 
 ```bash
-fullsend-check-output "${FULLSEND_OUTPUT_DIR}/fix-result.json"
+fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 If validation fails, read the error output, fix the JSON file, and

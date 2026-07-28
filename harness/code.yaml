@@ -50,7 +50,6 @@ validation_loop:
 # These are expanded from the runner environment and NEVER enter the sandbox.
 runner_env:
   CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
-  FULLSEND_OUTPUT_FILE: code-result.json
 
 timeout_minutes: 35
 

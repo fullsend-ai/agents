@@ -913,7 +913,7 @@ run_precommit_retry_test "precommit-retry-passes-but-left-unstaged" \
 # value and a set of files on disk, returns which result file (if any) would
 # be selected.
 #
-# Mirrors the three-branch logic: expected filename -> result.json fallback
+# Mirrors the two-branch logic: expected filename (agent-result.json)
 # -> no silent rescan (degrades to empty, matching this script's existing
 # soft-fallback-to-default-branch behavior rather than a hard failure).
 # ---------------------------------------------------------------------------
@@ -922,18 +922,16 @@ resolve_code_result() {
   local run_dir="$2"        # directory containing iteration-*/output/
 
   if [ -n "${validated_dir}" ]; then
-    if [ -f "${validated_dir}/code-result.json" ]; then
-      echo "${validated_dir}/code-result.json"
-    elif [ -f "${validated_dir}/result.json" ]; then
-      echo "${validated_dir}/result.json"
+    if [ -f "${validated_dir}/agent-result.json" ]; then
+      echo "${validated_dir}/agent-result.json"
     else
       echo ""
     fi
   else
     local result=""
     for dir in "${run_dir}"/iteration-*/output; do
-      if [ -f "${dir}/code-result.json" ]; then
-        result="${dir}/code-result.json"
+      if [ -f "${dir}/agent-result.json" ]; then
+        result="${dir}/agent-result.json"
       fi
     done
     echo "${result}"
@@ -991,23 +989,15 @@ run_resolve_code_test_unset() {
   echo "PASS: ${test_name}"
 }
 
-# Setup: validated dir has code-result.json
+# Setup: validated dir has agent-result.json
 setup_code_expected() {
   local run_dir="$1"
   local validated_dir="$2"
   mkdir -p "${validated_dir}"
-  echo '{}' > "${validated_dir}/code-result.json"
+  echo '{}' > "${validated_dir}/agent-result.json"
   # Also place a file in iteration-2 to verify it's NOT used.
   mkdir -p "${run_dir}/iteration-2/output"
-  echo '{}' > "${run_dir}/iteration-2/output/code-result.json"
-}
-
-# Setup: validated dir has only result.json
-setup_code_fallback() {
-  local run_dir="$1"
-  local validated_dir="$2"
-  mkdir -p "${validated_dir}"
-  echo '{}' > "${validated_dir}/result.json"
+  echo '{}' > "${run_dir}/iteration-2/output/agent-result.json"
 }
 
 # Setup: validated dir has neither filename
@@ -1022,17 +1012,13 @@ setup_code_iteration_scan() {
   local run_dir="$1"
   mkdir -p "${run_dir}/iteration-1/output"
   mkdir -p "${run_dir}/iteration-2/output"
-  echo '{}' > "${run_dir}/iteration-1/output/code-result.json"
-  echo '{}' > "${run_dir}/iteration-2/output/code-result.json"
+  echo '{}' > "${run_dir}/iteration-1/output/agent-result.json"
+  echo '{}' > "${run_dir}/iteration-2/output/agent-result.json"
 }
 
 run_resolve_code_test "code-validated-dir-expected-filename" \
   setup_code_expected \
-  "${RESOLVE_TMPDIR}/code-validated-dir-expected-filename/validated-output/code-result.json"
-
-run_resolve_code_test "code-validated-dir-fallback-filename" \
-  setup_code_fallback \
-  "${RESOLVE_TMPDIR}/code-validated-dir-fallback-filename/validated-output/result.json"
+  "${RESOLVE_TMPDIR}/code-validated-dir-expected-filename/validated-output/agent-result.json"
 
 run_resolve_code_test "code-validated-dir-neither-filename-degrades-to-empty" \
   setup_code_neither \
@@ -1040,7 +1026,7 @@ run_resolve_code_test "code-validated-dir-neither-filename-degrades-to-empty" \
 
 run_resolve_code_test_unset "code-unset-falls-back-to-scan" \
   setup_code_iteration_scan \
-  "${RESOLVE_TMPDIR}/code-unset-falls-back-to-scan/iteration-2/output/code-result.json"
+  "${RESOLVE_TMPDIR}/code-unset-falls-back-to-scan/iteration-2/output/agent-result.json"
 
 rm -rf "${RESOLVE_TMPDIR}"
 
