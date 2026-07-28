@@ -1,4 +1,7 @@
 # Expected outcome after the code agent + post-script run.
+# Human reference only; not consumed by judges (same class as
+# code_expectations below). Distinct from the live issue `state` key that
+# capture-fixture.sh writes into fixture-state.json.
 state: open
 
 # End-to-end success: post-script opened a PR that touches the buggy file.

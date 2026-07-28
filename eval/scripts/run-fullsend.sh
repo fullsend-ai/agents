@@ -109,12 +109,16 @@ trap cleanup EXIT
 # (unquoted values strip from space-hash onward).
 #
 # Dotenv format contract: NAME="value" lines, one per line, consumed by
-# fullsend's Go dotenv parser via --env-file (internal/*/envfile.go) — NOT
-# sourced by any shell. Escaping only needs to satisfy that parser's quoted-
-# string rules (backslash, double-quote, dollar-sign, backtick), not bash's;
-# characters with special meaning only to an interactive shell (e.g. `!`
-# history expansion) are not escaped here because they are never evaluated
-# by a shell.
+# fullsend's Go dotenv parser via --env-file (internal/envfile/envfile.go) —
+# NOT sourced by any shell. That parser does NOT support escape sequences
+# (its own doc comment: "Not supported: ... escape sequences"); quote
+# handling is a byte-literal scan for the first matching quote with zero
+# backslash-awareness. Escaping " / $ / ` here would either truncate the
+# value at the first \" (parser stops at the first " byte) or leave a
+# literal stray backslash in the value the agent receives. Fail closed on
+# the wrapping quote character instead, and pass every other byte through
+# unchanged — including $ and backtick, which the parser treats as
+# ordinary characters inside a quoted value.
 emit_env() {
   local name="$1" value="$2"
   if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
@@ -125,10 +129,11 @@ emit_env() {
     echo "ERROR: env value for ${name} contains a newline" >&2
     exit 1
   fi
-  value="${value//\\/\\\\}"
-  value="${value//\"/\\\"}"
-  value="${value//\$/\\\$}"
-  value="${value//\`/\\\`}"
+  # Fail closed: the parser can't represent a " inside a "-quoted value.
+  if [[ "$value" == *\"* ]]; then
+    echo "ERROR: env value for ${name} contains a double-quote; envfile.go has no escape sequences" >&2
+    exit 1
+  fi
   printf '%s="%s"\n' "$name" "$value"
 }
 

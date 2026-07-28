@@ -107,7 +107,10 @@ judges:
     description: Required labels from annotations.yaml must be present
     check: |
       import json
-      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
       actual = [l.lower() for l in state.get("labels", [])]
       required = outputs.get("annotations", {}).get("labels", {}).get("required", [])
       if not required:
@@ -121,7 +124,10 @@ judges:
     description: Labels listed in annotations.yaml forbidden list must NOT be present
     check: |
       import json
-      state = json.loads(outputs["files"]["output/fixture-state.json"])
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
       actual = [l.lower() for l in state.get("labels", [])]
       forbidden = outputs.get("annotations", {}).get("labels", {}).get("forbidden", [])
       if not forbidden:

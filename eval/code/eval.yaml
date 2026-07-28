@@ -40,6 +40,45 @@ execution:
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
     CLOUD_ML_REGION: $CLOUD_ML_REGION
+    # Must live under execution.env — for runner: type: cli the harness's
+    # CliRunner.from_config() builds the subprocess env from
+    # config.execution.env only; runner.env has no effect (see
+    # docs/opaque-cli-runner-contract.md). Putting EVAL_TIMEOUT under
+    # runner.env silently fell back to run-fullsend.sh's default of 1800,
+    # tying the outer harness SIGKILL to the inner `timeout` and inverting
+    # the intended ordering.
+    #
+    # Deliberately far below the code agent's real production budget: each
+    # validation_loop iteration is re-armed with its own fresh 2100s
+    # (harness/code.yaml timeout_minutes: 35, mirrored as TIMEOUT_SECONDS in
+    # env/code.env for the agent's own self-monitoring). internal/cli/run.go
+    # computes that duration once before the iteration loop begins and
+    # passes it into rt.Run() on each iteration; the fresh
+    # context.WithTimeout(ctx, timeout) call actually happens in
+    # internal/sandbox/sandbox.go's ExecStreamReader, invoked per-iteration
+    # via internal/runtime/claude.go's Run method. harness/code.yaml allows
+    # up to 2 iterations (validation_loop.max_iterations: 2) — worst case
+    # ~4200s of agent time, on top of sandbox creation/image pull/
+    # pre_script/post_script, none of which timeout_minutes bounds. None of
+    # that fits inside this CI job's 45-minute cap with any safety margin,
+    # so this eval does not attempt to reproduce the full production
+    # timeout envelope; matches eval/fix/eval.yaml's value instead (see
+    # execution.timeout above).
+    #
+    # This fixture is a 2-line arithmetic bug and completes in well under a
+    # minute in practice, so this number essentially never fires. If a
+    # genuine hang did occur: a single-iteration hang gets caught here and
+    # fullsend still writes a partial metrics.json before returning (see
+    # writeMetricsJSON in run.go's error path), giving an inconclusive but
+    # readable "metrics.json not found"-adjacent judge failure; a
+    # multi-iteration hang, or CI overhead pushing total time past 45min,
+    # gets a hard GitHub Actions job timeout with no artifacts at all. This
+    # ladder is a best-effort local-run affordance, not a guaranteed
+    # graceful-degradation path in CI. Separately, pr_created can also fail
+    # when the agent finishes in-budget but never emits a schema-valid
+    # code-result.json — validation_loop then skips post_script (ADR 0022),
+    # so no PR is created despite a clean timeout path.
+    EVAL_TIMEOUT: "1700"
 
 hooks:
   before_each:
@@ -63,38 +102,11 @@ runner:
     - "{agent}"
     - "{workspace}"
     - "{output_dir}"
-  env:
-    FULLSEND_DIR: $FULLSEND_DIR
-    GH_TOKEN: $GH_TOKEN
-    # Deliberately far below the code agent's real production budget: each
-    # validation_loop iteration is re-armed with its own fresh 2100s
-    # (harness/code.yaml timeout_minutes: 35, mirrored as TIMEOUT_SECONDS in
-    # env/code.env for the agent's own self-monitoring; internal/cli/run.go
-    # re-derives the context.WithTimeout from h.TimeoutMinutes inside the
-    # iteration loop), and harness/code.yaml allows up to 2 iterations
-    # (validation_loop.max_iterations: 2) — worst case ~4200s of agent time,
-    # on top of sandbox creation/image pull/pre_script/post_script, none of
-    # which timeout_minutes bounds. None of that fits inside this CI job's
-    # 45-minute cap with any safety margin, so this eval does not attempt to
-    # reproduce the full production timeout envelope; matches
-    # eval/fix/eval.yaml's value instead (see execution.timeout above).
-    #
-    # This fixture is a 2-line arithmetic bug and completes in well under a
-    # minute in practice, so this number essentially never fires. If a
-    # genuine hang did occur: a single-iteration hang gets caught here and
-    # fullsend still writes a partial metrics.json before returning (see
-    # writeMetricsJSON in run.go's error path), giving an inconclusive but
-    # readable "metrics.json not found"-adjacent judge failure; a
-    # multi-iteration hang, or CI overhead pushing total time past 45min,
-    # gets a hard GitHub Actions job timeout with no artifacts at all. This
-    # ladder is a best-effort local-run affordance, not a guaranteed
-    # graceful-degradation path in CI.
-    EVAL_TIMEOUT: "1700"
-    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
-    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
-    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
-    CLOUD_ML_REGION: $CLOUD_ML_REGION
-
+# Unused for this CLI-runner type: runner.command has no {model} placeholder
+# and run-fullsend.sh never passes --model (or equivalent) to `fullsend run`.
+# The real model is controlled solely by harness/code.yaml's `model:` field.
+# Declared here for harness reporting / parity with sibling evals only —
+# same "advisory / not enforced" class of limitation as max_budget_usd above.
 models:
   skill: claude-opus-4-6
   judge: claude-opus-4-6
@@ -118,7 +130,11 @@ outputs:
 # ---------------------------------------------------------------------------
 judges:
   - name: pr_created
-    description: Post-script must open at least one pull request (end-to-end success)
+    description: >
+      Post-script must open at least one pull request (end-to-end success).
+      Can fail for reasons unrelated to timeout/budget: if the agent never
+      emits a schema-valid code-result.json, validation_loop skips
+      post_script (ADR 0022) and no PR is created.
     check: |
       import json
       raw = outputs["files"].get("output/fixture-state.json")
@@ -161,6 +177,8 @@ judges:
           return False, f"Expected files missing from PRs: {missing} (changed: {sorted(changed)})"
       return True, f"All expected files present: {expected}"
 
+  # forbidden_labels / max_turns / max_cost below are shared verbatim with
+  # eval/fix/eval.yaml and eval/review/eval.yaml — update all three if changing.
   - name: forbidden_labels
     description: Labels listed in annotations.yaml forbidden list must NOT be present
     check: |
