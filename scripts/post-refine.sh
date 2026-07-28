@@ -41,6 +41,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # URL-fetched scripts are isolated content-addressed blobs (no siblings).
 # Resolution order: next to this script → install .fullsend/scripts →
 # same-commit fetch via fullsend cache metadata.json origin URL.
+# When fetching into a shared tmp dir, prefetch common siblings so sourced
+# helpers (e.g. comment-helpers → markdown-to-adf.py) find neighbors.
 _resolve_companion() {
   local name="$1"
   if [[ -f "${SCRIPT_DIR}/${name}" ]]; then
@@ -69,24 +71,41 @@ _resolve_companion() {
       if [[ ! -f "${tmp}/metadata.json" ]]; then
         jq -nc --arg url "${base_url}/entrypoint" '{url:$url}' > "${tmp}/metadata.json"
       fi
-      if [[ ! -f "${tmp}/${name}" ]]; then
-        if curl -fsSL --retry 3 --retry-delay 1 "${base_url}/${name}" -o "${tmp}/${name}.tmp"; then
-          mv "${tmp}/${name}.tmp" "${tmp}/${name}"
-          case "$name" in *.sh) chmod +x "${tmp}/${name}" ;; esac
-        else
-          rm -f "${tmp}/${name}.tmp"
-          echo "ERROR: failed to fetch companion ${name} from ${base_url}/${name}" >&2
-          return 1
+      _fetch_companion_into() {
+        local file="$1"
+        [[ -f "${tmp}/${file}" ]] && return 0
+        if curl -fsSL --retry 3 --retry-delay 1 "${base_url}/${file}" -o "${tmp}/${file}.tmp" 2>/dev/null; then
+          mv "${tmp}/${file}.tmp" "${tmp}/${file}"
+          case "$file" in *.sh) chmod +x "${tmp}/${file}" ;; esac
+          return 0
         fi
+        rm -f "${tmp}/${file}.tmp"
+        return 1
+      }
+      # Prefetch common siblings once per tmp dir (soft — not every branch has all).
+      if [[ ! -f "${tmp}/.prefetch-done" ]]; then
+        local _f
+        for _f in \
+          comment-helpers.sh markdown-to-adf.py adf-to-markdown.py \
+          jira-project-schema.sh create-children.sh pre-explore.sh \
+          platform-jira.md platform-github.md platform-gitlab.md; do
+          _fetch_companion_into "$_f" || true
+        done
+        touch "${tmp}/.prefetch-done"
       fi
-      printf '%s
+      if _fetch_companion_into "$name"; then
+        printf '%s
 ' "${tmp}/${name}"
-      return 0
+        return 0
+      fi
+      echo "ERROR: failed to fetch companion ${name} from ${base_url}/${name}" >&2
+      return 1
     fi
   fi
   echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]}, under install .fullsend/scripts, or via script origin URL." >&2
   return 1
 }
+
 
 
 
