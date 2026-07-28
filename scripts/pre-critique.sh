@@ -87,13 +87,14 @@ echo "::notice::Pre-critique: preparing context (source=${ISSUE_SOURCE}, key=${I
 
 # --- Step 1: Ensure issue context ---
 if [[ ! -f "$WORKSPACE/issue-context.json" ]]; then
-  if [[ -f "${SCRIPT_DIR}/pre-explore.sh" ]]; then
-    echo "Fetching issue context via pre-explore.sh..."
-    SKIP_REPO_CLONING=1 bash "$(_resolve_companion pre-explore.sh)"
+  echo "Fetching issue context via pre-explore.sh..."
+  if _PRE_EXPLORE="$(_resolve_companion pre-explore.sh)"; then
+    SKIP_REPO_CLONING=1 bash "$_PRE_EXPLORE"
   else
-    echo "ERROR: No issue context available and pre-explore.sh not found (requires PR #11 explore agent)"
+    echo "ERROR: No issue context available and pre-explore.sh not found (needs explore agent scripts in same commit or install overlay)"
     exit 1
   fi
+  unset _PRE_EXPLORE
 fi
 
 # --- Step 2: Download refine result ---
