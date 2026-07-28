@@ -768,6 +768,8 @@ echo "::add-mask::${PUSH_TOKEN}"
 # ---------------------------------------------------------------------------
 post_noop_comment() {
   local reason="$1"
+  local safe_issue_number
+  safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
 
   _post_failure_ensure_token
 
@@ -805,7 +807,7 @@ Retry with \`/fs-code\` if appropriate."
   if ! gh issue comment "${ISSUE_NUMBER}" \
     --repo "${REPO_FULL_NAME}" \
     --body "${body}" 2>/dev/null; then
-    gha_echo warning "Failed to post no-op comment to issue #${ISSUE_NUMBER}"
+    gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
   fi
 }
 
