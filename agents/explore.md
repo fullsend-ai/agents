@@ -389,3 +389,6 @@ been useful but were unavailable (GitLab repos, internal docs, Slack, CI data).
 - Write ONLY the JSON file. No markdown report, no other output files.
 - The JSON must be valid and parseable. No markdown fences around it.
 - Keep the summary under 1000 characters.
+
+
+**Schema note:** `impact_radius.recent_commits` must be an integer ≥ 0. Use `0` when unknown or not applicable — never `-1`.
