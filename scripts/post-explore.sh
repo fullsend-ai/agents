@@ -16,12 +16,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Companion resolution for harness base: composition (ADR-0045).
-# URL-fetched scripts are isolated blobs without siblings. Prefer install copies
-# under GITHUB_WORKSPACE/.fullsend/scripts or FULLSEND_DIR/scripts (overlay pattern).
+# URL-fetched scripts are isolated content-addressed blobs (no siblings).
+# Resolution order: next to this script → install .fullsend/scripts →
+# same-commit fetch via fullsend cache metadata.json origin URL.
 _resolve_companion() {
   local name="$1"
   if [[ -f "${SCRIPT_DIR}/${name}" ]]; then
-    printf '%s\n' "${SCRIPT_DIR}/${name}"
+    printf '%s
+' "${SCRIPT_DIR}/${name}"
     return 0
   fi
   local d
@@ -29,14 +31,41 @@ _resolve_companion() {
     "${GITHUB_WORKSPACE:+${GITHUB_WORKSPACE}/.fullsend/scripts}" \
     "${FULLSEND_DIR:+${FULLSEND_DIR}/scripts}"; do
     if [[ -n "${d}" && -f "${d}/${name}" ]]; then
-      printf '%s\n' "${d}/${name}"
+      printf '%s
+' "${d}/${name}"
       return 0
     fi
   done
-  echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]} or under install .fullsend/scripts." >&2
-  echo "Installs using harness base: should vendor companions (comment-helpers.sh, markdown-to-adf.py) into .fullsend/scripts/." >&2
+  local meta="${SCRIPT_DIR}/metadata.json"
+  if [[ -f "$meta" ]] && command -v jq >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    local origin base_url tmp
+    origin=$(jq -r '.url // empty' "$meta" 2>/dev/null || true)
+    if [[ -n "$origin" && "$origin" == http*://* ]]; then
+      base_url="${origin%/*}"
+      tmp="${TMPDIR:-/tmp}/fullsend-script-companions/$(printf '%s' "$base_url" | sha256sum | awk '{print $1}')"
+      mkdir -p "$tmp"
+      if [[ ! -f "${tmp}/metadata.json" ]]; then
+        jq -nc --arg url "${base_url}/entrypoint" '{url:$url}' > "${tmp}/metadata.json"
+      fi
+      if [[ ! -f "${tmp}/${name}" ]]; then
+        if curl -fsSL --retry 3 --retry-delay 1 "${base_url}/${name}" -o "${tmp}/${name}.tmp"; then
+          mv "${tmp}/${name}.tmp" "${tmp}/${name}"
+          case "$name" in *.sh) chmod +x "${tmp}/${name}" ;; esac
+        else
+          rm -f "${tmp}/${name}.tmp"
+          echo "ERROR: failed to fetch companion ${name} from ${base_url}/${name}" >&2
+          return 1
+        fi
+      fi
+      printf '%s
+' "${tmp}/${name}"
+      return 0
+    fi
+  fi
+  echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]}, under install .fullsend/scripts, or via script origin URL." >&2
   return 1
 }
+
 
 # shellcheck disable=SC1090
 source "$(_resolve_companion comment-helpers.sh)"
