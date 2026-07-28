@@ -41,6 +41,14 @@ else
   echo "PASS: bundled-script-has-pr-assignee"
 fi
 
+if ! grep -q 'CODE_AUTO_MERGE' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-auto-merge"
+  echo "  ${POST_SCRIPT} missing CODE_AUTO_MERGE"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-auto-merge"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -1375,6 +1383,62 @@ run_branch_validation_test "no-agent-target-ignores-allowed-list" \
 # are allowed — comma-wrapping must reject the partial match.
 run_branch_validation_test "substring-not-accepted" \
   "release" "main" "release-1,release-2" "reject:release"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the auto-merge decision logic from post-code.sh
+# section 9. Given the CODE_AUTO_MERGE env var value, returns the action.
+# ---------------------------------------------------------------------------
+decide_auto_merge() {
+  local code_auto_merge="$1"
+
+  if [ "${code_auto_merge}" = "true" ]; then
+    echo "enable"
+  else
+    echo "skip"
+  fi
+}
+
+run_auto_merge_test() {
+  local test_name="$1"
+  local code_auto_merge="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(decide_auto_merge "${code_auto_merge}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  code_auto_merge: '${code_auto_merge}'"
+    echo "  expected:        '${expected}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Auto-merge test cases ---
+
+# CODE_AUTO_MERGE=true → enable auto-merge
+run_auto_merge_test "auto-merge-enabled" \
+  "true" "enable"
+
+# CODE_AUTO_MERGE unset/empty → skip
+run_auto_merge_test "auto-merge-unset" \
+  "" "skip"
+
+# CODE_AUTO_MERGE=false → skip (only "true" enables)
+run_auto_merge_test "auto-merge-false" \
+  "false" "skip"
+
+# CODE_AUTO_MERGE=TRUE → skip (case-sensitive)
+run_auto_merge_test "auto-merge-uppercase" \
+  "TRUE" "skip"
+
+# CODE_AUTO_MERGE=1 → skip (only exact "true" match)
+run_auto_merge_test "auto-merge-numeric" \
+  "1" "skip"
 
 # --- Summary ---
 
