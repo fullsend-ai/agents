@@ -776,7 +776,10 @@ post_noop_comment() {
   local run_url
   run_url="$(post_failure_workflow_run_url "${REPO_FULL_NAME}")"
 
-  # Try to extract agent reasoning from result file
+  # Try to extract agent reasoning from result file.
+  # Note: RESULT_FILE is set at the top of the script and may point to a
+  # prior iteration's output when the current run exits before producing one.
+  # This is acceptable — context is sanitized and the comment is best-effort.
   local agent_context=""
   if [ -n "${RESULT_FILE:-}" ] && [ -f "${RESULT_FILE}" ]; then
     agent_context="$(jq -r '.pr_body // empty' "${RESULT_FILE}" 2>/dev/null || true)"
@@ -795,7 +798,7 @@ ${sanitized_context}"
   local body
   body="ℹ️ **No PR created** — agent determined no changes needed
 
-The code agent ran and evaluated issue #${ISSUE_NUMBER}, but did not produce changes to submit as a pull request.
+The code agent ran and evaluated issue #${safe_issue_number}, but did not produce changes to submit as a pull request.
 
 **Reason:** ${reason}
 ${detail_block}
