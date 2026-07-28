@@ -34,10 +34,14 @@ mkdir -p "$WORKSPACE"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Companion resolution for harness base: composition (ADR-0045).
+# URL-fetched scripts are isolated content-addressed blobs (no siblings).
+# Resolution order: next to this script → install .fullsend/scripts →
+# same-commit fetch via fullsend cache metadata.json origin URL.
 _resolve_companion() {
   local name="$1"
   if [[ -f "${SCRIPT_DIR}/${name}" ]]; then
-    printf '%s\n' "${SCRIPT_DIR}/${name}"
+    printf '%s
+' "${SCRIPT_DIR}/${name}"
     return 0
   fi
   local d
@@ -45,14 +49,41 @@ _resolve_companion() {
     "${GITHUB_WORKSPACE:+${GITHUB_WORKSPACE}/.fullsend/scripts}" \
     "${FULLSEND_DIR:+${FULLSEND_DIR}/scripts}"; do
     if [[ -n "${d}" && -f "${d}/${name}" ]]; then
-      printf '%s\n' "${d}/${name}"
+      printf '%s
+' "${d}/${name}"
       return 0
     fi
   done
-  echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]} or under install .fullsend/scripts." >&2
-  echo "Installs using harness base: should override pre_script/post_script locally, or vendor companions into .fullsend/scripts/." >&2
+  local meta="${SCRIPT_DIR}/metadata.json"
+  if [[ -f "$meta" ]] && command -v jq >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    local origin base_url tmp
+    origin=$(jq -r '.url // empty' "$meta" 2>/dev/null || true)
+    if [[ -n "$origin" && "$origin" == http*://* ]]; then
+      base_url="${origin%/*}"
+      tmp="${TMPDIR:-/tmp}/fullsend-script-companions/$(printf '%s' "$base_url" | sha256sum | awk '{print $1}')"
+      mkdir -p "$tmp"
+      if [[ ! -f "${tmp}/metadata.json" ]]; then
+        jq -nc --arg url "${base_url}/entrypoint" '{url:$url}' > "${tmp}/metadata.json"
+      fi
+      if [[ ! -f "${tmp}/${name}" ]]; then
+        if curl -fsSL --retry 3 --retry-delay 1 "${base_url}/${name}" -o "${tmp}/${name}.tmp"; then
+          mv "${tmp}/${name}.tmp" "${tmp}/${name}"
+          case "$name" in *.sh) chmod +x "${tmp}/${name}" ;; esac
+        else
+          rm -f "${tmp}/${name}.tmp"
+          echo "ERROR: failed to fetch companion ${name} from ${base_url}/${name}" >&2
+          return 1
+        fi
+      fi
+      printf '%s
+' "${tmp}/${name}"
+      return 0
+    fi
+  fi
+  echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]}, under install .fullsend/scripts, or via script origin URL." >&2
   return 1
 }
+
 
 
 # Strip GHA workflow-command metacharacters from interpolated log output.
@@ -296,13 +327,25 @@ for search_root in \
   fi
 done
 
-if [[ -n "$PLATFORM_CONTEXT_FILE" ]]; then
+if [[ -z "$PLATFORM_CONTEXT_FILE" ]]; then
+  case "${ISSUE_SOURCE}" in
+    jira)   _plat="platform-jira.md" ;;
+    github) _plat="platform-github.md" ;;
+    gitlab) _plat="platform-gitlab.md" ;;
+    *)      _plat="" ;;
+  esac
+  if [[ -n "$_plat" ]] && PLATFORM_CONTEXT_FILE="$(_resolve_companion "$_plat" 2>/dev/null)"; then
+    :
+  fi
+fi
+if [[ -n "$PLATFORM_CONTEXT_FILE" && -f "$PLATFORM_CONTEXT_FILE" ]]; then
   cp "$PLATFORM_CONTEXT_FILE" "$WORKSPACE/platform-context.md"
   echo "PLATFORM_CONTEXT=$WORKSPACE/platform-context.md" >> "${GITHUB_ENV:-/dev/null}"
   echo "::notice::Platform context loaded: ${ISSUE_SOURCE}"
 else
   echo "::warning::No platform context template found for source=${ISSUE_SOURCE}"
 fi
+unset _plat
 
 {
   echo "ISSUE_CONTEXT=$WORKSPACE/issue-context.json"
@@ -320,5 +363,58 @@ fi
 if [[ -f "$WORKSPACE/critique-feedback.json" ]]; then
   echo "CRITIQUE_FEEDBACK=$WORKSPACE/critique-feedback.json" >> "${GITHUB_ENV:-/dev/null}"
 fi
+
+
+# --- Install overlays (optional): project schema enrichment + ORG_KNOWLEDGE ---
+_INSTALL_SCRIPTS=""
+for _candidate in \
+  "$(git rev-parse --show-toplevel 2>/dev/null || echo ".")/.fullsend/scripts" \
+  ${GITHUB_WORKSPACE:+"${GITHUB_WORKSPACE}/.fullsend/scripts"} \
+  ${FULLSEND_DIR:+"${FULLSEND_DIR}/scripts"}; do
+  if [[ -n "${_candidate}" && -d "${_candidate}" ]]; then
+    _INSTALL_SCRIPTS="${_candidate}"
+    break
+  fi
+done
+
+if [[ "${ISSUE_SOURCE:-}" == "jira" && -f "$WORKSPACE/issue-context.json" ]]; then
+  _SCHEMA=""
+  if [[ -n "${_INSTALL_SCRIPTS}" && -f "${_INSTALL_SCRIPTS}/jira-project-schema.sh" ]]; then
+    _SCHEMA="${_INSTALL_SCRIPTS}/jira-project-schema.sh"
+  elif _SCHEMA="$(_resolve_companion jira-project-schema.sh 2>/dev/null)"; then
+    :
+  else
+    _SCHEMA=""
+  fi
+  if [[ -n "${_SCHEMA}" && -f "${_SCHEMA}" ]]; then
+    # shellcheck source=/dev/null
+    source "${_SCHEMA}"
+    REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo ".")"
+    FIELD_CONFIG_PATH=$(jira_schema_find_field_config "$REPO_ROOT" 2>/dev/null || true)
+    if [[ -z "${FIELD_CONFIG_PATH:-}" && -n "${ROUTING_SKILL:-}" ]]; then
+      _skill_dir=$(dirname "$ROUTING_SKILL")
+      if [[ -f "${_skill_dir}/project-field-config.json" ]]; then
+        FIELD_CONFIG_PATH="${_skill_dir}/project-field-config.json"
+      fi
+    fi
+    if [[ -n "${FIELD_CONFIG_PATH:-}" && -f "$FIELD_CONFIG_PATH" ]] && jq empty "$FIELD_CONFIG_PATH" 2>/dev/null; then
+      cp "$FIELD_CONFIG_PATH" "$WORKSPACE/project-field-config.json"
+      echo "PROJECT_FIELD_CONFIG=$WORKSPACE/project-field-config.json" >> "${GITHUB_ENV:-/dev/null}"
+      FIELD_CFG_JSON=$(jira_schema_load_config "$FIELD_CONFIG_PATH")
+      PARENT_PROJECT=$(jq -r '.project.key // (.key | split("-")[0])' "$WORKSPACE/issue-context.json")
+      ROUTABLE=$(jira_schema_build_routable_projects \
+        "$PARENT_PROJECT" "$FIELD_CFG_JSON" "${PROJECT_ROUTING:-}")
+      jira_schema_merge_routable_into_issue_context "$WORKSPACE/issue-context.json" "$ROUTABLE"
+      echo "::notice::Attached routable_projects for: $(echo "$ROUTABLE" | jq -r 'keys | join(", ")')"
+    fi
+  fi
+fi
+
+if [[ -n "${_INSTALL_SCRIPTS}" && -f "${_INSTALL_SCRIPTS}/pack-org-knowledge.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${_INSTALL_SCRIPTS}/pack-org-knowledge.sh"
+  pack_org_knowledge || echo "::warning::pack_org_knowledge soft-failed — continuing without rich ORG_KNOWLEDGE"
+fi
+unset _INSTALL_SCRIPTS _candidate _SCHEMA _skill_dir
 
 echo "Pre-refine complete."
