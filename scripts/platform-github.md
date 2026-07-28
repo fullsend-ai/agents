@@ -1,47 +1,35 @@
 # Platform Context: GitHub Issues
 
-## Work Item Hierarchy
+Forge background (prefer these over inventing process):
 
-GitHub uses a flat issue model with labels and sub-issues for hierarchy:
-- **Issues** — the base unit (no built-in types beyond issue/PR)
-- **Labels** — used to indicate level/type (feature, epic, story, task, bug, spike)
-- **Sub-issues** — GitHub's native parent-child relationship
-- **Milestones** — optional grouping mechanism
+- [About issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/about-issues)
+- [Adding sub-issues](https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/adding-sub-issues)
+- [Managing labels](https://docs.github.com/en/issues/using-labels-and-milestones-to-track-work/managing-labels)
 
-**Hierarchy rules:**
-- A feature-labeled issue produces: child issues labeled "epic" (parent_title=null) → child issues labeled "story" (parent_title=epic title) → child issues labeled "task" (parent_title=story title)
-- An epic-labeled issue produces: child issues labeled "story" (parent_title=null) → child issues labeled "task" (parent_title=story title)
-- A story-labeled issue produces: child issues labeled "task" (parent_title=null)
-- All hierarchy is expressed via GitHub's sub-issue feature
-- Labels differentiate the logical type of each issue
+## Org / program process
 
-**Important**: GitHub has no type restrictions — any issue can be a child of any other issue. Use labels consistently to communicate intent.
+Do **not** invent ownership, DoD, writing standards, or team conventions.
 
-## Decomposition Output
+- If `ORG_KNOWLEDGE` is present, prefer it for process and ownership.
+- GitHub children stay in the **same repository** as the parent. Do not set `target_project`.
+- Cross-repo work: note as dependencies; do not auto-create in other repos.
 
-Each child must include:
-- `type`: the logical type (used as a label). Common: epic, story, task, spike, bug
-- `labels`: additional labels beyond the type label
-- `target_platform`: "github" (or omit to inherit parent's platform)
-- `target_project` is NOT used for GitHub — all children are created in the same repository as the parent
+## Fullsend refine contract (this product)
 
-**Repository targeting**: Children are always created in the same repo as the parent issue. Cross-repo work should be noted in dependencies but not created automatically.
+GitHub has no native Feature/Epic/Story types. Express level with **`type`** (applied as a label) and parent/child via **sub-issues** using `parent_title` chains:
 
-## Description Format
+| Logical parent | Typical children | `parent_title` |
+|---|---|---|
+| Feature-labeled issue | Epic-labeled children, then stories under epics | `null` for top epics; epic title for stories |
+| Epic-labeled issue | Story-labeled children, then tasks | `null` for top stories; story title for tasks |
+| Story-labeled issue | Task-labeled children | `null` or story title |
 
-GitHub uses markdown natively. No conversion needed.
+Rules:
 
-**Feature-level descriptions** use a two-tier structure:
-- Visible top section (always shown)
-- Content after `---` delimiter is rendered as-is (GitHub doesn't have collapsible sections in issue descriptions, but the `---` creates a visual separator). If you want collapsible content, use `<details><summary>Detailed Specification</summary>` HTML.
+- `type`: logical type (`epic`, `story`, `task`, `spike`, `bug`, …) — used as a label.
+- `labels`: optional extras beyond the type label.
+- `target_platform`: `"github"` or omit to inherit.
+- Descriptions: markdown. Optional `---` between summary and detail; `<details>` works in GitHub for collapse if needed.
+- If sub-issue linking fails, create-children still creates the issue in-repo.
 
-**Child-level descriptions** can be more concise since GitHub issues are inherently lighter weight.
-
-## Parent-Child Constraints
-
-- Any issue can be a sub-issue of any other issue (no type restrictions)
-- Sub-issues are created via GitHub's sub-issues API
-- If sub-issue creation fails, the child is still created as a standalone issue in the same repo
-- Labels are automatically created if they don't exist
-- Always include spikes (label "spike") for high-uncertainty areas
-- Always include documentation tasks (label "documentation") for user-facing changes
+Do not require spikes, docs tasks, or specific label sets unless `ORG_KNOWLEDGE` / issue context calls for them.

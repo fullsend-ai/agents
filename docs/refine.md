@@ -70,7 +70,7 @@ To route child issues to different Jira projects based on team ownership, provid
 
 ### Platform context
 
-Platform context files (`platform-jira.md`, `platform-github.md`, `platform-gitlab.md`) define the hierarchy model, description format, and parent-child constraints for each platform. The pre-script selects the appropriate one based on `ISSUE_SOURCE`.
+Platform context files (`platform-jira.md`, `platform-github.md`, `platform-gitlab.md`) are **thin**: links to official forge docs, plus the Fullsend refine/create contract (`type`, `parent_title`, optional `target_project`). Org process belongs in `ORG_KNOWLEDGE` / `PROJECT_ROUTING`, not these files. The pre-script selects one based on `ISSUE_SOURCE`.
 
 ## Source
 

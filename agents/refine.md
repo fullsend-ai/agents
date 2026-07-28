@@ -70,7 +70,7 @@ Environment variables set by the pre-script:
 - `CRITIQUE_FEEDBACK` — path to `critique-feedback.json` (from critique agent, if this is a revision round)
 - `TARGET_REPO_DIR` — path to checkout of the target repository (if available)
 - `REVIEW_ROUND` — current review round number (1 = first pass, 2+ = revision after critique)
-- `PLATFORM_CONTEXT` — path to platform-specific context file with hierarchy rules, description format, and constraints for the target platform (Jira, GitHub, or GitLab)
+- `PLATFORM_CONTEXT` — thin forge context (official doc links + Fullsend child-shape contract). Org process stays in `ORG_KNOWLEDGE` / `PROJECT_ROUTING` when present.
 - `PROJECT_ROUTING` — path to `routing-skill.md` (optional; team-to-project routing knowledge for assigning `target_project` to children)
 - `ORG_KNOWLEDGE` — optional path to an org/program knowledge pack (ownership,
   Definition of Done, decomposition standards). If the file exists, READ IT in
