@@ -33,6 +33,9 @@
 #                       branch is allowed. (default: auto-detected)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
+#   CODE_AUTO_MERGE    — "true" to enable GitHub auto-merge on the PR after
+#                        creation. Uses the repo's configured merge strategy.
+#                        (default: disabled)
 #
 # Exit codes:
 #   0  — branch pushed and PR created, OR agent determined nothing to do
@@ -750,5 +753,16 @@ gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \
   --add-label "ready-for-review" 2>/dev/null || \
   gha_echo warning "Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+
+# ---------------------------------------------------------------------------
+# 9. Auto-merge (optional)
+# ---------------------------------------------------------------------------
+if [ "${CODE_AUTO_MERGE:-}" = "true" ]; then
+  echo "Auto-merge enabled — enabling auto-merge on PR #${PR_NUMBER_FROM_URL}..."
+  if ! gh pr merge "${PR_NUMBER_FROM_URL}" --auto \
+    --repo "${REPO_FULL_NAME}" 2>&1; then
+    gha_echo warning "Failed to enable auto-merge on PR #${PR_NUMBER_FROM_URL} — continuing"
+  fi
+fi
 
 maybe_assign_pr "${PR_NUMBER_FROM_URL}"
