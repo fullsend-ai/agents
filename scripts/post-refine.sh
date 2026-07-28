@@ -190,7 +190,8 @@ if $USE_GITHUB; then
 fi
 
 CHILD_COUNT=$(jq '.children | length' "${RESULT_FILE}" 2>/dev/null || echo "0")
-OPEN_QUESTION_COUNT=$(jq '.open_questions | length' "${RESULT_FILE}" 2>/dev/null || echo "0")
+OPEN_QUESTION_COUNT=$(jq '.open_questions // [] | length' "${RESULT_FILE}" 2>/dev/null || echo "0")
+NEEDS_HUMAN_COUNT=$(count_needs_human_questions "${RESULT_FILE}")
 
 EPIC_COUNT=$(jq '[.children[]? | select(.type == "epic")] | length' "${RESULT_FILE}" 2>/dev/null || echo "0")
 STORY_COUNT=$(jq '[.children[]? | select(.type == "story")] | length' "${RESULT_FILE}" 2>/dev/null || echo "0")
@@ -205,8 +206,10 @@ if [[ ${#PLAN_PARTS[@]} -gt 0 ]]; then
   PLAN_SUMMARY="${PLAN_SUMMARY} ($(IFS=', '; echo "${PLAN_PARTS[*]}"))"
 fi
 
-if [[ "$OPEN_QUESTION_COUNT" -gt 0 ]]; then
-  PLAN_SUMMARY="${PLAN_SUMMARY} · ${OPEN_QUESTION_COUNT} open question(s)"
+if [[ "$NEEDS_HUMAN_COUNT" -gt 0 ]]; then
+  PLAN_SUMMARY="${PLAN_SUMMARY} · ${NEEDS_HUMAN_COUNT} need your input"
+elif [[ "$OPEN_QUESTION_COUNT" -gt 0 ]]; then
+  PLAN_SUMMARY="${PLAN_SUMMARY} · ${OPEN_QUESTION_COUNT} noted (defaults/spikes)"
 fi
 
 WORKFLOW_REPO="${GITHUB_REPOSITORY:-${REPO_FULL_NAME:-unknown}}"
@@ -214,24 +217,7 @@ ARTIFACT_URL="https://github.com/${WORKFLOW_REPO}/actions/runs/${GITHUB_RUN_ID:-
 
 QUESTIONS_SECTION=""
 if [[ "$OPEN_QUESTION_COUNT" -gt 0 ]]; then
-  QUESTIONS_LIST=$(jq -r '
-    .open_questions[]?
-    | if type == "object" then
-        "| \(.dimension // "general") | \((.question // .text // .description // tostring) | gsub("\\|"; "/") | gsub("\n"; " ") | .[0:140]) | \(.impact // "—") |"
-      else
-        "| — | \(tostring | gsub("\\|"; "/") | .[0:140]) | — |"
-      end
-  ' "${RESULT_FILE}" 2>/dev/null || true)
-  if [[ -n "$QUESTIONS_LIST" ]]; then
-    QUESTIONS_SECTION="
-### Open Questions (${OPEN_QUESTION_COUNT})
-
-Reply with answers, then comment \`/fs-refine\` to re-run.
-
-| Dimension | Question | Impact |
-|---|---|---|
-${QUESTIONS_LIST}"
-  fi
+  QUESTIONS_SECTION=$(format_open_questions_md "${RESULT_FILE}")
 fi
 
 EXPLORE_CONTEXT_FILE="/tmp/workspace/exploration_context.json"

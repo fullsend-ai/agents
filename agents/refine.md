@@ -45,8 +45,9 @@ any definition gaps so the critique agent can catch them.
 3. **Exhaust available resources first** — if you can look something up,
    reason through it, or infer it from context, do so before assuming.
 4. **Be honest about uncertainty** — low confidence dimensions and assumptions
-   must be flagged, not hidden. Put them in `uncited_assumptions` and in the
-   `open_questions` field so the critique agent can evaluate them.
+   must be flagged, not hidden. Put them in `uncited_assumptions` and classify
+   each related item in `open_questions` with a `resolution` bucket (see below).
+   Do **not** dump every assumption into a human-blocking sticky.
 5. **Resume and re-evaluate when given feedback** — critique feedback or
    prior human answers may be available. Check for them and incorporate.
 
@@ -225,8 +226,8 @@ Calculate an overall confidence score (0-100). Record it honestly — low scores
 are fine. They tell the critique agent where the definition gaps are.
 
 **For low-confidence dimensions**: make your best judgment, flag it in
-`uncited_assumptions`, and add a corresponding entry to `open_questions`.
-Then proceed to decomposition regardless.
+`uncited_assumptions`, and add a corresponding `open_questions` entry with the
+correct `resolution` bucket (below). Then proceed to decomposition regardless.
 
 ### Phase 3: Decompose (ALWAYS)
 
@@ -564,7 +565,16 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
       "dimension": "acceptance_criteria",
       "question": "What is the target uptime SLA — 99.9% or 99.99%?",
       "impact": "Determines whether active-passive failover is sufficient or active-active with consensus is needed.",
+      "resolution": "assumed_default",
       "assumption_used": "Assumed 99.9% for the current decomposition."
+    },
+    {
+      "dimension": "technical_grounding",
+      "question": "Which cache backend meets the hit-rate requirement in this cluster?",
+      "impact": "Blocks cache sidecar implementation details.",
+      "resolution": "research_spike",
+      "spike_title": "Spike: Evaluate cache backend options",
+      "assumption_used": "Deferred to spike; no backend named in children."
     }
   ],
   "uncited_assumptions": ["Assumed 99.9% uptime SLA based on typical enterprise requirements"],
@@ -590,8 +600,39 @@ specific parent-child rules. The create script handles fallbacks (e.g.,
 constraints prevent direct parent-child linking.
 
 The `open_questions` array is critical — it tells the critique agent which areas
-you're least confident about. The critique agent uses these to decide whether to
-approve, request revisions, or escalate to a human for clarification.
+you're least confident about. **Every item MUST include `resolution`:**
+
+| `resolution` | When to use | Human sticky |
+|---|---|---|
+| `needs_human` | Only a stakeholder can decide, AND no Spike covers it, AND you cannot set a safe default from the Feature text / explore evidence | "Needs your input" — reply then `/fs-refine` |
+| `research_spike` | A Spike child investigates this (set `spike_title` to that child's exact title) | Listed as deferred to spike — **not** reply-required |
+| `assumed_default` | You chose a default and recorded it in `assumption_used` / `uncited_assumptions` | "Proposed defaults — confirm or correct" |
+
+### Anti-triple-booking (HARD CONSTRAINT)
+
+Never do all three of: (1) assume a default, (2) create a Spike for the same
+question, (3) mark `resolution: needs_human`. Pick one path:
+
+- **Spike path** → `research_spike` + matching Spike child. Do not also ask humans.
+- **Default path** → `assumed_default` + `assumption_used`. Optional confirm sticky.
+- **Human path** → `needs_human` only when research and defaults are impossible.
+
+### Research-before-ask (HARD CONSTRAINT)
+
+Before `needs_human` on a technical question, you MUST try: referenced-repos /
+ORG_KNOWLEDGE ownership maps, GitHub code search for existing hooks/APIs, and
+related Jira issues when credentials exist. If still uncertain → `research_spike`,
+not `needs_human`.
+
+### Banned from `open_questions` (use comment / assumptions instead)
+
+- Stage routing limits (e.g. production project keys not routable on stage)
+- Missing `TARGET_REPO_DIR` / `repo_full_name`
+- "Are PRs merged?" / install plumbing status
+- Schema or create-script field gaps (file as technical note, not stakeholder Q)
+
+The critique agent uses `resolution` to decide whether to approve, request
+revisions, or escalate to a human.
 
 ```bash
 fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
@@ -602,8 +643,9 @@ fullsend-check-output "$FULLSEND_OUTPUT_DIR/agent-result.json"
 - You do NOT write code, create PRs, post comments, or modify issues.
   Your only output is the JSON result file.
 - You do NOT fabricate information. If you don't know something and can't
-  find it, flag it as an assumption in `uncited_assumptions` and add it
-  to `open_questions`.
+  find it, flag it in `uncited_assumptions` and add an `open_questions` entry
+  with the correct `resolution` (`research_spike` or `assumed_default` preferred
+  over `needs_human`).
 - You do NOT narrow scope. If the input contains multiple dimensions,
   produce children for ALL of them.
 - Every child must trace to the input's requirements or exploration findings.

@@ -80,7 +80,8 @@ build_plan_summary() {
   local epic_count="$2"
   local story_count="$3"
   local task_count="$4"
-  local open_question_count="$5"
+  local needs_human_count="$5"
+  local noted_count="${6:-0}"
 
   local summary="Proposed: ${child_count} work items"
   local parts=()
@@ -96,16 +97,22 @@ build_plan_summary() {
     summary="${summary} (${joined})"
   fi
 
-  if [[ "$open_question_count" -gt 0 ]]; then
-    summary="${summary} · ${open_question_count} open question(s)"
+  if [[ "$needs_human_count" -gt 0 ]]; then
+    summary="${summary} · ${needs_human_count} need your input"
+  elif [[ "$noted_count" -gt 0 ]]; then
+    summary="${summary} · ${noted_count} noted (defaults/spikes)"
   fi
 
   echo "$summary"
 }
 
 run_test "plan-summary-full" \
-  "Proposed: 15 work items (3 epics, 8 stories, 4 tasks) · 2 open question(s)" \
+  "Proposed: 15 work items (3 epics, 8 stories, 4 tasks) · 2 need your input" \
   "$(build_plan_summary 15 3 8 4 2)"
+
+run_test "plan-summary-defaults-only" \
+  "Proposed: 6 work items (1 epics, 3 stories, 2 tasks) · 3 noted (defaults/spikes)" \
+  "$(build_plan_summary 6 1 3 2 0 3)"
 
 run_test "plan-summary-no-questions" \
   "Proposed: 6 work items (1 epics, 3 stories, 2 tasks)" \
@@ -222,7 +229,7 @@ test_result_file_missing
 # JSON field extraction — test jq commands used in post-refine.sh
 # ---------------------------------------------------------------------------
 
-FIXTURE='{"status":"complete","confidence":{"overall":82},"comment":"Plan summary here","children":[{"type":"epic","title":"E1"},{"type":"story","title":"S1"},{"type":"story","title":"S2"},{"type":"task","title":"T1"}],"open_questions":[{"dimension":"scope","question":"Q1","impact":"High"}],"uncited_assumptions":["Assumed X","Assumed Y"]}'
+FIXTURE='{"status":"complete","confidence":{"overall":82},"comment":"Plan summary here","children":[{"type":"epic","title":"E1"},{"type":"story","title":"S1"},{"type":"story","title":"S2"},{"type":"task","title":"T1"}],"open_questions":[{"dimension":"scope","question":"Q1","impact":"High","resolution":"needs_human"},{"dimension":"tech","question":"Q2","impact":"Med","resolution":"research_spike","spike_title":"Spike: X"},{"dimension":"ac","question":"Q3","impact":"Low","resolution":"assumed_default","assumption_used":"Assumed Y"}],"uncited_assumptions":["Assumed X","Assumed Y"]}'
 FIXTURE_FILE="${TMPDIR}/fixture.json"
 echo "$FIXTURE" > "$FIXTURE_FILE"
 
@@ -251,8 +258,29 @@ run_test "extract-task-count" \
   "$(jq '[.children[] | select(.type == "task")] | length' "$FIXTURE_FILE")"
 
 run_test "extract-open-question-count" \
-  "1" \
+  "3" \
   "$(jq '.open_questions | length' "$FIXTURE_FILE")"
+
+# shellcheck source=/dev/null
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/comment-helpers.sh"
+
+run_test "count-needs-human-only" \
+  "1" \
+  "$(count_needs_human_questions "$FIXTURE_FILE")"
+
+OQ_MD=$(format_open_questions_md "$FIXTURE_FILE")
+run_test "sticky-has-needs-input-heading" \
+  "1" \
+  "$(printf '%s' "$OQ_MD" | grep -c '### Needs your input' || true)"
+run_test "sticky-has-defaults-heading" \
+  "1" \
+  "$(printf '%s' "$OQ_MD" | grep -c '### Proposed defaults' || true)"
+run_test "sticky-has-spikes-heading" \
+  "1" \
+  "$(printf '%s' "$OQ_MD" | grep -c '### Deferred to research spikes' || true)"
+run_test "sticky-no-legacy-open-questions-heading" \
+  "0" \
+  "$(printf '%s' "$OQ_MD" | grep -c '### Open Questions' || true)"
 
 run_test "extract-assumption-count" \
   "2" \
