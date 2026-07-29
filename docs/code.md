@@ -46,7 +46,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script validates the agent's chosen target branch against this variable before pushing. Set via `env.runner` in `harness/code.yaml` (never injected into the sandbox). | Repo default branch (auto-detected via GitHub API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
-| `CODE_AUTO_MERGE` | Set to `"true"` to enable GitHub auto-merge on PRs created by the code agent. Uses the repo's configured merge strategy. | disabled | `"true"` to enable |
+| `CODE_AUTO_MERGE` | Set to `"true"` to enable GitHub auto-merge on PRs created by the code agent. Incompatible with GitHub merge queues (fails as a non-blocking warning). | `""` (disabled) | `"true"` to enable |
+| `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | `"merge"` | `"squash"`, `"rebase"`, `"merge"` |
 
 ## How the agent works
 
