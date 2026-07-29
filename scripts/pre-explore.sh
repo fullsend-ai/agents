@@ -383,6 +383,40 @@ fi
 echo "Issue context written to $WORKSPACE/issue-context.json"
 echo "::notice::Issue: ${ISSUE_KEY} (${ISSUE_SOURCE}, level=$(jq -r .level "$WORKSPACE/issue-context.json"))"
 
+# Hint file so the agent uses the live Jira search API (old /search is HTTP 410).
+if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_API_TOKEN:-}" ]]; then
+  _jira_auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+  _probe_codes=""
+  for _proj in KFLUXUI KFLUXSE STONEINTG; do
+    _code=$(curl -sS -o /dev/null -w "%{http_code}" \
+      -H "Authorization: Basic ${_jira_auth}" -H "Accept: application/json" \
+      "https://${JIRA_HOST}/rest/api/3/project/${_proj}" 2>/dev/null || echo "000")
+    _probe_codes="${_probe_codes}${_probe_codes:+, }${_proj}=${_code}"
+  done
+  _search_code=$(curl -sS -o /dev/null -w "%{http_code}" \
+    -H "Authorization: Basic ${_jira_auth}" -H "Accept: application/json" \
+    --get "https://${JIRA_HOST}/rest/api/3/search/jql" \
+    --data-urlencode "jql=project = ${ISSUE_KEY%%-*} ORDER BY updated DESC" \
+    --data-urlencode "maxResults=1" \
+    --data-urlencode "fields=key" 2>/dev/null || echo "000")
+  cat > "$WORKSPACE/jira-api-hints.json" <<EOF
+{
+  "host": "${JIRA_HOST}",
+  "search_endpoint": "/rest/api/3/search/jql",
+  "search_probe_http": ${_search_code},
+  "project_probes": "${_probe_codes}",
+  "notes": [
+    "Do NOT call /rest/api/3/search — it returns HTTP 410 (removed).",
+    "Use GET /rest/api/3/search/jql with jql + maxResults + fields query params.",
+    "Sibling projects returning 200 are readable — do not invent auth/host mismatch."
+  ]
+}
+EOF
+  echo "JIRA_API_HINTS=$WORKSPACE/jira-api-hints.json" >> "${GITHUB_ENV:-/dev/null}"
+  echo "::notice::Jira API hints written (search/jql probe HTTP ${_search_code}; projects ${_probe_codes})"
+  unset _jira_auth _probe_codes _proj _code _search_code
+fi
+
 # --- Install overlay: ORG_KNOWLEDGE pack (optional; before repo clone so knowledge can seed clones) ---
 for _install_scripts in \
   "$(git rev-parse --show-toplevel 2>/dev/null || echo ".")/.fullsend/scripts" \

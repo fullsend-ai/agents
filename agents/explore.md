@@ -38,6 +38,9 @@ Environment variables set by the pre-script:
   when present. If the file says no pack is available (or is absent): **still
   explore** using the issue, codebase, skills, and public sources. Do not invent
   an org model — record missing ownership/DoD/process facts in `gaps`.
+- `JIRA_API_HINTS` — optional path to `jira-api-hints.json` written by
+  pre-explore (live search endpoint + project probe HTTP codes). Read it before
+  any Jira sibling-project query.
 - `FULLSEND_OUTPUT_DIR` — where to write your result
 
 ## Process
@@ -47,6 +50,10 @@ Environment variables set by the pre-script:
 ```bash
 echo "::notice::PHASE 1: Parse work item"
 cat "$ISSUE_CONTEXT" | jq .
+if [[ -f "${JIRA_API_HINTS:-}" ]]; then
+  echo "Jira API hints:"
+  cat "$JIRA_API_HINTS" | jq .
+fi
 if [[ -f "${ORG_KNOWLEDGE:-}" ]]; then
   echo "Org/program knowledge pack:"
   cat "$ORG_KNOWLEDGE"
@@ -407,16 +414,53 @@ PMs often omit `repo_full_name` / `TARGET_REPO_DIR`. That is normal.
 
 Sandbox has read-only `JIRA_HOST` / `JIRA_EMAIL` / `JIRA_API_TOKEN` when the
 install configured them. For related work in sibling projects (e.g. KFLUXUI,
-STONEINTG on the same site), query Jira with curl+Basic auth rather than listing
-"Internal Red Hat Jira" under `not_accessed` without trying.
+KFLUXSE, STONEINTG on the same site), query Jira with curl+Basic auth rather
+than listing those projects under `not_accessed` without trying.
+
+**Use `/rest/api/3/search/jql`** — the old `/rest/api/3/search` endpoint returns
+HTTP 410 ("API has been removed"). A 410 is **not** an auth/host mismatch.
 
 ```bash
 AUTH=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
-curl -sf -H "Authorization: Basic $AUTH" -H "Accept: application/json" \
-  "https://${JIRA_HOST}/rest/api/3/search?jql=project=KFLUXUI%20AND%20text~%22SBOM%22&maxResults=10"
+# Confirm project exists
+curl -sS -o /tmp/proj.json -w "%{http_code}" -H "Authorization: Basic $AUTH" \
+  -H "Accept: application/json" \
+  "https://${JIRA_HOST}/rest/api/3/project/KFLUXUI"
+# Search (GET + jql query param)
+curl -sS -o /tmp/jql.json -w "%{http_code}" -H "Authorization: Basic $AUTH" \
+  -H "Accept: application/json" \
+  --get "https://${JIRA_HOST}/rest/api/3/search/jql" \
+  --data-urlencode 'jql=project = KFLUXUI ORDER BY updated DESC' \
+  --data-urlencode 'maxResults=10' \
+  --data-urlencode 'fields=summary,key,status'
 ```
 
-If credentials are missing or the call 401/403, then list it under `not_accessed`.
+Only list a Jira project under `not_accessed` when credentials are missing or
+the call returns 401/403. On success, put it under `accessed` with the issue
+keys you read. Never invent "auth/host mismatch" — report the HTTP status.
+
+## Public Konflux docs
+
+User-facing docs live at https://konflux.pages.redhat.com/docs/users/index.html
+(not a GitHub repo). Prefer fetching that when documenting UX/behavior gaps.
+Do not invent a `konflux.pages.redhat.com/docs` GitHub URL.
+
+## Confluence
+
+If `JIRA_HOST` is an Atlassian Cloud site, you may try Confluence:
+
+```bash
+curl -sS -o /tmp/conf.json -w "%{http_code}" -H "Authorization: Basic $AUTH" \
+  -H "Accept: application/json" \
+  --get "https://${JIRA_HOST}/wiki/rest/api/content/search" \
+  --data-urlencode 'cql=type=page AND text ~ "Konflux"' \
+  --data-urlencode 'limit=5'
+```
+
+Stage Confluence often returns 403 for the agent identity even when Jira works.
+In that case list "Confluence on $JIRA_HOST (HTTP 403 for this identity)" under
+`not_accessed` — do not invent pages. Prefer URLs already present in
+`ORG_KNOWLEDGE` (docs-and-links) when Confluence is unavailable.
 
 ## data_sources.not_accessed hygiene
 
@@ -425,3 +469,7 @@ Do **not** invent unavailable sources from the schema example. Especially:
   system and could not reach it (and never format it as a GitHub `owner/repo`).
 - Do not treat missing `TARGET_REPO_DIR` alone as a gap when referenced repos
   or GitHub API inspection succeeded.
+- Do not claim Jira sibling projects are unavailable after only calling the
+  removed `/rest/api/3/search` endpoint.
+- When listing org knowledge packs, name curated files so they can be linked
+  (e.g. `team-structure`, `deployments-ownership`).

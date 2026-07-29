@@ -297,10 +297,14 @@ def linkify(line: str) -> str:
         label, body = m.group("label"), m.group("body")
         parts = []
         for raw in re.split(r"\s*,\s*", body):
-            name = raw.strip()
-            if re.fullmatch(r"[A-Za-z0-9_.-]+\.md", name):
-                parts.append(f"[{name}]({knowledge_base}/{name})")
-            elif name:
+            name = raw.strip().strip("`")
+            if not name:
+                continue
+            # Agents often omit .md ("team-structure"); curated files are *.md.
+            file_name = name if name.endswith(".md") else f"{name}.md"
+            if re.fullmatch(r"[A-Za-z0-9_.-]+\.md", file_name):
+                parts.append(f"[{name}]({knowledge_base}/{file_name})")
+            else:
                 parts.append(name)
         if parts:
             return f"{label} ({', '.join(parts)})"
@@ -312,23 +316,33 @@ def linkify(line: str) -> str:
 
     out = re.sub(r"\b[A-Z][A-Z0-9]+-\d+\b", repl_jira, line)
 
-    def repl_repo(mo):
-        repo = mo.group(0)
-        if "..." in repo:
-            return repo
-        owner, _, name = repo.partition("/")
-        # Reject non-repo path-like tokens (e.g. "CI/CD", "docs/guides").
-        if owner.upper() in {"CI", "CD", "HTTP", "HTTPS", "WWW"}:
-            return repo
-        if name.upper() in {"CD", "CI"}:
-            return repo
-        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", owner):
-            return repo
-        if not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", name):
-            return repo
-        return f"[{repo}](https://github.com/{repo})"
+    # Link real URLs already present (http/https). Do NOT invent github.com links.
+    def repl_url(mo):
+        url = mo.group(0).rstrip(").,;]")
+        return f"[{url}]({url})"
 
-    return re.sub(r"\b[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*\b", repl_repo, out)
+    out = re.sub(r"https?://[^\s<>{}\"|\\^`\[\]]+", repl_url, out)
+
+    # Bare host paths that are clearly sites (contain a dot), e.g.
+    # konflux.pages.redhat.com/docs — never treat these as GitHub owner/repo.
+    def repl_host_path(mo):
+        hostpath = mo.group(0).rstrip(").,;]")
+        if "://" in hostpath:
+            return hostpath
+        href = f"https://{hostpath}"
+        return f"[{hostpath}]({href})"
+
+    out = re.sub(
+        r"\b(?:[A-Za-z0-9-]+\.)+(?:redhat\.com|atlassian\.net|github\.io|pages\.redhat\.com)"
+        r"(?:/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]*)?",
+        repl_host_path,
+        out,
+    )
+
+    # IMPORTANT: do not blanket-linkify bare owner/repo tokens. That turns
+    # "auth/host", "UX/design", "CI/CD" into fake https://github.com/... links.
+    # Structured "GitHub (owner/repo — …)" lines are handled above.
+    return out
 
 print("### Data Sources")
 print()
