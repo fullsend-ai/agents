@@ -115,6 +115,14 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 None.
 
+## Custom sandbox image
+
+The fix agent shares the same sandbox image as the code agent. If your
+project requires tools not in the universal image, see
+[Custom sandbox image](code.md#custom-sandbox-image) in the code agent
+docs. Remember to update the `image` field in both `harness/code.yaml`
+and `harness/fix.yaml`.
+
 ## How the agent works
 
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
