@@ -90,13 +90,24 @@ PRE_AGENT_HEAD="$(git -C "$TARGET_DIR" rev-parse HEAD)"
 export PRE_AGENT_HEAD
 
 REVIEW_BODY_FILE=""
+METRICS_TMP=""
 cleanup() {
+  # Best-effort temp-file removal only — must not override the script's real
+  # exit code. In bash, an EXIT trap's return status replaces an already-
+  # issued `exit "$rc"` when the trap's last command is false. The METRICS_TMP
+  # check below is false on nearly every real invocation (empty, or already
+  # mv'd into place), so without a trailing `true` a successful run reports
+  # exit 1 to the harness.
   # shellcheck disable=SC2317 # invoked indirectly via trap
   [[ -n "${ENV_FILE:-}" ]] && rm -f "$ENV_FILE"
   # shellcheck disable=SC2317
   [[ -n "${REVIEW_BODY_FILE:-}" && -f "${REVIEW_BODY_FILE:-}" ]] && rm -f "$REVIEW_BODY_FILE"
   # shellcheck disable=SC2317
   [[ -n "${EVAL_GH_WORKSPACE:-}" && -d "${EVAL_GH_WORKSPACE:-}" ]] && rm -rf "$EVAL_GH_WORKSPACE"
+  # shellcheck disable=SC2317
+  [[ -n "${METRICS_TMP:-}" && -f "${METRICS_TMP:-}" ]] && rm -f "$METRICS_TMP"
+  # shellcheck disable=SC2317
+  true
 }
 trap cleanup EXIT
 
@@ -106,12 +117,16 @@ trap cleanup EXIT
 # (unquoted values strip from space-hash onward).
 #
 # Dotenv format contract: NAME="value" lines, one per line, consumed by
-# fullsend's Go dotenv parser via --env-file (internal/*/envfile.go) — NOT
-# sourced by any shell. Escaping only needs to satisfy that parser's quoted-
-# string rules (backslash, double-quote, dollar-sign, backtick), not bash's;
-# characters with special meaning only to an interactive shell (e.g. `!`
-# history expansion) are not escaped here because they are never evaluated
-# by a shell.
+# fullsend's Go dotenv parser via --env-file (internal/envfile/envfile.go) —
+# NOT sourced by any shell. That parser does NOT support escape sequences
+# (its own doc comment: "Not supported: ... escape sequences"); quote
+# handling is a byte-literal scan for the first matching quote with zero
+# backslash-awareness. Escaping " / $ / ` here would either truncate the
+# value at the first \" (parser stops at the first " byte) or leave a
+# literal stray backslash in the value the agent receives. Fail closed on
+# the wrapping quote character instead, and pass every other byte through
+# unchanged — including $ and backtick, which the parser treats as
+# ordinary characters inside a quoted value.
 emit_env() {
   local name="$1" value="$2"
   if [[ ! "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
@@ -122,10 +137,11 @@ emit_env() {
     echo "ERROR: env value for ${name} contains a newline" >&2
     exit 1
   fi
-  value="${value//\\/\\\\}"
-  value="${value//\"/\\\"}"
-  value="${value//\$/\\\$}"
-  value="${value//\`/\\\`}"
+  # Fail closed: the parser can't represent a " inside a "-quoted value.
+  if [[ "$value" == *\"* ]]; then
+    echo "ERROR: env value for ${name} contains a double-quote; envfile.go has no escape sequences" >&2
+    exit 1
+  fi
   printf '%s="%s"\n' "$name" "$value"
 }
 
@@ -221,6 +237,27 @@ rm -f "$ENV_FILE"
 METRICS_FILE=$(find "$OUTPUT_DIR" -maxdepth 3 -name metrics.json -not -path "$OUTPUT_DIR/metrics.json" 2>/dev/null | head -1)
 if [[ -n "$METRICS_FILE" ]]; then
   cp "$METRICS_FILE" "$OUTPUT_DIR/metrics.json"
+  # agent-eval-harness's cli_runner.py reads a `cost_usd` key, but fullsend
+  # writes `total_cost_usd` (internal/cli/run.go's aggregateMetrics struct,
+  # written by writeMetricsJSON). Without this alias the harness silently
+  # reports $0.00 cost even when the run incurred real spend. Alias rather
+  # than rename so metrics.json still matches fullsend's own documented
+  # schema.
+  #
+  # mktemp/jq/mv are chained through the if-condition (not run as bare
+  # statements) so a failure here — e.g. /tmp unwritable, disk full, a
+  # cross-filesystem mv — only warns instead of tripping set -e and turning
+  # an otherwise-successful run (rc=0, PR created) into a reported failure.
+  if ! METRICS_TMP=$(mktemp); then
+    echo "WARNING: mktemp failed; skipping cost_usd alias" >&2
+  elif jq '.cost_usd = (.cost_usd // .total_cost_usd // 0)' \
+    "$OUTPUT_DIR/metrics.json" > "$METRICS_TMP"; then
+    mv "$METRICS_TMP" "$OUTPUT_DIR/metrics.json" \
+      || echo "WARNING: failed to install aliased metrics.json" >&2
+  else
+    echo "WARNING: failed to alias cost_usd in metrics.json; harness may report \$0.00 cost" >&2
+    rm -f "$METRICS_TMP"
+  fi
   echo "Copied metrics -> $OUTPUT_DIR/metrics.json"
 fi
 

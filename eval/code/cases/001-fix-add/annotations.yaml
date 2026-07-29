@@ -1,0 +1,29 @@
+# Expected outcome after the code agent + post-script run.
+# Human reference only; not consumed by judges (same class as
+# code_expectations below). Distinct from the live issue `state` key that
+# capture-fixture.sh writes into fixture-state.json.
+state: open
+
+# End-to-end success: post-script opened a PR that touches the buggy file.
+expected_files:
+  - calc.py
+
+labels:
+  forbidden: []
+
+# Code agent budgets (sandbox work + retries).
+# Observed baselines: 12 turns / $2.12 (CI run 29424512121), then 35 turns /
+# $0.98 (CI run 30166455238) for the same trivial fixture — turn count is
+# noisy run-to-run even though cost stays low, so max_turns carries most of
+# the headroom here (~1.7x over the higher observed value) while
+# max_cost_usd keeps ~2x over the higher observed cost.
+max_turns: 60
+max_cost_usd: 4.00
+
+# Human reference only; not consumed by judges (unlike triage/review quality).
+code_expectations: |
+  The repo has a one-line bug in calc.py: add() subtracts instead of adds.
+  A successful run creates a PR via the post-script that fixes add() to
+  return a + b. Primary signal is pr_created — this case is an end-to-end
+  regression guard for the code pipeline when sandbox GitHub is read-only
+  (agent must still read the issue/repo and leave commits for post-script).
