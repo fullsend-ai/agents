@@ -4,11 +4,27 @@
 # Prevents malformed or malicious event_payload from reaching the sandbox.
 # Runs on the GitHub Actions runner BEFORE sandbox creation.
 #
+# Skip signalling uses the pre-script output protocol
+# (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
+# when an open human PR already addresses the issue, this script writes
+# skipped=true to the file named by FULLSEND_PRESCRIPT_OUTPUT and
+# fullsend run stops before creating the sandbox. Under a CLI that
+# predates the protocol the variable is unset and the write is skipped —
+# the run proceeds, which matches the pre-protocol behavior.
+#
 # Required environment variables (set by the workflow):
 #   ISSUE_NUMBER       — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
 #   GITHUB_ISSUE_URL   — must be a valid GitHub issue URL
 set -euo pipefail
+
+# prescript_output KEY VALUE — append a protocol line, if the CLI
+# supports the protocol. Values must be single-line (protocol grammar).
+prescript_output() {
+  if [[ -n "${FULLSEND_PRESCRIPT_OUTPUT:-}" ]]; then
+    printf '%s=%s\n' "$1" "$2" >> "${FULLSEND_PRESCRIPT_OUTPUT}"
+  fi
+}
 
 echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL:-}"
 
@@ -57,7 +73,6 @@ echo "  GITHUB_ISSUE_URL=${GITHUB_ISSUE_URL}"
 # Skip if GH_TOKEN is not available (best-effort check).
 if [[ -z "${GH_TOKEN:-}" ]]; then
   echo "GH_TOKEN not set — skipping existing-PR check"
-  echo "skipped=false" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
@@ -65,7 +80,6 @@ fi
 echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
 if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${COMMENT_BODY:-}" == *--force* ]]; then
   echo "Force override — skipping existing-PR check"
-  echo "skipped=false" >> "${GITHUB_OUTPUT:-/dev/null}"
   exit 0
 fi
 
@@ -115,12 +129,12 @@ To override, comment \`/fs-code --force\` on this issue.
     --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
 
   echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
-  echo "skipped=true" >> "${GITHUB_OUTPUT:-/dev/null}"
+  prescript_output "skipped" "true"
+  prescript_output "reason" "open PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR} already addresses issue #${ISSUE_NUMBER}"
   exit 0
 fi
 
 echo "No existing human PRs found — proceeding with code agent"
-echo "skipped=false" >> "${GITHUB_OUTPUT:-/dev/null}"
 
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies
