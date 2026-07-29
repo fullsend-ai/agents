@@ -437,4 +437,9 @@ if [[ -n "${_INSTALL_SCRIPTS}" && -f "${_INSTALL_SCRIPTS}/pack-org-knowledge.sh"
 fi
 unset _INSTALL_SCRIPTS _candidate _SCHEMA _skill_dir
 
+# Duplicate-work gate file for sandbox (second /fs-refine = override).
+# shellcheck disable=SC1090
+source "$(_resolve_companion comment-helpers.sh)"
+write_duplicate_gate_file refine "$WORKSPACE"
+
 echo "Pre-refine complete."

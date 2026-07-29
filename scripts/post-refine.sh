@@ -177,6 +177,55 @@ fi
 
 init_comment_helpers "refine" "$USE_GITHUB"
 
+# --- Fail-fast duplicate block: sticky warning, no ready-to-critique ---
+if [[ "$STATUS" == "blocked_duplicate" ]]; then
+  CONFIDENCE_INT=$(printf '%.0f' "$CONFIDENCE" 2>/dev/null || echo "0")
+  DUP_SECTION=$(format_duplicate_block_md refine "${RESULT_FILE}")
+  SUMMARY_BLURB=$(format_brief_blurb_md "$(jq -r '.summary // .comment // ""' "${RESULT_FILE}")" 500)
+
+  if $USE_GITHUB; then
+    remove_label "${REPO_FULL_NAME}" "$GITHUB_ISSUE_NUMBER" "ready-to-refine" || true
+  else
+    # Drop ready-to-refine if still present so poller does not loop refine→critique
+    if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_API_TOKEN:-}" ]]; then
+      validate_jira_host
+      AUTH=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+      curl -sSf -X PUT \
+        -H "Authorization: Basic $AUTH" \
+        -H "Content-Type: application/json" \
+        -d '{"update":{"labels":[{"remove":"ready-to-refine"}]}}' \
+        "https://${JIRA_HOST}/rest/api/3/issue/${ISSUE_KEY}" > /dev/null 2>&1 || true
+    fi
+  fi
+
+  REFINE_COMMENT="${AGENT_HEADER}
+
+| | |
+|---|---|
+| **Disposition** | blocked_duplicate |
+| **Confidence** | ${CONFIDENCE_INT}/100 |
+
+---
+
+${DUP_SECTION}
+
+---
+
+### Summary
+
+${SUMMARY_BLURB}
+
+---
+
+> Refinement stopped early to avoid wasting tokens on duplicate work.
+> No \`ready-to-critique\` label was added. Re-run \`/fs-refine\` to override."
+
+  sticky_comment "$REFINE_COMMENT"
+  echo "::notice::Refine blocked on duplicate work — skipped ready-to-critique"
+  echo "Post-refine complete (blocked_duplicate)."
+  exit 0
+fi
+
 # --- Post plan and signal critique ---
 
 CONFIDENCE_INT=$(printf '%.0f' "$CONFIDENCE" 2>/dev/null || echo "0")

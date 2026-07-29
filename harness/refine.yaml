@@ -38,6 +38,9 @@ host_files:
   - src: /tmp/workspace/human-directive.txt
     dest: /sandbox/workspace/human-directive.txt
     optional: true
+  - src: /tmp/workspace/duplicate-gate.json
+    dest: /sandbox/workspace/duplicate-gate.json
+    optional: true
 
 pre_script: scripts/pre-refine.sh
 post_script: scripts/post-refine.sh
