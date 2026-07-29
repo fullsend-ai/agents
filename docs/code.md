@@ -71,7 +71,7 @@ need a custom image.
 
 ### Image requirements
 
-A custom image must satisfy the constraints enforced by the sandbox
+A custom image must work within the constraints enforced by the sandbox
 policy ([`policies/code.yaml`](../policies/code.yaml)):
 
 | Requirement | Detail |
@@ -111,11 +111,31 @@ docker push ghcr.io/<org>/<repo>-code:latest
 
 ### How to configure
 
-Override the `image` field in your repository's `harness/code.yaml` to
-point to the custom image:
+Create a custom harness for the code agent at `.fullsend/code.yaml`
+overriding the image with your's:
 
 ```yaml
+# .fullsend/code.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/code.yaml#sha256=<sha256sum>
 image: ghcr.io/<org>/<repo>-code:latest
+```
+
+To get the `<SHA>` and `<sha256sum>` values use:
+
+```bash
+SHA=$(curl -s https://api.github.com/repos/fullsend-ai/agents/commits/main | jq -r '.sha')
+HASH=$(curl -sL "https://raw.githubusercontent.com/fullsend-ai/agents/${SHA}/harness/code.yaml" | sha256sum | awk '{print $1}')
+echo "https://raw.githubusercontent.com/fullsend-ai/agents/${SHA}/harness/code.yaml#sha256=${HASH}"
+```
+
+And then reference that harness in your `.fullsend/config.yaml`:
+
+```yaml
+# .fullsend/config.yaml
+
+agents:
+  - name: code
+    source: code.yaml
 ```
 
 The same field exists in `harness/fix.yaml` (the [fix agent](fix.md)
