@@ -96,6 +96,7 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: read-only
+        allow_encoded_slash: true
       - host: "registry.yarnpkg.com"
         port: 443
         protocol: rest
