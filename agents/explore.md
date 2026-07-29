@@ -38,9 +38,9 @@ Environment variables set by the pre-script:
   when present. If the file says no pack is available (or is absent): **still
   explore** using the issue, codebase, skills, and public sources. Do not invent
   an org model — record missing ownership/DoD/process facts in `gaps`.
-- `JIRA_API_HINTS` — optional path to `jira-api-hints.json` written by
-  pre-explore (live search endpoint + project probe HTTP codes). Read it before
-  any Jira sibling-project query.
+- `/tmp/workspace/jira-api-hints.json` — optional file written by pre-explore
+  (live search endpoint + project probe HTTP codes). Read it before any Jira
+  sibling-project query when the file exists.
 - `FULLSEND_OUTPUT_DIR` — where to write your result
 
 ## Process
@@ -50,9 +50,9 @@ Environment variables set by the pre-script:
 ```bash
 echo "::notice::PHASE 1: Parse work item"
 cat "$ISSUE_CONTEXT" | jq .
-if [[ -f "${JIRA_API_HINTS:-}" ]]; then
+if [[ -f /tmp/workspace/jira-api-hints.json ]]; then
   echo "Jira API hints:"
-  cat "$JIRA_API_HINTS" | jq .
+  cat /tmp/workspace/jira-api-hints.json | jq .
 fi
 if [[ -f "${ORG_KNOWLEDGE:-}" ]]; then
   echo "Org/program knowledge pack:"

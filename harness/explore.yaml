@@ -65,6 +65,5 @@ env:
     JIRA_HOST: "${JIRA_HOST}"
     JIRA_EMAIL: "${JIRA_EMAIL}"
     JIRA_API_TOKEN: "${JIRA_API_TOKEN}"
-    JIRA_API_HINTS: "${JIRA_API_HINTS}"
 
 timeout_minutes: 20
