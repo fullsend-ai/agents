@@ -92,6 +92,12 @@ export PRE_AGENT_HEAD
 REVIEW_BODY_FILE=""
 METRICS_TMP=""
 cleanup() {
+  # Best-effort temp-file removal only — must not override the script's real
+  # exit code. In bash, an EXIT trap's return status replaces an already-
+  # issued `exit "$rc"` when the trap's last command is false. The METRICS_TMP
+  # check below is false on nearly every real invocation (empty, or already
+  # mv'd into place), so without a trailing `true` a successful run reports
+  # exit 1 to the harness.
   # shellcheck disable=SC2317 # invoked indirectly via trap
   [[ -n "${ENV_FILE:-}" ]] && rm -f "$ENV_FILE"
   # shellcheck disable=SC2317
@@ -100,6 +106,8 @@ cleanup() {
   [[ -n "${EVAL_GH_WORKSPACE:-}" && -d "${EVAL_GH_WORKSPACE:-}" ]] && rm -rf "$EVAL_GH_WORKSPACE"
   # shellcheck disable=SC2317
   [[ -n "${METRICS_TMP:-}" && -f "${METRICS_TMP:-}" ]] && rm -f "$METRICS_TMP"
+  # shellcheck disable=SC2317
+  true
 }
 trap cleanup EXIT
 

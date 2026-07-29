@@ -8,7 +8,7 @@ skill: fix
 
 execution:
   mode: case
-  # Harness hard-kill. Keep slightly above runner.env.EVAL_TIMEOUT so the
+  # Harness hard-kill. Keep slightly above execution.env.EVAL_TIMEOUT so the
   # script-level timeout can fire first and trap cleanup EXIT still runs.
   timeout: 1800  # fix harness timeout_minutes is 25; leave headroom
   parallelism: 1
@@ -20,6 +20,12 @@ execution:
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
     CLOUD_ML_REGION: $CLOUD_ML_REGION
+    # Must live under execution.env — for runner: type: cli the harness's
+    # CliRunner.from_config() builds the subprocess env from
+    # config.execution.env only; runner.env has no effect (see
+    # docs/opaque-cli-runner-contract.md). Script-level timeout, slightly
+    # under execution.timeout so trap cleanup EXIT still runs.
+    EVAL_TIMEOUT: "1700"
 
 hooks:
   before_each:
@@ -43,15 +49,6 @@ runner:
     - "{agent}"
     - "{workspace}"
     - "{output_dir}"
-  env:
-    FULLSEND_DIR: $FULLSEND_DIR
-    GH_TOKEN: $GH_TOKEN
-    # Script-level timeout (slightly under execution.timeout) so trap cleanup runs.
-    EVAL_TIMEOUT: "1700"
-    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
-    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
-    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
-    CLOUD_ML_REGION: $CLOUD_ML_REGION
 
 models:
   skill: claude-opus-4-6
