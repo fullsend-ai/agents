@@ -40,8 +40,9 @@ to focus on:
 
 ## Configuration
 
-See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
-[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
+See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md),
+[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills), and
+[Overriding Harness Configuration](customization.md).
 
 ### Variables
 

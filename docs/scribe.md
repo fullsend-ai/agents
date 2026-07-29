@@ -15,6 +15,9 @@ The scribe agent runs on a schedule or via manual trigger.
 
 ## Configuration
 
+See [Overriding Harness Configuration](customization.md) for the general
+pattern of customizing agent harness files via `.fullsend/` overrides.
+
 Register the agent in your `.fullsend` config (ADR 0058):
 
 ```bash

@@ -35,6 +35,10 @@ issue content and produces a score — the project board is updated directly.
 
 ## Configuration
 
+See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md),
+[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills), and
+[Overriding Harness Configuration](customization.md).
+
 ### Skill: `customer-research`
 
 The prioritize agent looks for a `customer-research` skill and, when available,

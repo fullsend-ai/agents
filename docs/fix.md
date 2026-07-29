@@ -108,8 +108,9 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 
 ## Configuration
 
-See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
-[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
+See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md),
+[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills), and
+[Overriding Harness Configuration](customization.md).
 
 ### Variables
 
@@ -120,8 +121,8 @@ None.
 The fix agent shares the same sandbox image as the code agent. If your
 project requires tools not in the universal image, see
 [Custom sandbox image](code.md#custom-sandbox-image) in the code agent
-docs. Remember to update the `image` field in both `harness/code.yaml`
-and `harness/fix.yaml`.
+docs. Remember to create `.fullsend/fix.yaml` with the same image
+override if your project uses the fix agent.
 
 ## How the agent works
 
