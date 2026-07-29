@@ -2,16 +2,45 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "explore-result.schema.json",
   "title": "Exploration Result",
-  "description": "Output schema for the explore agent \u2014 public research context for a work item.",
+  "description": "Output schema for the explore agent — public research context for a work item. disposition=blocked_duplicate is a fail-fast stop when near-duplicate open work is found.",
   "type": "object",
   "required": [
     "input",
-    "technical_landscape",
-    "related_work",
     "confidence",
     "summary"
   ],
   "properties": {
+    "disposition": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "blocked_duplicate"
+      ],
+      "description": "Omit or complete for a full exploration. blocked_duplicate = early stop; do not chain refine."
+    },
+    "duplicate_of": {
+      "type": "array",
+      "description": "Near-duplicate open Features/Epics that triggered a block (or were overridden).",
+      "items": {
+        "type": "object",
+        "required": [
+          "key",
+          "summary",
+          "reason"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
     "input": {
       "type": "object",
       "required": [
@@ -281,5 +310,40 @@
       "type": "string",
       "maxLength": 2000
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "disposition": {
+            "const": "blocked_duplicate"
+          }
+        },
+        "required": [
+          "disposition"
+        ]
+      },
+      "then": {
+        "required": [
+          "disposition",
+          "duplicate_of",
+          "related_work"
+        ],
+        "properties": {
+          "duplicate_of": {
+            "minItems": 1
+          },
+          "related_work": {
+            "minItems": 1
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "technical_landscape",
+          "related_work"
+        ]
+      }
+    }
+  ]
 }

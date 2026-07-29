@@ -125,14 +125,61 @@ fi
 OVERALL_CONFIDENCE=$(jq -r '.confidence.overall // 0' "${RESULT_FILE}")
 GAP_COUNT=$(jq '.gaps // [] | length' "${RESULT_FILE}")
 RELATED_COUNT=$(jq '.related_work // [] | length' "${RESULT_FILE}")
+DISPOSITION=$(jq -r '.disposition // "complete"' "${RESULT_FILE}")
 
-echo "::notice::Exploration complete: confidence=${OVERALL_CONFIDENCE}, gaps=${GAP_COUNT}, related_work=${RELATED_COUNT}"
+echo "::notice::Exploration complete: disposition=${DISPOSITION}, confidence=${OVERALL_CONFIDENCE}, gaps=${GAP_COUNT}, related_work=${RELATED_COUNT}"
 
 WORKSPACE="/tmp/workspace"
 mkdir -p "$WORKSPACE"
 cp "${RESULT_FILE}" "${WORKSPACE}/exploration_context.json"
 
 echo "Exploration context saved to ${WORKSPACE}/exploration_context.json"
+
+# --- Fail-fast duplicate block: sticky warning, no ready-to-refine ---
+if [[ "$DISPOSITION" == "blocked_duplicate" ]]; then
+  USE_GITHUB=false
+  if [[ "${ISSUE_SOURCE}" == "github" && -n "${GITHUB_ISSUE_NUMBER:-}" && "${GITHUB_ISSUE_NUMBER}" != "N/A" ]]; then
+    USE_GITHUB=true
+  fi
+  init_comment_helpers "explore" "$USE_GITHUB"
+
+  if [[ -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
+    RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+    RUN_LINK="[Run #${GITHUB_RUN_ID}](${RUN_URL})"
+  else
+    RUN_LINK="manual run"
+  fi
+
+  DUP_SECTION=$(format_duplicate_block_md explore "${RESULT_FILE}")
+  SUMMARY_BLURB=$(format_brief_blurb_md "$(jq -r '.summary // ""' "${RESULT_FILE}")" 500)
+
+  EXPLORE_COMMENT="## Explore Agent — duplicate work blocked
+
+| | |
+|---|---|
+| **Run** | ${RUN_LINK} |
+| **Disposition** | blocked_duplicate |
+
+---
+
+${DUP_SECTION}
+
+---
+
+### Summary
+
+${SUMMARY_BLURB}
+
+---
+
+> Exploration stopped early to avoid wasting tokens on duplicate work.
+> No \`ready-to-refine\` label was added. Re-run \`/fs-explore\` to override."
+
+  sticky_comment "$EXPLORE_COMMENT"
+  echo "::notice::Explore blocked on duplicate work — skipped ready-to-refine"
+  echo "Post-explore complete (blocked_duplicate)."
+  exit 0
+fi
 
 # --- Attach exploration context to the issue ---
 ATTACHMENT_NAME="exploration_context.json"

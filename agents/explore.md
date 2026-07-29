@@ -41,9 +41,45 @@ Environment variables set by the pre-script:
 - `/tmp/workspace/jira-api-hints.json` — optional file written by pre-explore
   (live search endpoint + project probe HTTP codes). Read it before any Jira
   sibling-project query when the file exists.
+- `/tmp/workspace/duplicate-gate.json` — written by pre-explore. If
+  `override: true`, a prior explore sticky already warned about duplicates and
+  this `/fs-explore` is an explicit human override — do **not** block again;
+  run a full exploration (still list the related keys in `related_work`).
 - `FULLSEND_OUTPUT_DIR` — where to write your result
 
 ## Process
+
+### Phase 0: Duplicate-work gate (FIRST — fail fast)
+
+```bash
+echo "::notice::PHASE 0: Duplicate-work gate"
+cat /tmp/workspace/duplicate-gate.json 2>/dev/null | jq . || true
+cat "$ISSUE_CONTEXT" | jq '{key, summary: .fields.summary // .summary, issuetype: .fields.issuetype.name // .level}'
+```
+
+**Before** codebase analysis, web research, or deep related-work mining:
+
+1. Read `duplicate-gate.json`. If `override` is `true`, skip to Phase 1 (full explore).
+2. Otherwise run a **cheap** Jira (or GitHub) search for **open** Features/Epics
+   whose problem + scope are substantially the same as this issue (near-duplicate
+   of the same work — not merely a related theme).
+3. If you find one or more near-duplicates:
+   - Write `$FULLSEND_OUTPUT_DIR/agent-result.json` immediately with
+     `"disposition": "blocked_duplicate"`, a non-empty `duplicate_of` array
+     (key, summary, reason), `related_work` listing those items, short `summary`,
+     and `confidence.overall` (use a low number such as 20). Sparse stubs for
+     other fields are fine.
+   - **Stop.** Do not clone/analyze repos, do not web-research, do not continue.
+4. If none — proceed to Phase 1.
+
+**Near-duplicate (block):** same product surface + same outcomes so a full
+explore would invent parallel work (e.g. two Features both asking for Conforma +
+Integration Application health signals).
+
+**Not a duplicate (proceed):** related themes, shared UI surface, sibling signal
+types, prior completed foundation, or dependencies. Record in `related_work`.
+
+Never treat a near-identical open sibling as “coordinate later, continue.”
 
 ### Phase 1: Understand the work item
 
@@ -289,14 +325,53 @@ echo "::notice::PHASE 6: Write result"
 
 Write the exploration result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
 
-**Important**: Include the `data_sources` field. This tells downstream agents
-and humans what data you actually accessed and what you could NOT access.
-Be specific and honest — list every source by name (repo, project key,
-search query count). For `not_accessed`, list data sources that WOULD have
-been useful but were unavailable (GitLab repos, internal docs, Slack, CI data).
+**Blocked duplicate (Phase 0 only)** — minimal payload, then stop:
 
 ```json
 {
+  "disposition": "blocked_duplicate",
+  "input": {
+    "source": "jira",
+    "key": "PROJECT-200",
+    "level": "feature",
+    "summary": "..."
+  },
+  "duplicate_of": [
+    {
+      "key": "PROJECT-100",
+      "summary": "Near-identical open Feature",
+      "reason": "Same problem and scope; proceeding would duplicate the plan"
+    }
+  ],
+  "related_work": [
+    {
+      "type": "issue",
+      "source": "jira",
+      "key": "PROJECT-100",
+      "title": "Near-identical open Feature",
+      "state": "open",
+      "relevance": "Near-duplicate — explore blocked"
+    }
+  ],
+  "confidence": { "overall": 20, "related_work": 90 },
+  "summary": "Blocked: near-duplicate of PROJECT-100. Re-run /fs-explore to override.",
+  "data_sources": {
+    "accessed": ["Jira (duplicate scan)"],
+    "not_accessed": ["Codebase deep-dive (skipped — duplicate block)"]
+  }
+}
+```
+
+**Full exploration:** set `"disposition": "complete"` (or omit). Include the
+`data_sources` field. Be specific and honest — list every source by name.
+For `not_accessed`, list data sources that WOULD have been useful but were
+unavailable (GitLab repos, internal docs, Slack, CI data). If this run was an
+override after a duplicate warning, note that in `summary` and still list the
+related keys in `related_work`.
+
+```json
+{
+  "disposition": "complete",
   "input": {
     "source": "jira | github | text | web",
     "key": "PROJECT-1234",

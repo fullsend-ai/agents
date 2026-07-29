@@ -849,3 +849,103 @@ if len(blurb) > int(sys.argv[1]):
 print(blurb)
 ' "$max_chars" <<<"$text"
 }
+
+# --- Duplicate-work early stop (explore / refine) --------------------------------
+# Marker lives in the stage sticky. A later /fs-explore or /fs-refine that sees
+# the marker for that stage is treated as an explicit human override.
+
+duplicate_block_marker() {
+  local stage="$1"
+  echo "fullsend:duplicate-block stage=${stage}"
+}
+
+# Return 0 if issue comments already contain a duplicate-block marker for stage.
+has_duplicate_block_marker() {
+  local stage="$1"
+  local marker
+  marker="$(duplicate_block_marker "$stage")"
+
+  if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_API_TOKEN:-}" ]]; then
+    validate_jira_host
+    local auth
+    auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+    curl -sSf \
+      -H "Authorization: Basic $auth" \
+      -H "Accept: application/json" \
+      "https://${JIRA_HOST}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50" \
+      2>/dev/null \
+      | jq -e --arg marker "$marker" '
+          any(.comments[]?;
+            ([.body.content[]? | .. | .text? // empty] | join(" ") | contains($marker))
+          )
+        ' >/dev/null 2>&1
+    return $?
+  fi
+
+  if [[ -n "${GITHUB_ISSUE_NUMBER:-}" && "${GITHUB_ISSUE_NUMBER}" != "N/A" && -n "${REPO_FULL_NAME:-}" ]]; then
+    gh api "repos/${REPO_FULL_NAME}/issues/${GITHUB_ISSUE_NUMBER}/comments" --paginate \
+      2>/dev/null \
+      | jq -s -e --arg marker "$marker" '
+          add
+          | any(.[]; (.body // "") | contains($marker))
+        ' >/dev/null 2>&1
+    return $?
+  fi
+
+  return 1
+}
+
+# Write /tmp/workspace/duplicate-gate.json for the sandbox (avoid harness ${VAR}
+# validation — same trap as JIRA_API_HINTS).
+write_duplicate_gate_file() {
+  local stage="$1"
+  local workspace="${2:-/tmp/workspace}"
+  local override=false
+  mkdir -p "$workspace"
+  if has_duplicate_block_marker "$stage"; then
+    override=true
+    echo "::notice::Duplicate-block marker found for ${stage} — treating this run as override"
+  fi
+  jq -nc --arg stage "$stage" --argjson override "$override" \
+    '{stage:$stage, override:$override, marker:("fullsend:duplicate-block stage="+$stage)}' \
+    > "${workspace}/duplicate-gate.json"
+  echo "Wrote ${workspace}/duplicate-gate.json (override=${override})"
+}
+
+# Markdown body for a blocked-duplicate sticky (includes machine marker).
+format_duplicate_block_md() {
+  local stage="$1"
+  local result_file="$2"
+  local cmd="/fs-${stage}"
+  local marker
+  marker="$(duplicate_block_marker "$stage")"
+
+  local keys_md
+  keys_md=$(jq -r '
+    (.duplicate_of // [])
+    | if length == 0 then "- (see summary)"
+      else
+        map(
+          "- **\(.key)** — \(.summary // "related issue")"
+          + (if (.reason // "") != "" then "\n  - \(.reason)" else "" end)
+        )
+        | join("\n")
+      end
+  ' "${result_file}" 2>/dev/null || echo "- (see summary)")
+
+  cat <<EOF
+### Possible duplicate work
+
+This issue looks like a **near-duplicate** of open work that already covers the same problem and scope:
+
+${keys_md}
+
+**What to do**
+1. Resolve or close the duplicate(s), then re-run \`${cmd}\`, **or**
+2. Comment \`${cmd}\` **again** to override this warning and run a full ${stage}.
+
+The second \`${cmd}\` after this notice is treated as an explicit human override.
+
+\`${marker}\`
+EOF
+}

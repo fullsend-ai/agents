@@ -29,6 +29,9 @@ host_files:
   - src: /tmp/workspace/referenced-repos-manifest.json
     dest: /sandbox/workspace/referenced-repos-manifest.json
     optional: true
+  - src: /tmp/workspace/duplicate-gate.json
+    dest: /sandbox/workspace/duplicate-gate.json
+    optional: true
 
 skills:
   - skills/public-research

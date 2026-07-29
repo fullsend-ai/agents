@@ -882,3 +882,8 @@ fi
 # Export paths for the agent
 echo "ISSUE_CONTEXT=$WORKSPACE/issue-context.json" >> "${GITHUB_ENV:-/dev/null}"
 
+# Duplicate-work gate: if a prior explore sticky warned about duplicates,
+# this /fs-explore is an override. File is mounted into the sandbox (no host
+# ${VAR} — avoids ValidateRunnerEnv before pre-script).
+write_duplicate_gate_file explore "$WORKSPACE"
+
