@@ -167,12 +167,13 @@ def main(argv=None):
         return 1
 
     if jsonschema is not None:
-        schema_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
-            "..",
-            "schemas",
-            "fix-result.schema.json",
-        )
+        schema_path = os.environ.get("FULLSEND_OUTPUT_SCHEMA")
+        if not schema_path:
+            print(
+                "::error::Cannot resolve schema path: FULLSEND_OUTPUT_SCHEMA environment variable is not set",
+                file=sys.stderr,
+            )
+            return 1
         try:
             with open(schema_path) as f:
                 schema = json.load(f)
