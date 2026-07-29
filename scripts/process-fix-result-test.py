@@ -26,6 +26,14 @@ spec.loader.exec_module(mod)
 build_summary_body = mod.build_summary_body
 main = mod.main
 
+_SCHEMA_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..",
+    "schemas",
+    "fix-result.schema.json",
+)
+_SCHEMA_ENV = {"FULLSEND_OUTPUT_SCHEMA": _SCHEMA_PATH}
+
 
 class TestBuildSummaryBody(unittest.TestCase):
     def test_basic_summary_with_fixes(self):
@@ -215,6 +223,7 @@ class TestCommentTruncation(unittest.TestCase):
         self.assertLess(len(body), MAX_COMMENT_LENGTH)
 
 
+@patch.dict(os.environ, _SCHEMA_ENV)
 class TestUnknownActionType(unittest.TestCase):
     def test_unknown_type_rejected_by_schema(self):
         """Unknown action types are now caught by schema validation (exit 1)."""
@@ -241,6 +250,7 @@ class TestUnknownActionType(unittest.TestCase):
                 os.unlink(f.name)
 
 
+@patch.dict(os.environ, _SCHEMA_ENV)
 class TestPostSummaryFailure(unittest.TestCase):
     def test_returns_2_when_comment_post_fails(self):
         data = {
@@ -267,6 +277,7 @@ class TestPostSummaryFailure(unittest.TestCase):
                 os.unlink(f.name)
 
 
+@patch.dict(os.environ, _SCHEMA_ENV)
 class TestMain(unittest.TestCase):
     def test_missing_args(self):
         self.assertEqual(main([]), 1)
@@ -321,6 +332,7 @@ class TestMain(unittest.TestCase):
                 os.unlink(f.name)
 
 
+@patch.dict(os.environ, _SCHEMA_ENV)
 class TestSchemaValidation(unittest.TestCase):
     """Tests for schema validation added in #412."""
 
@@ -442,6 +454,57 @@ class TestSchemaValidation(unittest.TestCase):
             f.flush()
             try:
                 self.assertEqual(main([f.name, "org/repo", "1", "--dry-run"]), 1)
+            finally:
+                os.unlink(f.name)
+
+
+@patch.dict(os.environ, _SCHEMA_ENV)
+class TestSchemaEnvVar(unittest.TestCase):
+    """Tests for FULLSEND_OUTPUT_SCHEMA env var requirement (#526)."""
+
+    def test_missing_env_var_fails(self):
+        """Missing FULLSEND_OUTPUT_SCHEMA exits 1 with a clear error."""
+        data = {
+            "pr_number": 42,
+            "trigger_source": "bot",
+            "actions": [
+                {"type": "fix", "finding": "nil check", "description": "Fixed"},
+            ],
+            "summary": "All good.",
+            "tests_passed": True,
+            "files_changed": ["foo.go"],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            f.flush()
+            try:
+                os.environ.pop("FULLSEND_OUTPUT_SCHEMA", None)
+                with contextlib.redirect_stderr(io.StringIO()) as captured:
+                    result = main([f.name, "org/repo", "42", "--dry-run"])
+                self.assertEqual(result, 1)
+                self.assertIn("FULLSEND_OUTPUT_SCHEMA", captured.getvalue())
+            finally:
+                os.unlink(f.name)
+
+    def test_env_var_used_for_schema_path(self):
+        """When FULLSEND_OUTPUT_SCHEMA is set, it is used as the schema path."""
+        data = {
+            "pr_number": 42,
+            "trigger_source": "bot",
+            "actions": [
+                {"type": "fix", "finding": "nil check", "description": "Fixed"},
+            ],
+            "summary": "All good.",
+            "tests_passed": True,
+            "files_changed": ["foo.go"],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            f.flush()
+            try:
+                # FULLSEND_OUTPUT_SCHEMA is set by the class-level @patch.dict
+                result = main([f.name, "org/repo", "42", "--dry-run"])
+                self.assertEqual(result, 0)
             finally:
                 os.unlink(f.name)
 
