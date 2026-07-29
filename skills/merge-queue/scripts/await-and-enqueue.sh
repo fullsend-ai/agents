@@ -9,19 +9,30 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/write-approval-check.lib.sh
+source "${SCRIPT_DIR}/lib/write-approval-check.lib.sh"
+
 POLL_INTERVAL="${POLL_INTERVAL:-30}"
 pr="${1:-}"
 
-# Resolve PR URL, repo, and base branch
+# Resolve PR URL, number, repo, and base branch
 if [[ -z "$pr" ]]; then
-  pr_json_init="$(gh pr view --json url,baseRefName,headRepository -q '{url,baseRefName,nwo:.headRepository.owner.login+"/"+.headRepository.name}')"
+  pr_json_init="$(gh pr view --json url,number,baseRefName,headRepository -q '{url,number,baseRefName,nwo:.headRepository.owner.login+"/"+.headRepository.name}')"
 else
-  pr_json_init="$(gh pr view "$pr" --json url,baseRefName,headRepository -q '{url,baseRefName,nwo:.headRepository.owner.login+"/"+.headRepository.name}')"
+  pr_json_init="$(gh pr view "$pr" --json url,number,baseRefName,headRepository -q '{url,number,baseRefName,nwo:.headRepository.owner.login+"/"+.headRepository.name}')"
 fi
 
 pr_url="$(echo "$pr_json_init" | jq -r .url)"
+pr_number="$(echo "$pr_json_init" | jq -r .number)"
 base_branch="$(echo "$pr_json_init" | jq -r .baseRefName)"
 repo_nwo="$(echo "$pr_json_init" | jq -r .nwo)"
+
+# fullsend-ai/fullsend#5687: whether this PR ever required write-approval
+# (per the immutable issue-events timeline, not current label state — see
+# lib/write-approval-check.lib.sh) does not change over the life of the PR,
+# so resolve it once rather than on every poll.
+ever_required_write_approval="$(write_approval_ever_required "$repo_nwo" "$pr_number")"
 
 # Fetch required status checks from branch rulesets (fail-closed on error).
 # Note: only the rulesets API is queried. Repositories using classic branch
@@ -41,10 +52,11 @@ fi
 echo "Waiting for checks and approvals on: $pr_url"
 
 while true; do
-  # Get check rollup and review decision in one call
-  pr_json="$(gh pr view "$pr_url" --json statusCheckRollup,reviewDecision)"
+  # Get check rollup, review decision, and current head commit in one call
+  pr_json="$(gh pr view "$pr_url" --json statusCheckRollup,reviewDecision,headRefOid)"
 
   review_decision="$(echo "$pr_json" | jq -r '.reviewDecision // "NONE"')"
+  head_sha="$(echo "$pr_json" | jq -r '.headRefOid')"
 
   # Use jq to analyze all check statuses and required check coverage in one pass
   result="$(echo "$pr_json" | jq -r --argjson required "$required_json" '
@@ -93,10 +105,16 @@ while true; do
     continue
   fi
 
+  if [[ "$ever_required_write_approval" == "true" ]] && ! has_write_plus_approval "$repo_nwo" "$pr_number" "$head_sha"; then
+    echo "PR required needs-write-approval at some point but has no APPROVE review, on the current head commit, from a currently admin/maintain/write collaborator — waiting ${POLL_INTERVAL}s"
+    sleep "$POLL_INTERVAL"
+    continue
+  fi
+
   echo "All checks passed and PR is approved. Enqueuing..."
   break
 done
 
-# Delegate to the enqueue script
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Delegate to the enqueue script, which independently re-verifies the
+# write-approval gate at the actual enqueue call site.
 exec bash "$SCRIPT_DIR/enqueue-pr.sh" "$pr_url"

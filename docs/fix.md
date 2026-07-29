@@ -105,6 +105,7 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 |-------|---------|
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
+| `needs-write-approval` | Applied when `TRIGGER_ROLE` is `triage` — the dispatching user held only the GitHub `triage` role, not write+. `skills/merge-queue/scripts/enqueue-pr.sh` and `await-and-enqueue.sh` refuse to enqueue such a PR without an APPROVE review, on its current head commit, from a currently admin/maintain/write human collaborator (checked live — this label having ever been applied is derived from the immutable issue-events timeline, not the label's current presence, since GitHub's `triage` role can remove it). This does not prevent a write+ collaborator from merging directly via GitHub's native UI or `gh pr merge`, which is unaware of this label. |
 
 ## Configuration
 
@@ -113,7 +114,9 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 ### Variables
 
-None.
+| Variable | Description | Default | Valid values |
+|----------|-------------|---------|--------------|
+| `TRIGGER_ROLE` | Permission tier that authorized this dispatch, set by dispatch routing. When `triage`, the post-fix script applies the `needs-write-approval` label. | Unset (treated as `write` — no gate) | `triage`, `write` |
 
 ## Custom sandbox image
 

@@ -33,6 +33,10 @@
 #                       branch is allowed. (default: auto-detected)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
+#   TRIGGER_ROLE      — permission tier that authorized this dispatch: "triage"
+#                       or "write" (default: unset, treated as write — no gate).
+#                       When "triage", the created PR is labeled
+#                       needs-write-approval (fullsend-ai/fullsend#5687).
 #
 # Exit codes:
 #   0  — branch pushed and PR created, OR agent determined nothing to do
@@ -46,6 +50,8 @@ source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
 # shellcheck source=lib/pr-assignee.lib.sh
 source "${SCRIPT_DIR_POST}/lib/pr-assignee.lib.sh"
+# shellcheck source=lib/write-approval-gate.lib.sh
+source "${SCRIPT_DIR_POST}/lib/write-approval-gate.lib.sh"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -522,6 +528,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
   maybe_assign_pr "${EXISTING_PR_NUM}"
+  apply_write_approval_gate_if_needed "${EXISTING_PR_NUM}"
   exit 0
 fi
 
@@ -673,12 +680,18 @@ rm -f "${PR_CREATE_STDERR}"
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
 
+PR_NUMBER_FROM_URL="${PR_URL##*/}"
+
+# Apply the write-approval gate BEFORE ready-for-review: ready-for-review is
+# what dispatches the review agent, so the gate label must already be in
+# place before any downstream automation can act on this PR.
+apply_write_approval_gate_if_needed "${PR_NUMBER_FROM_URL}"
+
 # Apply ready-for-review label so the review agent is dispatched via the
 # issues.labeled path. pull_request_target.opened requires the PR author to
 # pass authorization checks that often exclude bot accounts; the label path
 # is used instead (label application requires repo write access). See
 # .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
-PR_NUMBER_FROM_URL="${PR_URL##*/}"
 gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \
   --add-label "ready-for-review" 2>/dev/null || \

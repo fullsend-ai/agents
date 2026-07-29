@@ -386,6 +386,53 @@ run_postfix_integration_test "integration-neither-filename-fails-closed" "true"
 
 rm -rf "${INTEGRATION_TMPDIR}"
 
+# Verify apply_write_approval_gate_if_needed is present in the post-fix script
+if ! grep -q 'apply_write_approval_gate_if_needed' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-write-approval-gate"
+  echo "  ${POST_SCRIPT} missing apply_write_approval_gate_if_needed"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-write-approval-gate"
+fi
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the gating predicate from
+# lib/write-approval-gate.lib.sh's apply_write_approval_gate_if_needed:
+# gate applies when TRIGGER_ROLE normalizes (lowercased, trimmed) to "triage".
+# ---------------------------------------------------------------------------
+gate_applies_for_role() {
+  local trigger_role="${1:-}"
+  local role
+  role="$(printf '%s' "${trigger_role}" | tr '[:upper:]' '[:lower:]' | xargs)"
+  [[ "${role}" == "triage" ]]
+}
+
+run_gate_test() {
+  local test_name="$1"
+  local trigger_role="$2"
+  local expected="$3"  # "yes" or "no"
+
+  local actual="no"
+  gate_applies_for_role "${trigger_role}" && actual="yes"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  TRIGGER_ROLE='${trigger_role}' expected gate=${expected}, got gate=${actual}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gate_test "gate-applies-for-triage" "triage" "yes"
+run_gate_test "gate-applies-for-mixed-case" "Triage" "yes"
+run_gate_test "gate-applies-for-upper-case" "TRIAGE" "yes"
+run_gate_test "gate-applies-with-surrounding-whitespace" "  triage  " "yes"
+run_gate_test "gate-skipped-for-write" "write" "no"
+run_gate_test "gate-skipped-for-unset" "" "no"
+run_gate_test "gate-skipped-for-garbage-value" "admin" "no"
+
 # --- Summary ---
 
 echo ""
