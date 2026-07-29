@@ -42,7 +42,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script validates the agent's chosen target branch against this variable before pushing. Set via `runner_env` in `harness/code.yaml` (never injected into the sandbox). | Repo default branch (auto-detected via GitHub API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
-| `CODE_AUTO_MERGE` | Set to `"true"` to enable GitHub auto-merge on PRs created by the code agent. Uses the repo's configured merge strategy. | disabled | `"true"` to enable |
+| `CODE_AUTO_MERGE` | Set to `"true"` to enable GitHub auto-merge on PRs created by the code agent. Incompatible with GitHub merge queues (fails as a non-blocking warning). | `""` (disabled) | `"true"` to enable |
+| `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | `"merge"` | `"squash"`, `"rebase"`, `"merge"` |
 
 ## How the agent works
 
@@ -50,7 +51,7 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
 2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has no network access (enforced by OpenShell).
-3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, optionally enables auto-merge, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
+3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 
 This separation ensures the agent never has direct write access to the repository.
 

@@ -1440,6 +1440,56 @@ run_auto_merge_test "auto-merge-uppercase" \
 run_auto_merge_test "auto-merge-numeric" \
   "1" "skip"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the merge method flag resolution from
+# post-code.sh. Given a CODE_AUTO_MERGE_METHOD value, returns the flag.
+# ---------------------------------------------------------------------------
+resolve_merge_method_flag() {
+  local method="${1:-merge}"
+  case "${method}" in
+    squash) echo "--squash" ;;
+    rebase) echo "--rebase" ;;
+    *)      echo "--merge"  ;;
+  esac
+}
+
+run_merge_method_test() {
+  local test_name="$1"
+  local method="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(resolve_merge_method_flag "${method}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  method:   '${method}'"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Merge method test cases ---
+
+run_merge_method_test "merge-method-squash" \
+  "squash" "--squash"
+
+run_merge_method_test "merge-method-merge" \
+  "merge" "--merge"
+
+run_merge_method_test "merge-method-rebase" \
+  "rebase" "--rebase"
+
+run_merge_method_test "merge-method-default" \
+  "" "--merge"
+
+run_merge_method_test "merge-method-unknown" \
+  "fast-forward" "--merge"
+
 # --- Summary ---
 
 echo ""
