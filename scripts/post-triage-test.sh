@@ -734,7 +734,7 @@ run_test_with_env() {
   local exit_code=0
   (
     cd "${run_dir}"
-    # shellcheck disable=SC2086
+    # shellcheck disable=SC2086,SC2163
     for kv in ${extra_env}; do export "${kv}"; done
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
@@ -781,7 +781,7 @@ run_test_no_pattern_with_env() {
   local exit_code=0
   (
     cd "${run_dir}"
-    # shellcheck disable=SC2086
+    # shellcheck disable=SC2086,SC2163
     for kv in ${extra_env}; do export "${kv}"; done
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
