@@ -9,7 +9,11 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PRE_SCRIPT="${SCRIPT_DIR}/pre-code.sh"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+
+PRE_SCRIPT="$(resolve_agent_script pre-code "${SCRIPT_DIR}")"
 FAILURES=0
 
 # Create a temp directory for mock state.
