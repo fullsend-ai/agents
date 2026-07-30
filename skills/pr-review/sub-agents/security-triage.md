@@ -37,12 +37,11 @@ A file is **security-critical** if it matches ANY of the following:
 
 ### Governance and infrastructure paths
 
-Any path listed in the `REVIEW_PROTECTED_PATHS` environment variable
-is a governance or infrastructure path. Files under these prefixes
-control agent behavior, CI/CD, container builds, and access
-governance — changes can alter trust boundaries or weaken security
-controls. Classify as security-critical so they receive prioritized
-review context.
+The orchestrator provides an **Active governance paths** list in the
+spawn prompt context. Files under these prefixes control agent
+behavior, CI/CD, container builds, and access governance — changes
+can alter trust boundaries or weaken security controls. Classify as
+security-critical so they receive prioritized review context.
 
 ### Content heuristics (from diff summary)
 

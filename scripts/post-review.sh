@@ -208,6 +208,11 @@ else
   exit 1
 fi
 
+if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
+  echo "::error::PROTECTED_PATHS is empty after parsing — refusing to continue (fail-closed)" >&2
+  exit 1
+fi
+
 DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then
   PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
