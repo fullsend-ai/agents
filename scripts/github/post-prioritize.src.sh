@@ -14,8 +14,8 @@ set -euo pipefail
 
 # shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/github-api-csma.lib.sh
-source "${SCRIPT_DIR}/lib/github-api-csma.lib.sh"
+# shellcheck source=../lib/github/api-csma.lib.sh
+source "${SCRIPT_DIR}/../lib/github/api-csma.lib.sh"
 : "${GITHUB_ISSUE_URL:?GITHUB_ISSUE_URL must be set}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
 : "${ORG:?ORG must be set}"

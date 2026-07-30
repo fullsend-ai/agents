@@ -27,9 +27,6 @@ skills:
   - skills/agent-scaffolding
   - skills/autonomy-readiness
 
-pre_script: scripts/pre-retro.sh
-post_script: scripts/post-retro.sh
-
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/retro-result.schema.json
@@ -39,8 +36,8 @@ timeout_minutes: 30
 
 forge:
   github:
-    pre_script: scripts/pre-retro.sh
-    post_script: scripts/post-retro.sh
+    pre_script: scripts/github/pre-retro.sh
+    post_script: scripts/github/post-retro.sh
     runner_env:
       ORIGINATING_URL: "${ORIGINATING_URL}"
       REPO_FULL_NAME: "${REPO_FULL_NAME}"

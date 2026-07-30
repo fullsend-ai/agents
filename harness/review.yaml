@@ -31,9 +31,6 @@ host_files:
     dest: /sandbox/workspace/prior-review.txt
     optional: true
 
-pre_script: scripts/pre-review.sh
-post_script: scripts/post-review.sh
-
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
@@ -43,8 +40,8 @@ timeout_minutes: 20
 
 forge:
   github:
-    pre_script: scripts/pre-review.sh
-    post_script: scripts/post-review.sh
+    pre_script: scripts/github/pre-review.sh
+    post_script: scripts/github/post-review.sh
     runner_env:
       REVIEW_TOKEN: "${REVIEW_TOKEN}"
       REPO_FULL_NAME: "${REPO_FULL_NAME}"

@@ -1,9 +1,9 @@
 .DEFAULT_GOAL := help
 .PHONY: help script-build check-bundle script-test test
 
-BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/post-fix.src.sh scripts/post-prioritize.src.sh
+BUNDLE_SRCS := scripts/github/pre-code.src.sh scripts/github/post-code.src.sh scripts/github/post-fix.src.sh scripts/github/post-prioritize.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
-LIB_DEPS := $(wildcard scripts/lib/*.lib.sh)
+LIB_DEPS := $(wildcard scripts/lib/*.lib.sh scripts/lib/github/*.lib.sh)
 
 help:
 	@echo "Available targets:"
@@ -30,8 +30,8 @@ check-bundle:
 	@tmp=$$(mktemp -d); \
 	trap 'rm -rf "$$tmp"' EXIT; \
 	for src in $(BUNDLE_SRCS); do \
-	  out="$$tmp/$$(basename "$${src%.src.sh}.sh")"; \
-	  committed="scripts/$$(basename "$${src%.src.sh}.sh")"; \
+	  committed="$${src%.src.sh}.sh"; \
+	  out="$$tmp/$$(basename "$$committed")"; \
 	  scripts/bundle-sh.sh -o "$$out" "$$src" || exit 1; \
 	  diff -u "$$committed" "$$out" >/dev/null || \
 	    { echo "Bundled script stale: $$committed (run make script-build)" >&2; exit 1; }; \

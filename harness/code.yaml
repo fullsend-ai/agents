@@ -32,9 +32,6 @@ host_files:
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
 
-pre_script: scripts/pre-code.sh
-post_script: scripts/post-code.sh
-
 skills:
   - skills/code-implementation
 
@@ -55,8 +52,8 @@ timeout_minutes: 35
 
 forge:
   github:
-    pre_script: scripts/pre-code.sh
-    post_script: scripts/post-code.sh
+    pre_script: scripts/github/pre-code.sh
+    post_script: scripts/github/post-code.sh
     runner_env:
       PUSH_TOKEN: "${PUSH_TOKEN}"
       PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"

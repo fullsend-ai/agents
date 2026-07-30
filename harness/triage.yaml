@@ -24,9 +24,6 @@ host_files:
 skills:
   - skills/issue-labels
 
-pre_script: scripts/pre-triage.sh
-post_script: scripts/post-triage.sh
-
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/triage-result.schema.json
@@ -36,8 +33,8 @@ timeout_minutes: 10
 
 forge:
   github:
-    pre_script: scripts/pre-triage.sh
-    post_script: scripts/post-triage.sh
+    pre_script: scripts/github/pre-triage.sh
+    post_script: scripts/github/post-triage.sh
     env:
       runner:
         GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}

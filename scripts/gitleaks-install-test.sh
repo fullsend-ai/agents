@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # gitleaks-install-test.sh — Test platform detection and checksum lookup
-# from scripts/lib/gitleaks-install.lib.sh.
+# from scripts/lib/github/gitleaks-install.lib.sh.
 #
 # Run from the repo root:
 #   bash scripts/gitleaks-install-test.sh
@@ -12,8 +12,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FAILURES=0
 
 # Source the lib directly for unit testing.
-# shellcheck source=lib/gitleaks-install.lib.sh
-source "${SCRIPT_DIR}/lib/gitleaks-install.lib.sh"
+# shellcheck source=lib/github/gitleaks-install.lib.sh
+source "${SCRIPT_DIR}/lib/github/gitleaks-install.lib.sh"
 
 # ---------------------------------------------------------------------------
 # resolve_platform tests — mock uname via PATH override
@@ -145,7 +145,7 @@ run_verify_test "verify-invalid-checksum" "${KNOWN_CONTENT}" "000000000000000000
 # Version drift guard — GITLEAKS_VERSION must be consistent
 # ---------------------------------------------------------------------------
 for script in post-code post-fix; do
-  src_file="${SCRIPT_DIR}/${script}.src.sh"
+  src_file="${SCRIPT_DIR}/github/${script}.src.sh"
   [ -f "${src_file}" ] || continue
   src_ver="$(grep -o 'GITLEAKS_VERSION="[^"]*"' "${src_file}" || true)"
   if [ -n "${src_ver}" ]; then
@@ -157,7 +157,7 @@ for script in post-code post-fix; do
   fi
 done
 
-lib_ver="$(grep -o 'GITLEAKS_VERSION="[^"]*"' "${SCRIPT_DIR}/lib/gitleaks-install.lib.sh")"
+lib_ver="$(grep -o 'GITLEAKS_VERSION="[^"]*"' "${SCRIPT_DIR}/lib/github/gitleaks-install.lib.sh")"
 if [ -z "${lib_ver}" ]; then
   echo "FAIL: version-in-lib"
   echo "  gitleaks-install.lib.sh missing GITLEAKS_VERSION"
@@ -170,7 +170,7 @@ fi
 # Function drift guard — both bundled scripts must contain the shared functions
 # ---------------------------------------------------------------------------
 for script in post-code post-fix; do
-  bundled="${SCRIPT_DIR}/${script}.sh"
+  bundled="${SCRIPT_DIR}/github/${script}.sh"
   [ -f "${bundled}" ] || continue
   for func in resolve_platform gitleaks_sha256 verify_checksum install_gitleaks; do
     if ! grep -q "${func}" "${bundled}"; then

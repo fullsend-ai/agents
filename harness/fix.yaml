@@ -19,9 +19,6 @@ policy: policies/fix.yaml
 role: coder
 slug: fullsend-ai-coder
 
-pre_script: scripts/pre-fix.sh
-post_script: scripts/post-fix.sh
-
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/fix-result.schema.json
@@ -66,8 +63,8 @@ timeout_minutes: 25
 
 forge:
   github:
-    pre_script: scripts/pre-fix.sh
-    post_script: scripts/post-fix.sh
+    pre_script: scripts/github/pre-fix.sh
+    post_script: scripts/github/post-fix.sh
     env:
       runner:
         PUSH_TOKEN: "${PUSH_TOKEN}"

@@ -20,8 +20,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/prescript-output.lib.sh
-# BEGIN bundled: lib/prescript-output.lib.sh
+# shellcheck source=../lib/prescript-output.lib.sh
+# BEGIN bundled: ../lib/prescript-output.lib.sh
 # prescript-output.lib.sh — Write pre-script output protocol lines.
 #
 # The pre-script output protocol (fullsend docs/normative/prescript-output/v1,
@@ -47,7 +47,7 @@ prescript_output() {
     printf '%s=%s\n' "$1" "$2" >> "${FULLSEND_PRESCRIPT_OUTPUT}"
   fi
 }
-# END bundled: lib/prescript-output.lib.sh
+# END bundled: ../lib/prescript-output.lib.sh
 
 echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL:-}"
 

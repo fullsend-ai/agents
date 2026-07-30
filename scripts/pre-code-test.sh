@@ -13,7 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/test-lib.sh"
 parse_script_test_args "$@"
 
-PRE_SCRIPT="$(resolve_agent_script pre-code "${SCRIPT_DIR}")"
+PRE_SCRIPT="$(resolve_agent_script pre-code "${SCRIPT_DIR}/github")"
 FAILURES=0
 
 # Create a temp directory for mock state.

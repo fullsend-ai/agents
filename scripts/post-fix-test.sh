@@ -16,7 +16,7 @@ parse_script_test_args "$@"
 
 FAILURES=0
 
-POST_SCRIPT="$(resolve_agent_script post-fix "${SCRIPT_DIR}")"
+POST_SCRIPT="$(resolve_agent_script post-fix "${SCRIPT_DIR}/github")"
 if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_pr' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-failure-reporting"
   echo "  ${POST_SCRIPT} missing gha_echo or post_fail_to_pr"

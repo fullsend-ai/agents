@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pr-assignee-test.sh — Tests for scripts/lib/pr-assignee.lib.sh
+# pr-assignee-test.sh — Tests for scripts/lib/github/pr-assignee.lib.sh
 #
 # Run from the repo root:
 #   bash scripts/pr-assignee-test.sh
@@ -12,8 +12,8 @@ if [[ "${SCRIPT_TEST_TARGET:-source}" == "bundled" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/pr-assignee.lib.sh
-source "${SCRIPT_DIR}/lib/pr-assignee.lib.sh"
+# shellcheck source=lib/github/pr-assignee.lib.sh
+source "${SCRIPT_DIR}/lib/github/pr-assignee.lib.sh"
 
 FAILURES=0
 

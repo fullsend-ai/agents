@@ -6,7 +6,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POST_SCRIPT="${SCRIPT_DIR}/post-scribe.sh"
+POST_SCRIPT="${SCRIPT_DIR}/github/post-scribe.sh"
 FAILURES=0
 
 TMPDIR="$(mktemp -d)"

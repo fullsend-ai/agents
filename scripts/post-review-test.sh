@@ -362,7 +362,7 @@ run_control_label_test "empty-not-control" "" "false"
 # to verify label_actions validation, body modification, and API calls.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POST_SCRIPT="${SCRIPT_DIR}/post-review.sh"
+POST_SCRIPT="${SCRIPT_DIR}/github/post-review.sh"
 
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "${TMPDIR}"' EXIT

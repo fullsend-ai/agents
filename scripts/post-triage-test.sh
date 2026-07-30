@@ -7,7 +7,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POST_SCRIPT="${SCRIPT_DIR}/post-triage.sh"
+POST_SCRIPT="${SCRIPT_DIR}/github/post-triage.sh"
 FAILURES=0
 
 # Create a temp directory for test fixtures and mock state.

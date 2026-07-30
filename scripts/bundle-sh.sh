@@ -100,7 +100,7 @@ bundle_resolve_path() {
 
 bundle_is_lib() {
   local path="$1"
-  [[ "${path}" == */scripts/lib/*.lib.sh ]]
+  [[ "${path}" == */scripts/lib/*.lib.sh || "${path}" == */scripts/lib/*/*.lib.sh ]]
 }
 
 bundle_lib_body() {
@@ -155,7 +155,7 @@ bundle_expand_source() {
   fi
 
   if ! bundle_is_lib "${resolved}"; then
-    echo "bundle-sh: source outside scripts/lib/*.lib.sh: ${resolved}" >&2
+    echo "bundle-sh: source outside scripts/lib/**/*.lib.sh: ${resolved}" >&2
     exit 1
   fi
 
@@ -164,7 +164,7 @@ bundle_expand_source() {
     exit 1
   fi
 
-  rel_comment="${resolved#"${src_dir}/"}"
+  rel_comment="$(realpath --relative-to="${src_dir}" "${resolved}" 2>/dev/null || printf '%s' "${resolved#"${src_dir}/"}")"
 
   if [[ -n "${BUNDLE_INCLUDED[${resolved}]+x}" ]]; then
     printf '# (already bundled: %s)\n' "${rel_comment}"

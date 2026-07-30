@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# github-api-csma.lib.sh — CSMA/CD-style resilience for GitHub API calls via gh/fullsend.
+# api-csma.lib.sh — CSMA/CD-style resilience for GitHub API calls via gh/fullsend.
 #
 # Source from post-prioritize.src.sh:
-#   source "${SCRIPT_DIR}/lib/github-api-csma.lib.sh"
+#   source "${SCRIPT_DIR}/../lib/github/api-csma.lib.sh"
 #
 # Environment (all optional):
 #   GITHUB_CSMA_MAX_ATTEMPTS          — default 8

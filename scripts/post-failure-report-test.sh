@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# post-failure-report-test.sh — Tests for scripts/lib/post-failure-report.lib.sh
+# post-failure-report-test.sh — Tests for scripts/lib/github/post-failure-report.lib.sh
 #
 # Run from the repo root:
 #   bash scripts/post-failure-report-test.sh
@@ -12,8 +12,8 @@ if [[ "${SCRIPT_TEST_TARGET:-source}" == "bundled" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/post-failure-report.lib.sh
-source "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
+# shellcheck source=lib/github/post-failure-report.lib.sh
+source "${SCRIPT_DIR}/lib/github/post-failure-report.lib.sh"
 
 FAILURES=0
 

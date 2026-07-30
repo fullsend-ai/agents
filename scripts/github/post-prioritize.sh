@@ -15,12 +15,12 @@ set -euo pipefail
 
 # shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/github-api-csma.lib.sh
-# BEGIN bundled: lib/github-api-csma.lib.sh
-# github-api-csma.lib.sh — CSMA/CD-style resilience for GitHub API calls via gh/fullsend.
+# shellcheck source=../lib/github/api-csma.lib.sh
+# BEGIN bundled: ../lib/github/api-csma.lib.sh
+# api-csma.lib.sh — CSMA/CD-style resilience for GitHub API calls via gh/fullsend.
 #
 # Source from post-prioritize.src.sh:
-#   source "${SCRIPT_DIR}/lib/github-api-csma.lib.sh"
+#   source "${SCRIPT_DIR}/../lib/github/api-csma.lib.sh"
 #
 # Environment (all optional):
 #   GITHUB_CSMA_MAX_ATTEMPTS          — default 8
@@ -333,7 +333,7 @@ github_csma_run_cmd() {
 
   return 1
 }
-# END bundled: lib/github-api-csma.lib.sh
+# END bundled: ../lib/github/api-csma.lib.sh
 : "${GITHUB_ISSUE_URL:?GITHUB_ISSUE_URL must be set}"
 : "${GH_TOKEN:?GH_TOKEN must be set}"
 : "${ORG:?ORG must be set}"

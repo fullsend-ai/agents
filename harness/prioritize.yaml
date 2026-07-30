@@ -21,9 +21,6 @@ host_files:
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
 
-pre_script: scripts/pre-prioritize.sh
-post_script: scripts/post-prioritize.sh
-
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/prioritize-result.schema.json
@@ -33,8 +30,8 @@ timeout_minutes: 10
 
 forge:
   github:
-    pre_script: scripts/pre-prioritize.sh
-    post_script: scripts/post-prioritize.sh
+    pre_script: scripts/github/pre-prioritize.sh
+    post_script: scripts/github/post-prioritize.sh
     env:
       runner:
         GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}

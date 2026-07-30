@@ -19,8 +19,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/prescript-output.lib.sh
-source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
+# shellcheck source=../lib/prescript-output.lib.sh
+source "${SCRIPT_DIR}/../lib/prescript-output.lib.sh"
 
 echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL:-}"
 

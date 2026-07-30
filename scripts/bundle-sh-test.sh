@@ -130,8 +130,8 @@ DRIFT_ROOT="${TMPDIR}/drift-check"
 mkdir -p "${DRIFT_ROOT}"
 cp "${REPO_ROOT}/Makefile" "${DRIFT_ROOT}/"
 cp -r "${REPO_ROOT}/scripts" "${DRIFT_ROOT}/"
-printf '\n# corrupt\n' >> "${DRIFT_ROOT}/scripts/post-code.sh"
-touch -r "${DRIFT_ROOT}/scripts/post-code.sh" "${DRIFT_ROOT}/scripts/post-code.src.sh"
+printf '\n# corrupt\n' >> "${DRIFT_ROOT}/scripts/github/post-code.sh"
+touch -r "${DRIFT_ROOT}/scripts/github/post-code.sh" "${DRIFT_ROOT}/scripts/github/post-code.src.sh"
 if ( cd "${DRIFT_ROOT}" && make check-bundle >/dev/null 2>&1 ); then
   echo "FAIL: check-bundle-should-detect-equal-mtime-drift"
   FAILURES=$((FAILURES + 1))
