@@ -18,9 +18,9 @@
 #   GITHUB_ISSUE_URL   — must be a valid GitHub issue URL
 set -euo pipefail
 
-SCRIPT_DIR_PRE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
-source "${SCRIPT_DIR_PRE}/lib/prescript-output.lib.sh"
+source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 
 echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL:-}"
 
@@ -143,7 +143,6 @@ echo "No existing human PRs found — proceeding with code agent"
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_REPO="${REPO_DIR:-${GITHUB_WORKSPACE:-}/target-repo}"
 RESOLVE_SCRIPT="${SCRIPT_DIR}/resolve-precommit-tools.py"
 INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
