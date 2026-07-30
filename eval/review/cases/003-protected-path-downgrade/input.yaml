@@ -1,8 +1,18 @@
 forge: github
+
+seed_issues:
+  - title: "Add github-actions ecosystem to Dependabot"
+    body: |
+      We should add the `github-actions` package ecosystem to our
+      Dependabot config so it can flag outdated action versions.
+      Also bump the pip check interval from weekly to daily.
+
 fixture:
   type: pull_request
   title: "ci: add github-actions ecosystem to dependabot"
   body: |
+    Closes #1
+
     Add the `github-actions` package ecosystem to Dependabot so it can
     flag outdated action versions. Also bump the pip check interval to daily.
 
