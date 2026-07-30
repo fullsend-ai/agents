@@ -49,26 +49,26 @@ place:
 | Where the var is read | Where to declare it |
 |-----------------------|---------------------|
 | Agent prompt only (sandbox) | `env: sandbox:` in `harness/<agent>.yaml` |
-| Pre/post script only (runner) | `env: runner:` or `runner_env:` in `harness/<agent>.yaml` |
+| Pre/post script only (runner) | `env: runner:` in `harness/<agent>.yaml` |
 | Both agent and scripts | Both sandbox and runner sections |
 
-> **Two patterns exist in the codebase.** Some harness files use the nested
-> `env: runner:` / `env: sandbox:` structure (e.g., `fix.yaml`,
-> `scribe.yaml`). Others use the top-level `runner_env:` key (e.g.,
-> `code.yaml`, `review.yaml`). Check the target agent's existing harness
-> file and follow its convention.
+> **Use `env: runner:` / `env: sandbox:`.** Some older harness files still
+> use a top-level `runner_env:` key — that form is deprecated. New
+> configuration should use the nested `env: runner:` / `env: sandbox:`
+> structure. If you're adding a var to a harness file that still uses
+> `runner_env:`, prefer migrating it to `env: runner:` at the same time.
 
-Use `forge.github.env.sandbox` / `forge.github.env.runner` or
-`forge.github.runner_env` only if you need environment variables with
-different values between github and gitlab — again, match the existing
-pattern in the target harness file.
+Use `forge.github.env.sandbox` / `forge.github.env.runner` only when
+you need environment variables with different values between GitHub and
+GitLab. Some older harness files use `forge.github.runner_env` — prefer
+`forge.github.env.runner` for new work.
 
 ## 4. Update the subagent definition file
 
 If the agent needs to know about the new option:
 
-- [ ] Add the env var to the `## Inputs` section of `agents/<agent>.md`.
-      If no `## Inputs` section exists yet, create one.
+- [ ] Add the env var to the `## Variables` section of `agents/<agent>.md`.
+      If no `## Variables` section exists yet, create one.
 - [ ] Add conditional behavior to the agent prompt. Keep it minimal —
       describe the env var's meaning and what the agent should do
       differently. Don't add a paragraph where a sentence will do.
@@ -97,8 +97,11 @@ Ask yourself:
 In `harness/<agent>.yaml`:
 
 - [ ] Add the env var to the appropriate sections (see step 3)
-- [ ] If the var needs a default that differs from empty-string, set it
-      with shell default syntax: `${VAR:-default_value}`
+- [ ] The harness engine uses Go's `os.Expand` for variable substitution,
+      which supports `$VAR` and `${VAR}` only — **not** shell default
+      syntax like `${VAR:-default}`. If the var needs a default, set it
+      in the pre-script or post-script with standard shell defaults:
+      `VAR="${VAR:-default_value}"`
 
 ## 7. Update the schema (if the agent output changes)
 
