@@ -407,6 +407,7 @@ ${FAILED_CREATES}"
         off) return 1 ;;
         category)
           local categories="${TRIAGE_AUTO_CODE_CATEGORIES:-bug,documentation,performance}"
+          categories="${categories//[[:space:]]/}"
           # Check if CATEGORY appears in the comma-separated list.
           echo ",${categories}," | grep -qF ",${CATEGORY},"
           ;;

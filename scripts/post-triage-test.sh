@@ -937,6 +937,13 @@ run_test_with_env "auto-code-category-feature-gets-feature-label" \
   "false" \
   "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
 
+# TRIAGE_AUTO_CODE=category with whitespace in categories: still matches.
+run_test_with_env "auto-code-category-whitespace-tolerant" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance"
+
 # --- Summary ---
 
 echo ""
