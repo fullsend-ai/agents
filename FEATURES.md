@@ -165,3 +165,13 @@ Before opening the PR, verify:
 - [ ] Documentation is updated
 - [ ] No other agent is broken by a skill change
 - [ ] The tests pass: `make test`
+- [ ] Manually tested with `fullsend run` (see [LOCAL.md](LOCAL.md))
+
+## 13. Consider a functional eval test (optional)
+
+If the feature changes agent judgment or output in a way that unit
+tests can't cover, consider adding a functional eval case under
+`eval/<agent>/cases/`. These are expensive — they consume model tokens
+and create ephemeral GitHub repos — so only add one when the change
+meaningfully affects end-to-end behavior. See [eval/README.md](eval/README.md)
+for the test case structure.
