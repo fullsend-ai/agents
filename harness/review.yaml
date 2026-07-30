@@ -39,13 +39,13 @@ validation_loop:
   schema: schemas/review-result.schema.json
   max_iterations: 2
 
-timeout_minutes: 20
-
 env:
   runner:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
+
+timeout_minutes: 20
 
 forge:
   github:
