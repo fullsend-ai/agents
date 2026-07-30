@@ -437,6 +437,7 @@ run_label_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -476,6 +477,7 @@ run_label_test_stdout() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -515,6 +517,7 @@ run_label_test_no_pattern() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -624,6 +627,7 @@ run_label_test_with_env() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export "${env_var}=${env_val}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -672,6 +676,7 @@ run_label_test_with_env_stdout() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export "${env_var}=${env_val}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -743,6 +748,7 @@ run_validated_dir_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -849,6 +855,7 @@ run_body_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -898,6 +905,7 @@ run_body_count_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 

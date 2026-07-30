@@ -76,9 +76,9 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. | `low` | `info`, `low`, `medium`, `high`, `critical` |
+| `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`). | `low` | `info`, `low`, `medium`, `high`, `critical` |
 
-Set this in the CI workflow `env:` block.
+Override in the CI workflow `env:` block.
 
 When filtering removes all findings from a negative review verdict, the verdict
 is downgraded to a comment (applying the `requires-manual-review` label).

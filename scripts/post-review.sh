@@ -92,12 +92,10 @@ echo "Using result: ${RESULT_FILE}"
 # post-script enforces it. The filter runs before ACTION is read so
 # that verdict recalculation (if all findings are removed) is possible.
 # ---------------------------------------------------------------------------
-REVIEW_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD:-low}"
-
 case "$REVIEW_FINDING_SEVERITY_THRESHOLD" in
   info|low|medium|high|critical) ;;
-  *) echo "::warning::Invalid REVIEW_FINDING_SEVERITY_THRESHOLD='${REVIEW_FINDING_SEVERITY_THRESHOLD}', defaulting to 'low'"
-     REVIEW_FINDING_SEVERITY_THRESHOLD="low" ;;
+  *) echo "::error::REVIEW_FINDING_SEVERITY_THRESHOLD='${REVIEW_FINDING_SEVERITY_THRESHOLD}' is invalid (expected info|low|medium|high|critical)"
+     exit 1 ;;
 esac
 
 severity_rank() {

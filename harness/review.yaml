@@ -41,6 +41,12 @@ validation_loop:
 
 timeout_minutes: 20
 
+env:
+  runner:
+    REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
+  sandbox:
+    REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
+
 forge:
   github:
     pre_script: scripts/pre-review.sh
