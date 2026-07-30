@@ -18,6 +18,12 @@ Omit the argument to enqueue the current branch's PR.
 If the PR is not yet eligible (checks pending, missing approvals), use
 `await-and-enqueue.sh` instead — see below.
 
+A PR that ever carried the `needs-write-approval` label (fullsend-ai/fullsend#5687 —
+its dispatching user held only GitHub's `triage` role, not write+) is refused
+until an APPROVE review exists, on the PR's current head commit, from a
+collaborator whose current permission is admin/maintain/write. Both
+`enqueue-pr.sh` and `await-and-enqueue.sh` enforce this independently.
+
 ### Accepted input formats
 
 - **PR number:** `652` (uses the current repo context from `gh`)
@@ -72,3 +78,4 @@ Set `POLL_INTERVAL` (default: 30 seconds) to control how often it checks.
 - **"Resource not accessible by integration"** — the `gh` token lacks sufficient permissions.
 - **"status checks are expected"** — required checks haven't finished yet. Use `await-and-enqueue.sh` to poll and enqueue once they pass.
 - **`gh pr merge --auto` fails with merge queues** — GitHub's auto-merge API does not support merge queues. Use `await-and-enqueue.sh` instead.
+- **"Refusing to enqueue ... required needs-write-approval"** — the PR was triggered by a triage-role user and has no qualifying write+ approval yet. A collaborator with admin/maintain/write permission needs to review and approve the PR's current head commit.

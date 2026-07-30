@@ -34,6 +34,10 @@
 #                       branch is allowed. (default: auto-detected)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
+#   TRIGGER_ROLE      — permission tier that authorized this dispatch: "triage"
+#                       or "write" (default: unset, treated as write — no gate).
+#                       When "triage", the created PR is labeled
+#                       needs-write-approval (fullsend-ai/fullsend#5687).
 #
 # Exit codes:
 #   0  — branch pushed and PR created, OR agent determined nothing to do
@@ -676,6 +680,76 @@ maybe_assign_pr() {
   }
 }
 # END bundled: lib/pr-assignee.lib.sh
+# shellcheck source=lib/write-approval-gate.lib.sh
+# BEGIN bundled: lib/write-approval-gate.lib.sh
+# write-approval-gate.lib.sh — Merge gate for triage-role-triggered code/fix runs.
+#
+# Source from post-code.src.sh / post-fix.src.sh (after post-failure-report.lib.sh
+# for gha_echo):
+#   source "${SCRIPT_DIR}/lib/write-approval-gate.lib.sh"
+#
+# fullsend-ai/fullsend#5687: dispatch now accepts the GitHub `triage` role for
+# /fs-code and /fs-fix. Triage-role users still get a bot-authored PR (the
+# agent always held write-level credentials), but that PR must carry an
+# explicit visible marker so reviewers and merge tooling know it needs a
+# write+ collaborator's approval — the actual enforcement (requiring an
+# approval from a currently write+ user, not just any reviewDecision) lives
+# in skills/merge-queue/scripts/await-and-enqueue.sh, which checks this label.
+
+# shellcheck shell=bash
+
+[[ -n "${WRITE_APPROVAL_GATE_SH_LOADED:-}" ]] && return 0
+WRITE_APPROVAL_GATE_SH_LOADED=1
+
+# Emit a runner warning through gha_echo when available.
+_write_approval_gate_warn() {
+  if declare -F gha_echo >/dev/null 2>&1; then
+    gha_echo warning "$*"
+  else
+    echo "warning: $*" >&2
+  fi
+}
+
+# Normalize a TRIGGER_ROLE value: lowercase and trim surrounding whitespace.
+_normalize_trigger_role() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | xargs
+}
+
+# Apply the needs-write-approval label to a PR when TRIGGER_ROLE is "triage"
+# (case-insensitive, surrounding whitespace ignored). No-op (and no gh calls)
+# when TRIGGER_ROLE is unset or "write" — unset means the trigger was resolved
+# at write+ (or a path that predates TRIGGER_ROLE, e.g. bot-triggered
+# review->fix), so no gate is needed. Any other non-empty value is treated
+# the same as "write" (no gate) but logged, since it likely indicates a bug
+# in the caller rather than a legitimate write+ trigger.
+# Requires REPO_FULL_NAME. Best-effort: never fails the calling script.
+# Note: parameter is target_pr (not pr_number) to avoid SC2153 against
+# PR_NUMBER from post-failure-report.lib.sh once both libs are bundled into
+# post-code.sh / post-fix.sh — same fix as maybe_assign_pr in pr-assignee.lib.sh.
+apply_write_approval_gate_if_needed() {
+  local target_pr="$1"
+  local role
+  role="$(_normalize_trigger_role "${TRIGGER_ROLE:-}")"
+
+  if [[ -z "${role}" ]]; then
+    return 0
+  fi
+  if [[ "${role}" != "triage" ]]; then
+    if [[ "${role}" != "write" ]]; then
+      _write_approval_gate_warn "Unrecognized TRIGGER_ROLE '${TRIGGER_ROLE}' — treating as write (no gate applied). Expected 'triage' or 'write'."
+    fi
+    return 0
+  fi
+
+  echo "Trigger role is 'triage' — applying needs-write-approval gate to PR #${target_pr}"
+  gh label create "needs-write-approval" --repo "${REPO_FULL_NAME}" \
+    --description "Triggered by a triage-role user; needs write+ approval before merge" \
+    --color "B60205" 2>/dev/null || true
+  gh pr edit "${target_pr}" --repo "${REPO_FULL_NAME}" \
+    --add-label "needs-write-approval" 2>/dev/null || \
+    _write_approval_gate_warn "Failed to apply needs-write-approval label to PR #${target_pr}"
+}
+# END bundled: lib/write-approval-gate.lib.sh
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -1152,6 +1226,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
   maybe_assign_pr "${EXISTING_PR_NUM}"
+  apply_write_approval_gate_if_needed "${EXISTING_PR_NUM}"
   exit 0
 fi
 
@@ -1303,12 +1378,18 @@ rm -f "${PR_CREATE_STDERR}"
 echo "PR created: ${PR_URL}"
 echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
 
+PR_NUMBER_FROM_URL="${PR_URL##*/}"
+
+# Apply the write-approval gate BEFORE ready-for-review: ready-for-review is
+# what dispatches the review agent, so the gate label must already be in
+# place before any downstream automation can act on this PR.
+apply_write_approval_gate_if_needed "${PR_NUMBER_FROM_URL}"
+
 # Apply ready-for-review label so the review agent is dispatched via the
 # issues.labeled path. pull_request_target.opened requires the PR author to
 # pass authorization checks that often exclude bot accounts; the label path
 # is used instead (label application requires repo write access). See
 # .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
-PR_NUMBER_FROM_URL="${PR_URL##*/}"
 gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \
   --add-label "ready-for-review" 2>/dev/null || \

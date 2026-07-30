@@ -44,6 +44,10 @@
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
+#   TRIGGER_ROLE      — permission tier that authorized this dispatch: "triage"
+#                       or "write" (default: unset, treated as write — no gate).
+#                       When "triage", the PR is labeled needs-write-approval
+#                       (fullsend-ai/fullsend#5687).
 #
 # Exit codes:
 #   0  — branch pushed, PR updated
@@ -55,6 +59,8 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 # shellcheck source=lib/gitleaks-install.lib.sh
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
+# shellcheck source=lib/write-approval-gate.lib.sh
+source "${SCRIPT_DIR_POST}/lib/write-approval-gate.lib.sh"
 
 # ---------------------------------------------------------------------------
 # Helper: Bot user detection
@@ -445,6 +451,8 @@ if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"
   gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
     --add-label "needs-human" 2>/dev/null || true
 fi
+
+apply_write_approval_gate_if_needed "${PR_NUMBER}"
 
 # ---------------------------------------------------------------------------
 # 7. Summary

@@ -31,6 +31,7 @@ on issues (not PRs).
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
+| `needs-write-approval` | Applied when `TRIGGER_ROLE` is `triage` — the dispatching user held only the GitHub `triage` role, not write+. `skills/merge-queue/scripts/enqueue-pr.sh` and `await-and-enqueue.sh` refuse to enqueue such a PR without an APPROVE review, on its current head commit, from a currently admin/maintain/write human collaborator (checked live — this label having ever been applied is derived from the immutable issue-events timeline, not the label's current presence, since GitHub's `triage` role can remove it). This does not prevent a write+ collaborator from merging directly via GitHub's native UI or `gh pr merge`, which is unaware of this label. |
 
 ## Configuration
 
@@ -42,6 +43,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script validates the agent's chosen target branch against this variable before pushing. Set via `runner_env` in `harness/code.yaml` (never injected into the sandbox). | Repo default branch (auto-detected via GitHub API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
+| `TRIGGER_ROLE` | Permission tier that authorized this dispatch, set by dispatch routing. When `triage`, the post-code script applies the `needs-write-approval` label. | Unset (treated as `write` — no gate) | `triage`, `write` |
 
 ## How the agent works
 

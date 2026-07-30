@@ -7,19 +7,29 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/write-approval-check.lib.sh
+source "${SCRIPT_DIR}/lib/write-approval-check.lib.sh"
+
 pr="${1:-}"
 
-# Resolve PR to its URL and node ID in a single API call
+# Resolve PR to its URL, number, node ID, head commit, and repo in one call
 if [[ -z "$pr" ]]; then
-  pr_json="$(gh pr view --json url,id)"
-elif [[ "$pr" =~ ^[0-9]+$ ]]; then
-  pr_json="$(gh pr view "$pr" --json url,id)"
+  pr_json="$(gh pr view --json url,number,id,headRefOid,headRepository -q '{url,number,id,headRefOid,nwo:.headRepository.owner.login+"/"+.headRepository.name}')"
 else
-  pr_json="$(gh pr view "$pr" --json url,id)"
+  pr_json="$(gh pr view "$pr" --json url,number,id,headRefOid,headRepository -q '{url,number,id,headRefOid,nwo:.headRepository.owner.login+"/"+.headRepository.name}')"
 fi
 
 pr_url="$(echo "$pr_json" | jq -r .url)"
+pr_number="$(echo "$pr_json" | jq -r .number)"
 pr_node_id="$(echo "$pr_json" | jq -r .id)"
+pr_head_sha="$(echo "$pr_json" | jq -r .headRefOid)"
+repo_nwo="$(echo "$pr_json" | jq -r .nwo)"
+
+if ! enforce_write_approval_gate "$repo_nwo" "$pr_number" "$pr_head_sha"; then
+  echo "Refusing to enqueue $pr_url — see message above." >&2
+  exit 1
+fi
 
 echo "Enqueuing: $pr_url"
 
