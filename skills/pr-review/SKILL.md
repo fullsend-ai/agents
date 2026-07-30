@@ -990,30 +990,11 @@ governance and infrastructure files that require human approval — the
 review agent MUST NEVER approve changes to them without raising
 findings.
 
-The default protected paths (kept in sync with `post-review.sh`) are:
-
-- `.claude/`
-- `.cursor/`
-- `.gitattributes`
-- `.github/`
-- `.pre-commit-config.yaml`
-- `AGENTS.md`
-- `agents/`
-- `api-servers/`
-- `CLAUDE.md`
-- `CODEOWNERS`
-- `Containerfile`
-- `Dockerfile`
-- `harness/`
-- `images/`
-- `plugins/`
-- `policies/`
-- `scripts/`
-- `skills/`
-
-Repo owners can override this list by setting the `REVIEW_PROTECTED_PATHS`
-environment variable to a comma-separated list of path prefixes. When
-set, the variable replaces the defaults entirely.
+The protected paths list is determined at runtime. If the
+`REVIEW_PROTECTED_PATHS` environment variable is set (comma-separated
+path prefixes), use that list. If the variable is not set, read the
+default list from `env/default-review-protected-paths.txt` (one path prefix
+per line).
 
 For each file in the PR diff, check whether its path starts with (or
 exactly matches) any entry in the active protected paths list.

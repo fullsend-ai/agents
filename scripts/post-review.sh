@@ -183,26 +183,8 @@ ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # "comment" so only a human can grant approval. This is the sole enforcement
 # point — the code agent is free to propose changes to any path.
 # ---------------------------------------------------------------------------
-DEFAULT_PROTECTED_PATHS=(
-  ".claude/"
-  ".cursor/"
-  ".gitattributes"
-  ".github/"
-  ".pre-commit-config.yaml"
-  "AGENTS.md"
-  "agents/"
-  "api-servers/"
-  "CLAUDE.md"
-  "CODEOWNERS"
-  "Containerfile"
-  "Dockerfile"
-  "harness/"
-  "images/"
-  "plugins/"
-  "policies/"
-  "scripts/"
-  "skills/"
-)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_PROTECTED_PATHS_FILE="${SCRIPT_DIR}/../env/default-review-protected-paths.txt"
 
 if [[ -n "${REVIEW_PROTECTED_PATHS:-}" ]]; then
   IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
@@ -210,8 +192,16 @@ if [[ -n "${REVIEW_PROTECTED_PATHS:-}" ]]; then
   for i in "${!PROTECTED_PATHS[@]}"; do
     PROTECTED_PATHS[i]="$(echo "${PROTECTED_PATHS[i]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
   done
+elif [[ -f "${DEFAULT_PROTECTED_PATHS_FILE}" ]]; then
+  PROTECTED_PATHS=()
+  while IFS= read -r line; do
+    line="$(echo "${line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -z "${line}" || "${line}" == \#* ]] && continue
+    PROTECTED_PATHS+=("${line}")
+  done < "${DEFAULT_PROTECTED_PATHS_FILE}"
 else
-  PROTECTED_PATHS=("${DEFAULT_PROTECTED_PATHS[@]}")
+  echo "::error::REVIEW_PROTECTED_PATHS is not set and ${DEFAULT_PROTECTED_PATHS_FILE} not found — aborting" >&2
+  exit 1
 fi
 
 DOWNGRADED=false

@@ -1087,10 +1087,15 @@ run_protected_paths_test() {
 
 APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
 
-# Default protected paths: .github/ triggers downgrade
-run_protected_paths_test "default-protected-paths-triggers" \
+# File fallback: env var unset, .github/ triggers downgrade via defaults file
+run_protected_paths_test "file-fallback-triggers-on-default-path" \
   "${APPROVE_JSON}" "PR touches protected paths" "present" \
   "" ".github/workflows/ci.yml"
+
+# File fallback: env var unset, non-protected file does not trigger
+run_protected_paths_test "file-fallback-no-match" \
+  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
+  "" "src/main.go"
 
 # Custom REVIEW_PROTECTED_PATHS: .github/ is no longer protected
 run_protected_paths_test "custom-paths-removes-default" \
@@ -1111,6 +1116,50 @@ run_protected_paths_test "custom-paths-whitespace-trimmed" \
 run_protected_paths_test "custom-paths-no-match" \
   "${APPROVE_JSON}" "PR touches protected paths" "absent" \
   "deploy/,manifests/" "src/main.go"
+
+# Abort when both env var and defaults file are missing.
+# We override BASH_SOURCE resolution by symlinking the script to a temp dir
+# where no env/default-review-protected-paths.txt exists.
+run_missing_defaults_test() {
+  local test_name="missing-defaults-file-aborts"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local fake_scripts="${TMPDIR}/fake-scripts"
+  mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  # Copy the script to a location where ../env/ does not exist.
+  cp "${POST_SCRIPT}" "${fake_scripts}/post-review.sh"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    unset REVIEW_PROTECTED_PATHS
+    bash "${fake_scripts}/post-review.sh"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "REVIEW_PROTECTED_PATHS is not set" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected abort message in stderr"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_missing_defaults_test
 
 # --- Summary ---
 
