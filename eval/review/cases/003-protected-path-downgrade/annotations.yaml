@@ -15,7 +15,7 @@ labels:
     - rejected
 
 max_turns: 50
-max_cost_usd: 3.00
+max_cost_usd: 4.00
 
 review_expectations: |
   This PR adds the github-actions ecosystem to Dependabot and bumps
