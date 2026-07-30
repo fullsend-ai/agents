@@ -97,7 +97,7 @@ run_test() {
 
   # Set base env vars for the script.
   local env_cmd=(
-    env
+    env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY
     PATH="${mock_bin}:${PATH}"
     ISSUE_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
@@ -120,6 +120,16 @@ run_test() {
   if [[ ${exit_code} -ne ${expect_exit} ]]; then
     echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
     cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # The script must never write to GITHUB_OUTPUT — the legacy skipped= writes
+  # were removed in favor of the pre-script output protocol, and fullsend run's
+  # own relay writes to this file (last-write-wins collision otherwise).
+  if [[ -s "${gh_output}" ]]; then
+    echo "FAIL: ${test_name} — unexpected GITHUB_OUTPUT writes:"
+    cat "${gh_output}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -152,7 +162,7 @@ run_test_stdout() {
   : > "${gh_output}"
 
   local env_cmd=(
-    env
+    env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY
     PATH="${mock_bin}:${PATH}"
     ISSUE_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
@@ -173,6 +183,16 @@ run_test_stdout() {
   if [[ ${exit_code} -ne ${expect_exit} ]]; then
     echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
     cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # The script must never write to GITHUB_OUTPUT — the legacy skipped= writes
+  # were removed in favor of the pre-script output protocol, and fullsend run's
+  # own relay writes to this file (last-write-wins collision otherwise).
+  if [[ -s "${gh_output}" ]]; then
+    echo "FAIL: ${test_name} — unexpected GITHUB_OUTPUT writes:"
+    cat "${gh_output}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -203,7 +223,7 @@ run_test_stdout_excludes() {
   : > "${gh_output}"
 
   local env_cmd=(
-    env
+    env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY
     PATH="${mock_bin}:${PATH}"
     ISSUE_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
@@ -224,6 +244,16 @@ run_test_stdout_excludes() {
   if [[ ${exit_code} -ne ${expect_exit} ]]; then
     echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
     cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # The script must never write to GITHUB_OUTPUT — the legacy skipped= writes
+  # were removed in favor of the pre-script output protocol, and fullsend run's
+  # own relay writes to this file (last-write-wins collision otherwise).
+  if [[ -s "${gh_output}" ]]; then
+    echo "FAIL: ${test_name} — unexpected GITHUB_OUTPUT writes:"
+    cat "${gh_output}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -385,6 +415,31 @@ run_test_stdout "no-force-reaches-pr-search" \
   0 \
   "COMMENT_BODY=/fs-code"
 
+# --- Anchoring: --force counts only as the command's flag token ---
+# Mirrors the dispatch router's first-line tokenization. A comment that
+# merely mentions --force must not bypass the existing-PR check.
+
+# A longer flag sharing the prefix does not bypass; the check still blocks.
+run_test_stdout "forceful-prefix-does-not-bypass" \
+  "${HUMAN_PR_JSON}" \
+  "Skipping code agent" \
+  0 \
+  "COMMENT_BODY=/fs-code --forceful"
+
+# A mid-sentence mention of --force does not bypass.
+run_test_stdout "force-mid-sentence-does-not-bypass" \
+  "${HUMAN_PR_JSON}" \
+  "Skipping code agent" \
+  0 \
+  "COMMENT_BODY=please don't use --force on this issue"
+
+# --force anywhere but the flag position does not bypass.
+run_test_stdout "force-third-token-does-not-bypass" \
+  "${HUMAN_PR_JSON}" \
+  "Skipping code agent" \
+  0 \
+  "COMMENT_BODY=/fs-code now --force"
+
 # --- Pre-script output protocol tests (fullsend-ai/fullsend#4718) ---
 # Contract: fullsend docs/normative/prescript-output/v1. The script writes
 # skipped=true (plus reason=...) to FULLSEND_PRESCRIPT_OUTPUT only when an
@@ -403,15 +458,18 @@ run_test_prescript_output() {
   local mock_bin
   mock_bin="$(build_mock "${pr_list_output}")"
   local proto_out="${TMPDIR}/prescript-output.txt"
+  local gh_output="${TMPDIR}/github-output.txt"
   : > "${proto_out}"
+  : > "${gh_output}"
 
   local env_cmd=(
-    env
+    env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY
     PATH="${mock_bin}:${PATH}"
     ISSUE_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
     GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
     GH_TOKEN="fake-token"
+    GITHUB_OUTPUT="${gh_output}"
     FULLSEND_PRESCRIPT_OUTPUT="${proto_out}"
   )
 
@@ -427,6 +485,16 @@ run_test_prescript_output() {
   if [[ ${exit_code} -ne ${expect_exit} ]]; then
     echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
     cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # The script must never write to GITHUB_OUTPUT — the legacy skipped= writes
+  # were removed in favor of the pre-script output protocol, and fullsend run's
+  # own relay writes to this file (last-write-wins collision otherwise).
+  if [[ -s "${gh_output}" ]]; then
+    echo "FAIL: ${test_name} — unexpected GITHUB_OUTPUT writes:"
+    cat "${gh_output}"
     FAILURES=$((FAILURES + 1))
     return
   fi

@@ -76,9 +76,17 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
   exit 0
 fi
 
-# Allow override when --force is in the trigger comment or CODE_FORCE is set.
+# Allow override when the trigger comment is `/fs-code --force` or CODE_FORCE
+# is set. --force counts only as the command's flag token on the first line —
+# the same first-line tokenization the dispatch router uses — so a comment
+# merely mentioning --force (or a pasted log containing it) cannot bypass
+# the existing-PR check.
+FORCE_WORD=""
+if [[ -n "${COMMENT_BODY:-}" ]]; then
+  FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
+fi
 echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
-if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${COMMENT_BODY:-}" == *--force* ]]; then
+if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
   echo "Force override — skipping existing-PR check"
   exit 0
 fi
