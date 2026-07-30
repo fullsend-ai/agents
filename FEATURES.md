@@ -46,20 +46,29 @@ The harness separates the sandbox (where the agent runs) from the
 runner (where pre/post scripts run). An env var must be in the right
 place:
 
-| Where the var is read | Where needs to declare it |
+| Where the var is read | Where to declare it |
 |-----------------------|---------------------|
-| Agent prompt only (sandbox) | `env.sandbox` in `harness/<agent>.yaml` |
-| Pre/post script only (runner) | `env.runner` in `harness/<agent>.yaml` |
-| Both agent and scripts | Both `env.sandbox` and `env.runner` |
+| Agent prompt only (sandbox) | `env: sandbox:` in `harness/<agent>.yaml` |
+| Pre/post script only (runner) | `env: runner:` or `runner_env:` in `harness/<agent>.yaml` |
+| Both agent and scripts | Both sandbox and runner sections |
 
-Use `forge.github.env.sandbox` and `forge.github.env.runner` only if you need
-environment variables with different values between github and gitlab.
+> **Two patterns exist in the codebase.** Some harness files use the nested
+> `env: runner:` / `env: sandbox:` structure (e.g., `fix.yaml`,
+> `scribe.yaml`). Others use the top-level `runner_env:` key (e.g.,
+> `code.yaml`, `review.yaml`). Check the target agent's existing harness
+> file and follow its convention.
+
+Use `forge.github.env.sandbox` / `forge.github.env.runner` or
+`forge.github.runner_env` only if you need environment variables with
+different values between github and gitlab — again, match the existing
+pattern in the target harness file.
 
 ## 4. Update the subagent definition file
 
 If the agent needs to know about the new option:
 
-- [ ] Add the env var to the `## Inputs` section of `agents/<agent>.md`
+- [ ] Add the env var to the `## Inputs` section of `agents/<agent>.md`.
+      If no `## Inputs` section exists yet, create one.
 - [ ] Add conditional behavior to the agent prompt. Keep it minimal —
       describe the env var's meaning and what the agent should do
       differently. Don't add a paragraph where a sentence will do.
@@ -155,4 +164,4 @@ Before opening the PR, verify:
 - [ ] Tests cover both the default and the configured case
 - [ ] Documentation is updated
 - [ ] No other agent is broken by a skill change
-- [ ] The lint passes: `make lint`
+- [ ] The tests pass: `make test`
