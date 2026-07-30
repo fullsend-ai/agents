@@ -51,6 +51,11 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
 
 ## Severity filtering
 
+`$REVIEW_FINDING_SEVERITY_THRESHOLD` is required. The harness
+(`harness/review.yaml`) supplies the default via `env.sandbox`. When
+invoking the agent outside the harness (e.g., `--print` / pre-push),
+callers must set this variable explicitly.
+
 Use `$REVIEW_FINDING_SEVERITY_THRESHOLD` as the minimum severity for
 findings to include. The severity order from lowest to highest is:
 

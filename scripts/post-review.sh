@@ -9,9 +9,12 @@
 # to "comment" so only a human can grant approval.
 #
 # Required environment variables:
-#   REVIEW_TOKEN    — token with pull-requests:write on the target repo
-#   PR_NUMBER       — GitHub PR number
-#   REPO_FULL_NAME  — owner/repo (e.g. my-org/my-repo)
+#   REVIEW_TOKEN                      — token with pull-requests:write on the target repo
+#   PR_NUMBER                         — GitHub PR number
+#   REPO_FULL_NAME                    — owner/repo (e.g. my-org/my-repo)
+#   REVIEW_FINDING_SEVERITY_THRESHOLD — minimum severity for findings
+#                                       (info|low|medium|high|critical);
+#                                       default supplied by harness/review.yaml
 #
 # Exit codes:
 #   0 — review posted
@@ -101,6 +104,12 @@ case "${REVIEW_FINDING_SEVERITY_THRESHOLD}" in
      sanitized="${sanitized//$'\r'/}"
      sanitized="${sanitized//::/:}"
      echo "::error::REVIEW_FINDING_SEVERITY_THRESHOLD='${sanitized}' is invalid (expected info|low|medium|high|critical)"
+     echo '{"action":"failure","reason":"missing-context"}' | \
+       fullsend post-review \
+         --repo "${REPO_FULL_NAME}" \
+         --pr "${PR_NUMBER}" \
+         --token "${REVIEW_TOKEN}" \
+         --result -
      exit 1 ;;
 esac
 
