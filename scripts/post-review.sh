@@ -188,25 +188,20 @@ if [ "${ACTION}" = "approve" ]; then
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   DEFAULT_PROTECTED_PATHS_FILE="${SCRIPT_DIR}/../env/default-review-protected-paths.txt"
 
-  # Distinguish set-but-empty (disables protection) from unset (use defaults).
+  # Parse protected paths: env var (if set) takes precedence, else defaults file.
   if [[ "${REVIEW_PROTECTED_PATHS+set}" == "set" ]]; then
-    if [[ -z "${REVIEW_PROTECTED_PATHS}" ]]; then
-      # Explicitly empty — protection disabled, skip protected-path check.
-      PROTECTED_PATHS=()
-    else
-      IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
-      # Trim leading/trailing whitespace and drop empty entries.
-      _trimmed=()
-      for _entry in "${PROTECTED_PATHS[@]}"; do
-        _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-        [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
-      done
-      PROTECTED_PATHS=("${_trimmed[@]}")
-      unset _trimmed _entry
-      if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
-        echo "::error::PROTECTED_PATHS is empty after parsing — refusing to continue (fail-closed)" >&2
-        exit 1
-      fi
+    IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
+    # Trim leading/trailing whitespace and drop empty entries.
+    _trimmed=()
+    for _entry in "${PROTECTED_PATHS[@]}"; do
+      _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
+    done
+    PROTECTED_PATHS=("${_trimmed[@]}")
+    unset _trimmed _entry
+    if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
+      echo "::error::REVIEW_PROTECTED_PATHS is set but empty after parsing — refusing to continue (fail-closed)" >&2
+      exit 1
     fi
   elif [[ -f "${DEFAULT_PROTECTED_PATHS_FILE}" ]]; then
     PROTECTED_PATHS=()
@@ -215,6 +210,10 @@ if [ "${ACTION}" = "approve" ]; then
       [[ -z "${line}" || "${line}" == \#* ]] && continue
       PROTECTED_PATHS+=("${line}")
     done < "${DEFAULT_PROTECTED_PATHS_FILE}"
+    if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
+      echo "::error::Default protected paths file ${DEFAULT_PROTECTED_PATHS_FILE} yielded no paths — aborting (fail-closed)" >&2
+      exit 1
+    fi
   else
     echo "::error::REVIEW_PROTECTED_PATHS is not set and ${DEFAULT_PROTECTED_PATHS_FILE} not found — aborting" >&2
     exit 1

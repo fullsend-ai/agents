@@ -436,8 +436,8 @@ incident.
 
 1. Read `sub-agents/security-triage.md` for the sub-agent definition.
 2. Resolve the active governance paths list. If the
-   `REVIEW_PROTECTED_PATHS` environment variable is set, split on
-   commas and trim whitespace. Otherwise, read paths from
+   `REVIEW_PROTECTED_PATHS` environment variable is set **and
+   non-empty**, split on commas and trim whitespace. Otherwise, read paths from
    `env/default-review-protected-paths.txt` (one prefix per line,
    ignoring blank lines and comments).
 3. Compose a spawn prompt containing:
@@ -1007,10 +1007,10 @@ review agent MUST NEVER approve changes to them without raising
 findings.
 
 The protected paths list is determined at runtime. If the
-`REVIEW_PROTECTED_PATHS` environment variable is set (comma-separated
-path prefixes), use that list. If the variable is not set, read the
-default list from `env/default-review-protected-paths.txt` (one path prefix
-per line).
+`REVIEW_PROTECTED_PATHS` environment variable is set **and non-empty**
+(comma-separated path prefixes), use that list. If the variable is not
+set or empty, read the default list from
+`env/default-review-protected-paths.txt` (one path prefix per line).
 
 For each file in the PR diff, check whether its path starts with (or
 exactly matches) any entry in the active protected paths list.

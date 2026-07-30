@@ -1198,7 +1198,7 @@ run_empty_paths_test() {
     return
   fi
 
-  if ! grep -qF "PROTECTED_PATHS is empty" "${TMPDIR}/stdout-${test_name}.log"; then
+  if ! grep -qF "empty after parsing" "${TMPDIR}/stdout-${test_name}.log"; then
     echo "FAIL: ${test_name} — expected empty-paths abort message in stderr"
     cat "${TMPDIR}/stdout-${test_name}.log"
     FAILURES=$((FAILURES + 1))
@@ -1276,11 +1276,11 @@ run_nonapprove_missing_defaults_test() {
 }
 run_nonapprove_missing_defaults_test
 
-# Explicitly empty REVIEW_PROTECTED_PATHS="" disables protection (no downgrade).
-# The run_protected_paths_test helper cannot test this case because it guards on
-# -n, so we use a dedicated test function below.
+# Explicitly empty REVIEW_PROTECTED_PATHS="" must fail-closed (abort).
+# Empty-string assignment can occur through CI misconfiguration and must
+# not silently disable protection.
 run_explicit_empty_test() {
-  local test_name="explicit-empty-string-no-downgrade"
+  local test_name="explicit-empty-string-aborts"
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
@@ -1299,15 +1299,15 @@ run_explicit_empty_test() {
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
-  if [[ ${exit_code} -ne 0 ]]; then
-    echo "FAIL: ${test_name} — expected success but got exit code ${exit_code}"
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
     cat "${TMPDIR}/stdout-${test_name}.log"
     FAILURES=$((FAILURES + 1))
     return
   fi
 
-  if grep -qF "PR touches protected paths" "${TMPDIR}/stdout-${test_name}.log"; then
-    echo "FAIL: ${test_name} — should NOT downgrade when REVIEW_PROTECTED_PATHS is explicitly empty"
+  if ! grep -qF "REVIEW_PROTECTED_PATHS is set but empty" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected fail-closed abort message in stderr"
     cat "${TMPDIR}/stdout-${test_name}.log"
     FAILURES=$((FAILURES + 1))
     return
@@ -1316,6 +1316,50 @@ run_explicit_empty_test() {
   echo "PASS: ${test_name}"
 }
 run_explicit_empty_test
+
+# Defaults file containing only comments and blank lines must fail-closed.
+run_comments_only_defaults_test() {
+  local test_name="file-fallback-comments-only-aborts"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local fake_scripts="${TMPDIR}/fake-scripts-comments"
+  local fake_env="${TMPDIR}/fake-scripts-comments/../env"
+  mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}" "${fake_env}"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  cp "${POST_SCRIPT}" "${fake_scripts}/post-review.sh"
+  # Create a defaults file with only comments and blank lines.
+  printf '# This file is intentionally empty\n\n# No paths\n  \n' > "${fake_env}/default-review-protected-paths.txt"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    unset REVIEW_PROTECTED_PATHS
+    bash "${fake_scripts}/post-review.sh"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "yielded no paths" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected fail-closed abort message in stderr"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_comments_only_defaults_test
 
 # --- Summary ---
 

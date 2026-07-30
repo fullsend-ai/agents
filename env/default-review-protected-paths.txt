@@ -10,6 +10,7 @@ CLAUDE.md
 CODEOWNERS
 Containerfile
 Dockerfile
+env/
 harness/
 images/
 plugins/

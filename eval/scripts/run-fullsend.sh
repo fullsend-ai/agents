@@ -203,10 +203,22 @@ install -m 0600 /dev/null "$ENV_FILE"
   fi
 
   # Review agent: optional env vars referenced by harness/review.yaml.
-  # fullsend validates that all ${VAR} refs resolve; emit empty defaults
-  # so the agent falls back to its built-in defaults.
+  # fullsend validates that all ${VAR} refs resolve; emit defaults so
+  # the agent receives a meaningful value.
   if [[ "$AGENT" == "review" ]]; then
-    emit_env "REVIEW_PROTECTED_PATHS" "${REVIEW_PROTECTED_PATHS:-}"
+    if [[ -n "${REVIEW_PROTECTED_PATHS:-}" ]]; then
+      emit_env "REVIEW_PROTECTED_PATHS" "${REVIEW_PROTECTED_PATHS}"
+    else
+      # Read default protected paths and pass as comma-separated value
+      # so the sandbox agent always has a non-empty, meaningful list.
+      _default_paths_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/env/default-review-protected-paths.txt"
+      if [[ -f "${_default_paths_file}" ]]; then
+        _defaults=$(sed '/^[[:space:]]*$/d; /^[[:space:]]*#/d' "${_default_paths_file}" | paste -sd, -)
+        emit_env "REVIEW_PROTECTED_PATHS" "${_defaults}"
+      else
+        emit_env "REVIEW_PROTECTED_PATHS" ""
+      fi
+    fi
     emit_env "REVIEW_FINDING_SEVERITY_THRESHOLD" "${REVIEW_FINDING_SEVERITY_THRESHOLD:-}"
   fi
 
