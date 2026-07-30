@@ -1209,6 +1209,114 @@ run_empty_paths_test() {
 }
 run_empty_paths_test
 
+# Non-approve action must succeed even with degenerate REVIEW_PROTECTED_PATHS.
+run_nonapprove_degenerate_test() {
+  local test_name="nonapprove-degenerate-paths-succeeds"
+  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_PROTECTED_PATHS=",,, ,"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected success but got exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_nonapprove_degenerate_test
+
+# Non-approve action must succeed even when defaults file is missing.
+run_nonapprove_missing_defaults_test() {
+  local test_name="nonapprove-missing-defaults-succeeds"
+  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local fake_scripts="${TMPDIR}/fake-scripts-nonapprove"
+  mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}"
+  echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  cp "${POST_SCRIPT}" "${fake_scripts}/post-review.sh"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    unset REVIEW_PROTECTED_PATHS
+    bash "${fake_scripts}/post-review.sh"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected success but got exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_nonapprove_missing_defaults_test
+
+# Explicitly empty REVIEW_PROTECTED_PATHS="" disables protection (no downgrade).
+# The run_protected_paths_test helper cannot test this case because it guards on
+# -n, so we use a dedicated test function below.
+run_explicit_empty_test() {
+  local test_name="explicit-empty-string-no-downgrade"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES=".github/workflows/ci.yml"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected success but got exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "PR touches protected paths" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — should NOT downgrade when REVIEW_PROTECTED_PATHS is explicitly empty"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_explicit_empty_test
+
 # --- Summary ---
 
 echo ""

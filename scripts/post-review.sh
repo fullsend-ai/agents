@@ -183,38 +183,44 @@ ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # "comment" so only a human can grant approval. This is the sole enforcement
 # point — the code agent is free to propose changes to any path.
 # ---------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_PROTECTED_PATHS_FILE="${SCRIPT_DIR}/../env/default-review-protected-paths.txt"
-
-if [[ -n "${REVIEW_PROTECTED_PATHS:-}" ]]; then
-  IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
-  # Trim leading/trailing whitespace and drop empty entries.
-  _trimmed=()
-  for _entry in "${PROTECTED_PATHS[@]}"; do
-    _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
-  done
-  PROTECTED_PATHS=("${_trimmed[@]}")
-  unset _trimmed _entry
-elif [[ -f "${DEFAULT_PROTECTED_PATHS_FILE}" ]]; then
-  PROTECTED_PATHS=()
-  while IFS= read -r line; do
-    line="$(echo "${line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    [[ -z "${line}" || "${line}" == \#* ]] && continue
-    PROTECTED_PATHS+=("${line}")
-  done < "${DEFAULT_PROTECTED_PATHS_FILE}"
-else
-  echo "::error::REVIEW_PROTECTED_PATHS is not set and ${DEFAULT_PROTECTED_PATHS_FILE} not found — aborting" >&2
-  exit 1
-fi
-
-if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
-  echo "::error::PROTECTED_PATHS is empty after parsing — refusing to continue (fail-closed)" >&2
-  exit 1
-fi
-
 DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  DEFAULT_PROTECTED_PATHS_FILE="${SCRIPT_DIR}/../env/default-review-protected-paths.txt"
+
+  # Distinguish set-but-empty (disables protection) from unset (use defaults).
+  if [[ "${REVIEW_PROTECTED_PATHS+set}" == "set" ]]; then
+    if [[ -z "${REVIEW_PROTECTED_PATHS}" ]]; then
+      # Explicitly empty — protection disabled, skip protected-path check.
+      PROTECTED_PATHS=()
+    else
+      IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
+      # Trim leading/trailing whitespace and drop empty entries.
+      _trimmed=()
+      for _entry in "${PROTECTED_PATHS[@]}"; do
+        _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
+      done
+      PROTECTED_PATHS=("${_trimmed[@]}")
+      unset _trimmed _entry
+      if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
+        echo "::error::PROTECTED_PATHS is empty after parsing — refusing to continue (fail-closed)" >&2
+        exit 1
+      fi
+    fi
+  elif [[ -f "${DEFAULT_PROTECTED_PATHS_FILE}" ]]; then
+    PROTECTED_PATHS=()
+    while IFS= read -r line; do
+      line="$(echo "${line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -z "${line}" || "${line}" == \#* ]] && continue
+      PROTECTED_PATHS+=("${line}")
+    done < "${DEFAULT_PROTECTED_PATHS_FILE}"
+  else
+    echo "::error::REVIEW_PROTECTED_PATHS is not set and ${DEFAULT_PROTECTED_PATHS_FILE} not found — aborting" >&2
+    exit 1
+  fi
+
+  if [[ ${#PROTECTED_PATHS[@]} -gt 0 ]]; then
   PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
   if [ -z "${PR_FILES}" ]; then
     echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve (gh pr view --json files)" >&2
@@ -256,6 +262,7 @@ if [ "${ACTION}" = "approve" ]; then
     RESULT_FILE="${MODIFIED_RESULT}"
     DOWNGRADED=true
   fi
+  fi # end protected-paths check (non-empty PROTECTED_PATHS)
 fi
 
 # ---------------------------------------------------------------------------
