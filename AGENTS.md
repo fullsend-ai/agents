@@ -111,3 +111,42 @@ following fields are part of the skill specification:
 These fields are defined by the skill spec. A field's first appearance
 in a skill file in this repo is not a novel pattern and should not be
 flagged as a code-organization concern.
+
+## 8. Review pipeline propagation
+
+The review system has two layers that must stay in sync:
+
+- **`skills/code-review/SKILL.md`** defines review dimensions and
+  mandatory-finding rules for standalone use (e.g., when a developer
+  invokes `/code-review` directly).
+- **`skills/pr-review/SKILL.md`** orchestrates parallel sub-agents for
+  PR reviews. Each sub-agent receives only its own definition file from
+  `skills/pr-review/sub-agents/` — it never sees
+  `code-review/SKILL.md`.
+
+Because sub-agents are context-isolated, a rule added to
+`code-review/SKILL.md` has no effect during orchestrated PR reviews
+unless the corresponding sub-agent definition also contains a matching
+procedural section.
+
+### Propagation rule
+
+When adding or modifying a review rule in `code-review/SKILL.md`:
+
+1. Identify which sub-agent owns the rule's dimension. The sub-agent
+   roster table in `pr-review/SKILL.md` (section "Sub-agent roster")
+   maps categories to sub-agents.
+2. Add a procedural section to the corresponding sub-agent file in
+   `skills/pr-review/sub-agents/`. The section must include the
+   category name, severity guidance, and file-pattern or content-
+   matching instructions so the sub-agent can independently detect
+   and evaluate the condition.
+3. If the rule introduces a new category not listed in the roster
+   table's dimension mapping, add the category to the appropriate
+   row in the roster table in `pr-review/SKILL.md`.
+
+Use the "Permission and role changes" section in
+`skills/pr-review/sub-agents/security.md` as the reference model for
+what a complete procedural section looks like: it specifies the
+owned categories, the file patterns that trigger evaluation, the
+evaluation criteria, and the severity thresholds.
