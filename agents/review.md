@@ -208,10 +208,16 @@ gh api graphql -f query='{ repository(owner:"OWNER", name:"REPO") { pullRequest(
 - `approve` — no medium+ findings; the change is safe (low/info
   findings may be attached as comments)
 - `request-changes` — findings *requiring* resolution: one or more critical or
-  high findings; multiple medium-severity findings which could affect the
-  intended outcome of the PR
+  high findings; one or more medium-severity findings identifying a
+  functional bug (incorrect behavior, permission error, schema violation,
+  or silent failure). If the summary text states findings should be
+  addressed, fixed, or resolved before merge, the verdict must be
+  `request-changes`, not `comment` — the summary language and the
+  verdict action must be consistent.
 - `comment-only` — medium-severity findings worth noting but none
-  that should block
+  that should block. Use only when medium findings are stylistic,
+  advisory, or process-related — not when any medium finding identifies
+  a functional bug.
 - `reject` — the approach is fundamentally wrong; no amount of
   code-level iteration will make the PR mergeable (wrong design,
   unauthorized change, or the PR should be closed/rethought)
