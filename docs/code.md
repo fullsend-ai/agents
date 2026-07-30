@@ -57,7 +57,7 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 This separation ensures the agent never has direct write access to the repository.
 
-## Custom sandbox image
+### Custom sandbox image
 
 The code agent runs inside a sandbox container built from the universal
 `ghcr.io/fullsend-ai/fullsend-code:latest` image. This image ships common
