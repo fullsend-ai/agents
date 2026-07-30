@@ -32,7 +32,7 @@ Before writing code, answer:
 
 | Surface | When to use | Example |
 |---------|-------------|---------|
-| **Environment variable** | Runtime behavior toggle, simple values. Repo owners set it in their `.fullsend/` harness overlay or workflow inputs. The agent prompt, pre-script, or post-script reads the var and adjusts behavior. | `CODE_ALLOWED_TARGET_BRANCHES` |
+| **Environment variable** | Runtime behavior toggle, simple values. Repo owners set it in their base-derived harness files or workflow inputs. The agent prompt, pre-script, or post-script reads the var and adjusts behavior. | `CODE_ALLOWED_TARGET_BRANCHES` |
 | **Skill override** | The behavior is best expressed as natural-language instructions to the agent. Repo owners drop a replacement skill in `.agents/skills/` or org owners in `.fullsend/customized/skills/`. | `issue-labels` skill |
 
 Environment variables are the simplest for end users to configure.
@@ -52,16 +52,9 @@ place:
 | Pre/post script only (runner) | `env: runner:` in `harness/<agent>.yaml` |
 | Both agent and scripts | Both sandbox and runner sections |
 
-> **Use `env: runner:` / `env: sandbox:`.** Some older harness files still
-> use a top-level `runner_env:` key — that form is deprecated. New
-> configuration should use the nested `env: runner:` / `env: sandbox:`
-> structure. If you're adding a var to a harness file that still uses
-> `runner_env:`, prefer migrating it to `env: runner:` at the same time.
-
 Use `forge.github.env.sandbox` / `forge.github.env.runner` only when
 you need environment variables with different values between GitHub and
-GitLab. Some older harness files use `forge.github.runner_env` — prefer
-`forge.github.env.runner` for new work.
+GitLab.
 
 ## 4. Update the subagent definition file
 
@@ -100,11 +93,14 @@ Ask yourself:
 In `harness/<agent>.yaml`:
 
 - [ ] Add the env var to the appropriate sections (see step 3)
+- [ ] Set the default value directly in the harness YAML (e.g.,
+      `MY_VAR: "default_value"`). Users override defaults in their
+      base-derived harness files — the base harness is where sensible
+      defaults belong.
 - [ ] The harness engine uses Go's `os.Expand` for variable substitution,
       which supports `$VAR` and `${VAR}` only — **not** shell default
-      syntax like `${VAR:-default}`. If the var needs a default, set it
-      in the pre-script or post-script with standard shell defaults:
-      `VAR="${VAR:-default_value}"`
+      syntax like `${VAR:-default}`. Don't use `${VAR:-default}` in
+      harness YAML values; it won't work.
 
 ## 7. Update the schema (if the agent output changes)
 
