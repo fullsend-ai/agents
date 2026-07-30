@@ -243,7 +243,7 @@ post_failure_environmental_note() {
   case "$1" in
     push-workflow-permission)
       cat <<'EOF'
-> **Environmental limitation:** the GitHub App lacks `workflows` write permission on this repository. The agent's patch is not necessarily wrong — update repo or app permissions (or avoid `.github/workflows/` changes) and retry.
+> **Security boundary:** the coder app intentionally lacks `workflows` write permission. Changes to `.github/workflows/` must be made outside the agent (e.g., via a manual PR). Re-run the agent without workflow file changes, or apply those changes separately.
 EOF
       ;;
     *)
