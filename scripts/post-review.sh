@@ -188,10 +188,14 @@ DEFAULT_PROTECTED_PATHS_FILE="${SCRIPT_DIR}/../env/default-review-protected-path
 
 if [[ -n "${REVIEW_PROTECTED_PATHS:-}" ]]; then
   IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
-  # Trim leading/trailing whitespace from each entry.
-  for i in "${!PROTECTED_PATHS[@]}"; do
-    PROTECTED_PATHS[i]="$(echo "${PROTECTED_PATHS[i]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  # Trim leading/trailing whitespace and drop empty entries.
+  _trimmed=()
+  for _entry in "${PROTECTED_PATHS[@]}"; do
+    _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
   done
+  PROTECTED_PATHS=("${_trimmed[@]}")
+  unset _trimmed _entry
 elif [[ -f "${DEFAULT_PROTECTED_PATHS_FILE}" ]]; then
   PROTECTED_PATHS=()
   while IFS= read -r line; do

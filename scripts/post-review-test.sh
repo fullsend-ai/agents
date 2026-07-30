@@ -1117,6 +1117,16 @@ run_protected_paths_test "custom-paths-no-match" \
   "${APPROVE_JSON}" "PR touches protected paths" "absent" \
   "deploy/,manifests/" "src/main.go"
 
+# Empty entries from leading/trailing/consecutive commas must not match all files
+run_protected_paths_test "custom-paths-empty-entries-ignored" \
+  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
+  ",deploy/,,manifests/," "src/main.go"
+
+# Empty entries still allow valid entries to match
+run_protected_paths_test "custom-paths-empty-entries-valid-match" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  ",deploy/,,manifests/," "deploy/production.yaml"
+
 # Abort when both env var and defaults file are missing.
 # We override BASH_SOURCE resolution by symlinking the script to a temp dir
 # where no env/default-review-protected-paths.txt exists.

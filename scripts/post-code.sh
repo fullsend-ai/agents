@@ -16,8 +16,8 @@
 # before step 2 to ensure hooks have the binaries they need.
 #
 # Protected-path enforcement lives in post-review.sh: the review agent
-# cannot approve PRs that touch paths listed in REVIEW_PROTECTED_PATHS.
-# The code agent is free to propose changes to any path.
+# cannot approve PRs that touch sensitive paths (e.g. .github/, CODEOWNERS,
+# agents/). The code agent is free to propose changes to any path.
 #
 # Required environment variables:
 #   PUSH_TOKEN        — token with contents:write + issues:write + pull-requests:write

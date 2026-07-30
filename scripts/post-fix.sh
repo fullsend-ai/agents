@@ -14,8 +14,8 @@
 #   - Token isolation — PUSH_TOKEN never enters the sandbox
 #
 # Protected-path enforcement lives in post-review.sh: the review agent
-# cannot approve PRs that touch paths listed in REVIEW_PROTECTED_PATHS.
-# The fix agent is free to propose changes to any path.
+# cannot approve PRs that touch sensitive paths (e.g. .github/, CODEOWNERS,
+# agents/). The fix agent is free to propose changes to any path.
 #
 # Steps:
 #   0. Check for agent commits
