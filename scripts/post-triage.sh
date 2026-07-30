@@ -399,7 +399,7 @@ ${FAILED_CREATES}"
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
 
-    AUTO_CODE="${TRIAGE_AUTO_CODE}"
+    AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
     AUTO_CODE="${AUTO_CODE,,}"
 
     # Determine whether this category should auto-promote to ready-to-code.
@@ -407,7 +407,7 @@ ${FAILED_CREATES}"
       case "${AUTO_CODE}" in
         off) return 1 ;;
         category)
-          local categories="${TRIAGE_AUTO_CODE_CATEGORIES}"
+          local categories="${TRIAGE_AUTO_CODE_CATEGORIES:-bug,documentation,performance}"
           categories="${categories//[[:space:]]/}"
           # Check if CATEGORY appears in the comma-separated list.
           echo ",${categories}," | grep -qF ",${CATEGORY},"
