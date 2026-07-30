@@ -49,8 +49,6 @@ prescript_output() {
 }
 # END bundled: lib/prescript-output.lib.sh
 
-echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL:-}"
-
 errors=0
 
 if [[ ! "${ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
@@ -85,6 +83,8 @@ if [[ "${errors}" -gt 0 ]]; then
   exit 1
 fi
 
+echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL}"
+
 echo "Input validation passed:"
 echo "  ISSUE_NUMBER=${ISSUE_NUMBER}"
 echo "  REPO_FULL_NAME=${REPO_FULL_NAME}"
@@ -108,7 +108,8 @@ FORCE_WORD=""
 if [[ -n "${COMMENT_BODY:-}" ]]; then
   FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
 fi
-echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
+_cb="${COMMENT_BODY:-}"
+echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY_LENGTH='${#_cb}'"
 if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
   echo "Force override — skipping existing-PR check"
   exit 0
