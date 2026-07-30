@@ -61,6 +61,12 @@ None.
 
 ## How the agent works
 
+### Custom sandbox image
+
+The fix agent shares the [code agent's sandbox image](code.md#custom-sandbox-image).
+If your project uses a custom image, update the `image:` field in both
+`harness/code.yaml` and `harness/fix.yaml`.
+
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).

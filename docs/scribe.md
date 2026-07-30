@@ -17,8 +17,12 @@ Cloud, and by default it has access to *zero* Drive files. You then
 **invite** the service account's email address to the Google Calendar events
 you want it to scribe. (In the calendar event settings you also need to
 enable Gemini notes and grant read access to attendees outside your
-organization.) This calendar invite is how the resulting notes document
-becomes visible to the service account's Drive access.
+organization.) In our experience, this calendar invite is how the resulting
+notes document becomes visible to the service account's Drive access — but
+the exact behavior may depend on your Workspace edition and admin policies
+(domain-wide delegation settings, external-guest sharing restrictions, etc.).
+Consult your Workspace admin if the service account cannot see expected
+notes.
 
 At runtime, the pre-script queries the Drive API using a keyword search
 (`SCRIBE_SEARCH_QUERY`) over a rolling time window (`SCRIBE_LOOKBACK_HOURS`,
@@ -57,7 +61,9 @@ The scribe agent does not accept slash commands.
 
 ## Control labels
 
-The scribe agent does not use control labels.
+Scribe does not consume or apply labels that gate agent behavior. It does
+apply a `meeting-notes` label (or agent-specified labels) to issues it
+creates, for categorization only.
 
 ## Configuration
 
