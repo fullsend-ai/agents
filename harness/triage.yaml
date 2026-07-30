@@ -34,6 +34,11 @@ validation_loop:
 
 timeout_minutes: 10
 
+env:
+  runner:
+    TRIAGE_AUTO_CODE: "on"
+    TRIAGE_AUTO_CODE_CATEGORIES: "bug,documentation,performance"
+
 forge:
   github:
     pre_script: scripts/pre-triage.sh
@@ -42,8 +47,6 @@ forge:
       runner:
         GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
         GH_TOKEN: ${GH_TOKEN}
-        TRIAGE_AUTO_CODE: ${TRIAGE_AUTO_CODE}
-        TRIAGE_AUTO_CODE_CATEGORIES: ${TRIAGE_AUTO_CODE_CATEGORIES}
       sandbox:
         GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
         GH_TOKEN: "${GH_TOKEN}"

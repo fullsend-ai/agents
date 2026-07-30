@@ -64,6 +64,9 @@ chmod +x "${MOCK_BIN}/fullsend"
 export PATH="${MOCK_BIN}:${PATH}"
 export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
+# Harness defaults — post-triage.sh expects these from the harness env.
+export TRIAGE_AUTO_CODE="on"
+export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
 
 # prerequisites handler reads config.yaml from GITHUB_WORKSPACE.
 # Create a minimal workspace with an allowlist so the test can exercise
