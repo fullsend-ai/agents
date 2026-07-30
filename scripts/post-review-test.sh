@@ -383,9 +383,9 @@ if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* 
   exit 0
 fi
 
-# gh pr view ... --json files ... → no protected files
+# gh pr view ... --json files ... → configurable via MOCK_PR_FILES
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
-  echo "src/main.go"
+  echo "\${MOCK_PR_FILES:-src/main.go}"
   exit 0
 fi
 
@@ -1021,6 +1021,96 @@ run_body_test "label-actions-plus-action-hints-has-labels-section" \
 
 run_body_test "label-actions-plus-action-hints-has-next-steps" \
   "${LABEL_PLUS_HINTS_JSON}" "**Next steps:**"
+
+# ---------------------------------------------------------------------------
+# REVIEW_PROTECTED_PATHS override tests
+# Verify that setting REVIEW_PROTECTED_PATHS overrides the default list.
+# ---------------------------------------------------------------------------
+
+# Helper that sets two env vars (reuses run_label_test_with_env pattern but
+# needs two env vars: REVIEW_PROTECTED_PATHS + MOCK_PR_FILES).
+run_protected_paths_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local match_mode="$4"  # "present" or "absent"
+  local protected_paths="$5"
+  local mock_files="$6"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export MOCK_PR_FILES="${mock_files}"
+    if [[ -n "${protected_paths}" ]]; then
+      export REVIEW_PROTECTED_PATHS="${protected_paths}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${match_mode}" == "present" ]]; then
+    if ! grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected '${expected_pattern}' in stdout"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — '${expected_pattern}' should NOT be in stdout"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+
+# Default protected paths: .github/ triggers downgrade
+run_protected_paths_test "default-protected-paths-triggers" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  "" ".github/workflows/ci.yml"
+
+# Custom REVIEW_PROTECTED_PATHS: .github/ is no longer protected
+run_protected_paths_test "custom-paths-removes-default" \
+  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
+  "deploy/,manifests/" ".github/workflows/ci.yml"
+
+# Custom REVIEW_PROTECTED_PATHS: deploy/ is now protected
+run_protected_paths_test "custom-paths-adds-new" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  "deploy/,manifests/" "deploy/production.yaml"
+
+# Custom REVIEW_PROTECTED_PATHS with whitespace around entries
+run_protected_paths_test "custom-paths-whitespace-trimmed" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  " deploy/ , manifests/ " "deploy/production.yaml"
+
+# Custom REVIEW_PROTECTED_PATHS: non-matching file is not protected
+run_protected_paths_test "custom-paths-no-match" \
+  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
+  "deploy/,manifests/" "src/main.go"
 
 # --- Summary ---
 

@@ -990,7 +990,7 @@ governance and infrastructure files that require human approval — the
 review agent MUST NEVER approve changes to them without raising
 findings.
 
-Protected paths (kept in sync with `post-review.sh`):
+The default protected paths (kept in sync with `post-review.sh`) are:
 
 - `.claude/`
 - `.cursor/`
@@ -1011,8 +1011,12 @@ Protected paths (kept in sync with `post-review.sh`):
 - `scripts/`
 - `skills/`
 
+Repo owners can override this list by setting the `REVIEW_PROTECTED_PATHS`
+environment variable to a comma-separated list of path prefixes. When
+set, the variable replaces the defaults entirely.
+
 For each file in the PR diff, check whether its path starts with (or
-exactly matches) any entry in the list above.
+exactly matches) any entry in the active protected paths list.
 
 If **any** protected files are modified, you MUST emit a structured
 finding with `category: "protected-path"`. This is not optional —

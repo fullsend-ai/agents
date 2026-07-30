@@ -183,7 +183,7 @@ ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # "comment" so only a human can grant approval. This is the sole enforcement
 # point — the code agent is free to propose changes to any path.
 # ---------------------------------------------------------------------------
-REVIEW_PROTECTED_PATHS=(
+DEFAULT_PROTECTED_PATHS=(
   ".claude/"
   ".cursor/"
   ".gitattributes"
@@ -204,6 +204,16 @@ REVIEW_PROTECTED_PATHS=(
   "skills/"
 )
 
+if [[ -n "${REVIEW_PROTECTED_PATHS:-}" ]]; then
+  IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
+  # Trim leading/trailing whitespace from each entry.
+  for i in "${!PROTECTED_PATHS[@]}"; do
+    PROTECTED_PATHS[i]="$(echo "${PROTECTED_PATHS[i]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  done
+else
+  PROTECTED_PATHS=("${DEFAULT_PROTECTED_PATHS[@]}")
+fi
+
 DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then
   PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
@@ -215,7 +225,7 @@ if [ "${ACTION}" = "approve" ]; then
   PROTECTED_MATCHES=""
   while IFS= read -r file; do
     [ -z "${file}" ] && continue
-    for pattern in "${REVIEW_PROTECTED_PATHS[@]}"; do
+    for pattern in "${PROTECTED_PATHS[@]}"; do
       if [[ "${file}" == "${pattern}"* ]]; then
         PROTECTED_MATCHES="${PROTECTED_MATCHES}${file}"$'\n'
         break
