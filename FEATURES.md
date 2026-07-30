@@ -67,8 +67,11 @@ GitLab. Some older harness files use `forge.github.runner_env` — prefer
 
 If the agent needs to know about the new option:
 
-- [ ] Add the env var to the `## Variables` section of `agents/<agent>.md`.
-      If no `## Variables` section exists yet, create one.
+- [ ] Reference the env var in `agents/<agent>.md` wherever it fits
+      naturally in the prompt flow (per ADR 0049, there is no required
+      section structure for how agent prompts reference config vars).
+      If the file has an `## Inputs` section, that's a reasonable place;
+      otherwise, weave it into the existing prompt context.
 - [ ] Add conditional behavior to the agent prompt. Keep it minimal —
       describe the env var's meaning and what the agent should do
       differently. Don't add a paragraph where a sentence will do.
@@ -83,8 +86,8 @@ Ask yourself:
 
 - [ ] **Pre-script:** Does the new option affect how the agent gathers input
       before it runs? Does the new option affect whether the agent should run at
-      all? The [skipped=true
-      mechanism](https://fullsend.sh/docs/guides/user/building-custom-agents.html#skipping-the-run-from-the-pre-script)
+      all? The [`skipped=true`
+      mechanism](https://fullsend.sh/docs/normative/prescript-output/v1/)
       in the pre-script lets you skip the agent entirely based on configuration.
 - [ ] **Post-script:** Does the new option change how the agent's output
       is applied?  If your option changes output label behavior, comment

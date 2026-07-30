@@ -18,38 +18,10 @@ For installation of openshell and fullsend, see
 
 ## Starting the sandbox infrastructure
 
-Before running an agent, you need the podman socket and the openshell
-gateway running.
-
-### 1. Start the podman socket
-
-```bash
-systemctl --user start podman.socket
-```
-
-Verify it's listening:
-
-```bash
-systemctl --user status podman.socket
-```
-
-### 2. Start the openshell gateway
-
-In a separate terminal, start the gateway in the foreground:
-
-```bash
-openshell-gateway
-```
-
-You should see output like:
-
-```
-INFO openshell_server::cli: Starting OpenShell server bind=0.0.0.0:17670
-INFO openshell_driver_podman::driver: Connected to Podman
-```
-
-Leave this running while you test. The gateway manages sandbox
-containers via podman.
+Before running an agent, you need the podman socket (or podman machine
+on macOS) and the openshell gateway running. See
+[Running agents locally](https://fullsend.sh/docs/guides/user/running-agents-locally.html)
+for platform-specific setup instructions covering both Linux and macOS.
 
 ## Running an agent with `fullsend run`
 
@@ -63,6 +35,14 @@ Export the variables the agent needs:
 ```bash
 export GITHUB_ISSUE_URL="https://github.com/your-org/test-repo/issues/25"
 export GH_TOKEN="$(gh auth token)"
+
+# GCP/Vertex AI credentials — required by most agents via
+# common/env/gcp-vertex.env and the host_files GOOGLE_APPLICATION_CREDENTIALS
+# mount in harness YAML.
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
+export ANTHROPIC_VERTEX_PROJECT_ID="your-gcp-project-id"
+export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
+export CLOUD_ML_REGION="us-east5"
 ```
 
 If you're testing a new env var, export it here too. You can also use
