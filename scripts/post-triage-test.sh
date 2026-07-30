@@ -715,6 +715,228 @@ run_test_stdout "workflow-changes-warning-emitted" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
 
+# --- TRIAGE_AUTO_CODE configuration tests (#1754) ---
+
+# Helper: run_test with extra env vars. Accepts a 5th arg: space-separated
+# KEY=VALUE pairs exported into the post-script subshell.
+run_test_with_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local expect_failure="${4:-false}"
+  local extra_env="$5"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    # shellcheck disable=SC2086
+    for kv in ${extra_env}; do export "${kv}"; done
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit code ${exit_code})"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_test_no_pattern_with_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local forbidden_pattern="$3"
+  local extra_env="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    # shellcheck disable=SC2086
+    for kv in ${extra_env}; do export "${kv}"; done
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF -- "${forbidden_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — forbidden pattern '${forbidden_pattern}' was found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Shared fixture: sufficient bug.
+AUTO_CODE_BUG_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+
+# Shared fixture: sufficient documentation.
+AUTO_CODE_DOCS_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nDocs issue."}'
+
+# Shared fixture: sufficient performance.
+AUTO_CODE_PERF_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_speed"},"comment":"## Triage Summary\n\nPerformance issue."}'
+
+# Shared fixture: sufficient feature.
+AUTO_CODE_FEATURE_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nFeature request."}'
+
+# Default (unset): bug gets ready-to-code (existing behavior preserved).
+run_test "auto-code-default-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+# TRIAGE_AUTO_CODE=on: bug gets ready-to-code (explicit on).
+run_test_with_env "auto-code-on-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=on"
+
+# TRIAGE_AUTO_CODE=off: bug gets triaged instead of ready-to-code.
+run_test_with_env "auto-code-off-bug-gets-triaged" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: bug does NOT get ready-to-code.
+run_test_no_pattern_with_env "auto-code-off-bug-no-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "labels[]=ready-to-code" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: documentation gets triaged instead of ready-to-code.
+run_test_with_env "auto-code-off-docs-gets-triaged" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: performance gets triaged instead of ready-to-code.
+run_test_with_env "auto-code-off-perf-gets-triaged" \
+  "${AUTO_CODE_PERF_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: feature still gets triaged (unchanged behavior).
+run_test_with_env "auto-code-off-feature-gets-triaged" \
+  "${AUTO_CODE_FEATURE_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: bug still gets the bug category label.
+run_test_with_env "auto-code-off-bug-still-gets-bug-label" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=bug --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: documentation still gets the documentation label.
+run_test_with_env "auto-code-off-docs-still-gets-docs-label" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=documentation --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=category with default categories: bug gets ready-to-code.
+run_test_with_env "auto-code-category-default-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=category"
+
+# TRIAGE_AUTO_CODE=category with only bug: bug gets ready-to-code.
+run_test_with_env "auto-code-category-bug-only-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
+
+# TRIAGE_AUTO_CODE=category with only bug: documentation gets triaged.
+run_test_with_env "auto-code-category-bug-only-docs-gets-triaged" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
+
+# TRIAGE_AUTO_CODE=category with only bug: docs does NOT get ready-to-code.
+run_test_no_pattern_with_env "auto-code-category-bug-only-docs-no-ready-to-code" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "labels[]=ready-to-code" \
+  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
+
+# TRIAGE_AUTO_CODE=category with only documentation: performance gets triaged.
+run_test_with_env "auto-code-category-docs-only-perf-gets-triaged" \
+  "${AUTO_CODE_PERF_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=documentation"
+
+# TRIAGE_AUTO_CODE=category with bug,documentation: both get ready-to-code.
+run_test_with_env "auto-code-category-bug-docs-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug,documentation"
+
+run_test_with_env "auto-code-category-bug-docs-docs-gets-ready-to-code" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug,documentation"
+
+# TRIAGE_AUTO_CODE=off with workflow-changes: still triaged (both guards agree).
+run_test_with_env "auto-code-off-with-workflow-changes-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI","severity":"high","category":"bug","problem":"CI broken","root_cause_hypothesis":"Missing step","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_ci","requires_workflow_changes":true},"comment":"## Triage Summary\n\nNeeds workflow changes."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=category: feature still gets feature+triaged (unchanged).
+run_test_with_env "auto-code-category-feature-gets-feature-label" \
+  "${AUTO_CODE_FEATURE_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=feature --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
+
 # --- Summary ---
 
 echo ""
