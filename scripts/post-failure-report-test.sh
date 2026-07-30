@@ -91,9 +91,17 @@ run_failure_comment_test "failure-comment-workflow-permission-category" \
   "my-org/my-repo" "12345" \
   "workflows permission" "yes"
 
-run_failure_comment_test "failure-comment-workflow-permission-environmental-note" \
+run_failure_comment_test "failure-comment-workflow-permission-security-boundary" \
   "push-workflow-permission" "permission denied on workflow path" "my-org/my-repo" "12345" \
-  "Environmental limitation" "yes"
+  "Security boundary" "yes"
+
+run_failure_comment_test "failure-comment-workflow-permission-intentional" \
+  "push-workflow-permission" "permission denied on workflow path" "my-org/my-repo" "12345" \
+  "intentionally lacks" "yes"
+
+run_failure_comment_test "failure-comment-workflow-permission-no-update-suggestion" \
+  "push-workflow-permission" "permission denied on workflow path" "my-org/my-repo" "12345" \
+  "update repo or app permissions" "no"
 
 run_failure_comment_test "failure-comment-pre-commit-category" \
   "pre-commit-blocked" "trim trailing whitespace.............................Failed" \
@@ -137,7 +145,7 @@ run_fix_failure_comment_test "fix-failure-comment-push-rejected" \
 run_fix_failure_comment_test "fix-failure-comment-workflow-permission" \
   "push-workflow-permission" \
   "refusing to allow a GitHub App to create or update workflow without workflows permission" \
-  "Environmental limitation" "yes"
+  "Security boundary" "yes"
 
 run_fix_failure_comment_test "fix-failure-comment-pre-commit" \
   "pre-commit-blocked" "hook failed" "Pre-commit blocked" "yes"
