@@ -713,12 +713,13 @@ run_test "workflow-false-bug-gets-ready-to-code" \
 # Workflow changes warning appears in stdout.
 run_test_stdout "workflow-changes-warning-emitted" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
-  "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
+  "::warning::Triage detected workflow file changes required (#325)"
 
 # --- TRIAGE_AUTO_CODE configuration tests (#1754) ---
 
-# Helper: run_test with extra env vars. Accepts a 5th arg: space-separated
-# KEY=VALUE pairs exported into the post-script subshell.
+# Helper: run_test with extra env vars. Accepts a 5th arg: newline-separated
+# KEY=VALUE pairs exported into the post-script subshell (values may contain
+# spaces).
 run_test_with_env() {
   local test_name="$1"
   local json_content="$2"
@@ -734,8 +735,8 @@ run_test_with_env() {
   local exit_code=0
   (
     cd "${run_dir}"
-    # shellcheck disable=SC2086,SC2163
-    for kv in ${extra_env}; do export "${kv}"; done
+    # shellcheck disable=SC2163  # exporting KEY=VALUE, not the var "kv"
+    while IFS= read -r kv; do [[ -n "$kv" ]] && export "$kv"; done <<< "$extra_env"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
@@ -781,8 +782,8 @@ run_test_no_pattern_with_env() {
   local exit_code=0
   (
     cd "${run_dir}"
-    # shellcheck disable=SC2086,SC2163
-    for kv in ${extra_env}; do export "${kv}"; done
+    # shellcheck disable=SC2163  # exporting KEY=VALUE, not the var "kv"
+    while IFS= read -r kv; do [[ -n "$kv" ]] && export "$kv"; done <<< "$extra_env"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
@@ -888,40 +889,40 @@ run_test_with_env "auto-code-category-bug-only-bug-gets-ready-to-code" \
   "${AUTO_CODE_BUG_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
 # TRIAGE_AUTO_CODE=category with only bug: documentation gets triaged.
 run_test_with_env "auto-code-category-bug-only-docs-gets-triaged" \
   "${AUTO_CODE_DOCS_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "false" \
-  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
 # TRIAGE_AUTO_CODE=category with only bug: docs does NOT get ready-to-code.
 run_test_no_pattern_with_env "auto-code-category-bug-only-docs-no-ready-to-code" \
   "${AUTO_CODE_DOCS_FIXTURE}" \
   "labels[]=ready-to-code" \
-  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
 # TRIAGE_AUTO_CODE=category with only documentation: performance gets triaged.
 run_test_with_env "auto-code-category-docs-only-perf-gets-triaged" \
   "${AUTO_CODE_PERF_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "false" \
-  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=documentation"
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=documentation'
 
 # TRIAGE_AUTO_CODE=category with bug,documentation: both get ready-to-code.
 run_test_with_env "auto-code-category-bug-docs-bug-gets-ready-to-code" \
   "${AUTO_CODE_BUG_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug,documentation"
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
 
 run_test_with_env "auto-code-category-bug-docs-docs-gets-ready-to-code" \
   "${AUTO_CODE_DOCS_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug,documentation"
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
 
 # TRIAGE_AUTO_CODE=off with workflow-changes: still triaged (both guards agree).
 run_test_with_env "auto-code-off-with-workflow-changes-gets-triaged" \
@@ -935,14 +936,16 @@ run_test_with_env "auto-code-category-feature-gets-feature-label" \
   "${AUTO_CODE_FEATURE_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=feature --silent" \
   "false" \
-  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug"
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
 # TRIAGE_AUTO_CODE=category with whitespace in categories: still matches.
+# Uses documentation fixture (not bug) to verify multi-item matching actually
+# works — bug would match even a truncated list.
 run_test_with_env "auto-code-category-whitespace-tolerant" \
-  "${AUTO_CODE_BUG_FIXTURE}" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  "TRIAGE_AUTO_CODE=category TRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance"
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance'
 
 # --- Summary ---
 

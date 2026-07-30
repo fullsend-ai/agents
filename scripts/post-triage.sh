@@ -400,6 +400,7 @@ ${FAILED_CREATES}"
     echo "Category: ${CATEGORY}"
 
     AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
+    AUTO_CODE="${AUTO_CODE,,}"
 
     # Determine whether this category should auto-promote to ready-to-code.
     auto_code_allowed() {
@@ -417,15 +418,18 @@ ${FAILED_CREATES}"
       esac
     }
 
-    # Workflow-change guard: if triage detected workflow file changes and the
-    # category would normally auto-promote to ready-to-code, apply triaged
-    # instead and skip the per-category ready-to-code deferral.
+    # Workflow-change guard: if triage detected workflow file changes, always
+    # log the (#325) warning for operational visibility. Only block auto-
+    # promotion (apply triaged early) when the category would otherwise
+    # auto-promote to ready-to-code.
     WORKFLOW_BLOCKED=false
-    if [[ "${REQUIRES_WORKFLOW}" == "true" ]] && auto_code_allowed; then
-      echo "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
-      echo "Applying triaged label (workflow changes required)..."
-      add_label "triaged"
-      WORKFLOW_BLOCKED=true
+    if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
+      echo "::warning::Triage detected workflow file changes required (#325)"
+      if auto_code_allowed; then
+        echo "Applying triaged label (workflow changes required)..."
+        add_label "triaged"
+        WORKFLOW_BLOCKED=true
+      fi
     fi
     case "${CATEGORY}" in
       bug)
