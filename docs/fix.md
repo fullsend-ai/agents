@@ -61,18 +61,18 @@ None.
 
 ## How the agent works
 
-### Custom sandbox image
-
-The fix agent shares the [code agent's sandbox image](code.md#custom-sandbox-image).
-If your project uses a custom image, update the `image:` field in both
-`harness/code.yaml` and `harness/fix.yaml`.
-
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
 2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
+
+### Custom sandbox image
+
+The fix agent shares the [code agent's sandbox image](code.md#custom-sandbox-image).
+If your project uses a custom image, update the `image:` field in both
+`harness/code.yaml` and `harness/fix.yaml`.
 
 ### What the agent acts on
 

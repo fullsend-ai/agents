@@ -59,14 +59,14 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
 
     # Bail early if fences are unbalanced — unmatched ``` causes every
     # section check to misreport.
-    if awk 'BEGIN{f=0} /^```/{f=1-f} END{exit !f}' "$doc_path"; then
+    if awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f} END{exit !f}' "$doc_path"; then
         echo "  $doc_basename: unterminated fenced code block (unmatched \`\`\`)"
         errors=$((errors + 1))
         continue
     fi
 
     # Check that the top-level heading ends with " Agent"
-    h1="$(awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^# [^#]/{sub(/^# /,""); print; exit}' "$doc_path")"
+    h1="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^# [^#]/{sub(/^# /,""); print; exit}' "$doc_path")"
     if [[ -z "$h1" ]]; then
         echo "  $doc_basename: missing top-level \"# ...\" heading"
         errors=$((errors + 1))
@@ -76,14 +76,16 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
     fi
 
     # Extract ## headers outside fenced code blocks
-    actual_sections="$(awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^## /{sub(/^## /,""); print}' "$doc_path")"
+    actual_sections="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^## /{sub(/^## /,""); print}' "$doc_path")"
 
     # Check for duplicate ## headings
+    doc_ok=true
     duplicates="$(echo "$actual_sections" | sort | uniq -d)"
     if [[ -n "$duplicates" ]]; then
         while IFS= read -r dup; do
             echo "  $doc_basename: duplicate section \"## $dup\""
             errors=$((errors + 1))
+            doc_ok=false
         done <<< "$duplicates"
     fi
 
@@ -111,6 +113,7 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
 
     if [[ ${#missing[@]} -gt 0 || ${#extra[@]} -gt 0 ]]; then
         echo "  $doc_basename: FAIL"
+        doc_ok=false
         for s in "${missing[@]+"${missing[@]}"}"; do
             echo "    missing: \"## $s\""
             errors=$((errors + 1))
@@ -119,7 +122,7 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
             echo "    unexpected: \"## $s\" — adding new sections is fine, but please add them to the REQUIRED_SECTIONS list in hack/lint-agent-docs so all agent docs stay consistent"
             errors=$((errors + 1))
         done
-    else
+    elif [[ "$doc_ok" == "true" ]]; then
         echo "  $doc_basename: OK"
     fi
 done
@@ -140,12 +143,12 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
     doc_basename="$(basename "$doc_value")"
 
     # Only check docs that have the Configuration section
-    if ! awk 'BEGIN{f=0} /^```/{f=1-f; next} f==0 && /^## Configuration/{found=1} END{exit !found}' "$doc_path"; then
+    if ! awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^## Configuration/{found=1} END{exit !found}' "$doc_path"; then
         continue
     fi
 
     # Look for ### Variables under ## Configuration (not just anywhere)
-    if ! awk 'BEGIN{f=0;c=0} /^```/{f=1-f;next} f{next} /^## Configuration/{c=1;next} /^## /{c=0} c && /^### Variables/{found=1} END{exit !found}' "$doc_path"; then
+    if ! awk 'BEGIN{f=0;c=0} /^[[:space:]]*```/{f=1-f;next} f{next} /^## Configuration/{c=1;next} /^## /{c=0} c && /^### Variables/{found=1} END{exit !found}' "$doc_path"; then
         echo "  $doc_basename: missing \"### Variables\" subsection under \"## Configuration\""
         errors=$((errors + 1))
     else
