@@ -250,11 +250,11 @@ post_failure_category_label() {
   esac
 }
 
-post_failure_environmental_note() {
+post_failure_security_note() {
   case "$1" in
     push-workflow-permission)
       cat <<'EOF'
-> **Environmental limitation:** the GitHub App lacks `workflows` write permission on this repository. The agent's patch is not necessarily wrong — update repo or app permissions (or avoid `.github/workflows/` changes) and retry.
+> **Security boundary:** the coder app intentionally lacks `workflows` write permission. Changes to `.github/workflows/` must be made outside the agent (e.g., via a manual PR). Re-run the agent without workflow file changes, or apply those changes separately.
 EOF
       ;;
     *)
@@ -283,7 +283,7 @@ build_post_failure_comment() {
   local label env_note sanitized_detail run_url detail_block indented_detail
 
   label="$(post_failure_category_label "${category}")"
-  env_note="$(post_failure_environmental_note "${category}")"
+  env_note="$(post_failure_security_note "${category}")"
   run_url="$(post_failure_workflow_run_url "${repo_full_name}")"
 
   if [ "${category}" = "secret-scan" ]; then
