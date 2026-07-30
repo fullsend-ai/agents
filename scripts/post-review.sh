@@ -92,9 +92,15 @@ echo "Using result: ${RESULT_FILE}"
 # post-script enforces it. The filter runs before ACTION is read so
 # that verdict recalculation (if all findings are removed) is possible.
 # ---------------------------------------------------------------------------
-case "$REVIEW_FINDING_SEVERITY_THRESHOLD" in
+REVIEW_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD:-}"
+case "${REVIEW_FINDING_SEVERITY_THRESHOLD}" in
   info|low|medium|high|critical) ;;
-  *) echo "::error::REVIEW_FINDING_SEVERITY_THRESHOLD='${REVIEW_FINDING_SEVERITY_THRESHOLD}' is invalid (expected info|low|medium|high|critical)"
+  *) # Sanitize before interpolating into a workflow command: strip newlines
+     # and collapse '::' sequences to prevent command injection.
+     sanitized="${REVIEW_FINDING_SEVERITY_THRESHOLD//$'\n'/}"
+     sanitized="${sanitized//$'\r'/}"
+     sanitized="${sanitized//::/:}"
+     echo "::error::REVIEW_FINDING_SEVERITY_THRESHOLD='${sanitized}' is invalid (expected info|low|medium|high|critical)"
      exit 1 ;;
 esac
 
