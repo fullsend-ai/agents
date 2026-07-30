@@ -14,7 +14,7 @@ labels:
     - ready-for-merge
     - rejected
 
-max_turns: 30
+max_turns: 50
 max_cost_usd: 3.00
 
 review_expectations: |
