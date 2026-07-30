@@ -202,6 +202,14 @@ install -m 0600 /dev/null "$ENV_FILE"
     emit_env "REVIEW_BODY_FILE" "${REVIEW_BODY_FILE}"
   fi
 
+  # Review agent: optional env vars referenced by harness/review.yaml.
+  # fullsend validates that all ${VAR} refs resolve; emit empty defaults
+  # so the agent falls back to its built-in defaults.
+  if [[ "$AGENT" == "review" ]]; then
+    emit_env "REVIEW_PROTECTED_PATHS" "${REVIEW_PROTECTED_PATHS:-}"
+    emit_env "REVIEW_FINDING_SEVERITY_THRESHOLD" "${REVIEW_FINDING_SEVERITY_THRESHOLD:-}"
+  fi
+
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"
   [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]        && emit_env "GOOGLE_CLOUD_PROJECT" "${GOOGLE_CLOUD_PROJECT}"
   [[ -n "${CLOUD_ML_REGION:-}" ]]             && emit_env "CLOUD_ML_REGION" "${CLOUD_ML_REGION}"
