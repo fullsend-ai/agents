@@ -127,19 +127,25 @@ Check whether the workflow exhibits fix-break oscillation. Flapping wastes agent
 
 ### Signals to check
 
-Dispatch a subagent to gather the data. First, derive the PR number from the originating URL (PR_NUMBER is not exported to the retro agent's environment):
+Flapping detection applies to PR-based workflows with code/fix cycles. If `$ORIGINATING_URL` is an issue URL, check whether a PR is linked (`gh issue view <url> --json closedByPullRequestsReferences`) before skipping; issue-triggered retros routinely have downstream code dispatches once the issue reaches `ready-to-code`.
 
-> "Find all code and fix agent workflow runs for PR #N in `$DISPATCH_REPO`. For each run, get the resulting commit SHA from the run's artifacts or branch history, the list of changed files, and the CI test results (pass/fail)."
+Derive the PR number from the originating URL, following the existing Setup convention:
 
-Use workflow-run boundaries (each `gh run list --workflow=code.yml` or `--workflow=fix.yml` entry) to define "runs", not individual commits. A single run may produce more than one commit (amend, fixup, incremental push).
+```bash
+PR_NUMBER="${ORIGINATING_URL##*/}"
+```
 
-Flapping detection applies to PR-based workflows with code/fix cycles. For issue-only retros (no PR created yet), skip this section.
+Dispatch a subagent to gather the data:
+
+> "Find all code and fix agent workflow runs for PR #N. For each `gh run list --workflow=code.yml` and `gh run list --workflow=fix.yml` run, get the list of changed files. Also find `gh run list --workflow=review.yml` runs to identify review-fix cycles. For CI test results, query `$REPO_FULL_NAME`'s check runs for each resulting commit (`gh api repos/$REPO_FULL_NAME/commits/<sha>/check-runs`)."
+
+Use workflow-run boundaries to define "runs", not individual commits. A single run may produce more than one commit (amend, fixup, incremental push). Correlate each run to a commit by timestamp against the PR's commit history, since no direct run-to-SHA mapping is exposed today.
 
 Then check for these patterns:
 
 1. **File oscillation:** the same file was changed in two or more consecutive runs, and the changes reverse each other (lines added in run N were removed in run N+1, or vice versa).
-2. **Test result flipping:** a test that passed after run N fails after run N+1, then passes again after run N+2.
-3. **Cycle count:** more than N review-fix cycles on the same PR without convergence (the review keeps requesting changes on the same findings). The right threshold depends on repo and task type (default N=2; see [flapping-convergence.md](https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/flapping-convergence.md) open questions on configurability).
+2. **Test result flipping:** a test that passed after run N fails after run N+1, then passes again after run N+2, and the flapping test covers a file the agent modified in the same run. Tests that flip independently of agent changes may be pre-existing flaky tests, not agent-caused oscillation.
+3. **Cycle count:** more than 2 review-fix cycles on the same PR without convergence (the review keeps requesting changes on the same findings). This threshold is a starting point; see [flapping-convergence.md](https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/flapping-convergence.md) for open questions on making it configurable per repo/task type.
 
 ### When flapping is detected
 
