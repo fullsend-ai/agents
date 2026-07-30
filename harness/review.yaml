@@ -40,15 +40,18 @@ validation_loop:
   max_iterations: 2
 
 env:
-  # REVIEW_FINDING_SEVERITY_THRESHOLD is set independently for runner and
-  # sandbox — they're allowed to differ, but if they do, findings may be
-  # filtered inconsistently between the agent's own output and the
-  # post-script's defense-in-depth filter. Best practice is to keep them
-  # in sync.
+  # REVIEW_FINDING_SEVERITY_THRESHOLD and REVIEW_PROTECTED_PATHS are set
+  # independently for runner and sandbox — they're allowed to differ, but
+  # if they do, findings/enforcement may be inconsistent between the
+  # agent's own output and the post-script's defense-in-depth filter.
+  # Best practice is to keep them in sync. Repos needing different values
+  # override these keys via harness `base:` composition.
   runner:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
+    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,env/,harness/,images/,plugins/,policies/,scripts/,skills/"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
+    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,env/,harness/,images/,plugins/,policies/,scripts/,skills/"
 
 timeout_minutes: 20
 

@@ -1,0 +1,34 @@
+# Expected fixture state after the review agent runs.
+#
+# The PR modifies .github/workflows/ci.yml — a default protected path.
+# The review agent may approve the change (it's a sensible hardening),
+# but post-review.sh must downgrade the approval to a comment because
+# .github/ is protected. The outcome label must be requires-manual-review,
+# never ready-for-merge.
+state: open
+
+labels:
+  required:
+    - requires-manual-review
+  forbidden:
+    - ready-for-merge
+    - rejected
+
+max_turns: 30
+max_cost_usd: 3.00
+
+review_expectations: |
+  This PR pins actions/checkout from a tag (v4) to a full commit SHA.
+  It is a straightforward, well-motivated CI hardening change.
+
+  A good review should:
+  1. Recognize this as a supply-chain safety improvement.
+  2. Have no blocking findings about the code change itself.
+  3. Emit a protected-path finding because .github/ is modified.
+  4. End with comment or approve — but the post-script must downgrade
+     any approval to comment because the PR touches a protected path.
+
+  The key signal is the outcome label: requires-manual-review must be
+  present and ready-for-merge must NOT be present. This confirms that
+  the protected-path enforcement in post-review.sh (reading from
+  env/default-review-protected-paths.txt) is working end-to-end.

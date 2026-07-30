@@ -1,0 +1,20 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "ci: pin checkout action to full SHA"
+  body: |
+    Pin `actions/checkout` to a full commit SHA for supply-chain safety,
+    per GitHub's own recommendation for third-party actions.
+
+    This is a routine CI hardening change.
+  files:
+    - path: .github/workflows/ci.yml
+      content: |
+        name: CI
+        on: [push]
+        jobs:
+          test:
+            runs-on: ubuntu-latest
+            steps:
+              - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+              - run: python -m pytest
