@@ -47,6 +47,17 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 None.
 
+### Issue filing allowlist
+
+Cross-repo issue creation is governed by `create_issues.allow_targets` in
+`config.yaml` — the same allowlist used by the [triage agent](triage.md)
+for prerequisite issues. Proposals targeting repos outside the allowlist
+are skipped with a warning and surfaced in the summary comment so they
+can be filed manually.
+
+The originating repo (where the PR that triggered the retro lives) is
+always implicitly allowed.
+
 ## How the agent works
 
 The retro agent reconstructs the full workflow graph — [triage](triage.md), [code](code.md), [review](review.md), [fix](fix.md), and human interactions — by fetching issue and PR timelines, agent run logs, and review threads.

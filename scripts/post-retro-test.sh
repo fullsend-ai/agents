@@ -95,6 +95,22 @@ export GH_STDIN_LOG="${GH_STDIN_LOG}"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export GH_TOKEN="fake-token"
 
+# allow_targets handler reads config.yaml from GITHUB_WORKSPACE.
+# Create a minimal workspace with an allowlist so existing tests pass
+# (test-org is allowed) and new tests can exercise the disallowed path.
+WORKSPACE="${TMPDIR}/workspace"
+mkdir -p "${WORKSPACE}"
+cat > "${WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+create_issues:
+  allow_targets:
+    orgs:
+      - test-org
+    repos:
+      - allowed-org/allowed-repo
+CFGEOF
+export GITHUB_WORKSPACE="${WORKSPACE}"
+
 # Fixture: a valid agent result with one proposal.
 FIXTURE_ONE_PROPOSAL='{
   "summary": "The retro analysis found one improvement opportunity.",
@@ -249,6 +265,59 @@ FIXTURE_TITLE_PERCENT_ENCODED='{
       "what_could_go_better": "Sanitize titles.",
       "proposed_change": "Strip percent-encoded sequences.",
       "validation_criteria": "No injection."
+    }
+  ]
+}'
+
+# Fixture: a valid agent result targeting a disallowed repo.
+FIXTURE_DISALLOWED_TARGET='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "disallowed-org/other-repo",
+      "title": "Improve logging in external service",
+      "what_happened": "Logging was insufficient during incident.",
+      "what_could_go_better": "Structured logging should be added.",
+      "proposed_change": "Add structured log fields.",
+      "validation_criteria": "Log entries include request IDs."
+    }
+  ]
+}'
+
+# Fixture: mixed proposals — one allowed, one disallowed.
+FIXTURE_MIXED_TARGETS='{
+  "summary": "The retro analysis found two improvement opportunities.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Fix allowed repo issue",
+      "what_happened": "Something broke.",
+      "what_could_go_better": "It should not break.",
+      "proposed_change": "Fix the thing.",
+      "validation_criteria": "Thing works."
+    },
+    {
+      "target_repo": "disallowed-org/other-repo",
+      "title": "Fix disallowed repo issue",
+      "what_happened": "Something else broke.",
+      "what_could_go_better": "It should also not break.",
+      "proposed_change": "Fix the other thing.",
+      "validation_criteria": "Other thing works."
+    }
+  ]
+}'
+
+# Fixture: proposal targeting the originating repo (always allowed).
+FIXTURE_ORIGINATING_REPO_TARGET='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/test-repo",
+      "title": "Improve self-repo handling",
+      "what_happened": "The originating repo had a gap.",
+      "what_could_go_better": "Should be handled.",
+      "proposed_change": "Add handling.",
+      "validation_criteria": "Handling works."
     }
   ]
 }'
@@ -618,6 +687,55 @@ if [[ ${POSTED_LEN} -gt 65536 ]]; then
 else
   echo "PASS: comment-truncated-length"
 fi
+
+# ---------------------------------------------------------------------------
+# allow_targets tests
+# Verify that proposals targeting repos not in create_issues.allow_targets
+# are skipped with a warning, while allowed targets proceed normally.
+# ---------------------------------------------------------------------------
+
+# Disallowed target: proposal is NOT filed, warning emitted.
+run_test_no_gh_call "allow-targets-disallowed-skipped" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# Disallowed target: skipped proposal details appear in summary comment.
+run_test_stdin "allow-targets-skipped-in-summary" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "Proposals skipped (target repo not allowed)"
+
+# Allowed target: proposal IS filed (test-org is in the allowlist).
+run_test "allow-targets-allowed-filed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create"
+
+# Originating repo is always allowed even without explicit allowlist entry.
+run_test "allow-targets-originating-repo-allowed" \
+  "${FIXTURE_ORIGINATING_REPO_TARGET}" \
+  "gh issue create"
+
+# Mixed targets: allowed proposal filed, disallowed skipped.
+run_test "allow-targets-mixed-allowed-filed" \
+  "${FIXTURE_MIXED_TARGETS}" \
+  "gh issue create"
+
+run_test_stdout "allow-targets-mixed-disallowed-skipped" \
+  "${FIXTURE_MIXED_TARGETS}" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# No GITHUB_WORKSPACE: only originating repo is allowed.
+# Temporarily unset GITHUB_WORKSPACE so the config file is not found.
+unset GITHUB_WORKSPACE
+run_test_no_gh_call "allow-targets-no-workspace-cross-repo-blocked" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'test-org/target-repo'"
+
+run_test "allow-targets-no-workspace-originating-allowed" \
+  "${FIXTURE_ORIGINATING_REPO_TARGET}" \
+  "gh issue create"
+export GITHUB_WORKSPACE="${WORKSPACE}"
 
 # ---------------------------------------------------------------------------
 # FULLSEND_VALIDATED_ITERATION_DIR tests
