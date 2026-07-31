@@ -208,7 +208,14 @@ if [ "${ACTION}" = "approve" ]; then
       PROTECTED_PATHS=("${_trimmed[@]}")
       unset _trimmed _entry
       if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
-        echo "::error::REVIEW_PROTECTED_PATHS=\"${REVIEW_PROTECTED_PATHS}\" contains no valid path entries after trimming — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
+        # Sanitize before interpolating into a workflow command: strip
+        # newlines/carriage returns and collapse GHA delimiters, same as
+        # the label-actions handling below.
+        _sanitized_paths="${REVIEW_PROTECTED_PATHS//$'\n'/}"
+        _sanitized_paths="${_sanitized_paths//$'\r'/}"
+        _sanitized_paths="${_sanitized_paths//::/:}"
+        echo "::error::REVIEW_PROTECTED_PATHS=\"${_sanitized_paths}\" contains no valid path entries after trimming — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
+        unset _sanitized_paths
         exit 1
       fi
     fi
