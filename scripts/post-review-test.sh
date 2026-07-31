@@ -375,6 +375,13 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock gh: handle specific subcommands, log everything else.
 
+# gh api repos/.../pulls/.../reviews (idempotency guard in retry loop)
+# Returns nothing (no reviews for this commit SHA) so the guard stays
+# disabled in non-retry tests. The retry mock overrides this.
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/reviews"* ]]; then
+  exit 0
+fi
+
 # gh pr view ... --json state,isDraft → JSON with both fields.
 # MOCK_PR_IS_DRAFT can be set to "true" to simulate a draft PR.
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
@@ -941,6 +948,440 @@ run_body_test "label-actions-plus-action-hints-has-labels-section" \
 
 run_body_test "label-actions-plus-action-hints-has-next-steps" \
   "${LABEL_PLUS_HINTS_JSON}" "**Next steps:**"
+
+# ---------------------------------------------------------------------------
+# Retry logic tests
+#
+# These tests verify that fullsend post-review is retried on transient
+# failures and that the degraded-mode label fallback works when retries
+# are exhausted.
+# ---------------------------------------------------------------------------
+
+# Create retry-aware mock directory with a fullsend binary that tracks
+# call counts and returns configured exit codes per invocation.
+RETRY_MOCK_BIN="${TMPDIR}/retry-bin"
+mkdir -p "${RETRY_MOCK_BIN}"
+
+# Build retry-aware gh mock: extends the base mock with a reviews API
+# handler that returns nothing (no reviews for the reviewed commit SHA)
+# by default. MOCK_REVIEWS_COUNTER + MOCK_REVIEWS_RETURN_FROM can make
+# the handler return a review ID starting from the Nth call, enabling
+# idempotency guard tests. Also includes a comments API handler for the
+# degraded-mode fallback's review-comment marker check.
+cat > "${RETRY_MOCK_BIN}/gh" <<RETRYGHMOCKEOF
+#!/usr/bin/env bash
+
+# gh api repos/.../pulls/.../reviews (idempotency guard)
+# Supports counter-based incrementing for idempotency guard tests:
+#   MOCK_REVIEWS_COUNTER      — path to a file tracking call count
+#   MOCK_REVIEWS_RETURN_FROM  — call number from which to return a review ID
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/reviews"* ]]; then
+  if [ -n "\${MOCK_REVIEWS_COUNTER:-}" ]; then
+    _rv_count=0
+    if [ -f "\${MOCK_REVIEWS_COUNTER}" ]; then
+      _rv_count=\$(<"\${MOCK_REVIEWS_COUNTER}")
+    fi
+    _rv_count=\$((_rv_count + 1))
+    echo "\${_rv_count}" > "\${MOCK_REVIEWS_COUNTER}"
+    if [ "\${_rv_count}" -ge "\${MOCK_REVIEWS_RETURN_FROM:-999}" ]; then
+      echo "\$((_rv_count * 1000))"
+    fi
+  fi
+  exit 0
+fi
+
+# gh api repos/.../issues/.../comments (review-comment marker check)
+# Returns the fullsend review-agent marker by default so degraded-mode
+# fallback tests can verify label application. Set
+# MOCK_COMMENT_MARKER_PRESENT=false to simulate no comment posted.
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/comments"* ]] && [[ "\$*" == *"--jq"* ]]; then
+  if [ "\${MOCK_COMMENT_MARKER_PRESENT:-true}" = "true" ]; then
+    echo "<!-- fullsend:review-agent --> review content"
+  fi
+  exit 0
+fi
+
+# gh pr view ... --json state,isDraft
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
+  DRAFT="\${MOCK_PR_IS_DRAFT:-false}"
+  echo "{\"state\":\"OPEN\",\"isDraft\":\${DRAFT}}"
+  exit 0
+fi
+
+# gh pr view ... --json files
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
+  echo "src/main.go"
+  exit 0
+fi
+
+# gh api repos/.../labels --paginate (list repo labels)
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser"
+  exit 0
+fi
+
+# Log all other calls
+echo "gh \$*" >> "${GH_LOG}"
+RETRYGHMOCKEOF
+chmod +x "${RETRY_MOCK_BIN}/gh"
+
+# Retry-aware fullsend mock. Uses:
+#   MOCK_FULLSEND_COUNTER    — path to a file tracking invocation count
+#   MOCK_FULLSEND_EXIT_CODES — comma-separated exit codes per invocation
+# The heredoc is unquoted so ${GH_LOG} is baked in at creation time;
+# runtime variables are escaped with \$.
+cat > "${RETRY_MOCK_BIN}/fullsend" <<RETRYMOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "post-review" ]]; then
+  if [ -n "\${MOCK_FULLSEND_COUNTER:-}" ]; then
+    COUNT=0
+    if [ -f "\${MOCK_FULLSEND_COUNTER}" ]; then
+      COUNT=\$(<"\${MOCK_FULLSEND_COUNTER}")
+    fi
+    COUNT=\$((COUNT + 1))
+    echo "\${COUNT}" > "\${MOCK_FULLSEND_COUNTER}"
+
+    IFS=',' read -ra EXIT_CODES <<< "\${MOCK_FULLSEND_EXIT_CODES:-0}"
+    IDX=\$((COUNT - 1))
+    if [ "\${IDX}" -lt "\${#EXIT_CODES[@]}" ]; then
+      exit "\${EXIT_CODES[\$IDX]}"
+    fi
+    exit "\${EXIT_CODES[\${#EXIT_CODES[@]}-1]}"
+  fi
+fi
+echo "fullsend \$*" >> "${GH_LOG}"
+RETRYMOCKEOF
+chmod +x "${RETRY_MOCK_BIN}/fullsend"
+
+run_retry_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local exit_codes="$3"        # comma-separated fullsend exit codes per attempt
+  local expected_exit="$4"     # expected script exit code
+  local expected_calls="$5"    # expected number of fullsend post-review calls
+  local expected_stdout="${6:-}"  # optional: pattern expected in stdout
+  local expected_gh_log="${7:-}"  # optional: pattern expected in GH_LOG
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local counter_file="${TMPDIR}/counter-${test_name}"
+  rm -f "${counter_file}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${RETRY_MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export POST_REVIEW_RETRY_DELAY=0
+    export MOCK_FULLSEND_COUNTER="${counter_file}"
+    export MOCK_FULLSEND_EXIT_CODES="${exit_codes}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [ "${exit_code}" -ne "${expected_exit}" ]; then
+    echo "FAIL: ${test_name} — expected exit ${expected_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local actual_count=0
+  if [ -f "${counter_file}" ]; then
+    actual_count=$(<"${counter_file}")
+  fi
+
+  if [ "${actual_count}" -ne "${expected_calls}" ]; then
+    echo "FAIL: ${test_name} — expected ${expected_calls} fullsend calls, got ${actual_count}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [ -n "${expected_stdout}" ]; then
+    if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  if [ -n "${expected_gh_log}" ]; then
+    if ! grep -qF -- "${expected_gh_log}" "${GH_LOG}"; then
+      echo "FAIL: ${test_name} — expected gh log '${expected_gh_log}' not found"
+      echo "Actual gh log:"
+      cat "${GH_LOG}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Retry test cases ---
+
+# Retry then succeed: fails twice, succeeds on 3rd attempt → exit 0, label applied
+run_retry_test "retry-then-succeed" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "1,1,0" "0" "3" \
+  "retrying in" "--add-label ready-for-merge"
+
+# Retries exhausted + fallback (approve): all 3 fail → exit 1, fallback label applied
+run_retry_test "retries-exhausted-fallback-approve" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "1,1,1" "1" "3" \
+  "Degraded-mode fallback: applied ready-for-merge" "--add-label ready-for-merge"
+
+# Retries exhausted + fallback (comment): all 3 fail → requires-manual-review
+run_retry_test "retries-exhausted-fallback-comment" \
+  '{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Split review"}' \
+  "1,1,1" "1" "3" \
+  "Degraded-mode fallback: applied requires-manual-review" "--add-label requires-manual-review"
+
+# Retries exhausted (request-changes): no fallback label applicable
+run_retry_test "retries-exhausted-no-fallback-label" \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Changes needed","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}]}' \
+  "1,1,1" "1" "3" \
+  "Degraded-mode label fallback not applicable"
+
+# Stale-head bypass: exit code 10 → no retry, stale-head handler runs
+run_retry_test "stale-head-no-retry" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "10" "0" "1" \
+  "Stale-head detected"
+
+# Retry logging: fails once then succeeds → verify log format
+run_retry_test "retry-logging" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "1,0" "0" "2" \
+  "attempt 1/3 failed (exit 1)"
+
+# All-retries-exhausted logging: verify exhaustion message
+run_retry_test "retry-exhaustion-logging" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  "1,1,1" "1" "3" \
+  "all retries exhausted"
+
+# --- Idempotency guard trigger test ---
+# Exercises the actual anti-double-post branch: the mock reviews API
+# returns a new review ID on the 2nd call (simulating a "failed" attempt
+# that actually succeeded server-side). The guard should detect the new
+# review and skip further retries.
+
+_test_name="idempotency-guard-triggers"
+_run_dir="${TMPDIR}/run-${_test_name}"
+mkdir -p "${_run_dir}/iteration-1/output"
+echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  > "${_run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+_counter_file="${TMPDIR}/counter-${_test_name}"
+rm -f "${_counter_file}"
+_reviews_counter="${TMPDIR}/reviews-counter-${_test_name}"
+rm -f "${_reviews_counter}"
+_exit_code=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_run_dir}"
+  export PATH="${RETRY_MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token"
+  export PR_NUMBER="99"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export POST_REVIEW_RETRY_DELAY=0
+  export MOCK_FULLSEND_COUNTER="${_counter_file}"
+  export MOCK_FULLSEND_EXIT_CODES="1"
+  # Reviews mock: 1st call (snapshot) returns "100" (existing review);
+  # 2nd call (in-loop check) returns "12345" (new review appeared).
+  export MOCK_REVIEWS_COUNTER="${_reviews_counter}"
+  export MOCK_REVIEWS_RETURN_FROM=1
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-${_test_name}.log" 2>&1 || _exit_code=$?
+if [ "${_exit_code}" -ne 0 ]; then
+  echo "FAIL: ${_test_name} — expected exit 0, got ${_exit_code}"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "idempotency guard" "${TMPDIR}/stdout-${_test_name}.log"; then
+  echo "FAIL: ${_test_name} — expected 'idempotency guard' notice in stdout"
+  echo "Actual stdout:"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+else
+  _actual_calls=0
+  if [ -f "${_counter_file}" ]; then
+    _actual_calls=$(<"${_counter_file}")
+  fi
+  if [ "${_actual_calls}" -ne 1 ]; then
+    echo "FAIL: ${_test_name} — expected 1 fullsend call, got ${_actual_calls}"
+    cat "${TMPDIR}/stdout-${_test_name}.log"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${_test_name}"
+  fi
+fi
+
+# --- Fallback skipped when review comment not posted ---
+# When retries exhaust and the review comment marker is absent from the
+# PR's comments, the degraded-mode label fallback should NOT apply labels.
+
+_test_name="retries-exhausted-fallback-no-comment"
+_run_dir="${TMPDIR}/run-${_test_name}"
+mkdir -p "${_run_dir}/iteration-1/output"
+echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  > "${_run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+_counter_file="${TMPDIR}/counter-${_test_name}"
+rm -f "${_counter_file}"
+_exit_code=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_run_dir}"
+  export PATH="${RETRY_MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token"
+  export PR_NUMBER="99"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export POST_REVIEW_RETRY_DELAY=0
+  export MOCK_FULLSEND_COUNTER="${_counter_file}"
+  export MOCK_FULLSEND_EXIT_CODES="1,1,1"
+  export MOCK_COMMENT_MARKER_PRESENT=false
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-${_test_name}.log" 2>&1 || _exit_code=$?
+if [ "${_exit_code}" -ne 1 ]; then
+  echo "FAIL: ${_test_name} — expected exit 1, got ${_exit_code}"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "label fallback skipped" "${TMPDIR}/stdout-${_test_name}.log"; then
+  echo "FAIL: ${_test_name} — expected 'label fallback skipped' in stdout"
+  echo "Actual stdout:"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF "add-label" "${GH_LOG}"; then
+  echo "FAIL: ${_test_name} — expected no label to be applied, but found add-label in gh log"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${_test_name}"
+fi
+
+# --- Default backoff and invalid POST_REVIEW_RETRY_DELAY tests ---
+# These tests do NOT use run_retry_test because it hardcodes
+# POST_REVIEW_RETRY_DELAY=0. Instead they run the script directly with
+# custom env to exercise the production default backoff path and the
+# validation of invalid override values.
+
+# Default backoff (POST_REVIEW_RETRY_DELAY unset): verify "retrying in 5s"
+# appears in stdout on first retry.
+_test_name="default-backoff-unset"
+_run_dir="${TMPDIR}/run-${_test_name}"
+mkdir -p "${_run_dir}/iteration-1/output"
+echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  > "${_run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+_counter_file="${TMPDIR}/counter-${_test_name}"
+rm -f "${_counter_file}"
+_exit_code=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_run_dir}"
+  export PATH="${RETRY_MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token"
+  export PR_NUMBER="99"
+  export REPO_FULL_NAME="test-org/test-repo"
+  unset POST_REVIEW_RETRY_DELAY
+  export MOCK_FULLSEND_COUNTER="${_counter_file}"
+  export MOCK_FULLSEND_EXIT_CODES="1,0"
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-${_test_name}.log" 2>&1 || _exit_code=$?
+if [ "${_exit_code}" -ne 0 ]; then
+  echo "FAIL: ${_test_name} — expected exit 0, got ${_exit_code}"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "retrying in 5s" "${TMPDIR}/stdout-${_test_name}.log"; then
+  echo "FAIL: ${_test_name} — expected 'retrying in 5s' in stdout"
+  echo "Actual stdout:"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${_test_name}"
+fi
+
+# Invalid POST_REVIEW_RETRY_DELAY (empty string): should fall through to
+# progressive default instead of crashing.
+_test_name="invalid-delay-empty-string"
+_run_dir="${TMPDIR}/run-${_test_name}"
+mkdir -p "${_run_dir}/iteration-1/output"
+echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  > "${_run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+_counter_file="${TMPDIR}/counter-${_test_name}"
+rm -f "${_counter_file}"
+_exit_code=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_run_dir}"
+  export PATH="${RETRY_MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token"
+  export PR_NUMBER="99"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export POST_REVIEW_RETRY_DELAY=""
+  export MOCK_FULLSEND_COUNTER="${_counter_file}"
+  export MOCK_FULLSEND_EXIT_CODES="1,0"
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-${_test_name}.log" 2>&1 || _exit_code=$?
+if [ "${_exit_code}" -ne 0 ]; then
+  echo "FAIL: ${_test_name} — expected exit 0, got ${_exit_code} (script crashed on empty delay)"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "retrying in 5s" "${TMPDIR}/stdout-${_test_name}.log"; then
+  echo "FAIL: ${_test_name} — expected 'retrying in 5s' in stdout (progressive default)"
+  echo "Actual stdout:"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${_test_name}"
+fi
+
+# Invalid POST_REVIEW_RETRY_DELAY (non-numeric): should fall through to
+# progressive default instead of crashing.
+_test_name="invalid-delay-non-numeric"
+_run_dir="${TMPDIR}/run-${_test_name}"
+mkdir -p "${_run_dir}/iteration-1/output"
+echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  > "${_run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+_counter_file="${TMPDIR}/counter-${_test_name}"
+rm -f "${_counter_file}"
+_exit_code=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_run_dir}"
+  export PATH="${RETRY_MOCK_BIN}:${PATH}"
+  export REVIEW_TOKEN="fake-token"
+  export PR_NUMBER="99"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export POST_REVIEW_RETRY_DELAY="abc"
+  export MOCK_FULLSEND_COUNTER="${_counter_file}"
+  export MOCK_FULLSEND_EXIT_CODES="1,0"
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout-${_test_name}.log" 2>&1 || _exit_code=$?
+if [ "${_exit_code}" -ne 0 ]; then
+  echo "FAIL: ${_test_name} — expected exit 0, got ${_exit_code} (script crashed on non-numeric delay)"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "retrying in 5s" "${TMPDIR}/stdout-${_test_name}.log"; then
+  echo "FAIL: ${_test_name} — expected 'retrying in 5s' in stdout (progressive default)"
+  echo "Actual stdout:"
+  cat "${TMPDIR}/stdout-${_test_name}.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${_test_name}"
+fi
 
 # --- Summary ---
 

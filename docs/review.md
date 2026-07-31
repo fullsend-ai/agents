@@ -77,6 +77,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. | `low` | `info`, `low`, `medium`, `high`, `critical` |
+| `POST_REVIEW_RETRY_DELAY` | Override backoff seconds for all `fullsend post-review` retry attempts. When unset, the post-script uses progressive backoff (5 s on the first retry, 15 s on the second). Set to `0` in tests to skip sleep. | Progressive (5 s / 15 s) | Any non-negative integer |
 
 Set this in the CI workflow `env:` block.
 
