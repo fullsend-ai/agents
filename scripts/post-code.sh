@@ -744,13 +744,25 @@ fi
 DEFAULT_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null || echo 'main')"
 
 if [ -n "${AGENT_TARGET}" ]; then
-  ALLOWED="${CODE_ALLOWED_TARGET_BRANCHES:-${DEFAULT_BRANCH}}"
-  if [ "${ALLOWED}" = "*" ] || echo ",${ALLOWED}," | grep -qF ",${AGENT_TARGET},"; then
-    TARGET_BRANCH="${AGENT_TARGET}"
-    echo "Agent requested branch '${TARGET_BRANCH}' — allowed"
+  if [ -n "${CODE_ALLOWED_TARGET_BRANCHES:-}" ]; then
+    # Explicit allowed list — hard-fail if agent's choice is not in it.
+    if [ "${CODE_ALLOWED_TARGET_BRANCHES}" = "*" ] \
+       || echo ",${CODE_ALLOWED_TARGET_BRANCHES}," | grep -qF ",${AGENT_TARGET},"; then
+      TARGET_BRANCH="${AGENT_TARGET}"
+      echo "Agent requested branch '${TARGET_BRANCH}' — allowed"
+    else
+      post_fail_to_issue branch-validation \
+        "Agent requested branch '${AGENT_TARGET}' but allowed branches are: ${CODE_ALLOWED_TARGET_BRANCHES}"
+    fi
   else
-    post_fail_to_issue branch-validation \
-      "Agent requested branch '${AGENT_TARGET}' but allowed branches are: ${ALLOWED}"
+    # No explicit list — auto-correct to API-discovered default when mismatched.
+    if [ "${AGENT_TARGET}" = "${DEFAULT_BRANCH}" ]; then
+      TARGET_BRANCH="${AGENT_TARGET}"
+      echo "Agent requested branch '${TARGET_BRANCH}' — matches default"
+    else
+      TARGET_BRANCH="${DEFAULT_BRANCH}"
+      gha_echo warning "Agent requested branch '${AGENT_TARGET}' but default branch is '${DEFAULT_BRANCH}' — auto-correcting"
+    fi
   fi
 else
   TARGET_BRANCH="${DEFAULT_BRANCH}"

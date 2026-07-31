@@ -188,11 +188,29 @@ From these files, determine:
 
 Determine the correct target branch from the issue context. If the issue
 references a specific branch (e.g., "set up builds on the 3.18 branch"),
-use that branch. Otherwise, determine the repo's default branch:
+use that branch. Otherwise, determine the repo's default branch by trying
+these commands in order until one succeeds:
 
 ```bash
-git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2
+# Try each discovery method; use the first that returns a non-empty value.
+DEFAULT_BRANCH=""
+DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef \
+  --jq '.defaultBranchRef.name' 2>/dev/null)" || true
+if [ -z "${DEFAULT_BRANCH}" ]; then
+  DEFAULT_BRANCH="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null \
+    | sed 's|^origin/||')" || true
+fi
+if [ -z "${DEFAULT_BRANCH}" ] || [ "${DEFAULT_BRANCH}" = "HEAD" ]; then
+  DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+    | sed 's|^refs/remotes/origin/||')" || true
+fi
 ```
+
+**Do not skip discovery and assume `"main"`.** If all discovery methods
+fail, `${DEFAULT_BRANCH:-main}` provides a last-resort fallback — but
+the post-script will auto-correct it to the API-discovered default branch
+when no explicit allowed list is configured. Getting discovery right here
+avoids an unnecessary correction and the warning that goes with it.
 
 Write the structured output file with the target branch now. Write only
 `target_branch` at this stage — `pr_body` is added after implementation
@@ -201,11 +219,14 @@ Write the structured output file with the target branch now. Write only
 ```bash
 mkdir -p "${FULLSEND_OUTPUT_DIR}"
 
-jq -n --arg tb "<branch-name>" '{target_branch: $tb}' \
+jq -n --arg tb "${DEFAULT_BRANCH:-main}" '{target_branch: $tb}' \
   > "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-The post-script validates `target_branch` against allowed branches.
+The post-script validates `target_branch` against allowed branches. When
+no explicit `CODE_ALLOWED_TARGET_BRANCHES` list is configured, the
+post-script auto-corrects to the API-discovered default branch if the
+agent's value does not match.
 
 ### 4. Check for existing branch
 
