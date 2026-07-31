@@ -206,15 +206,25 @@ install -m 0600 /dev/null "$ENV_FILE"
   # fullsend validates that all ${VAR} refs resolve; emit defaults so
   # the agent receives a meaningful value.
   if [[ "$AGENT" == "review" ]]; then
-    if [[ -n "${REVIEW_PROTECTED_PATHS:-}" ]]; then
+    if [[ "${REVIEW_PROTECTED_PATHS+set}" == "set" ]]; then
+      # Set (including explicitly empty) — pass through as-is. An empty
+      # value is a deliberate opt-out; post-review.sh treats it as such
+      # rather than falling back to the defaults file.
       emit_env "REVIEW_PROTECTED_PATHS" "${REVIEW_PROTECTED_PATHS}"
     else
-      # Read default protected paths and pass as comma-separated value
-      # so the sandbox agent always has a non-empty, meaningful list.
+      # Unset — read default protected paths and pass as a comma-separated
+      # value so the sandbox agent always has a non-empty, meaningful list.
+      # Trim whitespace from each entry to match post-review.sh's parsing.
       _default_paths_file="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/env/default-review-protected-paths.txt"
       if [[ -f "${_default_paths_file}" ]]; then
-        _defaults=$(sed '/^[[:space:]]*$/d; /^[[:space:]]*#/d' "${_default_paths_file}" | paste -sd, -)
+        _defaults=""
+        while IFS= read -r _line; do
+          _line="$(echo "${_line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          [[ -z "${_line}" || "${_line}" == \#* ]] && continue
+          _defaults="${_defaults:+${_defaults},}${_line}"
+        done < "${_default_paths_file}"
         emit_env "REVIEW_PROTECTED_PATHS" "${_defaults}"
+        unset _line
       else
         emit_env "REVIEW_PROTECTED_PATHS" ""
       fi
