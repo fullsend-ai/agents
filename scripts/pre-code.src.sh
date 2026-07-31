@@ -21,21 +21,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
 source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
+# shellcheck source=lib/post-failure-report.lib.sh
+source "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
 
 errors=0
 
+# The validation messages below interpolate untrusted input that just
+# failed its format check — use gha_echo (not raw echo) so GHA's
+# workflow-command parser never sees an attacker-controlled "::" sequence
+# from that input.
 if [[ ! "${ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "::error::ISSUE_NUMBER must be a positive integer, got: '${ISSUE_NUMBER:-}'"
+  gha_echo error "ISSUE_NUMBER must be a positive integer, got: '${ISSUE_NUMBER:-}'"
   errors=$((errors + 1))
 fi
 
 if [[ ! "${REPO_FULL_NAME:-}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
-  echo "::error::REPO_FULL_NAME must be owner/repo format, got: '${REPO_FULL_NAME:-}'"
+  gha_echo error "REPO_FULL_NAME must be owner/repo format, got: '${REPO_FULL_NAME:-}'"
   errors=$((errors + 1))
 fi
 
 if [[ ! "${GITHUB_ISSUE_URL:-}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "::error::GITHUB_ISSUE_URL format invalid, got: '${GITHUB_ISSUE_URL:-}'"
+  gha_echo error "GITHUB_ISSUE_URL format invalid, got: '${GITHUB_ISSUE_URL:-}'"
   errors=$((errors + 1))
 fi
 
@@ -43,11 +49,11 @@ URL_REPO="$(echo "${GITHUB_ISSUE_URL:-}" | sed -E 's|https://github.com/([^/]+/[
 URL_ISSUE="$(echo "${GITHUB_ISSUE_URL:-}" | sed -E 's|.*/issues/([0-9]+)$|\1|')"
 
 if [[ -n "${URL_REPO}" && "${URL_REPO}" != "${REPO_FULL_NAME:-}" ]]; then
-  echo "::error::REPO_FULL_NAME does not match issue URL repo ('${REPO_FULL_NAME:-}' vs '${URL_REPO}')"
+  gha_echo error "REPO_FULL_NAME does not match issue URL repo ('${REPO_FULL_NAME:-}' vs '${URL_REPO}')"
   errors=$((errors + 1))
 fi
 if [[ -n "${URL_ISSUE}" && "${URL_ISSUE}" != "${ISSUE_NUMBER:-}" ]]; then
-  echo "::error::ISSUE_NUMBER does not match issue URL number ('${ISSUE_NUMBER:-}' vs '${URL_ISSUE}')"
+  gha_echo error "ISSUE_NUMBER does not match issue URL number ('${ISSUE_NUMBER:-}' vs '${URL_ISSUE}')"
   errors=$((errors + 1))
 fi
 
