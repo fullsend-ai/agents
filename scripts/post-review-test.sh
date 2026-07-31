@@ -757,14 +757,24 @@ run_severity_sanitize_test "severity-threshold-non-idempotent-colon-collapse" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD='errorinjected' is invalid"
 
 # URL-encoded newlines are interpreted by GHA as literal newlines in
-# workflow command parameters and must be stripped alongside raw ones.
+# workflow command parameters. Stripping the '%' character (rather than the
+# literal "%0A"/"%0D" tokens) neutralizes them without matching a specific
+# case or leaving a way for adjacent fragments to reassemble the token.
 run_severity_sanitize_test "severity-threshold-url-encoded-newline-upper" \
   "bad%0Ainjected" \
-  "REVIEW_FINDING_SEVERITY_THRESHOLD='badinjected' is invalid"
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='bad0Ainjected' is invalid"
 
 run_severity_sanitize_test "severity-threshold-url-encoded-carriage-return-lower" \
   "bad%0dinjected" \
-  "REVIEW_FINDING_SEVERITY_THRESHOLD='badinjected' is invalid"
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='bad0dinjected' is invalid"
+
+# Adjacent-fragment reassembly: stripping the literal 3-char token "%0a" from
+# "%0%0aA" in a single pass leaves the surrounding "%0" + "A" fragments
+# adjacent, spelling a live "%0A" — which GHA decodes as a literal newline.
+# The sanitizer must not leave any '%' character behind, at any position.
+run_severity_sanitize_test "severity-threshold-percent-adjacent-fragment-reassembly" \
+  "%0%0aA" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='00aA' is invalid"
 
 # --- Draft PR integration tests ---
 # These invoke the real post-review.sh with MOCK_PR_IS_DRAFT=true to verify

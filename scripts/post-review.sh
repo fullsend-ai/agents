@@ -98,20 +98,19 @@ echo "Using result: ${RESULT_FILE}"
 REVIEW_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD:-}"
 case "${REVIEW_FINDING_SEVERITY_THRESHOLD}" in
   info|low|medium|high|critical) ;;
-  *) # Sanitize before interpolating into a workflow command: strip raw and
-     # URL-encoded newlines (GHA treats %0A/%0D as literal newlines in
-     # workflow command parameters), and strip all colons rather than
-     # collapsing '::' pairs — a single-pass collapse is not idempotent and
-     # can be bypassed (e.g. ':::error:::' collapses to '::error::').
+  *) # Sanitize before interpolating into a workflow command. Strip raw
+     # newlines, then strip every '%' and ':' character outright rather than
+     # matching specific multi-char tokens (e.g. "%0A", "::") — matching
+     # fixed-width tokens is not idempotent and can be bypassed by adjacent
+     # fragments reassembling after a single pass (e.g. "%0%0aA" -> "%0A",
+     # ':::error:::' -> '::error::'). Removing every occurrence of a single
+     # character in one pass can't reassemble into that character.
      sanitized="${REVIEW_FINDING_SEVERITY_THRESHOLD//$'\n'/}"
      sanitized="${sanitized//$'\r'/}"
-     sanitized="${sanitized//%0A/}"
-     sanitized="${sanitized//%0a/}"
-     sanitized="${sanitized//%0D/}"
-     sanitized="${sanitized//%0d/}"
+     sanitized="${sanitized//%/}"
      sanitized="${sanitized//:/}"
      echo "::error::REVIEW_FINDING_SEVERITY_THRESHOLD='${sanitized}' is invalid (expected info|low|medium|high|critical)"
-     echo '{"action":"failure","reason":"missing-context"}' | \
+     echo '{"action":"failure","reason":"tool-failure"}' | \
        fullsend post-review \
          --repo "${REPO_FULL_NAME}" \
          --pr "${PR_NUMBER}" \
