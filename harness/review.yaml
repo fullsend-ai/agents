@@ -40,6 +40,11 @@ validation_loop:
   max_iterations: 2
 
 env:
+  # REVIEW_FINDING_SEVERITY_THRESHOLD is set independently for runner and
+  # sandbox — they're allowed to differ, but if they do, findings may be
+  # filtered inconsistently between the agent's own output and the
+  # post-script's defense-in-depth filter. Best practice is to keep them
+  # in sync.
   runner:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
   sandbox:

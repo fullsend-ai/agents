@@ -98,11 +98,18 @@ echo "Using result: ${RESULT_FILE}"
 REVIEW_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD:-}"
 case "${REVIEW_FINDING_SEVERITY_THRESHOLD}" in
   info|low|medium|high|critical) ;;
-  *) # Sanitize before interpolating into a workflow command: strip newlines
-     # and collapse '::' sequences to prevent command injection.
+  *) # Sanitize before interpolating into a workflow command: strip raw and
+     # URL-encoded newlines (GHA treats %0A/%0D as literal newlines in
+     # workflow command parameters), and strip all colons rather than
+     # collapsing '::' pairs — a single-pass collapse is not idempotent and
+     # can be bypassed (e.g. ':::error:::' collapses to '::error::').
      sanitized="${REVIEW_FINDING_SEVERITY_THRESHOLD//$'\n'/}"
      sanitized="${sanitized//$'\r'/}"
-     sanitized="${sanitized//::/:}"
+     sanitized="${sanitized//%0A/}"
+     sanitized="${sanitized//%0a/}"
+     sanitized="${sanitized//%0D/}"
+     sanitized="${sanitized//%0d/}"
+     sanitized="${sanitized//:/}"
      echo "::error::REVIEW_FINDING_SEVERITY_THRESHOLD='${sanitized}' is invalid (expected info|low|medium|high|critical)"
      echo '{"action":"failure","reason":"missing-context"}' | \
        fullsend post-review \

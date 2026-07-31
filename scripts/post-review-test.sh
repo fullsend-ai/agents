@@ -704,6 +704,68 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
+# --- Severity-threshold sanitization tests ---
+# Invalid REVIEW_FINDING_SEVERITY_THRESHOLD values are echoed into a GHA
+# `::error::` workflow command. Verify the sanitizer neutralizes both
+# raw `::` sequences and URL-encoded newlines rather than being bypassable.
+
+run_severity_sanitize_test() {
+  local test_name="$1"
+  local threshold_value="$2"
+  local expected_pattern="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+    > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="${threshold_value}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit for invalid threshold"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_pattern}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# ':::error:::injected' collapses to '::error::injected' under a single
+# non-overlapping '::' -> ':' pass, reviving a live workflow-command
+# delimiter. Full colon-stripping must leave no '::' in the sanitized value.
+run_severity_sanitize_test "severity-threshold-non-idempotent-colon-collapse" \
+  ":::error:::injected" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='errorinjected' is invalid"
+
+# URL-encoded newlines are interpreted by GHA as literal newlines in
+# workflow command parameters and must be stripped alongside raw ones.
+run_severity_sanitize_test "severity-threshold-url-encoded-newline-upper" \
+  "bad%0Ainjected" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='badinjected' is invalid"
+
+run_severity_sanitize_test "severity-threshold-url-encoded-carriage-return-lower" \
+  "bad%0dinjected" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='badinjected' is invalid"
+
 # --- Draft PR integration tests ---
 # These invoke the real post-review.sh with MOCK_PR_IS_DRAFT=true to verify
 # that draft PRs never receive the ready-for-merge label.
