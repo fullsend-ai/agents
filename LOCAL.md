@@ -42,23 +42,34 @@ export GH_TOKEN="$(gh auth token)"
 export GOOGLE_APPLICATION_CREDENTIALS="/path/to/your/service-account-key.json"
 export ANTHROPIC_VERTEX_PROJECT_ID="your-gcp-project-id"
 export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
-export CLOUD_ML_REGION="us-east5"
+export CLOUD_ML_REGION="global"
 ```
 
 If you're testing a new env var, export it here too. You can also use
 `--env-file` with a dotenv file if you prefer.
 
-### 2. Run the agent
+### 2. Clone the target repo
+
+`GITHUB_ISSUE_URL` above points at an issue in a separate repo (e.g.
+`your-org/test-repo`) — clone it to its own local path so `--target-repo`
+has real content to work against:
+
+```bash
+git clone git@github:your-org/test-repo /tmp/target-repo
+```
+
+### 3. Run the agent
 
 ```bash
 fullsend run triage \
   --fullsend-dir . \
-  --target-repo .
+  --target-repo /tmp/target-repo
 ```
 
 - `--fullsend-dir .` tells fullsend to use this repo's harness files.
-- `--target-repo .` points at a local repo checkout for the agent to
-  work against.
+- `--target-repo` points at the target repo checkout (from step 2) for
+  the agent to work against. Don't point it at `.` — that's this
+  harness repo, not the repo the issue lives in.
 - Add `--no-post-script` to inspect the agent's output without
   applying GitHub mutations (posting comments, applying labels). For
   features that change post-script behavior, you'll want to run
@@ -69,7 +80,7 @@ For agents that need additional variables (e.g., the code agent needs
 `ISSUE_NUMBER`, `REPO_FULL_NAME`, and `PUSH_TOKEN`), export them
 before running.
 
-### 3. Inspect the output
+### 4. Inspect the output
 
 The agent writes its result JSON to the output directory printed by
 `fullsend run`. Check it to verify your new configuration option
@@ -94,13 +105,13 @@ Example testing a hypothetical `TRIAGE_AUTO_CODE` var:
 # Default behavior (var unset)
 fullsend run triage \
   --fullsend-dir . \
-  --target-repo .
+  --target-repo /tmp/target-repo
 
 # New behavior (var set)
 export TRIAGE_AUTO_CODE=off
 fullsend run triage \
   --fullsend-dir . \
-  --target-repo .
+  --target-repo /tmp/target-repo
 ```
 
 ## Functional eval tests
