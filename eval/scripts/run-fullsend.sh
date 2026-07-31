@@ -226,7 +226,8 @@ install -m 0600 /dev/null "$ENV_FILE"
         emit_env "REVIEW_PROTECTED_PATHS" "${_defaults}"
         unset _line
       else
-        emit_env "REVIEW_PROTECTED_PATHS" ""
+        echo "ERROR: default protected paths file not found: ${_default_paths_file}" >&2
+        exit 1
       fi
     fi
     emit_env "REVIEW_FINDING_SEVERITY_THRESHOLD" "${REVIEW_FINDING_SEVERITY_THRESHOLD:-}"

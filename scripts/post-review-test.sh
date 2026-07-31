@@ -1053,6 +1053,8 @@ run_protected_paths_test() {
     export MOCK_PR_FILES="${mock_files}"
     if [[ -n "${protected_paths}" ]]; then
       export REVIEW_PROTECTED_PATHS="${protected_paths}"
+    else
+      unset REVIEW_PROTECTED_PATHS
     fi
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1096,6 +1098,16 @@ run_protected_paths_test "file-fallback-triggers-on-default-path" \
 run_protected_paths_test "file-fallback-no-match" \
   "${APPROVE_JSON}" "PR touches protected paths" "absent" \
   "" "src/main.go"
+
+# File fallback must not leak a REVIEW_PROTECTED_PATHS already present in the
+# calling environment — a "" protected_paths argument should still exercise
+# the defaults-file path, not silently inherit a stale/ambient value.
+# shellcheck disable=SC2031
+export REVIEW_PROTECTED_PATHS="deploy/,manifests/"
+run_protected_paths_test "file-fallback-ignores-ambient-env-var" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  "" ".github/workflows/ci.yml"
+unset REVIEW_PROTECTED_PATHS
 
 # Custom REVIEW_PROTECTED_PATHS: .github/ is no longer protected
 run_protected_paths_test "custom-paths-removes-default" \
