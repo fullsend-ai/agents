@@ -307,12 +307,29 @@ FIXTURE_MIXED_TARGETS='{
   ]
 }'
 
+# Fixture: proposal targeting a repo allowed by the repo-level allowlist.
+FIXTURE_REPO_ALLOWLIST_TARGET='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "allowed-org/allowed-repo",
+      "title": "Fix repo-level allowed target",
+      "what_happened": "Something needs fixing in allowed-repo.",
+      "what_could_go_better": "It should be fixed.",
+      "proposed_change": "Fix it.",
+      "validation_criteria": "It is fixed."
+    }
+  ]
+}'
+
 # Fixture: proposal targeting the originating repo (always allowed).
+# Uses an org NOT in the allowlist so the test isolates the
+# originating-repo check from the org-allowlist check.
 FIXTURE_ORIGINATING_REPO_TARGET='{
   "summary": "The retro analysis found one improvement opportunity.",
   "proposals": [
     {
-      "target_repo": "test-org/test-repo",
+      "target_repo": "unlisted-org/originating-repo",
       "title": "Improve self-repo handling",
       "what_happened": "The originating repo had a gap.",
       "what_could_go_better": "Should be handled.",
@@ -705,15 +722,24 @@ run_test_stdin "allow-targets-skipped-in-summary" \
   "${FIXTURE_DISALLOWED_TARGET}" \
   "Proposals skipped (target repo not allowed)"
 
-# Allowed target: proposal IS filed (test-org is in the allowlist).
+# Allowed target: proposal IS filed (test-org is in the org allowlist).
 run_test "allow-targets-allowed-filed" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "gh issue create"
 
+# Repo-level allowlist: allowed-org/allowed-repo is in repos allowlist.
+run_test "allow-targets-repo-level-filed" \
+  "${FIXTURE_REPO_ALLOWLIST_TARGET}" \
+  "gh issue create"
+
 # Originating repo is always allowed even without explicit allowlist entry.
+# Override ORIGINATING_URL to an org NOT in the allowlist so this test
+# isolates the originating-repo check from the org-allowlist check.
+ORIGINATING_URL="https://github.com/unlisted-org/originating-repo/pull/10"
 run_test "allow-targets-originating-repo-allowed" \
   "${FIXTURE_ORIGINATING_REPO_TARGET}" \
   "gh issue create"
+ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 
 # Mixed targets: allowed proposal filed, disallowed skipped.
 run_test "allow-targets-mixed-allowed-filed" \
@@ -732,9 +758,11 @@ run_test_no_gh_call "allow-targets-no-workspace-cross-repo-blocked" \
   "gh issue create" \
   "::warning::Skipping issue creation in 'test-org/target-repo'"
 
+ORIGINATING_URL="https://github.com/unlisted-org/originating-repo/pull/10"
 run_test "allow-targets-no-workspace-originating-allowed" \
   "${FIXTURE_ORIGINATING_REPO_TARGET}" \
   "gh issue create"
+ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
 # ---------------------------------------------------------------------------
