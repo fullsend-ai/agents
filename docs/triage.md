@@ -66,7 +66,7 @@ every agent).
 To overload the built-in skill, create your own `issue-labels` skill in
 `.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
 `.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-To override at the org level, create a custom harness with `base:`
+To override explicitly, create a custom harness with `base:`
 composition and include the replacement skill in the `skills:` array.
 At runtime, your version replaces the upstream default.
 
