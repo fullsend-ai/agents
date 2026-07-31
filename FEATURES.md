@@ -32,13 +32,17 @@ Before writing code, answer:
 
 | Surface | When to use | Example |
 |---------|-------------|---------|
-| **Environment variable** | Runtime behavior toggle, simple values. Repo owners set it in their base-derived harness files or workflow inputs. The agent prompt, pre-script, or post-script reads the var and adjusts behavior. | `CODE_ALLOWED_TARGET_BRANCHES` |
+| **Environment variable** | Runtime behavior toggle, simple values, specific to one agent. Repo owners set it in their base-derived harness files or workflow inputs. Per ADR 0049 (fullsend-ai/fullsend), it must use an `{AGENT}_` prefix and must not be settable via `config.yaml`. | `CODE_ALLOWED_TARGET_BRANCHES` |
+| **`config.yaml` option** | The option should be respected by *every* agent, not just one — no agent-specific prefix, and not configurable via env var. | the cross-repo allow list |
 | **Skill override** | The behavior is best expressed as natural-language instructions to the agent. Repo owners drop a replacement skill in `.agents/skills/` or org owners in `.fullsend/customized/skills/`. | `issue-labels` skill |
 
 Environment variables are the simplest for end users to configure.
 Skills are more flexible — they let repo or org owners override
 behavior with natural-language instructions without forking the agent
-definition.
+definition. A `config.yaml` option requires a schema update in
+fullsend-ai/fullsend plus a follow-up campaign to make each agent
+respect it; an env var option can be delivered entirely within this
+repo.
 
 ## 3. Env var placement — sandbox vs. runner vs. both
 
