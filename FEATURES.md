@@ -32,7 +32,7 @@ Before writing code, answer:
 
 | Surface | When to use | Example |
 |---------|-------------|---------|
-| **Environment variable** | Runtime behavior toggle, simple values, specific to one agent. Repo owners set it in their base-derived harness files or workflow inputs. Per ADR 0049 (fullsend-ai/fullsend), it must use an `{AGENT}_` prefix. By convention, env-var options and `config.yaml` options are kept mutually exclusive. | `CODE_ALLOWED_TARGET_BRANCHES` |
+| **Environment variable** | Runtime behavior toggle, simple values, specific to one agent. Repo owners set it in their base-derived harness files or workflow inputs. Per ADR 0049 (fullsend-ai/fullsend), it must use an `{AGENT}_` prefix. We recommend picking one surface per option — either an env var or a `config.yaml` option, not both — to avoid two sources of truth. | `CODE_ALLOWED_TARGET_BRANCHES` |
 | **`config.yaml` option** | The option should be respected by *every* agent, not just one — no agent-specific prefix, and not configurable via env var. | the cross-repo allow list |
 | **Skill override** | The behavior is best expressed as natural-language instructions to the agent. Repo owners drop a replacement skill in `.agents/skills/`. Org owners reference a replacement skill via a harness `skills:` entry (path or URL, per ADR 0038/0045 in fullsend-ai/fullsend) — `.fullsend/customized/skills/` is deprecated by ADR 0064. | `issue-labels` skill |
 

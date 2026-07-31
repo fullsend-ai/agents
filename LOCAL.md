@@ -55,7 +55,7 @@ If you're testing a new env var, export it here too. You can also use
 has real content to work against:
 
 ```bash
-git clone git@github:your-org/test-repo /tmp/target-repo
+git clone git@github.com:your-org/test-repo /tmp/target-repo
 ```
 
 ### 3. Run the agent
