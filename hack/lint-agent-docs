@@ -65,21 +65,24 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
         continue
     fi
 
+    doc_ok=true
+
     # Check that the top-level heading ends with " Agent"
-    h1="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^# [^#]/{sub(/^# /,""); print; exit}' "$doc_path")"
+    h1="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^# [^#]/{sub(/^# /,""); sub(/[ \t]*#*[ \t]*$/,""); print; exit}' "$doc_path")"
     if [[ -z "$h1" ]]; then
         echo "  $doc_basename: missing top-level \"# ...\" heading"
         errors=$((errors + 1))
+        doc_ok=false
     elif [[ "$h1" != *" Agent" ]]; then
         echo "  $doc_basename: top heading \"# $h1\" must end with \" Agent\" (e.g. \"# ${h1} Agent\")"
         errors=$((errors + 1))
+        doc_ok=false
     fi
 
     # Extract ## headers outside fenced code blocks
-    actual_sections="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^## /{sub(/^## /,""); print}' "$doc_path")"
+    actual_sections="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^## /{sub(/^## /,""); sub(/[ \t]*#*[ \t]*$/,""); print}' "$doc_path")"
 
     # Check for duplicate ## headings
-    doc_ok=true
     duplicates="$(echo "$actual_sections" | sort | uniq -d)"
     if [[ -n "$duplicates" ]]; then
         while IFS= read -r dup; do
