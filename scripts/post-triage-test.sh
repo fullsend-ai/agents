@@ -1036,6 +1036,13 @@ run_test_with_env "auto-code-category-feature-gets-feature-label" \
   "false" \
   $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
+# TRIAGE_AUTO_CODE=category with explicit empty categories: promotes nothing.
+run_test_with_env "auto-code-category-empty-string-gets-triaged" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES='
+
 # TRIAGE_AUTO_CODE=category with whitespace in categories: still matches.
 # Uses documentation fixture (not bug) to verify multi-item matching actually
 # works — bug would match even a truncated list.

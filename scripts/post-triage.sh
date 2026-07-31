@@ -407,7 +407,7 @@ ${FAILED_CREATES}"
       case "${AUTO_CODE}" in
         off) return 1 ;;
         category)
-          local categories="${TRIAGE_AUTO_CODE_CATEGORIES:-bug,documentation,performance}"
+          local categories="${TRIAGE_AUTO_CODE_CATEGORIES-bug,documentation,performance}"
           categories="${categories//[[:space:]]/}"
           categories="$(printf '%s' "${categories}" | tr '[:upper:]' '[:lower:]')"
           # Check if CATEGORY appears in the comma-separated list.

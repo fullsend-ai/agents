@@ -136,7 +136,7 @@ where every agent would pay the context cost.
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote bug/documentation/performance. `off` — never auto-promote; always apply `triaged`. `category` — auto-promote only categories in `TRIAGE_AUTO_CODE_CATEGORIES`. | `on` | `on`, `off`, `category` |
-| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=category`. | `bug,documentation,performance` | Any valid triage categories |
+| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=category`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
 
 ## How the agent works
 
