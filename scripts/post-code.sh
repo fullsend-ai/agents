@@ -752,10 +752,11 @@ classify_branch_vs_pr_head() {
 #   2. If CODE_AUTO_MERGE_METHOD is set → use it (warn on unknown values)
 #   3. Otherwise → auto-detect from repo's allowed merge methods (prefer squash)
 #
-# Usage: enable_auto_merge <pr_number> <repo> [existing]
+# Usage: enable_auto_merge <target_pr> <repo> [existing]
+# Note: parameter is target_pr (not pr_number) to avoid SC2153 against PR_NUMBER.
 # ---------------------------------------------------------------------------
 enable_auto_merge() {
-  local pr_number="$1"
+  local target_pr="$1"
   local repo="$2"
   local is_existing="${3:-}"
 
@@ -766,10 +767,10 @@ enable_auto_merge() {
   # Guard: only arm when PR is BLOCKED — immediate-merge states (CLEAN,
   # HAS_HOOKS, UNSTABLE) cause gh to merge on the spot, bypassing review/CI.
   local pr_json
-  pr_json="$(gh pr view "${pr_number}" --repo "${repo}" \
+  pr_json="$(gh pr view "${target_pr}" --repo "${repo}" \
     --json mergeStateStatus,autoMergeRequest,baseRefName 2>/dev/null || true)"
   if [ -z "${pr_json}" ]; then
-    gha_echo warning "Auto-merge: could not query PR #${pr_number} — skipping"
+    gha_echo warning "Auto-merge: could not query PR #${target_pr} — skipping"
     return 0
   fi
 
@@ -782,7 +783,7 @@ enable_auto_merge() {
       return 0
       ;;
     *)
-      gha_echo warning "Auto-merge: PR #${pr_number} is immediately mergeable (state: ${merge_state}) — skipping. Requires branch protection with required reviews or status checks."
+      gha_echo warning "Auto-merge: PR #${target_pr} is immediately mergeable (state: ${merge_state}) — skipping. Requires branch protection with required reviews or status checks."
       return 0
       ;;
   esac
@@ -792,7 +793,7 @@ enable_auto_merge() {
     local am_request
     am_request="$(echo "${pr_json}" | jq -r '.autoMergeRequest // empty')"
     if [ -n "${am_request}" ]; then
-      echo "Auto-merge already enabled on PR #${pr_number} — skipping"
+      echo "Auto-merge already enabled on PR #${target_pr} — skipping"
       return 0
     fi
   fi
@@ -841,13 +842,13 @@ enable_auto_merge() {
     esac
   fi
 
-  echo "Auto-merge: enabling on PR #${pr_number}${method_flag:+ (${method_flag})}..."
+  echo "Auto-merge: enabling on PR #${target_pr}${method_flag:+ (${method_flag})}..."
   local am_output
   # shellcheck disable=SC2086
-  if ! am_output="$(gh pr merge "${pr_number}" --auto ${method_flag} \
+  if ! am_output="$(gh pr merge "${target_pr}" --auto ${method_flag} \
     --repo "${repo}" 2>&1)"; then
     print_sanitized_gha_log "${am_output}"
-    gha_echo warning "Failed to enable auto-merge on PR #${pr_number} — continuing"
+    gha_echo warning "Failed to enable auto-merge on PR #${target_pr} — continuing"
   else
     print_sanitized_gha_log "${am_output}"
   fi

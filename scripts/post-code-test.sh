@@ -1930,6 +1930,61 @@ run_merge_method_test "merge-method-default" \
 run_merge_method_test "merge-method-unknown" \
   "fast-forward" "WARN:--merge"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the auto-detect priority logic from
+# enable_auto_merge: squash > merge > rebase, fallback to merge.
+# ---------------------------------------------------------------------------
+resolve_auto_detect_method() {
+  local allow_squash="$1"
+  local allow_merge="$2"
+  local allow_rebase="$3"
+
+  if [ "${allow_squash}" = "true" ]; then echo "squash"
+  elif [ "${allow_merge}" = "true" ]; then echo "merge"
+  elif [ "${allow_rebase}" = "true" ]; then echo "rebase"
+  else echo "merge"
+  fi
+}
+
+run_auto_detect_test() {
+  local test_name="$1"
+  local allow_squash="$2"
+  local allow_merge="$3"
+  local allow_rebase="$4"
+  local expected="$5"
+
+  local actual
+  actual="$(resolve_auto_detect_method "${allow_squash}" "${allow_merge}" "${allow_rebase}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  squash=${allow_squash} merge=${allow_merge} rebase=${allow_rebase}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Auto-detect priority test cases ---
+
+run_auto_detect_test "auto-detect-all-enabled" \
+  "true" "true" "true" "squash"
+
+run_auto_detect_test "auto-detect-merge-and-rebase" \
+  "false" "true" "true" "merge"
+
+run_auto_detect_test "auto-detect-rebase-only" \
+  "false" "false" "true" "rebase"
+
+run_auto_detect_test "auto-detect-none-enabled" \
+  "false" "false" "false" "merge"
+
+run_auto_detect_test "auto-detect-squash-only" \
+  "true" "false" "false" "squash"
+
 # --- Summary ---
 
 echo ""
