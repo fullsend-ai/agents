@@ -12,7 +12,17 @@ HARNESS_DIR="$REPO_ROOT/harness"
 extract_doc_value() {
     local raw
     raw="$(grep -E '^doc:' "$1" | head -1 || true)"
-    sed -E "s/^doc:[[:space:]]*//; s/[[:space:]]*#.*\$//; s/^([\"'])(.*)\1\$/\2/" <<< "$raw"
+    raw="$(sed -E "s/^doc:[[:space:]]*//; s/[[:space:]]*#.*\$//" <<< "$raw")"
+    # Strip matching surrounding quotes via bash parameter expansion —
+    # a sed backreference here behaves inconsistently between GNU and BSD sed.
+    if [[ "$raw" == \"*\" ]]; then
+        raw="${raw#\"}"
+        raw="${raw%\"}"
+    elif [[ "$raw" == \'*\' ]]; then
+        raw="${raw#\'}"
+        raw="${raw%\'}"
+    fi
+    echo "$raw"
 }
 
 errors=0
