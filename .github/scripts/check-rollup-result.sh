@@ -26,13 +26,13 @@ if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$EVENT_ACTION" = "labeled" ] 
   exit 0
 fi
 
-if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$DETECT_RESULT" = "skipped" ]; then
-  echo "::error::Detect was ${DETECT_RESULT} on pull_request_target — tests were not authorized to run"
+if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
+  echo "::error::Gate job ${GATE_RESULT}"
   exit 1
 fi
 
-if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
-  echo "::error::Gate job ${GATE_RESULT}"
+if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$DETECT_RESULT" = "skipped" ]; then
+  echo "::error::Detect was ${DETECT_RESULT} on pull_request_target — tests were not authorized to run"
   exit 1
 fi
 
