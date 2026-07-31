@@ -174,7 +174,7 @@ build_pr_body() {
         end = NR
         while (end > 0) {
           l = lines[end]
-          if (l == "" || l ~ /^[Cc]lose[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Ff]ix(e[sd])? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Rr]esolve[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/)
+          if (l == "" || l ~ /^[Cc]lose[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Ff]ix(e[sd])? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Rr]esolve[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Rr]elated to (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/)
             end--
           else
             break
@@ -583,6 +583,91 @@ closes_issue_pr_body_test() {
   echo "PASS: closes-issue-false-with-pr-body"
 }
 closes_issue_pr_body_test
+
+# ---------------------------------------------------------------------------
+# Test: commit-body fallback with closes_issue=false and 'Related to #N'
+# in commit body — verifies the resulting PR body contains exactly one
+# 'Related to' reference (no duplication).
+#
+# Reimplements extract_commit_body without git, then feeds the result
+# through build_pr_body to test the full pipeline.
+# ---------------------------------------------------------------------------
+count_related_to_commit_body_test() {
+  local test_name="$1"
+  local raw_commit_body="$2"
+  local issue_number="$3"
+
+  # Reimplement extract_commit_body without git (mirrors post-code.src.sh)
+  local processed
+  processed="$(printf '%s\n' "${raw_commit_body}" \
+    | sed '/^Signed-off-by:/d' \
+    | sed '/^Closes #/d' \
+    | sed '/^Related to #/d' \
+    | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+  processed="$(echo "${processed}" | awk '
+    /^$/           { if (buf) print buf; print; buf=""; next }
+    /^[-*#>]|^  /  { if (buf) print buf; buf=""; print; next }
+    /^Closes /     { if (buf) print buf; buf=""; print; next }
+    /^Related to / { if (buf) print buf; buf=""; print; next }
+                   { buf = (buf ? buf " " $0 : $0) }
+    END            { if (buf) print buf }
+  ')"
+
+  local actual
+  actual="$(build_pr_body "${processed}" "${issue_number}" "agent/${issue_number}-fix" "abc123..def456" "" "skipped" "false")"
+
+  local count
+  count=$(echo "${actual}" | grep -c "Related to #${issue_number}" || true)
+
+  if [ "${count}" -ne 1 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected exactly 1 'Related to #${issue_number}', found ${count}"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+count_related_to_commit_body_test "single-related-to-commit-body-fallback" \
+  "Partial fix for widget rendering.
+
+Related to #42" "42"
+
+# Test: pr_body path with closes_issue=false and trailing 'Related to #N'
+# footer — verifies the footer stripping awk removes it before the script
+# appends its own, so the final PR body contains exactly one reference.
+count_related_to_pr_body_test() {
+  local test_name="$1"
+  local pr_body="$2"
+  local issue_number="$3"
+
+  local actual
+  actual="$(build_pr_body "" "${issue_number}" "agent/${issue_number}-fix" "abc123..def456" "${pr_body}" "passed" "false")"
+
+  local count
+  count=$(echo "${actual}" | grep -c "Related to #${issue_number}" || true)
+
+  if [ "${count}" -ne 1 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected exactly 1 'Related to #${issue_number}', found ${count}"
+    echo "  in body:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+count_related_to_pr_body_test "single-related-to-pr-body-with-related-to" \
+  "## Summary
+
+Partial implementation.
+
+Related to #42" "42"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the no-op detection logic from post-code.sh
