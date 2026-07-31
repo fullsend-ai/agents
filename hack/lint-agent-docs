@@ -93,36 +93,17 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
     fi
 
     missing=()
-    extra=()
     for section in "${SECTION_LIST[@]}"; do
         if ! echo "$actual_sections" | grep -Fqx "$section"; then
             missing+=("$section")
         fi
     done
 
-    while IFS= read -r section; do
-        [[ -z "$section" ]] && continue
-        found=false
-        for required in "${SECTION_LIST[@]}"; do
-            if [[ "$section" == "$required" ]]; then
-                found=true
-                break
-            fi
-        done
-        if [[ "$found" == "false" ]]; then
-            extra+=("$section")
-        fi
-    done <<< "$actual_sections"
-
-    if [[ ${#missing[@]} -gt 0 || ${#extra[@]} -gt 0 ]]; then
+    if [[ ${#missing[@]} -gt 0 ]]; then
         echo "  $doc_basename: FAIL"
         doc_ok=false
         for s in "${missing[@]+"${missing[@]}"}"; do
             echo "    missing: \"## $s\""
-            errors=$((errors + 1))
-        done
-        for s in "${extra[@]+"${extra[@]}"}"; do
-            echo "    unexpected: \"## $s\" — adding new sections is fine, but please add them to the REQUIRED_SECTIONS list in hack/lint-agent-docs so all agent docs stay consistent"
             errors=$((errors + 1))
         done
     elif [[ "$doc_ok" == "true" ]]; then

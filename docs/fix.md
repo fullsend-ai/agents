@@ -68,13 +68,34 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
 
-### Custom sandbox image
+### Input details
+
+**Bot-triggered** (review agent requests changes):
+
+| Input | Source | How it gets there |
+|-------|--------|-------------------|
+| Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
+| PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
+| Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
+| Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
+
+**Human-triggered** (`/fs-fix [instruction]`):
+
+| Input | Source | How it gets there |
+|-------|--------|-------------------|
+| Human instruction | Free text after `/fs-fix` in the comment | Extracted by the workflow, passed as `HUMAN_INSTRUCTION` env var (up to 10,000 bytes) |
+| PR diff | `gh pr diff` inside the sandbox | Same as bot-triggered |
+| Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
+| Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
+| Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
+
+## Custom sandbox image
 
 The fix agent shares the [code agent's sandbox image](code.md#custom-sandbox-image).
 If your project uses a custom image, update the `image:` field in both
 `harness/code.yaml` and `harness/fix.yaml`.
 
-### What the agent acts on
+## What the agent acts on
 
 **When triggered by a review:** the agent reads the review body, the PR diff,
 and the full repository checkout.
@@ -133,27 +154,6 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   `needs-human` label.
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
-
-### Input details
-
-**Bot-triggered** (review agent requests changes):
-
-| Input | Source | How it gets there |
-|-------|--------|-------------------|
-| Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
-| PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
-| Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
-| Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
-
-**Human-triggered** (`/fs-fix [instruction]`):
-
-| Input | Source | How it gets there |
-|-------|--------|-------------------|
-| Human instruction | Free text after `/fs-fix` in the comment | Extracted by the workflow, passed as `HUMAN_INSTRUCTION` env var (up to 10,000 bytes) |
-| PR diff | `gh pr diff` inside the sandbox | Same as bot-triggered |
-| Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
-| Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
-| Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
 
 ## Source
 
