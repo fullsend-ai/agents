@@ -21,8 +21,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
 source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
-# shellcheck source=lib/post-failure-report.lib.sh
-source "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
+# shellcheck source=lib/gha-log-sanitize.lib.sh
+source "${SCRIPT_DIR}/lib/gha-log-sanitize.lib.sh"
 
 errors=0
 
