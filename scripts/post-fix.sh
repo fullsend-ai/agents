@@ -133,9 +133,12 @@ print_sanitized_gha_log() {
 }
 
 # Emit a GitHub Actions workflow command with a sanitised message body.
+# Defence-in-depth: sanitize the level parameter too, even though current
+# call sites only pass hardcoded string literals.
 gha_echo() {
   local level="$1"
   shift
+  level="${level//::/}"
   printf '::%s::%s\n' "${level}" "$(sanitize_gha_log_output "$*")"
 }
 # END bundled: lib/gha-log-sanitize.lib.sh

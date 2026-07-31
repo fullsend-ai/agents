@@ -113,7 +113,7 @@ if [[ -n "${HUMAN_PR_LINES}" ]]; then
   FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
   FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
 
-  echo "::notice::Found existing human PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+  gha_echo notice "Found existing human PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
 
   # Apply pr-open label to signal work is already underway.
   gh label create "pr-open" --repo "${REPO_FULL_NAME}" \
