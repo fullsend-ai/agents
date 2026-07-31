@@ -420,6 +420,15 @@ run_test_stdout_excludes "error-line-strips-workflow-cmd-chars" \
   1 \
   "ISSUE_NUMBER=12::34"
 
+# CODE_FORCE is interpolated in the force-override debug log — sanitize it
+# so a value containing "::" can't inject a GHA workflow command.
+run_test_stdout_excludes "code-force-sanitized-in-log" \
+  "" \
+  "CODE_FORCE='hasinjection'" \
+  "has::injection" \
+  0 \
+  "CODE_FORCE=has::injection"
+
 # --- Regression tests: --force bypasses PR search (issue #1697) ---
 TAB=$'\t'
 

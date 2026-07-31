@@ -462,7 +462,7 @@ if [[ -n "${COMMENT_BODY:-}" ]]; then
   FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
 fi
 _cb="${COMMENT_BODY:-}"
-echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY_LENGTH='${#_cb}'"
+echo "Evaluating force override: CODE_FORCE='$(sanitize_gha_log_output "${CODE_FORCE:-}")' COMMENT_BODY_LENGTH='${#_cb}'"
 if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
   echo "Force override — skipping existing-PR check"
   exit 0
