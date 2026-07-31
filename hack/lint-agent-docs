@@ -7,6 +7,14 @@ shopt -s nullglob
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARNESS_DIR="$REPO_ROOT/harness"
 
+# Extract the doc: field's value from a harness YAML, stripping the key,
+# any inline `# comment`, and surrounding quotes.
+extract_doc_value() {
+    local raw
+    raw="$(grep -E '^doc:' "$1" | head -1 || true)"
+    sed -E "s/^doc:[[:space:]]*//; s/[[:space:]]*#.*\$//; s/^([\"'])(.*)\1\$/\2/" <<< "$raw"
+}
+
 errors=0
 harness_count=0
 
@@ -16,7 +24,7 @@ echo "================================================"
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
     harness_count=$((harness_count + 1))
     name="$(basename "$yaml_file")"
-    doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
+    doc_value="$(extract_doc_value "$yaml_file")"
 
     if [[ -z "$doc_value" ]]; then
         echo "  ERROR: $name: missing 'doc:' field"
@@ -47,7 +55,7 @@ REQUIRED_SECTIONS="How it helps|Setup|Triggers|Commands|Control labels|Configura
 IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
-    doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
+    doc_value="$(extract_doc_value "$yaml_file")"
     if [[ -z "$doc_value" ]]; then
         continue
     fi
@@ -116,7 +124,7 @@ echo "Checking for ### Variables subsection..."
 echo "================================================"
 
 for yaml_file in "$HARNESS_DIR"/*.yaml; do
-    doc_value="$(grep -E '^doc:' "$yaml_file" | head -1 | sed 's/^doc:[[:space:]]*//' || true)"
+    doc_value="$(extract_doc_value "$yaml_file")"
     if [[ -z "$doc_value" ]]; then
         continue
     fi
