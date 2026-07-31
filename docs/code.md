@@ -146,45 +146,17 @@ agent.
 
 ### PR assignee resolution
 
-The post-script assigns a human owner to each PR it creates. Assignment
-is best-effort — if no human candidate is found, the PR is left
-unassigned and no error is raised.
+The post-script assigns a human owner to each PR it creates. When no human candidate is found,
+the PR is unassigned. The idea behind this is that the assignee takes care of the PR as it cares
+about its contents.
 
-**Precedence order** — the first human match wins:
+The precedence is as follows:
 
-1. **Most recent `/fs-code` invoker.** The post-script scans all issue
-   comments (paginated) for the most recent comment whose first word is
-   `/fs-code`, posted by a human user. This ensures the person who
-   requested the work owns the resulting PR.
-2. **First human issue assignee.** If no `/fs-code` invoker qualifies,
-   the first human in the issue's assignee list is used.
-3. **Human issue author.** If no assignee qualifies, the person who
-   opened the issue is used.
+1. `/fs-code` invoker.
+2. First assignee of the issue.
+3. Issue author.
 
-**Bot and GitHub App filtering.** Every candidate is checked before
-use. A login is filtered out if it:
-
-- ends with `[bot]` (e.g., `dependabot[bot]`, `fullsend-ai-coder[bot]`)
-- starts with `app/`
-- is exactly `dependabot`
-- is empty
-
-This filtering applies at every precedence level, so bots are never
-assigned.
-
-**Already-assigned skip.** Before resolving a candidate, the post-script
-checks whether the PR already has assignees. If it does, assignment is
-skipped entirely — existing assignees are never overwritten.
-
-**Unassigned PRs.** When no human candidate is found at any precedence
-level, the PR is left unassigned with a log message. This is not treated
-as an error. If a PR is unexpectedly unassigned, check whether:
-
-- the `/fs-code` invoker, issue assignees, and issue author are all bots
-- the issue has no assignees and was opened by a bot
-- the GitHub API call to read comments or issue metadata failed silently
-
-The resolution logic lives in
+**Note**: bots are filtered (`*[bot]`, `app/*`, `dependabot`). The resolution logic lives in
 [`scripts/lib/pr-assignee.lib.sh`](../scripts/lib/pr-assignee.lib.sh).
 
 ## Source
