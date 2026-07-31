@@ -219,9 +219,7 @@ ${issue_ref_keyword} #${issue_number}
 
 - [x] Branch is not main/master (\`${branch}\`)
 - [x] Secret scan passed (gitleaks — \`${scan_range}\`)
-${pr_body_scan_line}
-- [x] Pre-commit hooks passed (authoritative run on runner)
-- [x] Tests ran inside sandbox"
+${pr_body_scan_line}"
 }
 
 run_body_test() {
