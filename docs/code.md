@@ -144,6 +144,21 @@ The same field exists in `harness/fix.yaml` (the [fix agent](fix.md)
 shares the sandbox image). Update both if your project uses the fix
 agent.
 
+### PR assignee resolution
+
+The post-script assigns a human owner to each PR it creates. When no human candidate is found,
+the PR is unassigned. The idea behind this is that the assignee takes care of the PR as it cares
+about its contents.
+
+The precedence is as follows:
+
+1. `/fs-code` invoker.
+2. First assignee of the issue.
+3. Issue author.
+
+**Note**: bots are filtered (`*[bot]`, `app/*`, `dependabot`). The resolution logic lives in
+[`scripts/lib/pr-assignee.lib.sh`](../scripts/lib/pr-assignee.lib.sh).
+
 ## Source
 
 [`harness/code.yaml`](../harness/code.yaml)
