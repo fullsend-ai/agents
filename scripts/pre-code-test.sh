@@ -398,6 +398,13 @@ run_test_stdout_excludes "notice-not-emitted-before-validation" \
   1 \
   "ISSUE_NUMBER=not-a-number"
 
+# The reordering must not have dropped the notice entirely — it still fires
+# on the validation-success path, with the validated GITHUB_ISSUE_URL.
+run_test_stdout "notice-emitted-after-successful-validation" \
+  "" \
+  "::notice::🔗 Code target: https://github.com/test-org/test-repo/issues/42" \
+  0
+
 # COMMENT_BODY content itself must never reach stdout — only its length is
 # logged, so a hostile trigger comment can't inject GHA workflow commands
 # or terminal escape sequences via debug logging.
