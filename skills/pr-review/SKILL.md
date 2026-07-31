@@ -435,9 +435,11 @@ incident.
 **Procedure:**
 
 1. Read `sub-agents/security-triage.md` for the sub-agent definition.
-2. Resolve the active governance paths list. If the
-   `REVIEW_PROTECTED_PATHS` environment variable is set **and
-   non-empty**, split on commas and trim whitespace. Otherwise, read paths from
+2. Resolve the active governance paths list, matching
+   `post-review.sh`'s three-way resolution: if `REVIEW_PROTECTED_PATHS`
+   is set and non-empty, split on commas and trim whitespace; if it's
+   set and explicitly empty, the operator has opted out and the list
+   is empty; if it's unset, read paths from
    `env/default-review-protected-paths.txt` (one prefix per line,
    ignoring blank lines and comments).
 3. Compose a spawn prompt containing:
@@ -1006,11 +1008,16 @@ governance and infrastructure files that require human approval — the
 review agent MUST NEVER approve changes to them without raising
 findings.
 
-The protected paths list is determined at runtime. If the
-`REVIEW_PROTECTED_PATHS` environment variable is set **and non-empty**
-(comma-separated path prefixes), use that list. If the variable is not
-set or empty, read the default list from
-`env/default-review-protected-paths.txt` (one path prefix per line).
+The protected paths list is determined at runtime, matching
+`post-review.sh`'s three-way resolution:
+
+- **Set and non-empty** — use the `REVIEW_PROTECTED_PATHS` value
+  (comma-separated path prefixes).
+- **Set and explicitly empty** (`REVIEW_PROTECTED_PATHS=""`) — the
+  operator has deliberately opted out of protected-path enforcement.
+  The active list is empty, so no file can match it.
+- **Unset** — read the default list from
+  `env/default-review-protected-paths.txt` (one path prefix per line).
 
 For each file in the PR diff, check whether its path starts with (or
 exactly matches) any entry in the active protected paths list.
