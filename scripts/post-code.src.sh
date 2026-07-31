@@ -34,12 +34,16 @@
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
 #   CODE_AUTO_MERGE    — "true" to enable GitHub auto-merge on the PR after
-#                        creation. Incompatible with GitHub merge queues.
+#                        creation. Requires branch protection with required
+#                        reviews or status checks on the target branch.
 #                        (default: "" — disabled)
 #   CODE_AUTO_MERGE_METHOD
 #                      — merge method for auto-merge: "squash", "rebase", or
-#                        "merge". Ignored unless CODE_AUTO_MERGE is "true".
-#                        (default: "merge")
+#                        "merge". When unset, auto-detected from the repo's
+#                        allowed merge methods (prefers squash). Ignored
+#                        unless CODE_AUTO_MERGE is "true". Omitted
+#                        automatically when target branch uses a merge queue.
+#                        (default: auto-detected)
 #
 # Exit codes:
 #   0  — branch pushed and PR created, OR agent determined nothing to do
@@ -53,6 +57,119 @@ source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
 # shellcheck source=lib/pr-assignee.lib.sh
 source "${SCRIPT_DIR_POST}/lib/pr-assignee.lib.sh"
+
+# ---------------------------------------------------------------------------
+# enable_auto_merge — arm GitHub auto-merge on a PR (best-effort).
+#
+# Guards:
+#   - PR must be in BLOCKED state (requires branch protection)
+#   - For existing PRs: skips if auto-merge is already enabled
+#
+# Merge method resolution:
+#   1. If target branch has a merge queue → omit method flag (gh negotiates)
+#   2. If CODE_AUTO_MERGE_METHOD is set → use it (warn on unknown values)
+#   3. Otherwise → auto-detect from repo's allowed merge methods (prefer squash)
+#
+# Usage: enable_auto_merge <pr_number> <repo> [existing]
+# ---------------------------------------------------------------------------
+enable_auto_merge() {
+  local pr_number="$1"
+  local repo="$2"
+  local is_existing="${3:-}"
+
+  if [ "${CODE_AUTO_MERGE:-}" != "true" ]; then
+    return 0
+  fi
+
+  # Guard: only arm when PR is BLOCKED — immediate-merge states (CLEAN,
+  # HAS_HOOKS, UNSTABLE) cause gh to merge on the spot, bypassing review/CI.
+  local pr_json
+  pr_json="$(gh pr view "${pr_number}" --repo "${repo}" \
+    --json mergeStateStatus,autoMergeRequest,baseRefName 2>/dev/null || true)"
+  if [ -z "${pr_json}" ]; then
+    gha_echo warning "Auto-merge: could not query PR #${pr_number} — skipping"
+    return 0
+  fi
+
+  local merge_state
+  merge_state="$(echo "${pr_json}" | jq -r '.mergeStateStatus // "UNKNOWN"')"
+  case "${merge_state}" in
+    BLOCKED) ;;
+    UNKNOWN)
+      gha_echo warning "Auto-merge: could not determine PR merge state — skipping"
+      return 0
+      ;;
+    *)
+      gha_echo warning "Auto-merge: PR #${pr_number} is immediately mergeable (state: ${merge_state}) — skipping. Requires branch protection with required reviews or status checks."
+      return 0
+      ;;
+  esac
+
+  # Guard: for existing PRs, don't re-arm if auto-merge is already set.
+  if [ "${is_existing}" = "existing" ]; then
+    local am_request
+    am_request="$(echo "${pr_json}" | jq -r '.autoMergeRequest // empty')"
+    if [ -n "${am_request}" ]; then
+      echo "Auto-merge already enabled on PR #${pr_number} — skipping"
+      return 0
+    fi
+  fi
+
+  # Resolve merge method flag.
+  local method_flag=""
+  local base_branch
+  base_branch="$(echo "${pr_json}" | jq -r '.baseRefName // "main"')"
+
+  # Check for merge queue on the target branch — omit method flag if present.
+  local owner="${repo%%/*}"
+  local name="${repo##*/}"
+  local mq_id
+  mq_id="$(gh api graphql -f query="
+    query { repository(owner: \"${owner}\", name: \"${name}\") {
+      mergeQueue(branch: \"${base_branch}\") { id }
+    }}" --jq '.data.repository.mergeQueue.id // empty' 2>/dev/null || true)"
+
+  if [ -n "${mq_id}" ]; then
+    echo "Auto-merge: merge queue detected on ${base_branch} — omitting method flag"
+  else
+    local method="${CODE_AUTO_MERGE_METHOD:-}"
+    if [ -z "${method}" ]; then
+      local repo_info
+      repo_info="$(gh api "repos/${repo}" \
+        --jq '{s:.allow_squash_merge,m:.allow_merge_commit,r:.allow_rebase_merge}' 2>/dev/null || true)"
+      if [ -n "${repo_info}" ]; then
+        if [ "$(echo "${repo_info}" | jq -r '.s')" = "true" ]; then method="squash"
+        elif [ "$(echo "${repo_info}" | jq -r '.m')" = "true" ]; then method="merge"
+        elif [ "$(echo "${repo_info}" | jq -r '.r')" = "true" ]; then method="rebase"
+        else method="merge"
+        fi
+      else
+        method="merge"
+      fi
+    fi
+
+    case "${method}" in
+      squash) method_flag="--squash" ;;
+      rebase) method_flag="--rebase" ;;
+      merge)  method_flag="--merge"  ;;
+      *)
+        gha_echo warning "Unknown CODE_AUTO_MERGE_METHOD='${method}' — defaulting to --merge"
+        method_flag="--merge"
+        ;;
+    esac
+  fi
+
+  echo "Auto-merge: enabling on PR #${pr_number}${method_flag:+ (${method_flag})}..."
+  local am_output
+  # shellcheck disable=SC2086
+  if ! am_output="$(gh pr merge "${pr_number}" --auto ${method_flag} \
+    --repo "${repo}" 2>&1)"; then
+    print_sanitized_gha_log "${am_output}"
+    gha_echo warning "Failed to enable auto-merge on PR #${pr_number} — continuing"
+  else
+    print_sanitized_gha_log "${am_output}"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -546,21 +663,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
 
-  # Auto-merge
-  if [ "${CODE_AUTO_MERGE:-}" = "true" ]; then
-    _AM_METHOD_FLAG=""
-    case "${CODE_AUTO_MERGE_METHOD:-merge}" in
-      squash) _AM_METHOD_FLAG="--squash" ;;
-      rebase) _AM_METHOD_FLAG="--rebase" ;;
-      *)      _AM_METHOD_FLAG="--merge"  ;;
-    esac
-    echo "Auto-merge enabled (${_AM_METHOD_FLAG}) — enabling on PR #${EXISTING_PR_NUM}..."
-    if ! gh pr merge "${EXISTING_PR_NUM}" --auto ${_AM_METHOD_FLAG} \
-      --repo "${REPO_FULL_NAME}" 2>&1; then
-      gha_echo warning "Failed to enable auto-merge on PR #${EXISTING_PR_NUM} — continuing"
-    fi
-  fi
-
+  enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   maybe_assign_pr "${EXISTING_PR_NUM}"
   exit 0
 fi
@@ -733,18 +836,6 @@ gh issue edit "${PR_NUMBER_FROM_URL}" \
 # ---------------------------------------------------------------------------
 # 9. Auto-merge
 # ---------------------------------------------------------------------------
-if [ "${CODE_AUTO_MERGE:-}" = "true" ]; then
-  _AM_METHOD_FLAG=""
-  case "${CODE_AUTO_MERGE_METHOD:-merge}" in
-    squash) _AM_METHOD_FLAG="--squash" ;;
-    rebase) _AM_METHOD_FLAG="--rebase" ;;
-    *)      _AM_METHOD_FLAG="--merge"  ;;
-  esac
-  echo "Auto-merge enabled (${_AM_METHOD_FLAG}) — enabling on PR #${PR_NUMBER_FROM_URL}..."
-  if ! gh pr merge "${PR_NUMBER_FROM_URL}" --auto ${_AM_METHOD_FLAG} \
-    --repo "${REPO_FULL_NAME}" 2>&1; then
-    gha_echo warning "Failed to enable auto-merge on PR #${PR_NUMBER_FROM_URL} — continuing"
-  fi
-fi
+enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
 maybe_assign_pr "${PR_NUMBER_FROM_URL}"

@@ -1441,15 +1441,17 @@ run_auto_merge_test "auto-merge-numeric" \
   "1" "skip"
 
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the merge method flag resolution from
-# post-code.sh. Given a CODE_AUTO_MERGE_METHOD value, returns the flag.
+# Test helper — reimplements the merge method flag resolution from the
+# enable_auto_merge function's case statement. Given a CODE_AUTO_MERGE_METHOD
+# value, returns the flag (and "WARN" prefix for unknown values).
 # ---------------------------------------------------------------------------
 resolve_merge_method_flag() {
-  local method="${1:-merge}"
+  local method="${1:-}"
   case "${method}" in
     squash) echo "--squash" ;;
     rebase) echo "--rebase" ;;
-    *)      echo "--merge"  ;;
+    merge|"") echo "--merge"  ;;
+    *)      echo "WARN:--merge"  ;;
   esac
 }
 
@@ -1488,7 +1490,7 @@ run_merge_method_test "merge-method-default" \
   "" "--merge"
 
 run_merge_method_test "merge-method-unknown" \
-  "fast-forward" "--merge"
+  "fast-forward" "WARN:--merge"
 
 # --- Summary ---
 
