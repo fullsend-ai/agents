@@ -1133,7 +1133,7 @@ run_protected_paths_test "custom-paths-empty-entries-valid-match" \
 run_missing_defaults_test() {
   local test_name="missing-defaults-file-aborts"
   local run_dir="${TMPDIR}/run-${test_name}"
-  local fake_scripts="${TMPDIR}/fake-scripts"
+  local fake_scripts="${TMPDIR}/case-${test_name}/scripts"
   mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}"
   echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
@@ -1253,7 +1253,7 @@ run_nonapprove_missing_defaults_test() {
   local test_name="nonapprove-missing-defaults-succeeds"
   local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
   local run_dir="${TMPDIR}/run-${test_name}"
-  local fake_scripts="${TMPDIR}/fake-scripts-nonapprove"
+  local fake_scripts="${TMPDIR}/case-${test_name}/scripts"
   mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}"
   echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
@@ -1336,8 +1336,8 @@ run_explicit_empty_test
 run_comments_only_defaults_test() {
   local test_name="file-fallback-comments-only-aborts"
   local run_dir="${TMPDIR}/run-${test_name}"
-  local fake_scripts="${TMPDIR}/fake-scripts-comments"
-  local fake_env="${TMPDIR}/fake-scripts-comments/../env"
+  local fake_scripts="${TMPDIR}/case-${test_name}/scripts"
+  local fake_env="${TMPDIR}/case-${test_name}/env"
   mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}" "${fake_env}"
   echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
