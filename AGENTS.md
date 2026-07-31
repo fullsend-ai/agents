@@ -87,11 +87,20 @@ valid even if no matching directory exists in this repo. Do not treat
 missing local skill directories as bugs without first verifying the skill
 does not exist at platform level.
 
-To override an upstream skill at the org or repo level, create a custom
-harness with `base:` composition pointing to the upstream harness and
-include the replacement skill in the `skills:` array. See
-[Custom sandbox image — How to configure](docs/code.md#how-to-configure)
-for a worked example.
+To override an upstream skill, create a custom harness with `base:`
+composition pointing to the upstream harness and include the replacement
+skill in the `skills:` array. For example, to override `issue-labels`
+for the review agent:
+
+```yaml
+# .fullsend/review.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/review.yaml#sha256=<sha256sum>
+skills:
+  - .agents/skills/issue-labels
+```
+
+See [Custom sandbox image — How to configure](docs/code.md#how-to-configure)
+for how to obtain the `<SHA>` and `<sha256sum>` values.
 
 ### Valid SKILL.md frontmatter fields
 
