@@ -771,6 +771,79 @@ run_test_with_env() {
   echo "PASS: ${test_name}"
 }
 
+run_test_unset_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local vars_to_unset="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    for var in ${vars_to_unset}; do unset "${var}"; done
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_test_stdout_with_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local extra_env="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    # shellcheck disable=SC2163  # exporting KEY=VALUE, not the var "kv"
+    while IFS= read -r kv; do [[ -n "$kv" ]] && export "$kv"; done <<< "$extra_env"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 run_test_no_pattern_with_env() {
   local test_name="$1"
   local json_content="$2"
@@ -820,10 +893,12 @@ AUTO_CODE_PERF_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_
 # Shared fixture: sufficient feature.
 AUTO_CODE_FEATURE_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nFeature request."}'
 
-# Default (unset): bug gets ready-to-code (existing behavior preserved).
-run_test "auto-code-default-bug-gets-ready-to-code" \
+# Default (unset): bug gets ready-to-code, genuinely exercising the
+# ${TRIAGE_AUTO_CODE:-on} fallback (both vars unset in a subshell).
+run_test_unset_env "auto-code-default-bug-gets-ready-to-code" \
   "${AUTO_CODE_BUG_FIXTURE}" \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "TRIAGE_AUTO_CODE TRIAGE_AUTO_CODE_CATEGORIES"
 
 # TRIAGE_AUTO_CODE=on: bug gets ready-to-code (explicit on).
 run_test_with_env "auto-code-on-bug-gets-ready-to-code" \
@@ -926,6 +1001,26 @@ run_test_with_env "auto-code-category-bug-docs-docs-gets-ready-to-code" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
   $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
+
+# TRIAGE_AUTO_CODE=garbage: unrecognized value falls back to "on" but warns.
+run_test_stdout_with_env "auto-code-unrecognized-value-warns" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "::warning::Unrecognized TRIAGE_AUTO_CODE value 'garbage' — falling back to 'on'" \
+  "TRIAGE_AUTO_CODE=garbage"
+
+# TRIAGE_AUTO_CODE=garbage: unrecognized value still gets ready-to-code (fallback behavior).
+run_test_with_env "auto-code-unrecognized-value-still-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=garbage"
+
+# TRIAGE_AUTO_CODE=category with uppercase category name: still matches (case-insensitive).
+run_test_with_env "auto-code-category-uppercase-still-matches" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=Bug,Documentation'
 
 # TRIAGE_AUTO_CODE=off with workflow-changes: still triaged (both guards agree).
 run_test_with_env "auto-code-off-with-workflow-changes-gets-triaged" \

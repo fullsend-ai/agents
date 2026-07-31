@@ -400,7 +400,7 @@ ${FAILED_CREATES}"
     echo "Category: ${CATEGORY}"
 
     AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
-    AUTO_CODE="${AUTO_CODE,,}"
+    AUTO_CODE="$(printf '%s' "${AUTO_CODE}" | tr '[:upper:]' '[:lower:]')"
 
     # Determine whether this category should auto-promote to ready-to-code.
     auto_code_allowed() {
@@ -409,10 +409,13 @@ ${FAILED_CREATES}"
         category)
           local categories="${TRIAGE_AUTO_CODE_CATEGORIES:-bug,documentation,performance}"
           categories="${categories//[[:space:]]/}"
+          categories="$(printf '%s' "${categories}" | tr '[:upper:]' '[:lower:]')"
           # Check if CATEGORY appears in the comma-separated list.
           echo ",${categories}," | grep -qF ",${CATEGORY},"
           ;;
-        *) # "on" or unrecognized — preserve default behavior.
+        on) [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]] ;;
+        *)
+          echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '${AUTO_CODE}' — falling back to 'on'"
           [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]]
           ;;
       esac
