@@ -190,18 +190,27 @@ if [ "${ACTION}" = "approve" ]; then
 
   # Parse protected paths: env var (if set) takes precedence, else defaults file.
   if [[ "${REVIEW_PROTECTED_PATHS+set}" == "set" ]]; then
-    IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
-    # Trim leading/trailing whitespace and drop empty entries.
-    _trimmed=()
-    for _entry in "${PROTECTED_PATHS[@]}"; do
-      _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
-    done
-    PROTECTED_PATHS=("${_trimmed[@]}")
-    unset _trimmed _entry
-    if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
-      echo "::error::REVIEW_PROTECTED_PATHS is set but empty after parsing — refusing to continue (fail-closed)" >&2
-      exit 1
+    if [[ -z "${REVIEW_PROTECTED_PATHS}" ]]; then
+      # Explicitly empty — operator has opted out of protected-path
+      # enforcement for this repo. Distinct from comma-noise below, which
+      # is treated as a likely misconfiguration rather than an intentional
+      # opt-out.
+      echo "::notice::REVIEW_PROTECTED_PATHS is explicitly empty — protected-path enforcement disabled"
+      PROTECTED_PATHS=()
+    else
+      IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
+      # Trim leading/trailing whitespace and drop empty entries.
+      _trimmed=()
+      for _entry in "${PROTECTED_PATHS[@]}"; do
+        _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
+      done
+      PROTECTED_PATHS=("${_trimmed[@]}")
+      unset _trimmed _entry
+      if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
+        echo "::error::REVIEW_PROTECTED_PATHS=\"${REVIEW_PROTECTED_PATHS}\" contains no valid path entries after trimming — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
+        exit 1
+      fi
     fi
   elif [[ -f "${DEFAULT_PROTECTED_PATHS_FILE}" ]]; then
     PROTECTED_PATHS=()
