@@ -289,18 +289,20 @@ the issue does not mention.
 echo "::notice::STEP 5: Create branch"
 ```
 
+The sandbox checks out the default branch at its latest commit, so
+`HEAD` is already the correct base. Do not run `git fetch origin` — the
+sandbox network policy blocks git protocol access to `github.com`.
+
 If the `BRANCH_NAME` environment variable is set, use it:
 
 ```bash
-git fetch origin
-git checkout -b "${BRANCH_NAME}" origin/<target-branch>
+git checkout -b "${BRANCH_NAME}"
 ```
 
-Otherwise, create a feature branch from the target branch:
+Otherwise, create a feature branch from the current HEAD:
 
 ```bash
-git fetch origin
-git checkout -b agent/<number>-<short-description> origin/<target-branch>
+git checkout -b agent/<number>-<short-description>
 ```
 
 The branch name must follow the `agent/<issue-number>-<short-description>`
@@ -565,8 +567,12 @@ Both are mandatory — do not skip either one.
 Determine which packages to test from your changed files:
 
 ```bash
-git diff --name-only origin/<target-branch>
+git diff --name-only HEAD
 ```
+
+This lists both staged and unstaged changes relative to the branch
+point. Do not use `origin/<target-branch>` — origin refs may not be
+available in the sandbox.
 
 Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
 a final validation after targeted tests pass, but prefer targeted runs
