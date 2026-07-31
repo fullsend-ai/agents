@@ -676,9 +676,7 @@ ${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}
-- [x] Pre-commit hooks passed (authoritative run on runner)
-- [x] Tests ran inside sandbox"
+${PR_BODY_SCAN_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(gh pr create \
