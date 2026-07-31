@@ -138,8 +138,6 @@ where every agent would pay the context cost.
 | `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote bug/documentation/performance. `off` — never auto-promote; always apply `triaged`. `category` — auto-promote only categories in `TRIAGE_AUTO_CODE_CATEGORIES`. | `on` | `on`, `off`, `category` |
 | `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=category`. | `bug,documentation,performance` | Any valid triage categories |
 
-Set these in the CI workflow `env:` block.
-
 ## How the agent works
 
 The triage agent runs in a read-only sandbox. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
