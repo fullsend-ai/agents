@@ -1,0 +1,55 @@
+# This case tests the anti-redundancy rule: the triage agent should NOT
+# restate information already present in a comprehensive issue body.
+# The reporter has already identified the root cause, the affected files,
+# and the fix — a triage comment that simply re-summarizes all of this
+# adds zero value.
+state: open
+
+labels:
+  required:
+    - ready-to-code
+    - bug
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue is deliberately comprehensive and self-evident. The reporter
+  has already identified the exact root cause (None passed to re.match),
+  the exact files (views.py line 8, validators.py line 12), reproduction
+  steps, and even a suggested fix. There is nothing ambiguous.
+
+  This case primarily tests the ANTI-REDUNDANCY rule in the triage
+  agent's "Comment content rules" section. A good triage should:
+
+  1. Verify the reporter's analysis against the actual code. The claim
+     is correct — login_handler does pass the result of .get("email")
+     directly to validate_email with no None check.
+  2. NOT produce a lengthy structured comment that restates the problem,
+     root cause, reproduction steps, environment, or fix — all of which
+     the reporter already covered clearly.
+  3. Focus the comment on NET-NEW value only: a proposed test case
+     (which the reporter did not provide), any secondary findings from
+     code inspection, severity assessment, or related issues.
+  4. Keep the comment short. When the issue is self-evident, a concise
+     comment with a test case and labeling rationale is better than a
+     full triage template with every section restated.
+  5. Still populate all triage_summary fields completely — the anti-
+     redundancy rule governs only the comment field, not the structured
+     triage_summary.
+  6. Notice the secondary issue: login_handler also has no error
+     handling for ValueError from validate_email — invalid emails
+     cause 500 instead of 400 (same pattern as the reported bug, but
+     for a different input class).
+
+  Scoring guide:
+  A score of 1 means the agent fundamentally misunderstood the issue.
+  A score of 2 means correct action but the comment is a wall of text
+  restating everything the reporter already said.
+  A score of 3 means correct action, reasonable comment length, but
+  missed the secondary finding (no ValueError handling).
+  A score of 4 means concise comment with net-new value (test case),
+  and noticed at least one secondary issue.
+  A score of 5 means all of the above: verified the reporter's
+  analysis, kept the comment focused on net-new information, proposed
+  a concrete test case, and identified the secondary ValueError issue.
