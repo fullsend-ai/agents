@@ -80,13 +80,18 @@ stable (non-prerelease) version. Downstream consumers can reference
 
 ## 7. Skill resolution
 
-Skills declared in agent frontmatter `skills:` arrays are resolved at
-runtime from multiple sources in priority order: repo-level
-(`.agents/skills/`), org-level (`fullsend-ai/.fullsend/customized/skills/`),
-and upstream platform (`fullsend-ai/fullsend/skills/`). A skill reference
-in frontmatter is valid even if no matching directory exists in this repo.
-Do not treat missing local skill directories as bugs without first
-verifying the skill does not exist at org or platform level.
+Skills listed in harness `skills:` arrays are resolved at runtime from
+multiple sources in priority order: repo-level (`.agents/skills/`) and
+upstream platform (`fullsend-ai/fullsend/skills/`). A skill reference is
+valid even if no matching directory exists in this repo. Do not treat
+missing local skill directories as bugs without first verifying the skill
+does not exist at platform level.
+
+To override an upstream skill at the org or repo level, create a custom
+harness with `base:` composition pointing to the upstream harness and
+include the replacement skill in the `skills:` array. See
+[Custom sandbox image — How to configure](docs/code.md#how-to-configure)
+for a worked example.
 
 ### Valid SKILL.md frontmatter fields
 
