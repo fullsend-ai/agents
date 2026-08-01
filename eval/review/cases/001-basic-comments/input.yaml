@@ -1,0 +1,36 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "fix: handle empty user list in export"
+  body: |
+    Fixes a crash when exporting an empty user list. Also adds a
+    helper to format user display names.
+  base: main
+  files:
+    - path: src/users.py
+      content: |
+        """User export utilities."""
+
+
+        def format_name(first: str, last: str) -> str:
+            """Return a display name."""
+            return first + " " + last
+
+
+        def export_users(users: list[dict], path: str) -> int:
+            """Write users to a CSV file. Returns the number of rows written."""
+            f = open(path, "w")
+            f.write("name,email\n")
+            count = 0
+            for u in users:
+                name = format_name(u["first"], u["last"])
+                f.write(f"{name},{u['email']}\n")
+                count += 1
+            return count
+
+
+        def find_user(db, email: str) -> dict | None:
+            """Look up a user by email."""
+            cursor = db.cursor()
+            cursor.execute(f"SELECT * FROM users WHERE email = '{email}'")
+            return cursor.fetchone()
