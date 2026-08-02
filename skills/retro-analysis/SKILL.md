@@ -127,17 +127,28 @@ Check whether the workflow exhibits fix-break oscillation. Flapping wastes agent
 
 ### Signals to check
 
-Flapping detection applies to PR-based workflows with code/fix cycles. If `$ORIGINATING_URL` is an issue URL, check whether a PR is linked (`gh issue view <url> --json closedByPullRequestsReferences`) before skipping; issue-triggered retros routinely have downstream code dispatches once the issue reaches `ready-to-code`.
-
-Derive the PR number from the originating URL, following the existing Setup convention:
+Flapping detection applies to PR-based workflows with code/fix cycles. Derive the PR number from the originating URL, branching on its shape:
 
 ```bash
-PR_NUMBER="${ORIGINATING_URL##*/}"
+if [[ "$ORIGINATING_URL" == */pull/* ]]; then
+  PR_NUMBER="${ORIGINATING_URL##*/}"
+else
+  # Issue URL: check whether a PR is linked before skipping.
+  # Issue-triggered retros routinely have downstream code dispatches
+  # once the issue reaches ready-to-code.
+  PR_NUMBER=$(gh issue view "$ORIGINATING_URL" \
+    --json closedByPullRequestsReferences \
+    --jq '.closedByPullRequestsReferences[0].number // empty')
+  if [[ -z "$PR_NUMBER" ]]; then
+    # No linked PR; skip flapping detection.
+    return
+  fi
+fi
 ```
 
 Dispatch a subagent to gather the data:
 
-> "Find all code and fix agent workflow runs for PR #N. For each `gh run list --workflow=code.yml` and `gh run list --workflow=fix.yml` run, get the list of changed files. Also find `gh run list --workflow=review.yml` runs to identify review-fix cycles. For CI test results, query `$REPO_FULL_NAME`'s check runs for each resulting commit (`gh api repos/$REPO_FULL_NAME/commits/<sha>/check-runs`)."
+> "Find all code and fix agent workflow runs for PR #N. For each `gh run list --workflow=code.yml --repo "$DISPATCH_REPO"` and `gh run list --workflow=fix.yml --repo "$DISPATCH_REPO"` run, get the list of changed files. Also find `gh run list --workflow=review.yml --repo "$DISPATCH_REPO"` runs to identify review-fix cycles. For CI test results, query `$REPO_FULL_NAME`'s check runs for each resulting commit (`gh api repos/$REPO_FULL_NAME/commits/<sha>/check-runs`)."
 
 Use workflow-run boundaries to define "runs", not individual commits. A single run may produce more than one commit (amend, fixup, incremental push). Correlate each run to a commit by timestamp against the PR's commit history, since no direct run-to-SHA mapping is exposed today.
 
