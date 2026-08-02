@@ -1,0 +1,24 @@
+forge: github
+fixture:
+  type: issue
+  title: "config: VerboseLogging field is parsed but never consumed"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    `Config.VerboseLogging` (`config/config.go`, YAML key `verbose_logging`) is declared
+    in the struct, defaulted in `Defaults()`, parsed via `SetField()` in `config/fields.go`,
+    and round-tripped in tests (`config_test.go`). No code anywhere reads the value —
+    `runner.Run()` never checks it, there is no conditional log output, nothing branches
+    on it.
+
+    **What should happen:**
+    The field should be removed as dead code. Remove the struct field, the default value,
+    the `SetField` case, and the test assertions that exercise it.
+
+    **Steps to verify:**
+    1. `grep -rn VerboseLogging` across the repo — only config/ files reference it
+    2. `runner/runner.go` comments mention it but never reads it
+    3. After removal, `go test ./...` should still pass
+
+    Please remove `VerboseLogging` as dead config and keep all tests passing.

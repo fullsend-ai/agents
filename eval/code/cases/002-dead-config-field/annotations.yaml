@@ -1,0 +1,22 @@
+state: open
+
+expected_files:
+  - config/config.go
+  - config/fields.go
+  - config/config_test.go
+
+labels:
+  forbidden: []
+
+max_turns: 60
+max_cost_usd: 4.00
+
+code_expectations: |
+  The repo has a dead config field: Config.VerboseLogging is declared, defaulted,
+  parsed, and tested, but never read by any consumer (runner/runner.go doesn't
+  use it). A successful run creates a PR that removes VerboseLogging from: the
+  struct definition (config.go), the Defaults() return value (config.go), the
+  SetField() switch case (fields.go), and all test assertions (config_test.go).
+  Tests must still pass after removal. This case tests cross-file dead-code
+  removal — the agent must trace symbol references across multiple files to
+  determine what to change, not just fix a single line.
