@@ -193,6 +193,15 @@ Before writing any code, understand how this repository works:
 1. Read `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md` if they exist.
 2. Discover test and lint commands from `Makefile`, `package.json`, etc.
 3. Check for linter config (`.golangci.yml`, `.pre-commit-config.yaml`, etc.).
+4. **Disable in-repo git hooks.** The sandbox is ephemeral and the
+   post-script runs hooks authoritatively on the runner. In-repo hooks
+   are redundant inside the sandbox and some (e.g., Husky with DCO)
+   actively interfere by injecting `Signed-off-by` trailers that the
+   post-script rejects. Disable them:
+
+   ```bash
+   git config --global core.hooksPath /dev/null
+   ```
 
 Determine:
 - Test command (e.g., `make test`, `go test ./...`)

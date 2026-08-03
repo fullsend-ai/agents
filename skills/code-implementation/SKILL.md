@@ -282,6 +282,15 @@ the issue does not mention.
 echo "::notice::STEP 5: Create branch"
 ```
 
+**Disable in-repo git hooks.** The sandbox is ephemeral and the post-script
+runs hooks authoritatively on the runner. In-repo hooks are redundant inside
+the sandbox and some (e.g., Husky with DCO) actively interfere by injecting
+`Signed-off-by` trailers that the post-script rejects. Disable them:
+
+```bash
+git config --global core.hooksPath /dev/null
+```
+
 If the `BRANCH_NAME` environment variable is set, use it:
 
 ```bash
@@ -788,11 +797,12 @@ Repeat until gitlint passes. Do not leave a commit that you know will
 fail CI. If gitlint is not available, manually verify that no line in
 the title or body exceeds the configured limits.
 
-If a git hook fires during `git commit` and fails (e.g., the repo shipped
-a `.git/hooks/pre-commit`), do NOT enter a fix-and-retry loop. You already
-ran pre-commit in step 9b (which is the same check). Commit with
-`--no-verify` to bypass the git hook and disclose the failure in the commit
-message. The post-script runs an authoritative pre-commit on the runner.
+Git hooks are disabled in step 5 (`core.hooksPath /dev/null`), so in-repo
+hooks (including Husky and commitlint) should not fire during commit. If a
+hook fires despite this (e.g., the repo's build process re-enabled hooks),
+commit with `--no-verify` to bypass it and disclose the failure in the
+commit message. The post-script runs an authoritative pre-commit on the
+runner.
 
 **Do not push the branch.** The post-script handles pushing, PR creation,
 and failure reporting.
