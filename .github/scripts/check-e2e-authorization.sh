@@ -133,6 +133,10 @@ fi
 
 trap - ERR
 
+if [[ "${authorized}" != "true" ]]; then
+  echo "::warning::Functional tests did not run (reason: ${reason}). External contributors need a maintainer to apply the ok-to-test label after the latest push — see CONTRIBUTING.md."
+fi
+
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
     echo "authorized=${authorized}"

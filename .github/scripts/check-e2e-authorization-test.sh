@@ -116,6 +116,30 @@ export PR_AUTHOR_LOGIN="some-other-bot[bot]"
 output=$(run_auth 1 "test-org/test-repo")
 assert_unauthorized "unknown bot is not trusted" "${output}"
 
+# Test: denial emits a ::warning:: annotation so it surfaces in the Checks tab
+setup_mock_gh
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+export PR_AUTHOR_LOGIN="random-contributor"
+output=$(run_auth 1 "test-org/test-repo")
+if echo "${output}" | grep -q '::warning::'; then
+  echo "PASS: denial emits ::warning:: annotation"
+else
+  echo "FAIL: denial emits ::warning:: annotation — got: ${output}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Test: authorization success does not emit a ::warning:: annotation
+setup_mock_gh
+export PR_AUTHOR_ASSOCIATION="MEMBER"
+export PR_AUTHOR_LOGIN="some-human"
+output=$(run_auth 1 "test-org/test-repo")
+if echo "${output}" | grep -q '::warning::'; then
+  echo "FAIL: authorized run should not emit ::warning:: — got: ${output}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: authorized run does not emit ::warning::"
+fi
+
 # --- Summary ---
 echo ""
 if [[ "${FAILURES}" -gt 0 ]]; then
