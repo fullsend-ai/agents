@@ -52,8 +52,14 @@ It works.
 [`harness/widget.yaml`](../harness/widget.yaml)
 '
 
+# Sentinel DOC_CONTENT value: writes a doc: field pointing at a file that is
+# never created, exercising the "doc '...' does not exist" branch.
+readonly MISSING_DOC_FILE='__MISSING_DOC_FILE__'
+
 # run_case NAME DOC_CONTENT EXPECTED_EXIT [EXPECTED_OUTPUT_SUBSTRING]
 # Passing an empty DOC_CONTENT means "omit the doc: field from the harness YAML".
+# Passing MISSING_DOC_FILE means "doc: field present, but the file it names
+# doesn't exist".
 run_case() {
   local name="$1" doc_content="$2" expected_exit="$3" expected_substring="${4:-}"
 
@@ -64,7 +70,9 @@ run_case() {
   local doc_path="${case_dir}/widget.md"
   local yaml_path="${harness_dir}/widget.yaml"
 
-  if [[ -n "${doc_content}" ]]; then
+  if [[ "${doc_content}" == "${MISSING_DOC_FILE}" ]]; then
+    printf 'doc: nonexistent.md\n' > "${yaml_path}"
+  elif [[ -n "${doc_content}" ]]; then
     printf '%s' "${doc_content}" > "${doc_path}"
     printf 'doc: widget.md\n' > "${yaml_path}"
   else
@@ -121,6 +129,17 @@ run_case "near-miss-configuration-heading-not-treated-as-configuration" \
 run_case "missing-variables-under-configuration" \
   "$(printf '%s\n' "${VALID_DOC}" | sed '/^### Variables$/,+2d')" \
   1 'missing "### Variables" subsection under "## Configuration"'
+
+run_case "missing-top-level-heading" \
+  "$(echo "${VALID_DOC}" | sed '1d')" \
+  1 'missing top-level "# ..." heading'
+
+run_case "top-level-heading-not-ending-in-agent" \
+  "$(echo "${VALID_DOC}" | sed 's/^# Widget Agent$/# Widget/')" \
+  1 'must end with " Agent"'
+
+run_case "doc-field-points-to-nonexistent-file" \
+  "${MISSING_DOC_FILE}" 1 "does not exist"
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

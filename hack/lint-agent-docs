@@ -17,7 +17,7 @@ has_unbalanced_fence() {
 extract_doc_value() {
     local raw
     raw="$(grep -E '^doc:' "$1" | head -1 || true)"
-    raw="$(sed -E "s/^doc:[[:space:]]*//; s/[[:space:]]*#.*\$//" <<< "$raw")"
+    raw="$(sed -E "s/^doc:[[:space:]]*//; s/[[:space:]]+#.*\$//" <<< "$raw")"
     # Strip matching surrounding quotes via bash parameter expansion —
     # a sed backreference here behaves inconsistently between GNU and BSD sed.
     if [[ "$raw" == \"*\" ]]; then
