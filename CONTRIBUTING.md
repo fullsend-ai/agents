@@ -34,6 +34,24 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - **If your PR introduces a breaking change**, the PR title must carry the `!` suffix (e.g., `feat(harness)!: require role field`). See [COMMITS.md](COMMITS.md#breaking-changes) for how to identify breaking changes and what to include in the commit body.
 
+### CI approval for external contributors
+
+External contributor PRs have **two independent approval gates** in CI:
+
+1. **GitHub's workflow approval** — GitHub prompts a maintainer to approve
+   workflow runs for first-time contributors. Clicking "Approve and run" unblocks
+   `pull_request`-triggered workflows (linting, unit tests, script tests).
+
+2. **`ok-to-test` label** — Functional tests run on `pull_request_target` and
+   require a maintainer to add the `ok-to-test` label **after** the latest push.
+   This gate is separate from GitHub's workflow approval — approving workflow runs
+   does **not** unblock functional tests.
+
+If a PR needs functional test coverage (e.g., changes under `eval/`, `agents/`,
+`harness/`, or `scripts/`), a maintainer must apply `ok-to-test` in addition to
+approving the GitHub workflow prompt. The `ok-to-test` label is automatically
+removed when new commits are pushed, so it must be re-applied after each update.
+
 ### Review etiquette
 
 - **Comment resolution belongs to the PR author.** When a reviewer leaves a comment, the PR author is free to address the feedback and resolve the conversation themselves. This keeps the review cycle moving.

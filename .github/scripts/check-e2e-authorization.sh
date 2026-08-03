@@ -133,6 +133,20 @@ fi
 
 trap - ERR
 
+if [[ "${authorized}" != "true" ]]; then
+  case "${reason}" in
+    unauthorized)
+      echo "::warning::Functional tests require the ok-to-test label for external contributors. A maintainer must apply the label after the latest push."
+      ;;
+    stale_ok_to_test)
+      echo "::warning::The ok-to-test label was removed because new commits landed after it was applied. A maintainer must re-apply the label."
+      ;;
+    error)
+      echo "::warning::Functional test authorization check failed due to an API error. Re-run the workflow or contact a maintainer."
+      ;;
+  esac
+fi
+
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
     echo "authorized=${authorized}"
