@@ -324,6 +324,13 @@ run_test_stdout "single-author-skip-list" \
   0 \
   "REVIEW_SKIP_AUTHORS=dependabot[bot]"
 
+# 12. Case-insensitive matching — GitHub usernames are case-insensitive
+run_test_stdout "case-insensitive-skip" \
+  "OPEN" "Renovate[bot]" \
+  "skipping review (REVIEW_SKIP_AUTHORS)" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=renovate[bot]"
+
 # --- Summary ---
 
 echo ""
