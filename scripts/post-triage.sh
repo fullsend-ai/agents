@@ -422,6 +422,15 @@ ${FAILED_CREATES}"
       esac
     }
 
+    # Evaluate once — auto_code_allowed() can emit a ::warning:: for
+    # unrecognized TRIAGE_AUTO_CODE values, and calling it repeatedly below
+    # would duplicate that annotation in the Actions UI.
+    if auto_code_allowed; then
+      AUTO_CODE_ALLOWED=true
+    else
+      AUTO_CODE_ALLOWED=false
+    fi
+
     # Workflow-change guard: if triage detected workflow file changes, always
     # log the (#325) warning for operational visibility. Only block auto-
     # promotion (apply triaged early) when the category would otherwise
@@ -429,7 +438,7 @@ ${FAILED_CREATES}"
     WORKFLOW_BLOCKED=false
     if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
       echo "::warning::Triage detected workflow file changes required (#325)"
-      if auto_code_allowed; then
+      if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
         echo "Applying triaged label (workflow changes required)..."
         add_label "triaged"
         WORKFLOW_BLOCKED=true
@@ -439,7 +448,7 @@ ${FAILED_CREATES}"
       bug)
         echo "Applying bug label..."
         add_label "bug"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && auto_code_allowed; then
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
@@ -450,7 +459,7 @@ ${FAILED_CREATES}"
       documentation)
         echo "Applying documentation label..."
         add_label "documentation"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && auto_code_allowed; then
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
@@ -459,7 +468,7 @@ ${FAILED_CREATES}"
         fi
         ;;
       performance)
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && auto_code_allowed; then
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
