@@ -4,8 +4,8 @@
 set -euo pipefail
 shopt -s nullglob
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-HARNESS_DIR="$REPO_ROOT/harness"
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+HARNESS_DIR="${HARNESS_DIR:-$REPO_ROOT/harness}"
 
 # True if a doc has an unmatched ``` fence.
 has_unbalanced_fence() {
