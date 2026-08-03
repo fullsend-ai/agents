@@ -378,6 +378,7 @@ ${FAILED_CREATES}"
     remove_label "blocked"
     remove_label "needs-info"
     remove_label "pr-open"
+    remove_label "triaged"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
