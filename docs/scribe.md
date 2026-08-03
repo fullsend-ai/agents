@@ -1,17 +1,69 @@
 # Scribe Agent
 
-Reads Google Drive meeting notes, maps discussion topics to the GitHub issue backlog, and adds comments to relevant issues or creates new issues.
+Reads meeting notes that Gemini saves to Google Drive after a
+Google Meet call, maps discussion topics to the GitHub issue
+backlog, and adds comments to relevant issues or creates new
+issues.
+
+## Setup
+
+If you want to give autonomous agents access to your meeting notes, you
+immediately face a trust problem: how do you prevent the agent from reading
+notes it shouldn't have access to and then happily exposing that information
+in public GitHub issues?
+
+The answer is a **dedicated GCP service account**. You create it in Google
+Cloud, and by default it has access to *zero* Drive files. You then
+**invite** the service account's email address to the Google Calendar events
+you want it to scribe. (In the calendar event settings you also need to
+enable Gemini notes and grant read access to attendees outside your
+organization.) In our experience, this calendar invite is how the resulting
+notes document becomes visible to the service account's Drive access — but
+the exact behavior may depend on your Workspace edition and admin policies
+(domain-wide delegation settings, external-guest sharing restrictions, etc.).
+Consult your Workspace admin if the service account cannot see expected
+notes.
+
+At runtime, the pre-script queries the Drive API using a keyword search
+(`SCRIBE_SEARCH_QUERY`) over a rolling time window (`SCRIBE_LOOKBACK_HOURS`,
+default 3 hours) across everything the service account can see — including
+Shared Drives if the account has been added to any. This means the service
+account can read notes from *any* meeting it has been invited to, not just a
+single event. To keep the blast radius small, use a distinctive search query
+and avoid adding the service account to unrelated Shared Drives.
+
+Scribe wakes up on a schedule, uses the service account credentials to
+search Drive for matching notes, and processes them: it files new GitHub
+issues on your repo or comments on existing ones, noting that the team
+discussed the topic in their meeting. This is an important bridge between
+the team's life of human interaction and the fullsend agentic system — the
+filed and commented-on issues serve as fodder for the triage agent, coding
+agent, and others.
 
 ## How it helps
 
-- Meeting decisions and action items reach the issue backlog without manual copy-paste.
-- Topics are matched to existing issues by title and body content, not just keywords.
-- Public-safety and PII gates prevent confidential meeting content from reaching GitHub.
-- Idempotency checks avoid duplicate comments when the same notes URL was already posted.
+- Meeting decisions and action items reach the issue backlog
+  without manual copy-paste.
+- Topics are matched to existing issues by title and body
+  content, not just keywords.
+- Public-safety and PII gates prevent confidential meeting
+  content from reaching GitHub.
+- Idempotency checks avoid duplicate comments when the same
+  notes URL was already posted.
 
 ## Triggers
 
 The scribe agent runs on a schedule or via manual trigger.
+
+## Commands
+
+The scribe agent does not accept slash commands.
+
+## Control labels
+
+Scribe does not consume or apply labels that gate agent behavior. It does
+apply a `meeting-notes` label (or agent-specified labels) to issues it
+creates, for categorization only.
 
 ## Configuration
 
@@ -24,7 +76,7 @@ fullsend agent add \
   --fullsend-dir .
 ```
 
-### Environment variables
+### Variables
 
 Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 

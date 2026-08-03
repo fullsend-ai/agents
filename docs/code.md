@@ -4,6 +4,10 @@
 
 Implementation specialist that reads triaged GitHub issues, implements fixes or features following repository conventions, runs tests and linters, and commits to a local feature branch.
 
+## Setup
+
+No additional setup is required beyond the standard fullsend configuration.
+
 ## How it helps
 
 - Triaged issues can go from "ready" to "PR open" without human involvement.

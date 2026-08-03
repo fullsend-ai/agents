@@ -4,6 +4,10 @@
 
 Code review specialist that evaluates pull requests for correctness, security, intent alignment, style, and documentation currency.
 
+## Setup
+
+No additional setup is required beyond the standard fullsend configuration.
+
 ## How it helps
 
 - Every PR gets a thorough review within minutes, regardless of team availability.

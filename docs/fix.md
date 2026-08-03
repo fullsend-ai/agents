@@ -4,6 +4,10 @@
 
 Review-feedback specialist that reads review comments on open PRs, implements targeted fixes, runs tests and linters, and commits the result.
 
+## Setup
+
+No additional setup is required beyond the standard fullsend configuration.
+
 ## How it helps
 
 - Review feedback is addressed quickly — often before the reviewer checks back.
@@ -38,6 +42,58 @@ command. The text gives you direct control over what to fix:
 `/fs-fix-stop` adds the `fullsend-no-fix` label to the PR, preventing any
 further automatic fix runs. Manual `/fs-fix` commands still work.
 Remove the label or use `/fs-fix` to re-engage.
+
+## Control labels
+
+| Label | Meaning |
+|-------|---------|
+| `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
+| `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
+
+## Configuration
+
+See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
+[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
+
+### Variables
+
+None.
+
+## How the agent works
+
+The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
+
+1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
+2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
+3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
+4. **Post-script** pushes the commit and posts a summary comment on the PR.
+
+### Input details
+
+**Bot-triggered** (review agent requests changes):
+
+| Input | Source | How it gets there |
+|-------|--------|-------------------|
+| Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
+| PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
+| Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
+| Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
+
+**Human-triggered** (`/fs-fix [instruction]`):
+
+| Input | Source | How it gets there |
+|-------|--------|-------------------|
+| Human instruction | Free text after `/fs-fix` in the comment | Extracted by the workflow, passed as `HUMAN_INSTRUCTION` env var (up to 10,000 bytes) |
+| PR diff | `gh pr diff` inside the sandbox | Same as bot-triggered |
+| Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
+| Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
+| Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
+
+## Custom sandbox image
+
+The fix agent shares the [code agent's sandbox image](code.md#custom-sandbox-image).
+If your project uses a custom image, update the `image:` field in both
+`harness/code.yaml` and `harness/fix.yaml`.
 
 ## What the agent acts on
 
@@ -98,60 +154,6 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   `needs-human` label.
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
-
-## Control labels
-
-| Label | Meaning |
-|-------|---------|
-| `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
-| `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
-
-## Configuration
-
-See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
-[Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
-
-### Variables
-
-None.
-
-## Custom sandbox image
-
-The fix agent shares the same sandbox image as the code agent. If your
-project requires tools not in the universal image, see
-[Custom sandbox image](code.md#custom-sandbox-image) in the code agent
-docs. Remember to update the `image` field in both `harness/code.yaml`
-and `harness/fix.yaml`.
-
-## How the agent works
-
-The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
-
-1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
-2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
-3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** pushes the commit and posts a summary comment on the PR.
-
-### Input details
-
-**Bot-triggered** (review agent requests changes):
-
-| Input | Source | How it gets there |
-|-------|--------|-------------------|
-| Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
-| PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
-| Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
-| Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
-
-**Human-triggered** (`/fs-fix [instruction]`):
-
-| Input | Source | How it gets there |
-|-------|--------|-------------------|
-| Human instruction | Free text after `/fs-fix` in the comment | Extracted by the workflow, passed as `HUMAN_INSTRUCTION` env var (up to 10,000 bytes) |
-| PR diff | `gh pr diff` inside the sandbox | Same as bot-triggered |
-| Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
-| Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
-| Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
 
 ## Source
 
