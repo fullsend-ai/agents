@@ -7,6 +7,11 @@ shopt -s nullglob
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HARNESS_DIR="$REPO_ROOT/harness"
 
+# True if a doc has an unmatched ``` fence.
+has_unbalanced_fence() {
+    awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f} END{exit !f}' "$1"
+}
+
 # Extract the doc: field's value from a harness YAML, stripping the key,
 # any inline `# comment`, and surrounding quotes.
 extract_doc_value() {
@@ -77,7 +82,7 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
 
     # Bail early if fences are unbalanced — unmatched ``` causes every
     # section check to misreport.
-    if awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f} END{exit !f}' "$doc_path"; then
+    if has_unbalanced_fence "$doc_path"; then
         echo "  $doc_basename: unterminated fenced code block (unmatched \`\`\`)"
         errors=$((errors + 1))
         continue
@@ -144,13 +149,18 @@ for yaml_file in "$HARNESS_DIR"/*.yaml; do
     fi
     doc_basename="$(basename "$doc_value")"
 
-    # Only check docs that have the Configuration section
-    if ! awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^## Configuration/{found=1} END{exit !found}' "$doc_path"; then
+    # Skip docs with unbalanced fences — already reported as an error above.
+    if has_unbalanced_fence "$doc_path"; then
         continue
     fi
 
-    # Look for ### Variables under ## Configuration (not just anywhere)
-    if ! awk 'BEGIN{f=0;c=0} /^[[:space:]]*```/{f=1-f;next} f{next} /^## Configuration/{c=1;next} /^## /{c=0} c && /^### Variables/{found=1} END{exit !found}' "$doc_path"; then
+    # Only check docs that have an exact "## Configuration" heading
+    if ! awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^## /{h=$0; sub(/^## /,"",h); sub(/[ \t]*#*[ \t]*$/,"",h); if (h=="Configuration") found=1} END{exit !found}' "$doc_path"; then
+        continue
+    fi
+
+    # Look for ### Variables nested under ## Configuration (not just anywhere)
+    if ! awk 'BEGIN{f=0;c=0} /^[[:space:]]*```/{f=1-f;next} f{next} /^## /{h=$0; sub(/^## /,"",h); sub(/[ \t]*#*[ \t]*$/,"",h); c=(h=="Configuration"); next} c && /^### /{h=$0; sub(/^### /,"",h); sub(/[ \t]*#*[ \t]*$/,"",h); if (h=="Variables") found=1} END{exit !found}' "$doc_path"; then
         echo "  $doc_basename: missing \"### Variables\" subsection under \"## Configuration\""
         errors=$((errors + 1))
     else
