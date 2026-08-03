@@ -248,7 +248,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `action`    | string  | yes             | One of: `approve`, `request-changes`, `comment`, `reject`, `failure` |
 | `pr_number` | integer | yes             | PR number (minimum 1)                            |
 | `repo`      | string  | yes             | `owner/repo` format (pattern: `^[^/]+/[^/]+$`)  |
-| `head_sha`  | string  | conditional     | Commit SHA (min 7 chars)                         |
+| `head_sha`  | string  | conditional     | Commit SHA (40 or 64 hex chars)                  |
 | `body`      | string  | conditional     | Markdown review comment (min 1 char)             |
 | `findings`  | array   | conditional     | Array of finding objects (min 1 item when present)|
 | `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit` |

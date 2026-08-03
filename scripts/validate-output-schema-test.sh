@@ -415,51 +415,65 @@ run_test_custom_filename "path-traversal-stripped" \
 REVIEW_SCHEMA="${SCRIPT_DIR}/../schemas/review-result.schema.json"
 
 run_test_custom_filename "review-reject-valid" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
 run_test_custom_filename "review-reject-missing-findings" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong approach."}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
 
 run_test_custom_filename "review-reject-missing-body" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
 
 run_test_custom_filename "review-approve-valid" \
-  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Looks good, only minor nits."}' \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good, only minor nits."}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
+# --- review-result.schema.json: short / non-hex SHA rejected ---
+
+run_test_custom_filename "review-reject-short-sha-rejected" \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong.","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "review-approve-nonhex-sha-rejected" \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"ghijkl0123456789ghijkl0123456789ghijkl01","body":"LGTM."}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
 # --- review-result.schema.json protected-path constraint ---
 
 run_test_custom_filename "review-approve-with-protected-path-rejected" \
-  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Approved.","findings":[{"severity":"high","category":"protected-path","file":".github/workflows/ci.yml","description":"PR modifies protected path."}]}' \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"high","category":"protected-path","file":".github/workflows/ci.yml","description":"PR modifies protected path."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
 
 run_test_custom_filename "review-comment-with-protected-path-valid" \
-  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Protected paths detected.","findings":[{"severity":"medium","category":"protected-path","file":"CODEOWNERS","description":"PR modifies protected path."}]}' \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Protected paths detected.","findings":[{"severity":"medium","category":"protected-path","file":"CODEOWNERS","description":"PR modifies protected path."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
 run_test_custom_filename "review-request-changes-with-protected-path-valid" \
-  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Protected paths.","findings":[{"severity":"high","category":"protected-path","file":"scripts/deploy.sh","description":"PR modifies protected path."}]}' \
+  '{"action":"request-changes","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Protected paths.","findings":[{"severity":"high","category":"protected-path","file":"scripts/deploy.sh","description":"PR modifies protected path."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
 run_test_custom_filename "review-approve-no-protected-path-valid" \
-  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"LGTM.","findings":[{"severity":"low","category":"style","file":"main.go","description":"Minor style nit."}]}' \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM.","findings":[{"severity":"low","category":"style","file":"main.go","description":"Minor style nit."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
