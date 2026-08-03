@@ -436,12 +436,11 @@ incident.
 
 1. Read `sub-agents/security-triage.md` for the sub-agent definition.
 2. Resolve the active governance paths list, matching
-   `post-review.sh`'s three-way resolution: if `REVIEW_PROTECTED_PATHS`
-   is set and non-empty, split on commas and trim whitespace; if it's
-   set and explicitly empty, the operator has opted out and the list
-   is empty; if it's unset, read paths from
-   `env/default-review-protected-paths.txt` (one prefix per line,
-   ignoring blank lines and comments).
+   `post-review.sh`'s resolution: if `REVIEW_PROTECTED_PATHS` is
+   non-empty, split on commas and trim whitespace; if it's explicitly
+   empty, the operator has opted out and the list is empty.
+   `harness/review.yaml` always sets this var (a default, overridable
+   per-repo via harness composition), so it is never unset in practice.
 3. Compose a spawn prompt containing:
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
@@ -1009,15 +1008,15 @@ review agent MUST NEVER approve changes to them without raising
 findings.
 
 The protected paths list is determined at runtime, matching
-`post-review.sh`'s three-way resolution:
+`post-review.sh`'s resolution:
 
-- **Set and non-empty** — use the `REVIEW_PROTECTED_PATHS` value
-  (comma-separated path prefixes).
-- **Set and explicitly empty** (`REVIEW_PROTECTED_PATHS=""`) — the
+- **Non-empty** — use the `REVIEW_PROTECTED_PATHS` value
+  (comma-separated path prefixes). `harness/review.yaml` sets a
+  default list here; repos needing a different list override it via
+  harness composition.
+- **Explicitly empty** (`REVIEW_PROTECTED_PATHS=""`) — the
   operator has deliberately opted out of protected-path enforcement.
   The active list is empty, so no file can match it.
-- **Unset** — read the default list from
-  `env/default-review-protected-paths.txt` (one path prefix per line).
 
 For each file in the PR diff, check whether its path starts with (or
 exactly matches) any entry in the active protected paths list.

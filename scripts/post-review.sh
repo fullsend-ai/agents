@@ -185,54 +185,42 @@ ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # ---------------------------------------------------------------------------
 DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then
-  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-  DEFAULT_PROTECTED_PATHS_FILE="${SCRIPT_DIR}/../env/default-review-protected-paths.txt"
+  # harness/review.yaml always sets REVIEW_PROTECTED_PATHS (with a default,
+  # overridable per-repo via harness composition), so an unset value here
+  # indicates a genuine misconfiguration rather than an intentional opt-out.
+  if [[ "${REVIEW_PROTECTED_PATHS+set}" != "set" ]]; then
+    echo "::error::REVIEW_PROTECTED_PATHS is not set — check harness/review.yaml" >&2
+    exit 1
+  fi
 
-  # Parse protected paths: env var (if set) takes precedence, else defaults file.
-  if [[ "${REVIEW_PROTECTED_PATHS+set}" == "set" ]]; then
-    if [[ -z "${REVIEW_PROTECTED_PATHS}" ]]; then
-      # Explicitly empty — operator has opted out of protected-path
-      # enforcement for this repo. Distinct from comma-noise below, which
-      # is treated as a likely misconfiguration rather than an intentional
-      # opt-out.
-      echo "::notice::REVIEW_PROTECTED_PATHS is explicitly empty — protected-path enforcement disabled"
-      PROTECTED_PATHS=()
-    else
-      IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
-      # Trim leading/trailing whitespace and drop empty entries.
-      _trimmed=()
-      for _entry in "${PROTECTED_PATHS[@]}"; do
-        _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-        [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
-      done
-      PROTECTED_PATHS=("${_trimmed[@]}")
-      unset _trimmed _entry
-      if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
-        # Sanitize before interpolating into a workflow command: strip
-        # newlines/carriage returns and collapse GHA delimiters, same as
-        # the label-actions handling below.
-        _sanitized_paths="${REVIEW_PROTECTED_PATHS//$'\n'/}"
-        _sanitized_paths="${_sanitized_paths//$'\r'/}"
-        _sanitized_paths="${_sanitized_paths//::/:}"
-        echo "::error::REVIEW_PROTECTED_PATHS=\"${_sanitized_paths}\" contains no valid path entries after trimming — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
-        unset _sanitized_paths
-        exit 1
-      fi
-    fi
-  elif [[ -f "${DEFAULT_PROTECTED_PATHS_FILE}" ]]; then
+  if [[ -z "${REVIEW_PROTECTED_PATHS}" ]]; then
+    # Explicitly empty — operator has opted out of protected-path
+    # enforcement for this repo. Distinct from comma-noise below, which
+    # is treated as a likely misconfiguration rather than an intentional
+    # opt-out.
+    echo "::notice::REVIEW_PROTECTED_PATHS is explicitly empty — protected-path enforcement disabled"
     PROTECTED_PATHS=()
-    while IFS= read -r line; do
-      line="$(echo "${line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      [[ -z "${line}" || "${line}" == \#* ]] && continue
-      PROTECTED_PATHS+=("${line}")
-    done < "${DEFAULT_PROTECTED_PATHS_FILE}"
+  else
+    IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
+    # Trim leading/trailing whitespace and drop empty entries.
+    _trimmed=()
+    for _entry in "${PROTECTED_PATHS[@]}"; do
+      _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
+    done
+    PROTECTED_PATHS=("${_trimmed[@]}")
+    unset _trimmed _entry
     if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
-      echo "::error::Default protected paths file ${DEFAULT_PROTECTED_PATHS_FILE} yielded no paths — aborting (fail-closed)" >&2
+      # Sanitize before interpolating into a workflow command: strip
+      # newlines/carriage returns and collapse GHA delimiters, same as
+      # the label-actions handling below.
+      _sanitized_paths="${REVIEW_PROTECTED_PATHS//$'\n'/}"
+      _sanitized_paths="${_sanitized_paths//$'\r'/}"
+      _sanitized_paths="${_sanitized_paths//::/:}"
+      echo "::error::REVIEW_PROTECTED_PATHS=\"${_sanitized_paths}\" contains no valid path entries after trimming — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
+      unset _sanitized_paths
       exit 1
     fi
-  else
-    echo "::error::REVIEW_PROTECTED_PATHS is not set and ${DEFAULT_PROTECTED_PATHS_FILE} not found — aborting" >&2
-    exit 1
   fi
 
   if [[ ${#PROTECTED_PATHS[@]} -gt 0 ]]; then

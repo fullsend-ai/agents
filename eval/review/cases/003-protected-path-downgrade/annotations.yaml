@@ -35,8 +35,4 @@ review_expectations: |
   The key signal is the outcome label: requires-manual-review must be
   present and ready-for-merge must NOT be present. This confirms that
   protected-path enforcement in post-review.sh works end-to-end against
-  the default path list. Note the eval harness pre-populates
-  REVIEW_PROTECTED_PATHS with the CSV-ified contents of
-  env/default-review-protected-paths.txt, so this case exercises the
-  env-var branch, not the direct file-read fallback — that branch has
-  its own unit test in scripts/post-review-test.sh.
+  the default path list baked into harness/review.yaml.

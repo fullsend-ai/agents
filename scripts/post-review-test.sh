@@ -371,6 +371,13 @@ GH_LOG="${TMPDIR}/gh-calls.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 
+# harness/review.yaml always sets REVIEW_PROTECTED_PATHS (default, or a
+# per-repo override via harness composition). Export it here so generic
+# integration tests below — which don't exercise protected-path behavior —
+# reflect that reality instead of leaving it unset. Tests that specifically
+# cover protected-path resolution set or unset it within their own subshell.
+export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,env/,harness/,images/,plugins/,policies/,scripts/,skills/"
+
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock gh: handle specific subcommands, log everything else.
@@ -1089,26 +1096,6 @@ run_protected_paths_test() {
 
 APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
 
-# File fallback: env var unset, .github/ triggers downgrade via defaults file
-run_protected_paths_test "file-fallback-triggers-on-default-path" \
-  "${APPROVE_JSON}" "PR touches protected paths" "present" \
-  "" ".github/workflows/ci.yml"
-
-# File fallback: env var unset, non-protected file does not trigger
-run_protected_paths_test "file-fallback-no-match" \
-  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
-  "" "src/main.go"
-
-# File fallback must not leak a REVIEW_PROTECTED_PATHS already present in the
-# calling environment — a "" protected_paths argument should still exercise
-# the defaults-file path, not silently inherit a stale/ambient value.
-# shellcheck disable=SC2031
-export REVIEW_PROTECTED_PATHS="deploy/,manifests/"
-run_protected_paths_test "file-fallback-ignores-ambient-env-var" \
-  "${APPROVE_JSON}" "PR touches protected paths" "present" \
-  "" ".github/workflows/ci.yml"
-unset REVIEW_PROTECTED_PATHS
-
 # Custom REVIEW_PROTECTED_PATHS: .github/ is no longer protected
 run_protected_paths_test "custom-paths-removes-default" \
   "${APPROVE_JSON}" "PR touches protected paths" "absent" \
@@ -1139,19 +1126,15 @@ run_protected_paths_test "custom-paths-empty-entries-valid-match" \
   "${APPROVE_JSON}" "PR touches protected paths" "present" \
   ",deploy/,,manifests/," "deploy/production.yaml"
 
-# Abort when both env var and defaults file are missing.
-# We override BASH_SOURCE resolution by symlinking the script to a temp dir
-# where no env/default-review-protected-paths.txt exists.
-run_missing_defaults_test() {
-  local test_name="missing-defaults-file-aborts"
+# Abort when REVIEW_PROTECTED_PATHS is unset. harness/review.yaml always
+# sets it (with a default, overridable per-repo via harness composition),
+# so an unset value on an approve indicates a genuine misconfiguration.
+run_unset_env_var_test() {
+  local test_name="unset-env-var-aborts"
   local run_dir="${TMPDIR}/run-${test_name}"
-  local fake_scripts="${TMPDIR}/case-${test_name}/scripts"
-  mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}"
+  mkdir -p "${run_dir}/iteration-1/output"
   echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
-
-  # Copy the script to a location where ../env/ does not exist.
-  cp "${POST_SCRIPT}" "${fake_scripts}/post-review.sh"
 
   local exit_code=0
   # shellcheck disable=SC2030,SC2031
@@ -1162,7 +1145,7 @@ run_missing_defaults_test() {
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
     unset REVIEW_PROTECTED_PATHS
-    bash "${fake_scripts}/post-review.sh"
+    bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
   if [[ ${exit_code} -eq 0 ]]; then
@@ -1181,7 +1164,7 @@ run_missing_defaults_test() {
 
   echo "PASS: ${test_name}"
 }
-run_missing_defaults_test
+run_unset_env_var_test
 
 # Degenerate REVIEW_PROTECTED_PATHS that trims to empty must abort (fail-closed).
 run_empty_paths_test() {
@@ -1260,17 +1243,15 @@ run_nonapprove_degenerate_test() {
 }
 run_nonapprove_degenerate_test
 
-# Non-approve action must succeed even when defaults file is missing.
-run_nonapprove_missing_defaults_test() {
-  local test_name="nonapprove-missing-defaults-succeeds"
+# Non-approve action must succeed even when REVIEW_PROTECTED_PATHS is unset —
+# the protected-path block only runs for "approve".
+run_nonapprove_unset_env_var_test() {
+  local test_name="nonapprove-unset-env-var-succeeds"
   local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
   local run_dir="${TMPDIR}/run-${test_name}"
-  local fake_scripts="${TMPDIR}/case-${test_name}/scripts"
-  mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}"
+  mkdir -p "${run_dir}/iteration-1/output"
   echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
-
-  cp "${POST_SCRIPT}" "${fake_scripts}/post-review.sh"
 
   local exit_code=0
   # shellcheck disable=SC2030,SC2031
@@ -1281,7 +1262,7 @@ run_nonapprove_missing_defaults_test() {
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
     unset REVIEW_PROTECTED_PATHS
-    bash "${fake_scripts}/post-review.sh"
+    bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
   if [[ ${exit_code} -ne 0 ]]; then
@@ -1293,7 +1274,7 @@ run_nonapprove_missing_defaults_test() {
 
   echo "PASS: ${test_name}"
 }
-run_nonapprove_missing_defaults_test
+run_nonapprove_unset_env_var_test
 
 # Explicitly empty REVIEW_PROTECTED_PATHS="" disables protected-path
 # enforcement entirely — this is a deliberate operator opt-out, distinct
@@ -1343,50 +1324,6 @@ run_explicit_empty_test() {
   echo "PASS: ${test_name}"
 }
 run_explicit_empty_test
-
-# Defaults file containing only comments and blank lines must fail-closed.
-run_comments_only_defaults_test() {
-  local test_name="file-fallback-comments-only-aborts"
-  local run_dir="${TMPDIR}/run-${test_name}"
-  local fake_scripts="${TMPDIR}/case-${test_name}/scripts"
-  local fake_env="${TMPDIR}/case-${test_name}/env"
-  mkdir -p "${run_dir}/iteration-1/output" "${fake_scripts}" "${fake_env}"
-  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
-  : > "${GH_LOG}"
-
-  cp "${POST_SCRIPT}" "${fake_scripts}/post-review.sh"
-  # Create a defaults file with only comments and blank lines.
-  printf '# This file is intentionally empty\n\n# No paths\n  \n' > "${fake_env}/default-review-protected-paths.txt"
-
-  local exit_code=0
-  # shellcheck disable=SC2030,SC2031
-  (
-    cd "${run_dir}"
-    export PATH="${MOCK_BIN}:${PATH}"
-    export REVIEW_TOKEN="fake-token"
-    export PR_NUMBER="99"
-    export REPO_FULL_NAME="test-org/test-repo"
-    unset REVIEW_PROTECTED_PATHS
-    bash "${fake_scripts}/post-review.sh"
-  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
-
-  if [[ ${exit_code} -eq 0 ]]; then
-    echo "FAIL: ${test_name} — expected non-zero exit"
-    cat "${TMPDIR}/stdout-${test_name}.log"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-
-  if ! grep -qF "yielded no paths" "${TMPDIR}/stdout-${test_name}.log"; then
-    echo "FAIL: ${test_name} — expected fail-closed abort message in stderr"
-    cat "${TMPDIR}/stdout-${test_name}.log"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-
-  echo "PASS: ${test_name}"
-}
-run_comments_only_defaults_test
 
 # --- Summary ---
 
