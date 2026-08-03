@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "gh-classify-result.schema.json",
+  "title": "GitHub Issue Classify Agent Result",
+  "description": "Structured output from the gh-classify agent, validated by the harness before the post-script runs (ADR 0022). Category values must match the organization's configured project field options.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "classifications"
+  ],
+  "properties": {
+    "classifications": {
+      "type": "array",
+      "minItems": 0,
+      "items": {
+        "$ref": "#/$defs/classification"
+      }
+    }
+  },
+  "$defs": {
+    "classification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issue_number",
+        "workstream_category",
+        "reasoning",
+        "confidence"
+      ],
+      "properties": {
+        "issue_number": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "workstream_category": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Must match one of the category names from the organization's categories document, or null if no confident match."
+        },
+        "reasoning": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    }
+  }
+}

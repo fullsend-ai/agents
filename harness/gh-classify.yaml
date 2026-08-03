@@ -1,0 +1,65 @@
+---
+agent: agents/gh-classify.md
+doc: docs/gh-classify.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox:latest
+policy: policies/gh-classify.yaml
+role: triage
+slug: fullsend-ai-triage
+
+host_files:
+  - src: common/env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+  - src: env/gh-classify.env
+    dest: /sandbox/workspace/.env.d/gh-classify.env
+    expand: true
+  - src: ${CLASSIFY_CATEGORIES_PATH}
+    dest: /sandbox/workspace/categories.md
+    optional: true
+
+skills:
+  - skills/issue-classification
+
+pre_script: scripts/pre-gh-classify.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/gh-classify-result.schema.json
+  max_iterations: 2
+
+post_script: scripts/post-gh-classify.sh
+
+env:
+  runner:
+    GH_TOKEN: ${GH_TOKEN}
+    CLASSIFY_SOURCE_REPO: ${CLASSIFY_SOURCE_REPO}
+    CLASSIFY_MODE: ${CLASSIFY_MODE}
+    CLASSIFY_ISSUE_NUMBER: ${CLASSIFY_ISSUE_NUMBER}
+    CLASSIFY_FILTER_CATEGORY: ${CLASSIFY_FILTER_CATEGORY}
+    CLASSIFY_SCREEN_ISSUES: ${CLASSIFY_SCREEN_ISSUES}
+    CLASSIFY_CATEGORIES_PATH: ${CLASSIFY_CATEGORIES_PATH}
+    CLASSIFY_PROJECT_NUMBER: ${CLASSIFY_PROJECT_NUMBER}
+    CLASSIFY_FIELD_NAME: ${CLASSIFY_FIELD_NAME}
+    CLASSIFY_PROJECT_TOKEN: ${CLASSIFY_PROJECT_TOKEN}
+    CLASSIFY_MIN_CONFIDENCE: ${CLASSIFY_MIN_CONFIDENCE}
+    CLASSIFY_DRY_RUN: ${CLASSIFY_DRY_RUN}
+  sandbox:
+    GH_TOKEN: "${GH_TOKEN}"
+    CLASSIFY_SOURCE_REPO: "${CLASSIFY_SOURCE_REPO}"
+    CLASSIFY_MODE: "${CLASSIFY_MODE}"
+    CLASSIFY_ISSUE_NUMBER: "${CLASSIFY_ISSUE_NUMBER}"
+    CLASSIFY_FILTER_CATEGORY: "${CLASSIFY_FILTER_CATEGORY}"
+    CLASSIFY_SCREEN_ISSUES: "${CLASSIFY_SCREEN_ISSUES}"
+    CLASSIFY_CATEGORIES_PATH: "${CLASSIFY_CATEGORIES_PATH}"
+    CLASSIFY_PROJECT_NUMBER: "${CLASSIFY_PROJECT_NUMBER}"
+    CLASSIFY_FIELD_NAME: "${CLASSIFY_FIELD_NAME}"
+    CLASSIFY_MIN_CONFIDENCE: "${CLASSIFY_MIN_CONFIDENCE}"
+    CLASSIFY_DRY_RUN: "${CLASSIFY_DRY_RUN}"
+
+timeout_minutes: 15
