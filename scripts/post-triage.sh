@@ -391,11 +391,15 @@ ${FAILED_CREATES}"
     # (per #561, only feature issues should require human review before coding).
     #
     # TRIAGE_AUTO_CODE (#1754) controls whether auto-promotion happens:
-    #   on (default) — auto-promote bug/documentation/performance
+    #   on (default) — auto-promote categories listed in TRIAGE_AUTO_CODE_CATEGORIES
     #   off          — never auto-promote; always apply triaged
-    #   category     — auto-promote only categories listed in
-    #                  TRIAGE_AUTO_CODE_CATEGORIES (comma-separated,
-    #                  default: bug,documentation,performance)
+    #   category     — same as "on"; kept as a separate name for clarity when
+    #                  a category list is explicitly configured
+    #
+    # TRIAGE_AUTO_CODE_CATEGORIES is a comma-separated category list with no
+    # default baked into this script -- harness/triage.yaml and docs/triage.md
+    # own the "bug,documentation,performance" default. An absent or unset
+    # TRIAGE_AUTO_CODE_CATEGORIES means no categories auto-promote.
     #
     # Workflow-change guard (#325): if triage detected that the fix requires
     # modifying workflow files (.github/workflows/, .fullsend/.github/workflows/,
@@ -408,21 +412,22 @@ ${FAILED_CREATES}"
     AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
     AUTO_CODE="$(printf '%s' "${AUTO_CODE}" | tr '[:upper:]' '[:lower:]')"
 
+    # Check whether CATEGORY appears in the comma-separated TRIAGE_AUTO_CODE_CATEGORIES list.
+    category_in_auto_code_list() {
+      local categories="${TRIAGE_AUTO_CODE_CATEGORIES:-}"
+      categories="${categories//[[:space:]]/}"
+      categories="$(printf '%s' "${categories}" | tr '[:upper:]' '[:lower:]')"
+      echo ",${categories}," | grep -qF ",${CATEGORY},"
+    }
+
     # Determine whether this category should auto-promote to ready-to-code.
     auto_code_allowed() {
       case "${AUTO_CODE}" in
         off) return 1 ;;
-        category)
-          local categories="${TRIAGE_AUTO_CODE_CATEGORIES-bug,documentation,performance}"
-          categories="${categories//[[:space:]]/}"
-          categories="$(printf '%s' "${categories}" | tr '[:upper:]' '[:lower:]')"
-          # Check if CATEGORY appears in the comma-separated list.
-          echo ",${categories}," | grep -qF ",${CATEGORY},"
-          ;;
-        on) [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]] ;;
+        on | category) category_in_auto_code_list ;;
         *)
           echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '${AUTO_CODE}' — falling back to 'on'"
-          [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]]
+          category_in_auto_code_list
           ;;
       esac
     }

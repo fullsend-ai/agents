@@ -910,11 +910,13 @@ AUTO_CODE_PERF_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_
 # Shared fixture: sufficient feature.
 AUTO_CODE_FEATURE_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nFeature request."}'
 
-# Default (unset): bug gets ready-to-code, genuinely exercising the
-# ${TRIAGE_AUTO_CODE:-on} fallback (both vars unset in a subshell).
-run_test_unset_env "auto-code-default-bug-gets-ready-to-code" \
+# Default (unset): with TRIAGE_AUTO_CODE_CATEGORIES also genuinely unset,
+# bug gets triaged rather than ready-to-code. TRIAGE_AUTO_CODE_CATEGORIES has
+# no in-script default -- an absent/unset value means an empty allowlist, so
+# nothing auto-promotes even under the ${TRIAGE_AUTO_CODE:-on} fallback.
+run_test_unset_env "auto-code-default-categories-unset-gets-triaged" \
   "${AUTO_CODE_BUG_FIXTURE}" \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "TRIAGE_AUTO_CODE TRIAGE_AUTO_CODE_CATEGORIES"
 
 # TRIAGE_AUTO_CODE=on: bug gets ready-to-code (explicit on).
@@ -980,23 +982,12 @@ run_test_with_env "auto-code-category-default-bug-gets-ready-to-code" \
   "TRIAGE_AUTO_CODE=category"
 
 # TRIAGE_AUTO_CODE=category with TRIAGE_AUTO_CODE_CATEGORIES genuinely unset:
-# exercises the script's own ${TRIAGE_AUTO_CODE_CATEGORIES-bug,documentation,performance}
-# bash-level default, rather than inheriting the value exported globally above.
-run_test_unset_env "auto-code-category-categories-unset-bug-uses-default" \
+# no in-script default to fall back to, so the category list is empty and
+# bug gets triaged rather than ready-to-code. Locks in that the var is
+# required for auto-promotion to happen in "category" mode.
+run_test_unset_env "auto-code-category-categories-unset-gets-triaged" \
   "${AUTO_CODE_BUG_FIXTURE}" \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
-  "TRIAGE_AUTO_CODE_CATEGORIES" \
-  "TRIAGE_AUTO_CODE=category"
-
-run_test_unset_env "auto-code-category-categories-unset-docs-uses-default" \
-  "${AUTO_CODE_DOCS_FIXTURE}" \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
-  "TRIAGE_AUTO_CODE_CATEGORIES" \
-  "TRIAGE_AUTO_CODE=category"
-
-run_test_unset_env "auto-code-category-categories-unset-perf-uses-default" \
-  "${AUTO_CODE_PERF_FIXTURE}" \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "TRIAGE_AUTO_CODE_CATEGORIES" \
   "TRIAGE_AUTO_CODE=category"
 
