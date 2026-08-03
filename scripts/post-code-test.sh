@@ -41,6 +41,14 @@ else
   echo "PASS: bundled-script-has-pr-assignee"
 fi
 
+if ! grep -q 'CODE_AUTO_MERGE' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-auto-merge"
+  echo "  ${POST_SCRIPT} missing CODE_AUTO_MERGE"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-auto-merge"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -1373,6 +1381,169 @@ run_branch_validation_test "no-agent-target-ignores-allowed-list" \
 # are allowed — comma-wrapping must reject the partial match.
 run_branch_validation_test "substring-not-accepted" \
   "release" "main" "release-1,release-2" "reject:release"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the auto-merge decision logic from post-code.sh
+# section 9. Given the CODE_AUTO_MERGE env var value, returns the action.
+# ---------------------------------------------------------------------------
+decide_auto_merge() {
+  local code_auto_merge="$1"
+
+  if [ "${code_auto_merge}" = "true" ]; then
+    echo "enable"
+  else
+    echo "skip"
+  fi
+}
+
+run_auto_merge_test() {
+  local test_name="$1"
+  local code_auto_merge="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(decide_auto_merge "${code_auto_merge}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  code_auto_merge: '${code_auto_merge}'"
+    echo "  expected:        '${expected}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Auto-merge test cases ---
+
+# CODE_AUTO_MERGE=true → enable auto-merge
+run_auto_merge_test "auto-merge-enabled" \
+  "true" "enable"
+
+# CODE_AUTO_MERGE unset/empty → skip
+run_auto_merge_test "auto-merge-unset" \
+  "" "skip"
+
+# CODE_AUTO_MERGE=false → skip (only "true" enables)
+run_auto_merge_test "auto-merge-false" \
+  "false" "skip"
+
+# CODE_AUTO_MERGE=TRUE → skip (case-sensitive)
+run_auto_merge_test "auto-merge-uppercase" \
+  "TRUE" "skip"
+
+# CODE_AUTO_MERGE=1 → skip (only exact "true" match)
+run_auto_merge_test "auto-merge-numeric" \
+  "1" "skip"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the merge method flag resolution from the
+# enable_auto_merge function's case statement. Given a CODE_AUTO_MERGE_METHOD
+# value, returns the flag (and "WARN" prefix for unknown values).
+# ---------------------------------------------------------------------------
+resolve_merge_method_flag() {
+  local method="${1:-}"
+  case "${method}" in
+    squash) echo "--squash" ;;
+    rebase) echo "--rebase" ;;
+    merge|"") echo "--merge"  ;;
+    *)      echo "WARN:--merge"  ;;
+  esac
+}
+
+run_merge_method_test() {
+  local test_name="$1"
+  local method="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(resolve_merge_method_flag "${method}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  method:   '${method}'"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Merge method test cases ---
+
+run_merge_method_test "merge-method-squash" \
+  "squash" "--squash"
+
+run_merge_method_test "merge-method-merge" \
+  "merge" "--merge"
+
+run_merge_method_test "merge-method-rebase" \
+  "rebase" "--rebase"
+
+run_merge_method_test "merge-method-default" \
+  "" "--merge"
+
+run_merge_method_test "merge-method-unknown" \
+  "fast-forward" "WARN:--merge"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the auto-detect priority logic from
+# enable_auto_merge: squash > merge > rebase, fallback to merge.
+# ---------------------------------------------------------------------------
+resolve_auto_detect_method() {
+  local allow_squash="$1"
+  local allow_merge="$2"
+  local allow_rebase="$3"
+
+  if [ "${allow_squash}" = "true" ]; then echo "squash"
+  elif [ "${allow_merge}" = "true" ]; then echo "merge"
+  elif [ "${allow_rebase}" = "true" ]; then echo "rebase"
+  else echo "merge"
+  fi
+}
+
+run_auto_detect_test() {
+  local test_name="$1"
+  local allow_squash="$2"
+  local allow_merge="$3"
+  local allow_rebase="$4"
+  local expected="$5"
+
+  local actual
+  actual="$(resolve_auto_detect_method "${allow_squash}" "${allow_merge}" "${allow_rebase}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  squash=${allow_squash} merge=${allow_merge} rebase=${allow_rebase}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Auto-detect priority test cases ---
+
+run_auto_detect_test "auto-detect-all-enabled" \
+  "true" "true" "true" "squash"
+
+run_auto_detect_test "auto-detect-merge-and-rebase" \
+  "false" "true" "true" "merge"
+
+run_auto_detect_test "auto-detect-rebase-only" \
+  "false" "false" "true" "rebase"
+
+run_auto_detect_test "auto-detect-none-enabled" \
+  "false" "false" "false" "merge"
+
+run_auto_detect_test "auto-detect-squash-only" \
+  "true" "false" "false" "squash"
 
 # --- Summary ---
 
