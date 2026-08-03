@@ -1057,6 +1057,7 @@ run_protected_paths_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export MOCK_PR_FILES="${mock_files}"
     if [[ -n "${protected_paths}" ]]; then
       export REVIEW_PROTECTED_PATHS="${protected_paths}"
@@ -1144,6 +1145,7 @@ run_unset_env_var_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     unset REVIEW_PROTECTED_PATHS
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1182,6 +1184,7 @@ run_empty_paths_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=",,, ,"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1228,6 +1231,7 @@ run_nonapprove_degenerate_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=",,, ,"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1261,6 +1265,7 @@ run_nonapprove_unset_env_var_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     unset REVIEW_PROTECTED_PATHS
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1295,6 +1300,7 @@ run_explicit_empty_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=""
     export MOCK_PR_FILES=".github/workflows/ci.yml"
     bash "${POST_SCRIPT}"
