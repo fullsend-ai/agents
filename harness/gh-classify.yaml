@@ -27,13 +27,12 @@ skills:
   - skills/issue-classification
 
 pre_script: scripts/pre-gh-classify.sh
+post_script: scripts/post-gh-classify.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/gh-classify-result.schema.json
   max_iterations: 2
-
-post_script: scripts/post-gh-classify.sh
 
 env:
   runner:

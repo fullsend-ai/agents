@@ -18,6 +18,20 @@ mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 echo "gh \$*" >> "${GH_LOG}"
+# Simulate gh api --jq extraction used by set_project_field.
+if [[ "\$1" == "api" && "\$*" == *"/issues/"* && "\$*" == *"--jq"* ]]; then
+  echo "I_mock_node"
+  exit 0
+fi
+if [[ "\$1" == "api" && "\$2" == "graphql" && "\$*" == *"--jq"* && "\$*" == *"addProjectV2ItemById"* ]]; then
+  echo "PVTI_mock_item"
+  exit 0
+fi
+if [[ "\$1" == "api" && "\$2" == "graphql" ]]; then
+  # updateProjectV2ItemFieldValue and other mutations
+  echo '{}'
+  exit 0
+fi
 exit 0
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
@@ -115,6 +129,34 @@ run_test_stdout "validated-iteration-dir-preferred" \
   "Reading classify result from: ${VALIDATED_DIR}/agent-result.json" \
   "false" \
   "FULLSEND_VALIDATED_ITERATION_DIR=${VALIDATED_DIR}"
+
+# Live path: set_project_field must call gh api (issue node_id + GraphQL mutations).
+export CLASSIFY_DRY_RUN="false"
+run_test_stdout "live-run-sets-project-field" \
+  '{"classifications":[{"issue_number":42,"workstream_category":"Bug fixes","reasoning":"Crash in login flow.","confidence":0.92}]}' \
+  "CLASSIFY AGENT -- LIVE RUN"
+if ! grep -q 'api graphql' "${GH_LOG}"; then
+  echo "FAIL: live-run-sets-project-field — expected graphql mutation in gh log"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: live-run-sets-project-field (graphql mutation observed)"
+fi
+export CLASSIFY_DRY_RUN="true"
+
+# Race guard: more candidates than open issues must not yield negative counts.
+printf '42\n99\n100\n' > "${CONTEXT_DIR}/issue-numbers.txt"
+run_test_stdout "already-classified-never-negative" \
+  '{"classifications":[{"issue_number":42,"workstream_category":null,"reasoning":"n/a","confidence":0.1}]}' \
+  "SUMMARY"
+if grep -E 'Already classified:[[:space:]]+-' "${TMPDIR}/stdout.log"; then
+  echo "FAIL: already-classified-never-negative — negative count in summary"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: already-classified-never-negative (no negative count)"
+fi
+printf '42\n99\n' > "${CONTEXT_DIR}/issue-numbers.txt"
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo ""

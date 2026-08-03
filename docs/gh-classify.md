@@ -12,8 +12,11 @@ single-select field on a GitHub Project board.
 
 ## Triggers
 
-Runs via workflow dispatch (single issue, unclassified batch, or all) or
-from an enrolled-repo shim on `issues.opened`.
+Runs via workflow dispatch (single issue, unclassified batch, or all) or from
+an enrolled-repo shim on `issues.opened`. Enrollment means the target repo is
+listed under `repos:` with `enabled: true` in your org `.fullsend` config
+([fullsend agent registration](https://fullsend.sh/docs)). The shim workflow
+in the enrolled repo dispatches `gh-classify` in `.fullsend` for new issues.
 
 ## Configuration
 
@@ -25,6 +28,30 @@ fullsend agent add \
   --name gh-classify \
   --fullsend-dir .
 ```
+
+### Categories document
+
+`CLASSIFY_CATEGORIES_PATH` must point to a Markdown file whose `##` headings
+are the **exact** category names (matching your GitHub Project single-select
+options). Each section should describe what belongs, what does not, and any
+tiebreakers. Example:
+
+```markdown
+# Workstream Categories
+
+## Bug fixes
+Issues reporting broken functionality in existing features.
+
+**What belongs here:** crashes, regressions, incorrect output.
+
+**What does NOT belong:** feature requests (see New features).
+
+## New features
+Proposals for capabilities that do not exist yet.
+```
+
+Keep this file in the `.fullsend` repo (org-specific taxonomy). It is not
+shipped with the shared agent.
 
 ### Environment variables
 

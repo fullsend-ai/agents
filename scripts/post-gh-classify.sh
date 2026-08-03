@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# post-classify.sh — Apply classification decisions from the classify agent.
+# post-gh-classify.sh — Apply classification decisions from the classify agent.
 #
 # Runs on the host after sandbox cleanup. Reads the agent's JSON output and:
 # 1. Adds issues to the GitHub Project if not already present
@@ -267,7 +267,6 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   CONFIDENCE=$(jq -r ".classifications[${i}].confidence" "${RESULT_FILE}")
   REASONING=$(jq -r ".classifications[${i}].reasoning" "${RESULT_FILE}")
 
-  ACTIONS_TAKEN=""
   ISSUE_STATUS="skipped"
 
   # All API calls below are scoped to REPO (repos/${REPO}/issues/...).
@@ -289,12 +288,10 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
         ((CLASSIFIED++)) || true
         ISSUE_STATUS="classified"
         CATEGORY_ACTION="would-set"
-        ACTIONS_TAKEN="${ACTIONS_TAKEN:+${ACTIONS_TAKEN}, }category:${CATEGORY}"
       elif set_project_field "${ISSUE_NUM}" "${CATEGORY}"; then
         ((CLASSIFIED++)) || true
         ISSUE_STATUS="classified"
         CATEGORY_ACTION="set"
-        ACTIONS_TAKEN="${ACTIONS_TAKEN:+${ACTIONS_TAKEN}, }category:${CATEGORY}"
       else
         ((ERRORS++)) || true
         ISSUE_STATUS="error"
@@ -409,6 +406,11 @@ if [[ -f "${ISSUES_FILE}" ]]; then
   elif [[ -f "${CANDIDATE_NUMBERS_FILE}" ]]; then
     CANDIDATE_COUNT=$(wc -l < "${CANDIDATE_NUMBERS_FILE}" | tr -d ' ')
     ALREADY_CLASSIFIED=$((ALL_OPEN_COUNT - CANDIDATE_COUNT))
+    # Guard against races where candidates were counted after open-issues.json
+    # was written (or list membership drifted): never report a negative.
+    if (( ALREADY_CLASSIFIED < 0 )); then
+      ALREADY_CLASSIFIED=0
+    fi
 
     SCREENED_NUMS=()
     while IFS= read -r num; do
@@ -530,7 +532,13 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo "|------:|:----------:|-----------|"
     jq -r '
       .[] | select(.status == "skipped") |
-      "| #\(.issue_number) | \((.confidence * 100) | floor)% | \(.reasoning | gsub("\n"; " ") | gsub("\\|"; "∣") | if length > 100 then .[:100] + "…" else . end) |"
+      "| #\(.issue_number) | \((.confidence * 100) | floor)% | \(.reasoning
+        | gsub("\n"; " ")
+        | gsub("\\|"; "∣")
+        | gsub("`"; "")
+        | gsub("<"; "‹")
+        | gsub(">"; "›")
+        | if length > 100 then .[:100] + "…" else . end) |"
     ' "${REPORT_FILE}" 2>/dev/null || echo "| — | — | — |"
   } >> "${GITHUB_STEP_SUMMARY}"
 fi

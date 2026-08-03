@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pre-classify.sh — Prepare metadata for the classify agent's post-script.
+# pre-gh-classify.sh — Prepare metadata for the classify agent's post-script.
 #
 # Runs on the host via the harness pre_script mechanism. Determines which
 # issues to classify and discovers GitHub Project metadata needed by the
@@ -35,15 +35,8 @@ if [[ -n "${GH_TOKEN:-}" && "${GITHUB_ACTIONS:-}" == "true" ]]; then
   echo "::add-mask::${GH_TOKEN}"
 fi
 
-# Log mode info (::notice:: only renders in GitHub Actions).
-if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-  echo "::notice::Classify agent — mode=${CLASSIFY_MODE}, repo=${CLASSIFY_SOURCE_REPO}"
-  echo "::notice::All issue fetches are scoped exclusively to ${CLASSIFY_SOURCE_REPO}"
-else
-  echo "Classify agent — mode=${CLASSIFY_MODE}, repo=${CLASSIFY_SOURCE_REPO}"
-fi
-
-# Validate required vars.
+# Validate required vars before emitting workflow notices (inputs can carry
+# attacker-influenced strings via shim dispatch; keep ::notice:: values narrow).
 if [[ -z "${CLASSIFY_SOURCE_REPO:-}" ]]; then
   echo "ERROR: CLASSIFY_SOURCE_REPO is required"
   exit 1
@@ -51,6 +44,21 @@ fi
 if [[ ! "${CLASSIFY_SOURCE_REPO}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
   echo "ERROR: CLASSIFY_SOURCE_REPO format invalid"
   exit 1
+fi
+case "${CLASSIFY_MODE:-}" in
+  single|unclassified|all) ;;
+  *)
+    echo "ERROR: Unknown CLASSIFY_MODE: ${CLASSIFY_MODE:-<unset>}"
+    exit 1
+    ;;
+esac
+
+# Log mode info (::notice:: only renders in GitHub Actions).
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  echo "::notice::Classify agent — mode=${CLASSIFY_MODE}, repo=${CLASSIFY_SOURCE_REPO}"
+  echo "::notice::All issue fetches are scoped exclusively to ${CLASSIFY_SOURCE_REPO}"
+else
+  echo "Classify agent — mode=${CLASSIFY_MODE}, repo=${CLASSIFY_SOURCE_REPO}"
 fi
 
 ORG="${CLASSIFY_SOURCE_REPO%%/*}"
