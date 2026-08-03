@@ -109,7 +109,6 @@ AGENT_EVALUATED=$(jq '.classifications | length' "${RESULT_FILE}")
 CLASSIFIED=0
 SKIPPED=0
 ERRORS=0
-NOT_EVALUATED=0
 
 # Build a set of issue numbers the agent evaluated for fast lookup.
 AGENT_ISSUE_NUMS=$(jq -r '.classifications[].issue_number' "${RESULT_FILE}" | sort -n)
@@ -413,14 +412,14 @@ if [[ -f "${ISSUES_FILE}" ]]; then
 
     SCREENED_NUMS=()
     while IFS= read -r num; do
-      if [[ -n "${num}" ]] && ! printf '%s\n' ${AGENT_ISSUE_NUMS} | grep -qx "${num}"; then
+      if [[ -n "${num}" ]] && ! printf '%s\n' "${AGENT_ISSUE_NUMS}" | grep -qx "${num}"; then
         SCREENED_NUMS+=("${num}")
       fi
     done < "${CANDIDATE_NUMBERS_FILE}"
     SCREENED_OUT=${#SCREENED_NUMS[@]}
   else
     while IFS= read -r num; do
-      if ! printf '%s\n' ${AGENT_ISSUE_NUMS} | grep -qx "${num}"; then
+      if ! printf '%s\n' "${AGENT_ISSUE_NUMS}" | grep -qx "${num}"; then
         ((SCREENED_OUT++)) || true
       fi
     done < <(jq -r '.[].number' "${ISSUES_FILE}")
@@ -445,8 +444,6 @@ if [[ -f "${ISSUES_FILE}" ]]; then
     echo ""
   fi
 fi
-
-NOT_EVALUATED=$((ALREADY_CLASSIFIED + SCREENED_OUT))
 
 echo "============================================================"
 echo "  SUMMARY"
@@ -541,4 +538,3 @@ fi
 if [[ ${ERRORS} -gt 0 ]]; then
   echo "::warning::${ERRORS} error(s) during classification"
 fi
-
