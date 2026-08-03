@@ -10,7 +10,8 @@
 # GitHub Step Summary (if in Actions) and to stdout.
 #
 # Required env vars:
-#   GH_TOKEN              — GitHub token with issues:write, project scope
+#   GH_TOKEN              — GitHub token with issues:write and organization
+#                           projects:write (host post-script mutations)
 #   CLASSIFY_SOURCE_REPO  — owner/repo
 #   CLASSIFY_MIN_CONFIDENCE — minimum confidence to apply classification (default: 0.7)
 #
@@ -133,7 +134,10 @@ else
 fi
 echo "============================================================"
 printf '  Repository:   %s\n' "${REPO}"
-THRESHOLD_PCT=$(printf '%.0f' "$(echo "${MIN_CONFIDENCE} * 100" | bc -l)")
+THRESHOLD_PCT=$(echo "${MIN_CONFIDENCE} * 100" | bc -l 2>/dev/null | awk '{printf "%.0f", $0}')
+if [[ -z "${THRESHOLD_PCT}" ]]; then
+  THRESHOLD_PCT=$(awk -v c="${MIN_CONFIDENCE}" 'BEGIN { printf "%.0f", c * 100 }')
+fi
 printf '  Threshold:    %s%%\n' "${THRESHOLD_PCT}"
 if [[ -n "${FILTER_CATEGORY}" ]]; then
   printf '  Filter:       %s\n' "${FILTER_CATEGORY}"
@@ -230,6 +234,8 @@ set_project_field() {
     return 1
   fi
 
+  local err_output=""
+  local rc=0
   err_output=$(GH_TOKEN="${PROJECT_GH_TOKEN}" gh api graphql -f query='
     mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
       updateProjectV2ItemFieldValue(input: {
@@ -243,8 +249,7 @@ set_project_field() {
     }' -f projectId="${PROJECT_ID}" \
     -f itemId="${item_id}" \
     -f fieldId="${FIELD_ID}" \
-    -f optionId="${option_id}" --silent 2>&1)
-  local rc=$?
+    -f optionId="${option_id}" --silent 2>&1) || rc=$?
   if [[ ${rc} -ne 0 ]]; then
     local safe_err
     safe_err=$(printf '%s' "${err_output}" | head -c 200 | sed "s/${PROJECT_GH_TOKEN:-__NONE__}/***TOKEN***/g")
@@ -260,6 +265,20 @@ CLASSIFIED_LINES=()
 SKIPPED_LINES=()
 FILTER_MISMATCH_LINES=()
 BELOW_THRESHOLD_LINES=()
+OUT_OF_CANDIDATE_LINES=()
+OUT_OF_CANDIDATE=0
+
+# Authoritative candidate set from the host pre-script (not visible to sandbox).
+# Every agent-returned issue_number must be in this set before we write.
+CANDIDATE_NUMBERS_FILE="${CONTEXT_DIR}/issue-numbers.txt"
+declare -A CANDIDATE_ISSUES=()
+HAS_CANDIDATE_SET="false"
+if [[ -f "${CANDIDATE_NUMBERS_FILE}" ]]; then
+  HAS_CANDIDATE_SET="true"
+  while IFS= read -r num; do
+    [[ -n "${num}" ]] && CANDIDATE_ISSUES["${num}"]=1
+  done < "${CANDIDATE_NUMBERS_FILE}"
+fi
 
 for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   ISSUE_NUM=$(jq -r ".classifications[${i}].issue_number" "${RESULT_FILE}")
@@ -268,6 +287,33 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   REASONING=$(jq -r ".classifications[${i}].reasoning" "${RESULT_FILE}")
 
   ISSUE_STATUS="skipped"
+
+  # Reject issue numbers outside the host-computed candidate set (prompt-injection
+  # / mode-drift defense). independent of what the sandbox believes it excluded.
+  if [[ "${HAS_CANDIDATE_SET}" == "true" && -z "${CANDIDATE_ISSUES[${ISSUE_NUM}]:-}" ]]; then
+    ((OUT_OF_CANDIDATE++)) || true
+    ((SKIPPED++)) || true
+    ISSUE_STATUS="out-of-candidate"
+    CATEGORY_ACTION="out-of-candidate"
+    ISSUE_TITLE=$(lookup_title "${ISSUE_NUM}")
+    CONF_PCT=$(printf '%.0f' "$(echo "${CONFIDENCE} * 100" | bc -l 2>/dev/null || echo "0")")
+    OUT_OF_CANDIDATE_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
+    SAFE_REASONING=$(printf '%s' "${REASONING}" | head -c 500)
+    jq --argjson num "${ISSUE_NUM}" \
+      --arg status "${ISSUE_STATUS}" \
+      --arg cat_action "${CATEGORY_ACTION}" \
+      --arg conf "${CONFIDENCE}" \
+      --arg reason "${SAFE_REASONING}" \
+      '. += [{
+        issue_number: $num,
+        status: $status,
+        workstream_category: null,
+        category_action: $cat_action,
+        confidence: ($conf | tonumber),
+        reasoning: $reason
+      }]' "${REPORT_FILE}" > "${REPORT_FILE}.tmp" && mv "${REPORT_FILE}.tmp" "${REPORT_FILE}"
+    continue
+  fi
 
   # All API calls below are scoped to REPO (repos/${REPO}/issues/...).
   # Cross-repo writes are impossible — GitHub returns 404 for issue numbers
@@ -311,7 +357,7 @@ for i in $(seq 0 $((AGENT_EVALUATED - 1))); do
   fi
 
   ISSUE_TITLE=$(lookup_title "${ISSUE_NUM}")
-  CONF_PCT=$(printf '%.0f' "$(echo "${CONFIDENCE} * 100" | bc -l)")
+  CONF_PCT=$(printf '%.0f' "$(echo "${CONFIDENCE} * 100" | bc -l 2>/dev/null || echo "0")")
 
   if [[ "${ISSUE_STATUS}" == "classified" ]]; then
     CLASSIFIED_LINES+=("$(printf '  #%-4s  %3s%%  %s' "${ISSUE_NUM}" "${CONF_PCT}" "${ISSUE_TITLE}")")
@@ -370,6 +416,18 @@ if [[ ${#FILTER_MISMATCH_LINES[@]} -gt 0 ]]; then
   printf '  Agent classified these into other categories — skipped because\n'
   printf '  filter is restricted to "%s"\n' "${FILTER_CATEGORY}"
   for line in "${FILTER_MISMATCH_LINES[@]}"; do
+    echo "${line}"
+  done
+  echo ""
+fi
+
+# --- Display: Outside host candidate set ---
+if [[ ${#OUT_OF_CANDIDATE_LINES[@]} -gt 0 ]]; then
+  echo "OUTSIDE CANDIDATE SET (${#OUT_OF_CANDIDATE_LINES[@]} issues)"
+  echo "------------------------------------------------------------"
+  printf '  Agent returned issue numbers not in the host pre-script candidate\n'
+  printf '  list — skipped to prevent mode-drift / prompt-injection writes\n'
+  for line in "${OUT_OF_CANDIDATE_LINES[@]}"; do
     echo "${line}"
   done
   echo ""
@@ -462,6 +520,9 @@ fi
 printf '  Agent evaluated:    %s\n' "${AGENT_EVALUATED}"
 printf '    Classified:       %s\n' "${CLASSIFIED}"
 printf '    Skipped:          %s\n' "${SKIPPED}"
+if [[ ${OUT_OF_CANDIDATE} -gt 0 ]]; then
+  printf '    Outside candidates:%s\n' "${OUT_OF_CANDIDATE}"
+fi
 if [[ ${ERRORS} -gt 0 ]]; then
   printf '    Errors:           %s\n' "${ERRORS}"
 fi
@@ -472,17 +533,21 @@ if [[ "${DRY_RUN}" == "true" ]]; then
 fi
 echo "============================================================"
 
-# Copy the report to the output directory so it's included in artifacts.
-LATEST_OUTPUT=""
-for dir in iteration-*/output; do
-  if [[ -d "${dir}" ]]; then
-    LATEST_OUTPUT="${dir}"
-  fi
-done
-if [[ -n "${LATEST_OUTPUT}" ]]; then
-  cp "${REPORT_FILE}" "${LATEST_OUTPUT}/classify-report.json"
+# Copy the report to a durable output directory for CI artifacts.
+REPORT_DEST=""
+if [[ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" && -d "${FULLSEND_VALIDATED_ITERATION_DIR}" ]]; then
+  REPORT_DEST="${FULLSEND_VALIDATED_ITERATION_DIR}"
+else
+  for dir in iteration-*/output; do
+    if [[ -d "${dir}" ]]; then
+      REPORT_DEST="${dir}"
+    fi
+  done
+fi
+if [[ -n "${REPORT_DEST}" ]]; then
+  cp "${REPORT_FILE}" "${REPORT_DEST}/classify-report.json"
   echo ""
-  echo "Report written to ${LATEST_OUTPUT}/classify-report.json"
+  echo "Report written to ${REPORT_DEST}/classify-report.json"
 fi
 
 # Write GitHub Step Summary.

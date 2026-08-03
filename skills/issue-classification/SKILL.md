@@ -15,24 +15,26 @@ your role and constraints; this skill defines the process.
 
 ## Step 1: Load categories
 
-Read the categories document from `CLASSIFY_CATEGORIES_PATH`. The harness
-copies it into the sandbox as `/sandbox/workspace/categories.md` when the path
-is configured. Fall back through known locations, then the GitHub API:
+The categories document lives in the **installed repository** (per-repo
+install): the same repo fullsend was installed on, which is also
+`$CLASSIFY_SOURCE_REPO` when classifying that repo's issues. Prefer the
+harness `host_files` mount, then local paths, then the GitHub API for
+that repo.
+
+Use the **Read** tool (not `cat`) in this order:
+
+1. `/sandbox/workspace/categories.md` — harness host_files copy when
+   `CLASSIFY_CATEGORIES_PATH` is configured
+2. `$CLASSIFY_CATEGORIES_PATH` (default `categories.md`) relative to cwd
+3. `target-repo/$CLASSIFY_CATEGORIES_PATH`
+
+If none exist on disk, fetch from the installed/source repo with `gh` + `jq`
+only (no `base64` binary):
 
 ```bash
 CATEGORIES_PATH="${CLASSIFY_CATEGORIES_PATH:-categories.md}"
-
-if [ -f "$CATEGORIES_PATH" ]; then
-  cat "$CATEGORIES_PATH"
-elif [ -f "/sandbox/workspace/categories.md" ]; then
-  cat "/sandbox/workspace/categories.md"
-elif [ -f "../$CATEGORIES_PATH" ]; then
-  cat "../$CATEGORIES_PATH"
-elif [ -f "target-repo/$CATEGORIES_PATH" ]; then
-  cat "target-repo/$CATEGORIES_PATH"
-else
-  gh api "repos/$CLASSIFY_SOURCE_REPO/contents/$CATEGORIES_PATH" --jq '.content' | base64 -d
-fi
+gh api "repos/$CLASSIFY_SOURCE_REPO/contents/$CATEGORIES_PATH" \
+  --jq '.content | @base64d'
 ```
 
 **Stop if the document is empty or missing.** Do not proceed without
@@ -101,8 +103,9 @@ CLASSIFIED=$(gh api graphql --paginate -f query='
 ```
 
 If the project query fails (permissions, network), log a warning and
-continue with the full issue list — the post-script will prevent
-duplicate writes regardless.
+continue with the open-issue list you already fetched. The host post-script
+independently rejects any `issue_number` outside its pre-computed candidate
+set before writing project fields.
 
 Remove any issue whose number appears in `$CLASSIFIED` from your
 candidate list. Only evaluate issues that are **not already classified**.
@@ -174,12 +177,12 @@ labels, and context against the category descriptions. Consider:
 
 ## Step 5: Write output
 
-Write `${FULLSEND_OUTPUT_DIR}/agent-result.json`. Only include issues
-you actually evaluated. The top-level key **must** be `"classifications"`.
+Write `${FULLSEND_OUTPUT_DIR}/agent-result.json` using the **Write** tool
+(preferred) or equivalent file write — do not rely on `mkdir`/`cat` shell
+redirects. Only include issues you actually evaluated. The top-level key
+**must** be `"classifications"`.
 
-```bash
-mkdir -p "${FULLSEND_OUTPUT_DIR}"
-cat > "${FULLSEND_OUTPUT_DIR}/agent-result.json" << 'AGENT_RESULT_EOF'
+```json
 {
   "classifications": [
     {
@@ -190,7 +193,6 @@ cat > "${FULLSEND_OUTPUT_DIR}/agent-result.json" << 'AGENT_RESULT_EOF'
     }
   ]
 }
-AGENT_RESULT_EOF
 ```
 
 ### Output fields (each object in the `"classifications"` array)

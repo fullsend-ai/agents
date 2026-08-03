@@ -50,8 +50,11 @@ Issues reporting broken functionality in existing features.
 Proposals for capabilities that do not exist yet.
 ```
 
-Keep this file in the `.fullsend` repo (org-specific taxonomy). It is not
-shipped with the shared agent.
+In a **per-repo install**, keep this file in the repository where fullsend
+was installed (typically the same repo whose issues you classify). The
+harness mounts it via `CLASSIFY_CATEGORIES_PATH`; if the mount is missing,
+the agent falls back to reading that path from `$CLASSIFY_SOURCE_REPO` via
+the GitHub API. The shared agent does not ship a default categories doc.
 
 ### Environment variables
 
@@ -62,7 +65,7 @@ Per ADR 0049, classify configuration uses the `CLASSIFY_` prefix.
 | `CLASSIFY_SOURCE_REPO` | yes | Target GitHub repository (`owner/name`) |
 | `CLASSIFY_MODE` | yes | `single`, `unclassified`, or `all` |
 | `CLASSIFY_ISSUE_NUMBER` | single mode | Issue number to classify |
-| `CLASSIFY_CATEGORIES_PATH` | yes | Path to categories markdown (relative to `.fullsend` or target repo) |
+| `CLASSIFY_CATEGORIES_PATH` | yes | Path to categories markdown in the installed repo |
 | `CLASSIFY_PROJECT_NUMBER` | no | GitHub Project V2 number (default: `1`) |
 | `CLASSIFY_FIELD_NAME` | no | Project single-select field name (default: `Workstream Category`) |
 | `CLASSIFY_MIN_CONFIDENCE` | no | Minimum confidence to apply (default: `0.7`) |
@@ -70,7 +73,7 @@ Per ADR 0049, classify configuration uses the `CLASSIFY_` prefix.
 | `CLASSIFY_FILTER_CATEGORY` | no | Restrict assignments to one category name |
 | `CLASSIFY_SCREEN_ISSUES` | no | Pre-filter by title/labels in batch modes (default: `true`) |
 | `CLASSIFY_PROJECT_TOKEN` | cross-org | PAT for project access when app token cannot reach the board |
-| `GH_TOKEN` | yes | GitHub token with issues read and project write |
+| `GH_TOKEN` | yes | Pre-script: issues read. Post-script: issues write + org projects write. Sandbox: issues/project read. |
 
 ### Modes
 

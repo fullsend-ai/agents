@@ -28,7 +28,11 @@ if [[ "\$1" == "api" && "\$2" == "graphql" && "\$*" == *"--jq"* && "\$*" == *"ad
   exit 0
 fi
 if [[ "\$1" == "api" && "\$2" == "graphql" ]]; then
-  # updateProjectV2ItemFieldValue and other mutations
+  # Fail field-update mutations when requested (set -e resilience test).
+  if [[ "\${MOCK_FAIL_FIELD_UPDATE:-}" == "1" && "\$*" == *"updateProjectV2ItemFieldValue"* ]]; then
+    echo "mock field update failed" >&2
+    exit 1
+  fi
   echo '{}'
   exit 0
 fi
@@ -130,6 +134,18 @@ run_test_stdout "validated-iteration-dir-preferred" \
   "false" \
   "FULLSEND_VALIDATED_ITERATION_DIR=${VALIDATED_DIR}"
 
+# Filter-mismatch safety net.
+export CLASSIFY_FILTER_CATEGORY="Bug fixes"
+run_test_stdout "filter-mismatch-skips-other-category" \
+  '{"classifications":[{"issue_number":42,"workstream_category":"New features","reasoning":"Looks like a feature.","confidence":0.95}]}' \
+  'NOT "Bug fixes"'
+unset CLASSIFY_FILTER_CATEGORY
+
+# Outside host candidate set.
+run_test_stdout "rejects-issue-outside-candidate-set" \
+  '{"classifications":[{"issue_number":999,"workstream_category":"Bug fixes","reasoning":"Injected.","confidence":0.99}]}' \
+  "OUTSIDE CANDIDATE SET"
+
 # Live path: set_project_field must call gh api (issue node_id + GraphQL mutations).
 export CLASSIFY_DRY_RUN="false"
 run_test_stdout "live-run-sets-project-field" \
@@ -142,6 +158,13 @@ if ! grep -q 'api graphql' "${GH_LOG}"; then
 else
   echo "PASS: live-run-sets-project-field (graphql mutation observed)"
 fi
+
+# Live path resilience: field-update failure must not abort the whole script.
+export MOCK_FAIL_FIELD_UPDATE=1
+run_test_stdout "live-run-continues-after-field-update-failure" \
+  '{"classifications":[{"issue_number":42,"workstream_category":"Bug fixes","reasoning":"Crash.","confidence":0.95},{"issue_number":99,"workstream_category":null,"reasoning":"Ambiguous.","confidence":0.2}]}' \
+  "SUMMARY"
+unset MOCK_FAIL_FIELD_UPDATE
 export CLASSIFY_DRY_RUN="true"
 
 # Race guard: more candidates than open issues must not yield negative counts.
@@ -157,6 +180,26 @@ else
   echo "PASS: already-classified-never-negative (no negative count)"
 fi
 printf '42\n99\n' > "${CONTEXT_DIR}/issue-numbers.txt"
+
+# Validated-dir-only: report must still be copied when no iteration-*/output exists.
+VALIDATED_ONLY="${TMPDIR}/validated-only"
+mkdir -p "${VALIDATED_ONLY}"
+echo '{"classifications":[{"issue_number":42,"workstream_category":null,"reasoning":"n/a","confidence":0.1}]}' \
+  > "${VALIDATED_ONLY}/agent-result.json"
+run_dir="${TMPDIR}/run-validated-report-only"
+mkdir -p "${run_dir}"
+: > "${GH_LOG}"
+(
+  cd "${run_dir}" && \
+  env FULLSEND_VALIDATED_ITERATION_DIR="${VALIDATED_ONLY}" bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout.log" 2>&1 || true
+if [[ -f "${VALIDATED_ONLY}/classify-report.json" ]]; then
+  echo "PASS: validated-dir-report-copied"
+else
+  echo "FAIL: validated-dir-report-copied — report missing under validated dir"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo ""

@@ -7,7 +7,7 @@
 # the agent sandbox does NOT see these files).
 #
 # Required env vars:
-#   GH_TOKEN              — GitHub token with issues:read, contents:read scope
+#   GH_TOKEN              — GitHub token with issues:read (host pre-script reads)
 #   CLASSIFY_SOURCE_REPO  — owner/repo to classify issues in
 #   CLASSIFY_MODE         — "single" | "unclassified" | "all"
 #   CLASSIFY_ISSUE_NUMBER — (single mode) specific issue number to classify
