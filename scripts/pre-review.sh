@@ -89,9 +89,10 @@ if [[ -n "${REVIEW_SKIP_AUTHORS:-}" ]]; then
   if [[ -n "${PR_AUTHOR}" ]]; then
     IFS=',' read -ra _SKIP_LIST <<< "${REVIEW_SKIP_AUTHORS}"
     for _entry in "${_SKIP_LIST[@]}"; do
-      _entry="$(echo "${_entry}" | xargs)"  # trim whitespace
+      read -r _entry <<< "${_entry}"  # trim whitespace
       if [[ "${_entry}" == "${PR_AUTHOR}" ]]; then
-        echo "::notice::PR #${PR_NUMBER} authored by ${PR_AUTHOR} — skipping review (REVIEW_SKIP_AUTHORS)"
+        _SAFE_AUTHOR="${PR_AUTHOR//::/ }"
+        echo "::notice::PR #${PR_NUMBER} authored by ${_SAFE_AUTHOR} — skipping review (REVIEW_SKIP_AUTHORS)"
 
         COMMENT_BODY="Review skipped — PR author **${PR_AUTHOR}** is in the \`REVIEW_SKIP_AUTHORS\` list.
 
