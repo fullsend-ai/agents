@@ -115,6 +115,12 @@ is_control_label() {
 # subsequent label events in the dispatch concurrency group (see #1752).
 DEFERRED_LABEL=""
 
+# Clear a stale "triaged" label from a prior re-triage before dispatching on
+# the new action. Every terminal action below resets its own set of control
+# labels, but "triaged" is only ever re-applied (never removed) by the
+# handlers themselves, so it must be cleared up front rather than per-branch.
+remove_label "triaged"
+
 case "${ACTION}" in
   insufficient)
     if [[ -z "${COMMENT}" ]]; then
@@ -378,7 +384,6 @@ ${FAILED_CREATES}"
     remove_label "blocked"
     remove_label "needs-info"
     remove_label "pr-open"
-    remove_label "triaged"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything

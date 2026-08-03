@@ -179,6 +179,13 @@ run_test "insufficient-removes-pr-open-label" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
+# A stale "triaged" label from a prior re-triage must be cleared on every
+# terminal action, not just "sufficient" — the removal happens once before
+# the action dispatch (see #1754 review feedback).
+run_test "insufficient-clears-stale-triaged-label" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
+
 run_test "sufficient-posts-summary-and-labels" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
@@ -783,6 +790,7 @@ run_test_unset_env() {
   local json_content="$2"
   local expected_pattern="$3"
   local vars_to_unset="$4"
+  local extra_env="${5:-}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
@@ -793,6 +801,8 @@ run_test_unset_env() {
   (
     cd "${run_dir}"
     for var in ${vars_to_unset}; do unset "${var}"; done
+    # shellcheck disable=SC2163  # exporting KEY=VALUE, not the var "kv"
+    while IFS= read -r kv; do [[ -n "$kv" ]] && export "$kv"; done <<< "$extra_env"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
 
@@ -967,6 +977,27 @@ run_test_with_env "auto-code-category-default-bug-gets-ready-to-code" \
   "${AUTO_CODE_BUG_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
+  "TRIAGE_AUTO_CODE=category"
+
+# TRIAGE_AUTO_CODE=category with TRIAGE_AUTO_CODE_CATEGORIES genuinely unset:
+# exercises the script's own ${TRIAGE_AUTO_CODE_CATEGORIES-bug,documentation,performance}
+# bash-level default, rather than inheriting the value exported globally above.
+run_test_unset_env "auto-code-category-categories-unset-bug-uses-default" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "TRIAGE_AUTO_CODE_CATEGORIES" \
+  "TRIAGE_AUTO_CODE=category"
+
+run_test_unset_env "auto-code-category-categories-unset-docs-uses-default" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "TRIAGE_AUTO_CODE_CATEGORIES" \
+  "TRIAGE_AUTO_CODE=category"
+
+run_test_unset_env "auto-code-category-categories-unset-perf-uses-default" \
+  "${AUTO_CODE_PERF_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "TRIAGE_AUTO_CODE_CATEGORIES" \
   "TRIAGE_AUTO_CODE=category"
 
 # TRIAGE_AUTO_CODE=category with only bug: bug gets ready-to-code.
