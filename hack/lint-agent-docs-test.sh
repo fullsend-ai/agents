@@ -56,12 +56,14 @@ It works.
 # never created, exercising the "doc '...' does not exist" branch.
 readonly MISSING_DOC_FILE='__MISSING_DOC_FILE__'
 
-# run_case NAME DOC_CONTENT EXPECTED_EXIT [EXPECTED_OUTPUT_SUBSTRING]
+# run_case NAME DOC_CONTENT EXPECTED_EXIT [EXPECTED_OUTPUT_SUBSTRING] [DOC_FIELD_LINE]
 # Passing an empty DOC_CONTENT means "omit the doc: field from the harness YAML".
 # Passing MISSING_DOC_FILE means "doc: field present, but the file it names
 # doesn't exist".
+# DOC_FIELD_LINE overrides the literal `doc:` line written to the harness
+# YAML (default: "doc: widget.md"), for exercising quoting/comment handling.
 run_case() {
-  local name="$1" doc_content="$2" expected_exit="$3" expected_substring="${4:-}"
+  local name="$1" doc_content="$2" expected_exit="$3" expected_substring="${4:-}" doc_field="${5:-doc: widget.md}"
 
   local case_dir="${WORKDIR}/${name}"
   local harness_dir="${case_dir}/harness"
@@ -74,7 +76,7 @@ run_case() {
     printf 'doc: nonexistent.md\n' > "${yaml_path}"
   elif [[ -n "${doc_content}" ]]; then
     printf '%s' "${doc_content}" > "${doc_path}"
-    printf 'doc: widget.md\n' > "${yaml_path}"
+    printf '%s\n' "${doc_field}" > "${yaml_path}"
   else
     printf 'name: widget\n' > "${yaml_path}"
   fi
@@ -140,6 +142,15 @@ run_case "top-level-heading-not-ending-in-agent" \
 
 run_case "doc-field-points-to-nonexistent-file" \
   "${MISSING_DOC_FILE}" 1 "does not exist"
+
+run_case "doc-field-double-quoted" \
+  "${VALID_DOC}" 0 'widget.yaml: OK (widget.md)' 'doc: "widget.md"'
+
+run_case "doc-field-single-quoted" \
+  "${VALID_DOC}" 0 'widget.yaml: OK (widget.md)' "doc: 'widget.md'"
+
+run_case "doc-field-trailing-comment" \
+  "${VALID_DOC}" 0 'widget.yaml: OK (widget.md)' 'doc: widget.md  # comment about widget'
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
