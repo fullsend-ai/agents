@@ -45,8 +45,9 @@ forge:
   github:
     pre_script: scripts/pre-review.sh
     post_script: scripts/post-review.sh
-    runner_env:
-      REVIEW_TOKEN: "${REVIEW_TOKEN}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      PR_NUMBER: "${PR_NUMBER}"
-      GITHUB_PR_URL: "${GITHUB_PR_URL}"
+    env:
+      runner:
+        REVIEW_TOKEN: "${REVIEW_TOKEN}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        PR_NUMBER: "${PR_NUMBER}"
+        GITHUB_PR_URL: "${GITHUB_PR_URL}"
