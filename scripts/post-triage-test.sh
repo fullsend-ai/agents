@@ -62,8 +62,9 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
 export PATH="${MOCK_BIN}:${PATH}"
-export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
+export FULLSEND_FORGE="github"
 # Harness defaults — post-triage.sh expects these from the harness env.
 export TRIAGE_AUTO_CODE="on"
 export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
@@ -1073,6 +1074,244 @@ run_test_with_env "auto-code-on-whitespace-tolerant" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
   $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance'
+
+# ---------------------------------------------------------------------------
+# GitLab forge tests
+# Verify that post-triage.sh works correctly with FULLSEND_FORGE=gitlab.
+# ---------------------------------------------------------------------------
+
+# Switch to GitLab forge. Replace mock curl to handle GitLab API patterns.
+export FULLSEND_FORGE="gitlab"
+export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+export GITLAB_TOKEN="fake-gitlab-token"
+unset GH_TOKEN
+
+# GitLab mock curl: record calls and return appropriate responses.
+CURL_LOG="${TMPDIR}/curl-calls.log"
+cat > "${MOCK_BIN}/curl" <<'CURLMOCK'
+#!/usr/bin/env bash
+echo "curl $*" >> CURL_LOG_PLACEHOLDER
+
+# Parse the URL from args (last non-flag argument or after --request METHOD).
+URL=""
+METHOD="GET"
+for arg in "$@"; do
+  case "${arg}" in
+    --request) shift_next=method ;;
+    --fail|--silent|--show-error) ;;
+    --header|--data-urlencode) shift_next=skip ;;
+    *)
+      if [[ "${shift_next:-}" == "method" ]]; then
+        METHOD="${arg}"
+        shift_next=""
+      elif [[ "${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "${arg}" =~ ^https:// ]]; then
+        URL="${arg}"
+      fi
+      ;;
+  esac
+done
+
+# Return labels for the issue when queried.
+if [[ "${URL}" =~ /issues/42$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"iid":42,"title":"Test issue","labels":["area/api","old-label"],"state":"opened"}'
+  exit 0
+fi
+
+# Return labels list for the project (only page 1).
+if [[ "${URL}" =~ /labels\? ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ "${URL}" =~ page=1 ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
+    echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"},{"name":"enhancement"},{"name":"bug"},{"name":"documentation"},{"name":"pr-open"}]'
+  else
+    echo '[]'
+  fi
+  exit 0
+fi
+
+# Return empty notes list.
+if [[ "${URL}" =~ /notes\? ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '[]'
+  exit 0
+fi
+
+# Accept PUT/POST calls silently.
+if [[ "${METHOD}" == "PUT" ]] || [[ "${METHOD}" == "POST" ]]; then
+  # For issue creation, return a web_url.
+  if [[ "${URL}" =~ /issues$ ]] && [[ "${METHOD}" == "POST" ]]; then
+    echo '{"web_url":"https://gitlab.com/mock-group/mock-project/-/issues/999"}'
+  fi
+  exit 0
+fi
+
+exit 0
+CURLMOCK
+# Fix the log path placeholder.
+sed -i "s|CURL_LOG_PLACEHOLDER|${CURL_LOG}|" "${MOCK_BIN}/curl"
+chmod +x "${MOCK_BIN}/curl"
+
+# GitLab test runner — uses curl log instead of gh log.
+run_gitlab_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local expect_failure="${4:-false}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit code ${exit_code})"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_pattern}" ]] && ! grep -qF -- "${expected_pattern}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected curl call pattern '${expected_pattern}' not found"
+    echo "Actual curl calls:"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_test_no_gh() {
+  local test_name="$1"
+  local json_content="$2"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -s "${GH_LOG}" ]]; then
+    echo "FAIL: ${test_name} — gh was called but should not be on gitlab forge"
+    echo "gh calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Core test: GitLab forge uses curl, not gh.
+run_gitlab_test_no_gh "gitlab-no-gh-calls" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}'
+
+# GitLab insufficient action posts a comment via curl.
+run_gitlab_test "gitlab-insufficient-posts-comment" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+# GitLab insufficient action adds needs-info label via curl PUT.
+run_gitlab_test "gitlab-insufficient-adds-needs-info" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42"
+
+# GitLab sufficient action applies labels.
+run_gitlab_test "gitlab-sufficient-applies-labels" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42"
+
+# GitLab duplicate action closes the issue.
+run_gitlab_test "gitlab-duplicate-closes-issue" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "state_event=close"
+
+# GitLab question action posts a comment.
+run_gitlab_test "gitlab-question-posts-comment" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+# GitLab not-planned action closes the issue.
+run_gitlab_test "gitlab-not-planned-closes-issue" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
+  "state_event=close"
+
+# GitLab label_actions are processed.
+run_gitlab_test "gitlab-label-actions-applied" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "api/v4/projects/test-group%2Ftest-project/labels"
+
+# GitLab control label refused.
+run_gitlab_test_stdout "gitlab-control-label-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
+  "::warning::Refused to add control label 'ready-to-code' -- control labels are managed by the triage pipeline"
+
+# GitLab in-progress action.
+run_gitlab_test "gitlab-in-progress-posts-sticky-comment" \
+  '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+# Restore GitHub forge for any subsequent tests.
+export FULLSEND_FORGE="github"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export GH_TOKEN="fake-token"
+unset GITLAB_TOKEN
 
 # --- Summary ---
 
