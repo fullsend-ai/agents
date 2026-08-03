@@ -153,7 +153,7 @@ install -m 0600 /dev/null "$ENV_FILE"
   emit_env "PUSH_TOKEN" "${GH_TOKEN}"
   emit_env "REVIEW_TOKEN" "${GH_TOKEN}"
 
-  # Code/fix harness runner_env refs — mint normally sets these; eval skips mint.
+  # Code/fix harness env.runner refs — mint normally sets these; eval skips mint.
   # Only override GITHUB_WORKSPACE for agents whose post-scripts expand
   # REPO_DIR=${GITHUB_WORKSPACE}/target-repo (triage reads config.yaml from
   # the real Actions workspace and must not be redirected to the temp clone).

@@ -41,7 +41,8 @@ forge:
   github:
     pre_script: scripts/pre-retro.sh
     post_script: scripts/post-retro.sh
-    runner_env:
-      ORIGINATING_URL: "${ORIGINATING_URL}"
-      REPO_FULL_NAME: "${REPO_FULL_NAME}"
-      GH_TOKEN: "${GH_TOKEN}"
+    env:
+      runner:
+        ORIGINATING_URL: "${ORIGINATING_URL}"
+        REPO_FULL_NAME: "${REPO_FULL_NAME}"
+        GH_TOKEN: "${GH_TOKEN}"
