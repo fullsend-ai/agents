@@ -23,6 +23,9 @@ host_files:
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
 
+skills:
+  - skills/effort-estimation
+
 pre_script: scripts/pre-triage.sh
 post_script: scripts/post-triage.sh
 

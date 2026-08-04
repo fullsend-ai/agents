@@ -492,6 +492,11 @@ run_test "label-actions-applied" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API crash matches area/api label.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=area/api --silent"
 
+# Fenced code blocks in comment must be stripped (mirrors post-scribe.sh enforcement).
+run_test_stdout "comment-fenced-code-block-warning" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Please try:\n```bash\necho hello\n```\nand report back."}' \
+  "::warning::Stripping fenced code blocks from triage comment"
+
 run_test_stdout "label-actions-control-label-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "::warning::Refused to add control label 'ready-to-code' -- control labels are managed by the triage pipeline"
@@ -568,6 +573,10 @@ run_test_no_pattern() {
 
   echo "PASS: ${test_name}"
 }
+
+run_test_no_pattern "comment-fenced-code-block-stripped" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Please try:\n```bash\necho hello\n```\nand report back."}' \
+  '```'
 
 run_test_no_pattern "label-actions-all-refused-no-reason" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
@@ -732,42 +741,37 @@ run_validated_dir_test "validated-dir-neither-filename" \
   "" \
   "true"
 
-# --- Workflow change detection tests (#325) ---
+# --- Auto-promotion blocking tests (#2207, #325) ---
 
-# Bug with requires_workflow_changes=true should get triaged instead of ready-to-code.
-run_test "workflow-changes-bug-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+# Bug with block_auto_promotion.blocked=true (workflow changes) gets triaged.
+run_test "blocked-workflow-bug-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","block_auto_promotion":{"blocked":true,"reason":"Fix requires modifying workflow files; the code agent cannot modify these under current permissions"}},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
-# Bug with requires_workflow_changes=true should NOT get ready-to-code.
-run_test_no_pattern "workflow-changes-bug-no-ready-to-code" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+# Bug with block_auto_promotion.blocked=true should NOT get ready-to-code.
+run_test_no_pattern "blocked-bug-no-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching step","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","block_auto_promotion":{"blocked":true,"reason":"Fix requires modifying workflow files"}},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "labels[]=ready-to-code"
 
-# Documentation with requires_workflow_changes=true should get triaged instead of ready-to-code.
-run_test "workflow-changes-documentation-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update CI docs","severity":"low","category":"documentation","problem":"Outdated CI docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update workflow and docs","proposed_test_case":"test_docs","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+# Documentation with block_auto_promotion.blocked=true gets triaged.
+run_test "blocked-documentation-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update CI docs","severity":"low","category":"documentation","problem":"Outdated CI docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update workflow and docs","proposed_test_case":"test_docs","block_auto_promotion":{"blocked":true,"reason":"Fix requires modifying workflow files"}},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
-# Performance with requires_workflow_changes=true should get triaged instead of ready-to-code.
-run_test "workflow-changes-performance-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Speed up CI","severity":"medium","category":"performance","problem":"Slow CI","root_cause_hypothesis":"No parallelism","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add parallel steps","proposed_test_case":"test_speed","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+# Performance with block_auto_promotion.blocked=true gets triaged.
+run_test "blocked-performance-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Speed up CI","severity":"medium","category":"performance","problem":"Slow CI","root_cause_hypothesis":"No parallelism","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add parallel steps","proposed_test_case":"test_speed","block_auto_promotion":{"blocked":true,"reason":"Estimated effort 4.3/5 (multi-component optimization)"}},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
 
-# Bug without requires_workflow_changes still gets ready-to-code (regression guard).
-run_test "no-workflow-flag-bug-still-gets-ready-to-code" \
+# Bug without block_auto_promotion still gets ready-to-code (regression guard).
+run_test "no-block-flag-bug-still-gets-ready-to-code" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
-# Bug with requires_workflow_changes=false still gets ready-to-code.
-run_test "workflow-false-bug-gets-ready-to-code" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","requires_workflow_changes":false},"comment":"## Triage Summary\n\nReady."}' \
+# Bug with block_auto_promotion.blocked=false gets ready-to-code.
+run_test "unblocked-bug-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash","block_auto_promotion":{"blocked":false,"reason":"Low effort (1.5/5); single-file fix"}},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
-
-# Workflow changes warning appears in stdout.
-run_test_stdout "workflow-changes-warning-emitted" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
-  "::warning::Triage detected workflow file changes required (#325)"
 
 # --- TRIAGE_AUTO_CODE configuration tests (#1754) ---
 
@@ -1081,9 +1085,9 @@ run_test_with_env "auto-code-on-uppercase-still-matches" \
   "false" \
   $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=Bug,Documentation'
 
-# TRIAGE_AUTO_CODE=off with workflow-changes: still triaged (both guards agree).
-run_test_with_env "auto-code-off-with-workflow-changes-gets-triaged" \
-  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI","severity":"high","category":"bug","problem":"CI broken","root_cause_hypothesis":"Missing step","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_ci","requires_workflow_changes":true},"comment":"## Triage Summary\n\nNeeds workflow changes."}' \
+# TRIAGE_AUTO_CODE=off with block_auto_promotion: still triaged (both guards agree).
+run_test_with_env "auto-code-off-with-blocked-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI","severity":"high","category":"bug","problem":"CI broken","root_cause_hypothesis":"Missing step","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_ci","block_auto_promotion":{"blocked":true,"reason":"Fix requires modifying workflow files"}},"comment":"## Triage Summary\n\nNeeds workflow changes."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "false" \
   "TRIAGE_AUTO_CODE=off"
@@ -2103,6 +2107,53 @@ export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
 unset GITLAB_TOKEN
 unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
+
+# --- block_auto_promotion tests (#2207) ---
+
+# Blocked bug warning appears in stdout.
+run_test_stdout "blocked-warning-emitted" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","block_auto_promotion":{"blocked":true,"reason":"Fix requires modifying workflow files"}},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
+  "::warning::Skipping ready-to-code — auto-promotion blocked (see comment for details)"
+
+# Blocked reason is appended to the comment.
+run_test "blocked-reason-in-comment" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Refactor auth","severity":"high","category":"bug","problem":"Auth issue","root_cause_hypothesis":"Architectural","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Refactor","proposed_test_case":"test_auth","block_auto_promotion":{"blocked":true,"reason":"Estimated effort 4.3/5 (multi-component fix)"}},"comment":"## Triage Summary\n\nHigh effort."}' \
+  "Auto-promotion blocked:"
+
+# High-effort bug (blocked=true) gets triaged, not ready-to-code.
+run_test "effort-high-bug-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Refactor auth middleware","severity":"high","category":"bug","problem":"Auth edge cases","root_cause_hypothesis":"Architectural issue","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Refactor auth","proposed_test_case":"test_auth","block_auto_promotion":{"blocked":true,"reason":"Estimated effort 4.3/5 (multi-component fix with new test fixtures needed)"}},"comment":"## Triage Summary\n\nSubstantial refactor."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+# Low-effort bug (blocked=false) gets ready-to-code.
+run_test "effort-low-bug-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo","severity":"low","category":"bug","problem":"Typo in error","root_cause_hypothesis":"Copy-paste error","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_msg","block_auto_promotion":{"blocked":false,"reason":"Low effort (1/5); single-line fix"}},"comment":"## Triage Summary\n\nTrivial."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
+# Feature with block_auto_promotion is unaffected (already goes to triaged).
+run_test "blocked-feature-still-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode","block_auto_promotion":{"blocked":true,"reason":"High effort"}},"comment":"## Triage Summary\n\nFeature."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+# Blocked feature must NOT get block-reason footer in comment.
+run_test_no_pattern "blocked-feature-no-block-reason-in-comment" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode","block_auto_promotion":{"blocked":true,"reason":"High effort"}},"comment":"## Triage Summary\n\nFeature."}' \
+  "Auto-promotion blocked:"
+
+# Blocked with empty reason still gets a fallback footer.
+run_test "blocked-empty-reason-gets-fallback" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix bug","severity":"high","category":"bug","problem":"Bug","root_cause_hypothesis":"Root","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix","proposed_test_case":"test","block_auto_promotion":{"blocked":true,"reason":""}},"comment":"## Triage Summary\n\nBug."}' \
+  "No reason provided"
+
+# Block reason with workflow-command injection attempt must be sanitized.
+run_test_no_pattern "blocked-reason-injection-sanitized" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Inject","severity":"high","category":"bug","problem":"Bug","root_cause_hypothesis":"Root","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix","proposed_test_case":"test","block_auto_promotion":{"blocked":true,"reason":"reason\n::error::injected"}},"comment":"## Triage Summary\n\nBug."}' \
+  "::error::injected"
+
+# Triple-colon bypass: :::error::: must not survive as ::error::.
+run_test_no_pattern "blocked-reason-triple-colon-sanitized" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Inject","severity":"high","category":"bug","problem":"Bug","root_cause_hypothesis":"Root","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix","proposed_test_case":"test","block_auto_promotion":{"blocked":true,"reason":"reason\n:::error:::injected"}},"comment":"## Triage Summary\n\nBug."}' \
+  "::error:"
 
 # --- Summary ---
 

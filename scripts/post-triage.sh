@@ -929,6 +929,11 @@ fi
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 
+if echo "${COMMENT}" | grep -q '```'; then
+  echo "::warning::Stripping fenced code blocks from triage comment"
+  COMMENT=$(echo "${COMMENT}" | sed '/^```/,/^```/d')
+fi
+
 tracker_validate_issue_url
 tracker_parse_issue_url
 
@@ -1247,11 +1252,18 @@ ${FAILED_CREATES}"
     # own the "bug,documentation,performance" default. An absent or unset
     # TRIAGE_AUTO_CODE_CATEGORIES means no categories auto-promote.
     #
-    # Workflow-change guard (#325): if triage detected that the fix requires
-    # modifying workflow files (.github/workflows/, .fullsend/.github/workflows/,
-    # or shim workflows), skip ready-to-code regardless of category. The code
-    # agent cannot modify workflow files under current permissions.
-    REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
+    # Auto-promotion gate (#2207, #325): the triage agent can block
+    # auto-promotion via block_auto_promotion.blocked (e.g., high effort,
+    # workflow file changes). When blocked, bug/docs/performance categories
+    # receive triaged instead of ready-to-code, and the reason is appended
+    # to the comment.
+    BLOCKED=$(jq -r '.triage_summary.block_auto_promotion.blocked // false' "${RESULT_FILE}")
+    BLOCK_REASON=$(jq -r '.triage_summary.block_auto_promotion.reason // empty' "${RESULT_FILE}")
+    # Collapse runs of 2+ colons to a single colon so untrusted text
+    # can never form a GHA workflow command (e.g., ::error::).
+    while [[ "${BLOCK_REASON}" == *::* ]]; do
+      BLOCK_REASON="${BLOCK_REASON//::/:}"
+    done
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
 
@@ -1287,27 +1299,34 @@ ${FAILED_CREATES}"
       AUTO_CODE_ALLOWED=false
     fi
 
-    # Workflow-change guard: if triage detected workflow file changes, always
-    # log the (#325) warning for operational visibility. Only block auto-
-    # promotion (apply triaged early) when the category would otherwise
-    # auto-promote to ready-to-code.
-    WORKFLOW_BLOCKED=false
-    if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
-      echo "::warning::Triage detected workflow file changes required (#325)"
-      if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
-        echo "Applying triaged label (workflow changes required)..."
-        tracker_add_label "triaged"
-        WORKFLOW_BLOCKED=true
+    # block_auto_promotion gate: when the agent sets blocked=true, apply
+    # triaged instead of ready-to-code and append the reason to the comment.
+    # Only relevant for categories that would otherwise auto-promote.
+    AUTO_PROMOTION_BLOCKED=false
+    if [[ "${BLOCKED}" == "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
+      echo "::warning::Skipping ready-to-code — auto-promotion blocked (see comment for details)"
+      echo "Applying triaged label (auto-promotion blocked)..."
+      tracker_add_label "triaged"
+      AUTO_PROMOTION_BLOCKED=true
+      if [[ -z "${BLOCK_REASON}" ]]; then
+        BLOCK_REASON="No reason provided"
       fi
+      if echo "${BLOCK_REASON}" | grep -q '```'; then
+        BLOCK_REASON=$(echo "${BLOCK_REASON}" | sed '/^```/,/^```/d')
+      fi
+      COMMENT="${COMMENT}
+
+---
+**Auto-promotion blocked:** ${BLOCK_REASON}"
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
         tracker_add_label "bug"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
+        if [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
-        elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        elif [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
           tracker_add_label "triaged"
         fi
@@ -1315,19 +1334,19 @@ ${FAILED_CREATES}"
       documentation)
         echo "Applying documentation label..."
         tracker_add_label "documentation"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
+        if [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
-        elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        elif [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
           tracker_add_label "triaged"
         fi
         ;;
       performance)
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
+        if [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
-        elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        elif [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
           tracker_add_label "triaged"
         fi
@@ -1526,12 +1545,19 @@ fi
 # --- Append action-hints footer (sufficient only) ---
 
 if [[ "${ACTION}" == "sufficient" ]]; then
-  COMMENT="${COMMENT}
+  if [[ "${AUTO_PROMOTION_BLOCKED}" == "true" ]]; then
+    COMMENT="${COMMENT}
+
+---
+**Next steps:** This issue was held for review. Run \`/fs-code\` only after confirming the concerns above."
+  else
+    COMMENT="${COMMENT}
 
 ---
 **Next steps:**
 - \`/fs-code\` — agent creates a PR to implement this issue
 - \`/fs-code <your instruction>\` — agent implements with your specific guidance"
+  fi
 fi
 
 # --- Post comment ---
