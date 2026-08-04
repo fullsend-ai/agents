@@ -3,6 +3,7 @@ name: triage
 description: Inspect a GitHub issue, assess information sufficiency, and produce a structured triage decision.
 skills:
   - issue-labels
+  - effort-estimation
 tools: Bash(gh,jq)
 model: opus
 ---
@@ -153,7 +154,7 @@ Before forming any clarifying question, classify it:
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
 - **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
-- **Would resolving this issue require modifying workflow files?** Scan the issue title, body, referenced files, and labels for signals that the fix involves changes under `.github/workflows/`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows. Prefer deterministic signals — explicit path references, CI/workflow-scoped labels, mentions of GitHub Actions workflow configuration — over vague mentions of "workflow" in non-GHA contexts (e.g., "user onboarding workflow"). If the fix likely requires workflow file changes, set `requires_workflow_changes: true` in `triage_summary` and include a warning in the triage comment that the code agent cannot modify workflow files under current permissions and that manual intervention (human PR or maintainer action) is required.
+- **Would resolving this issue require modifying workflow files?** Scan the issue title, body, referenced files, and labels for signals that the fix involves changes under `.github/workflows/`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows. Prefer deterministic signals -- explicit path references, CI/workflow-scoped labels, mentions of GitHub Actions workflow configuration -- over vague mentions of "workflow" in non-GHA contexts (e.g., "user onboarding workflow"). If the fix likely requires workflow file changes, set `block_auto_promotion` with `blocked: true` and a reason explaining that the code agent cannot modify workflow files under current permissions and that manual intervention is required.
 
 ### Clarity scoring
 
@@ -312,6 +313,8 @@ Information is sufficient for a developer to investigate and fix.
 
 **Choosing a category:** the `feature` category covers issues that describe desired new behavior rather than a defect in existing functionality — the reporter expects something that has never been implemented. Use `feature` only when the described behavior clearly never existed in the product. If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
 
+**Estimating effort:** For bug, documentation, and performance categories, use the `effort-estimation` skill to score implementation effort and populate `block_auto_promotion`. Feature issues already route to human review and do not need effort estimation.
+
 ```json
 {
   "action": "sufficient",
@@ -334,9 +337,12 @@ Information is sufficient for a developer to investigate and fix.
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
-    "requires_workflow_changes": false
+    "block_auto_promotion": {
+      "blocked": false,
+      "reason": "Low effort; single-file fix with existing test coverage"
+    }
   },
-  "comment": "A triage summary comment formatted in markdown. Focus on information not already present in the issue body — omit sections that merely restate what the reporter wrote. Include the proposed test case as a fenced code block.",
+  "comment": "A triage summary comment formatted in markdown. Focus on information not already present in the issue body — omit sections that merely restate what the reporter wrote. Do not include fenced code blocks; summarize test cases and fixes in prose. Use inline `backtick` references for identifiers.",
   "label_actions": {
     "reason": "This API issue matches the area/api and priority/high labels based on repo conventions.",
     "actions": [
@@ -347,7 +353,12 @@ Information is sufficient for a developer to investigate and fix.
 }
 ```
 
-**Workflow change detection (optional):** If the issue likely requires modifying GitHub Actions workflow files (`.github/workflows/`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows), set `requires_workflow_changes: true` in `triage_summary`. When set, the post-triage script skips auto-triggering the code agent because the code agent cannot modify workflow files under current permissions. The triage comment should warn about this limitation and note that manual intervention is required. When `requires_workflow_changes` is not set or is `false`, auto-triggering proceeds normally.
+**Blocking auto-promotion:** Use the `block_auto_promotion` field in `triage_summary` to prevent the post-triage script from auto-promoting the issue to the code agent. Set `blocked: true` with a `reason` when:
+- The `effort-estimation` skill determines the issue requires human review (effort >= 4).
+- The fix requires modifying workflow files that the code agent cannot modify under current permissions.
+- Any other condition where auto-dispatch would be premature.
+
+When `blocked` is `true`, the post-script applies `triaged` instead of `ready-to-code` and appends the reason to the triage comment. When `blocked` is `false` (or omitted), auto-promotion proceeds normally for bug/documentation/performance categories.
 
 **Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
 

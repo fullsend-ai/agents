@@ -23,6 +23,7 @@ host_files:
 
 skills:
   - skills/issue-labels
+  - skills/effort-estimation
 
 pre_script: scripts/pre-triage.sh
 post_script: scripts/post-triage.sh
