@@ -13,7 +13,7 @@
 agent: agents/code.md
 doc: docs/code.md
 model: opus
-image: ghcr.io/fullsend-ai/fullsend-code:latest
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:de3ecbd7719a1927c983142ada96475f3314d2505d0f258bcf19c31411856eb6
 policy: policies/code.yaml
 
 role: coder
