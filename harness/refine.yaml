@@ -20,27 +20,6 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
-  - src: /tmp/workspace/issue-context.json
-    dest: /sandbox/workspace/issue-context.json
-    optional: true
-  - src: /tmp/workspace/exploration_context.json
-    dest: /sandbox/workspace/exploration_context.json
-    optional: true
-  - src: /tmp/workspace/critique-feedback.json
-    dest: /sandbox/workspace/critique-feedback.json
-    optional: true
-  - src: /tmp/workspace/routing-skill.md
-    dest: /sandbox/workspace/routing-skill.md
-    optional: true
-  - src: /tmp/workspace/platform-context.md
-    dest: /sandbox/workspace/platform-context.md
-    optional: true
-  - src: /tmp/workspace/human-directive.txt
-    dest: /sandbox/workspace/human-directive.txt
-    optional: true
-  - src: /tmp/workspace/duplicate-gate.json
-    dest: /sandbox/workspace/duplicate-gate.json
-    optional: true
 
 pre_script: scripts/pre-refine.sh
 post_script: scripts/post-refine.sh
