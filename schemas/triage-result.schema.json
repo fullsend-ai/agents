@@ -197,8 +197,32 @@
         "impact": { "type": "string", "minLength": 1 },
         "recommended_fix": { "type": "string", "minLength": 1 },
         "proposed_test_case": { "type": "string", "minLength": 1 },
-        "requires_workflow_changes": { "type": "boolean" }
+        "requires_workflow_changes": {
+          "description": "Deprecated. Use block_auto_promotion instead. Kept optional for one release so lockstep-skewed agent output still validates.",
+          "type": "boolean"
+        },
+        "block_auto_promotion": {
+          "description": "Set blocked to true with a reason to prevent auto-promotion; set blocked to false with a reason when auto-promotion is safe.",
+          "type": "object",
+          "required": ["blocked", "reason"],
+          "properties": {
+            "blocked": { "type": "boolean" },
+            "reason": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          },
+          "additionalProperties": false
+        }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "category": { "enum": ["bug", "documentation", "performance"] } },
+            "required": ["category"]
+          },
+          "then": {
+            "required": ["block_auto_promotion"]
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "label_actions": {

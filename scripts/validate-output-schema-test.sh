@@ -59,7 +59,7 @@ run_test "valid-insufficient" \
   "true"
 
 run_test "valid-sufficient" \
-  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete."}' \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":false,"reason":"Low effort; single-file fix with existing test coverage"}},"comment":"Triage complete."}' \
   "true"
 
 run_test "valid-duplicate" \
@@ -312,6 +312,46 @@ run_test_custom_filename_output "nested-additional-property-shows-allowed" \
   "${REVIEW_SCHEMA}" \
   "false" \
   "allowed properties: actionable, category, description, file, line, remediation, severity"
+
+# --- block_auto_promotion schema tests (#2207) ---
+
+run_test "valid-sufficient-with-block-auto-promotion" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":true,"reason":"Estimated effort 4.3/5"}},"comment":"Triage complete."}' \
+  "true"
+
+run_test "valid-sufficient-with-unblocked-auto-promotion" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":false,"reason":"Low effort"}},"comment":"Triage complete."}' \
+  "true"
+
+run_test "block-auto-promotion-missing-reason-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":true}},"comment":"Triage complete."}' \
+  "false"
+
+run_test "block-auto-promotion-missing-blocked-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"reason":"High effort"}},"comment":"Triage complete."}' \
+  "false"
+
+run_test "block-auto-promotion-empty-reason-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":true,"reason":""}},"comment":"Triage complete."}' \
+  "false"
+
+run_test "deprecated-requires-workflow-changes-still-accepted" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","requires_workflow_changes":true,"block_auto_promotion":{"blocked":true,"reason":"Workflow files"}},"comment":"Triage complete."}' \
+  "true"
+
+run_test "block-auto-promotion-extra-field-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":true,"reason":"High effort","effort_score":2.5}},"comment":"Triage complete."}' \
+  "false"
+
+# --- Conditional requirement: block_auto_promotion required for auto-promotable categories ---
+
+run_test "bug-missing-block-auto-promotion-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete."}' \
+  "false"
+
+run_test "security-without-block-auto-promotion-valid" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Vuln","severity":"high","category":"security","problem":"xss","root_cause_hypothesis":"unescaped input","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"escape","proposed_test_case":"test_xss"},"comment":"Triage complete."}' \
+  "true"
 
 # --- Structural failures ---
 

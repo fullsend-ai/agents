@@ -1,0 +1,31 @@
+forge: github
+fixture:
+  type: issue
+  title: "login_handler returns JSON on success; documented contract is HTTP 204 empty body"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    `login_handler` in `src/auth/views.py` returns `{"status": "ok"}` on
+    success. The public contract for this endpoint is HTTP 204 with an
+    empty body. Every SDK, dashboard, and downstream consumer that already
+    keys on `response["status"]` will break if we ship the documented
+    contract, and every client written against the docs already fails
+    against the current handler.
+
+    **Steps to reproduce:**
+    1. Call the login handler with a valid email.
+    2. Observe the body is `{"status": "ok"}` instead of empty.
+
+    **Expected behavior:**
+    Success should return HTTP 204 and no body. Change the return of
+    `login_handler` to match that contract.
+
+    **Impact:**
+    This is a breaking change for every caller of `login_handler`. Do not
+    auto-dispatch a code agent; the rollout needs a human to decide how
+    to migrate downstream consumers.
+
+    **Environment:**
+    - Python 3.12
+    - Single-process deployment
