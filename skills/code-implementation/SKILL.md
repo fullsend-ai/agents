@@ -155,6 +155,13 @@ and `Glob` to inspect project configuration:
 
 1. **Read project-level instructions.** Use `Read` on `CLAUDE.md`,
    `CONTRIBUTING.md`, and `AGENTS.md` (if they exist).
+
+   **Precedence rule:** When AGENTS.md instructions conflict with
+   patterns found in existing code, follow AGENTS.md. Existing code
+   may predate current rules and should not be treated as authoritative
+   for conventions. AGENTS.md represents the repo maintainer's current
+   intent.
+
 2. **Discover build and test commands.** Use `Read` on `Makefile`,
    `package.json`, `pyproject.toml`, or equivalent build config.
 3. **Check for linter configuration.** Use `Glob` to find files like
@@ -400,9 +407,10 @@ react to what you see.
 
 **Implementation:**
 
-- **Follow existing patterns.** If the repo uses a specific error handling idiom,
-  use it. If controllers follow a specific reconciliation pattern, follow it. If
-  test files use a specific helper library, use it.
+- **Follow existing patterns unless AGENTS.md specifies otherwise** (see
+  step 3 precedence rule). If the repo uses a specific error handling
+  idiom, use it. If controllers follow a specific reconciliation pattern,
+  follow it. If test files use a specific helper library, use it.
 - **Do not introduce new dependencies without justification.** If the change can
   be made with the existing dependency set, prefer that.
 - **Write or update tests.** Every behavioral change must have a corresponding
