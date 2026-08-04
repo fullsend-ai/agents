@@ -286,14 +286,14 @@ run_downgrade_test "request-changes-partial-filter-no-downgrade" \
   "$MIXED_FINDINGS" "medium" "request-changes" "true"
 
 # comment with all findings filtered → action stays comment, findings removed
-COMMENT_ALL_INFO='{"action":"comment","body":"text","head_sha":"abc123","findings":[
+COMMENT_ALL_INFO='{"action":"comment","body":"text","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[
   {"severity":"info","category":"style","file":"a.go","description":"x"}
 ]}'
 run_downgrade_test "comment-all-filtered-removes-findings" \
   "$COMMENT_ALL_INFO" "low" "comment" "false"
 
 # approve with all findings filtered → action stays approve, findings removed
-APPROVE_ALL_INFO='{"action":"approve","body":"LGTM","head_sha":"abc123","findings":[
+APPROVE_ALL_INFO='{"action":"approve","body":"LGTM","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[
   {"severity":"info","category":"style","file":"a.go","description":"x"}
 ]}'
 run_downgrade_test "approve-all-filtered-removes-findings" \
@@ -437,6 +437,7 @@ run_label_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -476,6 +477,7 @@ run_label_test_stdout() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -515,6 +517,7 @@ run_label_test_no_pattern() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -540,63 +543,63 @@ run_label_test_no_pattern() {
 
 # Approve with label_actions — label should be added via API
 run_label_test "label-actions-applied" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"PR modifies API surface.","actions":[{"action":"add","label":"area/api"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"PR modifies API surface.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=area/api --silent"
 
 # Control label refused — should NOT call the labels API for it
 run_label_test_stdout "label-actions-control-label-refused" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
   "::warning::Refused to add control label 'ready-for-merge'"
 
 # Non-existent label skipped — label "bug" is not in mock label list
 run_label_test_stdout "label-actions-nonexistent-label-skipped" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Agent recommended a label that does not exist.","actions":[{"action":"add","label":"bug"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Agent recommended a label that does not exist.","actions":[{"action":"add","label":"bug"}]}}' \
   "::warning::Skipping label 'bug'"
 
 # Invalid characters refused
 run_label_test_stdout "label-actions-invalid-characters-refused" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Injection attempt.","actions":[{"action":"add","label":"label;injection"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Injection attempt.","actions":[{"action":"add","label":"label;injection"}]}}' \
   "::warning::Refused label 'label;injection'"
 
 # Remove label — should call DELETE
 run_label_test "label-actions-remove" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Stale area label removed.","actions":[{"action":"remove","label":"area/cli"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Stale area label removed.","actions":[{"action":"remove","label":"area/cli"}]}}' \
   "gh api repos/test-org/test-repo/issues/99/labels/area%2Fcli -X DELETE --silent"
 
 # Multiple adds — both should be applied
 run_label_test "label-actions-multiple-add" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
   "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=area/api --silent"
 
 run_label_test "label-actions-multiple-second-label" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Multiple labels apply.","actions":[{"action":"add","label":"area/api"},{"action":"add","label":"priority/high"}]}}' \
   "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=priority/high --silent"
 
 # When all label actions are refused, reason should NOT appear in the review body
 run_label_test_no_pattern "label-actions-all-refused-no-body-append" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
   "labels[]=ready-for-merge"
 
 # No label_actions field — should still post review without errors
 run_label_test "label-actions-absent-still-posts" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
   "fullsend post-review"
 
 # request-changes with label_actions — labels should still be applied
 run_label_test "label-actions-with-request-changes" \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches CI config.","actions":[{"action":"add","label":"area/api"}]}}' \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches CI config.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=area/api --silent"
 
 # Label with embedded newline (GHA command injection attempt) — should be refused
 run_label_test_stdout "label-actions-newline-injection-refused" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Injection.","actions":[{"action":"add","label":"ok\n::set-output name=x::pwned"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Injection.","actions":[{"action":"add","label":"ok\n::set-output name=x::pwned"}]}}' \
   "::warning::Refused label"
 
 # Label with :: delimiter (GHA command injection attempt) — :: is sanitized to :,
 # so the label becomes ":warning:injected" which passes the character regex but
 # does not exist in the repo. The important thing is the :: is stripped.
 run_label_test_stdout "label-actions-gha-delimiter-sanitized" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","label_actions":{"reason":"Injection.","actions":[{"action":"add","label":"::warning::injected"}]}}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Injection.","actions":[{"action":"add","label":"::warning::injected"}]}}' \
   "::warning::Skipping label ':warning:injected'"
 
 # --- Severity filtering integration tests ---
@@ -624,6 +627,7 @@ run_label_test_with_env() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export "${env_var}=${env_val}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -647,7 +651,7 @@ run_label_test_with_env() {
 }
 
 run_label_test_with_env "severity-filter-downgrade-integration" \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
   "requires-manual-review" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
@@ -672,6 +676,7 @@ run_label_test_with_env_stdout() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export "${env_var}=${env_val}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -695,9 +700,81 @@ run_label_test_with_env_stdout() {
 }
 
 run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
+
+# --- Severity-threshold sanitization tests ---
+# Invalid REVIEW_FINDING_SEVERITY_THRESHOLD values are echoed into a GHA
+# `::error::` workflow command. Verify the sanitizer neutralizes both
+# raw `::` sequences and URL-encoded newlines rather than being bypassable.
+
+run_severity_sanitize_test() {
+  local test_name="$1"
+  local threshold_value="$2"
+  local expected_pattern="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+    > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="${threshold_value}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit for invalid threshold"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_pattern}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# ':::error:::injected' collapses to '::error::injected' under a single
+# non-overlapping '::' -> ':' pass, reviving a live workflow-command
+# delimiter. Full colon-stripping must leave no '::' in the sanitized value.
+run_severity_sanitize_test "severity-threshold-non-idempotent-colon-collapse" \
+  ":::error:::injected" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='errorinjected' is invalid"
+
+# URL-encoded newlines are interpreted by GHA as literal newlines in
+# workflow command parameters. Stripping the '%' character (rather than the
+# literal "%0A"/"%0D" tokens) neutralizes them without matching a specific
+# case or leaving a way for adjacent fragments to reassemble the token.
+run_severity_sanitize_test "severity-threshold-url-encoded-newline-upper" \
+  "bad%0Ainjected" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='bad0Ainjected' is invalid"
+
+run_severity_sanitize_test "severity-threshold-url-encoded-carriage-return-lower" \
+  "bad%0dinjected" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='bad0dinjected' is invalid"
+
+# Adjacent-fragment reassembly: stripping the literal 3-char token "%0a" from
+# "%0%0aA" in a single pass leaves the surrounding "%0" + "A" fragments
+# adjacent, spelling a live "%0A" — which GHA decodes as a literal newline.
+# The sanitizer must not leave any '%' character behind, at any position.
+run_severity_sanitize_test "severity-threshold-percent-adjacent-fragment-reassembly" \
+  "%0%0aA" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD='00aA' is invalid"
 
 # --- Draft PR integration tests ---
 # These invoke the real post-review.sh with MOCK_PR_IS_DRAFT=true to verify
@@ -705,13 +782,13 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
 
 # Approve on a draft PR → requires-manual-review, NOT ready-for-merge
 run_label_test_with_env "draft-approve-gets-manual-review" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
   "requires-manual-review" \
   "MOCK_PR_IS_DRAFT" "true"
 
 # Approve on a draft PR → stdout should mention draft skip
 run_label_test_with_env_stdout "draft-approve-log-message" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
   "PR is a draft" \
   "MOCK_PR_IS_DRAFT" "true"
 
@@ -743,6 +820,7 @@ run_validated_dir_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -780,11 +858,11 @@ setup_validated_dir_expected_filename() {
   local run_dir="$1"
   local validated_dir="$2"
   mkdir -p "${validated_dir}"
-  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
     > "${validated_dir}/agent-result.json"
   # Also put a DIFFERENT result in iteration-2 to verify it's NOT used.
   mkdir -p "${run_dir}/iteration-2/output"
-  echo '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"BAD"}' \
+  echo '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"BAD"}' \
     > "${run_dir}/iteration-2/output/agent-result.json"
 }
 
@@ -793,7 +871,7 @@ setup_validated_dir_fallback_filename() {
   local run_dir="$1"
   local validated_dir="$2"
   mkdir -p "${validated_dir}"
-  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  echo '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
     > "${validated_dir}/result.json"
 }
 
@@ -823,7 +901,7 @@ run_validated_dir_test "validated-dir-neither-filename" \
 # When approve disposition is chosen, ready-for-merge must NOT appear in
 # a --remove-label call.
 run_label_test_no_pattern "no-op-skip-ready-for-merge-removal" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}' \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
   "--remove-label ready-for-merge"
 
 # ---------------------------------------------------------------------------
@@ -849,6 +927,7 @@ run_body_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -898,6 +977,7 @@ run_body_count_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -931,7 +1011,7 @@ run_body_count_test() {
 }
 
 # request-changes + label_actions → body has label notice (---) AND action-hints footer (---)
-LABEL_PLUS_HINTS_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}'
+LABEL_PLUS_HINTS_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}'
 
 run_body_count_test "label-actions-plus-action-hints-two-hrs" \
   "${LABEL_PLUS_HINTS_JSON}" "---" "2"

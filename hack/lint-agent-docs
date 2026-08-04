@@ -1,0 +1,178 @@
+#!/bin/bash
+# Lint: every harness YAML must have a doc: field pointing to an existing file.
+# Also checks that agent docs follow a consistent structure.
+set -euo pipefail
+shopt -s nullglob
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+HARNESS_DIR="${HARNESS_DIR:-$REPO_ROOT/harness}"
+
+# True if a doc has an unmatched ``` fence.
+has_unbalanced_fence() {
+    awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f} END{exit !f}' "$1"
+}
+
+# Extract the doc: field's value from a harness YAML, stripping the key,
+# any inline `# comment`, and surrounding quotes.
+extract_doc_value() {
+    local raw
+    raw="$(grep -E '^doc:' "$1" | head -1 || true)"
+    raw="$(sed -E "s/^doc:[[:space:]]*//; s/[[:space:]]+#.*\$//" <<< "$raw")"
+    # Strip matching surrounding quotes via bash parameter expansion —
+    # a sed backreference here behaves inconsistently between GNU and BSD sed.
+    if [[ "$raw" == \"*\" ]]; then
+        raw="${raw#\"}"
+        raw="${raw%\"}"
+    elif [[ "$raw" == \'*\' ]]; then
+        raw="${raw#\'}"
+        raw="${raw%\'}"
+    fi
+    echo "$raw"
+}
+
+errors=0
+harness_count=0
+
+echo "Checking harness files for doc: field..."
+echo "================================================"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    harness_count=$((harness_count + 1))
+    name="$(basename "$yaml_file")"
+    doc_value="$(extract_doc_value "$yaml_file")"
+
+    if [[ -z "$doc_value" ]]; then
+        echo "  ERROR: $name: missing 'doc:' field"
+        errors=$((errors + 1))
+        continue
+    fi
+
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        echo "  ERROR: $name: doc '$doc_value' does not exist"
+        errors=$((errors + 1))
+        continue
+    fi
+
+    echo "  $name: OK ($doc_value)"
+done
+
+if [[ $harness_count -eq 0 ]]; then
+    echo "  ERROR: no harness/*.yaml files found — expected at least one"
+    errors=$((errors + 1))
+fi
+
+echo ""
+echo "Checking agent doc structure..."
+echo "================================================"
+
+REQUIRED_SECTIONS="How it helps|Setup|Triggers|Commands|Control labels|Configuration|How the agent works|Source"
+IFS='|' read -ra SECTION_LIST <<< "$REQUIRED_SECTIONS"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    doc_value="$(extract_doc_value "$yaml_file")"
+    if [[ -z "$doc_value" ]]; then
+        continue
+    fi
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        continue
+    fi
+    doc_basename="$(basename "$doc_value")"
+
+    # Bail early if fences are unbalanced — unmatched ``` causes every
+    # section check to misreport.
+    if has_unbalanced_fence "$doc_path"; then
+        echo "  $doc_basename: unterminated fenced code block (unmatched \`\`\`)"
+        errors=$((errors + 1))
+        continue
+    fi
+
+    doc_ok=true
+
+    # Check that the top-level heading ends with " Agent"
+    h1="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^# [^#]/{sub(/^# /,""); sub(/[ \t]*#*[ \t]*$/,""); print; exit}' "$doc_path")"
+    if [[ -z "$h1" ]]; then
+        echo "  $doc_basename: missing top-level \"# ...\" heading"
+        errors=$((errors + 1))
+        doc_ok=false
+    elif [[ "$h1" != *" Agent" ]]; then
+        echo "  $doc_basename: top heading \"# $h1\" must end with \" Agent\" (e.g. \"# ${h1} Agent\")"
+        errors=$((errors + 1))
+        doc_ok=false
+    fi
+
+    # Extract ## headers outside fenced code blocks
+    actual_sections="$(awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^## /{sub(/^## /,""); sub(/[ \t]*#*[ \t]*$/,""); print}' "$doc_path")"
+
+    # Check for duplicate ## headings
+    duplicates="$(echo "$actual_sections" | sort | uniq -d)"
+    if [[ -n "$duplicates" ]]; then
+        while IFS= read -r dup; do
+            echo "  $doc_basename: duplicate section \"## $dup\""
+            errors=$((errors + 1))
+            doc_ok=false
+        done <<< "$duplicates"
+    fi
+
+    missing=()
+    for section in "${SECTION_LIST[@]}"; do
+        if ! echo "$actual_sections" | grep -Fqx "$section"; then
+            missing+=("$section")
+        fi
+    done
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        echo "  $doc_basename: FAIL"
+        doc_ok=false
+        for s in "${missing[@]+"${missing[@]}"}"; do
+            echo "    missing: \"## $s\""
+            errors=$((errors + 1))
+        done
+    elif [[ "$doc_ok" == "true" ]]; then
+        echo "  $doc_basename: OK"
+    fi
+done
+
+echo ""
+echo "Checking for ### Variables subsection..."
+echo "================================================"
+
+for yaml_file in "$HARNESS_DIR"/*.yaml; do
+    doc_value="$(extract_doc_value "$yaml_file")"
+    if [[ -z "$doc_value" ]]; then
+        continue
+    fi
+    doc_path="$REPO_ROOT/$doc_value"
+    if [[ ! -f "$doc_path" ]]; then
+        continue
+    fi
+    doc_basename="$(basename "$doc_value")"
+
+    # Skip docs with unbalanced fences — already reported as an error above.
+    if has_unbalanced_fence "$doc_path"; then
+        continue
+    fi
+
+    # Only check docs that have an exact "## Configuration" heading
+    if ! awk 'BEGIN{f=0} /^[[:space:]]*```/{f=1-f; next} f==0 && /^## /{h=$0; sub(/^## /,"",h); sub(/[ \t]*#*[ \t]*$/,"",h); if (h=="Configuration") found=1} END{exit !found}' "$doc_path"; then
+        continue
+    fi
+
+    # Look for ### Variables nested under ## Configuration (not just anywhere)
+    if ! awk 'BEGIN{f=0;c=0} /^[[:space:]]*```/{f=1-f;next} f{next} /^## /{h=$0; sub(/^## /,"",h); sub(/[ \t]*#*[ \t]*$/,"",h); c=(h=="Configuration"); next} c && /^### /{h=$0; sub(/^### /,"",h); sub(/[ \t]*#*[ \t]*$/,"",h); if (h=="Variables") found=1} END{exit !found}' "$doc_path"; then
+        echo "  $doc_basename: missing \"### Variables\" subsection under \"## Configuration\""
+        errors=$((errors + 1))
+    else
+        echo "  $doc_basename: OK"
+    fi
+done
+
+echo ""
+echo "================================================"
+if [[ $errors -gt 0 ]]; then
+    echo "FAILED: $errors error(s) found"
+    exit 1
+else
+    echo "OK: All harness files have valid doc references and structure"
+fi

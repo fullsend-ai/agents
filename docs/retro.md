@@ -4,6 +4,10 @@
 
 Performs retrospectives on agent workflows — analyzes what happened, identifies improvement opportunities, and proposes changes as GitHub issues.
 
+## Setup
+
+No additional setup is required beyond the standard fullsend configuration.
+
 ## How it helps
 
 - Every workflow gets a post-mortem, not just the ones that failed badly enough for someone to notice.

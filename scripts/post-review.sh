@@ -9,9 +9,12 @@
 # to "comment" so only a human can grant approval.
 #
 # Required environment variables:
-#   REVIEW_TOKEN    — token with pull-requests:write on the target repo
-#   PR_NUMBER       — GitHub PR number
-#   REPO_FULL_NAME  — owner/repo (e.g. my-org/my-repo)
+#   REVIEW_TOKEN                      — token with pull-requests:write on the target repo
+#   PR_NUMBER                         — GitHub PR number
+#   REPO_FULL_NAME                    — owner/repo (e.g. my-org/my-repo)
+#   REVIEW_FINDING_SEVERITY_THRESHOLD — minimum severity for findings
+#                                       (info|low|medium|high|critical);
+#                                       default supplied by harness/review.yaml
 #
 # Exit codes:
 #   0 — review posted
@@ -92,12 +95,28 @@ echo "Using result: ${RESULT_FILE}"
 # post-script enforces it. The filter runs before ACTION is read so
 # that verdict recalculation (if all findings are removed) is possible.
 # ---------------------------------------------------------------------------
-REVIEW_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD:-low}"
-
-case "$REVIEW_FINDING_SEVERITY_THRESHOLD" in
+REVIEW_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD:-}"
+case "${REVIEW_FINDING_SEVERITY_THRESHOLD}" in
   info|low|medium|high|critical) ;;
-  *) echo "::warning::Invalid REVIEW_FINDING_SEVERITY_THRESHOLD='${REVIEW_FINDING_SEVERITY_THRESHOLD}', defaulting to 'low'"
-     REVIEW_FINDING_SEVERITY_THRESHOLD="low" ;;
+  *) # Sanitize before interpolating into a workflow command. Strip raw
+     # newlines, then strip every '%' and ':' character outright rather than
+     # matching specific multi-char tokens (e.g. "%0A", "::") — matching
+     # fixed-width tokens is not idempotent and can be bypassed by adjacent
+     # fragments reassembling after a single pass (e.g. "%0%0aA" -> "%0A",
+     # ':::error:::' -> '::error::'). Removing every occurrence of a single
+     # character in one pass can't reassemble into that character.
+     sanitized="${REVIEW_FINDING_SEVERITY_THRESHOLD//$'\n'/}"
+     sanitized="${sanitized//$'\r'/}"
+     sanitized="${sanitized//%/}"
+     sanitized="${sanitized//:/}"
+     echo "::error::REVIEW_FINDING_SEVERITY_THRESHOLD='${sanitized}' is invalid (expected info|low|medium|high|critical)"
+     echo '{"action":"failure","reason":"tool-failure"}' | \
+       fullsend post-review \
+         --repo "${REPO_FULL_NAME}" \
+         --pr "${PR_NUMBER}" \
+         --token "${REVIEW_TOKEN}" \
+         --result -
+     exit 1 ;;
 esac
 
 severity_rank() {
