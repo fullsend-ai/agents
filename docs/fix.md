@@ -160,6 +160,7 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
 
+
 ## Source
 
 [`harness/fix.yaml`](../harness/fix.yaml)

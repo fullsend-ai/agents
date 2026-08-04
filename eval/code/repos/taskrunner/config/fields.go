@@ -1,6 +1,10 @@
 package config
 
-import "github.com/eval-org/taskrunner/config/internal/yaml"
+import (
+	"fmt"
+
+	"github.com/eval-org/taskrunner/config/internal/yaml"
+)
 
 // SetField implements the configFields interface for the minimal YAML parser.
 func (c *Config) SetField(key, value string) error {
@@ -29,6 +33,8 @@ func (c *Config) SetField(key, value string) error {
 			return err
 		}
 		c.Workers = v
+	default:
+		return fmt.Errorf("unknown config key: %s", key)
 	}
 	return nil
 }

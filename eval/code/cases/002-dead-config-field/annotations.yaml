@@ -8,9 +8,14 @@ expected_files:
 labels:
   forbidden: []
 
+# Code agent budgets (sandbox work + retries).
+# TODO: establish baseline via CI run — values copied from 001-fix-add as
+# placeholder. 002 is expected to be harder (multi-file tracing vs single-line
+# fix), so these may need adjustment upward after observing real runs.
 max_turns: 60
 max_cost_usd: 4.00
 
+# Human reference only; not consumed by judges (unlike triage/review quality).
 code_expectations: |
   The repo has a dead config field: Config.VerboseLogging is declared, defaulted,
   parsed, and tested, but never read by any consumer (runner/runner.go doesn't
@@ -18,5 +23,5 @@ code_expectations: |
   struct definition (config.go), the Defaults() return value (config.go), the
   SetField() switch case (fields.go), and all test assertions (config_test.go).
   Tests must still pass after removal. This case tests cross-file dead-code
-  removal — the agent must trace symbol references across multiple files to
-  determine what to change, not just fix a single line.
+  removal — tracing symbol references across multiple files to determine what
+  to change, not just fixing a single line.
