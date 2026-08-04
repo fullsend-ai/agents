@@ -41,10 +41,11 @@ Environment variables set by the pre-script:
 - `/tmp/workspace/jira-api-hints.json` — optional file written by pre-explore
   (live search endpoint + project probe HTTP codes). Read it before any Jira
   sibling-project query when the file exists.
-- `/tmp/workspace/duplicate-gate.json` — written by pre-explore. If
-  `override: true`, a prior explore sticky already warned about duplicates and
-  this `/fs-explore` is an explicit human override — do **not** block again;
-  run a full exploration (still list the related keys in `related_work`).
+- Duplicate gate file — prefer `/tmp/workspace/duplicate-gate.json`, also try
+  `/sandbox/workspace/duplicate-gate.json`. If `override: true`, a prior explore
+  sticky already warned about duplicates and this `/fs-explore` is an explicit
+  human override — do **not** block again; run a full exploration (still list
+  the related keys in `related_work`).
 - `FULLSEND_OUTPUT_DIR` — where to write your result
 
 ## Process
@@ -53,13 +54,22 @@ Environment variables set by the pre-script:
 
 ```bash
 echo "::notice::PHASE 0: Duplicate-work gate"
-cat /tmp/workspace/duplicate-gate.json 2>/dev/null | jq . || true
+GATE=""
+for f in /tmp/workspace/duplicate-gate.json /sandbox/workspace/duplicate-gate.json; do
+  if [[ -f "$f" ]]; then GATE="$f"; break; fi
+done
+if [[ -n "$GATE" ]]; then
+  echo "Using gate file: $GATE"
+  cat "$GATE" | jq .
+else
+  echo "No duplicate-gate.json found under /tmp/workspace or /sandbox/workspace"
+fi
 cat "$ISSUE_CONTEXT" | jq '{key, summary: .fields.summary // .summary, issuetype: .fields.issuetype.name // .level}'
 ```
 
 **Before** codebase analysis, web research, or deep related-work mining:
 
-1. Read `duplicate-gate.json`. If `override` is `true`, skip to Phase 1 (full explore).
+1. Read the gate file. If `override` is `true`, skip to Phase 1 (full explore).
 2. Otherwise run a **cheap** Jira (or GitHub) search for **open** Features/Epics
    whose problem + scope are substantially the same as this issue (near-duplicate
    of the same work — not merely a related theme).
