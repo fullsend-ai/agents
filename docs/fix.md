@@ -95,6 +95,13 @@ The fix agent shares the [code agent's sandbox image](code.md#custom-sandbox-ima
 If your project uses a custom image, update the `image:` field in both
 `harness/code.yaml` and `harness/fix.yaml`.
 
+## Custom network policy
+
+The fix agent shares the code agent's sandbox network policy. If your
+project needs additional hosts whitelisted (e.g., for native package
+builds), see [Custom network policy](code.md#custom-network-policy)
+and apply the same `policy:` override in `.fullsend/fix.yaml`.
+
 ## What the agent acts on
 
 **When triggered by a review:** the agent reads the review body, the PR diff,
