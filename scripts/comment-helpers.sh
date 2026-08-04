@@ -895,8 +895,9 @@ has_duplicate_block_marker() {
   return 1
 }
 
-# Write /tmp/workspace/duplicate-gate.json for the sandbox (avoid harness ${VAR}
-# validation — same trap as JIRA_API_HINTS).
+# Write duplicate-gate.json into the host workspace (default /tmp/workspace).
+# Install host_files must use the same dest path the agent cats in Phase 0.
+# Avoid harness ${VAR} validation traps (same class as JIRA_API_HINTS).
 write_duplicate_gate_file() {
   local stage="$1"
   local workspace="${2:-/tmp/workspace}"

@@ -23,7 +23,7 @@ implementable child work items, even when information is incomplete.
 
 **Exception — near-duplicate open work:** If this issue is a near-duplicate of
 another open Feature/Epic covering the same problem and scope, you MUST halt
-with `status: blocked_duplicate` (Phase 0) unless `/tmp/workspace/duplicate-gate.json`
+with `status: blocked_duplicate` (Phase 0) unless the duplicate gate file
 has `"override": true` (human re-ran `/fs-refine` after the warning). Do not
 invent a parallel plan and “note coordination.”
 
@@ -78,7 +78,8 @@ Environment variables / files set by the pre-script:
 
 - `ISSUE_CONTEXT` — path to `issue-context.json`
 - `EXPLORE_CONTEXT` — path to `exploration_context.json` (from explore stage)
-- `/tmp/workspace/duplicate-gate.json` — if `override: true`, human re-ran
+- Duplicate gate file — prefer `/tmp/workspace/duplicate-gate.json`, also try
+  `/sandbox/workspace/duplicate-gate.json`. If `override: true`, human re-ran
   `/fs-refine` after a duplicate warning; proceed with a full plan.
 - `CRITIQUE_FEEDBACK` — path to `critique-feedback.json` (from critique agent, if this is a revision round)
 - `TARGET_REPO_DIR` — path to checkout of the target repository (if available)
@@ -102,10 +103,19 @@ Environment variables / files set by the pre-script:
 
 ```bash
 echo "::notice::PHASE 0: Duplicate-work gate"
-cat /tmp/workspace/duplicate-gate.json 2>/dev/null | jq . || true
+GATE=""
+for f in /tmp/workspace/duplicate-gate.json /sandbox/workspace/duplicate-gate.json; do
+  if [[ -f "$f" ]]; then GATE="$f"; break; fi
+done
+if [[ -n "$GATE" ]]; then
+  echo "Using gate file: $GATE"
+  cat "$GATE" | jq .
+else
+  echo "No duplicate-gate.json found under /tmp/workspace or /sandbox/workspace"
+fi
 ```
 
-1. If `duplicate-gate.json` has `"override": true`, skip to Phase 1 (full refine).
+1. If the gate file has `"override": true`, skip to Phase 1 (full refine).
 2. Else check explore `related_work` / a cheap Jira search for **open**
    Features/Epics that are near-duplicates of this issue (same problem + scope —
    not merely a related theme).
