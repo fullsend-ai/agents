@@ -13,14 +13,14 @@ func Unmarshal(data []byte, v interface{}) error {
 	lines := strings.Split(string(data), "\n")
 	kvs := make(map[string]string)
 	re := regexp.MustCompile(`^(\w+):\s*(.+)$`)
-	for _, line := range lines {
+	for i, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		m := re.FindStringSubmatch(line)
 		if m == nil {
-			continue
+			return fmt.Errorf("line %d: malformed YAML (expected 'key: value'): %q", i+1, line)
 		}
 		kvs[m[1]] = m[2]
 	}
@@ -39,33 +39,7 @@ func applyToStruct(kvs map[string]string, v interface{}) error {
 		}
 		return nil
 	}
-	return applyReflect(kvs, v)
-}
-
-func applyReflect(kvs map[string]string, v interface{}) error {
-	type yamlField struct {
-		Name string
-		Set  func(string) error
-	}
-
-	cfg, ok := v.(interface {
-		YAMLFields() []struct {
-			Key string
-			Set func(string) error
-		}
-	})
-	if !ok {
-		return fmt.Errorf("target does not implement YAMLFields or configFields")
-	}
-
-	for _, f := range cfg.YAMLFields() {
-		if val, exists := kvs[f.Key]; exists {
-			if err := f.Set(val); err != nil {
-				return fmt.Errorf("setting %s: %w", f.Key, err)
-			}
-		}
-	}
-	return nil
+	return fmt.Errorf("target does not implement configFields interface")
 }
 
 // ParseBool parses a YAML boolean string.
