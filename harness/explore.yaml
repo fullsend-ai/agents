@@ -20,18 +20,6 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
-  - src: /tmp/workspace/issue-context.json
-    dest: /tmp/workspace/issue-context.json
-    optional: true
-  - src: /tmp/workspace/referenced-repos.tar.gz
-    dest: /sandbox/workspace/referenced-repos.tar.gz
-    optional: true
-  - src: /tmp/workspace/referenced-repos-manifest.json
-    dest: /sandbox/workspace/referenced-repos-manifest.json
-    optional: true
-  - src: /tmp/workspace/duplicate-gate.json
-    dest: /sandbox/workspace/duplicate-gate.json
-    optional: true
 
 skills:
   - skills/public-research
