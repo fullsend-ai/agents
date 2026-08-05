@@ -180,26 +180,20 @@ the injected GitHub token.
 
 ### Default allowlist
 
-The default policy ([`policies/code.yaml`](../policies/code.yaml))
-allows the following:
-
-| Category | Hosts | Binaries |
-|----------|-------|----------|
-| **Vertex AI** | `api.anthropic.com`, `*.googleapis.com` | `claude`, `node` |
-| **GitHub API** | `api.github.com`, `github.com` | `gh`, `git`, `node`, `pre-commit` |
-| **Gitleaks releases** | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com` | `pre-commit` |
-| **Package registries** | `registry.npmjs.org`, `registry.yarnpkg.com`, `pypi.org`, `files.pythonhosted.org`, `proxy.golang.org`, `sum.golang.org`, `storage.googleapis.com` | `npm`, `npx`, `yarn`, `yarnpkg`, `pnpm`, `node`, `pip`, `pip3`, `python`, `python3`, `python3.*`, `uv`, `uvx`, `go`, `pre-commit` |
-
-All endpoints use port 443 (HTTPS) and are read-only except Vertex AI
-(which requires read-write for inference).
+The default policy is defined in
+[`policies/code.yaml`](../policies/code.yaml). It grants access to
+Vertex AI, the GitHub API, package registries (npm, PyPI, Go modules),
+and gitleaks releases. All endpoints use port 443 (HTTPS). See the
+policy file for the full list of allowed hosts and binaries.
 
 ### When you need a custom policy
 
-Some packages require network access beyond the default allowlist
-during installation or build. For example, `node-gyp` downloads
-native addon source from `codeload.github.com`, which is not in the
-default policy. When this happens, the agent logs show a connection
-error during `npm install` or the equivalent package manager command.
+Some packages require network access to hosts not in the default
+allowlist during installation or build — for example, a native addon
+that downloads source from a host outside the default list, or a
+package manager plugin that reaches an additional registry. When this
+happens, the agent logs show a connection error (such as
+`ECONNREFUSED` or `ETIMEDOUT`) during the install or build step.
 
 ### How to configure
 
@@ -207,154 +201,40 @@ Create a custom policy file in your repository that extends the
 default policy with additional endpoints. The file follows the same
 YAML structure as [`policies/code.yaml`](../policies/code.yaml).
 
-**Step 1 — Create the policy file.** Copy the default policy and add
-your endpoints to the `network_policies` section:
+**Step 1 — Create the policy file.** Copy
+[`policies/code.yaml`](../policies/code.yaml) and add your endpoints
+to the `network_policies` section. Remove any default entries your
+project does not need (e.g., Go registry entries for a Node-only
+project). Then append a new policy block for the additional host:
 
 ```yaml
 # .fullsend/policies/code.yaml
 ---
 version: 1
 
-# Include all default sections (filesystem_policy, landlock, process,
-# and the default network_policies from policies/code.yaml) plus your
-# custom endpoints.
-
 filesystem_policy:
-  include_workdir: true
-  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
-  read_write: [/sandbox, /tmp, /dev/null]
+  # ... (keep the defaults from policies/code.yaml)
 landlock:
-  compatibility: best_effort
+  # ...
 process:
-  run_as_user: sandbox
-  run_as_group: sandbox
+  # ...
 
 network_policies:
-  # ── Default policies (keep these) ──────────────────────────
+  # Keep the default policies your project needs (vertex_ai,
+  # github_api, gitleaks_releases, package_registries).
+  # See policies/code.yaml for the full structure.
   vertex_ai:
-    name: vertex-ai
-    endpoints:
-      - host: "api.anthropic.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-      - host: "*.googleapis.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-write
-    binaries:
-      - path: "**/claude"
-      - path: "**/node"
-
+    # ...
   github_api:
-    name: github-api
-    endpoints:
-      - host: "api.github.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "api.github.com"
-        port: 443
-        protocol: graphql
-        enforcement: enforce
-        access: read-only
-        path: "/graphql"
-      - host: "github.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-    binaries:
-      - path: "**/gh"
-      - path: "**/git"
-      - path: "**/node"
-      - path: "**/pre-commit"
-
-  gitleaks_releases:
-    name: gitleaks-releases
-    endpoints:
-      - host: "github.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "objects.githubusercontent.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "release-assets.githubusercontent.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-    binaries:
-      - path: "**/pre-commit"
-
+    # ...
   package_registries:
-    name: package-registries
-    endpoints:
-      - host: "registry.npmjs.org"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "registry.yarnpkg.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "pypi.org"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "files.pythonhosted.org"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "proxy.golang.org"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "sum.golang.org"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-      - host: "storage.googleapis.com"
-        port: 443
-        protocol: rest
-        enforcement: enforce
-        access: read-only
-    binaries:
-      - path: "**/npm"
-      - path: "**/npx"
-      - path: "**/yarn"
-      - path: "**/yarnpkg"
-      - path: "**/pnpm"
-      - path: "**/node"
-      - path: "**/pip"
-      - path: "**/pip3"
-      - path: "**/python"
-      - path: "**/python3"
-      - path: "**/python3.*"
-      - path: "**/uv"
-      - path: "**/uvx"
-      - path: "**/go"
-      - path: "**/pre-commit"
+    # ...
 
-  # ── Custom policy (your additions) ────────────────────────
-  # Example: allow node-gyp to download native addon source
-  native_builds:
-    name: native-builds
+  # ── Your additions ────────────────────────────────────────
+  custom_hosts:
+    name: custom-hosts
     endpoints:
-      - host: "codeload.github.com"
+      - host: "example.com"
         port: 443
         protocol: rest
         enforcement: enforce
@@ -362,7 +242,6 @@ network_policies:
     binaries:
       - path: "**/node"
       - path: "**/npm"
-      - path: "**/npx"
 ```
 
 **Step 2 — Reference the policy in your custom harness.** Add the
@@ -379,9 +258,11 @@ If you already have a custom harness (e.g., for a
 alongside the existing `image:` field.
 
 **Step 3 — Update the fix agent harness (if used).** The
-[fix agent](fix.md) uses the same sandbox environment. If your project
-uses the fix agent, apply the same `policy:` override in
-`.fullsend/fix.yaml`.
+[fix agent](fix.md) uses its own policy file
+([`policies/fix.yaml`](../policies/fix.yaml)) with similar but not
+identical defaults. If your project uses the fix agent and needs the
+same custom hosts, create a corresponding override and reference it
+in `.fullsend/fix.yaml`.
 
 ### Troubleshooting
 
