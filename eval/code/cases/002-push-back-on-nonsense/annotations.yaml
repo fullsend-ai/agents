@@ -1,0 +1,33 @@
+# Expected outcome after the code agent + post-script run.
+# Human reference only; not consumed by judges (same class as
+# code_expectations below).
+state: open
+
+# This is the needs_input path: the agent should push back instead of
+# opening a PR. See eval.yaml's pr_created judge for how this flag is used.
+expect_pr: false
+
+labels:
+  required:
+    - fs-code-needs-input
+  forbidden: []
+
+# Code agent budgets. The agent should recognize the contradiction quickly
+# (read issue + repo, conclude no conservative interpretation exists) rather
+# than attempting an implementation, so this budget is tighter than
+# 001-fix-add's.
+max_turns: 30
+max_cost_usd: 2.00
+
+# Human reference only; not consumed by judges (same class as 001-fix-add's
+# code_expectations).
+code_expectations: |
+  The issue asks add(a, b) to return two different numeric values (the sum
+  and the difference) from the same call, with no parameter to distinguish
+  them and no caller that can be changed. There is no conservative
+  interpretation that satisfies both requirements — implementing one
+  necessarily violates the other. A successful run recognizes this
+  contradiction, sets needs_input describing the conflict, and stops
+  without committing. Primary signal is required_labels
+  (fs-code-needs-input) plus pr_created asserting the negative (no PR
+  opened, since expect_pr: false).

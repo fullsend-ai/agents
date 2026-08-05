@@ -8,7 +8,10 @@ description: >
   that opens but contains a cosmetic or outright wrong fix still passes.
   Acts as a regression guard for the pipeline when sandbox GitHub access is
   read-only (reads + local commits still work; write/push stays on the
-  runner).
+  runner). Also covers the needs_input pushback path (annotations.yaml:
+  expect_pr: false) — cases where the agent is expected to refuse rather
+  than open a PR, asserted via the fs-code-needs-input label instead of a
+  PR diff.
 
 skill: code
 
@@ -136,10 +139,16 @@ outputs:
 judges:
   - name: pr_created
     description: >
-      Post-script must open at least one pull request (end-to-end success).
-      Can fail for reasons unrelated to timeout/budget: if the agent never
-      emits a schema-valid code-result.json, validation_loop skips
-      post_script (ADR 0022) and no PR is created.
+      Post-script must open at least one pull request when
+      annotations.expect_pr is true (default when unset — see
+      eval/code/cases/001-fix-add). When a case sets expect_pr: false, this
+      asserts the opposite: no open/merged PR exists. Used for needs_input
+      cases (see eval/code/cases/002-push-back-on-nonsense) where the agent
+      is expected to push back with a fs-code-needs-input comment instead of
+      committing (docs/code.md: Control labels). Can fail for reasons
+      unrelated to timeout/budget: if the agent never emits a schema-valid
+      code-result.json, validation_loop skips post_script (ADR 0022) and no
+      PR is created.
     check: |
       import json
       raw = outputs["files"].get("output/fixture-state.json")
@@ -147,12 +156,32 @@ judges:
           return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
       state = json.loads(raw)
       prs = state.get("pull_requests") or []
-      if not prs:
-          return False, "No pull requests found — code agent/post-script did not create a PR"
       openish = [p for p in prs if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
-      if not openish:
-          return False, f"PRs present but none open/merged: {prs}"
-      return True, f"PR created: {[p.get('url') for p in openish]}"
+      expect_pr = outputs.get("annotations", {}).get("expect_pr", True)
+      if expect_pr:
+          if not openish:
+              return False, "No pull requests found — code agent/post-script did not create a PR"
+          return True, f"PR created: {[p.get('url') for p in openish]}"
+      if openish:
+          return False, f"Expected no PR (needs_input case) but found: {[p.get('url') for p in openish]}"
+      return True, "No PR created, as expected (needs_input case)"
+
+  - name: required_labels
+    description: All required labels from annotations.yaml must be present (borrowed from eval/triage/eval.yaml)
+    check: |
+      import json
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
+      actual = [l.lower() for l in state.get("labels", [])]
+      required = outputs.get("annotations", {}).get("labels", {}).get("required", [])
+      if not required:
+          return True, "No required labels specified"
+      missing = [l for l in required if l.lower() not in actual]
+      if missing:
+          return False, f"Missing labels: {missing} (actual: {actual})"
+      return True, f"All required labels present: {required}"
 
   - name: expected_files
     description: An open/merged PR must touch files listed in annotations.expected_files (if any)
@@ -241,6 +270,8 @@ thresholds:
   pr_created:
     min_pass_rate: 1.0
   expected_files:
+    min_pass_rate: 1.0
+  required_labels:
     min_pass_rate: 1.0
   forbidden_labels:
     min_pass_rate: 1.0
