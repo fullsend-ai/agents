@@ -35,6 +35,7 @@ on issues (not PRs).
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
+| `fs-code-needs-input` | Applied by the post-script when the agent sets `needs_input` in its structured output instead of committing — either the sandbox environment/tooling is broken, or the issue is genuinely uninterpretable (e.g. contradictory requirements). Removes `ready-to-code`. No PR is opened; the agent posts a comment explaining what it needs. Remove the label and re-trigger with `/fs-code` once resolved. |
 
 ## Configuration
 
