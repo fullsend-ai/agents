@@ -9,9 +9,12 @@ labels:
   forbidden: []
 
 # Code agent budgets (sandbox work + retries).
-# TODO: establish baseline via CI run — values copied from 001-fix-add as
-# placeholder. 002 is expected to be harder (multi-file tracing vs single-line
-# fix), so these may need adjustment upward after observing real runs.
+# No case-specific baseline yet (end-to-end eval run pending CI access).
+# Reference: baseline-30 code-phase analytics (30 runs, claude-opus-4-6,
+# commit f96750b) — median $2.29 / 27 turns, P75 $3.76 / 42 turns,
+# P90 $4.66 / 61 turns. 002 is multi-file tracing (harder than 001's
+# single-line fix), so budget set near P75-P90 of the general code baseline.
+# Revisit after first CI run with case-specific data.
 max_turns: 60
 max_cost_usd: 4.00
 
