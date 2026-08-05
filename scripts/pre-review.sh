@@ -79,4 +79,32 @@ The \`/fs-review\` command only reviews open pull requests.
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# Check author skip list — exit early if PR author is in REVIEW_SKIP_AUTHORS
+# ---------------------------------------------------------------------------
+if [[ -n "${REVIEW_SKIP_AUTHORS:-}" ]]; then
+  PR_AUTHOR="$(GH_TOKEN="${_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" --json author --jq '.author.login' 2>/dev/null || true)"
+
+  if [[ -n "${PR_AUTHOR}" ]]; then
+    IFS=',' read -ra _SKIP_LIST <<< "${REVIEW_SKIP_AUTHORS}"
+    for _entry in "${_SKIP_LIST[@]}"; do
+      read -r _entry <<< "${_entry}"  # trim whitespace
+      if [[ "${_entry,,}" == "${PR_AUTHOR,,}" ]]; then
+        _SAFE_AUTHOR="${PR_AUTHOR//::/ }"
+        echo "::notice::PR #${PR_NUMBER} authored by ${_SAFE_AUTHOR} — skipping review (REVIEW_SKIP_AUTHORS)"
+
+        COMMENT_BODY="Review skipped — PR author **${PR_AUTHOR}** is in the \`REVIEW_SKIP_AUTHORS\` list.
+
+<sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-review check</sub>"
+
+        printf '%s' "${COMMENT_BODY}" | GH_TOKEN="${_TOKEN}" gh issue comment "${PR_NUMBER}" \
+          --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
+
+        exit 0
+      fi
+    done
+  fi
+fi
+
 echo "PR #${PR_NUMBER} is open — proceeding with review agent"
