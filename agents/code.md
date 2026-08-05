@@ -83,7 +83,10 @@ the review agent — if the triage was wrong, your code will fail review.
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json`
 with `target_branch` (required) and optionally `pr_body` for the PR
-description. The `code-implementation` skill describes the schema and
+description, or `needs_input` when you need human input before you can
+proceed — in that case, do not commit, and the post-script applies a
+`needs-input` label and posts the text as an issue comment instead of
+opening a PR. The `code-implementation` skill describes the schema and
 the exact steps where you write each field. The post-script reads this
 file to determine the PR target branch and description. Without this
 file, the validation loop rejects the run and retries.

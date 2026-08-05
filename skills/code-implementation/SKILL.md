@@ -39,7 +39,12 @@ The `scan-secrets` helper is pre-installed in the sandbox image at
 command -v scan-secrets
 ```
 
-If missing, **STOP**. Do not improvise a replacement or skip scanning.
+If missing, this is an environment blocker, not a silent stop. Write
+`needs_input` to the result file describing the missing helper and path
+(e.g. "scan-secrets helper not found in sandbox image at
+/usr/local/bin/scan-secrets — cannot verify changes are free of secrets"),
+validate structured output (step 11), and stop — no commit. **Do not
+improvise a replacement or skip scanning.**
 
 Two modes:
 
@@ -400,6 +405,21 @@ uninterpretable" (no viable path forward). For vague-but-actionable issues,
 implement the most conservative interpretation and note your assumptions in
 the commit message.
 
+For genuinely uninterpretable issues, do not guess. Write `needs_input` to
+the result file explaining specifically what's ambiguous and why no
+conservative interpretation is safe, skip implementation entirely, go
+straight to step 11 (validate structured output), and stop. No commit.
+
+```bash
+needs_input=$(cat <<'NEEDSINPUT'
+<what's ambiguous and why no conservative interpretation is safe>
+NEEDSINPUT
+)
+jq --arg ni "$needs_input" '. + {needs_input: $ni}' \
+  "${FULLSEND_OUTPUT_DIR}/agent-result.json" > "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" \
+  && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/agent-result.json"
+```
+
 Do not start writing code until you can articulate: what you will change, why,
 and how you will verify it works.
 
@@ -609,12 +629,10 @@ failures.
 
 **If tests or linters fail due to missing tools or infrastructure** (not
 due to your code): try the Makefile's setup targets first (`make deps`,
-`make setup`, etc.). If the tool genuinely cannot be installed in the
-sandbox, note this in your commit message body so reviewers know what was
-not verified:
-
-> Note: <suite-name> tests could not run (<reason>). <other-suite>
-> tests passed. Manual verification of <suite-name> is required.
+`make setup`, etc.) — one attempt only. If the tool still cannot run
+after that attempt, write `needs_input` to the result file describing
+exactly what's missing (the tool name, the command that failed, and the
+error), validate structured output (step 11), and stop — do NOT commit.
 
 **Do NOT silently skip tests or linters and commit as if everything
 passed.** If you cannot run the relevant test suite or lint command, you
