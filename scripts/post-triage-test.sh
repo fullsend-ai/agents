@@ -974,62 +974,55 @@ run_test_with_env "auto-code-off-docs-still-gets-docs-label" \
   "false" \
   "TRIAGE_AUTO_CODE=off"
 
-# TRIAGE_AUTO_CODE=category with default categories: bug gets ready-to-code.
-run_test_with_env "auto-code-category-default-bug-gets-ready-to-code" \
-  "${AUTO_CODE_BUG_FIXTURE}" \
-  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
-  "false" \
-  "TRIAGE_AUTO_CODE=category"
-
-# TRIAGE_AUTO_CODE=category with TRIAGE_AUTO_CODE_CATEGORIES genuinely unset:
-# no in-script default to fall back to, so the category list is empty and
-# bug gets triaged rather than ready-to-code. Locks in that the var is
-# required for auto-promotion to happen in "category" mode.
-run_test_unset_env "auto-code-category-categories-unset-gets-triaged" \
+# TRIAGE_AUTO_CODE=on with TRIAGE_AUTO_CODE_CATEGORIES genuinely unset: no
+# in-script default to fall back to, so the category list is empty and bug
+# gets triaged rather than ready-to-code. Locks in that the var is required
+# for auto-promotion to happen at all.
+run_test_unset_env "auto-code-on-categories-unset-gets-triaged" \
   "${AUTO_CODE_BUG_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "TRIAGE_AUTO_CODE_CATEGORIES" \
-  "TRIAGE_AUTO_CODE=category"
+  "TRIAGE_AUTO_CODE=on"
 
-# TRIAGE_AUTO_CODE=category with only bug: bug gets ready-to-code.
-run_test_with_env "auto-code-category-bug-only-bug-gets-ready-to-code" \
+# TRIAGE_AUTO_CODE=on with only bug: bug gets ready-to-code.
+run_test_with_env "auto-code-on-bug-only-bug-gets-ready-to-code" \
   "${AUTO_CODE_BUG_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
-# TRIAGE_AUTO_CODE=category with only bug: documentation gets triaged.
-run_test_with_env "auto-code-category-bug-only-docs-gets-triaged" \
+# TRIAGE_AUTO_CODE=on with only bug: documentation gets triaged.
+run_test_with_env "auto-code-on-bug-only-docs-gets-triaged" \
   "${AUTO_CODE_DOCS_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
-# TRIAGE_AUTO_CODE=category with only bug: docs does NOT get ready-to-code.
-run_test_no_pattern_with_env "auto-code-category-bug-only-docs-no-ready-to-code" \
+# TRIAGE_AUTO_CODE=on with only bug: docs does NOT get ready-to-code.
+run_test_no_pattern_with_env "auto-code-on-bug-only-docs-no-ready-to-code" \
   "${AUTO_CODE_DOCS_FIXTURE}" \
   "labels[]=ready-to-code" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
-# TRIAGE_AUTO_CODE=category with only documentation: performance gets triaged.
-run_test_with_env "auto-code-category-docs-only-perf-gets-triaged" \
+# TRIAGE_AUTO_CODE=on with only documentation: performance gets triaged.
+run_test_with_env "auto-code-on-docs-only-perf-gets-triaged" \
   "${AUTO_CODE_PERF_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=documentation'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=documentation'
 
-# TRIAGE_AUTO_CODE=category with bug,documentation: both get ready-to-code.
-run_test_with_env "auto-code-category-bug-docs-bug-gets-ready-to-code" \
+# TRIAGE_AUTO_CODE=on with bug,documentation: both get ready-to-code.
+run_test_with_env "auto-code-on-bug-docs-bug-gets-ready-to-code" \
   "${AUTO_CODE_BUG_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
 
-run_test_with_env "auto-code-category-bug-docs-docs-gets-ready-to-code" \
+run_test_with_env "auto-code-on-bug-docs-docs-gets-ready-to-code" \
   "${AUTO_CODE_DOCS_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
 
 # TRIAGE_AUTO_CODE=garbage: unrecognized value falls back to "on" but warns.
 run_test_stdout_with_env "auto-code-unrecognized-value-warns" \
@@ -1044,12 +1037,12 @@ run_test_with_env "auto-code-unrecognized-value-still-ready-to-code" \
   "false" \
   "TRIAGE_AUTO_CODE=garbage"
 
-# TRIAGE_AUTO_CODE=category with uppercase category name: still matches (case-insensitive).
-run_test_with_env "auto-code-category-uppercase-still-matches" \
+# TRIAGE_AUTO_CODE=on with uppercase category name: still matches (case-insensitive).
+run_test_with_env "auto-code-on-uppercase-still-matches" \
   "${AUTO_CODE_BUG_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=Bug,Documentation'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=Bug,Documentation'
 
 # TRIAGE_AUTO_CODE=off with workflow-changes: still triaged (both guards agree).
 run_test_with_env "auto-code-off-with-workflow-changes-gets-triaged" \
@@ -1058,28 +1051,28 @@ run_test_with_env "auto-code-off-with-workflow-changes-gets-triaged" \
   "false" \
   "TRIAGE_AUTO_CODE=off"
 
-# TRIAGE_AUTO_CODE=category: feature still gets feature+triaged (unchanged).
-run_test_with_env "auto-code-category-feature-gets-feature-label" \
+# TRIAGE_AUTO_CODE=on: feature still gets feature+triaged (unchanged).
+run_test_with_env "auto-code-on-feature-gets-feature-label" \
   "${AUTO_CODE_FEATURE_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=feature --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
 
-# TRIAGE_AUTO_CODE=category with explicit empty categories: promotes nothing.
-run_test_with_env "auto-code-category-empty-string-gets-triaged" \
+# TRIAGE_AUTO_CODE=on with explicit empty categories: promotes nothing.
+run_test_with_env "auto-code-on-empty-string-gets-triaged" \
   "${AUTO_CODE_BUG_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES='
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES='
 
-# TRIAGE_AUTO_CODE=category with whitespace in categories: still matches.
+# TRIAGE_AUTO_CODE=on with whitespace in categories: still matches.
 # Uses documentation fixture (not bug) to verify multi-item matching actually
 # works — bug would match even a truncated list.
-run_test_with_env "auto-code-category-whitespace-tolerant" \
+run_test_with_env "auto-code-on-whitespace-tolerant" \
   "${AUTO_CODE_DOCS_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
-  $'TRIAGE_AUTO_CODE=category\nTRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance'
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance'
 
 # --- Summary ---
 

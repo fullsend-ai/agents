@@ -393,8 +393,6 @@ ${FAILED_CREATES}"
     # TRIAGE_AUTO_CODE (#1754) controls whether auto-promotion happens:
     #   on (default) — auto-promote categories listed in TRIAGE_AUTO_CODE_CATEGORIES
     #   off          — never auto-promote; always apply triaged
-    #   category     — same as "on"; kept as a separate name for clarity when
-    #                  a category list is explicitly configured
     #
     # TRIAGE_AUTO_CODE_CATEGORIES is a comma-separated category list with no
     # default baked into this script -- harness/triage.yaml and docs/triage.md
@@ -424,7 +422,7 @@ ${FAILED_CREATES}"
     auto_code_allowed() {
       case "${AUTO_CODE}" in
         off) return 1 ;;
-        on | category) category_in_auto_code_list ;;
+        on) category_in_auto_code_list ;;
         *)
           echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '${AUTO_CODE}' — falling back to 'on'"
           category_in_auto_code_list

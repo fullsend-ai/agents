@@ -135,8 +135,14 @@ where every agent would pay the context cost.
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote bug/documentation/performance. `off` — never auto-promote; always apply `triaged`. `category` — auto-promote only categories in `TRIAGE_AUTO_CODE_CATEGORIES`. | `on` | `on`, `off`, `category` |
-| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=category`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
+| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote categories listed in `TRIAGE_AUTO_CODE_CATEGORIES`. `off` — never auto-promote; always apply `triaged`. | `on` | `on`, `off` |
+| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=on`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
+
+To override these defaults per repo or org, create a custom harness for the
+triage agent the same way the [code agent](code.md#how-to-configure) does —
+a `.fullsend/triage.yaml` with a `base:` pointing at
+[`harness/triage.yaml`](../harness/triage.yaml) and your own `env.runner`
+values, referenced from `.fullsend/config.yaml`.
 
 ## How the agent works
 
