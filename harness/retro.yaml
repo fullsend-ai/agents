@@ -26,6 +26,7 @@ skills:
   - skills/finding-agent-runs
   - skills/agent-scaffolding
   - skills/autonomy-readiness
+  - skills/retro-filing-policy
 
 pre_script: scripts/pre-retro.sh
 post_script: scripts/post-retro.sh

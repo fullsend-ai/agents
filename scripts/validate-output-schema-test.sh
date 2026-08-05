@@ -478,6 +478,40 @@ run_test_custom_filename "review-approve-no-protected-path-valid" \
   "${REVIEW_SCHEMA}" \
   "true"
 
+# --- retro-result.schema.json filing_decision tests (#525) ---
+
+RETRO_SCHEMA="${SCRIPT_DIR}/../schemas/retro-result.schema.json"
+
+run_test_custom_filename "retro-valid-with-filing-decision-file" \
+  '{"summary":"Found one issue.","proposals":[{"target_repo":"org/repo","title":"Fix X","what_happened":"X broke","what_could_go_better":"Y","proposed_change":"Z","validation_criteria":"W","filing_decision":{"file":true,"reason":"Actionable fix"}}]}' \
+  "agent-result.json" \
+  "${RETRO_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "retro-valid-with-filing-decision-skip" \
+  '{"summary":"Found one issue.","proposals":[{"target_repo":"org/repo","title":"Fix X","what_happened":"X broke","what_could_go_better":"Y","proposed_change":"Z","validation_criteria":"W","filing_decision":{"file":false,"reason":"Evidence-for pattern"}}]}' \
+  "agent-result.json" \
+  "${RETRO_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "retro-valid-without-filing-decision" \
+  '{"summary":"Found one issue.","proposals":[{"target_repo":"org/repo","title":"Fix X","what_happened":"X broke","what_could_go_better":"Y","proposed_change":"Z","validation_criteria":"W"}]}' \
+  "agent-result.json" \
+  "${RETRO_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "retro-filing-decision-missing-reason-rejected" \
+  '{"summary":"Found one issue.","proposals":[{"target_repo":"org/repo","title":"Fix X","what_happened":"X broke","what_could_go_better":"Y","proposed_change":"Z","validation_criteria":"W","filing_decision":{"file":true}}]}' \
+  "agent-result.json" \
+  "${RETRO_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "retro-filing-decision-extra-field-rejected" \
+  '{"summary":"Found one issue.","proposals":[{"target_repo":"org/repo","title":"Fix X","what_happened":"X broke","what_could_go_better":"Y","proposed_change":"Z","validation_criteria":"W","filing_decision":{"file":true,"reason":"Good","extra":"bad"}}]}' \
+  "agent-result.json" \
+  "${RETRO_SCHEMA}" \
+  "false"
+
 # --- Summary ---
 
 echo ""
