@@ -8,7 +8,12 @@ machine. For general background on running agents locally, see
 
 - **fullsend** CLI on your `PATH`
 - **gh** CLI authenticated (`gh auth status`)
-- **openshell** and **openshell-gateway** installed
+- **openshell** and **openshell-gateway** installed, matching the version
+  fullsend pins in
+  [`openshell-version.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/openshell-version.sh)
+  (currently 0.0.83) — an older version (e.g. the Homebrew tap's 0.0.73)
+  can fail the sandbox pre-flight with an opaque `GitHub API unreachable
+  from sandbox` error
 - **podman** installed
 - A test repo with issues you can point agents at (e.g.,
   `your-org/test-repo`)
@@ -63,13 +68,19 @@ git clone git@github.com:your-org/test-repo /tmp/target-repo
 ```bash
 fullsend run triage \
   --fullsend-dir . \
-  --target-repo /tmp/target-repo
+  --target-repo /tmp/target-repo \
+  --output-dir /tmp/fullsend
 ```
 
 - `--fullsend-dir .` tells fullsend to use this repo's harness files.
 - `--target-repo` points at the target repo checkout (from step 2) for
   the agent to work against. Don't point it at `.` — that's this
   harness repo, not the repo the issue lives in.
+- `--output-dir /tmp/fullsend` pins the output location so the `cat`
+  command in step 4 works as written. Without it, fullsend defaults to
+  Go's `os.TempDir()/fullsend`, which is `/tmp/fullsend` on Linux but
+  `$TMPDIR/fullsend` (something like
+  `/var/folders/.../T/fullsend/`) on macOS.
 - Add `--no-post-script` to inspect the agent's output without
   applying GitHub mutations (posting comments, applying labels). For
   features that change post-script behavior, you'll want to run
@@ -105,13 +116,15 @@ Example testing a hypothetical `TRIAGE_AUTO_CODE` var:
 # Default behavior (var unset)
 fullsend run triage \
   --fullsend-dir . \
-  --target-repo /tmp/target-repo
+  --target-repo /tmp/target-repo \
+  --output-dir /tmp/fullsend
 
 # New behavior (var set)
 export TRIAGE_AUTO_CODE=off
 fullsend run triage \
   --fullsend-dir . \
-  --target-repo /tmp/target-repo
+  --target-repo /tmp/target-repo \
+  --output-dir /tmp/fullsend
 ```
 
 ## Functional eval tests

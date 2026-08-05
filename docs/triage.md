@@ -73,7 +73,7 @@ To overload the built-in skill, create your own `issue-labels` skill in
 At the org level, override via `base:` composition (ADR 0045) — inherit
 the upstream harness and add your skill under `skills:` with the same
 basename (`issue-labels`) as the one you're replacing, so the merge
-dedupes by basename (fullsend-ai/fullsend #5408) and yours wins. The
+dedupes by basename (fullsend-ai/fullsend #5409) and yours wins. The
 older `customized/skills/issue-labels/SKILL.md` overlay in the org
 `.fullsend` config repo (and the per-repo `.fullsend/customized/skills/...`
 equivalent) is deprecated by ADR 0064.
