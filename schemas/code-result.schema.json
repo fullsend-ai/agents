@@ -21,6 +21,12 @@
       "type": "boolean",
       "default": true,
       "description": "Whether the PR should close the linked issue on merge. Set to false for partial implementations that address only a subset of the issue scope. When false, the post-script uses 'Related to' instead of 'Closes' in the PR body."
+    },
+    "needs_input": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "description": "Set when the agent cannot proceed without human input — either the environment/tooling is broken (can't verify changes) or the issue is genuinely uninterpretable. Explain specifically what is needed. When set, do not commit; the post-script applies the needs-input label and posts this text as a comment instead of opening a PR."
     }
   }
 }

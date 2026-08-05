@@ -71,6 +71,7 @@ env:
     PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     ISSUE_NUMBER: "${ISSUE_NUMBER}"
+    CODE_NEEDS_INPUT_LABEL: "fs-code-needs-input"
   sandbox:
     MAX_RETRIES: "1"
     TIMEOUT_SECONDS: "2100"
