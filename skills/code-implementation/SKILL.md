@@ -266,9 +266,15 @@ gh pr list --head "<branch-name>" --json number,state --jq '.[0]'
 
   ```bash
   git checkout <branch-name>
-  git log --oneline origin/<target>..HEAD
-  git diff origin/<target>..HEAD --stat
+  git log --oneline <target-branch>..HEAD
+  git diff <target-branch>..HEAD --stat
   ```
+
+  Use the local `<target-branch>` ref (e.g., `main`) discovered in
+  step 3 — not `origin/<target-branch>`. The sandbox checks out the
+  default branch at its latest commit before running, so the local ref
+  is already current. Origin refs may not be available when the sandbox
+  network policy blocks git protocol access.
 
   Treat the existing code as if you just wrote it. **Skip to step 9**
   (verification) — run secret scan, tests, and pre-commit on the changed
@@ -289,18 +295,20 @@ the issue does not mention.
 echo "::notice::STEP 5: Create branch"
 ```
 
+The sandbox checks out the default branch at its latest commit, so
+`HEAD` is already the correct base. Do not run `git fetch origin` — the
+sandbox network policy blocks git protocol access to `github.com`.
+
 If the `BRANCH_NAME` environment variable is set, use it:
 
 ```bash
-git fetch origin
-git checkout -b "${BRANCH_NAME}" origin/<target-branch>
+git checkout -b "${BRANCH_NAME}"
 ```
 
-Otherwise, create a feature branch from the target branch:
+Otherwise, create a feature branch from the current HEAD:
 
 ```bash
-git fetch origin
-git checkout -b agent/<number>-<short-description> origin/<target-branch>
+git checkout -b agent/<number>-<short-description>
 ```
 
 The branch name must follow the `agent/<issue-number>-<short-description>`
@@ -565,8 +573,15 @@ Both are mandatory — do not skip either one.
 Determine which packages to test from your changed files:
 
 ```bash
-git diff --name-only origin/<target-branch>
+git diff --name-only <target-branch>
 ```
+
+Use the local `<target-branch>` ref (e.g., `main`) discovered in
+step 3. This shows all files that differ between the target branch
+and the working tree — including previously committed changes on the
+feature branch. Do not use `origin/<target-branch>` — origin refs
+may not be available when the sandbox network policy blocks git
+protocol access.
 
 Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
 a final validation after targeted tests pass, but prefer targeted runs
