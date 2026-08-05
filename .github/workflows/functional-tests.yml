@@ -364,7 +364,11 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 1
+    permissions:
+      contents: read
     steps:
+      # Base branch only -- a PR must not be able to rewrite this script
+      # to force-pass its own roll-up check.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ github.sha }}
@@ -374,8 +378,6 @@ jobs:
       - name: Check results
         env:
           EVENT_NAME: ${{ github.event_name }}
-          EVENT_ACTION: ${{ github.event.action }}
-          LABEL_NAME: ${{ github.event.label.name }}
           GATE_RESULT: ${{ needs.gate.result }}
           DETECT_RESULT: ${{ needs.detect.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}

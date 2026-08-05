@@ -4,8 +4,6 @@
 #
 # Inputs (env vars):
 #   EVENT_NAME    — github.event_name
-#   EVENT_ACTION  — github.event.action  (only set for pull_request_target)
-#   LABEL_NAME    — github.event.label.name (only set when action == labeled)
 #   GATE_RESULT   — needs.gate.result
 #   DETECT_RESULT — needs.detect.result
 #   TESTS_RESULT  — needs.functional-tests.result
@@ -15,16 +13,9 @@
 set -euo pipefail
 
 EVENT_NAME="${EVENT_NAME:-}"
-EVENT_ACTION="${EVENT_ACTION:-}"
-LABEL_NAME="${LABEL_NAME:-}"
 GATE_RESULT="${GATE_RESULT:-}"
 DETECT_RESULT="${DETECT_RESULT:-}"
 TESTS_RESULT="${TESTS_RESULT:-}"
-
-if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$EVENT_ACTION" = "labeled" ] && [ "$LABEL_NAME" != "ok-to-test" ]; then
-  echo "Labeled event (${LABEL_NAME}) is not ok-to-test — skipping is expected"
-  exit 0
-fi
 
 if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
   echo "::error::Gate job ${GATE_RESULT}"
