@@ -250,34 +250,34 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # 1. Author in skip list → exit 0, skip notice
 run_test_stdout "skip-renovate-bot" \
-  "OPEN" "renovate[bot]" \
+  "OPEN" "app/renovate" \
   "skipping review (REVIEW_SKIP_AUTHORS)" \
   0 \
-  "REVIEW_SKIP_AUTHORS=renovate[bot],dependabot[bot]"
+  "REVIEW_SKIP_AUTHORS=app/renovate,app/dependabot"
 
 # 2. Different bot in skip list → exit 0, skip notice
 run_test_stdout "skip-dependabot" \
-  "OPEN" "dependabot[bot]" \
+  "OPEN" "app/dependabot" \
   "skipping review (REVIEW_SKIP_AUTHORS)" \
   0 \
-  "REVIEW_SKIP_AUTHORS=renovate[bot],dependabot[bot]"
+  "REVIEW_SKIP_AUTHORS=app/renovate,app/dependabot"
 
 # 3. Author NOT in skip list → review proceeds
 run_test_stdout "no-skip-human-author" \
   "OPEN" "some-human" \
   "proceeding with review agent" \
   0 \
-  "REVIEW_SKIP_AUTHORS=renovate[bot]"
+  "REVIEW_SKIP_AUTHORS=app/renovate"
 
 # 4. REVIEW_SKIP_AUTHORS unset → no skip, review proceeds for any author
 run_test_stdout "unset-skip-authors-proceeds" \
-  "OPEN" "renovate[bot]" \
+  "OPEN" "app/renovate" \
   "proceeding with review agent" \
   0
 
 # 5. REVIEW_SKIP_AUTHORS empty → no skip, review proceeds
 run_test_stdout "empty-skip-authors-proceeds" \
-  "OPEN" "renovate[bot]" \
+  "OPEN" "app/renovate" \
   "proceeding with review agent" \
   0 \
   "REVIEW_SKIP_AUTHORS="
@@ -291,45 +291,45 @@ run_test_stdout "skip-custom-bot" \
 
 # 7. Whitespace around entries → still matches after trimming
 run_test_stdout "skip-with-whitespace" \
-  "OPEN" "renovate[bot]" \
+  "OPEN" "app/renovate" \
   "skipping review (REVIEW_SKIP_AUTHORS)" \
   0 \
-  "REVIEW_SKIP_AUTHORS= renovate[bot] , dependabot[bot] "
+  "REVIEW_SKIP_AUTHORS= app/renovate , app/dependabot "
 
 # 8. Skip posts a comment
 run_test_gh_call "skip-posts-comment" \
-  "OPEN" "renovate[bot]" \
+  "OPEN" "app/renovate" \
   "gh issue comment 42 --repo test-org/test-repo --body-file -" \
   0 \
-  "REVIEW_SKIP_AUTHORS=renovate[bot]"
+  "REVIEW_SKIP_AUTHORS=app/renovate"
 
 # 9. Non-matching author does not trigger author fetch for comment
 run_test_stdout "no-skip-different-author" \
   "OPEN" "other-user" \
   "proceeding with review agent" \
   0 \
-  "REVIEW_SKIP_AUTHORS=renovate[bot],dependabot[bot]"
+  "REVIEW_SKIP_AUTHORS=app/renovate,app/dependabot"
 
 # 10. PR state check still works — merged PR skips before author check
 run_test_stdout "merged-pr-skips-before-author-check" \
-  "MERGED" "renovate[bot]" \
+  "MERGED" "app/renovate" \
   "skipping review" \
   0 \
-  "REVIEW_SKIP_AUTHORS=renovate[bot]"
+  "REVIEW_SKIP_AUTHORS=app/renovate"
 
 # 11. Single author in skip list works
 run_test_stdout "single-author-skip-list" \
-  "OPEN" "dependabot[bot]" \
+  "OPEN" "app/dependabot" \
   "skipping review (REVIEW_SKIP_AUTHORS)" \
   0 \
-  "REVIEW_SKIP_AUTHORS=dependabot[bot]"
+  "REVIEW_SKIP_AUTHORS=app/dependabot"
 
 # 12. Case-insensitive matching — GitHub usernames are case-insensitive
 run_test_stdout "case-insensitive-skip" \
-  "OPEN" "Renovate[bot]" \
+  "OPEN" "App/Renovate" \
   "skipping review (REVIEW_SKIP_AUTHORS)" \
   0 \
-  "REVIEW_SKIP_AUTHORS=renovate[bot]"
+  "REVIEW_SKIP_AUTHORS=app/renovate"
 
 # --- Summary ---
 

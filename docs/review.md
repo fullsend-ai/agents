@@ -81,7 +81,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`). | `low` | `info`, `low`, `medium`, `high`, `critical` |
-| `REVIEW_SKIP_AUTHORS` | Comma-separated list of GitHub usernames to skip review for. When a PR is opened by a user in this list, the review dispatch exits early without running the agent. | _(empty — all PRs are reviewed)_ | Comma-separated GitHub logins, e.g. `renovate[bot],dependabot[bot]` |
+| `REVIEW_SKIP_AUTHORS` | Comma-separated list of GitHub usernames to skip review for. When a PR is opened by a user in this list, the review dispatch exits early without running the agent. | _(empty — all PRs are reviewed)_ | Comma-separated GitHub logins, e.g. `app/renovate,app/dependabot` |
 
 Override by extending the harness file via a `base` reference and setting `env.runner` / `env.sandbox` in your custom harness YAML. `base` composition merges `env.runner`/`env.sandbox` per-key — child values override, everything else inherits from the base (ADR 0045, ADR 0055). Per ADR 0080 and ADR 0081, this harness-level override is the correct path; the CI workflow `env:` block is reserved for infrastructure plumbing, not agent behavior knobs like this one.
 
