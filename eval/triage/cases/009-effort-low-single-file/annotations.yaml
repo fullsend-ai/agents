@@ -1,0 +1,54 @@
+# This case tests the effort-estimation gate for a low-effort bug.
+# The fix is a single character change in one file, with existing tests
+# that already cover username validation. The agent should score effort
+# low (< 4) and NOT block auto-promotion, resulting in "ready-to-code".
+state: open
+
+labels:
+  required:
+    - ready-to-code
+  forbidden:
+    - triaged
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue reports that two-character usernames are rejected when they
+  should be valid. The fix is a single-character regex change in
+  validators.py ({2,29} -> {1,29}).
+
+  The effort-estimation skill should score this low because:
+  - Scope: single line in a single file (validators.py) — 1.
+  - Testing: existing test suite covers username validation with
+    boundary cases (test_valid_exactly_3_chars, test_invalid_too_short);
+    the fix would need minor test updates but no new infrastructure — 1-2.
+  - Domain knowledge: obvious from the error message and regex — 1.
+  - Risk: no behavior change for callers that already pass 3+ character
+    usernames; only loosens a constraint — 1.
+
+  Overall effort should be well under 4, so block_auto_promotion.blocked
+  should be false (or omitted).
+
+  A good triage should:
+
+  1. Verify the reporter's analysis against the code: confirm the regex
+     pattern is ^[a-zA-Z][a-zA-Z0-9_-]{2,29}$ and that changing {2,29}
+     to {1,29} is the correct fix.
+  2. Identify this as a bug — the minimum length is too restrictive,
+     not a feature request for new functionality.
+  3. Set block_auto_promotion.blocked = false (or omit block_auto_promotion)
+     with a reason citing the low effort.
+  4. The post-script should apply "ready-to-code" + "bug".
+  5. Note that the existing test test_valid_exactly_3_chars should be
+     updated to test_valid_exactly_2_chars, and test_invalid_too_short
+     needs a new boundary (single-character username).
+
+  Scoring guide:
+  A score of 1 means the agent misidentified the action or category.
+  A score of 2 means correct action but blocked auto-promotion despite
+  the trivial scope, or missed the existing test coverage.
+  A score of 3 means correct action and labels but did not verify the
+  regex against the code.
+  A score of 5 means correct triage, verified the regex, identified
+  specific test updates needed, and set low effort with a clear reason.

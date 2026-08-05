@@ -1,0 +1,41 @@
+forge: github
+fixture:
+  type: issue
+  title: "Session tokens never expire in practice — memory leak and security risk"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    We noticed our production server's memory usage climbs steadily over time
+    and never drops. After profiling, we traced it to the in-memory `SESSIONS`
+    dict in `src/auth/session.py` — it grows indefinitely because expired
+    sessions are only removed on lookup (`get_session`), never proactively
+    cleaned. Tokens that are never looked up again stay in memory forever.
+
+    On top of the memory leak, `logout_handler` in `src/auth/views.py` does
+    not delete the session — the token remains valid for the full TTL even
+    after the user explicitly logs out. Combined with the lack of cleanup,
+    this means a stolen token can be used long after the user thought they
+    signed out.
+
+    **Steps to reproduce:**
+    1. Start the server and log in 10,000 times (scripted).
+    2. Never revisit any of those sessions.
+    3. Observe `SESSIONS` dict size — it holds all 10,000 entries.
+    4. Log out — the session token is still usable afterward.
+
+    **Expected behavior:**
+    - A background task or TTL-based eviction should remove expired sessions.
+    - `logout_handler` should invalidate the session token immediately.
+    - The auth middleware should stop accepting tokens after logout.
+
+    **Impact:**
+    - Production OOMs every ~3 days, requiring manual restarts.
+    - Security: logout does not actually invalidate access.
+    - Affects the rate limiter too — `RATE_LIMITS` in
+      `src/middleware/rate_limit.py` has the same pattern (entries accumulate
+      without proactive cleanup).
+
+    **Environment:**
+    - Python 3.12, single-process deployment
+    - ~2,000 active users, ~15,000 logins/day

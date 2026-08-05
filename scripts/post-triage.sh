@@ -59,6 +59,11 @@ fi
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 
+if echo "${COMMENT}" | grep -q '```'; then
+  echo "::warning::Stripping fenced code blocks from triage comment"
+  COMMENT=$(echo "${COMMENT}" | sed '/^```/d')
+fi
+
 # Validate and extract repo and issue number from the HTML URL.
 # GITHUB_ISSUE_URL is e.g. https://github.com/org/repo/issues/42
 if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
@@ -384,28 +389,39 @@ ${FAILED_CREATES}"
     # else receives the triaged label and waits for human prioritization
     # (per #561, only feature issues should require human review before coding).
     #
-    # Workflow-change guard (#325): if triage detected that the fix requires
-    # modifying workflow files (.github/workflows/, .fullsend/.github/workflows/,
-    # or shim workflows), skip ready-to-code regardless of category. The code
-    # agent cannot modify workflow files under current permissions.
-    REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
+    # Auto-promotion gate (#2207, #325): the triage agent can block
+    # auto-promotion via block_auto_promotion.blocked (e.g., high effort,
+    # workflow file changes). When blocked, bug/docs/performance categories
+    # receive triaged instead of ready-to-code, and the reason is appended
+    # to the comment.
+    BLOCKED=$(jq -r '.triage_summary.block_auto_promotion.blocked // false' "${RESULT_FILE}")
+    BLOCK_REASON=$(jq -r '.triage_summary.block_auto_promotion.reason // empty' "${RESULT_FILE}")
+    # Collapse runs of 2+ colons to a single colon so untrusted text
+    # can never form a GHA workflow command (e.g., ::error::).
+    while [[ "${BLOCK_REASON}" == *::* ]]; do
+      BLOCK_REASON="${BLOCK_REASON//::/:}"
+    done
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
-    # Workflow-change guard: if triage detected workflow file changes and the
-    # category would normally auto-promote to ready-to-code, apply triaged
-    # instead and skip the per-category ready-to-code deferral.
-    WORKFLOW_BLOCKED=false
-    if [[ "${REQUIRES_WORKFLOW}" == "true" ]] && [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]]; then
-      echo "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
-      echo "Applying triaged label (workflow changes required)..."
+    AUTO_PROMOTION_BLOCKED=false
+    if [[ "${BLOCKED}" == "true" ]] && [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]]; then
+      echo "::warning::Skipping ready-to-code — auto-promotion blocked (see comment for details)"
+      echo "Applying triaged label (auto-promotion blocked)..."
       add_label "triaged"
-      WORKFLOW_BLOCKED=true
+      AUTO_PROMOTION_BLOCKED=true
+      if [[ -z "${BLOCK_REASON}" ]]; then
+        BLOCK_REASON="No reason provided"
+      fi
+      COMMENT="${COMMENT}
+
+---
+**Auto-promotion blocked:** ${BLOCK_REASON}"
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
         add_label "bug"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        if [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         fi
@@ -413,13 +429,13 @@ ${FAILED_CREATES}"
       documentation)
         echo "Applying documentation label..."
         add_label "documentation"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        if [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         fi
         ;;
       performance)
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        if [[ "${AUTO_PROMOTION_BLOCKED}" != "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         fi

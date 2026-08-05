@@ -289,6 +289,32 @@ run_test_custom_filename_output "nested-additional-property-shows-allowed" \
   "false" \
   "allowed properties: actionable, category, description, file, line, remediation, severity"
 
+# --- block_auto_promotion schema tests (#2207) ---
+
+run_test "valid-sufficient-with-block-auto-promotion" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":true,"reason":"Estimated effort 4.3/5"}},"comment":"Triage complete."}' \
+  "true"
+
+run_test "valid-sufficient-with-unblocked-auto-promotion" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":false,"reason":"Low effort"}},"comment":"Triage complete."}' \
+  "true"
+
+run_test "block-auto-promotion-missing-reason-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":true}},"comment":"Triage complete."}' \
+  "false"
+
+run_test "block-auto-promotion-missing-blocked-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"reason":"High effort"}},"comment":"Triage complete."}' \
+  "false"
+
+run_test "block-auto-promotion-empty-reason-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":true,"reason":""}},"comment":"Triage complete."}' \
+  "false"
+
+run_test "block-auto-promotion-extra-field-rejected" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","block_auto_promotion":{"blocked":true,"reason":"High effort","effort_score":2.5}},"comment":"Triage complete."}' \
+  "false"
+
 # --- Structural failures ---
 
 run_test "missing-action" \
