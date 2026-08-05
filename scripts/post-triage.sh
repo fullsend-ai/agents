@@ -115,6 +115,12 @@ is_control_label() {
 # subsequent label events in the dispatch concurrency group (see #1752).
 DEFERRED_LABEL=""
 
+# Clear a stale "triaged" label from a prior re-triage before dispatching on
+# the new action. Every terminal action below resets its own set of control
+# labels, but "triaged" is only ever re-applied (never removed) by the
+# handlers themselves, so it must be cleared up front rather than per-branch.
+remove_label "triaged"
+
 case "${ACTION}" in
   insufficient)
     if [[ -z "${COMMENT}" ]]; then
@@ -384,6 +390,15 @@ ${FAILED_CREATES}"
     # else receives the triaged label and waits for human prioritization
     # (per #561, only feature issues should require human review before coding).
     #
+    # TRIAGE_AUTO_CODE (#1754) controls whether auto-promotion happens:
+    #   on (default) — auto-promote categories listed in TRIAGE_AUTO_CODE_CATEGORIES
+    #   off          — never auto-promote; always apply triaged
+    #
+    # TRIAGE_AUTO_CODE_CATEGORIES is a comma-separated category list with no
+    # default baked into this script -- harness/triage.yaml and docs/triage.md
+    # own the "bug,documentation,performance" default. An absent or unset
+    # TRIAGE_AUTO_CODE_CATEGORIES means no categories auto-promote.
+    #
     # Workflow-change guard (#325): if triage detected that the fix requires
     # modifying workflow files (.github/workflows/, .fullsend/.github/workflows/,
     # or shim workflows), skip ready-to-code regardless of category. The code
@@ -391,37 +406,82 @@ ${FAILED_CREATES}"
     REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
-    # Workflow-change guard: if triage detected workflow file changes and the
-    # category would normally auto-promote to ready-to-code, apply triaged
-    # instead and skip the per-category ready-to-code deferral.
+
+    AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
+    AUTO_CODE="$(printf '%s' "${AUTO_CODE}" | tr '[:upper:]' '[:lower:]')"
+
+    # Check whether CATEGORY appears in the comma-separated TRIAGE_AUTO_CODE_CATEGORIES list.
+    category_in_auto_code_list() {
+      local categories="${TRIAGE_AUTO_CODE_CATEGORIES:-}"
+      categories="${categories//[[:space:]]/}"
+      categories="$(printf '%s' "${categories}" | tr '[:upper:]' '[:lower:]')"
+      echo ",${categories}," | grep -qF ",${CATEGORY},"
+    }
+
+    # Determine whether this category should auto-promote to ready-to-code.
+    auto_code_allowed() {
+      case "${AUTO_CODE}" in
+        off) return 1 ;;
+        on) category_in_auto_code_list ;;
+        *)
+          echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '${AUTO_CODE}' — falling back to 'on'"
+          category_in_auto_code_list
+          ;;
+      esac
+    }
+
+    # Evaluate once — auto_code_allowed() can emit a ::warning:: for
+    # unrecognized TRIAGE_AUTO_CODE values, and calling it repeatedly below
+    # would duplicate that annotation in the Actions UI.
+    if auto_code_allowed; then
+      AUTO_CODE_ALLOWED=true
+    else
+      AUTO_CODE_ALLOWED=false
+    fi
+
+    # Workflow-change guard: if triage detected workflow file changes, always
+    # log the (#325) warning for operational visibility. Only block auto-
+    # promotion (apply triaged early) when the category would otherwise
+    # auto-promote to ready-to-code.
     WORKFLOW_BLOCKED=false
-    if [[ "${REQUIRES_WORKFLOW}" == "true" ]] && [[ "${CATEGORY}" == "bug" || "${CATEGORY}" == "documentation" || "${CATEGORY}" == "performance" ]]; then
-      echo "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
-      echo "Applying triaged label (workflow changes required)..."
-      add_label "triaged"
-      WORKFLOW_BLOCKED=true
+    if [[ "${REQUIRES_WORKFLOW}" == "true" ]]; then
+      echo "::warning::Triage detected workflow file changes required (#325)"
+      if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
+        echo "Applying triaged label (workflow changes required)..."
+        add_label "triaged"
+        WORKFLOW_BLOCKED=true
+      fi
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
         add_label "bug"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
+        elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+          echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
+          add_label "triaged"
         fi
         ;;
       documentation)
         echo "Applying documentation label..."
         add_label "documentation"
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
+        elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+          echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
+          add_label "triaged"
         fi
         ;;
       performance)
-        if [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+        if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
+        elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
+          echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
+          add_label "triaged"
         fi
         ;;
       feature)

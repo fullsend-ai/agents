@@ -64,6 +64,9 @@ chmod +x "${MOCK_BIN}/fullsend"
 export PATH="${MOCK_BIN}:${PATH}"
 export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
+# Harness defaults — post-triage.sh expects these from the harness env.
+export TRIAGE_AUTO_CODE="on"
+export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
 
 # prerequisites handler reads config.yaml from GITHUB_WORKSPACE.
 # Create a minimal workspace with an allowlist so the test can exercise
@@ -176,6 +179,13 @@ run_test "insufficient-removes-pr-open-label" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
+# A stale "triaged" label from a prior re-triage must be cleared on every
+# terminal action, not just "sufficient" — the removal happens once before
+# the action dispatch (see #1754 review feedback).
+run_test "insufficient-clears-stale-triaged-label" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
+
 run_test "sufficient-posts-summary-and-labels" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
@@ -187,6 +197,13 @@ run_test "sufficient-bug-gets-ready-to-code" \
 run_test "sufficient-bug-gets-bug-label" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=bug --silent"
+
+# A stale "triaged" label from a prior re-triage (e.g. TRIAGE_AUTO_CODE was
+# "off" at the time) must be cleared even when this run auto-promotes to
+# ready-to-code, or the issue ends up with both labels simultaneously.
+run_test "sufficient-clears-stale-triaged-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
 
 run_test "sufficient-feature-gets-triaged" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
@@ -713,7 +730,349 @@ run_test "workflow-false-bug-gets-ready-to-code" \
 # Workflow changes warning appears in stdout.
 run_test_stdout "workflow-changes-warning-emitted" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI caching","severity":"high","category":"bug","problem":"CI cache miss","root_cause_hypothesis":"Missing cache key","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_cache","requires_workflow_changes":true},"comment":"## Triage Summary\n\nThis requires workflow changes."}' \
-  "::warning::Skipping ready-to-code — triage detected workflow file changes required (#325)"
+  "::warning::Triage detected workflow file changes required (#325)"
+
+# --- TRIAGE_AUTO_CODE configuration tests (#1754) ---
+
+# Helper: run_test with extra env vars. Accepts a 5th arg: newline-separated
+# KEY=VALUE pairs exported into the post-script subshell (values may contain
+# spaces).
+run_test_with_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local expect_failure="${4:-false}"
+  local extra_env="$5"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    # shellcheck disable=SC2163  # exporting KEY=VALUE, not the var "kv"
+    while IFS= read -r kv; do [[ -n "$kv" ]] && export "$kv"; done <<< "$extra_env"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit code ${exit_code})"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_test_unset_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local vars_to_unset="$4"
+  local extra_env="${5:-}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    for var in ${vars_to_unset}; do unset "${var}"; done
+    # shellcheck disable=SC2163  # exporting KEY=VALUE, not the var "kv"
+    while IFS= read -r kv; do [[ -n "$kv" ]] && export "$kv"; done <<< "$extra_env"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_test_stdout_with_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local extra_env="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    # shellcheck disable=SC2163  # exporting KEY=VALUE, not the var "kv"
+    while IFS= read -r kv; do [[ -n "$kv" ]] && export "$kv"; done <<< "$extra_env"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_test_no_pattern_with_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local forbidden_pattern="$3"
+  local extra_env="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    # shellcheck disable=SC2163  # exporting KEY=VALUE, not the var "kv"
+    while IFS= read -r kv; do [[ -n "$kv" ]] && export "$kv"; done <<< "$extra_env"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF -- "${forbidden_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — forbidden pattern '${forbidden_pattern}' was found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Shared fixture: sufficient bug.
+AUTO_CODE_BUG_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+
+# Shared fixture: sufficient documentation.
+AUTO_CODE_DOCS_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nDocs issue."}'
+
+# Shared fixture: sufficient performance.
+AUTO_CODE_PERF_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_speed"},"comment":"## Triage Summary\n\nPerformance issue."}'
+
+# Shared fixture: sufficient feature.
+AUTO_CODE_FEATURE_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nFeature request."}'
+
+# Default (unset): with TRIAGE_AUTO_CODE_CATEGORIES also genuinely unset,
+# bug gets triaged rather than ready-to-code. TRIAGE_AUTO_CODE_CATEGORIES has
+# no in-script default -- an absent/unset value means an empty allowlist, so
+# nothing auto-promotes even under the ${TRIAGE_AUTO_CODE:-on} fallback.
+run_test_unset_env "auto-code-default-categories-unset-gets-triaged" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "TRIAGE_AUTO_CODE TRIAGE_AUTO_CODE_CATEGORIES"
+
+# TRIAGE_AUTO_CODE=on: bug gets ready-to-code (explicit on).
+run_test_with_env "auto-code-on-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=on"
+
+# TRIAGE_AUTO_CODE=off: bug gets triaged instead of ready-to-code.
+run_test_with_env "auto-code-off-bug-gets-triaged" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: bug does NOT get ready-to-code.
+run_test_no_pattern_with_env "auto-code-off-bug-no-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "labels[]=ready-to-code" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: documentation gets triaged instead of ready-to-code.
+run_test_with_env "auto-code-off-docs-gets-triaged" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: performance gets triaged instead of ready-to-code.
+run_test_with_env "auto-code-off-perf-gets-triaged" \
+  "${AUTO_CODE_PERF_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: feature still gets triaged (unchanged behavior).
+run_test_with_env "auto-code-off-feature-gets-triaged" \
+  "${AUTO_CODE_FEATURE_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: bug still gets the bug category label.
+run_test_with_env "auto-code-off-bug-still-gets-bug-label" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=bug --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=off: documentation still gets the documentation label.
+run_test_with_env "auto-code-off-docs-still-gets-docs-label" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=documentation --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=on with TRIAGE_AUTO_CODE_CATEGORIES genuinely unset: no
+# in-script default to fall back to, so the category list is empty and bug
+# gets triaged rather than ready-to-code. Locks in that the var is required
+# for auto-promotion to happen at all.
+run_test_unset_env "auto-code-on-categories-unset-gets-triaged" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "TRIAGE_AUTO_CODE_CATEGORIES" \
+  "TRIAGE_AUTO_CODE=on"
+
+# TRIAGE_AUTO_CODE=on with only bug: bug gets ready-to-code.
+run_test_with_env "auto-code-on-bug-only-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
+
+# TRIAGE_AUTO_CODE=on with only bug: documentation gets triaged.
+run_test_with_env "auto-code-on-bug-only-docs-gets-triaged" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
+
+# TRIAGE_AUTO_CODE=on with only bug: docs does NOT get ready-to-code.
+run_test_no_pattern_with_env "auto-code-on-bug-only-docs-no-ready-to-code" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "labels[]=ready-to-code" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
+
+# TRIAGE_AUTO_CODE=on with only documentation: performance gets triaged.
+run_test_with_env "auto-code-on-docs-only-perf-gets-triaged" \
+  "${AUTO_CODE_PERF_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=documentation'
+
+# TRIAGE_AUTO_CODE=on with bug,documentation: both get ready-to-code.
+run_test_with_env "auto-code-on-bug-docs-bug-gets-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
+
+run_test_with_env "auto-code-on-bug-docs-docs-gets-ready-to-code" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug,documentation'
+
+# TRIAGE_AUTO_CODE=garbage: unrecognized value falls back to "on" but warns.
+run_test_stdout_with_env "auto-code-unrecognized-value-warns" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "::warning::Unrecognized TRIAGE_AUTO_CODE value 'garbage' — falling back to 'on'" \
+  "TRIAGE_AUTO_CODE=garbage"
+
+# TRIAGE_AUTO_CODE=garbage: unrecognized value still gets ready-to-code (fallback behavior).
+run_test_with_env "auto-code-unrecognized-value-still-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=garbage"
+
+# TRIAGE_AUTO_CODE=on with uppercase category name: still matches (case-insensitive).
+run_test_with_env "auto-code-on-uppercase-still-matches" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=Bug,Documentation'
+
+# TRIAGE_AUTO_CODE=off with workflow-changes: still triaged (both guards agree).
+run_test_with_env "auto-code-off-with-workflow-changes-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix CI","severity":"high","category":"bug","problem":"CI broken","root_cause_hypothesis":"Missing step","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Update workflow","proposed_test_case":"test_ci","requires_workflow_changes":true},"comment":"## Triage Summary\n\nNeeds workflow changes."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  "TRIAGE_AUTO_CODE=off"
+
+# TRIAGE_AUTO_CODE=on: feature still gets feature+triaged (unchanged).
+run_test_with_env "auto-code-on-feature-gets-feature-label" \
+  "${AUTO_CODE_FEATURE_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=feature --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug'
+
+# TRIAGE_AUTO_CODE=on with explicit empty categories: promotes nothing.
+run_test_with_env "auto-code-on-empty-string-gets-triaged" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES='
+
+# TRIAGE_AUTO_CODE=on with whitespace in categories: still matches.
+# Uses documentation fixture (not bug) to verify multi-item matching actually
+# works — bug would match even a truncated list.
+run_test_with_env "auto-code-on-whitespace-tolerant" \
+  "${AUTO_CODE_DOCS_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
+  "false" \
+  $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance'
 
 # --- Summary ---
 
