@@ -92,6 +92,7 @@ network_policies:
         protocol: rest
         enforcement: enforce
         access: read-only
+        allow_encoded_slash: true
       - host: "pypi.org"
         port: 443
         protocol: rest
