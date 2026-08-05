@@ -587,11 +587,13 @@ extract_commit_body() {
   raw="$(git log -1 --format='%b' HEAD \
     | sed '/^Signed-off-by:/d' \
     | sed '/^Closes #/d' \
+    | sed '/^Related to #/d' \
     | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
   echo "${raw}" | awk '
     /^$/           { if (buf) print buf; print; buf=""; next }
     /^[-*#>]|^  /  { if (buf) print buf; buf=""; print; next }
     /^Closes /     { if (buf) print buf; buf=""; print; next }
+    /^Related to / { if (buf) print buf; buf=""; print; next }
                    { buf = (buf ? buf " " $0 : $0) }
     END            { if (buf) print buf }
   '
@@ -611,7 +613,7 @@ if [ -n "${PR_BODY_FROM_RESULT}" ]; then
       end = NR
       while (end > 0) {
         l = lines[end]
-        if (l == "" || l ~ /^[Cc]lose[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Ff]ix(e[sd])? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Rr]esolve[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/)
+        if (l == "" || l ~ /^[Cc]lose[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Ff]ix(e[sd])? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Rr]esolve[sd]? (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/ || l ~ /^[Rr]elated to (#|[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+#)[0-9]+$/)
           end--
         else
           break
