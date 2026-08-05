@@ -106,3 +106,25 @@ based on common patterns — read it.
 If the file cannot be read (e.g., it is in another repository or
 inaccessible), state that you were unable to verify the contents.
 Never present unverified file contents as fact in a finding.
+
+### Regex pattern verification
+
+When a finding asserts that a regex pattern is incorrect (malformed,
+redundant, or logically wrong), you MUST decompose the pattern element
+by element before reporting it. Explicitly identify:
+
+- **Character classes** (`[...]`) and their contents
+- **Quantifiers** (`*`, `+`, `?`, `{n,m}`)
+- **Anchors** (`^`, `$`)
+- **Alternations** (`|`)
+- **Escape sequences** (`\d`, `\s`, `\.`, etc.)
+- **Literal characters** outside any special construct
+
+Do not treat the contents of a character class as part of the adjacent
+literal. For example, `[Cc]lose` is character class `[Cc]` (matches
+`C` or `c`) followed by literal `lose` — it is not a double `c`.
+
+If your decomposition shows the pattern is correct, do not report a
+finding. If the pattern is genuinely wrong, include the element-by-element
+breakdown in the finding description so reviewers can verify your
+reasoning.
