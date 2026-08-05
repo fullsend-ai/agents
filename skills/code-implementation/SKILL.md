@@ -573,12 +573,15 @@ Both are mandatory — do not skip either one.
 Determine which packages to test from your changed files:
 
 ```bash
-git diff --name-only HEAD
+git diff --name-only <target-branch>
 ```
 
-This lists both staged and unstaged changes relative to the branch
-point. Do not use `origin/<target-branch>` — origin refs may not be
-available in the sandbox.
+Use the local `<target-branch>` ref (e.g., `main`) discovered in
+step 3. This shows all files that differ between the target branch
+and the working tree — including previously committed changes on the
+feature branch. Do not use `origin/<target-branch>` — origin refs
+may not be available when the sandbox network policy blocks git
+protocol access.
 
 Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
 a final validation after targeted tests pass, but prefer targeted runs
