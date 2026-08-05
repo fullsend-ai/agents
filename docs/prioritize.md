@@ -68,6 +68,11 @@ None.
 
 The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update the project board.
 
+## Custom network policy
+
+If this agent needs to reach hosts beyond the defaults, see the
+[custom network policy guide](network-policy.md).
+
 ## Source
 
 [`harness/prioritize.yaml`](../harness/prioritize.yaml)

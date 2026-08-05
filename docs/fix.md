@@ -95,14 +95,6 @@ The fix agent shares the [code agent's sandbox image](code.md#custom-sandbox-ima
 If your project uses a custom image, update the `image:` field in both
 `harness/code.yaml` and `harness/fix.yaml`.
 
-## Custom network policy
-
-The fix agent uses its own network policy
-([`policies/fix.yaml`](../policies/fix.yaml)), which has similar but not
-identical defaults to the code agent's policy. If your project needs
-additional hosts whitelisted, see the
-[custom network policy guide](network-policy.md).
-
 ## What the agent acts on
 
 **When triggered by a review:** the agent reads the review body, the PR diff,
@@ -162,6 +154,11 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   `needs-human` label.
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
+
+## Custom network policy
+
+If this agent needs to reach hosts beyond the defaults, see the
+[custom network policy guide](network-policy.md).
 
 ## Source
 

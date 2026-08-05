@@ -52,7 +52,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 The code agent follows a three-phase pipeline: pre-script, sandbox execution, post-script.
 
 1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
-2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has no network access (enforced by OpenShell).
+2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
 3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 
 This separation ensures the agent never has direct write access to the repository.
@@ -165,9 +165,7 @@ The precedence is as follows:
 
 ## Custom network policy
 
-The sandbox restricts outbound network access via a policy allowlist.
-If your project needs to reach hosts beyond the defaults (e.g., for
-native addon builds), see the
+If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
 
 ## Source

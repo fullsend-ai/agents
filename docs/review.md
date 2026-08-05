@@ -98,6 +98,11 @@ The review agent follows the same pre-script / sandbox / post-script pipeline as
 
 If a prior review exists (e.g., re-review after fixes), it is injected into the sandbox so the agent can assess whether previous findings were addressed.
 
+## Custom network policy
+
+If this agent needs to reach hosts beyond the defaults, see the
+[custom network policy guide](network-policy.md).
+
 ## Source
 
 [`harness/review.yaml`](../harness/review.yaml)

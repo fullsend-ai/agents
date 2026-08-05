@@ -62,6 +62,11 @@ The retro agent reconstructs the full workflow graph — [triage](triage.md), [c
 
 When triggered via `/fs-retro`, the human's comment is passed to the agent as high-signal direction about what to focus on.
 
+## Custom network policy
+
+If this agent needs to reach hosts beyond the defaults, see the
+[custom network policy guide](network-policy.md).
+
 ## Source
 
 [`harness/retro.yaml`](../harness/retro.yaml)
