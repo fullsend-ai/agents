@@ -32,7 +32,7 @@ Before writing code, answer:
 
 | Surface | When to use | Example |
 |---------|-------------|---------|
-| **Environment variable** | Runtime behavior toggle, simple values, specific to one agent — per ADR 0080 (fullsend-ai/fullsend), this is single-agent behavior tuning rather than a `config.yaml` field. Repo owners set it in their base-derived harness files, overriding via `base:` composition (ADR 0045). Per ADR 0049, it must use an `{AGENT}_` prefix. Per ADR 0081, the CI workflow `env:` block is reserved for infrastructure plumbing (credentials, project IDs, regions) — don't use workflow inputs to set a behavior knob's value, except for values only computable at CI runtime. We recommend picking one surface per option — either an env var or a `config.yaml` option, not both — to avoid two sources of truth. | `CODE_ALLOWED_TARGET_BRANCHES` |
+| **Environment variable** | Runtime behavior toggle, simple values, specific to one agent — per ADR 0080 (fullsend-ai/fullsend), this is single-agent behavior tuning rather than a `config.yaml` field. Repo owners set it in their base-derived harness files, overriding via `base:` composition (ADR 0045). Per ADR 0049, it must use an `{AGENT}_` prefix. Per ADR 0081, the CI workflow `env:` block is reserved for infrastructure plumbing (credentials, project IDs, regions) — don't use workflow inputs to set a behavior knob's value, except for values only computable at CI runtime. We recommend picking one surface per option — either an env var or a `config.yaml` option, not both — to avoid two sources of truth. | `TRIAGE_AUTO_CODE` |
 | **`config.yaml` option** | The option should be respected by *every* agent, not just one — no agent-specific prefix, and not configurable via env var. | the cross-repo allow list |
 | **Skill override** | The behavior is best expressed as natural-language instructions to the agent. Repo owners drop a replacement skill in `.agents/skills/`. Org owners override via `base:` composition (ADR 0045) — inherit the upstream harness and add the skill under `skills:` with the same basename as the one being replaced, so the merge dedupes by basename (fullsend-ai/fullsend #5409) and it wins. The older `customized/skills/` overlay in the org `.fullsend` config repo is deprecated by ADR 0064. | `issue-labels` skill |
 
@@ -91,9 +91,10 @@ Ask yourself:
       content, or whether to suppress output entirely, the post script is where
       that logic lives.
 - [ ] **Both:** Some features may require changes in both.
-- [ ] **Generated scripts:** `scripts/post-code.sh`, `scripts/post-fix.sh`,
-      and `scripts/post-prioritize.sh` are generated from the corresponding
-      `scripts/<name>.src.sh` — edit the `.src.sh` file and run
+- [ ] **Generated scripts:** `scripts/pre-code.sh`, `scripts/post-code.sh`,
+      `scripts/post-fix.sh`, and `scripts/post-prioritize.sh` are generated
+      from the corresponding `scripts/<name>.src.sh` — edit the `.src.sh`
+      file and run
       `make script-build` to regenerate the committed `.sh`. Run
       `make check-bundle` (required in CI) to verify before opening the PR.
 

@@ -87,9 +87,10 @@ fullsend run triage \
   without this flag — just point at a test issue where you don't mind
   making changes.
 
-For agents that need additional variables (e.g., the code agent needs
-`ISSUE_NUMBER`, `REPO_FULL_NAME`, and `PUSH_TOKEN`), export them
-before running.
+Some agents need additional variables beyond the ones above — check the
+target agent's `harness/<agent>.yaml` (top-level `runner_env`, `env:
+runner:`, and `forge.<forge>.runner_env`) for what it expects, and
+export those before running.
 
 ### 4. Inspect the output
 
