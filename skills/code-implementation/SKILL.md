@@ -266,9 +266,15 @@ gh pr list --head "<branch-name>" --json number,state --jq '.[0]'
 
   ```bash
   git checkout <branch-name>
-  git log --oneline origin/<target>..HEAD
-  git diff origin/<target>..HEAD --stat
+  git log --oneline <target-branch>..HEAD
+  git diff <target-branch>..HEAD --stat
   ```
+
+  Use the local `<target-branch>` ref (e.g., `main`) discovered in
+  step 3 — not `origin/<target-branch>`. The sandbox checks out the
+  default branch at its latest commit before running, so the local ref
+  is already current. Origin refs may not be available when the sandbox
+  network policy blocks git protocol access.
 
   Treat the existing code as if you just wrote it. **Skip to step 9**
   (verification) — run secret scan, tests, and pre-commit on the changed
