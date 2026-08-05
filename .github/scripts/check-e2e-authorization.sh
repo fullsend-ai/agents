@@ -30,8 +30,14 @@ TRUSTED_ASSOCIATIONS="OWNER MEMBER COLLABORATOR"
 TRUSTED_BOTS="fullsend-ai-coder[bot]"
 OK_TO_TEST_LABEL="ok-to-test"
 
+emit_denial_warning() {
+  local reason="$1"
+  echo "::warning::Functional tests did not run (reason: ${reason}). External contributors need a maintainer to apply the ok-to-test label after the latest push — see CONTRIBUTING.md."
+}
+
 write_error_output() {
   echo "check-e2e-authorization: API or script error (see log above)" >&2
+  emit_denial_warning "error"
   if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     {
       echo "authorized=false"
@@ -134,7 +140,7 @@ fi
 trap - ERR
 
 if [[ "${authorized}" != "true" ]]; then
-  echo "::warning::Functional tests did not run (reason: ${reason}). External contributors need a maintainer to apply the ok-to-test label after the latest push — see CONTRIBUTING.md."
+  emit_denial_warning "${reason}"
 fi
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then

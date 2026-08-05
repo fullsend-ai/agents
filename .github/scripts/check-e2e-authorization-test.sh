@@ -36,6 +36,44 @@ MOCKEOF
   chmod +x "${MOCK_BIN}/gh"
 }
 
+# Mock gh: the pulls endpoint fails, simulating an API error that trips the
+# script's ERR trap (reason=error).
+setup_mock_gh_failing_pulls() {
+  cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "api" ]] && [[ "$2" == *"/pulls/"* ]] && [[ "$2" != *"/files"* ]]; then
+  echo "mock-gh: simulated API failure" >&2
+  exit 1
+fi
+echo "mock-gh: unhandled call: $*" >&2
+exit 1
+MOCKEOF
+  chmod +x "${MOCK_BIN}/gh"
+}
+
+# Mock gh: PR already has the ok-to-test label but no labeling event, so the
+# label is treated as stale (reason=stale_ok_to_test).
+setup_mock_gh_stale_label() {
+  cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "api" ]] && [[ "$2" == *"/pulls/"* ]] && [[ "$2" != *"/files"* ]]; then
+  echo '{"author_association": "CONTRIBUTOR", "labels": [{"name": "ok-to-test"}], "updated_at": "2026-01-01T00:00:00Z"}'
+  exit 0
+fi
+if [[ "$1" == "api" ]] && [[ "$2" == *"/collaborators/"*"/permission"* ]]; then
+  echo '{"role_name": "read"}'
+  exit 0
+fi
+if [[ "$1" == "api" ]] && [[ "$2" == *"/issues/"*"/events"* ]]; then
+  echo '[]'
+  exit 0
+fi
+echo "mock-gh: unhandled call: $*" >&2
+exit 1
+MOCKEOF
+  chmod +x "${MOCK_BIN}/gh"
+}
+
 run_auth() {
   # Run the script, capture stdout, suppress stderr
   local output
@@ -127,6 +165,35 @@ else
   echo "FAIL: denial emits ::warning:: annotation — got: ${output}"
   FAILURES=$((FAILURES + 1))
 fi
+
+# Test: an API failure (ERR trap, reason=error) still emits a ::warning:: annotation
+setup_mock_gh_failing_pulls
+unset PR_AUTHOR_ASSOCIATION
+export PR_AUTHOR_LOGIN="random-contributor"
+output=$(run_auth 1 "test-org/test-repo")
+assert_unauthorized "API failure (ERR trap) is unauthorized" "${output}" "error"
+if echo "${output}" | grep -q '::warning::'; then
+  echo "PASS: API failure emits ::warning:: annotation"
+else
+  echo "FAIL: API failure emits ::warning:: annotation — got: ${output}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Test: a stale ok-to-test label (reason=stale_ok_to_test) emits a ::warning:: annotation
+setup_mock_gh_stale_label
+export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+export PR_AUTHOR_LOGIN="random-contributor"
+export EVENT_ACTION="synchronize"
+export CHECK_E2E_AUTH_DRY_RUN="true"
+output=$(run_auth 1 "test-org/test-repo")
+assert_unauthorized "stale ok-to-test label is unauthorized" "${output}" "stale_ok_to_test"
+if echo "${output}" | grep -q '::warning::'; then
+  echo "PASS: stale ok-to-test label emits ::warning:: annotation"
+else
+  echo "FAIL: stale ok-to-test label emits ::warning:: annotation — got: ${output}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset EVENT_ACTION CHECK_E2E_AUTH_DRY_RUN
 
 # Test: authorization success does not emit a ::warning:: annotation
 setup_mock_gh
