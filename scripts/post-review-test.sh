@@ -376,7 +376,7 @@ mkdir -p "${MOCK_BIN}"
 # integration tests below — which don't exercise protected-path behavior —
 # reflect that reality instead of leaving it unset. Tests that specifically
 # cover protected-path resolution set or unset it within their own subshell.
-export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,env/,harness/,images/,plugins/,policies/,scripts/,skills/"
+export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,scripts/,skills/"
 
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash

@@ -48,10 +48,10 @@ env:
   # override these keys via harness `base:` composition.
   runner:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
-    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,env/,harness/,images/,plugins/,policies/,scripts/,skills/"
+    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,scripts/,skills/"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
-    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,env/,harness/,images/,plugins/,policies/,scripts/,skills/"
+    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,scripts/,skills/"
 
 timeout_minutes: 20
 
