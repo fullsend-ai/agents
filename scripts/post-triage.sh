@@ -19,6 +19,10 @@
 
 set -euo pipefail
 
+SCRIPT_DIR_TRIAGE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/labels.lib.sh
+source "${SCRIPT_DIR_TRIAGE}/lib/labels.lib.sh"
+
 # Find the triage result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
 # on the runner — not by the sandbox or the agent. No containment check
@@ -74,6 +78,7 @@ echo "Issue: #${ISSUE_NUMBER}"
 
 # add_label uses the labels API to avoid firing issues.edited.
 add_label() {
+  ensure_label "${REPO}" "$1"
   local endpoint="repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
   local err_output
   if ! err_output=$(gh api "${endpoint}" -f "labels[]=$1" --silent 2>&1); then
@@ -312,9 +317,6 @@ ${FAILED_CREATES}"
     remove_label "blocked"
     remove_label "ready-to-code"
     remove_label "needs-info"
-    gh label create "pr-open" --repo "${REPO}" \
-      --description "An open PR already addresses this issue" --color "D4C5F9" \
-      --force 2>/dev/null || true
     add_label "pr-open"
     ;;
 

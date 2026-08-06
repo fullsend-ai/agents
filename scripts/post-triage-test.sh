@@ -343,7 +343,7 @@ run_test "in-progress-multiple-prs-second-linked" \
 
 run_test "in-progress-creates-pr-open-label" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
-  "gh label create pr-open --repo test-org/test-repo --description An open PR already addresses this issue --color D4C5F9 --force"
+  "gh label create pr-open --repo test-org/test-repo --description Fullsend: open PR addresses this issue --color D4C5F9"
 
 run_test "in-progress-missing-comment-fails" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}]}' \

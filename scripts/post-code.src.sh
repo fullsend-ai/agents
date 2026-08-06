@@ -36,7 +36,7 @@
 #
 # Exit codes:
 #   0  — branch pushed and PR created, OR agent determined nothing to do
-#   1  — validation failure or error (nothing pushed)
+#   1  — validation failure, error, or post-push label application failure
 set -euo pipefail
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +46,8 @@ source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
 # shellcheck source=lib/pr-assignee.lib.sh
 source "${SCRIPT_DIR_POST}/lib/pr-assignee.lib.sh"
+# shellcheck source=lib/labels.lib.sh
+source "${SCRIPT_DIR_POST}/lib/labels.lib.sh"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -702,9 +704,15 @@ echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
 # is used instead (label application requires repo write access). See
 # .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
-gh issue edit "${PR_NUMBER_FROM_URL}" \
+ensure_label "${REPO_FULL_NAME}" "ready-for-review"
+label_err=""
+if label_err=$(gh issue edit "${PR_NUMBER_FROM_URL}" \
   --repo "${REPO_FULL_NAME}" \
-  --add-label "ready-for-review" 2>/dev/null || \
-  gha_echo warning "Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+  --add-label "ready-for-review" 2>&1); then
+  echo "Applied ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+else
+  gha_echo error "Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL} — review agent will NOT be dispatched: ${label_err}"
+  exit 1
+fi
 
 maybe_assign_pr "${PR_NUMBER_FROM_URL}"

@@ -1459,6 +1459,30 @@ run_branch_validation_test "no-agent-target-ignores-allowed-list" \
 run_branch_validation_test "substring-not-accepted" \
   "release" "main" "release-1,release-2" "reject:release"
 
+# ---------------------------------------------------------------------------
+# Verify the bundled script uses ensure_label from labels.lib.sh for the
+# ready-for-review label, rather than inline create-on-missing fallback.
+# ---------------------------------------------------------------------------
+
+# Source script must call ensure_label for ready-for-review
+if grep -q 'ensure_label.*ready-for-review' "${POST_SCRIPT}"; then
+  echo "PASS: script-calls-ensure-label"
+else
+  echo "FAIL: script-calls-ensure-label"
+  echo "  ${POST_SCRIPT} does not call ensure_label for ready-for-review"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Bundled script must have labels.lib.sh inlined (ensure_label + _label_defaults)
+BUNDLED_SCRIPT="${SCRIPT_DIR}/post-code.sh"
+if grep -q '_label_defaults' "${BUNDLED_SCRIPT}" && grep -q 'ensure_label' "${BUNDLED_SCRIPT}"; then
+  echo "PASS: bundled-has-labels-lib"
+else
+  echo "FAIL: bundled-has-labels-lib"
+  echo "  ${BUNDLED_SCRIPT} missing labels.lib.sh functions"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # --- Summary ---
 
 echo ""
