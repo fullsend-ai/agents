@@ -137,7 +137,8 @@ judges:
       Post-script must open at least one pull request when
       annotations.expect_pr is true (default when unset — see
       eval/code/cases/001-fix-add). When a case sets expect_pr: false, this
-      asserts the opposite: no open/merged PR exists. Used for needs_input
+      asserts the opposite: no PR was created at all (open, merged, or
+      closed). Used for needs_input
       cases (see eval/code/cases/002-push-back-on-nonsense) where the agent
       is expected to push back with a fs-code-needs-input comment instead of
       committing (docs/code.md: Control labels). Can fail for reasons
@@ -157,8 +158,8 @@ judges:
           if not openish:
               return False, "No pull requests found — code agent/post-script did not create a PR"
           return True, f"PR created: {[p.get('url') for p in openish]}"
-      if openish:
-          return False, f"Expected no PR (needs_input case) but found: {[p.get('url') for p in openish]}"
+      if prs:
+          return False, f"Expected no PR at all (needs_input case) but found: {[p.get('url') for p in prs]}"
       return True, "No PR created, as expected (needs_input case)"
 
   - name: required_labels
