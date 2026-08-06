@@ -70,9 +70,13 @@ every agent).
 To overload the built-in skill, create your own `issue-labels` skill in
 `.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
 `.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-You can also overload it at the org level in your `.fullsend` config repo at
-`customized/skills/issue-labels/SKILL.md`. At runtime, your version replaces
-the upstream default — no other configuration needed.
+At the org level, override via `base:` composition (ADR 0045) — inherit
+the upstream harness and add your skill under `skills:` with the same
+basename (`issue-labels`) as the one you're replacing, so the merge
+dedupes by basename (fullsend-ai/fullsend #5409) and yours wins. The
+older `customized/skills/issue-labels/SKILL.md` overlay in the org
+`.fullsend` config repo (and the per-repo `.fullsend/customized/skills/...`
+equivalent) is deprecated by ADR 0064.
 
 Here's an example that encodes domain-specific labeling rules:
 
