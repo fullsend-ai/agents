@@ -1376,6 +1376,48 @@ run_empty_pr_files_with_protection_disabled_test() {
 }
 run_empty_pr_files_with_protection_disabled_test
 
+# The REVIEW_PROTECTED_PATHS default above is duplicated verbatim in
+# harness/review.yaml's env.runner/env.sandbox (there's no single structural
+# source of truth since env/default-review-protected-paths.txt was removed).
+# Guard against silent drift: if a future edit updates one copy and misses
+# another, this test suite would otherwise keep passing against a stale
+# default. Skips (doesn't fail) when yq is unavailable, matching the
+# fallback pattern in post-triage.sh.
+run_protected_paths_default_drift_test() {
+  local test_name="protected-paths-default-matches-harness-review-yaml"
+
+  if ! command -v yq &>/dev/null; then
+    echo "SKIP: ${test_name} — yq not found"
+    return
+  fi
+
+  local harness_file="${SCRIPT_DIR}/../harness/review.yaml"
+  local runner_default sandbox_default
+  runner_default="$(yq -r '.env.runner.REVIEW_PROTECTED_PATHS' "${harness_file}")"
+  sandbox_default="$(yq -r '.env.sandbox.REVIEW_PROTECTED_PATHS' "${harness_file}")"
+
+  # shellcheck disable=SC2030,SC2031
+  if [[ "${runner_default}" != "${REVIEW_PROTECTED_PATHS}" ]]; then
+    echo "FAIL: ${test_name} — harness/review.yaml env.runner.REVIEW_PROTECTED_PATHS does not match this test file's default"
+    echo "  harness/review.yaml: ${runner_default}"
+    echo "  post-review-test.sh: ${REVIEW_PROTECTED_PATHS}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # shellcheck disable=SC2030,SC2031
+  if [[ "${sandbox_default}" != "${REVIEW_PROTECTED_PATHS}" ]]; then
+    echo "FAIL: ${test_name} — harness/review.yaml env.sandbox.REVIEW_PROTECTED_PATHS does not match this test file's default"
+    echo "  harness/review.yaml: ${sandbox_default}"
+    echo "  post-review-test.sh: ${REVIEW_PROTECTED_PATHS}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_protected_paths_default_drift_test
+
 # --- Summary ---
 
 echo ""
