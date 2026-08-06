@@ -202,11 +202,13 @@ install -m 0600 /dev/null "$ENV_FILE"
     emit_env "REVIEW_BODY_FILE" "${REVIEW_BODY_FILE}"
   fi
 
-  # Review agent: REVIEW_PROTECTED_PATHS is a literal default baked into
-  # harness/review.yaml (not a ${VAR} passthrough), so it needs no handling
-  # here — only REVIEW_FINDING_SEVERITY_THRESHOLD is a real caller-supplied var.
+  # Review agent: both REVIEW_PROTECTED_PATHS and
+  # REVIEW_FINDING_SEVERITY_THRESHOLD are literal defaults baked into
+  # harness/review.yaml's env.runner/env.sandbox stanzas. Default here to
+  # the same value ("low") so eval cases that don't set this var don't
+  # fail closed in post-review.sh's severity-validation block.
   if [[ "$AGENT" == "review" ]]; then
-    emit_env "REVIEW_FINDING_SEVERITY_THRESHOLD" "${REVIEW_FINDING_SEVERITY_THRESHOLD:-}"
+    emit_env "REVIEW_FINDING_SEVERITY_THRESHOLD" "${REVIEW_FINDING_SEVERITY_THRESHOLD:-low}"
   fi
 
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"

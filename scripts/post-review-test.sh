@@ -390,9 +390,12 @@ if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* 
   exit 0
 fi
 
-# gh pr view ... --json files ... → configurable via MOCK_PR_FILES
+# gh pr view ... --json files ... → configurable via MOCK_PR_FILES.
+# Uses \${VAR-default} (not \${VAR:-default}) so an explicitly-empty
+# MOCK_PR_FILES="" can simulate "no changed files" instead of falling
+# back to the default.
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
-  echo "\${MOCK_PR_FILES:-src/main.go}"
+  echo "\${MOCK_PR_FILES-src/main.go}"
   exit 0
 fi
 
@@ -1330,6 +1333,48 @@ run_explicit_empty_test() {
   echo "PASS: ${test_name}"
 }
 run_explicit_empty_test
+
+# The "PR has no changed files" safety net is independent of
+# protected-path enforcement and must still apply even when an operator
+# has explicitly opted out of protected-path enforcement.
+run_empty_pr_files_with_protection_disabled_test() {
+  local test_name="empty-pr-files-safety-net-independent-of-protected-paths"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES=""
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected empty-PR-files abort message in output"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_empty_pr_files_with_protection_disabled_test
 
 # --- Summary ---
 
