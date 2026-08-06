@@ -16,8 +16,12 @@ labels:
 # (read issue + repo, conclude no conservative interpretation exists) rather
 # than attempting an implementation, so this budget is tighter than
 # 001-fix-add's.
-max_turns: 30
-max_cost_usd: 2.00
+# Observed baseline: 21 turns / $0.64 (CI run 31042840745). Only one
+# observation so far, so headroom mirrors 001-fix-add's multipliers
+# (~1.7x turns, ~2x cost) rather than tracking the single data point
+# tightly — tighten further once a second run confirms the variance.
+max_turns: 35
+max_cost_usd: 1.25
 
 # Human reference only; not consumed by judges (same class as 001-fix-add's
 # code_expectations).
