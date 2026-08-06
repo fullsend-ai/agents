@@ -94,11 +94,24 @@ GHA_LOG_SANITIZE_SH_LOADED=1
 
 _sanitize_workflow_value() {
   local value="$1"
-  value="${value//::/}"
-  value="${value//%0A/}"
-  value="${value//%0a/}"
-  value="${value//%0D/}"
-  value="${value//%0d/}"
+  local prev
+  # Loop to a fixed point: removing one token can reassemble another (e.g.
+  # stripping "%0A" out of ":%0A:notice:%0A:" collapses the flanking colons
+  # back into a live "::"). A single fixed pass-order can't defend against
+  # that in both directions, so keep stripping until nothing changes.
+  while true; do
+    prev="${value}"
+    value="${value//::/}"
+    value="${value//%0A/}"
+    value="${value//%0a/}"
+    value="${value//%0D/}"
+    value="${value//%0d/}"
+    [[ "${value}" == "${prev}" ]] && break
+  done
+  # GHA's runner parses stdout line-by-line; a literal CR/LF byte would start
+  # a new physical line the "::" strip above never sees.
+  value="${value//$'\r'/}"
+  value="${value//$'\n'/ }"
   printf '%s' "${value}"
 }
 
