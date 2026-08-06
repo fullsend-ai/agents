@@ -11,5 +11,11 @@ Reference documentation for the default agents shipped by fullsend.
 | [Fix](fix.md) | Addresses review feedback on open PRs |
 | [Retro](retro.md) | Analyzes completed workflows and proposes system improvements |
 
+### Guides
+
+| Guide | Summary |
+|-------|---------|
+| [Custom network policy](network-policy.md) | Configure sandbox network access for hosts beyond the default allowlist |
+
 For configuration, customization, and building your own agents, see the
 [fullsend docs](https://fullsend.sh/docs).

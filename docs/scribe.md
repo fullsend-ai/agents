@@ -124,6 +124,11 @@ The agent produces JSON validated against `schemas/scribe-result.schema.json`:
 - `new_issues[]` — proposals for issues not yet in the backlog
 - `stats` — counts for observability
 
+## Custom network policy
+
+If this agent needs to reach hosts beyond the defaults, see the
+[custom network policy guide](network-policy.md).
+
 ## Source
 
 [`harness/scribe.yaml`](../harness/scribe.yaml)
