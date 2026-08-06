@@ -203,14 +203,14 @@ if [ "${ACTION}" = "approve" ]; then
   else
     IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
     # Trim leading/trailing whitespace and drop empty entries.
-    _trimmed=()
-    for _entry in "${PROTECTED_PATHS[@]}"; do
-      _entry="$(echo "${_entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-      [[ -n "${_entry}" ]] && _trimmed+=("${_entry}")
+    trimmed=()
+    for entry in "${PROTECTED_PATHS[@]}"; do
+      entry="$(echo "${entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -n "${entry}" ]] && trimmed+=("${entry}")
     done
     PROTECTED_PATHS=()
-    [[ ${#_trimmed[@]} -gt 0 ]] && PROTECTED_PATHS=("${_trimmed[@]}")
-    unset _trimmed _entry
+    [[ ${#trimmed[@]} -gt 0 ]] && PROTECTED_PATHS=("${trimmed[@]}")
+    unset trimmed entry
     if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
       # Sanitize before interpolating into a workflow command. Strip raw
       # newlines, then strip every '%' and ':' character outright rather
@@ -219,12 +219,12 @@ if [ "${ACTION}" = "approve" ]; then
       # adjacent fragments reassembling after a single pass. Same
       # approach as the REVIEW_FINDING_SEVERITY_THRESHOLD sanitization
       # above.
-      _sanitized_paths="${REVIEW_PROTECTED_PATHS//$'\n'/}"
-      _sanitized_paths="${_sanitized_paths//$'\r'/}"
-      _sanitized_paths="${_sanitized_paths//%/}"
-      _sanitized_paths="${_sanitized_paths//:/}"
-      echo "::error::REVIEW_PROTECTED_PATHS=\"${_sanitized_paths}\" contains no valid path entries after trimming — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
-      unset _sanitized_paths
+      sanitized_paths="${REVIEW_PROTECTED_PATHS//$'\n'/}"
+      sanitized_paths="${sanitized_paths//$'\r'/}"
+      sanitized_paths="${sanitized_paths//%/}"
+      sanitized_paths="${sanitized_paths//:/}"
+      echo "::error::REVIEW_PROTECTED_PATHS=\"${sanitized_paths}\" contains no valid path entries after trimming — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
+      unset sanitized_paths
       exit 1
     fi
   fi
