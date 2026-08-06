@@ -87,14 +87,56 @@ post_needs_input_comment() {
   local label="${CODE_NEEDS_INPUT_LABEL:-fs-code-needs-input}"
   gh label create "${label}" --repo "${REPO_FULL_NAME}" \
     --description "Code agent needs human input to proceed" --color "D93F0B" \
-    --force 2>/dev/null || true
+    --force 2>/dev/null || gha_echo warning "Failed to create/update label '${label}' on ${REPO_FULL_NAME}"
   gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
-    -f "labels[]=${label}" --silent 2>/dev/null || true
+    -f "labels[]=${label}" --silent 2>/dev/null || \
+    gha_echo warning "Failed to apply label '${label}' to issue #${safe_issue_number}"
   gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels/ready-to-code" \
-    -X DELETE --silent 2>/dev/null || true
+    -X DELETE --silent 2>/dev/null || \
+    gha_echo warning "Failed to remove 'ready-to-code' label from issue #${safe_issue_number}"
+
+  # Guard against a contract violation: needs_input means "stop before
+  # implementing," so there should be no local commits and no open PR for
+  # this branch. Check anyway — cheaply — so a violation surfaces to the
+  # human instead of silently discarding the agent's work or leaving
+  # contradictory state (an open PR alongside a "no PR" comment).
+  local caveat=""
+  local current_branch
+  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  if [ -n "${current_branch}" ]; then
+    local existing_pr_url
+    existing_pr_url="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${current_branch}" \
+      --json url --jq '.[0].url // empty' 2>/dev/null || true)"
+    if [ -n "${existing_pr_url}" ]; then
+      caveat="⚠️ An open PR already exists for branch \`${current_branch}\`: ${existing_pr_url}. The agent set \`needs_input\` on this run — check whether that PR is still current."
+      gha_echo warning "needs_input set but an open PR already exists for branch '${current_branch}': ${existing_pr_url}"
+    else
+      local default_branch commits_ahead
+      default_branch="$(gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null || echo main)"
+      if [ "${current_branch}" != "${default_branch}" ]; then
+        commits_ahead="$(git rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || echo 0)"
+        if [ "${commits_ahead}" -gt 0 ]; then
+          caveat="⚠️ The agent made ${commits_ahead} local commit(s) on branch \`${current_branch}\` before setting \`needs_input\` — these were not pushed and will be discarded."
+          gha_echo warning "needs_input set but ${commits_ahead} local commit(s) exist on branch '${current_branch}' — discarding"
+        fi
+      fi
+    fi
+  fi
 
   local sanitized_input
-  sanitized_input="$(sanitize_failure_detail "${needs_input}")"
+  # max_lines=0 disables tail-based truncation: needs_input is forward,
+  # human-authored prose already length-capped by the schema (maxLength
+  # 4000), not command/log output where tail-ing to recent lines makes
+  # sense. Truncating from the tail would silently drop the opening
+  # framing of a long explanation.
+  sanitized_input="$(sanitize_failure_detail "${needs_input}" 0)"
+
+  local caveat_block=""
+  if [ -n "${caveat}" ]; then
+    caveat_block="
+${caveat}
+"
+  fi
 
   local body
   body="🚧 **Code agent needs input** — issue #${safe_issue_number}
@@ -103,7 +145,7 @@ The code agent stopped before implementing a fix because it needs input from a h
 
 **What it needs:**
 ${sanitized_input}
-
+${caveat_block}
 Once this is resolved, remove the \`${label}\` label and re-trigger with \`/fs-code\`."
 
   if ! gh issue comment "${ISSUE_NUMBER}" \
