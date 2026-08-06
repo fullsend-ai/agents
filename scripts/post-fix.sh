@@ -548,6 +548,22 @@ else
   NO_PUSH=false
 fi
 
+# ---------------------------------------------------------------------------
+# 0b. Verify branch matches the PR's head ref
+#
+# The fix agent is dispatched to modify a specific PR. Verify the agent's
+# local branch matches that PR's head ref to prevent a compromised agent
+# from pushing commits to a different PR's branch.
+# ---------------------------------------------------------------------------
+if [ "${NO_PUSH}" = "false" ]; then
+  EXPECTED_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
+  if [ -n "${EXPECTED_BRANCH}" ] && [ "${BRANCH}" != "${EXPECTED_BRANCH}" ]; then
+    post_fail_to_pr branch-mismatch \
+      "Agent branch '${BRANCH}' does not match PR #${PR_NUMBER} head ref '${EXPECTED_BRANCH}'. Refusing to push."
+  fi
+fi
+
 # Scope to the agent's commit(s) only — not the entire branch. PRE_AGENT_HEAD
 # is set by fix.yml to the HEAD SHA before the harness runs, so this diff
 # captures every commit the agent made (including validation_loop retries).
@@ -767,6 +783,9 @@ if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
     "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
+  # Record remote tip before push for pinned --force-with-lease.
+  FIX_REMOTE_SHA="$(git ls-remote --heads origin "${BRANCH}" 2>/dev/null | awk '{print $1}' || true)"
+
   # Plain push first. Falls back to --force-with-lease when the push
   # is rejected (non-fast-forward), which happens after a rebase — the
   # agent rewrote history so the remote branch diverged. force-with-lease
@@ -778,8 +797,12 @@ if [ "${NO_PUSH}" = "false" ]; then
   if [ "${PUSH_RC}" -ne 0 ]; then
     if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
       gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+      LEASE_ARG="--force-with-lease"
+      if [ -n "${FIX_REMOTE_SHA}" ]; then
+        LEASE_ARG="--force-with-lease=${BRANCH}:${FIX_REMOTE_SHA}"
+      fi
       FORCE_PUSH_OUTPUT=""
-      if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+      if ! FORCE_PUSH_OUTPUT="$(git push "${LEASE_ARG}" -u origin -- "${BRANCH}" 2>&1)"; then
         print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
         PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"

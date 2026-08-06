@@ -386,6 +386,60 @@ run_postfix_integration_test "integration-neither-filename-fails-closed" "true"
 
 rm -rf "${INTEGRATION_TMPDIR}"
 
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the branch mismatch detection logic from
+# post-fix.src.sh section 0b. Given the agent's branch and the PR's
+# expected head ref, returns the decision.
+# ---------------------------------------------------------------------------
+check_branch_mismatch() {
+  local branch="$1"
+  local expected_branch="$2"
+
+  if [ -z "${expected_branch}" ]; then
+    echo "skip:no-expected-branch"
+  elif [ "${branch}" = "${expected_branch}" ]; then
+    echo "match"
+  else
+    echo "mismatch:${branch}:expected=${expected_branch}"
+  fi
+}
+
+run_branch_mismatch_test() {
+  local test_name="$1"
+  local branch="$2"
+  local expected_branch="$3"
+  local expected_prefix="$4"
+
+  local actual
+  actual="$(check_branch_mismatch "${branch}" "${expected_branch}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  branch:          '${branch}'"
+    echo "  expected_branch: '${expected_branch}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Branch mismatch test cases ---
+
+# Branch matches PR head ref
+run_branch_mismatch_test "branch-matches-pr" \
+  "agent/42-fix-widget" "agent/42-fix-widget" "match"
+
+# Branch does not match PR head ref
+run_branch_mismatch_test "branch-mismatch" \
+  "agent/99-other-fix" "agent/42-fix-widget" "mismatch"
+
+# No expected branch (gh pr view failed) — skip check
+run_branch_mismatch_test "no-expected-branch" \
+  "agent/42-fix-widget" "" "skip:no-expected-branch"
+
 # --- Summary ---
 
 echo ""

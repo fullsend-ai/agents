@@ -842,6 +842,28 @@ if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ];
   exit 0
 fi
 
+# ---------------------------------------------------------------------------
+# 1b. Enforce agent/<ISSUE_NUMBER>-* branch namespace
+#
+# The agent chooses its own branch name inside the sandbox. Rename it
+# deterministically using the trusted ISSUE_NUMBER (sourced from the
+# GitHub event, not from agent output) so cross-issue branch collisions
+# are structurally impossible.
+# ---------------------------------------------------------------------------
+SLUG="${BRANCH##*/}"
+SLUG="${SLUG#"${ISSUE_NUMBER}-"}"
+SLUG="${SLUG#"${ISSUE_NUMBER}"}"
+SLUG="$(echo "${SLUG}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-//;s/-$//' | head -c 60)"
+if [ -z "${SLUG}" ]; then
+  SLUG="impl"
+fi
+SAFE_BRANCH="agent/${ISSUE_NUMBER}-${SLUG}"
+if [ "${BRANCH}" != "${SAFE_BRANCH}" ]; then
+  gha_echo warning "Renaming agent branch '${BRANCH}' to '${SAFE_BRANCH}'"
+  git branch -m "${SAFE_BRANCH}"
+fi
+BRANCH="${SAFE_BRANCH}"
+
 echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
 
@@ -1116,8 +1138,9 @@ export GH_TOKEN="${PUSH_TOKEN}"
 # because the local branch was created fresh from origin/main. Delete the
 # stale remote branch so the push succeeds.
 # ---------------------------------------------------------------------------
-REMOTE_REF="$(git ls-remote --heads origin "${BRANCH}" 2>/dev/null | head -1 || true)"
-if [ -n "${REMOTE_REF}" ]; then
+REMOTE_REF_LINE="$(git ls-remote --heads origin "${BRANCH}" 2>/dev/null | head -1 || true)"
+REMOTE_SHA="$(echo "${REMOTE_REF_LINE}" | awk '{print $1}')"
+if [ -n "${REMOTE_REF_LINE}" ]; then
   echo "Remote branch ${BRANCH} already exists — checking for open PRs..."
   OPEN_PR="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
     --state open --json number --jq '.[0].number' 2>/dev/null || true)"
@@ -1125,8 +1148,22 @@ if [ -n "${REMOTE_REF}" ]; then
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
     git push origin --delete "${BRANCH}" 2>&1 || \
       gha_echo warning "Failed to delete stale remote branch ${BRANCH}"
+    REMOTE_SHA=""
   else
-    echo "Open PR #${OPEN_PR} uses ${BRANCH} — keeping remote branch"
+    # Verify the open PR belongs to this issue. With deterministic branch
+    # naming (agent/<ISSUE_NUMBER>-*) this should always hold, but check
+    # anyway as defense-in-depth against cross-issue commit injection.
+    PR_BODY_TEXT="$(gh pr view "${OPEN_PR}" --repo "${REPO_FULL_NAME}" \
+      --json body --jq '.body' 2>/dev/null || true)"
+    PR_CLOSES_THIS_ISSUE=false
+    if echo "${PR_BODY_TEXT}" | grep -qE "(Close[sd]?|Fix(e[sd])?|Resolve[sd]?|Related to) #${ISSUE_NUMBER}( |$)"; then
+      PR_CLOSES_THIS_ISSUE=true
+    fi
+    if [ "${PR_CLOSES_THIS_ISSUE}" = "false" ]; then
+      post_fail_to_issue branch-collision \
+        "Remote branch '${BRANCH}' backs open PR #${OPEN_PR}, which does not reference issue #${ISSUE_NUMBER}. Refusing to push to avoid cross-issue commit injection."
+    fi
+    echo "Open PR #${OPEN_PR} uses ${BRANCH} and references issue #${ISSUE_NUMBER} — keeping remote branch"
   fi
 fi
 
@@ -1140,8 +1177,12 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    LEASE_ARG="--force-with-lease"
+    if [ -n "${REMOTE_SHA}" ]; then
+      LEASE_ARG="--force-with-lease=${BRANCH}:${REMOTE_SHA}"
+    fi
     FORCE_PUSH_OUTPUT=""
-    if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+    if ! FORCE_PUSH_OUTPUT="$(git push "${LEASE_ARG}" -u origin -- "${BRANCH}" 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
       PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
