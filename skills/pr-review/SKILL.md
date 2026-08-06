@@ -446,8 +446,10 @@ incident.
    **Part 1 — Sub-agent definition:** the full markdown body of the
    security-triage sub-agent file (everything after the frontmatter)
 
-   **Part 2 — Governance paths:** the resolved list from step 2,
-   formatted as a bullet list under a heading:
+   **Part 2 — Governance paths:** the resolved list from step 2 above
+   (this procedure's own governance-paths resolution step, not the
+   orchestrator's per-file-mode step 2 referenced elsewhere in this
+   subsection), formatted as a bullet list under a heading:
 
    ```markdown
    ## Active governance paths
@@ -504,8 +506,10 @@ incident.
    uniform-attention behavior as a safe default.
 
    **Structural validation:** Before accepting the classification,
-   verify the following invariants against the changed-file set from
-   step 2. If any check fails, treat as a triage failure and apply
+   verify the following invariants against the changed-file set
+   produced by the orchestrator's step 2 (large-PR mode file
+   selection — not this procedure's own governance-paths step 2
+   above). If any check fails, treat as a triage failure and apply
    the fallback above.
 
    a. **Completeness:** The union of paths in
