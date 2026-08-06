@@ -199,19 +199,19 @@ if [ "${ACTION}" = "approve" ]; then
     # is treated as a likely misconfiguration rather than an intentional
     # opt-out.
     echo "::notice::REVIEW_PROTECTED_PATHS is explicitly empty — protected-path enforcement disabled"
-    PROTECTED_PATHS=()
+    REVIEW_ACTIVE_PROTECTED_PATHS=()
   else
-    IFS=',' read -ra PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
+    IFS=',' read -ra REVIEW_ACTIVE_PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
     # Trim leading/trailing whitespace and drop empty entries.
     trimmed=()
-    for entry in "${PROTECTED_PATHS[@]}"; do
+    for entry in "${REVIEW_ACTIVE_PROTECTED_PATHS[@]}"; do
       entry="$(echo "${entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
       [[ -n "${entry}" ]] && trimmed+=("${entry}")
     done
-    PROTECTED_PATHS=()
-    [[ ${#trimmed[@]} -gt 0 ]] && PROTECTED_PATHS=("${trimmed[@]}")
+    REVIEW_ACTIVE_PROTECTED_PATHS=()
+    [[ ${#trimmed[@]} -gt 0 ]] && REVIEW_ACTIVE_PROTECTED_PATHS=("${trimmed[@]}")
     unset trimmed entry
-    if [[ ${#PROTECTED_PATHS[@]} -eq 0 ]]; then
+    if [[ ${#REVIEW_ACTIVE_PROTECTED_PATHS[@]} -eq 0 ]]; then
       # Sanitize before interpolating into a workflow command. Strip raw
       # newlines, then strip every '%' and ':' character outright rather
       # than collapsing fixed-width tokens (e.g. "::", "%0A") — matching
@@ -233,18 +233,18 @@ if [ "${ACTION}" = "approve" ]; then
   # net (refuse to approve if we can't establish what changed) and must
   # run regardless of whether protected-path enforcement itself is
   # enabled — only the pattern-matching loop below is gated on a
-  # non-empty PROTECTED_PATHS.
+  # non-empty REVIEW_ACTIVE_PROTECTED_PATHS.
   PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
   if [ -z "${PR_FILES}" ]; then
     echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve (gh pr view --json files)" >&2
     exit 1
   fi
 
-  if [[ ${#PROTECTED_PATHS[@]} -gt 0 ]]; then
+  if [[ ${#REVIEW_ACTIVE_PROTECTED_PATHS[@]} -gt 0 ]]; then
     PROTECTED_MATCHES=""
     while IFS= read -r file; do
       [ -z "${file}" ] && continue
-      for pattern in "${PROTECTED_PATHS[@]}"; do
+      for pattern in "${REVIEW_ACTIVE_PROTECTED_PATHS[@]}"; do
         if [[ "${file}" == "${pattern}"* ]]; then
           PROTECTED_MATCHES="${PROTECTED_MATCHES}${file}"$'\n'
           break
