@@ -815,8 +815,8 @@ exactly what's missing (the tool name, the command that failed, and the
 error), validate structured output (step 11), and stop — do NOT commit.
 
 **Do NOT silently skip tests or linters and commit as if everything
-passed.** If you cannot run the relevant test suite or lint command, you
-must disclose that.
+passed.** If you cannot run the relevant test suite or lint command, use
+`needs_input` as described above — do not commit.
 
 **If tests or linters fail due to your code:**
 
@@ -1092,8 +1092,8 @@ optionally `pr_body` and `closes_issue`:
 ```
 
 **Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch`, `pr_body`, and `closes_issue` are allowed. Any
-other fields will cause validation to fail.
+Only `target_branch`, `pr_body`, `closes_issue`, and `needs_input` are
+allowed. Any other fields will cause validation to fail.
 
 Validate the output against the schema:
 
