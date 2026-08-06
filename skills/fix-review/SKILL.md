@@ -232,8 +232,13 @@ multiple times. Before planning, read the PR's commit history to understand
 what was already tried:
 
 ```bash
-git log --oneline "origin/${BASE_BRANCH}..HEAD" | head -20
+git log --oneline "${BASE_BRANCH}..HEAD" | head -20
 ```
+
+Use the local `${BASE_BRANCH}` ref — not `origin/${BASE_BRANCH}`. The
+sandbox checks out the base branch at its latest commit, so the local
+ref is already current. Origin refs may not be available when the
+sandbox network policy blocks git protocol access.
 
 Try a fundamentally different approach: different algorithm, different data
 structure, different error handling strategy. Note the strategy change in

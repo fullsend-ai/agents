@@ -45,9 +45,18 @@ Use the diff and changed file list provided by the invoking skill
 (typically `pr-review`). If invoked standalone, obtain the diff:
 
 ```bash
-DEFAULT_BRANCH=$(git rev-parse --abbrev-ref origin/HEAD | cut -d/ -f2)
+DEFAULT_BRANCH=$(gh repo view --json defaultBranchRef \
+  --jq '.defaultBranchRef.name' 2>/dev/null \
+  || git rev-parse --abbrev-ref origin/HEAD 2>/dev/null \
+  | sed 's|^origin/||')
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
 git diff $(git merge-base HEAD "$DEFAULT_BRANCH")..HEAD
 ```
+
+The primary discovery method (`gh repo view`) works in the sandbox;
+`origin/HEAD` is kept as a fallback for environments where the GitHub
+CLI is unavailable. Origin refs may not resolve when the sandbox
+network policy blocks git protocol access.
 
 Record the list of files changed in the PR:
 
