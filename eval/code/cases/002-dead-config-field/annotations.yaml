@@ -9,12 +9,12 @@ labels:
   forbidden: []
 
 # Code agent budgets (sandbox work + retries).
-# No case-specific baseline yet (end-to-end eval run pending CI access).
-# Reference: baseline-30 code-phase analytics (30 runs, claude-opus-4-6,
-# commit f96750b) — median $2.29 / 27 turns, P75 $3.76 / 42 turns,
-# P90 $4.66 / 61 turns. 002 is multi-file tracing (harder than 001's
-# single-line fix), so budget set near P75-P90 of the general code baseline.
-# Revisit after first CI run with case-specific data.
+# Reference: Round 4 A/B benchmark (2026-08-02, guyoron1/fullsend).
+# Upstream #5808 (same dead-config-removal pattern as this case) completed
+# in 75–79 turns / $3.85–$4.02 against the full fullsend codebase (~50k LOC).
+# This fixture is ~200 LOC, so budget should be well under those numbers.
+# Workflow runs: 30729219887 (Path A), 30740388070 (Path B).
+# See: guyoron1/fullsend/docs/ab-benchmark-round4/
 max_turns: 60
 max_cost_usd: 4.00
 
