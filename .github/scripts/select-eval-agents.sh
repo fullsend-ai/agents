@@ -3,7 +3,7 @@
 # whose functional tests should run.
 #
 # Usage:
-#   echo "env/triage.env" | ./select-eval-agents.sh [--repo-root <path>]
+#   echo "env/gcp-vertex.env" | ./select-eval-agents.sh [--repo-root <path>]
 #
 # Logic:
 #   For each harness/*.yaml that has a corresponding eval/<agent>/eval.yaml,

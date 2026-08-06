@@ -78,7 +78,8 @@ need a custom image.
 ### Image requirements
 
 A custom image must work within the constraints enforced by the sandbox
-policy ([`policies/code.yaml`](../policies/code.yaml)):
+policy ([`policies/base.yaml`](../policies/base.yaml)) and network
+profiles ([`profiles/`](../profiles/)):
 
 | Requirement | Detail |
 |-------------|--------|
