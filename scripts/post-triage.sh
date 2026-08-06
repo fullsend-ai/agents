@@ -1,23 +1,27 @@
 #!/usr/bin/env bash
-# post-triage.sh — Parse triage agent JSON output and perform GitHub mutations.
+# post-triage.sh — Parse triage agent JSON output and perform mutations.
 #
 # Runs on the host after sandbox cleanup. Working directory is the fullsend
 # run output directory (e.g., /tmp/fullsend/agent-triage-<id>/iteration-1/).
 #
 # Required env vars:
-#   GITHUB_ISSUE_URL  — HTML URL of the issue (e.g., https://github.com/org/repo/issues/42)
-#   GH_TOKEN          — GitHub token with issues read/write scope
+#   ISSUE_URL      — HTML URL of the issue
+#   FULLSEND_FORGE — "github" or "gitlab"
 #
 # The agent writes its decision to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
 #
-# IMPORTANT: Label mutations use the labels API directly (gh api) instead of
-# gh issue edit. gh issue edit uses PATCH /issues/{number} which fires
+# IMPORTANT: Label mutations use the labels API directly instead of issue edit
+# commands. On GitHub, gh issue edit uses PATCH /issues/{number} which fires
 # issues.edited, re-triggering the triage dispatch in the shim workflow.
 # The labels API (POST/DELETE /issues/{number}/labels) only fires
 # issues.labeled/issues.unlabeled, avoiding the re-triage loop.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/${FULLSEND_FORGE}/triage-ops.sh"
 
 # Find the triage result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -59,36 +63,12 @@ fi
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 
-# Validate and extract repo and issue number from the HTML URL.
-# GITHUB_ISSUE_URL is e.g. https://github.com/org/repo/issues/42
-if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}" >&2
-  exit 1
-fi
-REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
-ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
+forge_validate_issue_url
+forge_parse_issue_url
 
 echo "Action: ${ACTION}"
 echo "Repo: ${REPO}"
 echo "Issue: #${ISSUE_NUMBER}"
-
-# add_label uses the labels API to avoid firing issues.edited.
-add_label() {
-  local endpoint="repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
-  local err_output
-  if ! err_output=$(gh api "${endpoint}" -f "labels[]=$1" --silent 2>&1); then
-    echo "ERROR: failed to add label '$1' to issue #${ISSUE_NUMBER} (POST ${endpoint})" >&2
-    [[ -n "${err_output}" ]] && echo "ERROR: ${err_output}" >&2
-    exit 1
-  fi
-}
-
-# remove_label silently removes a label (no error if absent).
-remove_label() {
-  local encoded
-  encoded=$(printf '%s' "$1" | jq -sRr @uri)
-  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
-}
 
 # Control labels managed by the triage pipeline. The post script refuses to
 # add or remove these via label_actions. pre-triage.sh resets needs-info,
@@ -119,7 +99,7 @@ DEFERRED_LABEL=""
 # the new action. Every terminal action below resets its own set of control
 # labels, but "triaged" is only ever re-applied (never removed) by the
 # handlers themselves, so it must be cleared up front rather than per-branch.
-remove_label "triaged"
+forge_remove_label "triaged"
 
 case "${ACTION}" in
   insufficient)
@@ -127,9 +107,9 @@ case "${ACTION}" in
       echo "ERROR: action is 'insufficient' but no comment provided" >&2
       exit 1
     fi
-    remove_label "blocked"
-    remove_label "pr-open"
-    add_label "needs-info"
+    forge_remove_label "blocked"
+    forge_remove_label "pr-open"
+    forge_add_label "needs-info"
     ;;
 
   duplicate)
@@ -142,9 +122,9 @@ case "${ACTION}" in
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
-    remove_label "blocked"
-    remove_label "pr-open"
-    add_label "duplicate"
+    forge_remove_label "blocked"
+    forge_remove_label "pr-open"
+    forge_add_label "duplicate"
     ;;
 
   prerequisites)
@@ -217,7 +197,7 @@ ${ISSUE_BODY}
       fi
 
       echo "Creating prerequisite issue in ${TARGET_REPO}..."
-      CREATED_URL=$(gh issue create --repo "${TARGET_REPO}" --title "${ISSUE_TITLE}" --body "${ISSUE_BODY}" 2>&1) || {
+      CREATED_URL=$(forge_create_issue "${TARGET_REPO}" "${ISSUE_TITLE}" "${ISSUE_BODY}") || {
         echo "::warning::Failed to create issue in '${TARGET_REPO}': ${CREATED_URL}"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
@@ -262,10 +242,10 @@ ${ISSUE_BODY}
 ${FAILED_CREATES}"
     fi
 
-    remove_label "ready-to-code"
-    remove_label "needs-info"
-    remove_label "pr-open"
-    add_label "blocked"
+    forge_remove_label "ready-to-code"
+    forge_remove_label "needs-info"
+    forge_remove_label "pr-open"
+    forge_add_label "blocked"
     ;;
 
   in-progress)
@@ -309,13 +289,11 @@ ${FAILED_CREATES}"
 
 **Addressed by:**${PR_LIST}"
 
-    remove_label "blocked"
-    remove_label "ready-to-code"
-    remove_label "needs-info"
-    gh label create "pr-open" --repo "${REPO}" \
-      --description "An open PR already addresses this issue" --color "D4C5F9" \
-      --force 2>/dev/null || true
-    add_label "pr-open"
+    forge_remove_label "blocked"
+    forge_remove_label "ready-to-code"
+    forge_remove_label "needs-info"
+    forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
+    forge_add_label "pr-open"
     ;;
 
   sufficient)
@@ -381,9 +359,9 @@ ${FAILED_CREATES}"
       fi
     fi
 
-    remove_label "blocked"
-    remove_label "needs-info"
-    remove_label "pr-open"
+    forge_remove_label "blocked"
+    forge_remove_label "needs-info"
+    forge_remove_label "pr-open"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
@@ -448,31 +426,31 @@ ${FAILED_CREATES}"
       echo "::warning::Triage detected workflow file changes required (#325)"
       if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
         echo "Applying triaged label (workflow changes required)..."
-        add_label "triaged"
+        forge_add_label "triaged"
         WORKFLOW_BLOCKED=true
       fi
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
-        add_label "bug"
+        forge_add_label "bug"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          add_label "triaged"
+          forge_add_label "triaged"
         fi
         ;;
       documentation)
         echo "Applying documentation label..."
-        add_label "documentation"
+        forge_add_label "documentation"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          add_label "triaged"
+          forge_add_label "triaged"
         fi
         ;;
       performance)
@@ -481,17 +459,17 @@ ${FAILED_CREATES}"
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          add_label "triaged"
+          forge_add_label "triaged"
         fi
         ;;
       feature)
         echo "Applying feature + triaged labels..."
-        add_label "feature"
-        add_label "triaged"
+        forge_add_label "feature"
+        forge_add_label "triaged"
         ;;
       *)
         echo "Applying triaged label (${CATEGORY})..."
-        add_label "triaged"
+        forge_add_label "triaged"
         ;;
     esac
     ;;
@@ -501,10 +479,10 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'question' but no comment provided" >&2
       exit 1
     fi
-    remove_label "blocked"
-    remove_label "needs-info"
-    remove_label "pr-open"
-    add_label "question"
+    forge_remove_label "blocked"
+    forge_remove_label "needs-info"
+    forge_remove_label "pr-open"
+    forge_add_label "question"
     ;;
 
   not-planned)
@@ -512,10 +490,10 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'not-planned' but no comment provided" >&2
       exit 1
     fi
-    remove_label "blocked"
-    remove_label "needs-info"
-    remove_label "pr-open"
-    add_label "not-planned"
+    forge_remove_label "blocked"
+    forge_remove_label "needs-info"
+    forge_remove_label "pr-open"
+    forge_add_label "not-planned"
     ;;
 
   *)
@@ -533,14 +511,10 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 
   echo "Processing ${LABEL_COUNT} label action(s)..."
 
-  # Fetch existing repo labels once so we can reject labels that don't exist.
-  # This prevents the agent from accidentally creating labels the org removed.
-  EXISTING_LABELS=$(gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true)
+  EXISTING_LABELS=$(forge_list_repo_labels)
 
   label_exists() {
     local label="$1"
-    # Use grep with fixed-string and line-match to avoid regex issues with
-    # label names that contain special characters (e.g., "c++").
     echo "${EXISTING_LABELS}" | grep -qFx "${label}"
   }
 
@@ -567,12 +541,12 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
           continue
         fi
         echo "Adding label '${LA_LABEL}'..."
-        add_label "${LA_LABEL}"
+        forge_add_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       remove)
         echo "Removing label '${LA_LABEL}'..."
-        remove_label "${LA_LABEL}"
+        forge_remove_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       *)
@@ -594,7 +568,7 @@ fi
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
-  add_label "${DEFERRED_LABEL}"
+  forge_add_label "${DEFERRED_LABEL}"
 fi
 
 # --- Append action-hints footer (sufficient only) ---
@@ -612,29 +586,21 @@ fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
-  # Summaries use sticky comments — there's one logical summary per issue and
-  # updating it in-place avoids flooding. See #602.
-  printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
+  forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
 elif [[ "${ACTION}" == "in-progress" ]]; then
-  # in-progress is a durable status, not an interactive prompt: it holds for the
-  # whole life of the PR while triage re-runs on every issue edit. Stick it to
-  # its own marker so re-runs update in place instead of re-posting. Distinct
-  # from the triage-agent marker so it does not clobber the summary comment.
-  printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-in-progress -->" --token "${GH_TOKEN}" --result -
+  forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
 else
-  # Interactive comments (needs-info questions, blocked notices, duplicates)
-  # post as new comments so the conversation reads chronologically.
-  printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+  forge_post_comment "${COMMENT}"
 fi
 
 # --- Post-action: close issues ---
 
 if [[ "${ACTION}" == "duplicate" ]]; then
-  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "duplicate"
+  forge_close_issue "duplicate"
 fi
 
 if [[ "${ACTION}" == "not-planned" ]]; then
-  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "not planned"
+  forge_close_issue "not planned"
 fi
 
 echo "Post-triage complete."

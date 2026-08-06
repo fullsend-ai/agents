@@ -6,42 +6,29 @@
 # mutual-exclusion violations (Story 2, #125).
 #
 # Required env vars:
-#   GITHUB_ISSUE_URL — HTML URL of the issue
-#   GH_TOKEN         — GitHub token with issues read/write scope
+#   ISSUE_URL      — HTML URL of the issue
+#   FULLSEND_FORGE — "github" or "gitlab"
 #
 # IMPORTANT: Uses the labels API directly (DELETE /issues/{number}/labels/{name})
-# instead of gh issue edit --remove-label. gh issue edit uses PATCH /issues/{number}
+# instead of gh issue edit. gh issue edit uses PATCH /issues/{number}
 # which fires issues.edited, re-triggering the triage dispatch in the shim workflow.
 
 set -euo pipefail
 
-echo "::notice::🔗 Triage target: ${GITHUB_ISSUE_URL}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/${FULLSEND_FORGE}/triage-ops.sh"
 
-if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}"
-  exit 1
-fi
+echo "::notice::🔗 Triage target: ${ISSUE_URL}"
 
-REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
-ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
+forge_validate_issue_url
+forge_parse_issue_url
 
 echo "Resetting triage labels on ${REPO}#${ISSUE_NUMBER}"
 
-for label in needs-info ready-to-code duplicate feature question not-planned pr-open; do
-  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${label}" -X DELETE --silent 2>/dev/null || true
-done
+TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned pr-open)
 
-# Verify no triage labels remain — the pipeline depends on mutual exclusivity.
-REMAINING=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" \
-  --jq '[.[] | select(.name == "needs-info" or .name == "ready-to-code" or .name == "duplicate" or .name == "feature" or .name == "question" or .name == "not-planned" or .name == "pr-open") | .name] | join(", ")' 2>/dev/null || echo "VERIFY_FAILED")
-
-if [[ "${REMAINING}" == "VERIFY_FAILED" ]]; then
-  echo "ERROR: cannot verify label state — API call failed"
-  exit 1
-fi
-if [[ -n "${REMAINING}" ]]; then
-  echo "ERROR: triage labels still present after reset: ${REMAINING}"
-  exit 1
-fi
+forge_strip_labels "${TRIAGE_LABELS[@]}"
+forge_verify_labels_stripped "${TRIAGE_LABELS[@]}"
 
 echo "Label reset complete."
