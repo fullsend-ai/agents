@@ -39,11 +39,14 @@ CLOSED_ISSUES_FILE="${WORK_DIR}/closed-issues.json"
 OPEN_PRS_FILE="${WORK_DIR}/open-prs.json"
 REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
 
-# Open issues with bodies (truncated to 500 chars to keep context lean)
+# Open issues with bodies (truncated to 500 chars to keep context lean).
+# Use gh api --paginate to fetch ALL open issues, avoiding truncation on
+# repos with >1000 open issues (see #705). The REST /issues endpoint
+# includes pull requests, so we filter them out with --jq.
 echo "Fetching open issues from ${SCRIBE_REPO}..."
-gh issue list --repo "${SCRIBE_REPO}" --state open \
-  --json number,title,body,labels,milestone,url --limit 1000 \
-  | jq '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
+gh api --paginate "repos/${SCRIBE_REPO}/issues?state=open&per_page=100" \
+  --jq '.[] | select(.pull_request == null) | {number, title, body, labels, milestone, url: .html_url}' \
+  | jq -s '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
   > "${BACKLOG_FILE}"
 ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
 echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
@@ -176,7 +179,7 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --argjson closed_count "${CLOSED_COUNT}" \
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $issue_count, backlog_truncated: false, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
@@ -316,6 +319,8 @@ jq -n \
     repo: $repo,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
+    open_issue_total: $issue_count,
+    backlog_truncated: false,
     closed_issues: $closed_count,
     open_prs: $pr_count,
     repo_docs: $doc_path_count
