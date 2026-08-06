@@ -32,21 +32,30 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 WORKDIR="${TMPDIR}/workdir"
 mkdir -p "${WORKDIR}"
 
-# Mock gh: record every invocation to a log file. None of the needs_input
-# calls read gh's stdout, so a bare logger is sufficient here (unlike
-# post-triage-test.sh's mock, which also emulates --body-file - stdin
-# capture and label-listing responses that this path doesn't need).
+REPO_FULL_NAME="owner/repo"
+ISSUE_NUMBER="42"
+
+# Mock gh: record every invocation to a log file. Most needs_input calls
+# don't read gh's stdout, but the contract-violation guards (existing PR /
+# default branch lookups) do, so this mock emulates those two responses via
+# case-matching on the call — unlike post-triage-test.sh's mock, which
+# emulates --body-file stdin capture and label-listing instead.
 GH_LOG="${TMPDIR}/gh-calls.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 echo "gh \$*" >> "${GH_LOG}"
+case "\$*" in
+  *"repos/${REPO_FULL_NAME} --jq .default_branch"*)
+    echo "main"
+    ;;
+  *"pr list --repo ${REPO_FULL_NAME} --head"*"--json url"*)
+    echo "\${MOCK_EXISTING_PR_URL:-}"
+    ;;
+esac
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
-
-REPO_FULL_NAME="owner/repo"
-ISSUE_NUMBER="42"
 
 # Runs the real post-code script against a fixture agent-result.json.
 # Leaves the result in EXIT_CODE, the gh call log at ${GH_LOG}, and stdout
@@ -170,6 +179,21 @@ run_post_code '{"target_branch":"main"}'
 assert_log_pattern "no-needs-input-field-unaffected" \
   "fs-code-needs-input" "no"
 
+# Regression guard: a needs_input longer than POST_FAILURE_DETAIL_MAX_LINES
+# (default 30) must not be truncated from the start. sanitize_failure_detail
+# defaults to tail-based truncation (recent lines of command/log output);
+# needs_input is forward, human-authored prose and must be posted in full.
+NEEDS_INPUT_LONG_TEXT="opening context that must not be dropped"
+for i in $(seq 1 35); do
+  NEEDS_INPUT_LONG_TEXT="${NEEDS_INPUT_LONG_TEXT}\nline ${i} of a long explanation"
+done
+FIXTURE_NEEDS_INPUT_LONG="{\"target_branch\":\"main\",\"needs_input\":\"${NEEDS_INPUT_LONG_TEXT}\"}"
+
+run_post_code "${FIXTURE_NEEDS_INPUT_LONG}"
+
+assert_log_pattern "needs-input-comment-not-truncated-from-start" \
+  "opening context that must not be dropped" "yes"
+
 # CODE_NEEDS_INPUT_LABEL env override
 run_post_code_with_label "${FIXTURE_NEEDS_INPUT}" "custom-label"
 
@@ -178,6 +202,68 @@ assert_log_pattern "respects-code-needs-input-label-env-override" \
 
 assert_log_pattern "respects-code-needs-input-label-env-override-no-default-label" \
   "labels[]=fs-code-needs-input" "no"
+
+# --- Contract-violation guard tests ---
+# needs_input should mean "stop before implementing" — no local commits, no
+# open PR. Unlike the tests above (a plain, non-git WORKDIR so the guard's
+# `git branch --show-current` is always empty and the guard is a no-op),
+# these use a real git repo with a feature branch ahead of a fake
+# `origin/main` ref, so the guard's checks actually run.
+GIT_WORKDIR="${TMPDIR}/git-workdir"
+
+setup_git_workdir_with_commits_ahead() {
+  rm -rf "${GIT_WORKDIR}"
+  git init -q -b main "${GIT_WORKDIR}"
+  git -C "${GIT_WORKDIR}" config user.email "test@example.com"
+  git -C "${GIT_WORKDIR}" config user.name "Test"
+  git -C "${GIT_WORKDIR}" commit --allow-empty -m "init" -q
+  # A local-only ref standing in for a fetched remote-tracking branch — no
+  # actual remote needed for the guard's merge-base-style comparison.
+  git -C "${GIT_WORKDIR}" update-ref refs/remotes/origin/main HEAD
+  git -C "${GIT_WORKDIR}" checkout -q -b feature/needs-input
+  git -C "${GIT_WORKDIR}" commit --allow-empty -m "agent work" -q
+}
+
+run_post_code_in_git_workdir() {
+  local fixture_json="$1"
+  local fixture_dir="${TMPDIR}/fixture-input"
+  rm -rf "${fixture_dir}"
+  mkdir -p "${fixture_dir}"
+  echo "${fixture_json}" > "${fixture_dir}/agent-result.json"
+
+  : > "${GH_LOG}"
+
+  EXIT_CODE=0
+  (
+    cd "${GIT_WORKDIR}" && \
+    PATH="${MOCK_BIN}:${PATH}" \
+    REPO_DIR="." \
+    PUSH_TOKEN="fake-token" \
+    REPO_FULL_NAME="${REPO_FULL_NAME}" \
+    ISSUE_NUMBER="${ISSUE_NUMBER}" \
+    FULLSEND_VALIDATED_ITERATION_DIR="${fixture_dir}" \
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || EXIT_CODE=$?
+}
+
+setup_git_workdir_with_commits_ahead
+run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+
+assert_log_pattern "needs-input-warns-on-discarded-commits" \
+  "were not pushed and will be discarded" "yes"
+
+assert_exit_code "needs-input-with-commits-still-exits-zero" 0
+
+# Same git state, but gh pr list reports an already-open PR for the branch —
+# the "existing PR" caveat should win over the "discarded commits" one.
+MOCK_EXISTING_PR_URL="https://github.com/${REPO_FULL_NAME}/pull/7" \
+  run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+
+assert_log_pattern "needs-input-warns-on-existing-pr" \
+  "An open PR already exists for branch" "yes"
+
+assert_log_pattern "needs-input-existing-pr-caveat-omits-discarded-commits" \
+  "were not pushed and will be discarded" "no"
 
 # --- Summary ---
 
