@@ -1460,23 +1460,11 @@ run_branch_validation_test "substring-not-accepted" \
   "release" "main" "release-1,release-2" "reject:release"
 
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the branch namespace enforcement logic from
-# post-code.src.sh section 1b. Given an agent branch and an issue number,
-# returns the safe branch name.
+# Branch-safety helpers under test come from the SAME lib the shipped script
+# sources, so these cases exercise production logic rather than a copy.
 # ---------------------------------------------------------------------------
-enforce_branch_namespace() {
-  local branch="$1"
-  local issue_number="$2"
-
-  local slug="${branch##*/}"
-  slug="${slug#"${issue_number}-"}"
-  slug="${slug#"${issue_number}"}"
-  slug="$(echo "${slug}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-//;s/-$//' | head -c 60)"
-  if [ -z "${slug}" ]; then
-    slug="impl"
-  fi
-  echo "agent/${issue_number}-${slug}"
-}
+# shellcheck source=lib/branch-guard.lib.sh
+source "${SCRIPT_DIR}/lib/branch-guard.lib.sh"
 
 run_namespace_test() {
   local test_name="$1"
@@ -1524,7 +1512,7 @@ run_namespace_test "namespace-uppercase" \
 
 # Branch name that is just the issue number gets fallback slug
 run_namespace_test "namespace-just-issue-number" \
-  "agent/42" "42" "agent/42-impl"
+  "agent/42" "42" "agent/42-42"
 
 # Colliding branch from different issue gets rewritten with this issue's number
 run_namespace_test "namespace-cross-issue-collision" \
@@ -1534,16 +1522,58 @@ run_namespace_test "namespace-cross-issue-collision" \
 run_namespace_test "namespace-special-chars" \
   "agent/42-fix_widget@v2" "42" "agent/42-fix-widget-v2"
 
+# Bare issue number inside slug is NOT stripped (avoids mangling e.g. "42nd")
+run_namespace_test "namespace-bare-number-preserved" \
+  "agent/42-42nd-street-fix" "42" "agent/42-42nd-street-fix"
+
+# Idempotency: enforcing an already-enforced name produces the same result
+_idem_once="$(enforce_branch_namespace "agent/42-fix-widget" "42")"
+_idem_twice="$(enforce_branch_namespace "${_idem_once}" "42")"
+if [ "${_idem_once}" != "${_idem_twice}" ]; then
+  echo "FAIL: namespace-idempotent"
+  echo "  once:  '${_idem_once}'"
+  echo "  twice: '${_idem_twice}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: namespace-idempotent"
+fi
+
+# Idempotency for long inputs (truncation with hash suffix)
+_long_input="agent/42-$(printf 'a%.0s' {1..70})"
+_long_once="$(enforce_branch_namespace "${_long_input}" "42")"
+_long_twice="$(enforce_branch_namespace "${_long_once}" "42")"
+if [ "${_long_once}" != "${_long_twice}" ]; then
+  echo "FAIL: namespace-idempotent-long"
+  echo "  once:  '${_long_once}'"
+  echo "  twice: '${_long_twice}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: namespace-idempotent-long"
+fi
+
+# Two long branches with different suffixes must not collide
+_col_a="agent/42-$(printf 'a%.0s' {1..70})-alpha"
+_col_b="agent/42-$(printf 'a%.0s' {1..70})-beta"
+_col_a_out="$(enforce_branch_namespace "${_col_a}" "42")"
+_col_b_out="$(enforce_branch_namespace "${_col_b}" "42")"
+if [ "${_col_a_out}" = "${_col_b_out}" ]; then
+  echo "FAIL: namespace-no-collision"
+  echo "  a: '${_col_a_out}'"
+  echo "  b: '${_col_b_out}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: namespace-no-collision"
+fi
+
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the cross-issue PR detection logic from
-# post-code.src.sh section 7a. Given a PR body and the current issue
-# number, returns whether the PR references this issue.
+# Thin wrapper over the shipped pr_body_refs_issue (from
+# branch-guard.lib.sh), so these cases exercise production logic.
 # ---------------------------------------------------------------------------
 check_pr_issue_ref() {
   local pr_body="$1"
   local issue_number="$2"
 
-  if echo "${pr_body}" | grep -qE "(Close[sd]?|Fix(e[sd])?|Resolve[sd]?|Related to) #${issue_number}( |$)"; then
+  if pr_body_refs_issue "${pr_body}" "${issue_number}"; then
     echo "match"
   else
     echo "no-match"
@@ -1593,6 +1623,18 @@ run_pr_issue_ref_test "pr-ref-no-footer" \
 
 run_pr_issue_ref_test "pr-ref-substring-not-matched" \
   $'Fix rendering.\n\n---\n\nCloses #421' "42" "no-match"
+
+# Trailing punctuation after issue number
+run_pr_issue_ref_test "pr-ref-trailing-punctuation" \
+  $'Fix rendering.\n\n---\n\nCloses #42.' "42" "match"
+
+# Lowercase closing keyword (GitHub's own keywords are case-insensitive)
+run_pr_issue_ref_test "pr-ref-lowercase" \
+  $'Fix rendering.\n\n---\n\ncloses #42' "42" "match"
+
+# CRLF body (web UI normalises to \r\n)
+run_pr_issue_ref_test "pr-ref-crlf-body" \
+  $'Fix rendering.\r\n\r\n---\r\n\r\nCloses #42\r\n' "42" "match"
 
 # --- Summary ---
 

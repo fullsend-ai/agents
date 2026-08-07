@@ -502,6 +502,57 @@ install_gitleaks() {
   export PATH="${HOME}/.local/bin:${PATH}"
 }
 # END bundled: lib/gitleaks-install.lib.sh
+# shellcheck source=lib/branch-guard.lib.sh
+# BEGIN bundled: lib/branch-guard.lib.sh
+# shellcheck shell=bash
+
+# enforce_branch_namespace <branch> <issue_number>
+# Prints the deterministic safe branch name on stdout.
+enforce_branch_namespace() {
+  local branch="$1"
+  local issue_number="$2"
+
+  local slug="${branch##*/}"
+  slug="${slug#"${issue_number}-"}"
+  slug="$(printf '%s' "${slug}" | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+    | LC_ALL=C tr -cs 'a-z0-9-' '-')"
+  if [ "${#slug}" -gt 60 ]; then
+    local hash
+    hash="$(printf '%s' "${slug}" | sha1sum | head -c 8)"
+    slug="$(printf '%s' "${slug}" | head -c 51)-${hash}"
+  fi
+  slug="$(printf '%s' "${slug}" | sed 's/^-*//;s/-*$//')"
+  if [ -z "${slug}" ]; then
+    slug="impl"
+  fi
+  echo "agent/${issue_number}-${slug}"
+}
+
+# pr_body_refs_issue <pr_body> <issue_number>
+# Returns 0 if the PR body references the issue, non-zero otherwise.
+pr_body_refs_issue() {
+  local pr_body="$1"
+  local issue_number="$2"
+
+  printf '%s' "${pr_body}" | tr -d '\r' \
+    | grep -qiE "(Close[sd]?|Fix(e[sd])?|Resolve[sd]?|Related to)[[:space:]]+#${issue_number}([^0-9]|$)"
+}
+
+# classify_branch_vs_pr_head <branch> <expected_branch>
+# Prints one of: "skip", "match", or "mismatch".
+classify_branch_vs_pr_head() {
+  local branch="$1"
+  local expected_branch="$2"
+
+  if [ -z "${expected_branch}" ]; then
+    echo "skip"
+  elif [ "${branch}" = "${expected_branch}" ]; then
+    echo "match"
+  else
+    echo "mismatch"
+  fi
+}
+# END bundled: lib/branch-guard.lib.sh
 
 # ---------------------------------------------------------------------------
 # Helper: Bot user detection
@@ -521,6 +572,9 @@ RUN_DIR="$(pwd)"
 : "${PR_NUMBER:?PR_NUMBER is required}"
 : "${TRIGGER_SOURCE:?TRIGGER_SOURCE is required}"
 trap 'report_post_failure_to_pr' ERR
+
+[[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
+  post_fail_to_pr setup-error "PR_NUMBER must be numeric, got '${PR_NUMBER}'"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -556,9 +610,21 @@ fi
 # from pushing commits to a different PR's branch.
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
-  EXPECTED_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh pr view "${PR_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null || true)"
-  if [ -n "${EXPECTED_BRANCH}" ] && [ "${BRANCH}" != "${EXPECTED_BRANCH}" ]; then
+  EXPECTED_BRANCH=""
+  HEAD_REF_RC=1
+  for _attempt in 1 2 3; do
+    if EXPECTED_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh pr view "${PR_NUMBER}" \
+      --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null)"; then
+      HEAD_REF_RC=0
+      break
+    fi
+    sleep 2
+  done
+  if [ "${HEAD_REF_RC}" -ne 0 ] || [ -z "${EXPECTED_BRANCH}" ]; then
+    post_fail_to_pr branch-mismatch \
+      "Could not resolve PR #${PR_NUMBER} head ref after 3 attempts — refusing to push."
+  fi
+  if [ "$(classify_branch_vs_pr_head "${BRANCH}" "${EXPECTED_BRANCH}")" = "mismatch" ]; then
     post_fail_to_pr branch-mismatch \
       "Agent branch '${BRANCH}' does not match PR #${PR_NUMBER} head ref '${EXPECTED_BRANCH}'. Refusing to push."
   fi
@@ -784,7 +850,7 @@ if [ "${NO_PUSH}" = "false" ]; then
     "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
   # Record remote tip before push for pinned --force-with-lease.
-  FIX_REMOTE_SHA="$(git ls-remote --heads origin "${BRANCH}" 2>/dev/null | awk '{print $1}' || true)"
+  FIX_REMOTE_SHA="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 | awk '{print $1}' || true)"
 
   # Plain push first. Falls back to --force-with-lease when the push
   # is rejected (non-fast-forward), which happens after a rebase — the
@@ -797,12 +863,8 @@ if [ "${NO_PUSH}" = "false" ]; then
   if [ "${PUSH_RC}" -ne 0 ]; then
     if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
       gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
-      LEASE_ARG="--force-with-lease"
-      if [ -n "${FIX_REMOTE_SHA}" ]; then
-        LEASE_ARG="--force-with-lease=${BRANCH}:${FIX_REMOTE_SHA}"
-      fi
       FORCE_PUSH_OUTPUT=""
-      if ! FORCE_PUSH_OUTPUT="$(git push "${LEASE_ARG}" -u origin -- "${BRANCH}" 2>&1)"; then
+      if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
         print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
         PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"

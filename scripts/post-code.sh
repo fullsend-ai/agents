@@ -676,6 +676,57 @@ maybe_assign_pr() {
   }
 }
 # END bundled: lib/pr-assignee.lib.sh
+# shellcheck source=lib/branch-guard.lib.sh
+# BEGIN bundled: lib/branch-guard.lib.sh
+# shellcheck shell=bash
+
+# enforce_branch_namespace <branch> <issue_number>
+# Prints the deterministic safe branch name on stdout.
+enforce_branch_namespace() {
+  local branch="$1"
+  local issue_number="$2"
+
+  local slug="${branch##*/}"
+  slug="${slug#"${issue_number}-"}"
+  slug="$(printf '%s' "${slug}" | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+    | LC_ALL=C tr -cs 'a-z0-9-' '-')"
+  if [ "${#slug}" -gt 60 ]; then
+    local hash
+    hash="$(printf '%s' "${slug}" | sha1sum | head -c 8)"
+    slug="$(printf '%s' "${slug}" | head -c 51)-${hash}"
+  fi
+  slug="$(printf '%s' "${slug}" | sed 's/^-*//;s/-*$//')"
+  if [ -z "${slug}" ]; then
+    slug="impl"
+  fi
+  echo "agent/${issue_number}-${slug}"
+}
+
+# pr_body_refs_issue <pr_body> <issue_number>
+# Returns 0 if the PR body references the issue, non-zero otherwise.
+pr_body_refs_issue() {
+  local pr_body="$1"
+  local issue_number="$2"
+
+  printf '%s' "${pr_body}" | tr -d '\r' \
+    | grep -qiE "(Close[sd]?|Fix(e[sd])?|Resolve[sd]?|Related to)[[:space:]]+#${issue_number}([^0-9]|$)"
+}
+
+# classify_branch_vs_pr_head <branch> <expected_branch>
+# Prints one of: "skip", "match", or "mismatch".
+classify_branch_vs_pr_head() {
+  local branch="$1"
+  local expected_branch="$2"
+
+  if [ -z "${expected_branch}" ]; then
+    echo "skip"
+  elif [ "${branch}" = "${expected_branch}" ]; then
+    echo "match"
+  else
+    echo "mismatch"
+  fi
+}
+# END bundled: lib/branch-guard.lib.sh
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -687,6 +738,9 @@ RUN_DIR="$(pwd)"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
 trap 'report_post_failure_to_issue' ERR
+
+[[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
+  post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -847,20 +901,13 @@ fi
 #
 # The agent chooses its own branch name inside the sandbox. Rename it
 # deterministically using the trusted ISSUE_NUMBER (sourced from the
-# GitHub event, not from agent output) so cross-issue branch collisions
-# are structurally impossible.
+# GitHub event, not from agent output) so agent-authored pushes are
+# confined to this issue's namespace.
 # ---------------------------------------------------------------------------
-SLUG="${BRANCH##*/}"
-SLUG="${SLUG#"${ISSUE_NUMBER}-"}"
-SLUG="${SLUG#"${ISSUE_NUMBER}"}"
-SLUG="$(echo "${SLUG}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9-' '-' | sed 's/^-//;s/-$//' | head -c 60)"
-if [ -z "${SLUG}" ]; then
-  SLUG="impl"
-fi
-SAFE_BRANCH="agent/${ISSUE_NUMBER}-${SLUG}"
+SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${ISSUE_NUMBER}")"
 if [ "${BRANCH}" != "${SAFE_BRANCH}" ]; then
   gha_echo warning "Renaming agent branch '${BRANCH}' to '${SAFE_BRANCH}'"
-  git branch -m "${SAFE_BRANCH}"
+  git branch -M "${SAFE_BRANCH}"
 fi
 BRANCH="${SAFE_BRANCH}"
 
@@ -1138,13 +1185,23 @@ export GH_TOKEN="${PUSH_TOKEN}"
 # because the local branch was created fresh from origin/main. Delete the
 # stale remote branch so the push succeeds.
 # ---------------------------------------------------------------------------
-REMOTE_REF_LINE="$(git ls-remote --heads origin "${BRANCH}" 2>/dev/null | head -1 || true)"
+REMOTE_REF_LINE="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 || true)"
 REMOTE_SHA="$(echo "${REMOTE_REF_LINE}" | awk '{print $1}')"
 if [ -n "${REMOTE_REF_LINE}" ]; then
   echo "Remote branch ${BRANCH} already exists — checking for open PRs..."
+  PR_LIST_RC=0
   OPEN_PR="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-    --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+    --state open --json number,headRepositoryOwner \
+    --jq '[.[] | select(.headRepositoryOwner.login == "'"${REPO_FULL_NAME%%/*}"'")] | .[0].number // empty' 2>/dev/null)" || PR_LIST_RC=$?
+  if [ "${PR_LIST_RC}" -ne 0 ]; then
+    post_fail_to_issue api-error \
+      "Could not query open PRs for branch '${BRANCH}' — refusing to push."
+  fi
   if [ -z "${OPEN_PR}" ]; then
+    if [[ "${BRANCH}" != agent/${ISSUE_NUMBER}-* ]]; then
+      post_fail_to_issue branch-namespace-violation \
+        "Branch '${BRANCH}' is outside agent/${ISSUE_NUMBER}-* namespace — refusing to delete."
+    fi
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
     git push origin --delete "${BRANCH}" 2>&1 || \
       gha_echo warning "Failed to delete stale remote branch ${BRANCH}"
@@ -1156,7 +1213,7 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
     PR_BODY_TEXT="$(gh pr view "${OPEN_PR}" --repo "${REPO_FULL_NAME}" \
       --json body --jq '.body' 2>/dev/null || true)"
     PR_CLOSES_THIS_ISSUE=false
-    if echo "${PR_BODY_TEXT}" | grep -qE "(Close[sd]?|Fix(e[sd])?|Resolve[sd]?|Related to) #${ISSUE_NUMBER}( |$)"; then
+    if pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
       PR_CLOSES_THIS_ISSUE=true
     fi
     if [ "${PR_CLOSES_THIS_ISSUE}" = "false" ]; then
@@ -1177,12 +1234,8 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
-    LEASE_ARG="--force-with-lease"
-    if [ -n "${REMOTE_SHA}" ]; then
-      LEASE_ARG="--force-with-lease=${BRANCH}:${REMOTE_SHA}"
-    fi
     FORCE_PUSH_OUTPUT=""
-    if ! FORCE_PUSH_OUTPUT="$(git push "${LEASE_ARG}" -u origin -- "${BRANCH}" 2>&1)"; then
+    if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
       PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
@@ -1201,11 +1254,12 @@ fi
 # ---------------------------------------------------------------------------
 
 EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-  --json number --jq '.[0].number' 2>/dev/null || true)"
+  --state open --json number,headRepositoryOwner \
+  --jq '[.[] | select(.headRepositoryOwner.login == "'"${REPO_FULL_NAME%%/*}"'")] | .[0].number // empty' 2>/dev/null || true)"
 
 if [ -n "${EXISTING_PR_NUM}" ]; then
-  EXISTING_PR_URL="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-    --json url --jq '.[0].url' 2>/dev/null || true)"
+  EXISTING_PR_URL="$(gh pr view "${EXISTING_PR_NUM}" --repo "${REPO_FULL_NAME}" \
+    --json url --jq '.url' 2>/dev/null || true)"
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"

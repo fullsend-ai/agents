@@ -387,21 +387,23 @@ run_postfix_integration_test "integration-neither-filename-fails-closed" "true"
 rm -rf "${INTEGRATION_TMPDIR}"
 
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the branch mismatch detection logic from
-# post-fix.src.sh section 0b. Given the agent's branch and the PR's
-# expected head ref, returns the decision.
+# Thin wrapper over the shipped classify_branch_vs_pr_head (from
+# branch-guard.lib.sh), so these cases exercise production logic.
+# Note: post-fix.src.sh retries and fails closed before reaching the
+# classifier, so "skip" is unreachable in production.
 # ---------------------------------------------------------------------------
+# shellcheck source=lib/branch-guard.lib.sh
+source "${SCRIPT_DIR}/lib/branch-guard.lib.sh"
+
 check_branch_mismatch() {
   local branch="$1"
   local expected_branch="$2"
 
-  if [ -z "${expected_branch}" ]; then
-    echo "skip:no-expected-branch"
-  elif [ "${branch}" = "${expected_branch}" ]; then
-    echo "match"
-  else
-    echo "mismatch:${branch}:expected=${expected_branch}"
-  fi
+  case "$(classify_branch_vs_pr_head "${branch}" "${expected_branch}")" in
+    skip)     echo "skip:no-expected-branch" ;;
+    match)    echo "match" ;;
+    mismatch) echo "mismatch:${branch}:expected=${expected_branch}" ;;
+  esac
 }
 
 run_branch_mismatch_test() {
