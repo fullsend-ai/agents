@@ -1636,6 +1636,182 @@ run_pr_issue_ref_test "pr-ref-lowercase" \
 run_pr_issue_ref_test "pr-ref-crlf-body" \
   $'Fix rendering.\r\n\r\n---\r\n\r\nCloses #42\r\n' "42" "match"
 
+# ---------------------------------------------------------------------------
+# ISSUE_NUMBER numeric validation
+# ---------------------------------------------------------------------------
+
+run_numeric_validation_test() {
+  local test_name="$1"
+  local input="$2"
+  local should_pass="$3"
+
+  if [[ "${input}" =~ ^[1-9][0-9]*$ ]]; then
+    if [ "${should_pass}" = "true" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been rejected"
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    if [ "${should_pass}" = "false" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been accepted"
+      FAILURES=$((FAILURES + 1))
+    fi
+  fi
+}
+
+run_numeric_validation_test "issue-number-valid" "42" "true"
+run_numeric_validation_test "issue-number-large" "12345" "true"
+run_numeric_validation_test "issue-number-regex-injection" ".*" "false"
+run_numeric_validation_test "issue-number-alpha" "abc" "false"
+run_numeric_validation_test "issue-number-zero" "0" "false"
+run_numeric_validation_test "issue-number-leading-zero" "042" "false"
+run_numeric_validation_test "issue-number-empty" "" "false"
+run_numeric_validation_test "issue-number-negative" "-1" "false"
+run_numeric_validation_test "issue-number-decimal" "1.5" "false"
+run_numeric_validation_test "issue-number-shell-injection" "1;echo pwned" "false"
+
+# ---------------------------------------------------------------------------
+# Security integration tests — verify that security controls fail closed.
+# These run the REAL post-code.sh against a minimal repo with mock binaries.
+# ---------------------------------------------------------------------------
+
+SEC_CODE_TMPDIR="$(mktemp -d)"
+SEC_CODE_MOCK_BIN="${SEC_CODE_TMPDIR}/bin"
+mkdir -p "${SEC_CODE_MOCK_BIN}"
+
+cat > "${SEC_CODE_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/sleep"
+
+cat > "${SEC_CODE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gitleaks"
+
+REAL_GIT="$(which git)"
+cat > "${SEC_CODE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/git"
+
+# Create a cloned repo with a feature branch and actual file changes.
+# Usage: setup_sec_code_repo <run_dir> <branch_name>
+setup_sec_code_repo() {
+  local run_dir="$1"
+  local branch_name="${2:-evil-branch}"
+  local bare_dir="${run_dir}/remote.git"
+  local repo_dir="${run_dir}/repo"
+
+  ${REAL_GIT} init -q --bare -b main "${bare_dir}"
+  ${REAL_GIT} clone -q "${bare_dir}" "${repo_dir}"
+  ${REAL_GIT} -C "${repo_dir}" config user.email "test@example.com"
+  ${REAL_GIT} -C "${repo_dir}" config user.name "Test"
+  echo "init" > "${repo_dir}/README.md"
+  ${REAL_GIT} -C "${repo_dir}" add README.md
+  ${REAL_GIT} -C "${repo_dir}" commit -q -m "init"
+  ${REAL_GIT} -C "${repo_dir}" push -q origin main
+
+  ${REAL_GIT} -C "${repo_dir}" checkout -q -b "${branch_name}"
+  echo "changed content" > "${repo_dir}/file.txt"
+  ${REAL_GIT} -C "${repo_dir}" add file.txt
+  ${REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
+}
+
+# --- Namespace enforcement: arbitrary branch is renamed to agent/<issue>-* ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_ns_dir="${SEC_CODE_TMPDIR}/run-namespace"
+setup_sec_code_repo "${_sec_ns_dir}" "evil-branch"
+
+_sec_ns_rc=0
+(
+  cd "${_sec_ns_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-namespace.log" 2>&1 || _sec_ns_rc=$?
+
+_sec_ns_safe="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list "agent/99-evil-branch" 2>/dev/null)"
+_sec_ns_evil="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list "evil-branch" 2>/dev/null)"
+
+if [ -n "${_sec_ns_safe}" ] && [ -z "${_sec_ns_evil}" ]; then
+  echo "PASS: security-namespace-enforcement"
+else
+  echo "FAIL: security-namespace-enforcement"
+  echo "  exit code:      ${_sec_ns_rc}"
+  echo "  agent/99-*:     '${_sec_ns_safe}'"
+  echo "  evil-branch:    '${_sec_ns_evil}'"
+  echo "  remote refs:    $(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list)"
+  cat "${SEC_CODE_TMPDIR}/stdout-namespace.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# --- gh pr list API failure → fail closed (not delete branch and proceed) ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     exit 1 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_api_dir="${SEC_CODE_TMPDIR}/run-api-failure"
+setup_sec_code_repo "${_sec_api_dir}" "agent/99-test-fix"
+${REAL_GIT} -C "${_sec_api_dir}/repo" push -q origin agent/99-test-fix
+
+_sec_api_rc=0
+(
+  cd "${_sec_api_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-api-failure.log" 2>&1 || _sec_api_rc=$?
+
+if [ "${_sec_api_rc}" -eq 0 ]; then
+  echo "FAIL: security-api-failure-pr-list-fails-closed — expected non-zero exit"
+  cat "${SEC_CODE_TMPDIR}/stdout-api-failure.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "Could not query" "${SEC_CODE_TMPDIR}/stdout-api-failure.log"; then
+  echo "PASS: security-api-failure-pr-list-fails-closed (expected failure, got exit ${_sec_api_rc})"
+else
+  echo "FAIL: security-api-failure-pr-list-fails-closed — rejected but wrong reason"
+  cat "${SEC_CODE_TMPDIR}/stdout-api-failure.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+rm -rf "${SEC_CODE_TMPDIR}"
+
 # --- Summary ---
 
 echo ""

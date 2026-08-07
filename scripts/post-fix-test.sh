@@ -442,6 +442,117 @@ run_branch_mismatch_test "branch-mismatch" \
 run_branch_mismatch_test "no-expected-branch" \
   "agent/42-fix-widget" "" "skip:no-expected-branch"
 
+# ---------------------------------------------------------------------------
+# PR_NUMBER numeric validation
+# ---------------------------------------------------------------------------
+
+run_numeric_validation_test() {
+  local test_name="$1"
+  local input="$2"
+  local should_pass="$3"
+
+  if [[ "${input}" =~ ^[1-9][0-9]*$ ]]; then
+    if [ "${should_pass}" = "true" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been rejected"
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    if [ "${should_pass}" = "false" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been accepted"
+      FAILURES=$((FAILURES + 1))
+    fi
+  fi
+}
+
+run_numeric_validation_test "pr-number-valid" "42" "true"
+run_numeric_validation_test "pr-number-large" "12345" "true"
+run_numeric_validation_test "pr-number-regex-injection" ".*" "false"
+run_numeric_validation_test "pr-number-alpha" "abc" "false"
+run_numeric_validation_test "pr-number-zero" "0" "false"
+run_numeric_validation_test "pr-number-leading-zero" "042" "false"
+run_numeric_validation_test "pr-number-empty" "" "false"
+run_numeric_validation_test "pr-number-negative" "-1" "false"
+run_numeric_validation_test "pr-number-decimal" "1.5" "false"
+run_numeric_validation_test "pr-number-shell-injection" "1;echo pwned" "false"
+
+# ---------------------------------------------------------------------------
+# Security integration tests — verify that security controls fail closed.
+# These run the REAL post-fix.sh against a minimal repo with mock binaries.
+# ---------------------------------------------------------------------------
+
+SEC_TMPDIR="$(mktemp -d)"
+SEC_MOCK_BIN="${SEC_TMPDIR}/bin"
+mkdir -p "${SEC_MOCK_BIN}"
+
+cat > "${SEC_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${SEC_MOCK_BIN}/sleep"
+
+run_sec_postfix_test() {
+  local test_name="$1"
+  local expected_marker="$2"
+  local pr_number="${3:-99}"
+
+  local run_dir="${SEC_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  mkdir -p "${repo_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${SEC_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="${pr_number}"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    bash "${POST_SCRIPT}"
+  ) > "${SEC_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${SEC_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [ -n "${expected_marker}" ] \
+     && ! grep -q "${expected_marker}" "${SEC_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — exited ${exit_code} but missing: ${expected_marker}"
+    cat "${SEC_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+# --- gh pr view API failure → fail closed (not fail open) ---
+cat > "${SEC_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view") exit 1 ;;
+  "pr comment"|"issue comment") printf '%s\n' "$@"; exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_MOCK_BIN}/gh"
+
+run_sec_postfix_test "security-api-failure-fails-closed" "Could not resolve"
+
+rm -rf "${SEC_TMPDIR}"
+
 # --- Summary ---
 
 echo ""
