@@ -330,6 +330,7 @@ report_post_failure_to_issue() {
   local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
   local body
+  # shellcheck disable=SC2153
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
   # ISSUE_NUMBER and REPO_FULL_NAME are required by post-code.src.sh before sourcing.
   # shellcheck disable=SC2153
@@ -1186,7 +1187,6 @@ export GH_TOKEN="${PUSH_TOKEN}"
 # stale remote branch so the push succeeds.
 # ---------------------------------------------------------------------------
 REMOTE_REF_LINE="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 || true)"
-REMOTE_SHA="$(echo "${REMOTE_REF_LINE}" | awk '{print $1}')"
 if [ -n "${REMOTE_REF_LINE}" ]; then
   echo "Remote branch ${BRANCH} already exists — checking for open PRs..."
   PR_LIST_RC=0
@@ -1205,7 +1205,6 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
     git push origin --delete "${BRANCH}" 2>&1 || \
       gha_echo warning "Failed to delete stale remote branch ${BRANCH}"
-    REMOTE_SHA=""
   else
     # Verify the open PR belongs to this issue. With deterministic branch
     # naming (agent/<ISSUE_NUMBER>-*) this should always hold, but check

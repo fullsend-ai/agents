@@ -1744,6 +1744,7 @@ _sec_ns_dir="${SEC_CODE_TMPDIR}/run-namespace"
 setup_sec_code_repo "${_sec_ns_dir}" "evil-branch"
 
 _sec_ns_rc=0
+# shellcheck disable=SC2030
 (
   cd "${_sec_ns_dir}"
   export HOME="${SEC_CODE_TMPDIR}"
@@ -1787,6 +1788,7 @@ setup_sec_code_repo "${_sec_api_dir}" "agent/99-test-fix"
 ${REAL_GIT} -C "${_sec_api_dir}/repo" push -q origin agent/99-test-fix
 
 _sec_api_rc=0
+# shellcheck disable=SC2031
 (
   cd "${_sec_api_dir}"
   export HOME="${SEC_CODE_TMPDIR}"

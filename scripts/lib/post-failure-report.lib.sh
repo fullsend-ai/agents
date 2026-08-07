@@ -286,6 +286,7 @@ report_post_failure_to_issue() {
   local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
   local body
+  # shellcheck disable=SC2153
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
   # ISSUE_NUMBER and REPO_FULL_NAME are required by post-code.src.sh before sourcing.
   # shellcheck disable=SC2153
