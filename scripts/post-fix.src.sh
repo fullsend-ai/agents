@@ -353,9 +353,6 @@ if [ "${NO_PUSH}" = "false" ]; then
   git remote set-url origin \
     "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
 
-  # Record remote tip before push for pinned --force-with-lease.
-  FIX_REMOTE_SHA="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 | awk '{print $1}' || true)"
-
   # Plain push first. Falls back to --force-with-lease when the push
   # is rejected (non-fast-forward), which happens after a rebase — the
   # agent rewrote history so the remote branch diverged. force-with-lease

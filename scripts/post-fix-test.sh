@@ -348,6 +348,7 @@ run_postfix_integration_test() {
   git -C "${repo_dir}" commit --allow-empty -m "init" -q
 
   local exit_code=0
+  # shellcheck disable=SC2030
   (
     cd "${run_dir}"
     export PATH="${MOCK_BIN}:${PATH}"
@@ -511,6 +512,7 @@ run_sec_postfix_test() {
   git -C "${repo_dir}" commit --allow-empty -m "test change" -q
 
   local exit_code=0
+  # shellcheck disable=SC2031
   (
     cd "${run_dir}"
     export PATH="${SEC_MOCK_BIN}:${PATH}"
