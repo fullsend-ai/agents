@@ -1459,6 +1459,359 @@ run_branch_validation_test "no-agent-target-ignores-allowed-list" \
 run_branch_validation_test "substring-not-accepted" \
   "release" "main" "release-1,release-2" "reject:release"
 
+# ---------------------------------------------------------------------------
+# Branch-safety helpers under test come from the SAME lib the shipped script
+# sources, so these cases exercise production logic rather than a copy.
+# ---------------------------------------------------------------------------
+# shellcheck source=lib/branch-guard.lib.sh
+source "${SCRIPT_DIR}/lib/branch-guard.lib.sh"
+
+run_namespace_test() {
+  local test_name="$1"
+  local branch="$2"
+  local issue_number="$3"
+  local expected="$4"
+
+  local actual
+  actual="$(enforce_branch_namespace "${branch}" "${issue_number}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  branch:    '${branch}'"
+    echo "  issue:     '${issue_number}'"
+    echo "  expected:  '${expected}'"
+    echo "  actual:    '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Branch namespace enforcement test cases ---
+
+# Already conforming branch name should be unchanged
+run_namespace_test "namespace-already-conforming" \
+  "agent/42-fix-widget" "42" "agent/42-fix-widget"
+
+# Branch with wrong issue number gets rewritten
+run_namespace_test "namespace-wrong-issue-number" \
+  "agent/99-fix-widget" "42" "agent/42-99-fix-widget"
+
+# Branch missing agent/ prefix gets rewritten
+run_namespace_test "namespace-missing-prefix" \
+  "fix-widget" "42" "agent/42-fix-widget"
+
+# Arbitrary branch name gets namespaced
+run_namespace_test "namespace-arbitrary-name" \
+  "my-feature-branch" "123" "agent/123-my-feature-branch"
+
+# Uppercase gets lowercased
+run_namespace_test "namespace-uppercase" \
+  "agent/42-Fix-Widget" "42" "agent/42-fix-widget"
+
+# Branch name that is just the issue number gets fallback slug
+run_namespace_test "namespace-just-issue-number" \
+  "agent/42" "42" "agent/42-42"
+
+# Colliding branch from different issue gets rewritten with this issue's number
+run_namespace_test "namespace-cross-issue-collision" \
+  "agent/99-add-feature" "42" "agent/42-99-add-feature"
+
+# Special characters get stripped
+run_namespace_test "namespace-special-chars" \
+  "agent/42-fix_widget@v2" "42" "agent/42-fix-widget-v2"
+
+# Bare issue number inside slug is NOT stripped (avoids mangling e.g. "42nd")
+run_namespace_test "namespace-bare-number-preserved" \
+  "agent/42-42nd-street-fix" "42" "agent/42-42nd-street-fix"
+
+# Idempotency: enforcing an already-enforced name produces the same result
+_idem_once="$(enforce_branch_namespace "agent/42-fix-widget" "42")"
+_idem_twice="$(enforce_branch_namespace "${_idem_once}" "42")"
+if [ "${_idem_once}" != "${_idem_twice}" ]; then
+  echo "FAIL: namespace-idempotent"
+  echo "  once:  '${_idem_once}'"
+  echo "  twice: '${_idem_twice}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: namespace-idempotent"
+fi
+
+# Idempotency for long inputs (truncation with hash suffix)
+_long_input="agent/42-$(printf 'a%.0s' {1..70})"
+_long_once="$(enforce_branch_namespace "${_long_input}" "42")"
+_long_twice="$(enforce_branch_namespace "${_long_once}" "42")"
+if [ "${_long_once}" != "${_long_twice}" ]; then
+  echo "FAIL: namespace-idempotent-long"
+  echo "  once:  '${_long_once}'"
+  echo "  twice: '${_long_twice}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: namespace-idempotent-long"
+fi
+
+# Two long branches with different suffixes must not collide
+_col_a="agent/42-$(printf 'a%.0s' {1..70})-alpha"
+_col_b="agent/42-$(printf 'a%.0s' {1..70})-beta"
+_col_a_out="$(enforce_branch_namespace "${_col_a}" "42")"
+_col_b_out="$(enforce_branch_namespace "${_col_b}" "42")"
+if [ "${_col_a_out}" = "${_col_b_out}" ]; then
+  echo "FAIL: namespace-no-collision"
+  echo "  a: '${_col_a_out}'"
+  echo "  b: '${_col_b_out}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: namespace-no-collision"
+fi
+
+# ---------------------------------------------------------------------------
+# Thin wrapper over the shipped pr_body_refs_issue (from
+# branch-guard.lib.sh), so these cases exercise production logic.
+# ---------------------------------------------------------------------------
+check_pr_issue_ref() {
+  local pr_body="$1"
+  local issue_number="$2"
+
+  if pr_body_refs_issue "${pr_body}" "${issue_number}"; then
+    echo "match"
+  else
+    echo "no-match"
+  fi
+}
+
+run_pr_issue_ref_test() {
+  local test_name="$1"
+  local pr_body="$2"
+  local issue_number="$3"
+  local expected="$4"
+
+  local actual
+  actual="$(check_pr_issue_ref "${pr_body}" "${issue_number}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  issue:     '${issue_number}'"
+    echo "  expected:  '${expected}'"
+    echo "  actual:    '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Cross-issue PR detection test cases ---
+
+run_pr_issue_ref_test "pr-ref-closes-match" \
+  $'Fix rendering.\n\n---\n\nCloses #42' "42" "match"
+
+run_pr_issue_ref_test "pr-ref-related-to-match" \
+  $'Partial fix.\n\n---\n\nRelated to #42' "42" "match"
+
+run_pr_issue_ref_test "pr-ref-fixes-match" \
+  $'Fix rendering.\n\n---\n\nFixes #42' "42" "match"
+
+run_pr_issue_ref_test "pr-ref-resolves-match" \
+  $'Fix rendering.\n\n---\n\nResolves #42' "42" "match"
+
+run_pr_issue_ref_test "pr-ref-different-issue" \
+  $'Fix rendering.\n\n---\n\nCloses #99' "42" "no-match"
+
+run_pr_issue_ref_test "pr-ref-no-footer" \
+  "Fix rendering." "42" "no-match"
+
+run_pr_issue_ref_test "pr-ref-substring-not-matched" \
+  $'Fix rendering.\n\n---\n\nCloses #421' "42" "no-match"
+
+# Trailing punctuation after issue number
+run_pr_issue_ref_test "pr-ref-trailing-punctuation" \
+  $'Fix rendering.\n\n---\n\nCloses #42.' "42" "match"
+
+# Lowercase closing keyword (GitHub's own keywords are case-insensitive)
+run_pr_issue_ref_test "pr-ref-lowercase" \
+  $'Fix rendering.\n\n---\n\ncloses #42' "42" "match"
+
+# CRLF body (web UI normalises to \r\n)
+run_pr_issue_ref_test "pr-ref-crlf-body" \
+  $'Fix rendering.\r\n\r\n---\r\n\r\nCloses #42\r\n' "42" "match"
+
+# ---------------------------------------------------------------------------
+# ISSUE_NUMBER numeric validation
+# ---------------------------------------------------------------------------
+
+run_numeric_validation_test() {
+  local test_name="$1"
+  local input="$2"
+  local should_pass="$3"
+
+  if [[ "${input}" =~ ^[1-9][0-9]*$ ]]; then
+    if [ "${should_pass}" = "true" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been rejected"
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    if [ "${should_pass}" = "false" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been accepted"
+      FAILURES=$((FAILURES + 1))
+    fi
+  fi
+}
+
+run_numeric_validation_test "issue-number-valid" "42" "true"
+run_numeric_validation_test "issue-number-large" "12345" "true"
+run_numeric_validation_test "issue-number-regex-injection" ".*" "false"
+run_numeric_validation_test "issue-number-alpha" "abc" "false"
+run_numeric_validation_test "issue-number-zero" "0" "false"
+run_numeric_validation_test "issue-number-leading-zero" "042" "false"
+run_numeric_validation_test "issue-number-empty" "" "false"
+run_numeric_validation_test "issue-number-negative" "-1" "false"
+run_numeric_validation_test "issue-number-decimal" "1.5" "false"
+run_numeric_validation_test "issue-number-shell-injection" "1;echo pwned" "false"
+
+# ---------------------------------------------------------------------------
+# Security integration tests — verify that security controls fail closed.
+# These run the REAL post-code.sh against a minimal repo with mock binaries.
+# ---------------------------------------------------------------------------
+
+SEC_CODE_TMPDIR="$(mktemp -d)"
+SEC_CODE_MOCK_BIN="${SEC_CODE_TMPDIR}/bin"
+mkdir -p "${SEC_CODE_MOCK_BIN}"
+
+cat > "${SEC_CODE_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/sleep"
+
+cat > "${SEC_CODE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gitleaks"
+
+REAL_GIT="$(which git)"
+cat > "${SEC_CODE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/git"
+
+# Create a cloned repo with a feature branch and actual file changes.
+# Usage: setup_sec_code_repo <run_dir> <branch_name>
+setup_sec_code_repo() {
+  local run_dir="$1"
+  local branch_name="${2:-evil-branch}"
+  local bare_dir="${run_dir}/remote.git"
+  local repo_dir="${run_dir}/repo"
+
+  ${REAL_GIT} init -q --bare -b main "${bare_dir}"
+  ${REAL_GIT} clone -q "${bare_dir}" "${repo_dir}"
+  ${REAL_GIT} -C "${repo_dir}" config user.email "test@example.com"
+  ${REAL_GIT} -C "${repo_dir}" config user.name "Test"
+  echo "init" > "${repo_dir}/README.md"
+  ${REAL_GIT} -C "${repo_dir}" add README.md
+  ${REAL_GIT} -C "${repo_dir}" commit -q -m "init"
+  ${REAL_GIT} -C "${repo_dir}" push -q origin main
+
+  ${REAL_GIT} -C "${repo_dir}" checkout -q -b "${branch_name}"
+  echo "changed content" > "${repo_dir}/file.txt"
+  ${REAL_GIT} -C "${repo_dir}" add file.txt
+  ${REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
+}
+
+# --- Namespace enforcement: arbitrary branch is renamed to agent/<issue>-* ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_ns_dir="${SEC_CODE_TMPDIR}/run-namespace"
+setup_sec_code_repo "${_sec_ns_dir}" "evil-branch"
+
+_sec_ns_rc=0
+(
+  cd "${_sec_ns_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-namespace.log" 2>&1 || _sec_ns_rc=$?
+
+_sec_ns_safe="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list "agent/99-evil-branch" 2>/dev/null)"
+_sec_ns_evil="$(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list "evil-branch" 2>/dev/null)"
+
+if [ -n "${_sec_ns_safe}" ] && [ -z "${_sec_ns_evil}" ]; then
+  echo "PASS: security-namespace-enforcement"
+else
+  echo "FAIL: security-namespace-enforcement"
+  echo "  exit code:      ${_sec_ns_rc}"
+  echo "  agent/99-*:     '${_sec_ns_safe}'"
+  echo "  evil-branch:    '${_sec_ns_evil}'"
+  echo "  remote refs:    $(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list)"
+  cat "${SEC_CODE_TMPDIR}/stdout-namespace.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# --- gh pr list API failure → fail closed (not delete branch and proceed) ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     exit 1 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_api_dir="${SEC_CODE_TMPDIR}/run-api-failure"
+setup_sec_code_repo "${_sec_api_dir}" "agent/99-test-fix"
+${REAL_GIT} -C "${_sec_api_dir}/repo" push -q origin agent/99-test-fix
+
+_sec_api_rc=0
+(
+  cd "${_sec_api_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-api-failure.log" 2>&1 || _sec_api_rc=$?
+
+if [ "${_sec_api_rc}" -eq 0 ]; then
+  echo "FAIL: security-api-failure-pr-list-fails-closed — expected non-zero exit"
+  cat "${SEC_CODE_TMPDIR}/stdout-api-failure.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "Could not query" "${SEC_CODE_TMPDIR}/stdout-api-failure.log"; then
+  echo "PASS: security-api-failure-pr-list-fails-closed (expected failure, got exit ${_sec_api_rc})"
+else
+  echo "FAIL: security-api-failure-pr-list-fails-closed — rejected but wrong reason"
+  cat "${SEC_CODE_TMPDIR}/stdout-api-failure.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+rm -rf "${SEC_CODE_TMPDIR}"
+
 # --- Summary ---
 
 echo ""
