@@ -567,6 +567,15 @@ For each selected sub-agent, assemble a context package containing:
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
 - `scope_constraint`: exploration limit for this sub-agent (see 3e)
 
+**No content abbreviation.** When including source file content or test
+fixtures in sub-agent context packages, include the content verbatim —
+do not abbreviate, summarize, or replace sections with placeholder
+strings (e.g., `'...'`, `[truncated]`). If a file is too large to
+include in full, either include only the relevant section with explicit
+boundary markers noting what was omitted, or omit the file entirely and
+list it as unavailable. Sub-agents must never receive content that could
+be mistaken for the original when it has been altered.
+
 #### 3e. Set scope constraints
 
 Based on the triage classification, assign a `scope_constraint` to
