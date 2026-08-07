@@ -253,6 +253,114 @@ FIXTURE_TITLE_PERCENT_ENCODED='{
   ]
 }'
 
+# Fixture: a valid agent result with filing_decision.file=false.
+FIXTURE_POLICY_SKIP='{
+  "summary": "The retro analysis found one item filtered by policy.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Add unit tests for widget parser",
+      "what_happened": "Widget parser has no tests.",
+      "what_could_go_better": "Test coverage should improve.",
+      "proposed_change": "Add unit tests for widget parser.",
+      "validation_criteria": "Widget parser has test coverage.",
+      "filing_decision": {
+        "file": false,
+        "reason": "Documentation-only proposal; no behavior change identified"
+      }
+    }
+  ]
+}'
+
+# Fixture: mixed proposals — one skipped by policy, one filed.
+FIXTURE_POLICY_MIXED='{
+  "summary": "The retro analysis found two items.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Low-confidence speculation about caching",
+      "what_happened": "Cache miss rate was high.",
+      "what_could_go_better": "Caching strategy could improve.",
+      "proposed_change": "Review caching strategy.",
+      "validation_criteria": "Cache hit rate improves.",
+      "filing_decision": {
+        "file": false,
+        "reason": "Low confidence — speculation without log evidence"
+      }
+    },
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed on empty input.",
+      "what_could_go_better": "Input validation should reject empty payloads.",
+      "proposed_change": "Add a nil check at the entry point.",
+      "validation_criteria": "Widget service returns 400 on empty input.",
+      "filing_decision": {
+        "file": true,
+        "reason": "Actionable fix with clear validation criteria"
+      }
+    }
+  ]
+}'
+
+# Fixture: proposal with filing_decision.file=true (explicit approval).
+FIXTURE_POLICY_APPROVED='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed on empty input.",
+      "what_could_go_better": "Input validation should reject empty payloads.",
+      "proposed_change": "Add a nil check at the entry point.",
+      "validation_criteria": "Widget service returns 400 on empty input.",
+      "filing_decision": {
+        "file": true,
+        "reason": "Actionable change with clear validation criteria"
+      }
+    }
+  ]
+}'
+
+# Fixture: policy-skipped proposal with :: in reason (injection test).
+FIXTURE_POLICY_INJECTION='{
+  "summary": "The retro analysis found one item.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Some proposal",
+      "what_happened": "Something happened.",
+      "what_could_go_better": "Something could improve.",
+      "proposed_change": "Change something.",
+      "validation_criteria": "Verify the change.",
+      "filing_decision": {
+        "file": false,
+        "reason": "Skipped ::error::injected command"
+      }
+    }
+  ]
+}'
+
+# Fixture: evidence-for title with filing_decision.file=true — the evidence-for
+# gate must override the filing decision as a hard safety net.
+FIXTURE_POLICY_OVERRIDE_EVIDENCE='{
+  "summary": "The retro analysis found corroborating evidence.",
+  "proposals": [
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Evidence for #999: agent approved bad PR",
+      "what_happened": "Agent approved it.",
+      "what_could_go_better": "Should not approve.",
+      "proposed_change": "Add check.",
+      "validation_criteria": "No bad approvals.",
+      "filing_decision": {
+        "file": true,
+        "reason": "Actionable proposal"
+      }
+    }
+  ]
+}'
+
 # Fixture: a valid agent result with no proposals.
 FIXTURE_NO_PROPOSALS='{
   "summary": "The retro analysis found no actionable improvements.",
@@ -699,6 +807,60 @@ run_validated_dir_test "validated-dir-neither-filename" \
   "none" \
   "" \
   "true"
+
+# --- Filing policy tests (#525) ---
+
+# Filing policy: proposal with file=false is not filed.
+run_test_no_gh_call "policy-skip-no-issue-created" \
+  "${FIXTURE_POLICY_SKIP}" \
+  "gh issue create" \
+  "::warning::proposal[0] skipped by filing policy"
+
+# Filing policy: skipped proposal count appears in stdout.
+run_test_stdout "policy-skip-count" \
+  "${FIXTURE_POLICY_SKIP}" \
+  "1 proposal(s) skipped by filing policy"
+
+# Filing policy: skipped proposal reason folded into summary comment.
+run_test_stdin "policy-skip-folded-into-summary" \
+  "${FIXTURE_POLICY_SKIP}" \
+  "Proposals skipped by filing policy"
+
+# Filing policy: mixed — skipped one, filed the other.
+run_test "policy-mixed-issue-created" \
+  "${FIXTURE_POLICY_MIXED}" \
+  "gh issue create"
+
+run_test_stdout "policy-mixed-skip-count" \
+  "${FIXTURE_POLICY_MIXED}" \
+  "1 proposal(s) skipped by filing policy"
+
+# Filing policy: file=true proposal is filed normally.
+run_test "policy-approved-issue-created" \
+  "${FIXTURE_POLICY_APPROVED}" \
+  "gh issue create"
+
+# Filing policy: no filing_decision field — proposal filed (backward compat).
+run_test "policy-absent-still-filed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create"
+
+# Filing policy: :: in reason is sanitized.
+run_test_stdout_absent "policy-injection-sanitized" \
+  "${FIXTURE_POLICY_INJECTION}" \
+  "::warning::proposal[0] skipped by filing policy" \
+  "::error::injected"
+
+# Filing policy: evidence-for gate overrides filing_decision.file=true.
+run_test_no_gh_call "policy-file-true-evidence-for-still-rejected" \
+  "${FIXTURE_POLICY_OVERRIDE_EVIDENCE}" \
+  "gh issue create" \
+  "::warning::proposal[0] rejected"
+
+# Filing policy: evidence-for gate folds into evidence notes, not policy notes.
+run_test_stdin "policy-file-true-evidence-for-in-evidence-notes" \
+  "${FIXTURE_POLICY_OVERRIDE_EVIDENCE}" \
+  "Evidence notes (not filed as issues)"
 
 # --- Results ---
 

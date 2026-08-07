@@ -47,6 +47,30 @@ to focus on:
 See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
 [Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
 
+### Skill: `retro-filing-policy`
+
+The retro agent includes a `retro-filing-policy` skill that evaluates
+each proposal and decides whether it should be filed as a GitHub issue.
+The skill populates the `filing_decision` field on each proposal:
+
+- `file: true` + `reason`: the post-script files the proposal as an issue.
+- `file: false` + `reason`: the post-script skips filing and folds the
+  proposal into the summary comment instead.
+
+By default, the skill rejects evidence-for proposals, documentation-only
+proposals with no behavior change, restatements of the triggering issue,
+and low-confidence speculation. Users can override the skill at repo or
+org level to adjust the criteria (e.g., raise the confidence bar, suppress
+specific categories, restrict target repos).
+
+When the skill is absent or `filing_decision` is omitted, all proposals
+are filed (current default behavior). The hardcoded evidence-for filter
+in the post-script remains as a fallback for proposals that lack a
+`filing_decision` field.
+
+See [Fullsend's Customizing with Skills docs](https://fullsend.sh/docs/guides/user/customizing-with-skills.html)
+to know where to add the skill files.
+
 ### Variables
 
 None.
@@ -58,7 +82,7 @@ The retro agent reconstructs the full workflow graph — [triage](triage.md), [c
 1. **Pre-script** gathers metadata about the originating PR or issue.
 2. **Sandbox** — the agent reads the full workflow history, identifies patterns (wasted cycles, missed context, repeated failures), and writes structured proposals. It uses the retro-analysis and finding-agent-runs skills. The agent cannot write files or edit code in the target repo.
 3. **Validation loop** — output is checked against a schema, with up to 2 retries.
-4. **Post-script** creates GitHub issues from the agent's proposals. Proposals whose titles match evidence-for patterns (e.g. "Evidence for #1234: ...") are filtered out and folded into the summary comment as evidence notes instead of being filed as issues.
+4. **Post-script** creates GitHub issues from the agent's proposals. Two gates filter proposals before filing: first, proposals with `filing_decision.file=false` (set by the `retro-filing-policy` skill) are skipped and folded into the summary comment; second, proposals whose titles match evidence-for patterns (e.g. "Evidence for #1234: ...") are rejected regardless of `filing_decision` and folded into the summary as evidence notes.
 
 When triggered via `/fs-retro`, the human's comment is passed to the agent as high-signal direction about what to focus on.
 

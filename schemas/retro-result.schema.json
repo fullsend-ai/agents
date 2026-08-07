@@ -60,6 +60,16 @@
           "minLength": 1,
           "maxLength": 8192,
           "description": "How to know the change had the desired effect. Measurable or observable outcomes."
+        },
+        "filing_decision": {
+          "description": "Set file to true with a reason to file as an issue; set file to false with a reason to skip filing and fold into the summary comment.",
+          "type": "object",
+          "required": ["file", "reason"],
+          "properties": {
+            "file": { "type": "boolean" },
+            "reason": { "type": "string", "minLength": 1, "maxLength": 1024 }
+          },
+          "additionalProperties": false
         }
       }
     }
