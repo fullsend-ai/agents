@@ -1,0 +1,343 @@
+#!/usr/bin/env bash
+# post-explore.sh — Store exploration results and post summary.
+#
+# Validates agent output, attaches exploration_context.json to Jira issues,
+# posts a sticky summary comment, and optionally applies pipeline labels when
+# EXPLORE_READY_LABEL / EXPLORE_NEEDS_INFO_LABEL are configured.
+#
+# Required env vars:
+#   ISSUE_KEY      — Issue identifier
+#   ISSUE_SOURCE   — "jira" or "github"
+#   REPO_FULL_NAME — owner/repo
+#   GH_TOKEN       — GitHub token
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Companion resolution for harness base: composition (ADR-0045).
+# URL-fetched scripts are isolated content-addressed blobs (no siblings).
+# Resolution order: next to this script → install .fullsend/scripts →
+# same-commit fetch via fullsend cache metadata.json origin URL.
+# When fetching into a shared tmp dir, prefetch common siblings so sourced
+# helpers (e.g. comment-helpers → markdown-to-adf.py) find neighbors.
+_resolve_companion() {
+  local name="$1"
+  if [[ -f "${SCRIPT_DIR}/${name}" ]]; then
+    printf '%s
+' "${SCRIPT_DIR}/${name}"
+    return 0
+  fi
+  local d
+  for d in \
+    "${GITHUB_WORKSPACE:+${GITHUB_WORKSPACE}/.fullsend/scripts}" \
+    "${FULLSEND_DIR:+${FULLSEND_DIR}/scripts}"; do
+    if [[ -n "${d}" && -f "${d}/${name}" ]]; then
+      printf '%s
+' "${d}/${name}"
+      return 0
+    fi
+  done
+  local meta="${SCRIPT_DIR}/metadata.json"
+  if [[ -f "$meta" ]] && command -v jq >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
+    local origin base_url tmp
+    origin=$(jq -r '.url // empty' "$meta" 2>/dev/null || true)
+    if [[ -n "$origin" && "$origin" == http*://* ]]; then
+      base_url="${origin%/*}"
+      tmp="${TMPDIR:-/tmp}/fullsend-script-companions/$(printf '%s' "$base_url" | sha256sum | awk '{print $1}')"
+      mkdir -p "$tmp"
+      if [[ ! -f "${tmp}/metadata.json" ]]; then
+        jq -nc --arg url "${base_url}/entrypoint" '{url:$url}' > "${tmp}/metadata.json"
+      fi
+      _fetch_companion_into() {
+        local file="$1"
+        [[ -f "${tmp}/${file}" ]] && return 0
+        if curl -fsSL --retry 3 --retry-delay 1 "${base_url}/${file}" -o "${tmp}/${file}.tmp" 2>/dev/null; then
+          mv "${tmp}/${file}.tmp" "${tmp}/${file}"
+          case "$file" in *.sh) chmod +x "${tmp}/${file}" ;; esac
+          return 0
+        fi
+        rm -f "${tmp}/${file}.tmp"
+        return 1
+      }
+      # Prefetch common siblings once per tmp dir (soft — not every branch has all).
+      if [[ ! -f "${tmp}/.prefetch-done" ]]; then
+        local _f
+        for _f in \
+          comment-helpers.sh markdown-to-adf.py adf-to-markdown.py \
+          jira-project-schema.sh create-children.sh pre-explore.sh \
+          platform-jira.md platform-github.md platform-gitlab.md; do
+          _fetch_companion_into "$_f" || true
+        done
+        touch "${tmp}/.prefetch-done"
+      fi
+      if _fetch_companion_into "$name"; then
+        printf '%s
+' "${tmp}/${name}"
+        return 0
+      fi
+      echo "ERROR: failed to fetch companion ${name} from ${base_url}/${name}" >&2
+      return 1
+    fi
+  fi
+  echo "ERROR: companion ${name} not found next to ${BASH_SOURCE[0]}, under install .fullsend/scripts, or via script origin URL." >&2
+  return 1
+}
+
+
+
+# shellcheck disable=SC1090
+source "$(_resolve_companion comment-helpers.sh)"
+
+validate_label_name() {
+  local label="$1"
+  if [[ ! "${label}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+    echo "::warning::Refused pipeline label '${label}' -- contains invalid characters"
+    return 1
+  fi
+  return 0
+}
+
+github_label_exists() {
+  local label="$1"
+  echo "${EXISTING_GH_LABELS}" | grep -qFx "${label}"
+}
+
+RESULT_FILE=""
+for dir in iteration-*/output; do
+  if [[ -f "${dir}/agent-result.json" ]]; then
+    RESULT_FILE="${dir}/agent-result.json"
+  fi
+done
+
+if [[ -z "${RESULT_FILE}" ]]; then
+  echo "ERROR: agent-result.json not found in any iteration output directory"
+  exit 1
+fi
+
+echo "Reading exploration result from: ${RESULT_FILE}"
+
+if ! jq empty "${RESULT_FILE}" 2>/dev/null; then
+  echo "ERROR: ${RESULT_FILE} is not valid JSON"
+  exit 1
+fi
+
+OVERALL_CONFIDENCE=$(jq -r '.confidence.overall // 0' "${RESULT_FILE}")
+GAP_COUNT=$(jq '.gaps // [] | length' "${RESULT_FILE}")
+RELATED_COUNT=$(jq '.related_work // [] | length' "${RESULT_FILE}")
+DISPOSITION=$(jq -r '.disposition // "complete"' "${RESULT_FILE}")
+
+echo "::notice::Exploration complete: disposition=${DISPOSITION}, confidence=${OVERALL_CONFIDENCE}, gaps=${GAP_COUNT}, related_work=${RELATED_COUNT}"
+
+WORKSPACE="/tmp/workspace"
+mkdir -p "$WORKSPACE"
+cp "${RESULT_FILE}" "${WORKSPACE}/exploration_context.json"
+
+echo "Exploration context saved to ${WORKSPACE}/exploration_context.json"
+
+# --- Fail-fast duplicate block: sticky warning, no ready-to-refine ---
+if [[ "$DISPOSITION" == "blocked_duplicate" ]]; then
+  USE_GITHUB=false
+  if [[ "${ISSUE_SOURCE}" == "github" && -n "${GITHUB_ISSUE_NUMBER:-}" && "${GITHUB_ISSUE_NUMBER}" != "N/A" ]]; then
+    USE_GITHUB=true
+  fi
+  init_comment_helpers "explore" "$USE_GITHUB"
+
+  if [[ -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
+    RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+    RUN_LINK="[Run #${GITHUB_RUN_ID}](${RUN_URL})"
+  else
+    RUN_LINK="manual run"
+  fi
+
+  DUP_SECTION=$(format_duplicate_block_md explore "${RESULT_FILE}")
+  SUMMARY_BLURB=$(format_brief_blurb_md "$(jq -r '.summary // ""' "${RESULT_FILE}")" 500)
+
+  EXPLORE_COMMENT="## Explore Agent — duplicate work blocked
+
+| | |
+|---|---|
+| **Run** | ${RUN_LINK} |
+| **Disposition** | blocked_duplicate |
+
+---
+
+${DUP_SECTION}
+
+---
+
+### Summary
+
+${SUMMARY_BLURB}
+
+---
+
+> Exploration stopped early to avoid wasting tokens on duplicate work.
+> No \`ready-to-refine\` label was added. Re-run \`/fs-explore\` to override."
+
+  sticky_comment "$EXPLORE_COMMENT"
+  echo "::notice::Explore blocked on duplicate work — skipped ready-to-refine"
+  echo "Post-explore complete (blocked_duplicate)."
+  exit 0
+fi
+
+# --- Attach exploration context to the issue ---
+ATTACHMENT_NAME="exploration_context.json"
+
+if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_API_TOKEN:-}" ]]; then
+  validate_jira_host
+  AUTH=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+
+  EXISTING_ID=$(curl -sSf \
+    -H "Authorization: Basic $AUTH" \
+    -H "Accept: application/json" \
+    "https://${JIRA_HOST}/rest/api/3/issue/${ISSUE_KEY}?fields=attachment" \
+    | jq -r --arg name "$ATTACHMENT_NAME" \
+      '.fields.attachment[] | select(.filename == $name) | .id' \
+    | head -1 2>/dev/null || true)
+
+  if [[ -n "$EXISTING_ID" ]]; then
+    echo "Removing prior ${ATTACHMENT_NAME} attachment (id: ${EXISTING_ID})"
+    curl -sSf -X DELETE \
+      -H "Authorization: Basic $AUTH" \
+      "https://${JIRA_HOST}/rest/api/3/attachment/${EXISTING_ID}" > /dev/null 2>&1 || true
+  fi
+
+  ATTACH_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" \
+    -X POST \
+    -H "Authorization: Basic $AUTH" \
+    -H "X-Atlassian-Token: no-check" \
+    -F "file=@${WORKSPACE}/${ATTACHMENT_NAME}" \
+    "https://${JIRA_HOST}/rest/api/3/issue/${ISSUE_KEY}/attachments")
+
+  if [[ "$ATTACH_HTTP" =~ ^2 ]]; then
+    echo "::notice::Attached ${ATTACHMENT_NAME} to ${ISSUE_KEY}"
+  else
+    echo "::warning::Failed to attach ${ATTACHMENT_NAME} to ${ISSUE_KEY} (HTTP ${ATTACH_HTTP})"
+  fi
+fi
+
+# --- Optional pipeline labels (configured via env) ---
+CONFIDENCE_INT=$(printf '%.1f' "$OVERALL_CONFIDENCE" 2>/dev/null || echo "0.0")
+THRESHOLD="${EXPLORE_CONFIDENCE_THRESHOLD:-2.5}"
+READY_LABEL="${EXPLORE_READY_LABEL:-}"
+NEEDS_INFO_LABEL="${EXPLORE_NEEDS_INFO_LABEL:-}"
+SIGNAL_LABEL=""
+STATUS_MSG="Exploration complete (confidence: ${CONFIDENCE_INT}/5)."
+
+if [[ -n "$READY_LABEL" || -n "$NEEDS_INFO_LABEL" ]]; then
+  if awk "BEGIN{exit !($CONFIDENCE_INT >= $THRESHOLD)}" && [[ -n "$READY_LABEL" ]]; then
+    if validate_label_name "$READY_LABEL"; then
+      SIGNAL_LABEL="$READY_LABEL"
+      STATUS_MSG="Exploration complete. Issue labeled \`${SIGNAL_LABEL}\` for the next pipeline stage."
+    fi
+  elif awk "BEGIN{exit !($CONFIDENCE_INT < $THRESHOLD)}" && [[ -n "$NEEDS_INFO_LABEL" ]]; then
+    if validate_label_name "$NEEDS_INFO_LABEL"; then
+      SIGNAL_LABEL="$NEEDS_INFO_LABEL"
+      STATUS_MSG="Exploration found insufficient context (confidence: ${CONFIDENCE_INT}/${THRESHOLD}). Issue labeled \`${SIGNAL_LABEL}\` — additional input may be needed."
+    fi
+  fi
+fi
+
+# --- Add label when configured (skip labels that do not already exist on GitHub) ---
+if [[ -n "$SIGNAL_LABEL" ]]; then
+  if [[ -n "${GITHUB_ISSUE_NUMBER:-}" && "${GITHUB_ISSUE_NUMBER}" != "N/A" ]]; then
+    EXISTING_GH_LABELS=$(gh api "repos/${REPO_FULL_NAME}/labels" --paginate --jq '.[].name' 2>/dev/null || true)
+    if github_label_exists "$SIGNAL_LABEL"; then
+      gh api "repos/${REPO_FULL_NAME}/issues/${GITHUB_ISSUE_NUMBER}/labels" \
+        -f "labels[]=${SIGNAL_LABEL}" --silent 2>/dev/null || true
+      echo "::notice::Added label '${SIGNAL_LABEL}' to GitHub issue #${GITHUB_ISSUE_NUMBER}"
+    else
+      echo "::warning::Skipping label '${SIGNAL_LABEL}' -- does not exist in repo (will not auto-create)"
+    fi
+  fi
+
+  if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" && -n "${JIRA_API_TOKEN:-}" ]]; then
+    validate_jira_host
+    AUTH=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+    curl -sSf -X PUT \
+      -H "Authorization: Basic $AUTH" \
+      -H "Content-Type: application/json" \
+      -d "{\"update\":{\"labels\":[{\"add\":\"${SIGNAL_LABEL}\"}]}}" \
+      "https://${JIRA_HOST}/rest/api/3/issue/${ISSUE_KEY}" > /dev/null 2>&1 || true
+    echo "::notice::Added label '${SIGNAL_LABEL}' to Jira ${ISSUE_KEY}"
+  fi
+fi
+
+# --- Post exploration summary comment (sticky) ---
+USE_GITHUB=false
+if [[ "${ISSUE_SOURCE}" == "github" && -n "${GITHUB_ISSUE_NUMBER:-}" && "${GITHUB_ISSUE_NUMBER}" != "N/A" ]]; then
+  USE_GITHUB=true
+fi
+init_comment_helpers "explore" "$USE_GITHUB"
+
+EXPLORE_SUMMARY=$(jq -r '.summary // "Exploration complete."' "${RESULT_FILE}")
+
+if [[ -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_RUN_ID:-}" ]]; then
+  RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+  RUN_LINK="[Run #${GITHUB_RUN_ID}](${RUN_URL})"
+else
+  RUN_LINK="manual run"
+fi
+
+# Extract structured data from result JSON
+GAPS_SECTION=""
+if [[ "$GAP_COUNT" -gt 0 ]]; then
+  GAPS_LIST=$(jq -r '
+    (.gaps // [])[]
+    | if type == "object" then
+        "| \(.dimension // "gap") | \((.description // .text // tostring) | gsub("\\|"; "/") | gsub("\n"; " ") | .[0:160]) |"
+      else
+        "| — | \(tostring | gsub("\\|"; "/") | .[0:160]) |"
+      end
+  ' "${RESULT_FILE}" 2>/dev/null | head -12 || true)
+  if [[ -n "$GAPS_LIST" ]]; then
+    GAPS_SECTION="
+### Definition Gaps (${GAP_COUNT})
+
+| Dimension | Gap |
+|---|---|
+${GAPS_LIST}"
+  fi
+fi
+
+RELATED_SECTION=""
+JIRA_BROWSE="${JIRA_HOST:+https://${JIRA_HOST}/browse/}"
+RELATED_SECTION=$(format_related_work_md "${RESULT_FILE}" "${JIRA_BROWSE:-}")
+
+DATA_SOURCES_SECTION=$(format_data_sources_md "${RESULT_FILE}" "${JIRA_BROWSE:-}")
+
+# Keep summary short for humans; full prose is in exploration_context.json
+SUMMARY_BLURB=$(format_brief_blurb_md "${EXPLORE_SUMMARY}" 500)
+[[ -z "$SUMMARY_BLURB" ]] && SUMMARY_BLURB="${EXPLORE_SUMMARY}"
+
+EXPLORE_BODY=$(join_md_sections \
+  "$SUMMARY_BLURB" \
+  "$GAPS_SECTION" \
+  "$RELATED_SECTION" \
+  "$DATA_SOURCES_SECTION")
+
+EXPLORE_COMMENT="## Explore Agent
+
+| | |
+|---|---|
+| **Run** | ${RUN_LINK} |
+| **Confidence** | ${OVERALL_CONFIDENCE}/5 |
+| **Definition Gaps** | ${GAP_COUNT} |
+| **Related Work** | ${RELATED_COUNT} |
+
+---
+
+### Summary
+
+${EXPLORE_BODY}
+
+---
+
+> ${STATUS_MSG}
+>
+> Full structured output: \`exploration_context.json\` attachment."
+
+sticky_comment "$EXPLORE_COMMENT"
+
+echo "Post-explore complete."
