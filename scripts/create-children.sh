@@ -242,11 +242,13 @@ github_create_issue() {
 }
 
 # Resolve a Jira issue-link type name that exists on this site.
-# Caches the resolved name in JIRA_RESOLVED_LINK_TYPE.
+# Cache is per preferred name so Relates resolution never shadows Blocks.
+declare -A JIRA_RESOLVED_LINK_TYPES=()
+
 jira_resolve_link_type() {
   local preferred="${1:-Relates}"
-  if [[ -n "${JIRA_RESOLVED_LINK_TYPE:-}" ]]; then
-    echo "$JIRA_RESOLVED_LINK_TYPE"
+  if [[ -n "${JIRA_RESOLVED_LINK_TYPES[$preferred]:-}" ]]; then
+    echo "${JIRA_RESOLVED_LINK_TYPES[$preferred]}"
     return 0
   fi
 
@@ -257,35 +259,72 @@ jira_resolve_link_type() {
     -H "Accept: application/json" \
     "https://${JIRA_HOST}/rest/api/3/issueLinkType" 2>/dev/null || echo '{"issueLinkTypes":[]}')
 
-  # Prefer exact name, then case-insensitive Relates/Related, then first type whose
-  # name/inward/outward contains "relat".
+  # Prefer exact name, then case-insensitive match. For Relates-like prefs,
+  # fall back to name/inward/outward containing "relat". Never fall Blocks
+  # back to Relates — that silently drops sequencing.
   resolved=$(echo "$types_json" | jq -r --arg pref "$preferred" '
     .issueLinkTypes // []
     | (map(select(.name == $pref))[0].name)
       // (map(select((.name // "") | ascii_downcase == ($pref | ascii_downcase)))[0].name)
-      // (map(select(
-            ((.name // "") | test("relat"; "i"))
-            or ((.inward // "") | test("relat"; "i"))
-            or ((.outward // "") | test("relat"; "i"))
-          ))[0].name)
+      // (if ($pref | ascii_downcase | test("relat")) then
+            (map(select(
+              ((.name // "") | test("relat"; "i"))
+              or ((.inward // "") | test("relat"; "i"))
+              or ((.outward // "") | test("relat"; "i"))
+            ))[0].name)
+          else empty end)
       // empty
   ' 2>/dev/null || true)
 
-  if [[ -z "$resolved" ]]; then
-    # Last resort: first available link type
+  if [[ -z "$resolved" && "${preferred,,}" != "blocks" ]]; then
+    # Last resort for non-Blocks: first available link type
     resolved=$(echo "$types_json" | jq -r '.issueLinkTypes[0].name // empty' 2>/dev/null || true)
   fi
 
   if [[ -z "$resolved" ]]; then
-    echo "::warning::Could not discover any Jira issue link types; using '${preferred}'" >&2
+    echo "::warning::Could not discover Jira issue link type for '${preferred}'; using '${preferred}'" >&2
     resolved="$preferred"
   else
     echo "::notice::Resolved Jira link type '${preferred}' → '${resolved}'" >&2
   fi
 
-  JIRA_RESOLVED_LINK_TYPE="$resolved"
-  export JIRA_RESOLVED_LINK_TYPE
+  JIRA_RESOLVED_LINK_TYPES["$preferred"]="$resolved"
   echo "$resolved"
+}
+
+# Create a directed Blocks link: blocker_key blocks blocked_key
+# (Jira: outwardIssue=blocker "blocks", inwardIssue=blocked "is blocked by").
+# Does not swap directions on failure — orientation is semantic.
+jira_link_blocks() {
+  local blocker_key="$1" blocked_key="$2"
+  local auth resolved_type payload response http_code body
+  auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
+  resolved_type=$(jira_resolve_link_type "Blocks")
+
+  payload=$(jq -n \
+    --arg type "$resolved_type" \
+    --arg inward "$blocked_key" \
+    --arg outward "$blocker_key" \
+    '{
+      type: {name: $type},
+      inwardIssue: {key: $inward},
+      outwardIssue: {key: $outward}
+    }')
+
+  response=$(curl -sS -w "\n%{http_code}" -X POST \
+    -H "Authorization: Basic $auth" \
+    -H "Content-Type: application/json" \
+    -d "$payload" \
+    "https://${JIRA_HOST}/rest/api/3/issueLink")
+  http_code=$(echo "$response" | tail -1)
+  body=$(echo "$response" | sed '$d')
+
+  if [[ "$http_code" -ge 400 ]]; then
+    echo "::warning::Failed Blocks link ${blocker_key} blocks ${blocked_key} (HTTP ${http_code}): ${body}" >&2
+    return 1
+  fi
+  echo "  Linked ${blocker_key} blocks ${blocked_key}" >&2
+  return 0
 }
 
 jira_link_issues() {
@@ -315,8 +354,9 @@ jira_link_issues() {
   http_code=$(echo "$response" | tail -1)
   body=$(echo "$response" | sed '$d')
 
-  # Some sites reject one direction — swap inward/outward once
-  if [[ "$http_code" -ge 400 ]]; then
+  # Some sites reject one direction — swap inward/outward once (Relates-style only).
+  # Never swap Blocks — that inverts sequencing.
+  if [[ "$http_code" -ge 400 && "${resolved_type,,}" != "blocks" ]]; then
     echo "::warning::Link ${from_key} → ${to_key} as '${resolved_type}' failed (HTTP ${http_code}): ${body}" >&2
     payload=$(jq -n \
       --arg type "$resolved_type" \
@@ -777,6 +817,90 @@ if [[ $CREATED_COUNT -lt $CHILD_COUNT ]]; then
   done
 fi
 
+# --- Materialize children[].dependencies as Jira Blocks / Relates links ---
+# Refine plans sequencing in JSON; until this runs, issuelinks stay empty and
+# triage cannot see blocked/blocking edges.
+DEP_LINKS_OK=0
+DEP_LINKS_SKIP=0
+if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-}" ]]; then
+  echo "Materializing dependency links from refine-result..."
+  declare -A DEP_LINKED_PAIRS=()
+  for i in $(seq 0 $((CHILD_COUNT - 1))); do
+    CHILD_TITLE=$(jq -r ".children[${i}].title // empty" "${RESULT_FILE}")
+    [[ -z "$CHILD_TITLE" ]] && continue
+    CHILD_KEY="${TITLE_TO_KEY[$CHILD_TITLE]:-}"
+    [[ -z "$CHILD_KEY" ]] && continue
+
+    DEP_COUNT=$(jq -r ".children[${i}].dependencies // [] | length" "${RESULT_FILE}")
+    [[ "$DEP_COUNT" == "0" ]] && continue
+
+    for j in $(seq 0 $((DEP_COUNT - 1))); do
+      DEP_TYPE=$(jq -r ".children[${i}].dependencies[${j}].type // empty" "${RESULT_FILE}" | tr '[:upper:]' '[:lower:]')
+      DEP_TARGET=$(jq -r ".children[${i}].dependencies[${j}].target // empty" "${RESULT_FILE}")
+      [[ -z "$DEP_TYPE" || -z "$DEP_TARGET" ]] && continue
+
+      TARGET_KEY="${TITLE_TO_KEY[$DEP_TARGET]:-}"
+      if [[ -z "$TARGET_KEY" ]]; then
+        # Target may be an already-existing Jira key
+        if [[ "$DEP_TARGET" =~ ^[A-Z][A-Z0-9]+-[0-9]+$ ]]; then
+          TARGET_KEY="$DEP_TARGET"
+        else
+          echo "::warning::Dependency target '${DEP_TARGET}' not in created titles — skip (${CHILD_KEY} ${DEP_TYPE})"
+          DEP_LINKS_SKIP=$((DEP_LINKS_SKIP + 1))
+          continue
+        fi
+      fi
+
+      case "$DEP_TYPE" in
+        blocked_by|is_blocked_by)
+          # CHILD is blocked by TARGET → TARGET blocks CHILD
+          PAIR="${TARGET_KEY}>${CHILD_KEY}"
+          if [[ -n "${DEP_LINKED_PAIRS[$PAIR]:-}" ]]; then
+            continue
+          fi
+          if jira_link_blocks "$TARGET_KEY" "$CHILD_KEY"; then
+            DEP_LINKED_PAIRS["$PAIR"]=1
+            DEP_LINKS_OK=$((DEP_LINKS_OK + 1))
+          else
+            DEP_LINKS_SKIP=$((DEP_LINKS_SKIP + 1))
+          fi
+          ;;
+        blocks)
+          # CHILD blocks TARGET
+          PAIR="${CHILD_KEY}>${TARGET_KEY}"
+          if [[ -n "${DEP_LINKED_PAIRS[$PAIR]:-}" ]]; then
+            continue
+          fi
+          if jira_link_blocks "$CHILD_KEY" "$TARGET_KEY"; then
+            DEP_LINKED_PAIRS["$PAIR"]=1
+            DEP_LINKS_OK=$((DEP_LINKS_OK + 1))
+          else
+            DEP_LINKS_SKIP=$((DEP_LINKS_SKIP + 1))
+          fi
+          ;;
+        relates|related|relates_to)
+          PAIR="relates:${CHILD_KEY}:${TARGET_KEY}"
+          PAIR_REV="relates:${TARGET_KEY}:${CHILD_KEY}"
+          if [[ -n "${DEP_LINKED_PAIRS[$PAIR]:-}" || -n "${DEP_LINKED_PAIRS[$PAIR_REV]:-}" ]]; then
+            continue
+          fi
+          if jira_link_issues "$CHILD_KEY" "$TARGET_KEY" "Relates"; then
+            DEP_LINKED_PAIRS["$PAIR"]=1
+            DEP_LINKS_OK=$((DEP_LINKS_OK + 1))
+          else
+            DEP_LINKS_SKIP=$((DEP_LINKS_SKIP + 1))
+          fi
+          ;;
+        *)
+          echo "::warning::Unknown dependency type '${DEP_TYPE}' on ${CHILD_KEY} — skip"
+          DEP_LINKS_SKIP=$((DEP_LINKS_SKIP + 1))
+          ;;
+      esac
+    done
+  done
+  echo "::notice::Dependency links: ${DEP_LINKS_OK} created, ${DEP_LINKS_SKIP} skipped"
+fi
+
 SKIPPED_MSG=""
 if [[ ${#SKIPPED_KEYS[@]} -gt 0 ]]; then
   SKIPPED_MSG=" (skipped ${#SKIPPED_KEYS[@]} existing: ${SKIPPED_KEYS[*]})"
@@ -786,3 +910,4 @@ echo "::notice::Created ${#CREATED_KEYS[@]} child issue(s): ${CREATED_KEYS[*]}${
 # Export for callers that need the result
 export CREATED_CHILD_COUNT="${#CREATED_KEYS[@]}"
 export CREATED_CHILD_KEYS="${CREATED_KEYS[*]}"
+export CREATED_DEP_LINK_COUNT="${DEP_LINKS_OK}"
