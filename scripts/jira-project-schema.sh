@@ -209,21 +209,25 @@ jira_schema_fetch_project_issue_types() {
   local auth
   auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
 
-  local types
-  types=$(curl -sf \
+  local types raw
+  # Keep jq parse noise off the job log when the API body is empty/non-JSON.
+  raw=$(curl -sf \
     -H "Authorization: Basic $auth" \
     -H "Accept: application/json" \
-    "https://${JIRA_HOST}/rest/api/3/project/${project_key}" 2>/dev/null \
-    | jq -c '[.issueTypes[]? | {name: .name, subtask: .subtask, hierarchyLevel: .hierarchyLevel, description: (.description // "")}]' \
-    || echo '[]')
+    "https://${JIRA_HOST}/rest/api/3/project/${project_key}" 2>/dev/null || true)
+  types='[]'
+  if [[ -n "$raw" ]]; then
+    types=$(printf '%s' "$raw" | jq -c '[.issueTypes[]? | {name: .name, subtask: .subtask, hierarchyLevel: .hierarchyLevel, description: (.description // "")}]' 2>/dev/null || echo '[]')
+  fi
 
   if [[ "$types" == "[]" || "$types" == "null" ]]; then
-    types=$(curl -sf \
+    raw=$(curl -sf \
       -H "Authorization: Basic $auth" \
       -H "Accept: application/json" \
-      "https://${JIRA_HOST}/rest/api/3/issue/createmeta/${project_key}/issuetypes" 2>/dev/null \
-      | jq -c '[.issueTypes // [] | .[] | {name, subtask, hierarchyLevel, description: (.description // "")}]' \
-      || echo '[]')
+      "https://${JIRA_HOST}/rest/api/3/issue/createmeta/${project_key}/issuetypes" 2>/dev/null || true)
+    if [[ -n "$raw" ]]; then
+      types=$(printf '%s' "$raw" | jq -c '[.issueTypes // [] | .[] | {name, subtask, hierarchyLevel, description: (.description // "")}]' 2>/dev/null || echo '[]')
+    fi
   fi
 
   echo "${types:-[]}"

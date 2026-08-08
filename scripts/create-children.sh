@@ -166,7 +166,7 @@ get_usable_types_for_project() {
   if [[ -f "$issue_context_file" ]]; then
     live=$(jq -c --arg p "$project_key" '
       .routable_projects[$p].available_issue_types
-      // (if .project.id == $p or .project.key == $p then .project.available_issue_types else null end)
+      // (if .project.key == $p then .project.available_issue_types else null end)
       // []
     ' "$issue_context_file")
   fi
@@ -179,14 +179,20 @@ get_usable_types_for_project() {
     # Also prefer precomputed usable list from context
     if [[ -f "$issue_context_file" ]]; then
       usable=$(jq -c --arg p "$project_key" '
-        .routable_projects[$p].usable_issue_types // empty
-      ' "$issue_context_file")
+        .routable_projects[$p].usable_issue_types // []
+      ' "$issue_context_file" 2>/dev/null || echo '[]')
     fi
-    if [[ -z "${usable:-}" || "$usable" == "null" ]]; then
+    if [[ -z "${usable:-}" || "$usable" == "null" || "$usable" == "[]" ]]; then
       usable=$(jira_schema_intersect_issue_types "$live" "")
     fi
   else
     usable=$(jira_schema_intersect_issue_types "$live" "$allowed")
+    # Live createmeta sometimes returns [] (perm/network) while the install
+    # allowlist still knows Epic/Task — synthesize usable types so create proceeds
+    # without jq noise or falling through empty-match paths.
+    if [[ "$usable" == "[]" && "$allowed" != "[]" ]]; then
+      usable=$(printf '%s' "$allowed" | jq -c 'map(if type == "string" then {name: ., subtask: false} else . end)' 2>/dev/null || echo '[]')
+    fi
   fi
 
   if [[ "$usable" == "[]" ]]; then
@@ -347,12 +353,23 @@ jira_create_issue() {
   auth=$(printf '%s:%s' "$JIRA_EMAIL" "$JIRA_API_TOKEN" | base64 -w0)
 
   local adf_desc
-  adf_desc=$(printf '%s' "$description" | python3 "$(_resolve_companion markdown-to-adf.py)" | jq '.body')
+  # --wrap-detail collapses post-HR / "Detailed Specification" into a Jira expand
+  # (same as sticky comments / parent Feature descriptions).
+  adf_desc=$(printf '%s' "$description" | python3 "$(_resolve_companion markdown-to-adf.py)" --wrap-detail | jq -c '.body')
 
   # Filter custom fields against allowlist for this project
   local allow_keys filtered_customs
   allow_keys=$(jira_schema_allowlist_keys_for_project "$FIELD_CONFIG_JSON" "$project")
-  filtered_customs=$(jira_schema_filter_custom_fields "$custom_fields_json" "$allow_keys")
+  if [[ -z "$allow_keys" ]] || ! printf '%s' "$allow_keys" | jq -e . >/dev/null 2>&1; then
+    allow_keys='[]'
+  fi
+  filtered_customs=$(jira_schema_filter_custom_fields "${custom_fields_json:-{}}" "$allow_keys")
+  if [[ -z "$filtered_customs" ]] || ! printf '%s' "$filtered_customs" | jq -e . >/dev/null 2>&1; then
+    filtered_customs='{}'
+  fi
+  if [[ -z "$labels_json" ]] || ! printf '%s' "$labels_json" | jq -e . >/dev/null 2>&1; then
+    labels_json='[]'
+  fi
 
   local payload
   payload=$(jq -n \
