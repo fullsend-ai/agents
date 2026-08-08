@@ -696,7 +696,13 @@ format_assessment_table_md() {
   [[ "$has" -gt 0 ]] || return 0
 
   local overall has_notes
-  overall=$(jq -r '.assessment.overall // empty' "$file" 2>/dev/null || true)
+  # Prefer .score when overall is an object; scale is 0–5 (one decimal).
+  overall=$(jq -r '
+    .assessment.overall
+    | if type == "object" then (.score // empty)
+      elif type == "number" or type == "string" then .
+      else empty end
+  ' "$file" 2>/dev/null || true)
   has_notes=$(jq '
     [.assessment // {} | to_entries[]
       | select(.key != "overall")
@@ -708,7 +714,7 @@ format_assessment_table_md() {
   echo "### Assessment"
   echo
   if [[ -n "$overall" ]]; then
-    echo "**Overall: ${overall}/100**"
+    echo "**Overall: ${overall}/5**"
     echo
   fi
 
