@@ -214,33 +214,38 @@ This gives you FULL access to the codebase — use it aggressively. Read
 interface definitions, configuration schemas, test files, CI pipelines,
 documentation, and anything relevant to the work item.
 
-**Step 3: Fall back to curl for repos NOT pre-cloned**
+**Step 3: Fall back to GitHub API only for repos NOT pre-cloned**
 
-For repos that failed to clone (private) or weren't discovered by the
-pre-script, use the API fallback:
+Prefer local trees under `referenced-repos/` first. API fallback is last resort.
+
+`GH_TOKEN` is injected into the sandbox — **always authenticate**. Anonymous
+GitHub API is 60 req/hour and shared runner IPs hit it constantly.
 
 ```bash
-# IMPORTANT: Use curl for cross-org repos — gh api requires auth that may not
-# be available in the sandbox. curl works for any public repo without auth.
+# Prefer gh (uses GH_TOKEN). Fall back to authenticated curl.
 # Do NOT use WebFetch for GitHub URLs — it gets blocked (403).
-curl -sf "https://api.github.com/repos/{owner}/{repo}" | jq '{name, description, language, stargazers_count, default_branch}'
-curl -sf "https://api.github.com/repos/{owner}/{repo}/contents/" | jq '.[].name'
-curl -sf "https://api.github.com/repos/{owner}/{repo}/languages"
-curl -sf "https://api.github.com/repos/{owner}/{repo}/git/trees/main?recursive=1" \
-  | jq '[.tree[] | select(.type=="blob") | .path] | .[:80][]'
+# Do NOT call api.github.com without Authorization.
+if [[ -n "${GH_TOKEN:-}" ]]; then
+  gh api "repos/{owner}/{repo}" --jq '{name, description, language, stargazers_count, default_branch}'
+  gh api "repos/{owner}/{repo}/contents/" --jq '.[].name'
+  gh api "repos/{owner}/{repo}/languages"
+  gh api "repos/{owner}/{repo}/git/trees/main?recursive=1" \
+    --jq '[.tree[] | select(.type=="blob") | .path] | .[:80][]'
+else
+  echo "::warning::GH_TOKEN unset — GitHub API limited to ~60 req/hour"
+  curl -sf "https://api.github.com/repos/{owner}/{repo}" | jq '{name, description, language}'
+fi
 ```
 
-This works for any public repo without authentication (60 requests/hour limit).
-If curl returns nothing (empty/error), the repo is private — note it as a gap
-and move on.
+If authenticated calls return 404, treat as private/missing and note a gap.
+If you see HTTP 403/429 rate-limit, stop API browsing, rely on pre-cloned
+repos, and record the rate-limit under `not_accessed` — do not burn retries.
 
-For key repos via API, read important files:
+For key files via API (only when not on disk):
 
 ```bash
-curl -sf "https://api.github.com/repos/{owner}/{repo}/contents/README.md" \
-  | jq -r '.content' | base64 -d
-curl -sf "https://api.github.com/repos/{owner}/{repo}/contents/path/to/file" \
-  | jq -r '.content' | base64 -d
+gh api "repos/{owner}/{repo}/contents/README.md" --jq '.content' | base64 -d
+gh api "repos/{owner}/{repo}/contents/path/to/file" --jq '.content' | base64 -d
 ```
 
 ### Phase 3: Search for related work
