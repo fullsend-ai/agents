@@ -218,6 +218,29 @@ run_sanitize_gha_log_test "sanitize-gha-log-strips-workflow-commands" \
   $'::error::boom' \
   "::error::"
 
+# Regression test (PR #576 review): removing "%0A"/"%0D" text tokens AFTER
+# removing literal "::" can reconstruct a fresh "::" from the leftover
+# fragments — e.g. ":%0A:notice:%0A:PWNED" has no "::" substring until the
+# "%0A" tokens are stripped, at which point the flanking colons collapse
+# into a live "::notice::" workflow command.
+run_sanitize_gha_log_test "sanitize-gha-log-blocks-percent-token-reconstruction" \
+  ':%0A:notice:%0A:PWNED-INJECTED' \
+  "::"
+
+# Same reconstruction, but combined with a real embedded newline byte ahead
+# of it. GHA's runner parses stdout line-by-line, so even if "::" is fully
+# stripped, a literal newline in the sanitized value would start a new
+# physical output line — the sanitizer must collapse real newline/CR bytes
+# too, not just their percent-encoded text lookalikes.
+newline_reconstruction_actual="$(sanitize_gha_log_output $'true\n:%0A:notice:%0A:pwned')"
+if [[ "${newline_reconstruction_actual}" == *$'\n'* || "${newline_reconstruction_actual}" == *"::"* ]]; then
+  echo "FAIL: sanitize-gha-log-blocks-newline-plus-token-reconstruction"
+  echo "  sanitized output: '${newline_reconstruction_actual}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: sanitize-gha-log-blocks-newline-plus-token-reconstruction"
+fi
+
 run_categorize_push_test() {
   local test_name="$1"
   local push_output="$2"

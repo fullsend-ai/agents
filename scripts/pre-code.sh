@@ -48,23 +48,108 @@ prescript_output() {
   fi
 }
 # END bundled: lib/prescript-output.lib.sh
+# shellcheck source=lib/gha-log-sanitize.lib.sh
+# BEGIN bundled: lib/gha-log-sanitize.lib.sh
+# gha-log-sanitize.lib.sh — Sanitize untrusted values before they reach
+# GitHub Actions' workflow-command log parser.
+#
+# GHA treats any line starting with "::cmd::" in step output as a workflow
+# command. Interpolating untrusted input (issue/PR bodies, dispatch inputs)
+# into echoed diagnostics without stripping "::" lets that input inject its
+# own workflow commands. This library holds only the sanitizing helpers —
+# no `gh` calls or comment-posting logic — so it can be sourced from
+# trust-sensitive pre-scripts without pulling in unrelated capabilities.
+#
+# Source from a .src.sh script:
+#   source "${SCRIPT_DIR}/lib/gha-log-sanitize.lib.sh"
 
-echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL:-}"
+# shellcheck shell=bash
+
+[[ -n "${GHA_LOG_SANITIZE_SH_LOADED:-}" ]] && return 0
+GHA_LOG_SANITIZE_SH_LOADED=1
+
+_sanitize_workflow_value() {
+  local value="$1"
+  local prev
+  # Loop to a fixed point: removing one token can reassemble another (e.g.
+  # stripping "%0A" out of ":%0A:notice:%0A:" collapses the flanking colons
+  # back into a live "::"). A single fixed pass-order can't defend against
+  # that in both directions, so keep stripping until nothing changes.
+  while true; do
+    prev="${value}"
+    value="${value//::/}"
+    value="${value//%0A/}"
+    value="${value//%0a/}"
+    value="${value//%0D/}"
+    value="${value//%0d/}"
+    [[ "${value}" == "${prev}" ]] && break
+  done
+  # GHA's runner parses stdout line-by-line; a literal CR/LF byte would start
+  # a new physical line the "::" strip above never sees.
+  value="${value//$'\r'/}"
+  value="${value//$'\n'/ }"
+  printf '%s' "${value}"
+}
+
+# Neutralize line-start GHA workflow commands in comment bodies without
+# stripping mid-string :: (e.g. std::string in compiler output).
+sanitize_comment_workflow_commands() {
+  local value="$1"
+  value="$(printf '%s\n' "${value}" | sed -E \
+    -e 's/^::(warning|error|notice|debug|group|endgroup):://')"
+  value="${value//%0A/}"
+  value="${value//%0a/}"
+  value="${value//%0D/}"
+  value="${value//%0d/}"
+  # printf '%s' drops trailing newline added by the pipeline above.
+  printf '%s' "${value}"
+}
+
+# Strip GitHub Actions workflow-command sequences from runner log output.
+sanitize_gha_log_output() {
+  _sanitize_workflow_value "$1"
+}
+
+# Print sanitized command output to stdout or stderr without SC2005 echo-$(cmd) noise.
+print_sanitized_gha_log() {
+  local sanitized
+  sanitized="$(sanitize_gha_log_output "$1")"
+  if [ "${2:-}" = "stderr" ]; then
+    printf '%s\n' "${sanitized}" >&2
+  else
+    printf '%s\n' "${sanitized}"
+  fi
+}
+
+# Emit a GitHub Actions workflow command with a sanitised message body.
+# Defence-in-depth: sanitize the level parameter too, even though current
+# call sites only pass hardcoded string literals.
+gha_echo() {
+  local level="$1"
+  shift
+  level="${level//::/}"
+  printf '::%s::%s\n' "${level}" "$(sanitize_gha_log_output "$*")"
+}
+# END bundled: lib/gha-log-sanitize.lib.sh
 
 errors=0
 
+# The validation messages below interpolate untrusted input that just
+# failed its format check — use gha_echo (not raw echo) so GHA's
+# workflow-command parser never sees an attacker-controlled "::" sequence
+# from that input.
 if [[ ! "${ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "::error::ISSUE_NUMBER must be a positive integer, got: '${ISSUE_NUMBER:-}'"
+  gha_echo error "ISSUE_NUMBER must be a positive integer, got: '${ISSUE_NUMBER:-}'"
   errors=$((errors + 1))
 fi
 
 if [[ ! "${REPO_FULL_NAME:-}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
-  echo "::error::REPO_FULL_NAME must be owner/repo format, got: '${REPO_FULL_NAME:-}'"
+  gha_echo error "REPO_FULL_NAME must be owner/repo format, got: '${REPO_FULL_NAME:-}'"
   errors=$((errors + 1))
 fi
 
 if [[ ! "${GITHUB_ISSUE_URL:-}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "::error::GITHUB_ISSUE_URL format invalid, got: '${GITHUB_ISSUE_URL:-}'"
+  gha_echo error "GITHUB_ISSUE_URL format invalid, got: '${GITHUB_ISSUE_URL:-}'"
   errors=$((errors + 1))
 fi
 
@@ -72,11 +157,11 @@ URL_REPO="$(echo "${GITHUB_ISSUE_URL:-}" | sed -E 's|https://github.com/([^/]+/[
 URL_ISSUE="$(echo "${GITHUB_ISSUE_URL:-}" | sed -E 's|.*/issues/([0-9]+)$|\1|')"
 
 if [[ -n "${URL_REPO}" && "${URL_REPO}" != "${REPO_FULL_NAME:-}" ]]; then
-  echo "::error::REPO_FULL_NAME does not match issue URL repo ('${REPO_FULL_NAME:-}' vs '${URL_REPO}')"
+  gha_echo error "REPO_FULL_NAME does not match issue URL repo ('${REPO_FULL_NAME:-}' vs '${URL_REPO}')"
   errors=$((errors + 1))
 fi
 if [[ -n "${URL_ISSUE}" && "${URL_ISSUE}" != "${ISSUE_NUMBER:-}" ]]; then
-  echo "::error::ISSUE_NUMBER does not match issue URL number ('${ISSUE_NUMBER:-}' vs '${URL_ISSUE}')"
+  gha_echo error "ISSUE_NUMBER does not match issue URL number ('${ISSUE_NUMBER:-}' vs '${URL_ISSUE}')"
   errors=$((errors + 1))
 fi
 
@@ -84,6 +169,8 @@ if [[ "${errors}" -gt 0 ]]; then
   echo "::error::Input validation failed with ${errors} error(s). Aborting."
   exit 1
 fi
+
+echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL}"
 
 echo "Input validation passed:"
 echo "  ISSUE_NUMBER=${ISSUE_NUMBER}"
@@ -108,7 +195,8 @@ FORCE_WORD=""
 if [[ -n "${COMMENT_BODY:-}" ]]; then
   FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
 fi
-echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
+_cb="${COMMENT_BODY:-}"
+echo "Evaluating force override: CODE_FORCE='$(sanitize_gha_log_output "${CODE_FORCE:-}")' COMMENT_BODY_LENGTH='${#_cb}'"
 if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
   echo "Force override — skipping existing-PR check"
   exit 0
@@ -133,7 +221,7 @@ if [[ -n "${HUMAN_PR_LINES}" ]]; then
   FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
   FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
 
-  echo "::notice::Found existing human PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+  gha_echo notice "Found existing human PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
 
   # Apply pr-open label to signal work is already underway.
   gh label create "pr-open" --repo "${REPO_FULL_NAME}" \

@@ -66,24 +66,52 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 [[ -n "${POST_FAILURE_REPORT_SH_LOADED:-}" ]] && return 0
 POST_FAILURE_REPORT_SH_LOADED=1
 
-POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
-POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
-# Guard against duplicate posts within one script invocation (e.g. trap + explicit
-# call). Intentionally not deduped across workflow re-runs: the user should see
-# a fresh comment when they actively retry.
-POST_FAILURE_REPORTED=false
-POST_FAILURE_SECRET_SCAN_MESSAGE="Secret scan blocked the push. See workflow logs for details."
+# Resolve relative to this file (not the caller's SCRIPT_DIR/SCRIPT_DIR_POST,
+# which name the sourcing script's directory, not this library's). Only used
+# by the source line below — once bundled, that line is inlined and this
+# assignment goes unused, hence the disable.
+# shellcheck disable=SC2034
+LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/gha-log-sanitize.lib.sh
+# BEGIN bundled: lib/gha-log-sanitize.lib.sh
+# gha-log-sanitize.lib.sh — Sanitize untrusted values before they reach
+# GitHub Actions' workflow-command log parser.
+#
+# GHA treats any line starting with "::cmd::" in step output as a workflow
+# command. Interpolating untrusted input (issue/PR bodies, dispatch inputs)
+# into echoed diagnostics without stripping "::" lets that input inject its
+# own workflow commands. This library holds only the sanitizing helpers —
+# no `gh` calls or comment-posting logic — so it can be sourced from
+# trust-sensitive pre-scripts without pulling in unrelated capabilities.
+#
+# Source from a .src.sh script:
+#   source "${SCRIPT_DIR}/lib/gha-log-sanitize.lib.sh"
 
-# Maximum lines of sanitized detail to include in issue/PR comments.
-POST_FAILURE_DETAIL_MAX_LINES="${POST_FAILURE_DETAIL_MAX_LINES:-30}"
+# shellcheck shell=bash
+
+[[ -n "${GHA_LOG_SANITIZE_SH_LOADED:-}" ]] && return 0
+GHA_LOG_SANITIZE_SH_LOADED=1
 
 _sanitize_workflow_value() {
   local value="$1"
-  value="${value//::/}"
-  value="${value//%0A/}"
-  value="${value//%0a/}"
-  value="${value//%0D/}"
-  value="${value//%0d/}"
+  local prev
+  # Loop to a fixed point: removing one token can reassemble another (e.g.
+  # stripping "%0A" out of ":%0A:notice:%0A:" collapses the flanking colons
+  # back into a live "::"). A single fixed pass-order can't defend against
+  # that in both directions, so keep stripping until nothing changes.
+  while true; do
+    prev="${value}"
+    value="${value//::/}"
+    value="${value//%0A/}"
+    value="${value//%0a/}"
+    value="${value//%0D/}"
+    value="${value//%0d/}"
+    [[ "${value}" == "${prev}" ]] && break
+  done
+  # GHA's runner parses stdout line-by-line; a literal CR/LF byte would start
+  # a new physical line the "::" strip above never sees.
+  value="${value//$'\r'/}"
+  value="${value//$'\n'/ }"
   printf '%s' "${value}"
 }
 
@@ -118,11 +146,26 @@ print_sanitized_gha_log() {
 }
 
 # Emit a GitHub Actions workflow command with a sanitised message body.
+# Defence-in-depth: sanitize the level parameter too, even though current
+# call sites only pass hardcoded string literals.
 gha_echo() {
   local level="$1"
   shift
+  level="${level//::/}"
   printf '::%s::%s\n' "${level}" "$(sanitize_gha_log_output "$*")"
 }
+# END bundled: lib/gha-log-sanitize.lib.sh
+
+POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
+POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
+# Guard against duplicate posts within one script invocation (e.g. trap + explicit
+# call). Intentionally not deduped across workflow re-runs: the user should see
+# a fresh comment when they actively retry.
+POST_FAILURE_REPORTED=false
+POST_FAILURE_SECRET_SCAN_MESSAGE="Secret scan blocked the push. See workflow logs for details."
+
+# Maximum lines of sanitized detail to include in issue/PR comments.
+POST_FAILURE_DETAIL_MAX_LINES="${POST_FAILURE_DETAIL_MAX_LINES:-30}"
 
 _redact_multiline_pem() {
   awk '

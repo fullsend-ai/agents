@@ -141,6 +141,7 @@ bundle_expand_source() {
     -e 's/^[[:space:]]*'\''//; s/'\''[[:space:]]*$//' \
     -e 's/^\$\{SCRIPT_DIR[^}]*\}\///' \
     -e 's/^\$\{SCRIPT_DIR_POST[^}]*\}\///' \
+    -e 's/^\$\{LIB_DIR[^}]*\}\///' \
     -e 's/^\$\{SCRIPT_DIR[^}]*\}//')"
 
   if [[ -z "${ref}" ]]; then

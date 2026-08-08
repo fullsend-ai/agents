@@ -386,6 +386,56 @@ run_test "pr-label-created" \
   "gh label create pr-open --repo test-org/test-repo" \
   0
 
+# --- Regression tests: workflow-command injection hardening (PR #576) ---
+
+# The GITHUB_ISSUE_URL ::notice:: moved to after validation — it must not
+# appear when validation fails, otherwise an unvalidated value could still
+# reach GHA's workflow-command parser via the notice line.
+run_test_stdout_excludes "notice-not-emitted-before-validation" \
+  "" \
+  "::error::ISSUE_NUMBER must be a positive integer" \
+  "::notice::" \
+  1 \
+  "ISSUE_NUMBER=not-a-number"
+
+# The reordering must not have dropped the notice entirely — it still fires
+# on the validation-success path, with the validated GITHUB_ISSUE_URL.
+run_test_stdout "notice-emitted-after-successful-validation" \
+  "" \
+  "::notice::🔗 Code target: https://github.com/test-org/test-repo/issues/42" \
+  0
+
+# COMMENT_BODY content itself must never reach stdout — only its length is
+# logged, so a hostile trigger comment can't inject GHA workflow commands
+# or terminal escape sequences via debug logging.
+run_test_stdout_excludes "comment-body-not-echoed-raw" \
+  "" \
+  "COMMENT_BODY_LENGTH=" \
+  "TOTALLY-SECRET-MARKER" \
+  0 \
+  "COMMENT_BODY=/fs-code TOTALLY-SECRET-MARKER"
+
+# Validation-failure ::error:: lines strip embedded "::" from untrusted
+# input before interpolating it — GHA's workflow-command parser triggers on
+# any line starting with "::", so raw interpolation of a malformed value
+# (which failed validation specifically because it's not well-formed)
+# could inject a second workflow command.
+run_test_stdout_excludes "error-line-strips-workflow-cmd-chars" \
+  "" \
+  "got: '1234'" \
+  "got: '12::34'" \
+  1 \
+  "ISSUE_NUMBER=12::34"
+
+# CODE_FORCE is interpolated in the force-override debug log — sanitize it
+# so a value containing "::" can't inject a GHA workflow command.
+run_test_stdout_excludes "code-force-sanitized-in-log" \
+  "" \
+  "CODE_FORCE='hasinjection'" \
+  "has::injection" \
+  0 \
+  "CODE_FORCE=has::injection"
+
 # --- Regression tests: --force bypasses PR search (issue #1697) ---
 TAB=$'\t'
 
