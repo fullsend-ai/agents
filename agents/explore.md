@@ -264,13 +264,13 @@ gh pr list --repo "$REPO_FULL_NAME" --state all \
 ```
 
 Also search referenced repos (identified in Phase 2) for related issues and PRs.
-Use curl for cross-org repos where gh may not have auth:
+Use authenticated `gh` (GH_TOKEN) — never anonymous search API (30/min + shared IP):
 
 ```bash
-curl -sf "https://api.github.com/search/issues?q=repo:{owner}/{repo}+type:issue+relevant+keywords&per_page=20" \
-  | jq '.items[] | {number, title, state}'
-curl -sf "https://api.github.com/search/issues?q=repo:{owner}/{repo}+type:pr+relevant+keywords&per_page=10" \
-  | jq '.items[] | {number, title, state}'
+gh search issues "relevant keywords" --repo "{owner}/{repo}" --limit 20 \
+  --json number,title,state
+gh search prs "relevant keywords" --repo "{owner}/{repo}" --limit 10 \
+  --json number,title,state
 ```
 
 For Jira items, related issues and linked issues are already in the

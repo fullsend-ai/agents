@@ -778,14 +778,16 @@ else
     echo "  cloning: $ref → $DEST"
     mkdir -p "$DEST"
 
-    # Auth clone when GH_TOKEN is set (avoids anon IP clone limits). Still disable
-    # credential helpers; token is only embedded after validate_repo confirmed public.
+    # Auth clone when GH_TOKEN is set (avoids anon IP clone limits). Use
+    # http.extraHeader — never embed the token in the URL (shows up in `ps`).
+    # credential.helper stays disabled; only after validate_repo confirmed public.
     clone_url="https://github.com/${ref}.git"
+    clone_args=(-c credential.helper=)
     if [[ -n "${GH_TOKEN:-}" ]]; then
-      clone_url="https://x-access-token:${GH_TOKEN}@github.com/${ref}.git"
+      clone_args+=(-c "http.extraHeader=Authorization: Bearer ${GH_TOKEN}")
     fi
     if GIT_TERMINAL_PROMPT=0 timeout "${CLONE_TIMEOUT}" \
-        git -c credential.helper= clone --depth 1 --single-branch --quiet \
+        git "${clone_args[@]}" clone --depth 1 --single-branch --quiet \
         "$clone_url" "$DEST" 2>/dev/null; then
       rm -rf "$DEST/.git"  # agent only needs source files, not git metadata
       CLONED+=("$ref")

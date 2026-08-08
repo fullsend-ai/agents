@@ -6,12 +6,16 @@ Inspects a work item (GitHub issue or Jira ticket), gathers technical context fr
 
 The explore agent runs after a work item enters the refinement pipeline. A host pre-script fetches issue context and optionally shallow-clones public GitHub repos referenced in the issue. The agent researches inside a sandbox with read-only GitHub/Jira/web access, writes a schema-validated JSON result, and a post-script attaches the result, posts a sticky summary comment, and optionally applies pipeline labels.
 
-Credentials (Jira tokens, GitHub tokens) stay on the runner — they never enter the sandbox.
+Host pre-script uses runner credentials to fetch issue context and shallow-clone
+public repos. The sandbox receives `GH_TOKEN` / Jira env via the harness for
+read API fallbacks, constrained by OpenShell network policy (github.com,
+api.github.com, configured Jira host). Prefer pre-cloned trees so the agent
+rarely needs live git.
 
 ## How it helps
 
 - Downstream agents receive structured technical landscape, related work, and definition gaps instead of raw issue text.
-- Referenced repos are pre-cloned so the agent can grep and inspect code without live git credentials in the sandbox.
+- Referenced repos are pre-cloned so the agent can grep and inspect code without live git clones in the sandbox.
 - Confidence scoring and optional pipeline labels signal when a work item is ready for the next stage.
 
 ## Platform support
