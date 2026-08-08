@@ -424,7 +424,7 @@ critical files compete with boilerplate for the review agent's context
 window and reasoning budget. A triage pass ensures files touching
 auth, permissions, token handling, trust boundaries, and similar
 concerns receive dedicated review context rather than being diluted
-across dozens of routine changes. The triage prompt (Part 2 below)
+across dozens of routine changes. The triage prompt (Part 3 below)
 requires per-file diff summaries, so this step runs only when step 2
 has produced them — gating on `FILE_COUNT` alone would trigger triage
 for PRs that have many files but few changed lines (not meeting step
@@ -435,12 +435,31 @@ incident.
 **Procedure:**
 
 1. Read `sub-agents/security-triage.md` for the sub-agent definition.
-2. Compose a spawn prompt containing:
+2. Resolve the active governance paths list, matching
+   `post-review.sh`'s resolution: if `REVIEW_PROTECTED_PATHS` is
+   non-empty, split on commas and trim whitespace; if it's explicitly
+   empty, the operator has opted out and the list is empty.
+   `harness/review.yaml` always sets this var (a default, overridable
+   per-repo via harness composition), so it is never unset in practice.
+3. Compose a spawn prompt containing:
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
    security-triage sub-agent file (everything after the frontmatter)
 
-   **Part 2 — Context:** the PR's changed file list with per-file
+   **Part 2 — Governance paths:** the resolved list from step 2 above
+   (this procedure's own governance-paths resolution step, not the
+   orchestrator's per-file-mode step 2 referenced elsewhere in this
+   subsection), formatted as a bullet list under a heading:
+
+   ```markdown
+   ## Active governance paths
+   - .claude/
+   - .github/
+   - scripts/
+   ...
+   ```
+
+   **Part 3 — Context:** the PR's changed file list with per-file
    diff stats (additions, deletions), plus a brief diff summary for
    each file. For files that match a path pattern from the
    classification criteria, include the first ~20 lines of the diff
@@ -465,21 +484,21 @@ incident.
    ...
    ```
 
-3. Spawn via Agent tool with:
+4. Spawn via Agent tool with:
    - `model`: `haiku` (from the sub-agent frontmatter)
    - `subagent_type`: `Explore` (read-only)
-   - `prompt`: composed from parts 1–2
+   - `prompt`: composed from parts 1–3
 
    This agent runs **synchronously** (not in the background) because
    its output feeds into step 3d's context package assembly. It uses
    haiku for speed — classification does not require deep reasoning.
 
-4. Parse the triage output. The security-triage sub-agent returns a
+5. Parse the triage output. The security-triage sub-agent returns a
    JSON object with `security_critical_files` (array of objects with
    `file` and `reason`), `standard_files` (array of paths), and
    `summary` (string).
 
-5. Validate and store the classification result for use in step 3d:
+6. Validate and store the classification result for use in step 3d:
 
    **Failure fallback:** If the security-triage sub-agent fails
    (timeout, parse error, empty response), fall back to treating
@@ -487,8 +506,10 @@ incident.
    uniform-attention behavior as a safe default.
 
    **Structural validation:** Before accepting the classification,
-   verify the following invariants against the changed-file set from
-   step 2. If any check fails, treat as a triage failure and apply
+   verify the following invariants against the changed-file set
+   produced by the orchestrator's step 2 (large-PR mode file
+   selection — not this procedure's own governance-paths step 2
+   above). If any check fails, treat as a triage failure and apply
    the fallback above.
 
    a. **Completeness:** The union of paths in
@@ -990,29 +1011,19 @@ governance and infrastructure files that require human approval — the
 review agent MUST NEVER approve changes to them without raising
 findings.
 
-Protected paths (kept in sync with `post-review.sh`):
+The protected paths list is determined at runtime, matching
+`post-review.sh`'s resolution:
 
-- `.claude/`
-- `.cursor/`
-- `.gitattributes`
-- `.github/`
-- `.pre-commit-config.yaml`
-- `AGENTS.md`
-- `agents/`
-- `api-servers/`
-- `CLAUDE.md`
-- `CODEOWNERS`
-- `Containerfile`
-- `Dockerfile`
-- `harness/`
-- `images/`
-- `plugins/`
-- `policies/`
-- `scripts/`
-- `skills/`
+- **Non-empty** — use the `REVIEW_PROTECTED_PATHS` value
+  (comma-separated path prefixes). `harness/review.yaml` sets a
+  default list here; repos needing a different list override it via
+  harness composition.
+- **Explicitly empty** (`REVIEW_PROTECTED_PATHS=""`) — the
+  operator has deliberately opted out of protected-path enforcement.
+  The active list is empty, so no file can match it.
 
 For each file in the PR diff, check whether its path starts with (or
-exactly matches) any entry in the list above.
+exactly matches) any entry in the active protected paths list.
 
 If **any** protected files are modified, you MUST emit a structured
 finding with `category: "protected-path"`. This is not optional —

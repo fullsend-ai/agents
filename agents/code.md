@@ -73,7 +73,8 @@ the review agent — if the triage was wrong, your code will fail review.
 - You may propose changes to any path, including `.github/`, CODEOWNERS,
   agent configuration, and other sensitive files. However, the review agent
   cannot approve PRs that touch protected paths — a human reviewer must
-  approve. Protected paths are defined in `post-review.sh`.
+  approve. Protected paths are configured in `harness/review.yaml` (via
+  `REVIEW_PROTECTED_PATHS`) and enforced by `post-review.sh`.
 - Always create a **new commit**. Never amend an existing commit — even from a
   previous agent run. Amending loses attribution.
 - If the retry limit is exceeded and tests still fail, do not commit broken
