@@ -232,7 +232,7 @@ if [[ "${VERDICT}" == "approved" ]]; then
 | | |
 |---|---|
 | **Verdict** | Approved |
-| **Score** | ${OVERALL_SCORE}/100 |
+| **Score** | ${OVERALL_SCORE}/5 |
 
 ---
 
@@ -298,7 +298,7 @@ elif [[ "${VERDICT}" == "revise" ]]; then
 | | |
 |---|---|
 | **Verdict** | Max Rounds Reached |
-| **Score** | ${OVERALL_SCORE}/100 |
+| **Score** | ${OVERALL_SCORE}/5 |
 | **Rounds** | ${MAX_REVIEW_ROUNDS}/${MAX_REVIEW_ROUNDS} |
 
 ---
@@ -338,7 +338,7 @@ ${ASSESSMENT_TABLE}
 | | |
 |---|---|
 | **Verdict** | Revisions Requested |
-| **Score** | ${OVERALL_SCORE}/100 |
+| **Score** | ${OVERALL_SCORE}/5 |
 | **Revisions** | ${REVISION_COUNT} requested |
 
 ---
@@ -385,7 +385,7 @@ elif [[ "${VERDICT}" == "needs_input" ]]; then
 | | |
 |---|---|
 | **Verdict** | Needs Human Input |
-| **Score** | ${OVERALL_SCORE}/100 |
+| **Score** | ${OVERALL_SCORE}/5 |
 | **Dimension** | ${QUESTION_DIM} |
 
 ---

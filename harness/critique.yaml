@@ -20,24 +20,12 @@ host_files:
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
-  - src: /tmp/workspace/issue-context.json
-    dest: /sandbox/workspace/issue-context.json
-    optional: true
-  - src: /tmp/workspace/exploration_context.json
-    dest: /sandbox/workspace/exploration_context.json
-    optional: true
-  - src: /tmp/workspace/refine-result.json
-    dest: /sandbox/workspace/refine-result.json
-    optional: true
-  - src: /tmp/workspace/critique-history.json
-    dest: /sandbox/workspace/critique-history.json
-    optional: true
-  - src: /tmp/workspace/routing-skill.md
-    dest: /sandbox/workspace/routing-skill.md
-    optional: true
-  - src: /tmp/workspace/platform-context.md
-    dest: /sandbox/workspace/platform-context.md
-    optional: true
+  # Absolute /tmp/workspace/* host_files are intentionally omitted here.
+  # fullsend 0.34.0 resolveBaseHostFiles rejects absolute paths on URL-fetched
+  # bases (security). Runtime files (issue-context, refine-result, etc.) are
+  # staged into /tmp/workspace by pre_script; absolute host mounts belong in
+  # the install overlay (e.g. konflux-ci/refinement .fullsend/harness/critique.yaml),
+  # not this generic agents base — same pattern as explore/refine bases.
 
 pre_script: scripts/pre-critique.sh
 post_script: scripts/post-critique.sh

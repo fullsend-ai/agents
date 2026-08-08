@@ -59,12 +59,12 @@ You catch these before issues flood the backlog.
    coverage, granularity, dependencies, and implementability.
 
 2. **Infinite Loop** — requesting revisions on subjective preferences or
-   diminishing-returns improvements. If the plan is 80%+ quality, approve it
-   with notes rather than forcing another round.
+   diminishing-returns improvements. If the plan scores 4.0/5+ overall, approve
+   it with notes rather than forcing another round.
 
 3. **Assumption Laundering** — treating the refine agent's unverified
    assumptions as established facts. When refine says "Assumed X" and scores
-   itself at 56/100, but the plan reads as if X is certain, the plan's
+   itself at 2.8/5, but the plan reads as if X is certain, the plan's
    internal coherence is an illusion. A well-structured plan built on wrong
    assumptions is worse than a messy plan built on verified facts — it creates
    confident-looking tickets that send engineers down the wrong path.
@@ -134,7 +134,7 @@ Understand:
 echo "::notice::PHASE 2: Evaluate plan"
 ```
 
-Score each dimension 0-100:
+Score each dimension 0.0–5.0 (one decimal):
 
 | Dimension | What you're checking |
 |-----------|---------------------|
@@ -175,16 +175,16 @@ determine whether those guesses are safe or dangerous.
 
 #### Step 4a: Cross-check refine's self-confidence
 
-Read refine's `confidence` scores. If any dimension is below 60, or overall
-is below 70, treat this as a signal that the plan has substantive definition gaps —
+Read refine's `confidence` scores. If any dimension is below 3.0, or overall
+is below 3.5, treat this as a signal that the plan has substantive definition gaps —
 not just structural ones. A low-confidence plan that looks well-structured
 may be hiding unverified assumptions behind polished formatting.
 
 **Do not score implementability or scope_accuracy higher than refine's own
 confidence in those dimensions unless you can point to specific evidence
-in the exploration context that refine missed.** If refine says "I'm 55%
+in the exploration context that refine missed.** If refine says "I'm 2.8/5
 confident on technical grounding" and you want to score implementability
-at 78%, you must explain what evidence supports the higher score.
+at 3.9/5, you must explain what evidence supports the higher score.
 
 #### Step 4b: Evaluate each open question
 
@@ -239,8 +239,8 @@ echo "::notice::PHASE 5: Decide verdict"
 ```
 
 **Approve** if:
-- All dimensions score >= 60 (including assumption_grounding; and program_grounding when `ORG_KNOWLEDGE` was present)
-- Overall assessment >= 70
+- All dimensions score >= 3.0 (including assumption_grounding; and program_grounding when `ORG_KNOWLEDGE` was present)
+- Overall assessment >= 3.5
 - No critical definition gaps (missing entire requirement dimensions)
 - No dependency cycles
 - Children are specific enough to be actionable
@@ -251,7 +251,7 @@ echo "::notice::PHASE 5: Decide verdict"
   3+ children if wrong)
 
 **Revise** if:
-- Any dimension scores below 50
+- Any dimension scores below 2.5
 - Critical coverage gaps exist
 - Dependency structure is broken
 - Multiple children are too vague to implement
@@ -259,7 +259,7 @@ echo "::notice::PHASE 5: Decide verdict"
 - Open questions could be resolved by the refine agent itself
 - Structurally significant assumptions are unverified but researchable —
   refine should do the research, not punt to humans
-- Refine's self-confidence is below 60 overall AND you cannot independently
+- Refine's self-confidence is below 3.0 overall AND you cannot independently
   verify the assumptions that drove the low confidence
 
 **Needs Input** if:
@@ -296,7 +296,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 {
   "input": {
     "source": "jira | github",
-    "key": "PROJECT-1234",
+    "issue_id": "PROJECT-1234",
     "level": "feature",
     "summary": "..."
   },
@@ -309,15 +309,15 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
     "total_children": 15
   },
   "assessment": {
-    "coverage": { "score": 85, "reasoning": "All 4 dimensions of the feature have corresponding epics..." },
-    "granularity": { "score": 80, "reasoning": "Stories are appropriately sized for single-sprint delivery..." },
-    "dependency_coherence": { "score": 90, "reasoning": "Dependency chain is linear and achievable..." },
-    "implementability": { "score": 75, "reasoning": "Most children name specific APIs, though 2 stories could be more specific..." },
-    "scope_accuracy": { "score": 85, "reasoning": "Children collectively match the parent scope..." },
-    "assumption_grounding": { "score": 80, "reasoning": "3 of 4 architectural decisions are backed by exploration context..." },
-    "program_grounding": { "score": 80, "reasoning": "Scored only when ORG_KNOWLEDGE has real packed content; omit when absent." },
-    "description_clarity": { "score": 85, "reasoning": "Top section is concise (220 words), covers all 5 required headings..." },
-    "overall": 83
+    "coverage": { "score": 4.3, "reasoning": "All 4 dimensions of the feature have corresponding epics..." },
+    "granularity": { "score": 4.0, "reasoning": "Stories are appropriately sized for single-sprint delivery..." },
+    "dependency_coherence": { "score": 4.5, "reasoning": "Dependency chain is linear and achievable..." },
+    "implementability": { "score": 3.8, "reasoning": "Most children name specific APIs, though 2 stories could be more specific..." },
+    "scope_accuracy": { "score": 4.3, "reasoning": "Children collectively match the parent scope..." },
+    "assumption_grounding": { "score": 4.0, "reasoning": "3 of 4 architectural decisions are backed by exploration context..." },
+    "program_grounding": { "score": 4.0, "reasoning": "Scored only when ORG_KNOWLEDGE has real packed content; omit when absent." },
+    "description_clarity": { "score": 4.3, "reasoning": "Top section is concise (220 words), covers all 5 required headings..." },
+    "overall": 4.2
   },
   "revisions": [],
   "comment": "A comment posted to the feature issue explaining the approval.",
@@ -331,7 +331,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 {
   "input": {
     "source": "jira | github",
-    "key": "PROJECT-1234",
+    "issue_id": "PROJECT-1234",
     "level": "feature",
     "summary": "..."
   },
@@ -344,15 +344,15 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
     "total_children": 20
   },
   "assessment": {
-    "coverage": { "score": 70, "reasoning": "..." },
-    "granularity": { "score": 45, "reasoning": "Epic 4 (Monitoring) has only 1 story..." },
-    "dependency_coherence": { "score": 80, "reasoning": "..." },
-    "implementability": { "score": 60, "reasoning": "..." },
-    "scope_accuracy": { "score": 55, "reasoning": "Stories 7-10 add observability dashboards not mentioned in the parent..." },
-    "assumption_grounding": { "score": 50, "reasoning": "Refine assumed a new dedicated repo but exploration context suggests extending the existing repo..." },
-    "program_grounding": { "score": 50, "reasoning": "Scored only when ORG_KNOWLEDGE has real packed content; omit when absent." },
-    "description_clarity": { "score": 45, "reasoning": "Top section exceeds 400 words and repeats Background content in Problem..." },
-    "overall": 62
+    "coverage": { "score": 3.5, "reasoning": "..." },
+    "granularity": { "score": 2.3, "reasoning": "Epic 4 (Monitoring) has only 1 story..." },
+    "dependency_coherence": { "score": 4.0, "reasoning": "..." },
+    "implementability": { "score": 3.0, "reasoning": "..." },
+    "scope_accuracy": { "score": 2.8, "reasoning": "Stories 7-10 add observability dashboards not mentioned in the parent..." },
+    "assumption_grounding": { "score": 2.5, "reasoning": "Refine assumed a new dedicated repo but exploration context suggests extending the existing repo..." },
+    "program_grounding": { "score": 2.5, "reasoning": "Scored only when ORG_KNOWLEDGE has real packed content; omit when absent." },
+    "description_clarity": { "score": 2.3, "reasoning": "Top section exceeds 400 words and repeats Background content in Problem..." },
+    "overall": 3.1
   },
   "revisions": [
     {
@@ -385,7 +385,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 {
   "input": {
     "source": "jira | github",
-    "key": "PROJECT-1234",
+    "issue_id": "PROJECT-1234",
     "level": "feature",
     "summary": "..."
   },
@@ -398,14 +398,14 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
     "total_children": 15
   },
   "assessment": {
-    "coverage": { "score": 55, "reasoning": "..." },
-    "granularity": { "score": 70, "reasoning": "..." },
-    "dependency_coherence": { "score": 75, "reasoning": "..." },
-    "implementability": { "score": 40, "reasoning": "Cannot determine implementation approach without knowing the target SLA..." },
-    "scope_accuracy": { "score": 50, "reasoning": "..." },
-    "assumption_grounding": { "score": 35, "reasoning": "..." },
-    "description_clarity": { "score": 60, "reasoning": "..." },
-    "overall": 58
+    "coverage": { "score": 2.8, "reasoning": "..." },
+    "granularity": { "score": 3.5, "reasoning": "..." },
+    "dependency_coherence": { "score": 3.8, "reasoning": "..." },
+    "implementability": { "score": 2.0, "reasoning": "Cannot determine implementation approach without knowing the target SLA..." },
+    "scope_accuracy": { "score": 2.5, "reasoning": "..." },
+    "assumption_grounding": { "score": 1.8, "reasoning": "..." },
+    "description_clarity": { "score": 3.0, "reasoning": "..." },
+    "overall": 2.9
   },
   "question": {
     "dimension": "scope_clarity",

@@ -17,7 +17,7 @@
       "additionalProperties": false,
       "required": [
         "source",
-        "key",
+        "issue_id",
         "level",
         "summary"
       ],
@@ -31,7 +31,7 @@
             "text"
           ]
         },
-        "key": {
+        "issue_id": {
           "type": "string"
         },
         "level": {
@@ -125,7 +125,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -139,7 +139,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -153,7 +153,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -167,7 +167,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -181,7 +181,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -196,7 +196,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -210,7 +210,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -225,7 +225,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -240,7 +240,7 @@
             "score": {
               "type": "number",
               "minimum": 0,
-              "maximum": 100
+              "maximum": 5
             },
             "reasoning": {
               "type": "string"
@@ -250,7 +250,7 @@
         "overall": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         }
       }
     },

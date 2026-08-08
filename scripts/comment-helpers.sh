@@ -379,7 +379,7 @@ join_md_sections() {
 _default_child_project() {
   local from_ctx=""
   if [[ -f /tmp/workspace/issue-context.json ]]; then
-    from_ctx=$(jq -r '.project.key // empty' /tmp/workspace/issue-context.json 2>/dev/null || true)
+    from_ctx=$(jq -r '.project.id // .project.key // empty' /tmp/workspace/issue-context.json 2>/dev/null || true)
   fi
   if [[ -n "$from_ctx" ]]; then
     printf '%s' "$from_ctx"

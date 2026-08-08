@@ -166,7 +166,7 @@ get_usable_types_for_project() {
   if [[ -f "$issue_context_file" ]]; then
     live=$(jq -c --arg p "$project_key" '
       .routable_projects[$p].available_issue_types
-      // (if .project.key == $p then .project.available_issue_types else null end)
+      // (if .project.id == $p or .project.key == $p then .project.available_issue_types else null end)
       // []
     ' "$issue_context_file")
   fi
