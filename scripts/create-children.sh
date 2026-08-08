@@ -292,8 +292,9 @@ jira_resolve_link_type() {
   echo "$resolved"
 }
 
-# Create a directed Blocks link: blocker_key blocks blocked_key
-# (Jira: outwardIssue=blocker "blocks", inwardIssue=blocked "is blocked by").
+# Create a directed Blocks link: blocker_key blocks blocked_key.
+# Stage/Cloud create orientation (verified 2026-08-08): inwardIssue=blocker,
+# outwardIssue=blocked — yields blocker "blocks" blocked on readback.
 # Does not swap directions on failure — orientation is semantic.
 jira_link_blocks() {
   local blocker_key="$1" blocked_key="$2"
@@ -303,8 +304,8 @@ jira_link_blocks() {
 
   payload=$(jq -n \
     --arg type "$resolved_type" \
-    --arg inward "$blocked_key" \
-    --arg outward "$blocker_key" \
+    --arg inward "$blocker_key" \
+    --arg outward "$blocked_key" \
     '{
       type: {name: $type},
       inwardIssue: {key: $inward},
