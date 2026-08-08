@@ -166,11 +166,11 @@ if [[ "${ISSUE_SOURCE}" == "jira" ]]; then
       PARENT_DESC=$(echo "$PARENT_ISSUE" | jq '.fields.description' | python3 "$(_resolve_companion adf-to-markdown.py)")
     fi
     PARENT_JSON=$(jq -n --arg k "$PARENT_KEY" --arg s "$PARENT_SUMMARY" --arg d "$PARENT_DESC" \
-      '{"key": $k, "summary": $s, "description": $d}')
+      '{"issue_id": $k, "summary": $s, "description": $d}')
   fi
 
   CHILDREN_JSON=$(jira_get "${JIRA_BASE}/search?jql=parent=${ISSUE_KEY}&fields=summary,status,issuetype&maxResults=50" 2>/dev/null \
-    | jq '[.issues[] | {key: .key, summary: .fields.summary, status: .fields.status.name, type: .fields.issuetype.name}]' \
+    | jq '[.issues[] | {issue_id: .key, summary: .fields.summary, status: .fields.status.name, type: .fields.issuetype.name}]' \
     || echo "[]")
 
   COMMENTS_TMPFILE=$(mktemp)
@@ -226,7 +226,7 @@ print(json.dumps(result, ensure_ascii=False))
 
   LINKS_JSON=$(echo "$ISSUE_JSON" | jq '[.fields.issuelinks // [] | .[] | {
     type: (.type.outward // .type.name),
-    key: (.outwardIssue.key // .inwardIssue.key),
+    issue_id: (.outwardIssue.key // .inwardIssue.key),
     summary: (.outwardIssue.fields.summary // .inwardIssue.fields.summary),
     status: (.outwardIssue.fields.status.name // .inwardIssue.fields.status.name)
   }]')
@@ -260,7 +260,7 @@ print(json.dumps(result, ensure_ascii=False))
   jq -n \
     --arg source "jira" \
     --arg host "$JIRA_HOST" \
-    --arg key "$ISSUE_KEY" \
+    --arg issue_id "$ISSUE_KEY" \
     --arg level "$LEVEL" \
     --arg summary "$SUMMARY" \
     --arg description "$DESCRIPTION" \
@@ -281,7 +281,7 @@ print(json.dumps(result, ensure_ascii=False))
     '{
       source: $source,
       host: $host,
-      key: $key,
+      issue_id: $issue_id,
       level: $level,
       summary: $summary,
       description: $description,
@@ -336,11 +336,11 @@ elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
 
   SUB_ISSUES=$(gh issue list --repo "$REPO_FULL_NAME" --state all \
     --search "parent:#${ISSUE_KEY}" --json number,title,state,labels --limit 30 2>/dev/null \
-    | jq '[.[] | {key: ("#" + (.number | tostring)), summary: .title, status: .state, type: "issue"}]' \
+    | jq '[.[] | {issue_id: ("#" + (.number | tostring)), summary: .title, status: .state, type: "issue"}]' \
     || echo "[]")
   jq -n \
     --arg source "github" \
-    --arg key "#${ISSUE_KEY}" \
+    --arg issue_id "#${ISSUE_KEY}" \
     --arg level "$LEVEL" \
     --arg summary "$TITLE" \
     --arg description "$BODY" \
@@ -354,7 +354,7 @@ elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
     --arg repo "$REPO_FULL_NAME" \
     '{
       source: $source,
-      key: $key,
+      issue_id: $issue_id,
       level: $level,
       summary: $summary,
       description: $description,
@@ -457,6 +457,40 @@ TOTAL_BUDGET=120  # seconds total for all cloning
 
 mkdir -p "$REFERENCED_REPOS_DIR"
 
+# Preserve host-prefetched clones (e.g. GitLab CI chartroom / known Konflux repos).
+# Prior bug: "already cloned" skipped without adding to CLONED[], then the manifest
+# rewrite hid them from the agent → unauthenticated API fallback → rate limit.
+CLONED=()
+SKIPPED=()
+FAILED=()
+EXISTING_FORGE='{}'
+if [[ -f "$REFERENCED_MANIFEST" ]]; then
+  EXISTING_FORGE=$(jq -c '.forge // {}' "$REFERENCED_MANIFEST" 2>/dev/null || echo '{}')
+  while IFS= read -r pref; do
+    [[ -z "$pref" ]] && continue
+    # Strip forge prefix if present (github.com/owner/repo → owner/repo)
+    pref="${pref#github.com/}"
+    pref="${pref#gitlab.cee.redhat.com/}"
+    if [[ -d "$REFERENCED_REPOS_DIR/$pref" ]]; then
+      CLONED+=("$pref")
+    fi
+  done < <(jq -r '.cloned[]? // empty' "$REFERENCED_MANIFEST" 2>/dev/null || true)
+fi
+while IFS= read -r dest; do
+  [[ -z "$dest" ]] && continue
+  ref="${dest#"$REFERENCED_REPOS_DIR"/}"
+  [[ "$ref" == */* && "$ref" != */*/* ]] || continue
+  already=false
+  for c in "${CLONED[@]+"${CLONED[@]}"}"; do
+    [[ "$c" == "$ref" ]] && already=true && break
+  done
+  $already || CLONED+=("$ref")
+done < <(find "$REFERENCED_REPOS_DIR" -mindepth 2 -maxdepth 2 -type d 2>/dev/null || true)
+REPO_COUNT=${#CLONED[@]}
+if (( REPO_COUNT > 0 )); then
+  echo "::notice::Preserved ${REPO_COUNT} prefetched referenced repo(s): ${CLONED[*]}"
+fi
+
 # Extract GitHub repo references from issue text and ADF structures.
 extract_repo_refs_from_text() {
   TEXT_CONTENT=$(jq -r '
@@ -542,18 +576,31 @@ extract_repo_refs_from_previous_explore() {
   echo "$PREV_EXPLORE" | jq -r '
     [
       (.technical_landscape.key_dependencies[]?.name // empty),
-      (.related_work[]? | select(.source == "github") | .key // empty)
+      (.related_work[]? | select(.source == "github") | .issue_id // empty)
     ] | .[] | select(test("^[A-Za-z][A-Za-z0-9._-]*/[A-Za-z][A-Za-z0-9._-]*$"))
   ' 2>/dev/null || true
 }
 
 # Validate a candidate owner/repo against the GitHub API.
+# Prefer GH_TOKEN (5000/hr) — anonymous is 60/hr and shared runner IPs burn it fast.
+# Only accept public repos (private:false) so auth never unlocks private content.
 validate_repo() {
   local ref="$1"
-  local http_code
-  http_code=$(GIT_TERMINAL_PROMPT=0 curl -sf -o /dev/null -w "%{http_code}" \
-    "https://api.github.com/repos/${ref}" 2>/dev/null || echo "000")
-  [[ "$http_code" == "200" ]]
+  local curl_args=(-sS -w "\n%{http_code}" -H "Accept: application/vnd.github+json")
+  if [[ -n "${GH_TOKEN:-}" ]]; then
+    curl_args+=(-H "Authorization: Bearer ${GH_TOKEN}")
+  fi
+  local response http_code body
+  response=$(GIT_TERMINAL_PROMPT=0 curl "${curl_args[@]}" \
+    "https://api.github.com/repos/${ref}" 2>/dev/null || printf '\n000')
+  http_code=$(printf '%s' "$response" | tail -1)
+  body=$(printf '%s' "$response" | sed '$d')
+  if [[ "$http_code" == "403" || "$http_code" == "429" ]]; then
+    echo "::warning::GitHub rate-limited validating ${ref} (HTTP ${http_code})" >&2
+    return 1
+  fi
+  [[ "$http_code" == "200" ]] || return 1
+  [[ "$(printf '%s' "$body" | jq -r '.private // true')" == "false" ]]
 }
 
 # Seed clone candidates from ORG_KNOWLEDGE / curated knowledge GitHub URLs.
@@ -657,9 +704,8 @@ KNOWLEDGE_REFS=$(extract_repo_refs_from_org_knowledge)
 REPO_REFS=$(printf '%s\n%s\n%s' "$KNOWLEDGE_REFS" "$TEXT_REFS" "$PREV_REFS" \
   | awk 'NF && !seen[$0]++' | grep -v '^$' || true)
 
-CLONED=()
-SKIPPED=()
-FAILED=()
+# CLONED/SKIPPED/FAILED/REPO_COUNT already seeded from host prefetch above —
+# do not reset them here or CI-prefetched repos vanish from the manifest.
 START_TIME=$(date +%s)
 
 if [[ -z "$REPO_REFS" ]]; then
@@ -668,8 +714,6 @@ else
   echo "Candidates found:"
   echo "$REPO_REFS" | sed 's/^/  /'
   echo "---"
-
-  REPO_COUNT=0
   while IFS= read -r ref; do
     [[ -z "$ref" ]] && continue
 
@@ -706,31 +750,45 @@ else
       continue
     fi
 
+    DEST="$REFERENCED_REPOS_DIR/$OWNER/$REPO"
+
+    # Prefer on-disk / CI-prefetched trees — skip API validate/clone entirely.
+    if [[ -d "$DEST" && -n "$(ls -A "$DEST" 2>/dev/null || true)" ]]; then
+      echo "  skip (already cloned): $ref"
+      already=false
+      for c in "${CLONED[@]+"${CLONED[@]}"}"; do
+        [[ "$c" == "$ref" ]] && already=true && break
+      done
+      if ! $already; then
+        CLONED+=("$ref")
+        REPO_COUNT=$((REPO_COUNT + 1))
+      fi
+      continue
+    fi
+
     # Validate candidate is a real public repo via GitHub API
     echo -n "  validating: $ref ... "
     if ! validate_repo "$ref"; then
-      echo "not a public repo"
+      echo "not a public repo (or rate-limited)"
       SKIPPED+=("$ref (not found)")
       continue
     fi
     echo "confirmed"
 
-    DEST="$REFERENCED_REPOS_DIR/$OWNER/$REPO"
-
-    if [[ -d "$DEST" ]]; then
-      echo "  skip (already cloned): $ref"
-      continue
-    fi
-
     echo "  cloning: $ref → $DEST"
     mkdir -p "$DEST"
 
-    # SECURITY: Explicitly disable credential helpers to ensure only public repos
-    # are cloneable. This prevents accidentally leaking private repo content if
-    # a credential helper is configured on the runner (e.g., by actions/checkout).
+    # Auth clone when GH_TOKEN is set (avoids anon IP clone limits). Use
+    # http.extraHeader — never embed the token in the URL (shows up in `ps`).
+    # credential.helper stays disabled; only after validate_repo confirmed public.
+    clone_url="https://github.com/${ref}.git"
+    clone_args=(-c credential.helper=)
+    if [[ -n "${GH_TOKEN:-}" ]]; then
+      clone_args+=(-c "http.extraHeader=Authorization: Bearer ${GH_TOKEN}")
+    fi
     if GIT_TERMINAL_PROMPT=0 timeout "${CLONE_TIMEOUT}" \
-        git -c credential.helper= clone --depth 1 --single-branch --quiet \
-        "https://github.com/${ref}.git" "$DEST" 2>/dev/null; then
+        git "${clone_args[@]}" clone --depth 1 --single-branch --quiet \
+        "$clone_url" "$DEST" 2>/dev/null; then
       rm -rf "$DEST/.git"  # agent only needs source files, not git metadata
       CLONED+=("$ref")
       REPO_COUNT=$((REPO_COUNT + 1))
@@ -738,24 +796,28 @@ else
     else
       rm -rf "$DEST"
       FAILED+=("$ref")
-      echo "    ✗ failed (private or timeout)"
+      echo "    ✗ failed (private, rate-limited, or timeout)"
     fi
   done <<< "$REPO_REFS"
 fi
 
-# Write manifest so the agent knows what's available
+# Write manifest so the agent knows what's available (merge forge from host prefetch)
 CLONED_JSON="[]"
 SKIPPED_JSON="[]"
 FAILED_JSON="[]"
 [[ ${#CLONED[@]} -gt 0 ]] && CLONED_JSON=$(printf '%s\n' "${CLONED[@]}" | jq -R . | jq -s .)
 [[ ${#SKIPPED[@]} -gt 0 ]] && SKIPPED_JSON=$(printf '%s\n' "${SKIPPED[@]}" | jq -R . | jq -s .)
 [[ ${#FAILED[@]} -gt 0 ]] && FAILED_JSON=$(printf '%s\n' "${FAILED[@]}" | jq -R . | jq -s .)
+if [[ -z "$EXISTING_FORGE" ]] || ! printf '%s' "$EXISTING_FORGE" | jq -e . >/dev/null 2>&1; then
+  EXISTING_FORGE='{}'
+fi
 
 jq -n \
   --argjson cloned "$CLONED_JSON" \
   --argjson skipped "$SKIPPED_JSON" \
   --argjson failed "$FAILED_JSON" \
-  '{cloned: $cloned, skipped: $skipped, failed: $failed}' \
+  --argjson forge "$EXISTING_FORGE" \
+  '{cloned: $cloned, skipped: $skipped, failed: $failed, forge: $forge}' \
   > "$REFERENCED_MANIFEST"
 
 echo "::endgroup::"
