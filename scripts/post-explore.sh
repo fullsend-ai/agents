@@ -125,7 +125,7 @@ fi
 OVERALL_CONFIDENCE=$(jq -r '.confidence.overall // 0' "${RESULT_FILE}")
 GAP_COUNT=$(jq '.gaps // [] | length' "${RESULT_FILE}")
 RELATED_COUNT=$(jq '.related_work // [] | length' "${RESULT_FILE}")
-DISPOSITION=$(jq -r '.disposition // "complete"' "${RESULT_FILE}")
+DISPOSITION=$(jq -r '.disposition // ""' "${RESULT_FILE}")
 
 echo "::notice::Exploration complete: disposition=${DISPOSITION}, confidence=${OVERALL_CONFIDENCE}, gaps=${GAP_COUNT}, related_work=${RELATED_COUNT}"
 
@@ -226,16 +226,18 @@ SIGNAL_LABEL=""
 STATUS_MSG="Exploration complete (confidence: ${CONFIDENCE_INT}/5)."
 
 if [[ -n "$READY_LABEL" || -n "$NEEDS_INFO_LABEL" ]]; then
-  if awk "BEGIN{exit !($CONFIDENCE_INT >= $THRESHOLD)}" && [[ -n "$READY_LABEL" ]]; then
-    if validate_label_name "$READY_LABEL"; then
-      SIGNAL_LABEL="$READY_LABEL"
-      STATUS_MSG="Exploration complete. Issue labeled \`${SIGNAL_LABEL}\` for the next pipeline stage."
-    fi
+  if [[ "$DISPOSITION" == "needs_info" && -n "$NEEDS_INFO_LABEL" ]]; then
+    validate_label_name "$NEEDS_INFO_LABEL" && SIGNAL_LABEL="$NEEDS_INFO_LABEL"
+    STATUS_MSG="Exploration needs user input (confidence: ${CONFIDENCE_INT}/5). Issue labeled \`${SIGNAL_LABEL}\`."
+  elif [[ "$DISPOSITION" == "complete" && -n "$READY_LABEL" ]]; then
+    validate_label_name "$READY_LABEL" && SIGNAL_LABEL="$READY_LABEL"
+    STATUS_MSG="Exploration complete. Issue labeled \`${SIGNAL_LABEL}\` for the next pipeline stage."
+  elif awk "BEGIN{exit !($CONFIDENCE_INT >= $THRESHOLD)}" && [[ -n "$READY_LABEL" ]]; then
+    validate_label_name "$READY_LABEL" && SIGNAL_LABEL="$READY_LABEL"
+    STATUS_MSG="Exploration complete. Issue labeled \`${SIGNAL_LABEL}\` for the next pipeline stage."
   elif awk "BEGIN{exit !($CONFIDENCE_INT < $THRESHOLD)}" && [[ -n "$NEEDS_INFO_LABEL" ]]; then
-    if validate_label_name "$NEEDS_INFO_LABEL"; then
-      SIGNAL_LABEL="$NEEDS_INFO_LABEL"
-      STATUS_MSG="Exploration found insufficient context (confidence: ${CONFIDENCE_INT}/${THRESHOLD}). Issue labeled \`${SIGNAL_LABEL}\` — additional input may be needed."
-    fi
+    validate_label_name "$NEEDS_INFO_LABEL" && SIGNAL_LABEL="$NEEDS_INFO_LABEL"
+    STATUS_MSG="Exploration found insufficient context (confidence: ${CONFIDENCE_INT}/${THRESHOLD}). Issue labeled \`${SIGNAL_LABEL}\` — additional input may be needed."
   fi
 fi
 

@@ -317,6 +317,26 @@ place) that the downstream agents will have enough context to produce good specs
 
 For any dimension below 3.0, note the specific definition gap.
 
+#### Disposition decision
+
+After scoring, decide the exploration **disposition**:
+
+- **`complete`** — enough context exists for downstream agents to refine.
+  Remaining gaps are implementation-facing (resolvable during refine or code)
+  and the work item's product intent is clear. Use this even when overall
+  confidence is middling (e.g. 2–3) if the low dimensions are things like
+  competitive_context or technical depth — not user-facing product facts.
+- **`needs_info`** — user-facing product questions remain that the agent
+  cannot resolve from public sources. Refinement should wait for human input.
+  Examples: unclear target persona, ambiguous scope boundary, missing
+  acceptance criteria that only the requester can provide.
+
+Populate `open_questions` for any unresolved questions. Set `blocking: true`
+when the user must answer before refinement (user-facing product gap), or
+`blocking: false` when the question is implementation-facing and downstream
+agents can resolve it. If any question is `blocking: true`, set disposition
+to `needs_info`.
+
 **Scoring requirements_clarity:** Large feature descriptions often embed
 reference material (e.g., related feature specs, background context) alongside
 the actual requirements. When assessing clarity, weight **structured decision
@@ -372,12 +392,15 @@ Write the exploration result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`
 }
 ```
 
-**Full exploration:** set `"disposition": "complete"` (or omit). Include the
-`data_sources` field. Be specific and honest — list every source by name.
-For `not_accessed`, list data sources that WOULD have been useful but were
-unavailable (GitLab repos, internal docs, Slack, CI data). If this run was an
-override after a duplicate warning, note that in `summary` and still list the
-related keys in `related_work`.
+**Full exploration:** set `"disposition"` based on your assessment:
+- `"complete"` (or omit) — enough context to refine
+- `"needs_info"` — user-facing product questions must be answered first
+
+Include the `data_sources` field. Be specific and honest — list every source
+by name. For `not_accessed`, list data sources that WOULD have been useful but
+were unavailable (GitLab repos, internal docs, Slack, CI data). If this run
+was an override after a duplicate warning, note that in `summary` and still
+list the related keys in `related_work`.
 
 ```json
 {
@@ -434,6 +457,20 @@ related keys in `related_work`.
       "dimension": "requirements_clarity",
       "description": "What is missing",
       "impact": "How this affects refinement"
+    }
+  ],
+  "open_questions": [
+    {
+      "question": "Which authentication provider should be supported?",
+      "dimension": "requirements_clarity",
+      "blocking": true,
+      "impact": "Cannot decompose auth work without knowing the provider"
+    },
+    {
+      "question": "Should the existing rate-limiter middleware be reused or replaced?",
+      "dimension": "technical_landscape",
+      "blocking": false,
+      "impact": "Refine agent can decide based on codebase patterns"
     }
   ],
   "confidence": {

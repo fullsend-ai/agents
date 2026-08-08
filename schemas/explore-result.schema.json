@@ -14,9 +14,10 @@
       "type": "string",
       "enum": [
         "complete",
+        "needs_info",
         "blocked_duplicate"
       ],
-      "description": "Omit or complete for a full exploration. blocked_duplicate = early stop; do not chain refine."
+      "description": "complete (or omit) = enough context to refine. needs_info = user-facing product questions remain; do not chain refine. blocked_duplicate = early stop on near-duplicate work."
     },
     "duplicate_of": {
       "type": "array",
@@ -241,6 +242,31 @@
           },
           "description": {
             "type": "string"
+          },
+          "impact": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "description": "Unresolved questions surfaced during exploration. blocking=true means the user must answer before refinement can proceed (user-facing product fact); blocking=false means the question is implementation-facing and downstream agents can resolve it.",
+      "items": {
+        "type": "object",
+        "required": [
+          "question",
+          "blocking"
+        ],
+        "properties": {
+          "question": {
+            "type": "string"
+          },
+          "dimension": {
+            "type": "string"
+          },
+          "blocking": {
+            "type": "boolean"
           },
           "impact": {
             "type": "string"
