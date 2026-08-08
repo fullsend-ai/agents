@@ -54,6 +54,7 @@ script-test:
 	$(call run-timed,bash scripts/post-fix-test.sh)
 	$(call run-timed,bash scripts/post-retro-test.sh)
 	$(call run-timed,bash scripts/post-scribe-test.sh)
+	$(call run-timed,bash scripts/post-critique-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash hack/lint-agent-docs-test.sh)
