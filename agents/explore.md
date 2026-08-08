@@ -64,7 +64,7 @@ if [[ -n "$GATE" ]]; then
 else
   echo "No duplicate-gate.json found under /tmp/workspace or /sandbox/workspace"
 fi
-cat "$ISSUE_CONTEXT" | jq '{key, summary: .fields.summary // .summary, issuetype: .fields.issuetype.name // .level}'
+cat "$ISSUE_CONTEXT" | jq '{issue_id, summary: .fields.summary // .summary, issuetype: .fields.issuetype.name // .level}'
 ```
 
 **Before** codebase analysis, web research, or deep related-work mining:
@@ -76,8 +76,8 @@ cat "$ISSUE_CONTEXT" | jq '{key, summary: .fields.summary // .summary, issuetype
 3. If you find one or more near-duplicates:
    - Write `$FULLSEND_OUTPUT_DIR/agent-result.json` immediately with
      `"disposition": "blocked_duplicate"`, a non-empty `duplicate_of` array
-     (key, summary, reason), `related_work` listing those items, short `summary`,
-     and `confidence.overall` (use a low number such as 20). Sparse stubs for
+     (issue_id, summary, reason), `related_work` listing those items, short `summary`,
+     and `confidence.overall` (use a low number such as 1.0). Sparse stubs for
      other fields are fine.
    - **Stop.** Do not clone/analyze repos, do not web-research, do not continue.
 4. If none — proceed to Phase 1.
@@ -304,8 +304,8 @@ definition gap in your understanding.
 echo "::notice::PHASE 5: Assess confidence"
 ```
 
-For each dimension of the work item, rate your confidence (0-100) that the
-downstream agents will have enough context to produce good specs:
+For each dimension of the work item, rate your confidence (0.0–5.0, one decimal
+place) that the downstream agents will have enough context to produce good specs:
 
 | Dimension | What it measures |
 |-----------|-----------------|
@@ -315,7 +315,7 @@ downstream agents will have enough context to produce good specs:
 | competitive_context | Do we know how alternatives handle this? |
 | requirements_clarity | Is the work item clear enough to decompose? |
 
-For any dimension below 60, note the specific definition gap.
+For any dimension below 3.0, note the specific definition gap.
 
 **Scoring requirements_clarity:** Large feature descriptions often embed
 reference material (e.g., related feature specs, background context) alongside
@@ -342,13 +342,13 @@ Write the exploration result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`
   "disposition": "blocked_duplicate",
   "input": {
     "source": "jira",
-    "key": "PROJECT-200",
+    "issue_id": "PROJECT-200",
     "level": "feature",
     "summary": "..."
   },
   "duplicate_of": [
     {
-      "key": "PROJECT-100",
+      "issue_id": "PROJECT-100",
       "summary": "Near-identical open Feature",
       "reason": "Same problem and scope; proceeding would duplicate the plan"
     }
@@ -357,13 +357,13 @@ Write the exploration result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`
     {
       "type": "issue",
       "source": "jira",
-      "key": "PROJECT-100",
+      "issue_id": "PROJECT-100",
       "title": "Near-identical open Feature",
       "state": "open",
       "relevance": "Near-duplicate — explore blocked"
     }
   ],
-  "confidence": { "overall": 20, "related_work": 90 },
+  "confidence": { "overall": 1.0, "related_work": 4.5 },
   "summary": "Blocked: near-duplicate of PROJECT-100. Re-run /fs-explore to override.",
   "data_sources": {
     "accessed": ["Jira (duplicate scan)"],
@@ -384,7 +384,7 @@ related keys in `related_work`.
   "disposition": "complete",
   "input": {
     "source": "jira | github | text | web",
-    "key": "PROJECT-1234",
+    "issue_id": "PROJECT-1234",
     "level": "outcome | feature | epic | story | task | issue",
     "summary": "..."
   },
@@ -406,7 +406,7 @@ related keys in `related_work`.
     {
       "type": "issue | pr | discussion",
       "source": "github | jira",
-      "key": "#42 | PROJECT-100",
+      "issue_id": "#42 | PROJECT-100",
       "title": "...",
       "state": "open | closed | merged",
       "relevance": "Why this is relevant"
@@ -437,12 +437,12 @@ related keys in `related_work`.
     }
   ],
   "confidence": {
-    "technical_landscape": 85,
-    "related_work": 70,
-    "architectural_constraints": 90,
-    "competitive_context": 60,
-    "requirements_clarity": 75,
-    "overall": 76
+    "technical_landscape": 4.2,
+    "related_work": 3.5,
+    "architectural_constraints": 4.5,
+    "competitive_context": 3.0,
+    "requirements_clarity": 3.8,
+    "overall": 3.8
   },
   "data_sources": {
     "accessed": [

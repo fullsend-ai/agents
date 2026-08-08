@@ -31,7 +31,7 @@ Labels are opt-in via runner env vars — the generic agent does not hardcode te
 |---------|---------|
 | `EXPLORE_READY_LABEL` | Applied when confidence ≥ threshold |
 | `EXPLORE_NEEDS_INFO_LABEL` | Applied when confidence < threshold |
-| `EXPLORE_CONFIDENCE_THRESHOLD` | Minimum confidence for ready label (default: 50) |
+| `EXPLORE_CONFIDENCE_THRESHOLD` | Minimum confidence for ready label (default: 2.5, scale 0–5) |
 
 GitHub labels must already exist in the repo; the post-script will not auto-create them.
 

@@ -24,12 +24,12 @@
       "items": {
         "type": "object",
         "required": [
-          "key",
+          "issue_id",
           "summary",
           "reason"
         ],
         "properties": {
-          "key": {
+          "issue_id": {
             "type": "string"
           },
           "summary": {
@@ -45,7 +45,7 @@
       "type": "object",
       "required": [
         "source",
-        "key",
+        "issue_id",
         "level",
         "summary"
       ],
@@ -59,7 +59,7 @@
             "web"
           ]
         },
-        "key": {
+        "issue_id": {
           "type": "string"
         },
         "level": {
@@ -143,7 +143,7 @@
         "required": [
           "type",
           "source",
-          "key",
+          "issue_id",
           "title",
           "relevance"
         ],
@@ -154,7 +154,7 @@
           "source": {
             "type": "string"
           },
-          "key": {
+          "issue_id": {
             "type": "string"
           },
           "title": {
@@ -257,32 +257,32 @@
         "technical_landscape": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "related_work": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "architectural_constraints": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "competitive_context": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "requirements_clarity": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "overall": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         }
       }
     },

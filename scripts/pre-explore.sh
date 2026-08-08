@@ -166,11 +166,11 @@ if [[ "${ISSUE_SOURCE}" == "jira" ]]; then
       PARENT_DESC=$(echo "$PARENT_ISSUE" | jq '.fields.description' | python3 "$(_resolve_companion adf-to-markdown.py)")
     fi
     PARENT_JSON=$(jq -n --arg k "$PARENT_KEY" --arg s "$PARENT_SUMMARY" --arg d "$PARENT_DESC" \
-      '{"key": $k, "summary": $s, "description": $d}')
+      '{"issue_id": $k, "summary": $s, "description": $d}')
   fi
 
   CHILDREN_JSON=$(jira_get "${JIRA_BASE}/search?jql=parent=${ISSUE_KEY}&fields=summary,status,issuetype&maxResults=50" 2>/dev/null \
-    | jq '[.issues[] | {key: .key, summary: .fields.summary, status: .fields.status.name, type: .fields.issuetype.name}]' \
+    | jq '[.issues[] | {issue_id: .key, summary: .fields.summary, status: .fields.status.name, type: .fields.issuetype.name}]' \
     || echo "[]")
 
   COMMENTS_TMPFILE=$(mktemp)
@@ -226,7 +226,7 @@ print(json.dumps(result, ensure_ascii=False))
 
   LINKS_JSON=$(echo "$ISSUE_JSON" | jq '[.fields.issuelinks // [] | .[] | {
     type: (.type.outward // .type.name),
-    key: (.outwardIssue.key // .inwardIssue.key),
+    issue_id: (.outwardIssue.key // .inwardIssue.key),
     summary: (.outwardIssue.fields.summary // .inwardIssue.fields.summary),
     status: (.outwardIssue.fields.status.name // .inwardIssue.fields.status.name)
   }]')
@@ -260,7 +260,7 @@ print(json.dumps(result, ensure_ascii=False))
   jq -n \
     --arg source "jira" \
     --arg host "$JIRA_HOST" \
-    --arg key "$ISSUE_KEY" \
+    --arg issue_id "$ISSUE_KEY" \
     --arg level "$LEVEL" \
     --arg summary "$SUMMARY" \
     --arg description "$DESCRIPTION" \
@@ -281,7 +281,7 @@ print(json.dumps(result, ensure_ascii=False))
     '{
       source: $source,
       host: $host,
-      key: $key,
+      issue_id: $issue_id,
       level: $level,
       summary: $summary,
       description: $description,
@@ -295,7 +295,7 @@ print(json.dumps(result, ensure_ascii=False))
       children: $children,
       comments: $comments,
       linked_issues: $linked_issues,
-      project: {key: $project_key, name: $project_name, available_issue_types: $available_issue_types, team_usage: $team_usage}
+      project: {id: $project_key, name: $project_name, available_issue_types: $available_issue_types, team_usage: $team_usage}
     }' > "$WORKSPACE/issue-context.json"
 
 elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
@@ -336,11 +336,11 @@ elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
 
   SUB_ISSUES=$(gh issue list --repo "$REPO_FULL_NAME" --state all \
     --search "parent:#${ISSUE_KEY}" --json number,title,state,labels --limit 30 2>/dev/null \
-    | jq '[.[] | {key: ("#" + (.number | tostring)), summary: .title, status: .state, type: "issue"}]' \
+    | jq '[.[] | {issue_id: ("#" + (.number | tostring)), summary: .title, status: .state, type: "issue"}]' \
     || echo "[]")
   jq -n \
     --arg source "github" \
-    --arg key "#${ISSUE_KEY}" \
+    --arg issue_id "#${ISSUE_KEY}" \
     --arg level "$LEVEL" \
     --arg summary "$TITLE" \
     --arg description "$BODY" \
@@ -354,7 +354,7 @@ elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
     --arg repo "$REPO_FULL_NAME" \
     '{
       source: $source,
-      key: $key,
+      issue_id: $issue_id,
       level: $level,
       summary: $summary,
       description: $description,
@@ -367,7 +367,7 @@ elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
       children: $children,
       comments: $comments,
       linked_issues: [],
-      project: {key: $repo, name: $repo}
+      project: {id: $repo, name: $repo}
     }' > "$WORKSPACE/issue-context.json"
 
   if [[ -n "${GITHUB_ENV:-}" ]]; then
@@ -542,7 +542,7 @@ extract_repo_refs_from_previous_explore() {
   echo "$PREV_EXPLORE" | jq -r '
     [
       (.technical_landscape.key_dependencies[]?.name // empty),
-      (.related_work[]? | select(.source == "github") | .key // empty)
+      (.related_work[]? | select(.source == "github") | .issue_id // empty)
     ] | .[] | select(test("^[A-Za-z][A-Za-z0-9._-]*/[A-Za-z][A-Za-z0-9._-]*$"))
   ' 2>/dev/null || true
 }

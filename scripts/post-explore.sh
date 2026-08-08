@@ -218,20 +218,20 @@ if [[ "${ISSUE_SOURCE:-}" == "jira" && -n "${JIRA_HOST:-}" && -n "${JIRA_EMAIL:-
 fi
 
 # --- Optional pipeline labels (configured via env) ---
-CONFIDENCE_INT=$(printf '%.0f' "$OVERALL_CONFIDENCE" 2>/dev/null || echo "0")
-THRESHOLD="${EXPLORE_CONFIDENCE_THRESHOLD:-50}"
+CONFIDENCE_INT=$(printf '%.1f' "$OVERALL_CONFIDENCE" 2>/dev/null || echo "0.0")
+THRESHOLD="${EXPLORE_CONFIDENCE_THRESHOLD:-2.5}"
 READY_LABEL="${EXPLORE_READY_LABEL:-}"
 NEEDS_INFO_LABEL="${EXPLORE_NEEDS_INFO_LABEL:-}"
 SIGNAL_LABEL=""
-STATUS_MSG="Exploration complete (confidence: ${CONFIDENCE_INT}/100)."
+STATUS_MSG="Exploration complete (confidence: ${CONFIDENCE_INT}/5)."
 
 if [[ -n "$READY_LABEL" || -n "$NEEDS_INFO_LABEL" ]]; then
-  if [[ "$CONFIDENCE_INT" -ge "$THRESHOLD" && -n "$READY_LABEL" ]]; then
+  if awk "BEGIN{exit !($CONFIDENCE_INT >= $THRESHOLD)}" && [[ -n "$READY_LABEL" ]]; then
     if validate_label_name "$READY_LABEL"; then
       SIGNAL_LABEL="$READY_LABEL"
       STATUS_MSG="Exploration complete. Issue labeled \`${SIGNAL_LABEL}\` for the next pipeline stage."
     fi
-  elif [[ "$CONFIDENCE_INT" -lt "$THRESHOLD" && -n "$NEEDS_INFO_LABEL" ]]; then
+  elif awk "BEGIN{exit !($CONFIDENCE_INT < $THRESHOLD)}" && [[ -n "$NEEDS_INFO_LABEL" ]]; then
     if validate_label_name "$NEEDS_INFO_LABEL"; then
       SIGNAL_LABEL="$NEEDS_INFO_LABEL"
       STATUS_MSG="Exploration found insufficient context (confidence: ${CONFIDENCE_INT}/${THRESHOLD}). Issue labeled \`${SIGNAL_LABEL}\` — additional input may be needed."
@@ -322,7 +322,7 @@ EXPLORE_COMMENT="## Explore Agent
 | | |
 |---|---|
 | **Run** | ${RUN_LINK} |
-| **Confidence** | ${OVERALL_CONFIDENCE}/100 |
+| **Confidence** | ${OVERALL_CONFIDENCE}/5 |
 | **Definition Gaps** | ${GAP_COUNT} |
 | **Related Work** | ${RELATED_COUNT} |
 
