@@ -139,6 +139,28 @@ if [[ -n "$FIELD_CONFIG_PATH" ]]; then
   fi
 fi
 
+# Hard create allowlist: parent project ∪ field-config keys ∪ issue-context
+# routable_projects. Explicit target_project outside this set is skipped.
+PARENT_PROJECT_KEY="$(echo "${ISSUE_KEY}" | sed 's/-.*//')"
+declare -A CREATE_ALLOWED_PROJECTS=()
+CREATE_ALLOWED_PROJECTS["$PARENT_PROJECT_KEY"]=1
+while IFS= read -r pk; do
+  [[ -n "$pk" ]] && CREATE_ALLOWED_PROJECTS["$pk"]=1
+done < <(echo "$FIELD_CONFIG_JSON" | jq -r '.projects // {} | keys[]?' 2>/dev/null || true)
+if [[ -f /tmp/workspace/issue-context.json ]]; then
+  while IFS= read -r pk; do
+    [[ -n "$pk" ]] && CREATE_ALLOWED_PROJECTS["$pk"]=1
+  done < <(jq -r '.routable_projects // {} | keys[]?' /tmp/workspace/issue-context.json 2>/dev/null || true)
+fi
+_allowed_list=$(printf '%s\n' "${!CREATE_ALLOWED_PROJECTS[@]}" | sort | tr '\n' ' ')
+echo "::notice::Create project allowlist: ${_allowed_list}"
+
+jira_project_create_allowed() {
+  local project_key="${1:-}"
+  jira_schema_valid_project_key "$project_key" || return 1
+  [[ -n "${CREATE_ALLOWED_PROJECTS[$project_key]:-}" ]]
+}
+
 # Map an optional plan priority token to a Jira priority name.
 # Empty input → empty output (do not invent a default for the API).
 map_jira_priority() {
@@ -708,9 +730,13 @@ while [[ $CREATED_COUNT -lt $CHILD_COUNT && $PASS -lt $MAX_PASSES ]]; do
       CREATED_KEYS+=("#$NEW_ISSUE")
     else
       CHILD_TARGET_PROJECT=$(jq -r ".children[${i}].target_project // \"\"" "${RESULT_FILE}")
-      PROJECT_KEY="${CHILD_TARGET_PROJECT:-$(echo "$ISSUE_KEY" | sed 's/-.*//')}"
+      PROJECT_KEY="${CHILD_TARGET_PROJECT:-$PARENT_PROJECT_KEY}"
       if ! jira_schema_valid_project_key "$PROJECT_KEY"; then
         echo "  [pass ${PASS}] SKIP '${CHILD_TITLE}' — invalid target_project '${PROJECT_KEY}'"
+        continue
+      fi
+      if [[ -n "$CHILD_TARGET_PROJECT" ]] && ! jira_project_create_allowed "$PROJECT_KEY"; then
+        echo "  [pass ${PASS}] SKIP '${CHILD_TITLE}' — target_project '${PROJECT_KEY}' not in create allowlist (${_allowed_list})"
         continue
       fi
       PROJECT_TYPES=$(get_usable_types_for_project "$PROJECT_KEY")
@@ -793,9 +819,13 @@ if [[ $CREATED_COUNT -lt $CHILD_COUNT ]]; then
       CREATED_KEYS+=("#$NEW_ISSUE")
     else
       CHILD_TARGET_PROJECT=$(jq -r ".children[${i}].target_project // \"\"" "${RESULT_FILE}")
-      PROJECT_KEY="${CHILD_TARGET_PROJECT:-$(echo "$ISSUE_KEY" | sed 's/-.*//')}"
+      PROJECT_KEY="${CHILD_TARGET_PROJECT:-$PARENT_PROJECT_KEY}"
       if ! jira_schema_valid_project_key "$PROJECT_KEY"; then
         echo "  [orphan] SKIP '${CHILD_TITLE}' — invalid target_project '${PROJECT_KEY}'"
+        continue
+      fi
+      if [[ -n "$CHILD_TARGET_PROJECT" ]] && ! jira_project_create_allowed "$PROJECT_KEY"; then
+        echo "  [orphan] SKIP '${CHILD_TITLE}' — target_project '${PROJECT_KEY}' not in create allowlist (${_allowed_list})"
         continue
       fi
       PROJECT_TYPES=$(get_usable_types_for_project "$PROJECT_KEY")
