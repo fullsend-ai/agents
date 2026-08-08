@@ -338,6 +338,20 @@ exploration context contains codebase analysis:
   exploration context
 - Always cite the source: "Per exploration context, the codebase uses
   [X] pattern in [Y] — this child extends that pattern"
+
+**d) File/repo anchors on leaf Stories and Tasks (when evidence exists)**
+
+When exploration accessed local clones or lists concrete paths (check
+`data_sources.accessed`, `technical_landscape`, and any `REPO-INDEX.md`
+under referenced-repos):
+- Each **Story** / **Task** description SHOULD include a short
+  `## Scope anchors` subsection with **1–3** concrete paths
+  (`owner/repo` + file, package, or directory) taken from that evidence
+- Prefer paths that already exist in the clone or explore notes —
+  **never invent** filenames
+- Epics may omit file paths; Spikes may point at a repo/area to investigate
+- If explore did not surface any path for that leaf, omit the section
+  rather than guessing (outcomes-only AC is fine)
 - Still flag anything you infer but didn't directly observe as an
   `uncited_assumption`
 
