@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "refine-result.schema.json",
   "title": "Refinement Result",
-  "description": "Output schema for the refine agent \u2014 complete decomposition plan, or blocked_duplicate early stop when near-duplicate open work is found.",
+  "description": "Output schema for the refine agent — complete decomposition plan, or blocked_duplicate early stop when near-duplicate open work is found.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,7 +20,7 @@
       "additionalProperties": false,
       "required": [
         "source",
-        "key",
+        "issue_id",
         "level",
         "summary"
       ],
@@ -34,7 +34,7 @@
             "text"
           ]
         },
-        "key": {
+        "issue_id": {
           "type": "string"
         },
         "level": {
@@ -74,32 +74,32 @@
         "scope_clarity": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "technical_grounding": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "acceptance_criteria": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "dependencies": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "sizing": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         },
         "overall": {
           "type": "number",
           "minimum": 0,
-          "maximum": 100
+          "maximum": 5
         }
       }
     },
@@ -175,7 +175,7 @@
           "confidence": {
             "type": "number",
             "minimum": 0,
-            "maximum": 100
+            "maximum": 5
           },
           "deployment_target": {
             "type": "string"
@@ -225,7 +225,7 @@
           },
           "resolution": {
             "type": "string",
-            "description": "How this uncertainty should be surfaced to humans and critique. needs_human: only a stakeholder can unblock (sticky asks for reply). research_spike: covered by a Spike child \u2014 do not ask humans. assumed_default: plan proceeds on a stated default \u2014 sticky asks confirm/correct only.",
+            "description": "How this uncertainty should be surfaced to humans and critique. needs_human: only a stakeholder can unblock (sticky asks for reply). research_spike: covered by a Spike child — do not ask humans. assumed_default: plan proceeds on a stated default — sticky asks confirm/correct only.",
             "enum": [
               "needs_human",
               "research_spike",
@@ -282,12 +282,12 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "key",
+          "issue_id",
           "summary",
           "reason"
         ],
         "properties": {
-          "key": {
+          "issue_id": {
             "type": "string"
           },
           "summary": {

@@ -263,8 +263,9 @@ information to produce an implementable child spec:
 | Dependencies | Do you know what blocks or is blocked by this? |
 | Size | Can you estimate effort? |
 
-Calculate an overall confidence score (0-100). Record it honestly — low scores
-are fine. They tell the critique agent where the definition gaps are.
+Calculate an overall confidence score (0.0–5.0, one decimal). Record it
+honestly — low scores are fine. They tell the critique agent where the
+definition gaps are.
 
 **For low-confidence dimensions**: make your best judgment, flag it in
 `uncited_assumptions`, and add a corresponding `open_questions` entry with the
@@ -322,7 +323,7 @@ acceptance criteria, you MUST be able to point to WHERE you learned it
 - **DO** add a spike child for the team to investigate the right
   approach if the implementation choice is uncertain
 
-**When explore confidence `technical_landscape` is below 60** (check
+**When explore confidence `technical_landscape` is below 3.0** (check
 `confidence.technical_landscape` in the exploration context JSON), or when
 the exploration context has gaps in the `technical_landscape` dimension:
 - Write requirements and acceptance criteria in terms of OUTCOMES, not
@@ -331,7 +332,7 @@ the exploration context has gaps in the `technical_landscape` dimension:
   approach to be determined by the owning team based on codebase analysis"
 - Add research spikes for each area where you'd otherwise be guessing
 
-**When explore confidence `technical_landscape` is 60 or above** AND the
+**When explore confidence `technical_landscape` is 3.0 or above** AND the
 exploration context contains codebase analysis:
 - You MAY reference specific APIs, libraries, and patterns FROM the
   exploration context
@@ -546,17 +547,17 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
 {
   "input": {
     "source": "jira",
-    "key": "PROJECT-200",
+    "issue_id": "PROJECT-200",
     "level": "feature",
     "summary": "..."
   },
   "status": "blocked_duplicate",
   "target_level": "epic",
-  "confidence": { "overall": 20 },
+  "confidence": { "overall": 1.0 },
   "children": [],
   "duplicate_of": [
     {
-      "key": "PROJECT-100",
+      "issue_id": "PROJECT-100",
       "summary": "Near-identical open Feature",
       "reason": "Same problem and scope; proceeding would duplicate the plan"
     }
@@ -572,19 +573,19 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
 {
   "input": {
     "source": "jira | github",
-    "key": "PROJECT-1234",
+    "issue_id": "PROJECT-1234",
     "level": "feature",
     "summary": "..."
   },
   "status": "complete",
   "target_level": "epic",
   "confidence": {
-    "scope_clarity": 85,
-    "technical_grounding": 90,
-    "acceptance_criteria": 80,
-    "dependencies": 75,
-    "sizing": 78,
-    "overall": 82
+    "scope_clarity": 4.3,
+    "technical_grounding": 4.5,
+    "acceptance_criteria": 4.0,
+    "dependencies": 3.8,
+    "sizing": 3.9,
+    "overall": 4.1
   },
   "children": [
     {
@@ -597,7 +598,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
       "labels": [],
       "priority": "high",
       "estimated_scope": "L",
-      "confidence": 85,
+      "confidence": 4.3,
       "deployment_target": "kubernetes"
     },
     {
@@ -610,7 +611,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
       "labels": [],
       "priority": "high",
       "estimated_scope": "M",
-      "confidence": 90,
+      "confidence": 4.5,
       "deployment_target": "kubernetes"
     },
     {
@@ -623,7 +624,7 @@ Write to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
       "labels": ["spike"],
       "priority": "high",
       "estimated_scope": "S",
-      "confidence": 95,
+      "confidence": 4.8,
       "deployment_target": "all"
     }
   ],

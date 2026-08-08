@@ -379,7 +379,7 @@ join_md_sections() {
 _default_child_project() {
   local from_ctx=""
   if [[ -f /tmp/workspace/issue-context.json ]]; then
-    from_ctx=$(jq -r '.project.key // empty' /tmp/workspace/issue-context.json 2>/dev/null || true)
+    from_ctx=$(jq -r '.project.id // .project.key // empty' /tmp/workspace/issue-context.json 2>/dev/null || true)
   fi
   if [[ -n "$from_ctx" ]]; then
     printf '%s' "$from_ctx"
@@ -412,8 +412,8 @@ format_related_work_md() {
       | .repo
     ] + [
       (.related_work // [])[]?
-      | select((.key // "") | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
-      | .key
+      | select(((.issue_id // .key) // "") | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+      | (.issue_id // .key)
     ]
     | unique
   ' "$file" 2>/dev/null || echo '[]')
@@ -447,6 +447,7 @@ def pick_repo(item: dict) -> str:
     for cand in (
         item.get("repo"),
         item.get("repository"),
+        item.get("issue_id"),
         item.get("key"),
     ):
         if isinstance(cand, str) and re.match(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", cand) and "..." not in cand:
@@ -465,7 +466,7 @@ def pr_url(num: str, item: dict) -> str:
 
 def blob(item: dict) -> str:
     parts = []
-    for k in ("title", "summary", "description", "relevance", "state", "note", "url", "key", "id"):
+    for k in ("title", "summary", "description", "relevance", "state", "note", "url", "issue_id", "key", "id"):
         v = item.get(k)
         if isinstance(v, str) and v:
             parts.append(v)
@@ -476,7 +477,7 @@ for item in items:
         print(f"- {item}")
         continue
     title = item.get("title") or item.get("summary") or item.get("description") or "Related item"
-    key = item.get("key") or item.get("id") or ""
+    key = item.get("issue_id") or item.get("key") or item.get("id") or ""
     url = item.get("url") or ""
     source = item.get("source") or ""
     typ = item.get("type") or ""
@@ -927,7 +928,7 @@ format_duplicate_block_md() {
     | if length == 0 then "- (see summary)"
       else
         map(
-          "- **\(.key)** — \(.summary // "related issue")"
+          "- **\(.issue_id // .key)** — \(.summary // "related issue")"
           + (if (.reason // "") != "" then "\n  - \(.reason)" else "" end)
         )
         | join("\n")

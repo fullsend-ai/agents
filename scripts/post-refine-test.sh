@@ -229,7 +229,7 @@ test_result_file_missing
 # JSON field extraction — test jq commands used in post-refine.sh
 # ---------------------------------------------------------------------------
 
-FIXTURE='{"status":"complete","confidence":{"overall":82},"comment":"Plan summary here","children":[{"type":"epic","title":"E1"},{"type":"story","title":"S1"},{"type":"story","title":"S2"},{"type":"task","title":"T1"}],"open_questions":[{"dimension":"scope","question":"Q1","impact":"High","resolution":"needs_human"},{"dimension":"tech","question":"Q2","impact":"Med","resolution":"research_spike","spike_title":"Spike: X"},{"dimension":"ac","question":"Q3","impact":"Low","resolution":"assumed_default","assumption_used":"Assumed Y"}],"uncited_assumptions":["Assumed X","Assumed Y"]}'
+FIXTURE='{"status":"complete","confidence":{"overall":4.1},"comment":"Plan summary here","children":[{"type":"epic","title":"E1"},{"type":"story","title":"S1"},{"type":"story","title":"S2"},{"type":"task","title":"T1"}],"open_questions":[{"dimension":"scope","question":"Q1","impact":"High","resolution":"needs_human"},{"dimension":"tech","question":"Q2","impact":"Med","resolution":"research_spike","spike_title":"Spike: X"},{"dimension":"ac","question":"Q3","impact":"Low","resolution":"assumed_default","assumption_used":"Assumed Y"}],"uncited_assumptions":["Assumed X","Assumed Y"]}'
 FIXTURE_FILE="${TMPDIR}/fixture.json"
 echo "$FIXTURE" > "$FIXTURE_FILE"
 
@@ -238,7 +238,7 @@ run_test "extract-status" \
   "$(jq -r '.status' "$FIXTURE_FILE")"
 
 run_test "extract-confidence" \
-  "82" \
+  "4.1" \
   "$(jq -r '.confidence.overall' "$FIXTURE_FILE")"
 
 run_test "extract-child-count" \
@@ -290,7 +290,7 @@ run_test "extract-assumption-count" \
 # Edge cases
 # ---------------------------------------------------------------------------
 
-MINIMAL='{"status":"complete","confidence":{"overall":50},"comment":"Minimal plan","children":[{"type":"task","title":"T1"}]}'
+MINIMAL='{"status":"complete","confidence":{"overall":2.5},"comment":"Minimal plan","children":[{"type":"task","title":"T1"}]}'
 MINIMAL_FILE="${TMPDIR}/minimal.json"
 echo "$MINIMAL" > "$MINIMAL_FILE"
 

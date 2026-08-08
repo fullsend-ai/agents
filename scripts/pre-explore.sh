@@ -295,7 +295,7 @@ print(json.dumps(result, ensure_ascii=False))
       children: $children,
       comments: $comments,
       linked_issues: $linked_issues,
-      project: {key: $project_key, name: $project_name, available_issue_types: $available_issue_types, team_usage: $team_usage}
+      project: {id: $project_key, name: $project_name, available_issue_types: $available_issue_types, team_usage: $team_usage}
     }' > "$WORKSPACE/issue-context.json"
 
 elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
@@ -367,7 +367,7 @@ elif [[ "${ISSUE_SOURCE}" == "github" ]]; then
       children: $children,
       comments: $comments,
       linked_issues: [],
-      project: {key: $repo, name: $repo}
+      project: {id: $repo, name: $repo}
     }' > "$WORKSPACE/issue-context.json"
 
   if [[ -n "${GITHUB_ENV:-}" ]]; then

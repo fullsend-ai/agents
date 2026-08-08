@@ -240,7 +240,7 @@ fi
 
 if [[ ! -f "$WORKSPACE/exploration_context.json" ]]; then
   echo "::warning::No exploration context available — refine agent will rely on issue context and codebase only"
-  echo '{"gaps": [{"dimension": "exploration", "description": "Explore stage did not run", "impact": "Refine agent has limited context"}], "confidence": {"overall": 50}}' \
+  echo '{"gaps": [{"dimension": "exploration", "description": "Explore stage did not run", "impact": "Refine agent has limited context"}], "confidence": {"overall": 2.5}}' \
     > "$WORKSPACE/exploration_context.json"
 fi
 
@@ -421,7 +421,7 @@ if [[ "${ISSUE_SOURCE:-}" == "jira" && -f "$WORKSPACE/issue-context.json" ]]; th
       cp "$FIELD_CONFIG_PATH" "$WORKSPACE/project-field-config.json"
       echo "PROJECT_FIELD_CONFIG=$WORKSPACE/project-field-config.json" >> "${GITHUB_ENV:-/dev/null}"
       FIELD_CFG_JSON=$(jira_schema_load_config "$FIELD_CONFIG_PATH")
-      PARENT_PROJECT=$(jq -r '.project.key // (.key | split("-")[0])' "$WORKSPACE/issue-context.json")
+      PARENT_PROJECT=$(jq -r '.project.id // .project.key // (.issue_id // .key | split("-")[0])' "$WORKSPACE/issue-context.json")
       ROUTABLE=$(jira_schema_build_routable_projects \
         "$PARENT_PROJECT" "$FIELD_CFG_JSON" "${PROJECT_ROUTING:-}")
       jira_schema_merge_routable_into_issue_context "$WORKSPACE/issue-context.json" "$ROUTABLE"

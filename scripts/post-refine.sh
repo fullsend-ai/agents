@@ -179,7 +179,7 @@ init_comment_helpers "refine" "$USE_GITHUB"
 
 # --- Fail-fast duplicate block: sticky warning, no ready-to-critique ---
 if [[ "$STATUS" == "blocked_duplicate" ]]; then
-  CONFIDENCE_INT=$(printf '%.0f' "$CONFIDENCE" 2>/dev/null || echo "0")
+  CONFIDENCE_FMT=$(printf '%.1f' "$CONFIDENCE" 2>/dev/null || echo "0.0")
   DUP_SECTION=$(format_duplicate_block_md refine "${RESULT_FILE}")
   SUMMARY_BLURB=$(format_brief_blurb_md "$(jq -r '.summary // .comment // ""' "${RESULT_FILE}")" 500)
 
@@ -203,7 +203,7 @@ if [[ "$STATUS" == "blocked_duplicate" ]]; then
 | | |
 |---|---|
 | **Disposition** | blocked_duplicate |
-| **Confidence** | ${CONFIDENCE_INT}/100 |
+| **Confidence** | ${CONFIDENCE_FMT}/5 |
 
 ---
 
@@ -228,9 +228,9 @@ fi
 
 # --- Post plan and signal critique ---
 
-CONFIDENCE_INT=$(printf '%.0f' "$CONFIDENCE" 2>/dev/null || echo "0")
+CONFIDENCE_FMT=$(printf '%.1f' "$CONFIDENCE" 2>/dev/null || echo "0.0")
 
-echo "::notice::Refine complete (confidence ${CONFIDENCE_INT}/100) — posting proposed plan and signaling critique"
+echo "::notice::Refine complete (confidence ${CONFIDENCE_FMT}/5) — posting proposed plan and signaling critique"
 
 if $USE_GITHUB; then
   remove_label "${REPO_FULL_NAME}" "$GITHUB_ISSUE_NUMBER" "ready-to-refine"
@@ -304,7 +304,7 @@ PLAN_COMMENT="${AGENT_HEADER}
 
 | | |
 |---|---|
-| **Confidence** | ${CONFIDENCE}/100 |
+| **Confidence** | ${CONFIDENCE}/5 |
 | **Work Items** | ${PLAN_SUMMARY} |
 
 ---
