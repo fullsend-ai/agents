@@ -77,3 +77,27 @@ func TestLoadPartial(t *testing.T) {
 		t.Errorf("VerboseLogging = %v, want false (default)", cfg.VerboseLogging)
 	}
 }
+
+func TestLoadMalformedLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("not a valid line\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Error("Load() = nil error for malformed YAML, want error")
+	}
+}
+
+func TestLoadUnknownKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte("bogus_key: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load(path)
+	if err == nil {
+		t.Error("Load() = nil error for unknown key, want error")
+	}
+}

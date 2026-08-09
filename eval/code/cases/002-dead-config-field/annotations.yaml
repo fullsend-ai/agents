@@ -9,9 +9,12 @@ labels:
   forbidden: []
 
 # Code agent budgets (sandbox work + retries).
-# TODO: establish baseline via CI run — values copied from 001-fix-add as
-# placeholder. 002 is expected to be harder (multi-file tracing vs single-line
-# fix), so these may need adjustment upward after observing real runs.
+# Reference: Round 4 A/B benchmark (2026-08-02, guyoron1/fullsend).
+# Upstream #5808 (same dead-config-removal pattern as this case) completed
+# in 75–79 turns / $3.85–$4.02 against the full fullsend codebase (~50k LOC).
+# This fixture is ~200 LOC (vs ~50k LOC), so expect lower cost per run.
+# Workflow runs: 30729219887 (Path A), 30740388070 (Path B).
+# See: guyoron1/fullsend/docs/ab-benchmark-round4/
 max_turns: 60
 max_cost_usd: 4.00
 
@@ -24,4 +27,6 @@ code_expectations: |
   SetField() switch case (fields.go), and all test assertions (config_test.go).
   Tests must still pass after removal. This case tests cross-file dead-code
   removal — tracing symbol references across multiple files to determine what
-  to change, not just fixing a single line.
+  to change, not just fixing a single line. The raw YAML literal in TestLoad
+  (verbose_logging: true) must also be removed — SetField rejects unknown keys,
+  so leaving it breaks Load().
