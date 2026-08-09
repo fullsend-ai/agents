@@ -46,6 +46,8 @@ source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
 # shellcheck source=lib/pr-assignee.lib.sh
 source "${SCRIPT_DIR_POST}/lib/pr-assignee.lib.sh"
+# shellcheck source=lib/branch-guard.lib.sh
+source "${SCRIPT_DIR_POST}/lib/branch-guard.lib.sh"
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -57,6 +59,9 @@ RUN_DIR="$(pwd)"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
 trap 'report_post_failure_to_issue' ERR
+
+[[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
+  post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -211,6 +216,21 @@ if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ];
   post_noop_comment "Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}')"
   exit 0
 fi
+
+# ---------------------------------------------------------------------------
+# 1b. Enforce agent/<ISSUE_NUMBER>-* branch namespace
+#
+# The agent chooses its own branch name inside the sandbox. Rename it
+# deterministically using the trusted ISSUE_NUMBER (sourced from the
+# GitHub event, not from agent output) so agent-authored pushes are
+# confined to this issue's namespace.
+# ---------------------------------------------------------------------------
+SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${ISSUE_NUMBER}")"
+if [ "${BRANCH}" != "${SAFE_BRANCH}" ]; then
+  gha_echo warning "Renaming agent branch '${BRANCH}' to '${SAFE_BRANCH}'"
+  git branch -M "${SAFE_BRANCH}"
+fi
+BRANCH="${SAFE_BRANCH}"
 
 echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
@@ -486,17 +506,40 @@ export GH_TOKEN="${PUSH_TOKEN}"
 # because the local branch was created fresh from origin/main. Delete the
 # stale remote branch so the push succeeds.
 # ---------------------------------------------------------------------------
-REMOTE_REF="$(git ls-remote --heads origin "${BRANCH}" 2>/dev/null | head -1 || true)"
-if [ -n "${REMOTE_REF}" ]; then
+REMOTE_REF_LINE="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 || true)"
+if [ -n "${REMOTE_REF_LINE}" ]; then
   echo "Remote branch ${BRANCH} already exists — checking for open PRs..."
+  PR_LIST_RC=0
   OPEN_PR="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-    --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+    --state open --json number,headRepositoryOwner \
+    --jq '[.[] | select(.headRepositoryOwner.login == "'"${REPO_FULL_NAME%%/*}"'")] | .[0].number // empty' 2>/dev/null)" || PR_LIST_RC=$?
+  if [ "${PR_LIST_RC}" -ne 0 ]; then
+    post_fail_to_issue api-error \
+      "Could not query open PRs for branch '${BRANCH}' — refusing to push."
+  fi
   if [ -z "${OPEN_PR}" ]; then
+    if [[ "${BRANCH}" != agent/${ISSUE_NUMBER}-* ]]; then
+      post_fail_to_issue branch-namespace-violation \
+        "Branch '${BRANCH}' is outside agent/${ISSUE_NUMBER}-* namespace — refusing to delete."
+    fi
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
     git push origin --delete "${BRANCH}" 2>&1 || \
       gha_echo warning "Failed to delete stale remote branch ${BRANCH}"
   else
-    echo "Open PR #${OPEN_PR} uses ${BRANCH} — keeping remote branch"
+    # Verify the open PR belongs to this issue. With deterministic branch
+    # naming (agent/<ISSUE_NUMBER>-*) this should always hold, but check
+    # anyway as defense-in-depth against cross-issue commit injection.
+    PR_BODY_TEXT="$(gh pr view "${OPEN_PR}" --repo "${REPO_FULL_NAME}" \
+      --json body --jq '.body' 2>/dev/null || true)"
+    PR_CLOSES_THIS_ISSUE=false
+    if pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
+      PR_CLOSES_THIS_ISSUE=true
+    fi
+    if [ "${PR_CLOSES_THIS_ISSUE}" = "false" ]; then
+      post_fail_to_issue branch-collision \
+        "Remote branch '${BRANCH}' backs open PR #${OPEN_PR}, which does not reference issue #${ISSUE_NUMBER}. Refusing to push to avoid cross-issue commit injection."
+    fi
+    echo "Open PR #${OPEN_PR} uses ${BRANCH} and references issue #${ISSUE_NUMBER} — keeping remote branch"
   fi
 fi
 
@@ -530,11 +573,12 @@ fi
 # ---------------------------------------------------------------------------
 
 EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-  --json number --jq '.[0].number' 2>/dev/null || true)"
+  --state open --json number,headRepositoryOwner \
+  --jq '[.[] | select(.headRepositoryOwner.login == "'"${REPO_FULL_NAME%%/*}"'")] | .[0].number // empty' 2>/dev/null || true)"
 
 if [ -n "${EXISTING_PR_NUM}" ]; then
-  EXISTING_PR_URL="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-    --json url --jq '.[0].url' 2>/dev/null || true)"
+  EXISTING_PR_URL="$(gh pr view "${EXISTING_PR_NUM}" --repo "${REPO_FULL_NAME}" \
+    --json url --jq '.url' 2>/dev/null || true)"
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"

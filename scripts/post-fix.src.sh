@@ -55,6 +55,8 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 # shellcheck source=lib/gitleaks-install.lib.sh
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
+# shellcheck source=lib/branch-guard.lib.sh
+source "${SCRIPT_DIR_POST}/lib/branch-guard.lib.sh"
 
 # ---------------------------------------------------------------------------
 # Helper: Bot user detection
@@ -74,6 +76,9 @@ RUN_DIR="$(pwd)"
 : "${PR_NUMBER:?PR_NUMBER is required}"
 : "${TRIGGER_SOURCE:?TRIGGER_SOURCE is required}"
 trap 'report_post_failure_to_pr' ERR
+
+[[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
+  post_fail_to_pr setup-error "PR_NUMBER must be numeric, got '${PR_NUMBER}'"
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -99,6 +104,34 @@ if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ];
   NO_PUSH=true
 else
   NO_PUSH=false
+fi
+
+# ---------------------------------------------------------------------------
+# 0b. Verify branch matches the PR's head ref
+#
+# The fix agent is dispatched to modify a specific PR. Verify the agent's
+# local branch matches that PR's head ref to prevent a compromised agent
+# from pushing commits to a different PR's branch.
+# ---------------------------------------------------------------------------
+if [ "${NO_PUSH}" = "false" ]; then
+  EXPECTED_BRANCH=""
+  HEAD_REF_RC=1
+  for _attempt in 1 2 3; do
+    if EXPECTED_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh pr view "${PR_NUMBER}" \
+      --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null)"; then
+      HEAD_REF_RC=0
+      break
+    fi
+    sleep 2
+  done
+  if [ "${HEAD_REF_RC}" -ne 0 ] || [ -z "${EXPECTED_BRANCH}" ]; then
+    post_fail_to_pr branch-mismatch \
+      "Could not resolve PR #${PR_NUMBER} head ref after 3 attempts — refusing to push."
+  fi
+  if [ "$(classify_branch_vs_pr_head "${BRANCH}" "${EXPECTED_BRANCH}")" = "mismatch" ]; then
+    post_fail_to_pr branch-mismatch \
+      "Agent branch '${BRANCH}' does not match PR #${PR_NUMBER} head ref '${EXPECTED_BRANCH}'. Refusing to push."
+  fi
 fi
 
 # Scope to the agent's commit(s) only — not the entire branch. PRE_AGENT_HEAD
