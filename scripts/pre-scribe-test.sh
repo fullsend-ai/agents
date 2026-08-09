@@ -49,8 +49,7 @@ fi
 exit 0
 MOCKEOF
 
-  local escaped_fixture="${fixture_file//\//\\/}"
-  perl -pi -e "s/FIXTURE_PLACEHOLDER/${escaped_fixture}/g" "${MOCK_BIN}/gh"
+  sed -i "s|FIXTURE_PLACEHOLDER|${fixture_file}|g" "${MOCK_BIN}/gh"
   chmod +x "${MOCK_BIN}/gh"
 }
 
@@ -242,13 +241,17 @@ test_metadata_fields() {
   local meta_file="${TMPDIR}/meta-${test_name}.json"
   local issue_count=1879
 
-  # Run the same jq command from pre-scribe.sh to generate metadata
+  # Run the same jq command from pre-scribe.sh to generate metadata.
+  # open_total and truncated are now separate args (dynamic values in
+  # the real script, derived from the repo API).
   jq -n \
     --arg cutoff "2026-08-06T09:00:00Z" \
     --arg notes_url "https://docs.google.com/document/d/abc" \
     --arg repo "mock-org/mock-repo" \
     --argjson doc_count 1 \
     --argjson issue_count "${issue_count}" \
+    --argjson open_total "${issue_count}" \
+    --argjson truncated false \
     --argjson closed_count 50 \
     --argjson pr_count 10 \
     --argjson doc_path_count 25 \
@@ -258,24 +261,67 @@ test_metadata_fields() {
       repo: $repo,
       docs_downloaded: $doc_count,
       backlog_issues: $issue_count,
-      open_issue_total: $issue_count,
-      backlog_truncated: false,
+      open_issue_total: $open_total,
+      backlog_truncated: $truncated,
       closed_issues: $closed_count,
       open_prs: $pr_count,
       repo_docs: $doc_path_count
     }' > "${meta_file}"
 
   # Verify new fields exist and have correct values
-  local total truncated
+  local total truncated_val
   total=$(jq '.open_issue_total' "${meta_file}")
-  truncated=$(jq '.backlog_truncated' "${meta_file}")
+  truncated_val=$(jq '.backlog_truncated' "${meta_file}")
   if ! assert_eq "${test_name}: open_issue_total" "1879" "${total}"; then return; fi
-  if ! assert_eq "${test_name}: backlog_truncated" "false" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: backlog_truncated" "false" "${truncated_val}"; then return; fi
 
   # Verify existing fields still present
   local backlog_issues
   backlog_issues=$(jq '.backlog_issues' "${meta_file}")
   if ! assert_eq "${test_name}: backlog_issues" "1879" "${backlog_issues}"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
+# ===================================================================
+# Test 6b: backlog_truncated is true when counts diverge
+# ===================================================================
+test_metadata_truncated() {
+  local test_name="metadata-truncated"
+  local meta_file="${TMPDIR}/meta-${test_name}.json"
+
+  # Simulate: fetched 950 issues but API reports 1879 total
+  jq -n \
+    --arg cutoff "2026-08-06T09:00:00Z" \
+    --arg notes_url "https://docs.google.com/document/d/abc" \
+    --arg repo "mock-org/mock-repo" \
+    --argjson doc_count 1 \
+    --argjson issue_count 950 \
+    --argjson open_total 1879 \
+    --argjson truncated true \
+    --argjson closed_count 50 \
+    --argjson pr_count 10 \
+    --argjson doc_path_count 25 \
+    '{
+      cutoff_date: $cutoff,
+      notes_url: $notes_url,
+      repo: $repo,
+      docs_downloaded: $doc_count,
+      backlog_issues: $issue_count,
+      open_issue_total: $open_total,
+      backlog_truncated: $truncated,
+      closed_issues: $closed_count,
+      open_prs: $pr_count,
+      repo_docs: $doc_path_count
+    }' > "${meta_file}"
+
+  local total truncated_val backlog_issues
+  total=$(jq '.open_issue_total' "${meta_file}")
+  truncated_val=$(jq '.backlog_truncated' "${meta_file}")
+  backlog_issues=$(jq '.backlog_issues' "${meta_file}")
+  if ! assert_eq "${test_name}: open_issue_total" "1879" "${total}"; then return; fi
+  if ! assert_eq "${test_name}: backlog_truncated" "true" "${truncated_val}"; then return; fi
+  if ! assert_eq "${test_name}: backlog_issues" "950" "${backlog_issues}"; then return; fi
 
   echo "PASS: ${test_name}"
 }
@@ -324,6 +370,7 @@ test_short_body_preserved
 test_empty_issues
 test_null_body
 test_metadata_fields
+test_metadata_truncated
 test_labels_milestone_preserved
 
 echo ""

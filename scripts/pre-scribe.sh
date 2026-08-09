@@ -71,6 +71,20 @@ GH_TOKEN="${CONTENTS_GH}" gh pr list --repo "${SCRIBE_REPO}" --state open \
 PR_COUNT=$(jq 'length' "${OPEN_PRS_FILE}")
 echo "Fetched ${PR_COUNT} open pull requests."
 
+# Fetch authoritative open-issues count for truncation detection (#705).
+# GitHub's open_issues_count includes PRs; subtract PR_COUNT for an
+# issue-only estimate so we can compare against our paginated fetch.
+REPO_OPEN_COUNT=$(gh api "repos/${SCRIBE_REPO}" --jq '.open_issues_count' 2>/dev/null || echo "")
+if [[ -n "${REPO_OPEN_COUNT}" ]]; then
+  OPEN_ISSUE_TOTAL=$((REPO_OPEN_COUNT - PR_COUNT))
+  [[ "${OPEN_ISSUE_TOTAL}" -lt 0 ]] && OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  [[ "${ISSUE_COUNT}" -lt "${OPEN_ISSUE_TOTAL}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
+else
+  # API call failed; fall back to fetched count
+  OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  BACKLOG_TRUNCATED=false
+fi
+
 # Repo doc index — ADRs, problem docs, guides. One API call using the
 # git tree (recursive) so the agent can reference docs by path.
 # Uses CONTENTS_TOKEN (coder app) which has contents:read scope.
@@ -176,10 +190,12 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --arg repo "${SCRIBE_REPO}" \
     --argjson doc_count 0 \
     --argjson issue_count "${ISSUE_COUNT}" \
+    --argjson open_total "${OPEN_ISSUE_TOTAL}" \
+    --argjson truncated "${BACKLOG_TRUNCATED}" \
     --argjson closed_count "${CLOSED_COUNT}" \
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $issue_count, backlog_truncated: false, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
@@ -310,6 +326,8 @@ jq -n \
   --arg repo "${SCRIBE_REPO}" \
   --argjson doc_count "${DOC_COUNT}" \
   --argjson issue_count "${ISSUE_COUNT}" \
+  --argjson open_total "${OPEN_ISSUE_TOTAL}" \
+  --argjson truncated "${BACKLOG_TRUNCATED}" \
   --argjson closed_count "${CLOSED_COUNT}" \
   --argjson pr_count "${PR_COUNT}" \
   --argjson doc_path_count "${DOC_PATH_COUNT}" \
@@ -319,8 +337,8 @@ jq -n \
     repo: $repo,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
-    open_issue_total: $issue_count,
-    backlog_truncated: false,
+    open_issue_total: $open_total,
+    backlog_truncated: $truncated,
     closed_issues: $closed_count,
     open_prs: $pr_count,
     repo_docs: $doc_path_count
