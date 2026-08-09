@@ -55,16 +55,21 @@ MOCKEOF
 
 # --- Backlog fetch pipeline ---
 # Reproduces the exact command chain from pre-scribe.sh so we test the
-# real pipeline without requiring Drive credentials.
+# real pipeline without requiring Drive credentials. Mirrors the two-step
+# approach: save raw paginated output, then filter PRs and truncate bodies.
 run_backlog_fetch() {
   local scribe_repo="$1"
   local backlog_file="$2"
+  local raw_file="${TMPDIR}/raw-paginated.json"
 
   PATH="${MOCK_BIN}:${PATH}" \
   gh api --paginate "repos/${scribe_repo}/issues?state=open&per_page=100" \
-    --jq '.[] | select(.pull_request == null) | {number, title, body, labels, milestone, url: .html_url}' \
-    | jq -s '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
+    > "${raw_file}"
+
+  jq -s '[.[][] | select(.pull_request == null) | {number, title, body, labels, milestone, url: .html_url}]' "${raw_file}" \
+    | jq '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
     > "${backlog_file}"
+  rm -f "${raw_file}"
 }
 
 # --- Test helpers ---
@@ -362,6 +367,71 @@ EOF
   echo "PASS: ${test_name}"
 }
 
+# ===================================================================
+# Test 8: Truncation detection logic (bash arithmetic + comparison)
+# ===================================================================
+test_truncation_detection_logic() {
+  local test_name="truncation-detection-logic"
+
+  # Reproduces the bash arithmetic from pre-scribe.sh truncation detection.
+  # Takes: paginated_total, issue_count, repo_open_count (empty = API failed)
+  # Outputs: "BACKLOG_TRUNCATED OPEN_ISSUE_TOTAL"
+  run_truncation_logic() {
+    local paginated_total="$1" issue_count="$2" repo_open_count="$3"
+    local backlog_truncated open_issue_total
+
+    if [[ -n "${repo_open_count}" ]]; then
+      [[ "${paginated_total}" -lt "${repo_open_count}" ]] && backlog_truncated=true || backlog_truncated=false
+      local observed_pr_count=$((paginated_total - issue_count))
+      open_issue_total=$((repo_open_count - observed_pr_count))
+      [[ "${open_issue_total}" -lt 0 ]] && open_issue_total="${issue_count}"
+    else
+      open_issue_total="${issue_count}"
+      backlog_truncated=false
+    fi
+    echo "${backlog_truncated} ${open_issue_total}"
+  }
+
+  local result truncated total
+
+  # Case 1: No truncation — all items fetched, 21 PRs in response
+  # paginated_total=1900 (1879 issues + 21 PRs), repo reports 1900
+  result=$(run_truncation_logic 1900 1879 1900)
+  truncated="${result%% *}"; total="${result##* }"
+  if ! assert_eq "${test_name}: case1 truncated" "false" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: case1 total" "1879" "${total}"; then return; fi
+
+  # Case 2: Truncation detected — pagination stopped early
+  # paginated_total=950 (900 issues + 50 PRs), repo reports 2000
+  result=$(run_truncation_logic 950 900 2000)
+  truncated="${result%% *}"; total="${result##* }"
+  if ! assert_eq "${test_name}: case2 truncated" "true" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: case2 total" "1950" "${total}"; then return; fi
+
+  # Case 3: >100 PRs — old code would undercount PRs and false-positive truncate
+  # paginated_total=2100 (1900 issues + 200 PRs), repo reports 2100
+  # Old logic: OPEN_ISSUE_TOTAL = 2100 - 100 (capped PR_COUNT) = 2000 → false truncation
+  # New logic: compares paginated_total vs repo_open_count → equal → no truncation
+  result=$(run_truncation_logic 2100 1900 2100)
+  truncated="${result%% *}"; total="${result##* }"
+  if ! assert_eq "${test_name}: case3 truncated" "false" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: case3 total" "1900" "${total}"; then return; fi
+
+  # Case 4: API call failed (empty repo_open_count) — fallback
+  result=$(run_truncation_logic 500 480 "")
+  truncated="${result%% *}"; total="${result##* }"
+  if ! assert_eq "${test_name}: case4 truncated" "false" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: case4 total" "480" "${total}"; then return; fi
+
+  # Case 5: Zero PRs in response
+  result=$(run_truncation_logic 500 500 500)
+  truncated="${result%% *}"; total="${result##* }"
+  if ! assert_eq "${test_name}: case5 truncated" "false" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: case5 total" "500" "${total}"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- Run tests ---
 
 test_pagination_filters_prs
@@ -372,6 +442,7 @@ test_null_body
 test_metadata_fields
 test_metadata_truncated
 test_labels_milestone_preserved
+test_truncation_detection_logic
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

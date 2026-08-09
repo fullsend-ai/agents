@@ -42,14 +42,25 @@ REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
 # Open issues with bodies (truncated to 500 chars to keep context lean).
 # Use gh api --paginate to fetch ALL open issues, avoiding truncation on
 # repos with >1000 open issues (see #705). The REST /issues endpoint
-# includes pull requests, so we filter them out with --jq.
+# includes pull requests; save raw output first so we can count total items
+# (issues+PRs) for truncation detection, then filter PRs out for the backlog.
 echo "Fetching open issues from ${SCRIBE_REPO}..."
+RAW_PAGINATED_FILE="${WORK_DIR}/raw-paginated-issues.json"
 gh api --paginate "repos/${SCRIBE_REPO}/issues?state=open&per_page=100" \
-  --jq '.[] | select(.pull_request == null) | {number, title, body, labels, milestone, url: .html_url}' \
-  | jq -s '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
+  > "${RAW_PAGINATED_FILE}"
+
+# Count total items (issues + PRs) from paginated response before filtering.
+# Used later for truncation detection — avoids depending on PR_COUNT from
+# gh pr list which caps at its --limit value (see edge-case in review #708).
+PAGINATED_TOTAL=$(jq -s '[.[][]] | length' "${RAW_PAGINATED_FILE}")
+
+# Filter out PRs, extract fields, truncate bodies
+jq -s '[.[][] | select(.pull_request == null) | {number, title, body, labels, milestone, url: .html_url}]' "${RAW_PAGINATED_FILE}" \
+  | jq '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
   > "${BACKLOG_FILE}"
+rm -f "${RAW_PAGINATED_FILE}"
 ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
-echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
+echo "Fetched ${ISSUE_COUNT} open issues for backlog context (${PAGINATED_TOTAL} total items including PRs)."
 
 # Recently closed issues (last 50) — helps avoid duplicates and enables
 # "this was resolved in #N" references
@@ -72,13 +83,16 @@ PR_COUNT=$(jq 'length' "${OPEN_PRS_FILE}")
 echo "Fetched ${PR_COUNT} open pull requests."
 
 # Fetch authoritative open-issues count for truncation detection (#705).
-# GitHub's open_issues_count includes PRs; subtract PR_COUNT for an
-# issue-only estimate so we can compare against our paginated fetch.
+# GitHub's open_issues_count includes PRs. Compare directly against
+# PAGINATED_TOTAL (issues + PRs fetched via pagination) to detect truncation
+# without relying on PR_COUNT (which caps at gh pr list's --limit value).
 REPO_OPEN_COUNT=$(gh api "repos/${SCRIBE_REPO}" --jq '.open_issues_count' 2>/dev/null || echo "")
 if [[ -n "${REPO_OPEN_COUNT}" ]]; then
-  OPEN_ISSUE_TOTAL=$((REPO_OPEN_COUNT - PR_COUNT))
+  [[ "${PAGINATED_TOTAL}" -lt "${REPO_OPEN_COUNT}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
+  # Derive issue-only total: subtract observed PR count from API total
+  OBSERVED_PR_COUNT=$((PAGINATED_TOTAL - ISSUE_COUNT))
+  OPEN_ISSUE_TOTAL=$((REPO_OPEN_COUNT - OBSERVED_PR_COUNT))
   [[ "${OPEN_ISSUE_TOTAL}" -lt 0 ]] && OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
-  [[ "${ISSUE_COUNT}" -lt "${OPEN_ISSUE_TOTAL}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
 else
   # API call failed; fall back to fetched count
   OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
