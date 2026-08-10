@@ -809,10 +809,11 @@ failures.
 
 **If tests or linters fail due to missing tools or infrastructure** (not
 due to your code): try the Makefile's setup targets first (`make deps`,
-`make setup`, etc.) — one attempt only. If the tool still cannot run
-after that attempt, write `needs_input` to the result file describing
-exactly what's missing (the tool name, the command that failed, and the
-error), validate structured output (step 11), and stop — do NOT commit.
+`make setup`, etc.) — a reasonable number of attempts (typically one,
+more only if the failure looks transient). If the tool still cannot run,
+write `needs_input` to the result file describing exactly what's missing
+(the tool name, the command that failed, and the error), validate
+structured output (step 11), and stop — do NOT commit.
 
 **Do NOT silently skip tests or linters and commit as if everything
 passed.** If you cannot run the relevant test suite or lint command, use
