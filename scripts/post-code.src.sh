@@ -268,11 +268,20 @@ post_needs_input_comment() {
   local current_branch
   current_branch="$(git branch --show-current 2>/dev/null || true)"
   if [ -n "${current_branch}" ]; then
+    # current_branch is chosen by the code agent inside the sandbox while
+    # processing potentially adversarial issue content, and git ref names
+    # permit backticks — never interpolate it raw into the comment body
+    # below. Same safe-charset check already applied to AGENT_TARGET.
+    local display_branch="${current_branch}"
+    if [[ ! "${current_branch}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+      display_branch="(branch name omitted — contains unexpected characters, see workflow log)"
+      gha_echo warning "needs_input set on a branch with unexpected characters in its name; omitting the raw name from the issue comment"
+    fi
     local existing_pr_url
     existing_pr_url="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${current_branch}" \
       --json url --jq '.[0].url // empty' 2>/dev/null || true)"
     if [ -n "${existing_pr_url}" ]; then
-      caveat="⚠️ An open PR already exists for branch \`${current_branch}\`: ${existing_pr_url}. The agent set \`needs_input\` on this run — check whether that PR is still current."
+      caveat="⚠️ An open PR already exists for branch \`${display_branch}\`: ${existing_pr_url}. The agent set \`needs_input\` on this run — check whether that PR is still current."
       gha_echo warning "needs_input set but an open PR already exists for branch '${current_branch}': ${existing_pr_url}"
     else
       local default_branch commits_ahead
@@ -283,7 +292,7 @@ post_needs_input_comment() {
       if [ "${current_branch}" != "${default_branch}" ]; then
         commits_ahead="$(git rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || echo 0)"
         if [ "${commits_ahead}" -gt 0 ]; then
-          caveat="⚠️ The agent made ${commits_ahead} local commit(s) on branch \`${current_branch}\` before setting \`needs_input\` — these were not pushed and will be discarded."
+          caveat="⚠️ The agent made ${commits_ahead} local commit(s) on branch \`${display_branch}\` before setting \`needs_input\` — these were not pushed and will be discarded."
           gha_echo warning "needs_input set but ${commits_ahead} local commit(s) exist on branch '${current_branch}' — discarding"
         fi
       fi
