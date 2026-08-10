@@ -276,7 +276,10 @@ post_needs_input_comment() {
       gha_echo warning "needs_input set but an open PR already exists for branch '${current_branch}': ${existing_pr_url}"
     else
       local default_branch commits_ahead
-      default_branch="$(gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null || echo main)"
+      if ! default_branch="$(gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null)"; then
+        default_branch="main"
+        gha_echo warning "Failed to determine default branch for ${REPO_FULL_NAME}; assuming 'main' — the discarded-commits check may be inaccurate"
+      fi
       if [ "${current_branch}" != "${default_branch}" ]; then
         commits_ahead="$(git rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || echo 0)"
         if [ "${commits_ahead}" -gt 0 ]; then
