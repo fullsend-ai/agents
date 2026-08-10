@@ -137,3 +137,10 @@ Each test case follows this lifecycle:
 - **`checkStatus` drops string errors.** fullsend's `checkStatus` does
   not handle string-typed error responses from the GitHub API, causing
   silent failures.
+
+## Measurement manifests (online scoring)
+
+Per-agent manifests under [`eval/measurements/`](./measurements/) select which
+**eval measurement** scorers `fullsend eval-measure` runs after managed jobs.
+These are **not** functional PR-gate scenarios. See the README in that
+directory and fullsend ADR 0087.

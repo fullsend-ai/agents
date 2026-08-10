@@ -1,0 +1,5 @@
+agent: prioritize
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
