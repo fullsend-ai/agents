@@ -140,7 +140,13 @@ Each test case follows this lifecycle:
 
 ## Measurement manifests (online scoring)
 
-Per-agent manifests under [`eval/measurements/`](./measurements/) select which
-**eval measurement** scorers `fullsend eval-measure` runs after managed jobs.
-These are **not** functional PR-gate scenarios. See the README in that
-directory and fullsend ADR 0087.
+Per-agent manifests under [`eval/measurements/`](./measurements/) are the
+**default online-scoring policy** for stock agents (which scorers run after
+managed jobs via `fullsend eval-measure`). They are **not** functional PR-gate
+scenarios under `eval/<agent>/`.
+
+Scorer *implementations* live in `fullsend-ai/fullsend`; this repo only
+declares defaults. Jobs fetch these files from `agents@v0` unless a consumer
+overrides under `FULLSEND_DIR`. See [`eval/measurements/README.md`](./measurements/README.md),
+[fullsend#6036](https://github.com/fullsend-ai/fullsend/pull/6036), and
+fullsend ADR 0087.

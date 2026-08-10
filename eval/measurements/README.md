@@ -4,11 +4,54 @@ Per-agent YAML that selects which **eval measurement** scorers run after a
 managed agent job (`fullsend eval-measure`). This is **not** the functional
 eval harness under `eval/<agent>/` (PR-gate scenarios / fixtures).
 
-- **Scorers** (Go logic) live in `fullsend-ai/fullsend` (`internal/evalmeasure/`).
-- **Manifests** (which scorers for which agent) live here.
+## Why this lives next to the agents
 
-At first ship, six agents enable the `trace_fitness` scorer (em-001): code, fix,
-prioritize, retro, review, and triage. Omit a file to opt an agent out (e.g.
+These files are the **default online-scoring policy** for the stock fullsend
+agents — the same idea as shipping the agents themselves: “here is `code`,
+and here is what we measure on wild `code` runs.”
+
+Managed fullsend jobs resolve manifests as:
+
+1. Local `${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml` if present (override / BYOA)
+2. Else this repo at the `v0` pin:
+   `https://raw.githubusercontent.com/fullsend-ai/agents/v0/eval/measurements/${AGENT}.yaml`
+
+Installs that only use stock agents **do not copy these files**. Local files
+are for changing defaults, opting out, or scoring a custom agent.
+
+## What lives where
+
+| Concern | Repo |
+|---|---|
+| Scorer **implementations** (Go), parser, CLI, job wiring | [`fullsend-ai/fullsend`](https://github.com/fullsend-ai/fullsend) (`internal/evalmeasure/`) |
+| Default manifests (which `id` / `scorer` / `version` per agent) | **This directory** |
+| Org/repo overrides and BYOA manifests | Consumer `FULLSEND_DIR` |
+
+Executable logic stays in fullsend because `fullsend eval-measure` is the
+released binary that reads `run-telemetry.jsonl` (produced by fullsend). This
+repo is content/policy, not that binary. Platform checks like EM-001
+(`trace_fitness`) still get **enabled** here for each stock agent.
+
+| Change | PR |
+|---|---|
+| New Go scorer or (future) new declarative `assert:` | `fullsend` |
+| New measurement id / enable / disable / thresholds for a stock agent using an existing scorer | **agents** (this repo) |
+| Custom policy for one org or a BYOA agent | Local override in the consumer repo |
+
+Companion platform PR: [fullsend-ai/fullsend#6036](https://github.com/fullsend-ai/fullsend/pull/6036)
+([ADR 0087](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0087-eval-measurements-online-trace-scoring.md)
+lands with that PR).
+
+## First ship
+
+Six agents enable `trace_fitness` (em-001): code, fix, prioritize, retro,
+review, and triage. Omit a file to leave an agent without defaults (e.g.
 scribe has no forge work-item identity today).
 
-See fullsend ADR 0087 and the Eval Measurements guide in `fullsend-ai/fullsend`.
+```yaml
+agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+```
