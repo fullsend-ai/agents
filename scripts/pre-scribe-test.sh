@@ -23,9 +23,14 @@ mkdir -p "${MOCK_BIN}"
 build_mock_gh() {
   local fixture_file="$1"
 
+  # Store fixture path in a side file the mock reads at runtime.
+  # Avoids sed/awk placeholder substitution — safe regardless of
+  # characters in the mktemp path.
+  printf '%s' "${fixture_file}" > "${MOCK_BIN}/.gh-fixture"
+
   cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
-FIXTURE="FIXTURE_PLACEHOLDER"
+FIXTURE="$(cat "$(dirname "$0")/.gh-fixture")"
 
 if [[ "$1" == "api" ]]; then
   shift
@@ -49,7 +54,6 @@ fi
 exit 0
 MOCKEOF
 
-  sed -i "s|FIXTURE_PLACEHOLDER|${fixture_file}|g" "${MOCK_BIN}/gh"
   chmod +x "${MOCK_BIN}/gh"
 }
 
@@ -374,14 +378,20 @@ test_truncation_detection_logic() {
   local test_name="truncation-detection-logic"
 
   # Reproduces the bash arithmetic from pre-scribe.sh truncation detection.
+  # Mirrors the tolerance-based comparison: only flag truncation when the
+  # shortfall exceeds TRUNCATION_TOLERANCE (default 5), absorbing small
+  # discrepancies from API timing between the paginated fetch and the
+  # repo metadata call.
   # Takes: paginated_total, issue_count, repo_open_count (empty = API failed)
   # Outputs: "BACKLOG_TRUNCATED OPEN_ISSUE_TOTAL"
   run_truncation_logic() {
     local paginated_total="$1" issue_count="$2" repo_open_count="$3"
     local backlog_truncated open_issue_total
+    local truncation_tolerance=5
 
     if [[ -n "${repo_open_count}" ]]; then
-      [[ "${paginated_total}" -lt "${repo_open_count}" ]] && backlog_truncated=true || backlog_truncated=false
+      local shortfall=$((repo_open_count - paginated_total))
+      [[ "${shortfall}" -gt "${truncation_tolerance}" ]] && backlog_truncated=true || backlog_truncated=false
       local observed_pr_count=$((paginated_total - issue_count))
       open_issue_total=$((repo_open_count - observed_pr_count))
       [[ "${open_issue_total}" -lt 0 ]] && open_issue_total="${issue_count}"
@@ -401,7 +411,7 @@ test_truncation_detection_logic() {
   if ! assert_eq "${test_name}: case1 truncated" "false" "${truncated}"; then return; fi
   if ! assert_eq "${test_name}: case1 total" "1879" "${total}"; then return; fi
 
-  # Case 2: Truncation detected — pagination stopped early
+  # Case 2: Truncation detected — pagination stopped early (large shortfall)
   # paginated_total=950 (900 issues + 50 PRs), repo reports 2000
   result=$(run_truncation_logic 950 900 2000)
   truncated="${result%% *}"; total="${result##* }"
@@ -428,6 +438,26 @@ test_truncation_detection_logic() {
   truncated="${result%% *}"; total="${result##* }"
   if ! assert_eq "${test_name}: case5 truncated" "false" "${truncated}"; then return; fi
   if ! assert_eq "${test_name}: case5 total" "500" "${total}"; then return; fi
+
+  # Case 6: Small discrepancy within tolerance (API timing race)
+  # paginated_total=1897, repo reports 1900 — difference of 3 is within
+  # tolerance of 5, so should NOT flag as truncated.
+  result=$(run_truncation_logic 1897 1876 1900)
+  truncated="${result%% *}"; total="${result##* }"
+  if ! assert_eq "${test_name}: case6 truncated" "false" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: case6 total" "1879" "${total}"; then return; fi
+
+  # Case 7: Shortfall exactly at tolerance boundary (5) — not truncated
+  result=$(run_truncation_logic 1895 1875 1900)
+  truncated="${result%% *}"; total="${result##* }"
+  if ! assert_eq "${test_name}: case7 truncated" "false" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: case7 total" "1880" "${total}"; then return; fi
+
+  # Case 8: Shortfall just above tolerance (6) — IS truncated
+  result=$(run_truncation_logic 1894 1874 1900)
+  truncated="${result%% *}"; total="${result##* }"
+  if ! assert_eq "${test_name}: case8 truncated" "true" "${truncated}"; then return; fi
+  if ! assert_eq "${test_name}: case8 total" "1880" "${total}"; then return; fi
 
   echo "PASS: ${test_name}"
 }

@@ -86,9 +86,16 @@ echo "Fetched ${PR_COUNT} open pull requests."
 # GitHub's open_issues_count includes PRs. Compare directly against
 # PAGINATED_TOTAL (issues + PRs fetched via pagination) to detect truncation
 # without relying on PR_COUNT (which caps at gh pr list's --limit value).
+#
+# Note: REPO_OPEN_COUNT is fetched in a separate API call after pagination
+# completes. Issues or PRs created/closed between the two calls can cause
+# small discrepancies. A tolerance of 5 items absorbs typical churn and
+# prevents false-positive backlog_truncated=true from API timing (#708).
 REPO_OPEN_COUNT=$(gh api "repos/${SCRIBE_REPO}" --jq '.open_issues_count' 2>/dev/null || echo "")
+TRUNCATION_TOLERANCE=5
 if [[ -n "${REPO_OPEN_COUNT}" ]]; then
-  [[ "${PAGINATED_TOTAL}" -lt "${REPO_OPEN_COUNT}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
+  SHORTFALL=$((REPO_OPEN_COUNT - PAGINATED_TOTAL))
+  [[ "${SHORTFALL}" -gt "${TRUNCATION_TOLERANCE}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
   # Derive issue-only total: subtract observed PR count from API total
   OBSERVED_PR_COUNT=$((PAGINATED_TOTAL - ISSUE_COUNT))
   OPEN_ISSUE_TOTAL=$((REPO_OPEN_COUNT - OBSERVED_PR_COUNT))
