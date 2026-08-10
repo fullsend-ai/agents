@@ -111,3 +111,19 @@ following fields are part of the skill specification:
 These fields are defined by the skill spec. A field's first appearance
 in a skill file in this repo is not a novel pattern and should not be
 flagged as a code-organization concern.
+
+## 8. Harness env var literals are not "hardcoded" mistakes
+
+A literal value in a harness `env.runner`/`env.sandbox` block (e.g.
+`CODE_NEEDS_INPUT_LABEL: "fs-code-needs-input"` in `harness/code.yaml`)
+is the correct, intended shape for an agent behavior default — not a
+bug. Per fullsend-ai/fullsend
+[ADR 0080](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0080-config-yaml-vs-agent-env-var-scope.md)
+and [ADR 0081](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0081-reserve-workflow-env-for-infra-plumbing.md),
+the only supported override path is extending the harness via `base:`
+composition and setting the var there. Do not "fix" these literals into
+`${VAR}` passthrough (harness env blocks resolve `${VAR}` as
+host-variable expansion, not shell defaulting, and fail validation) or
+into a CI workflow `env:` block (reserved for infrastructure plumbing).
+When reviewing PRs, do not flag a literal default in these blocks as
+hardcoded.
