@@ -15,6 +15,11 @@
 #   REVIEW_FINDING_SEVERITY_THRESHOLD — minimum severity for findings
 #                                       (info|low|medium|high|critical);
 #                                       default supplied by harness/review.yaml
+#   REVIEW_PROTECTED_PATHS            — comma-separated protected path prefixes,
+#                                       or empty string to opt out; required
+#                                       (non-empty-or-explicitly-empty) for
+#                                       approve actions; default supplied by
+#                                       harness/review.yaml
 #
 # Exit codes:
 #   0 — review posted
