@@ -115,7 +115,7 @@ flagged as a code-organization concern.
 ## 8. Harness env var literals are not "hardcoded" mistakes
 
 A literal value in a harness `env.runner`/`env.sandbox` block (e.g.
-`CODE_NEEDS_INPUT_LABEL: "fs-code-needs-input"` in `harness/code.yaml`)
+`REVIEW_FINDING_SEVERITY_THRESHOLD: "low"` in `harness/review.yaml`)
 is the correct, intended shape for an agent behavior default — not a
 bug. Per fullsend-ai/fullsend
 [ADR 0080](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0080-config-yaml-vs-agent-env-var-scope.md)
