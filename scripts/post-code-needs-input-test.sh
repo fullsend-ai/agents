@@ -133,6 +133,39 @@ assert_log_pattern() {
   fi
 }
 
+# Like assert_log_pattern, but scoped to just the "gh issue comment" call —
+# i.e. the actual posted comment body — rather than the whole gh call log
+# (which also legitimately contains raw values like the branch name from
+# earlier "gh pr list --head" lookup calls).
+assert_comment_body_pattern() {
+  local test_name="$1"
+  local pattern="$2"
+  local expect_present="$3"  # "yes" or "no"
+  # The mocked gh call is logged as-is, including embedded newlines from a
+  # multi-line --body value, so pull every line from the "gh issue comment"
+  # call up to (not including) the next top-level "gh " invocation.
+  local comment_line
+  comment_line="$(awk '/^gh issue comment/{p=1} p && /^gh / && !/^gh issue comment/{exit} p' "${GH_LOG}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if grep -qF -- "${pattern}" <<<"${comment_line}"; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — expected comment body pattern '${pattern}' not found"
+      echo "Actual comment call: ${comment_line}"
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    if grep -qF -- "${pattern}" <<<"${comment_line}"; then
+      echo "FAIL: ${test_name} — expected comment body pattern '${pattern}' NOT to be found"
+      echo "Actual comment call: ${comment_line}"
+      FAILURES=$((FAILURES + 1))
+    else
+      echo "PASS: ${test_name}"
+    fi
+  fi
+}
+
 assert_exit_code() {
   local test_name="$1"
   local expected="$2"
@@ -264,6 +297,32 @@ assert_log_pattern "needs-input-warns-on-existing-pr" \
 
 assert_log_pattern "needs-input-existing-pr-caveat-omits-discarded-commits" \
   "were not pushed and will be discarded" "no"
+
+# Branch names are chosen by the code agent and git ref names permit
+# backticks — a branch name containing one must never be interpolated raw
+# into the posted comment body, since it would break out of the markdown
+# code span it's wrapped in.
+BACKTICK_BRANCH='feature/`whoami`-needs-input'
+
+setup_git_workdir_with_backtick_branch() {
+  rm -rf "${GIT_WORKDIR}"
+  git init -q -b main "${GIT_WORKDIR}"
+  git -C "${GIT_WORKDIR}" config user.email "test@example.com"
+  git -C "${GIT_WORKDIR}" config user.name "Test"
+  git -C "${GIT_WORKDIR}" commit --allow-empty -m "init" -q
+  git -C "${GIT_WORKDIR}" update-ref refs/remotes/origin/main HEAD
+  git -C "${GIT_WORKDIR}" checkout -q -b "${BACKTICK_BRANCH}"
+  git -C "${GIT_WORKDIR}" commit --allow-empty -m "agent work" -q
+}
+
+setup_git_workdir_with_backtick_branch
+MOCK_EXISTING_PR_URL="" run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+
+assert_comment_body_pattern "needs-input-backtick-branch-omitted-from-comment" \
+  "${BACKTICK_BRANCH}" "no"
+
+assert_comment_body_pattern "needs-input-backtick-branch-placeholder-used" \
+  "branch name omitted" "yes"
 
 # --- Summary ---
 
