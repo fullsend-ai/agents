@@ -11,6 +11,16 @@ permissions:
   contents: read
 
 jobs:
+  skillsaw:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: stbenjam/skillsaw@2795ab65e00b36b475614c95bde217439eb676df # v0
+        with:
+          strict: true
+
   test:
     runs-on: ubuntu-24.04
     steps:
