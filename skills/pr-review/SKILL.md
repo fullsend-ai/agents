@@ -5,7 +5,8 @@ description: >-
   sub-agents in parallel across review dimensions, synthesizes their
   findings, runs PR-specific checks, and produces a structured review
   result. Sub-agent definitions live in sub-agents/ relative to this
-  file.
+  file. Use when reviewing a pull request end-to-end and producing a
+  structured review result.
 ---
 
 # PR Review (Orchestrator)
@@ -198,7 +199,7 @@ orchestrator selects dimension-relevant files for each sub-agent:
 
 For omitted changed files in large PRs, sub-agents should treat those
 files as unavailable for PR-head verification. Any findings about
-omitted files should note that the file contents could not be verified
+omitted files must state that the file contents could not be verified
 against the PR head. Sub-agents must not read omitted changed files
 from disk, since disk contains base-branch code, not the PR head.
 
@@ -434,7 +435,7 @@ incident.
 
 **Procedure:**
 
-1. Read `sub-agents/security-triage.md` for the sub-agent definition.
+1. Read [`sub-agents/security-triage.md`](sub-agents/security-triage.md) for the sub-agent definition.
 2. Resolve the active governance paths list, matching
    `post-review.sh`'s resolution: if `REVIEW_PROTECTED_PATHS` is
    non-empty, split on commas and trim whitespace; if it's explicitly
@@ -690,7 +691,7 @@ runs in step 6d):
    reviewing PR" template, and include everything else verbatim
 
    **Part 3 — Doc review skill:** *If and only if* the roster key is
-   "docs-currency", read "../docs-review/SKILL.md" and include its
+   "docs-currency", read "[../docs-review/SKILL.md](../docs-review/SKILL.md)" and include its
    contents verbatim
 
    **Part 4 — Context package:** the assembled context from step 3d,
@@ -722,7 +723,7 @@ runs in step 6d):
    **Note:** Not all changed files are included above due to PR size.
    Changed files not listed here should be treated as unavailable for
    PR-head verification. If you produce findings about files not included
-   above, note that the file contents could not be verified against the
+   above, state that the file contents could not be verified against the
    PR head. Do not read changed files from disk — disk contains
    base-branch code, not the PR head.
 
@@ -1042,7 +1043,7 @@ the finding.
 2. **Sufficient context** — the PR links to an issue and the
    description explains the rationale for the change: raise a
    **medium** finding with category `protected-path`. The description
-   MUST list the affected protected files and note that human
+   MUST list the affected protected files and state that human
    approval is always required for protected-path changes, regardless
    of context.
 
@@ -1206,7 +1207,7 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   — omit the `## Review` header and `### Findings` section entirely.
 - **No footer.** Do not append any footer, action-hints block, or
   boilerplate after findings. The post-review pipeline appends
-  action hints deterministically when appropriate.
+  action hints deterministically when the outcome is `request-changes`.
 
 If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
 info-level finding in the review output:
