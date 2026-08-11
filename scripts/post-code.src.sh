@@ -193,6 +193,10 @@ REPO_DIR="${REPO_DIR:-repo}"
 RUN_DIR="$(pwd)"
 
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
+echo "::add-mask::${PUSH_TOKEN}"
+if [ -n "${GITLAB_TOKEN:-}" ]; then
+  echo "::add-mask::${GITLAB_TOKEN}"
+fi
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
 trap 'report_post_failure_to_issue' ERR
@@ -416,11 +420,6 @@ if [ -n "${AGENT_TARGET}" ]; then
 else
   TARGET_BRANCH="${DEFAULT_BRANCH}"
   echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
-fi
-
-echo "::add-mask::${PUSH_TOKEN}"
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
 fi
 
 # ---------------------------------------------------------------------------
