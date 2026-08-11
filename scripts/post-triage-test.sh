@@ -1074,6 +1074,64 @@ run_test_with_env "auto-code-on-whitespace-tolerant" \
   "false" \
   $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance'
 
+# --- Split action tests (#756) ---
+
+SPLIT_FIXTURE='{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated and reference old API."}],"comment":"This issue covers two independent problems that should be tracked separately."}'
+
+run_test "split-posts-comment" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "split-creates-first-sub-issue" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Fix crash on save --body The save handler crashes when input is empty."
+
+run_test "split-creates-second-sub-issue" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Update error messages --body Error messages are outdated and reference old API."
+
+run_test "split-closes-original" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue close 42 --repo test-org/test-repo --reason completed"
+
+run_test "split-appends-sub-issue-links" \
+  "${SPLIT_FIXTURE}" \
+  "Split into:"
+
+run_test "split-removes-blocked-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "split-removes-needs-info-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "split-removes-ready-to-code-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-to-code -X DELETE --silent"
+
+run_test "split-removes-pr-open-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
+
+run_test "split-clears-stale-triaged-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
+
+run_test "split-missing-comment-fails" \
+  '{"action":"split","reasoning":"bundles independent concerns","sub_issues":[{"title":"A","body":"a"},{"title":"B","body":"b"}]}' \
+  "" \
+  "true"
+
+run_test "split-fewer-than-two-sub-issues-fails" \
+  '{"action":"split","reasoning":"bundles independent concerns","sub_issues":[{"title":"Only one","body":"single item"}],"comment":"Split."}' \
+  "" \
+  "true"
+
+run_test "split-three-sub-issues" \
+  '{"action":"split","reasoning":"bundles three concerns","sub_issues":[{"title":"A","body":"a"},{"title":"B","body":"b"},{"title":"C","body":"c"}],"comment":"Three independent items."}' \
+  "gh issue create --repo test-org/test-repo --title C --body c"
+
 # --- Summary ---
 
 echo ""

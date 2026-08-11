@@ -496,6 +496,55 @@ ${FAILED_CREATES}"
     esac
     ;;
 
+  split)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'split' but no comment provided" >&2
+      exit 1
+    fi
+
+    # Create sub-issues in the source repo, collect URLs.
+    SUB_ISSUE_COUNT=$(jq '.sub_issues // [] | length' "${RESULT_FILE}")
+    if [[ "${SUB_ISSUE_COUNT}" -lt 2 ]]; then
+      echo "ERROR: action is 'split' but fewer than 2 sub-issues provided" >&2
+      exit 1
+    fi
+
+    CREATED_URLS=""
+    FAILED_CREATES=""
+    for i in $(seq 0 $((SUB_ISSUE_COUNT - 1))); do
+      SUB_TITLE=$(jq -r ".sub_issues[${i}].title" "${RESULT_FILE}")
+      SUB_BODY=$(jq -r ".sub_issues[${i}].body" "${RESULT_FILE}")
+
+      echo "Creating sub-issue ${i}: ${SUB_TITLE}..."
+      CREATED_URL=$(gh issue create --repo "${REPO}" --title "${SUB_TITLE}" --body "${SUB_BODY}" 2>&1) || {
+        echo "::warning::Failed to create sub-issue '${SUB_TITLE}': ${CREATED_URL}"
+        FAILED_CREATES="${FAILED_CREATES}
+- ${SUB_TITLE}"
+        continue
+      }
+      echo "Created: ${CREATED_URL}"
+      CREATED_URLS="${CREATED_URLS}
+- ${CREATED_URL}"
+    done
+
+    if [[ -n "${CREATED_URLS}" ]]; then
+      COMMENT="${COMMENT}
+
+**Split into:**${CREATED_URLS}"
+    fi
+
+    if [[ -n "${FAILED_CREATES}" ]]; then
+      COMMENT="${COMMENT}
+
+**Could not create automatically:**${FAILED_CREATES}"
+    fi
+
+    remove_label "blocked"
+    remove_label "needs-info"
+    remove_label "ready-to-code"
+    remove_label "pr-open"
+    ;;
+
   question)
     if [[ -z "${COMMENT}" ]]; then
       echo "ERROR: action is 'question' but no comment provided" >&2
@@ -635,6 +684,10 @@ fi
 
 if [[ "${ACTION}" == "not-planned" ]]; then
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "not planned"
+fi
+
+if [[ "${ACTION}" == "split" ]]; then
+  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "completed"
 fi
 
 echo "Post-triage complete."

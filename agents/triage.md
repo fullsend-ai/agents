@@ -154,6 +154,17 @@ Before forming any clarifying question, classify it:
 - Could a developer start investigating without contacting the reporter?
 - **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
 - **Would resolving this issue require modifying workflow files?** Scan the issue title, body, referenced files, and labels for signals that the fix involves changes under `.github/workflows/`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows. Prefer deterministic signals — explicit path references, CI/workflow-scoped labels, mentions of GitHub Actions workflow configuration — over vague mentions of "workflow" in non-GHA contexts (e.g., "user onboarding workflow"). If the fix likely requires workflow file changes, set `requires_workflow_changes: true` in `triage_summary` and include a warning in the triage comment that the code agent cannot modify workflow files under current permissions and that manual intervention (human PR or maintainer action) is required.
+- **Does this issue bundle multiple independent concerns?** An issue bundles independent concerns when it lists several distinct problems, tasks, or gaps that share no blocking relationship — each could be filed, triaged, and resolved independently. Use `action: "split"` to decompose the issue into separate sub-issues. Signs of a bundled issue:
+  - A numbered or bulleted list of distinct items (e.g., "1. fix X, 2. add Y, 3. update Z")
+  - Multiple unrelated components, files, or subsystems mentioned with no dependency between them
+  - The issue title uses phrasing like "several", "multiple", "various", or "a few"
+  - Resolving one item would leave the issue partially open
+
+  Do NOT split when:
+  - The items are steps toward a single goal (e.g., "add endpoint, write tests, update docs" for one feature)
+  - The items have a dependency chain — one must land before the next makes sense
+  - The issue describes one problem with multiple symptoms or examples
+  - There are only two items and they are closely related
 
 ### Clarity scoring
 
@@ -288,6 +299,30 @@ At least one of the two arrays must have entries.
     ]
   },
   "comment": "A professional comment explaining the blocking dependencies. Link to existing blockers and describe what new issues need to be created upstream. Be specific about why each dependency must be resolved before this issue can proceed."
+}
+```
+
+### Action: `split`
+
+The issue bundles multiple independent concerns that should each be tracked separately. Use this action to decompose the issue into individual sub-issues, close the original, and link the new issues.
+
+Each sub-issue must have a clear, self-contained title and body. Write sub-issue bodies for a developer who has not read the original issue — include enough context to understand and act on the sub-issue independently. Do not include the sub-issue URLs in `comment` — the post-script appends a "Split into:" list automatically.
+
+```json
+{
+  "action": "split",
+  "reasoning": "Brief explanation of why this issue should be split rather than triaged as a unit",
+  "sub_issues": [
+    {
+      "title": "Clear, specific title for first sub-issue",
+      "body": "Self-contained description with enough context for independent triage and implementation."
+    },
+    {
+      "title": "Clear, specific title for second sub-issue",
+      "body": "Self-contained description with enough context for independent triage and implementation."
+    }
+  ],
+  "comment": "A professional comment explaining that this issue has been decomposed into separate sub-issues because the items are independent and do not block each other. Summarize what each sub-issue covers — do not include the sub-issue URLs yourself, the post-script appends a 'Split into:' list automatically."
 }
 ```
 
