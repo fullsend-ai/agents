@@ -61,6 +61,31 @@ fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
+# Mock yq: parse the test config.yaml for create_issues.allow_targets.
+# Handles the two queries used by post-triage.sh's is_target_allowed().
+cat > "${MOCK_BIN}/yq" <<'YQEOF'
+#!/usr/bin/env bash
+FILTER="$2"
+FILE="$3"
+if [[ ! -f "${FILE}" ]]; then
+  exit 1
+fi
+case "${FILTER}" in
+  '.create_issues.allow_targets.orgs // [] | .[]')
+    # Extract lines under orgs: indented with "      - "
+    sed -n '/^    orgs:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    ;;
+  '.create_issues.allow_targets.repos // [] | .[]')
+    # Extract lines under repos: indented with "      - "
+    sed -n '/^    repos:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+YQEOF
+chmod +x "${MOCK_BIN}/yq"
+
 export PATH="${MOCK_BIN}:${PATH}"
 export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
@@ -1131,6 +1156,21 @@ run_test "split-fewer-than-two-sub-issues-fails" \
 run_test "split-three-sub-issues" \
   '{"action":"split","reasoning":"bundles three concerns","sub_issues":[{"title":"A","body":"a"},{"title":"B","body":"b"},{"title":"C","body":"c"}],"comment":"Three independent items."}' \
   "gh issue create --repo test-org/test-repo --title C --body c"
+
+# Cross-repo split: sub-issue targeting an allowed repo should be created there.
+run_test "split-creates-allowed-cross-repo-issue" \
+  '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"allowed-org/allowed-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}' \
+  "gh issue create --repo allowed-org/allowed-repo --title Upstream fix --body Fix upstream."
+
+# Cross-repo split: sub-issue targeting a disallowed repo should be skipped.
+run_test_stdout "split-skips-disallowed-cross-repo-issue" \
+  '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"disallowed-org/other-repo","title":"Remote fix","body":"Fix remote."}],"comment":"Split across repos."}' \
+  "::warning::Skipping sub-issue creation in 'disallowed-org/other-repo'"
+
+# Cross-repo split: sub-issue without repo field defaults to source repo.
+run_test "split-defaults-to-source-repo" \
+  '{"action":"split","reasoning":"no repo field","sub_issues":[{"title":"First","body":"a"},{"title":"Second","body":"b"}],"comment":"Split."}' \
+  "gh issue create --repo test-org/test-repo --title First --body a"
 
 # --- Split functional test: end-to-end flow (#756) ---
 # Runs the split action once and verifies the complete flow in a single test:

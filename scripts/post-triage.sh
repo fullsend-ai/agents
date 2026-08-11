@@ -121,6 +121,49 @@ DEFERRED_LABEL=""
 # handlers themselves, so it must be cleared up front rather than per-branch.
 remove_label "triaged"
 
+# --- Cross-repo issue creation allowlist ---
+# Used by prerequisites and split actions. Read once before the case
+# statement so both handlers share the same config and helper.
+
+CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/config.yaml"
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  # Per-repo mode: config is under .fullsend/
+  CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/.fullsend/config.yaml"
+fi
+
+ALLOWED_ORGS=""
+ALLOWED_REPOS=""
+if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+  echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+fi
+if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
+  ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+  ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+fi
+
+# The source repo is always implicitly allowed.
+is_target_allowed() {
+  local target_repo="$1"
+  local target_org="${target_repo%%/*}"
+
+  # Source repo is always allowed.
+  if [[ "${target_repo}" == "${REPO}" ]]; then
+    return 0
+  fi
+
+  # Check org allowlist.
+  if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
+    return 0
+  fi
+
+  # Check repo allowlist.
+  if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+    return 0
+  fi
+
+  return 1
+}
+
 case "${ACTION}" in
   insufficient)
     if [[ -z "${COMMENT}" ]]; then
@@ -152,47 +195,6 @@ case "${ACTION}" in
       echo "ERROR: action is 'prerequisites' but no comment provided" >&2
       exit 1
     fi
-
-    # Read the allowlist from config.yaml. The config repo is checked out
-    # at $GITHUB_WORKSPACE by the reusable workflow.
-    CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/config.yaml"
-    if [[ ! -f "${CONFIG_FILE}" ]]; then
-      # Per-repo mode: config is under .fullsend/
-      CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/.fullsend/config.yaml"
-    fi
-
-    ALLOWED_ORGS=""
-    ALLOWED_REPOS=""
-    if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
-      echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
-    fi
-    if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
-      ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-      ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-    fi
-
-    # The source repo is always implicitly allowed.
-    is_target_allowed() {
-      local target_repo="$1"
-      local target_org="${target_repo%%/*}"
-
-      # Source repo is always allowed.
-      if [[ "${target_repo}" == "${REPO}" ]]; then
-        return 0
-      fi
-
-      # Check org allowlist.
-      if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
-        return 0
-      fi
-
-      # Check repo allowlist.
-      if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
-        return 0
-      fi
-
-      return 1
-    }
 
     # Process create entries: create issues, collect URLs.
     CREATE_COUNT=$(jq '.prerequisites.create // [] | length' "${RESULT_FILE}")
@@ -502,7 +504,8 @@ ${FAILED_CREATES}"
       exit 1
     fi
 
-    # Create sub-issues in the source repo, collect URLs.
+    # Create sub-issues, collect URLs. Each sub-issue may optionally specify
+    # a target repo; defaults to the source repo when omitted.
     SUB_ISSUE_COUNT=$(jq '.sub_issues // [] | length' "${RESULT_FILE}")
     if [[ "${SUB_ISSUE_COUNT}" -lt 2 ]]; then
       echo "ERROR: action is 'split' but fewer than 2 sub-issues provided" >&2
@@ -514,12 +517,31 @@ ${FAILED_CREATES}"
     for i in $(seq 0 $((SUB_ISSUE_COUNT - 1))); do
       SUB_TITLE=$(jq -r ".sub_issues[${i}].title" "${RESULT_FILE}")
       SUB_BODY=$(jq -r ".sub_issues[${i}].body" "${RESULT_FILE}")
+      TARGET_REPO=$(jq -r ".sub_issues[${i}].repo // empty" "${RESULT_FILE}")
+      TARGET_REPO="${TARGET_REPO:-${REPO}}"
 
-      echo "Creating sub-issue ${i}: ${SUB_TITLE}..."
-      CREATED_URL=$(gh issue create --repo "${REPO}" --title "${SUB_TITLE}" --body "${SUB_BODY}" 2>&1) || {
+      if ! is_target_allowed "${TARGET_REPO}"; then
+        echo "::warning::Skipping sub-issue creation in '${TARGET_REPO}' — not in create_issues.allow_targets"
+        FAILED_CREATES="${FAILED_CREATES}
+<details>
+<summary>Sub-issue: ${TARGET_REPO} — ${SUB_TITLE}</summary>
+
+${SUB_BODY}
+
+</details>"
+        continue
+      fi
+
+      echo "Creating sub-issue ${i}: ${SUB_TITLE} (repo: ${TARGET_REPO})..."
+      CREATED_URL=$(gh issue create --repo "${TARGET_REPO}" --title "${SUB_TITLE}" --body "${SUB_BODY}" 2>&1) || {
         echo "::warning::Failed to create sub-issue '${SUB_TITLE}': ${CREATED_URL}"
         FAILED_CREATES="${FAILED_CREATES}
-- ${SUB_TITLE}"
+<details>
+<summary>Sub-issue: ${TARGET_REPO} — ${SUB_TITLE}</summary>
+
+${SUB_BODY}
+
+</details>"
         continue
       }
       echo "Created: ${CREATED_URL}"
@@ -536,7 +558,8 @@ ${FAILED_CREATES}"
     if [[ -n "${FAILED_CREATES}" ]]; then
       COMMENT="${COMMENT}
 
-**Could not create automatically:**${FAILED_CREATES}"
+**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+${FAILED_CREATES}"
     fi
 
     remove_label "blocked"
