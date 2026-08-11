@@ -3,7 +3,8 @@ name: code-implementation
 description: >-
   Step-by-step procedure for implementing a GitHub issue. Gathers context,
   discovers repo conventions, plans the change, implements, verifies with
-  tests and linters, and commits to a feature branch.
+  tests and linters, and commits to a feature branch. Use when implementing
+  a triaged GitHub issue end-to-end into a committed, tested change.
 ---
 
 # Code Implementation
@@ -576,12 +577,10 @@ Determine which packages to test from your changed files:
 git diff --name-only <target-branch>
 ```
 
-Use the local `<target-branch>` ref (e.g., `main`) discovered in
-step 3. This shows all files that differ between the target branch
-and the working tree — including previously committed changes on the
-feature branch. Do not use `origin/<target-branch>` — origin refs
-may not be available when the sandbox network policy blocks git
-protocol access.
+Use the local `<target-branch>` ref, not `origin/<target-branch>`, for
+the reasons given in step 4. This shows all files that differ between
+the target branch and the working tree — including previously
+committed changes on the feature branch.
 
 Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
 a final validation after targeted tests pass, but prefer targeted runs
@@ -657,6 +656,7 @@ git diff
 Read every line. Check for:
 
 - Changes that don't serve the issue (scope creep, unrelated formatting)
+<!-- skillsaw-disable-next-line content-placeholder-text -->
 - Accidental artifacts: debug prints, commented-out code, TODO comments
 - Secret material: `.env`, `*.pem`, `*.key`, `credentials.json`
 - Protected-path files (see agent definition for the authoritative list)
@@ -911,9 +911,9 @@ JSON you have and exit.
 If you hit a token limit or context window boundary before completing the
 implementation, and the tests pass on the partial work: commit what you have.
 The review agent downstream will evaluate completeness — incomplete-but-passing
-code is caught at the review stage, not the implementation stage. The commit
-message should note that the work is partial (e.g., "partial
-implementation" in the description) and use `Related to #<number>`
+code is caught at the review stage, not the implementation stage. State in the commit
+message description that the work is partial (e.g., "partial
+implementation") and use `Related to #<number>`
 instead of `Closes #<number>`. Set `closes_issue: false` in the result
 file so the post-script uses the same keyword in the PR body.
 
