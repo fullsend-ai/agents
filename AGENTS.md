@@ -116,14 +116,26 @@ flagged as a code-organization concern.
 
 A literal value in a harness `env.runner`/`env.sandbox` block (e.g.
 `REVIEW_FINDING_SEVERITY_THRESHOLD: "low"` in `harness/review.yaml`)
-is the correct, intended shape for an agent behavior default — not a
-bug. Per fullsend-ai/fullsend
+is the correct, intended shape for a static agent-behavior-tuning
+default — not a bug. Per fullsend-ai/fullsend
 [ADR 0080](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0080-config-yaml-vs-agent-env-var-scope.md)
 and [ADR 0081](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0081-reserve-workflow-env-for-infra-plumbing.md),
-the only supported override path is extending the harness via `base:`
-composition and setting the var there. Do not "fix" these literals into
-`${VAR}` passthrough (harness env blocks resolve `${VAR}` as
-host-variable expansion, not shell defaulting, and fail validation) or
-into a CI workflow `env:` block (reserved for infrastructure plumbing).
-When reviewing PRs, do not flag a literal default in these blocks as
-hardcoded.
+the only supported override path for these defaults is extending the
+harness via `base:` composition and setting the var there. Do not
+"fix" a static default into `${VAR}` passthrough (harness env blocks
+resolve `${VAR}` as host-variable expansion, not shell defaulting —
+it changes semantics, and it will fail when the referenced host
+variable is unset or when unsupported defaulting syntax like
+`${VAR:-default}` is used) or into a CI workflow `env:` block
+(reserved for infrastructure plumbing).
+
+This rule is scoped to static, tunable defaults. It does not cover
+values that are genuinely computed per-repo or per-run, such as
+branch lists, tokens, or PR/issue numbers — those must stay as
+`${VAR}` passthrough, as already used by `CODE_ALLOWED_TARGET_BRANCHES`
+in `harness/code.yaml`'s `env.runner` block and by `REVIEW_TOKEN`,
+`REPO_FULL_NAME`, `PR_NUMBER`, and `GITHUB_PR_URL` in the
+`forge.github.env.runner` blocks. When reviewing PRs, do not flag a
+static literal default in these blocks as hardcoded, but do flag a
+regression that replaces one of these computed passthrough values
+with a literal.
