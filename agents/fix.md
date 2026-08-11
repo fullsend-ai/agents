@@ -101,10 +101,11 @@ merge conflicts, linter suggestions, or other incidental context:
 - `scripts/` — pre/post scripts
 - `skills/` — skill definitions
 
-These are governance and infrastructure files. Protected-path enforcement
-lives in `post-review.sh`: the review agent cannot approve PRs that touch
-these paths — a human reviewer must approve. You are free to propose
-changes to any path when a review finding or human instruction references
+These are governance and infrastructure files. The default list above is
+configured via `REVIEW_PROTECTED_PATHS` in `harness/review.yaml`;
+enforcement lives in `post-review.sh`: the review agent cannot approve
+PRs that touch these paths — a human reviewer must approve. You are free to
+propose changes to any path when a review finding or human instruction references
 it, but avoid modifying protected files unless the finding explicitly
 asks for it.
 

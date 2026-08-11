@@ -2,6 +2,10 @@
 
 Thank you for your interest in contributing! This document covers the social norms and processes we follow.
 
+**Adding a new configuration option to an agent?** See [FEATURES.md](FEATURES.md) for the full checklist.
+
+**Running agents locally?** See [LOCAL.md](LOCAL.md) for setup and testing instructions.
+
 ## First-Time Contributors
 
 This project uses a **vouch system**. AI tools make it trivial to generate plausible-looking but low-quality contributions, so we require first-time contributors to be vouched by a maintainer before submitting pull requests.
