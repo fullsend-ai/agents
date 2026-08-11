@@ -3,8 +3,8 @@ name: code-review
 description: >-
   Standalone procedure for reviewing any code change. Identifies the
   change, reads surrounding source, evaluates across six review
-  dimensions, and compiles structured findings. Can be invoked directly
-  for local review or delegated to by the pr-review skill.
+  dimensions, and compiles structured findings. Use when reviewing a
+  code change directly, or when delegated to by the pr-review skill.
 ---
 
 # Code Review
@@ -95,7 +95,8 @@ dimension carry over to another — each requires its own scrutiny.
   orchestrator expecting structured JSON from a component that has no
   output format instructions), and whether failure paths are handled
   (e.g., what happens if a critical sub-component fails — does the
-  caller degrade gracefully or silently proceed?). Trace the full path
+  caller return an error or fall back to a default, or does it silently
+  proceed as if nothing failed?). Trace the full path
   from where the mechanism is set to where it is read.
 - Test adequacy: are the right behaviors tested?
 - Do the tests actually constrain the code's behavior, or do they
@@ -108,7 +109,8 @@ dimension carry over to another — each requires its own scrutiny.
 #### Security
 
 - RBAC and authorization changes: does the change alter who can do what?
-- Authentication flows: is auth correctly enforced on all code paths?
+- Authentication flows: is auth enforced on every code path, including
+  error and edge-case branches?
 - Data exposure: could the change leak sensitive data to unauthorized
   parties?
 - Privilege escalation: can a lower-privilege principal gain
