@@ -127,7 +127,11 @@ resolve `${VAR}` as host-variable expansion, not shell defaulting —
 it changes semantics, and it will fail when the referenced host
 variable is unset or when unsupported defaulting syntax like
 `${VAR:-default}` is used) or into a CI workflow `env:` block
-(reserved for infrastructure plumbing).
+(reserved for infrastructure plumbing). The one exception
+(per ADR 0081) is a value that can only be computed at CI
+runtime — derived from `github.event.*`, a build matrix
+variable, or a non-static secret — which may live in the
+workflow `env:` block even if it configures agent behavior.
 
 This rule is scoped to static, tunable defaults. It does not cover
 values that are genuinely computed per-repo or per-run, such as
