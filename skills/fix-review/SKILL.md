@@ -328,7 +328,7 @@ git diff
 
 Read every line. Check for:
 - Changes that don't trace to a review comment
-<!-- skillsaw-disable-next-line content-placeholder-text -->
+  <!-- skillsaw-disable-next-line content-placeholder-text -->
 - Debug prints, commented-out code, TODO comments
 - Secret material
 - Protected-path files
