@@ -33,6 +33,11 @@
 #                     — comma-separated list of branches the agent may target,
 #                       or "*" for any. When unset, only the repo's default
 #                       branch is allowed. (default: auto-detected)
+#   CODE_NEEDS_INPUT_LABEL
+#                     — label applied when the agent sets needs_input instead
+#                       of committing. Set via env.runner in harness/code.yaml
+#                       as a hardcoded value (not forwarded from the runner
+#                       environment). (default: fs-code-needs-input)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
 #   CODE_AUTO_MERGE    — "true" to enable auto-merge on the PR/MR after
@@ -308,6 +313,29 @@ post_needs_input_comment() {
   # sense. Truncating from the tail would silently drop the opening
   # framing of a long explanation.
   sanitized_input="$(sanitize_failure_detail "${needs_input}" 0)"
+
+  # Secret-scan needs_input — same category of free-form, agent-authored,
+  # out-of-git-tree prose as pr_body, also posted as a public issue comment.
+  # Run gitleaks to catch secrets that sanitize_failure_detail's fixed
+  # pattern set does not cover (e.g. AWS keys, DB passwords).
+  local ni_tmp gl_stderr gl_rc
+  ni_tmp="$(mktemp)"
+  printf '%s\n' "${sanitized_input}" > "${ni_tmp}"
+  gl_stderr="$(mktemp)"
+  gl_rc=0
+  gitleaks detect --source "${ni_tmp}" --no-git --redact 2>"${gl_stderr}" || gl_rc=$?
+  if [ -s "${gl_stderr}" ]; then
+    sed 's/^/::debug::gitleaks: /' "${gl_stderr}"
+  fi
+  rm -f "${gl_stderr}"
+  if [ "${gl_rc}" -eq 1 ]; then
+    gha_echo warning "BLOCKED — secret detected in needs_input text; replacing with generic message"
+    sanitized_input="(Content redacted — the agent's explanation contained a potential secret. Check the workflow log for details.)"
+  elif [ "${gl_rc}" -gt 1 ]; then
+    gha_echo warning "gitleaks scan of needs_input failed (exit ${gl_rc}); replacing with generic message"
+    sanitized_input="(Content redacted — secret scan of the agent's explanation failed. Check the workflow log for details.)"
+  fi
+  rm -f "${ni_tmp}"
 
   local caveat_block=""
   if [ -n "${caveat}" ]; then
