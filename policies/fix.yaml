@@ -3,10 +3,11 @@ version: 1
 
 # Sandbox policy for the fix agent.
 #
-# Identical to the code agent policy — the fix agent needs the same network
-# access (Vertex AI, GitHub API for gh pr view/diff, package registries)
-# because it runs tests and linters. The review body is pre-fetched by the
-# workflow; the sandbox GH_TOKEN is read-only scoped.
+# Shares much of the same network and sandbox needs as the code agent
+# (Vertex AI, GitHub API for gh pr view/diff, package registries) because
+# it runs tests and linters. The two policies may diverge when fix-specific
+# access is required. The review body is pre-fetched by the workflow; the
+# sandbox GH_TOKEN is read-only scoped.
 
 filesystem_policy:
   include_workdir: true
