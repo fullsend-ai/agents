@@ -33,6 +33,14 @@ else
   echo "PASS: bundled-script-has-gitleaks-install"
 fi
 
+if ! grep -q 'git fetch origin "\${BRANCH}"' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-fetches-before-force-with-lease"
+  echo "  ${POST_SCRIPT} missing git fetch before --force-with-lease retry"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-fetches-before-force-with-lease"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the push retry logic from post-fix.sh section 5.
 # Given a push exit code and output, returns the action.
