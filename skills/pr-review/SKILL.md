@@ -1036,7 +1036,7 @@ the finding.
 1. **Insufficient context** — the PR has no linked issue, or the PR
    description does not explain why the protected files are being
    changed: raise a **high** finding with category `protected-path`.
-   The description MUST list the affected protected files and note
+   The description MUST list the affected protected files and state
    that the PR lacks justification for modifying governance or
    infrastructure files.
 
