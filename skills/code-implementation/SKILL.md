@@ -835,8 +835,7 @@ passed.** If you cannot run the relevant test suite or lint command, use
 The retry limit is read from the `MAX_RETRIES` environment variable
 (default: 1 if unset). The harness may also enforce a hard timeout
 independently — if the harness kills the session, your retry count is
-irrelevant. Prefer committing with a disclosed issue over burning time
-on additional retry iterations.
+irrelevant.
 
 If the retry limit is reached and tests or linters still fail, do not
 commit. Validate structured output, then stop:
@@ -1083,7 +1082,7 @@ cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body` and `closes_issue`:
+optionally `pr_body`, `closes_issue`, and `needs_input`:
 
 ```json
 {
