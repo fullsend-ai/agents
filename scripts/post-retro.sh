@@ -94,29 +94,57 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 fi
 echo "All ${PROPOSAL_COUNT} proposal(s) validated"
 
+# Sanitize a string for use in GHA workflow commands. Strips newlines,
+# collapses :: to :, and removes percent-encoded CR/LF sequences.
+sanitize_for_gha() {
+  local val="$1"
+  val="${val//$'\n'/}"
+  val="${val//$'\r'/}"
+  val="${val//::/:}"
+  val="${val//%0A/}"
+  val="${val//%0a/}"
+  val="${val//%0D/}"
+  val="${val//%0d/}"
+  printf '%s' "${val}"
+}
+
 ISSUE_LINKS=""
 EVIDENCE_NOTES=""
+POLICY_NOTES=""
 FILTERED_COUNT=0
+POLICY_FILTERED_COUNT=0
 if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
   for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
     TITLE=$(jq -r ".proposals[$i].title" "${RESULT_FILE}")
 
+    # Filing policy gate (#525): if the agent set filing_decision.file=false,
+    # skip this proposal and fold it into the summary.
+    FILING_DECISION=$(jq -r "if .proposals[$i].filing_decision then .proposals[$i].filing_decision.file else true end" "${RESULT_FILE}")
+    if [[ "${FILING_DECISION}" == "false" ]]; then
+      FILING_REASON=$(jq -r ".proposals[$i].filing_decision.reason // empty" "${RESULT_FILE}")
+      FILING_REASON=$(sanitize_for_gha "${FILING_REASON}")
+      if [[ -z "${FILING_REASON}" ]]; then
+        FILING_REASON="No reason provided"
+      fi
+      SAFE_TITLE=$(sanitize_for_gha "${TITLE}")
+      echo "::warning::proposal[$i] skipped by filing policy: ${SAFE_TITLE} (${FILING_REASON})"
+      POLICY_NOTES="${POLICY_NOTES}
+- **${TITLE}** (${TARGET_REPO}): ${FILING_REASON}"
+      POLICY_FILTERED_COUNT=$((POLICY_FILTERED_COUNT + 1))
+      continue
+    fi
+
     # Deterministic gate: reject "Evidence for" proposals.
     # The retro-analysis skill instructs the agent not to file these, but the
     # agent ignores the instruction frequently enough that a post-script gate
-    # is needed. See fullsend-ai/fullsend#3881.
+    # is needed. This gate runs even when filing_decision.file=true — the
+    # agent cannot override it. See fullsend-ai/fullsend#3881.
     TITLE_LOWER=$(printf '%s' "${TITLE}" | tr '[:upper:]' '[:lower:]')
     if [[ "${TITLE_LOWER}" =~ ^evidence[[:space:]]+(for|of)[[:space:]]+\# ]] || \
        [[ "${TITLE_LOWER}" =~ ^evidence: ]] || \
        [[ "${TITLE_LOWER}" =~ ^additional[[:space:]]+evidence ]]; then
-      SAFE_TITLE="${TITLE//$'\n'/}"
-      SAFE_TITLE="${SAFE_TITLE//$'\r'/}"
-      SAFE_TITLE="${SAFE_TITLE//::/:}"
-      SAFE_TITLE="${SAFE_TITLE//%0A/}"
-      SAFE_TITLE="${SAFE_TITLE//%0a/}"
-      SAFE_TITLE="${SAFE_TITLE//%0D/}"
-      SAFE_TITLE="${SAFE_TITLE//%0d/}"
+      SAFE_TITLE=$(sanitize_for_gha "${TITLE}")
       echo "::warning::proposal[$i] rejected — title matches evidence-for pattern: ${SAFE_TITLE}. Folding into summary."
       EVIDENCE_NOTES="${EVIDENCE_NOTES}
 - **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
@@ -149,11 +177,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       --color "ededed" \
       --force 2>/dev/null || true
 
-    SAFE_TITLE="${TITLE//::/}"
-    SAFE_TITLE="${SAFE_TITLE//%0A/}"
-    SAFE_TITLE="${SAFE_TITLE//%0a/}"
-    SAFE_TITLE="${SAFE_TITLE//%0D/}"
-    SAFE_TITLE="${SAFE_TITLE//%0d/}"
+    SAFE_TITLE=$(sanitize_for_gha "${TITLE}")
     echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
     if ! ISSUE_URL=$(gh issue create \
       --repo "${TARGET_REPO}" \
@@ -183,10 +207,16 @@ fi
 if [[ ${FILTERED_COUNT} -gt 0 ]]; then
   echo "${FILTERED_COUNT} proposal(s) filtered (evidence-for pattern)"
 fi
+if [[ ${POLICY_FILTERED_COUNT} -gt 0 ]]; then
+  echo "${POLICY_FILTERED_COUNT} proposal(s) skipped by filing policy"
+fi
 
 COMMENT="${SUMMARY}"
 if [[ -n "${ISSUE_LINKS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals filed\n\n%s' "${COMMENT}" "${ISSUE_LINKS}")
+fi
+if [[ -n "${POLICY_NOTES}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals skipped by filing policy\n%s' "${COMMENT}" "${POLICY_NOTES}")
 fi
 if [[ -n "${EVIDENCE_NOTES}" ]]; then
   COMMENT=$(printf '%s\n\n### Evidence notes (not filed as issues)\n%s' "${COMMENT}" "${EVIDENCE_NOTES}")
@@ -217,22 +247,10 @@ if [[ ${COMMENT_EXIT} -ne 0 ]]; then
   # gh version changes the format, the match will fail-closed (treating the
   # error as fatal), which is the safer default.
   if echo "${COMMENT_OUTPUT}" | grep -qE "HTTP (401|403)"; then
-    # Sanitize before interpolating into GHA workflow command to prevent
-    # injecting ::set-output or ::save-state directives via crafted responses.
-    SAFE_OUTPUT="${COMMENT_OUTPUT//::/}"
-    SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
-    SAFE_OUTPUT="${SAFE_OUTPUT//%0a/}"
-    SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
-    SAFE_OUTPUT="${SAFE_OUTPUT//%0d/}"
+    SAFE_OUTPUT=$(sanitize_for_gha "${COMMENT_OUTPUT}")
     echo "::warning::Could not post summary comment to ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: insufficient permissions (${SAFE_OUTPUT}). Skipping."
   else
-    # Sanitize before echoing to prevent GHA workflow command injection
-    # (same pattern as the 401/403 branch above).
-    SAFE_OUTPUT="${COMMENT_OUTPUT//::/}"
-    SAFE_OUTPUT="${SAFE_OUTPUT//%0A/}"
-    SAFE_OUTPUT="${SAFE_OUTPUT//%0a/}"
-    SAFE_OUTPUT="${SAFE_OUTPUT//%0D/}"
-    SAFE_OUTPUT="${SAFE_OUTPUT//%0d/}"
+    SAFE_OUTPUT=$(sanitize_for_gha "${COMMENT_OUTPUT}")
     echo "ERROR: failed to post summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: ${SAFE_OUTPUT}"
     exit 1
   fi
