@@ -86,6 +86,10 @@ run_test "valid-in-progress" \
   '{"action":"in-progress","reasoning":"PR #123 fixes this issue","pull_requests":[{"url":"https://github.com/org/repo/pull/123"}],"comment":"An open PR already addresses this issue."}' \
   "true"
 
+run_test "valid-split" \
+  '{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated."}],"comment":"Splitting into independent sub-issues."}' \
+  "true"
+
 # --- Conditional requirement failures ---
 
 run_test "insufficient-missing-clarity-scores" \
@@ -110,6 +114,10 @@ run_test "prerequisites-both-arrays-empty" \
 
 run_test "prerequisites-malformed-url-in-existing" \
   '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[{"url":"not-a-url"}],"create":[]},"comment":"Blocked."}' \
+  "false"
+
+run_test "split-missing-sub-issues" \
+  '{"action":"split","reasoning":"issue bundles independent concerns","comment":"Splitting."}' \
   "false"
 
 run_test "in-progress-missing-pull-requests" \

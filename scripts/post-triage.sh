@@ -520,6 +520,10 @@ ${FAILED_CREATES}"
       TARGET_REPO=$(jq -r ".sub_issues[${i}].repo // empty" "${RESULT_FILE}")
       TARGET_REPO="${TARGET_REPO:-${REPO}}"
 
+      # Sanitize for GHA workflow command safety (prevent newline injection).
+      SAFE_TITLE="${SUB_TITLE//$'\n'/ }"
+      SAFE_TITLE="${SAFE_TITLE//::/-}"
+
       if ! is_target_allowed "${TARGET_REPO}"; then
         echo "::warning::Skipping sub-issue creation in '${TARGET_REPO}' — not in create_issues.allow_targets"
         FAILED_CREATES="${FAILED_CREATES}
@@ -532,9 +536,11 @@ ${SUB_BODY}
         continue
       fi
 
-      echo "Creating sub-issue ${i}: ${SUB_TITLE} (repo: ${TARGET_REPO})..."
+      echo "Creating sub-issue ${i}: ${SAFE_TITLE} (repo: ${TARGET_REPO})..."
       CREATED_URL=$(gh issue create --repo "${TARGET_REPO}" --title "${SUB_TITLE}" --body "${SUB_BODY}" 2>&1) || {
-        echo "::warning::Failed to create sub-issue '${SUB_TITLE}': ${CREATED_URL}"
+        SAFE_URL="${CREATED_URL//$'\n'/ }"
+        SAFE_URL="${SAFE_URL//::/-}"
+        echo "::warning::Failed to create sub-issue '${SAFE_TITLE}': ${SAFE_URL}"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Sub-issue: ${TARGET_REPO} — ${SUB_TITLE}</summary>
@@ -548,6 +554,13 @@ ${SUB_BODY}
       CREATED_URLS="${CREATED_URLS}
 - ${CREATED_URL}"
     done
+
+    # Guard: if all sub-issue creations failed, abort rather than closing the
+    # original issue with no replacements.
+    if [[ -z "${CREATED_URLS}" ]] && [[ -n "${FAILED_CREATES}" ]]; then
+      echo "ERROR: all sub-issue creations failed — not closing the original issue" >&2
+      exit 1
+    fi
 
     if [[ -n "${CREATED_URLS}" ]]; then
       COMMENT="${COMMENT}
