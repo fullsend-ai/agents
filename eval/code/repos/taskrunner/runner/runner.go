@@ -40,7 +40,7 @@ func (r *Runner) Register(t Task) {
 }
 
 // Run executes all registered tasks with retry and timeout logic.
-// It uses cfg.MaxRetries, cfg.Timeout, and cfg.Workers.
+// It processes tasks concurrently based on the runner's configuration.
 func (r *Runner) Run() error {
 	sem := make(chan struct{}, r.cfg.Workers)
 	errs := make(chan error, len(r.tasks))
