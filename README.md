@@ -98,4 +98,5 @@ This repository is versioned in lockstep with [fullsend](https://github.com/full
 | `fullsend.yaml` | fullsend (centrally managed) | Routes GitHub events to agent dispatch workflows |
 | `release.yml` | This repo | Creates GitHub Releases and moves the `v0` tag on version tag push |
 | `notify-agent-sync.yml` | This repo | Dispatches `agents-updated` event to `.fullsend` for cross-repo digest sync |
+| `lint.yml` | This repo | Runs pre-commit checks, commit-message linting, and skillsaw on PRs and main branch pushes |
 | `script-test.yml` | This repo | Runs agent shell script tests on PRs and main branch pushes |
