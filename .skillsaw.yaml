@@ -45,9 +45,12 @@ rules:
     severity: warning
 
   # Marketplace.json must be valid JSON with required fields
-  # Disabled: plugins/gopls-lsp/plugin.json is an internal fullsend
-  # harness config (see harness/code.yaml), not a Claude Code plugin
-  # marketplace meant for distribution.
+  # Disabled: this repo isn't a distributable Claude Code plugin
+  # marketplace — plugins/gopls-lsp is internal fullsend harness config
+  # (see harness/code.yaml), not a plugin skillsaw's marketplace rules
+  # apply to. Confirmed zero plugins are actually detected here either
+  # way, so marketplace-registration below is provably inert; re-enable
+  # both if this repo ever adds a real distributable plugin.
   marketplace-json-valid:
     enabled: false
     severity: error
@@ -326,12 +329,14 @@ custom-rules: []
 # Exclude patterns (glob format)
 # Use exclude: [] to disable all excludes including defaults
 exclude:
-    # - "**/template/**"
-    # - "**/templates/**"
-    # - "**/_template/**"
+  # - "**/template/**"
+  # - "**/templates/**"
+  # - "**/_template/**"
 
 # Additional markdown files to run content rules on (glob format)
 content-paths: []
 
-# Treat warnings as errors
+# Not enforced here: CI (lint.yml) and `make lint` both pass an explicit
+# strict flag that overrides this config value, so this setting only
+# matters if you invoke skillsaw directly without either wrapper.
 strict: false
