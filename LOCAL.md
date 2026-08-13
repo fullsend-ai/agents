@@ -40,6 +40,7 @@ Export the variables the agent needs:
 ```bash
 export GITHUB_ISSUE_URL="https://github.com/your-org/test-repo/issues/25"
 export GH_TOKEN="$(gh auth token)"
+export FULLSEND_FORGE="github"
 
 # GCP/Vertex AI credentials — required by most agents via
 # common/env/gcp-vertex.env and the host_files GOOGLE_APPLICATION_CREDENTIALS

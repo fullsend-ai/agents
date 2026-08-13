@@ -2,7 +2,7 @@
 
 ![Triage agent icon](icons/triage.png)
 
-Inspects a GitHub issue, assesses information sufficiency, asks clarifying questions when needed, and produces a triage decision that determines whether the issue is ready for implementation.
+Inspects an issue, assesses information sufficiency, asks clarifying questions when needed, and produces a triage decision that determines whether the issue is ready for implementation.
 
 ## Setup
 
@@ -49,7 +49,7 @@ These labels are managed by the triage agent based on its assessment of the issu
 | `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
 | `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
 | `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
-| `pr-open` | An open PR already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR is closed without merging: nothing re-triages on PR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
+| `pr-open` | An open PR or merge request already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR/MR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR/MR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR/MR is closed without merging: nothing re-triages on PR/MR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
 The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `create_issues.allow_targets` in config.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
 
@@ -69,24 +69,19 @@ it with your own version to encode your team's labeling knowledge directly in
 the skill, keeping it out of `AGENTS.md` (where it would bloat context for
 every agent).
 
-To overload the built-in skill, create your own `issue-labels` skill in
-`.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
-`.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-To override explicitly, create a custom harness with `base:`
-composition and include the replacement skill in the `skills:` array.
-At runtime, your version replaces the upstream default.
-
-For example, to override `issue-labels` via a custom triage harness:
-
-```yaml
-# .fullsend/triage.yaml
-base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/triage.yaml#sha256=<sha256sum>
-skills:
-  - .agents/skills/issue-labels
-```
-
-See [Custom sandbox image — How to configure](code.md#how-to-configure)
-for how to obtain the `<SHA>` and `<sha256sum>` values.
+The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`
+and `skills/issue-labels/gitlab/SKILL.md`), registered under
+`forge.<platform>.skills` in the harness. To overload the built-in skill,
+create your own skill in `.agents/skills/issue-labels/github/SKILL.md` and
+symlink `.claude/skills` to `.agents/skills` so it's discoverable by both
+fullsend and local agent tooling. At the org level, override via `base:`
+composition (ADR 0045) — inherit the upstream harness and replace the
+forge-specific skill entry under `forge.<platform>.skills` with your own path
+whose basename matches the built-in (`github` or `gitlab`), so `mergeSkills`
+dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
+The older `customized/skills/issue-labels/SKILL.md` overlay in the org
+`.fullsend` config repo (and the per-repo `.fullsend/customized/skills/...`
+equivalent) is deprecated by ADR 0064.
 
 Here's an example that encodes domain-specific labeling rules:
 
@@ -171,6 +166,53 @@ surfaced in the summary comment so they can be filed manually.
 
 The source repo (where the triaged issue lives) is always implicitly
 allowed.
+
+## Multi-forge support
+
+The triage agent supports both GitHub and GitLab. The forge is selected
+automatically at runtime via the `FULLSEND_FORGE` environment variable, which
+the harness sets based on the detected CI platform (`github` or `gitlab`).
+
+### Migration notes for custom harness overrides
+
+If you use `base:` composition to override `harness/triage.yaml`:
+
+- **`ISSUE_URL` replaces `GITHUB_ISSUE_URL` inside scripts**: The sandbox and
+  runner env var consumed by pre/post scripts is now `ISSUE_URL` (forge-neutral).
+  `GITHUB_ISSUE_URL` remains the workflow-level input for the GitHub forge; the
+  harness maps it to `ISSUE_URL` via `env.runner` / `env.sandbox`. Custom
+  pre/post scripts that reference `GITHUB_ISSUE_URL` directly should switch to
+  `ISSUE_URL`.
+- **`FULLSEND_FORGE` is required**: Pre- and post-scripts require this env var
+  to select the correct forge operations. It is set automatically by the forge
+  sections in the harness; if your override removes the forge sections, set it
+  explicitly in `env.runner` and `env.sandbox`.
+- **`policy`, `skills`, and `host_files` live in forge sections**: This
+  harness defines policy, skills, and the forge-specific env file
+  (`env/github/triage.env` / `env/gitlab/triage.env`) under
+  `forge.<platform>` rather than at the top level. `pre_script` and
+  `post_script` are set at both levels (identical values — the forge-level
+  entries are redundant but kept explicit for clarity). Top-level keys are
+  still supported by `ResolveForge` — a downstream harness using `base:`
+  composition can set top-level `policy:`, `skills:`, or `host_files:` and
+  they will work: policy (scalar) is overridden by the forge-level value,
+  skills (list) are concatenated with forge-level skills and deduped by
+  basename, host_files (list) are concatenated with last-writer-wins dedup
+  by `dest`. `providers` and `openshell` follow the same merge rules and
+  are also forge-overridable (fullsend-ai/fullsend#5970).
+- **Schema accepts both forge URL shapes unconditionally**: The result schema
+  validates PR/issue URLs against both GitHub and GitLab patterns regardless of
+  the active forge. This is intentional — the schema is forge-neutral.
+  Cross-forge issue creation (`prerequisites.create`) is enforced at runtime
+  (the forge API rejects foreign project paths), but comment URLs
+  (`pull_requests[].url`, `prerequisites.existing[].url`) are interpolated
+  verbatim and are schema-constrained only. The prompt includes examples of
+  both URL shapes to guide the agent toward the correct format.
+- **GitLab functional eval coverage is deferred**: The eval cases under
+  `eval/triage/cases/` currently cover GitHub only. GitLab-specific behavior is
+  covered by unit-level bash tests in `scripts/post-triage-test.sh` (mocked
+  curl, forge dispatch, label operations). End-to-end GitLab eval cases require
+  a GitLab test fixture environment and will be added as follow-up work.
 
 ## How the agent works
 

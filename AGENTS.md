@@ -89,14 +89,16 @@ does not exist at platform level.
 
 To override an upstream skill, create a custom harness with `base:`
 composition pointing to the upstream harness and include the replacement
-skill in the `skills:` array. For example, to override `issue-labels`
-for the review agent:
+skill in the `skills:` array. The override path's basename must match
+the upstream skill's basename so `mergeSkills` dedupes by basename and
+yours wins. For example, to override `issue-labels/github` for the
+review agent:
 
 ```yaml
 # .fullsend/review.yaml
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/review.yaml#sha256=<sha256sum>
 skills:
-  - .agents/skills/issue-labels
+  - .agents/skills/issue-labels/github
 ```
 
 See [Custom sandbox image — How to configure](docs/code.md#how-to-configure)

@@ -13,7 +13,7 @@ skills:
   - skills/pr-review
   - skills/code-review
   - skills/docs-review
-  - skills/issue-labels
+  - skills/issue-labels/github
 
 host_files:
   - src: common/env/gcp-vertex.env

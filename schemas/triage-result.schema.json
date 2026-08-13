@@ -39,7 +39,10 @@
         "properties": {
           "url": {
             "type": "string",
-            "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$"
+            "anyOf": [
+              { "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$" },
+              { "pattern": "^https://(gitlab\\.com|gitlab\\.cee\\.redhat\\.com)(/[a-zA-Z0-9._-]+)+/-/merge_requests/[0-9]+$" }
+            ]
           }
         },
         "additionalProperties": false
@@ -57,7 +60,10 @@
             "properties": {
               "url": {
                 "type": "string",
-                "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$"
+                "anyOf": [
+                  { "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$" },
+                  { "pattern": "^https://(gitlab\\.com|gitlab\\.cee\\.redhat\\.com)(/[a-zA-Z0-9._-]+)+/-/(issues|merge_requests)/[0-9]+$" }
+                ]
               }
             },
             "additionalProperties": false
@@ -71,7 +77,7 @@
             "properties": {
               "repo": {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$"
+                "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$"
               },
               "title": {
                 "type": "string",
@@ -97,7 +103,7 @@
         "properties": {
           "repo": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$"
+            "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$"
           },
           "title": {
             "type": "string",

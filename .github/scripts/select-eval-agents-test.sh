@@ -31,7 +31,6 @@ setup_fixture() {
   cat > "$tmpdir/harness/triage.yaml" << 'YAML'
 agent: agents/triage.md
 doc: docs/triage.md
-policy: policies/triage.yaml
 pre_script: scripts/pre-triage.sh
 post_script: scripts/post-triage.sh
 validation_loop:
@@ -40,12 +39,34 @@ validation_loop:
 host_files:
   - src: common/env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
-  - src: env/triage.env
-    dest: /sandbox/workspace/.env.d/triage.env
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
-skills:
-  - skills/issue-labels
+  - src: env/${AGENT_NAME}.env
+    dest: /sandbox/workspace/.env.d/agent.env
+forge:
+  github:
+    policy: policies/github/triage.yaml
+    pre_script: scripts/forge-pre-triage.sh
+    post_script: scripts/forge-post-triage.sh
+    skills:
+      - skills/github-forge
+      - skills/issue-labels/github
+    host_files:
+      - src: env/github/triage.env
+        dest: /sandbox/workspace/.env.d/triage.env
+    providers:
+      - providers/github-ro.yaml
+    openshell:
+      profiles:
+        - profiles/github-code.yaml
+  gitlab:
+    policy: policies/gitlab/triage.yaml
+    skills:
+      - skills/gitlab-forge
+      - skills/issue-labels/gitlab
+    host_files:
+      - src: env/gitlab/triage.env
+        dest: /sandbox/workspace/.env.d/triage.env
 YAML
 
   cat > "$tmpdir/harness/review.yaml" << 'YAML'
@@ -113,7 +134,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "env/triage.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+RESULT=$(echo "env/github/triage.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 if [[ "$RESULT" == "triage" ]]; then
   pass "env file change selects agent via harness reference"
 else
@@ -179,7 +200,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "skills/issue-labels/README.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+RESULT=$(echo "skills/issue-labels/github/README.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 if [[ "$RESULT" == "triage" ]]; then
   pass "skill subpath change selects agent"
 else
@@ -205,7 +226,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(printf "env/triage.env\nagents/review.md\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+RESULT=$(printf "env/github/triage.env\nagents/review.md\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
 EXPECTED=$(printf "review\ntriage")
 if [[ "$RESULT" == "$EXPECTED" ]]; then
   pass "multiple agents selected from mixed changes"
@@ -259,18 +280,99 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-# Add forge scripts to the triage harness
-cat >> "$FIXTURE/harness/triage.yaml" << 'YAML'
-forge:
-  github:
-    pre_script: scripts/forge-pre-triage.sh
-    post_script: scripts/forge-post-triage.sh
-YAML
 RESULT=$(echo "scripts/forge-pre-triage.sh" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 if [[ "$RESULT" == "triage" ]]; then
   pass "forge script change selects agent"
 else
   fail "forge script change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: forge-level policy, skills, and host_files are tracked
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "skills/gitlab-forge/SKILL.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "forge skill subpath change selects agent"
+else
+  fail "forge skill subpath change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "policies/gitlab/triage.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "forge policy change selects agent"
+else
+  fail "forge policy change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "env/gitlab/triage.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "forge host_file change selects agent"
+else
+  fail "forge host_file change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: forge-level providers and openshell profiles are tracked
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "providers/github-ro.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "forge provider change selects agent"
+else
+  fail "forge provider change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "profiles/github-code.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "forge openshell profile change selects agent"
+else
+  fail "forge openshell profile change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: top-level providers and openshell profiles are tracked
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+cat >> "$FIXTURE/harness/triage.yaml" << 'YAML'
+providers:
+  - providers/vertex-ai.yaml
+YAML
+RESULT=$(echo "providers/vertex-ai.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "top-level provider change selects agent"
+else
+  fail "top-level provider change selects agent (got: '$RESULT')"
+fi
+cleanup_fixture "$FIXTURE"
+
+run_test
+FIXTURE="$(setup_fixture)"
+cat >> "$FIXTURE/harness/triage.yaml" << 'YAML'
+openshell:
+  profiles:
+    - profiles/code.yaml
+YAML
+RESULT=$(echo "profiles/code.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "triage" ]]; then
+  pass "top-level openshell profile change selects agent"
+else
+  fail "top-level openshell profile change selects agent (got: '$RESULT')"
 fi
 cleanup_fixture "$FIXTURE"
 
@@ -305,11 +407,6 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-# Add a host_file with an embedded variable
-cat >> "$FIXTURE/harness/triage.yaml" << 'YAML'
-  - src: env/${AGENT_NAME}.env
-    dest: /sandbox/workspace/.env.d/agent.env
-YAML
 RESULT=$(echo 'env/${AGENT_NAME}.env' | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 if [[ -z "$RESULT" ]]; then
   pass "embedded variable host_file paths are ignored"
@@ -387,7 +484,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(printf "env/triage.env\nenv/triage.env\nenv/triage.env\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+RESULT=$(printf "env/github/triage.env\nenv/github/triage.env\nenv/github/triage.env\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 LINES=$(echo "$RESULT" | grep -c "triage")
 if [[ "$LINES" -eq 1 ]]; then
   pass "duplicate file inputs produce single agent output"

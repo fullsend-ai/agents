@@ -172,7 +172,8 @@ install -m 0600 /dev/null "$ENV_FILE"
     issue)
       emit_env "GITHUB_ISSUE_URL" "${FIXTURE_URL}"
       # Code (and other issue-driven agents) require these explicitly;
-      # triage derives them inside its pre-script from GITHUB_ISSUE_URL alone.
+      # triage derives them from ISSUE_URL (mapped from GITHUB_ISSUE_URL
+      # by the harness forge section).
       emit_env "ISSUE_NUMBER" "${FIXTURE_NUMBER}"
       emit_env "REPO_FULL_NAME" "${EPHEMERAL_REPO}"
       ;;
