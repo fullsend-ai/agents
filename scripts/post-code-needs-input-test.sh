@@ -201,6 +201,9 @@ assert_log_pattern "needs-input-posts-comment" \
 assert_log_pattern "needs-input-posts-comment-includes-text" \
   "${NEEDS_INPUT_TEXT}" "yes"
 
+assert_log_pattern "needs-input-no-conflict-label-on-clean-path" \
+  "fs-code-needs-input-conflict" "no"
+
 assert_exit_code "needs-input-exits-zero" 0
 
 # Regression guard: a result file without needs_input must not take the
@@ -285,6 +288,9 @@ run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
 assert_log_pattern "needs-input-warns-on-discarded-commits" \
   "were not pushed and will be discarded" "yes"
 
+assert_log_pattern "needs-input-conflict-label-applied-on-discarded-commits" \
+  "labels[]=fs-code-needs-input-conflict" "yes"
+
 assert_exit_code "needs-input-with-commits-still-exits-zero" 0
 
 # Same git state, but gh pr list reports an already-open PR for the branch —
@@ -294,6 +300,9 @@ MOCK_EXISTING_PR_URL="https://github.com/${REPO_FULL_NAME}/pull/7" \
 
 assert_log_pattern "needs-input-warns-on-existing-pr" \
   "An open PR already exists for branch" "yes"
+
+assert_log_pattern "needs-input-conflict-label-applied-on-existing-pr" \
+  "labels[]=fs-code-needs-input-conflict" "yes"
 
 assert_log_pattern "needs-input-existing-pr-caveat-omits-discarded-commits" \
   "were not pushed and will be discarded" "no"

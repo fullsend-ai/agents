@@ -50,7 +50,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
-| `CODE_NEEDS_INPUT_LABEL` | Label applied when the agent sets `needs_input` instead of committing. Set via `env.runner` in `harness/code.yaml` as a hardcoded value (not forwarded from the runner environment). | `fs-code-needs-input` | Any valid GitHub label name |
+| `CODE_NEEDS_INPUT_LABEL` | Label applied when the agent sets `needs_input` instead of committing. Forwarded from the runner environment via `env.runner` in `harness/code.yaml`. The script defaults to `fs-code-needs-input` when unset. | `fs-code-needs-input` | Any valid GitHub label name |
 
 ## How the agent works
 
