@@ -68,12 +68,12 @@ execution:
     # Two cases now share this window: 001-fix-add (a 2-line arithmetic bug
     # that completes in well under a minute) and 002-dead-config-field (a
     # cross-file dead-config removal with a larger 60-turn / $4.00 budget).
-    # Neither is expected to approach 1700s in practice — the code agent's
-    # own per-iteration budget (2100s, harness/code.yaml) bounds each run
-    # well before this backstop — so this number should still essentially
-    # never fire. 002 has no observed CI runtime yet, so treat its headroom
-    # as an open risk to revisit once a real run exists. If a
-    # genuine hang did occur: a single-iteration hang gets caught here and
+    # Neither is expected to approach 1700s in practice: these small fixtures
+    # finish far under it. Note the 1700s outer backstop — not the larger
+    # 2100s per-iteration agent budget — is the binding limit, so a genuine
+    # hang is caught by 1700s first. 002 has no observed CI runtime yet, so
+    # treat its headroom as an open risk to revisit once a real run exists.
+    # If a genuine hang did occur: a single-iteration hang gets caught here and
     # fullsend still writes a partial metrics.json before returning (see
     # writeMetricsJSON in run.go's error path), giving an inconclusive but
     # readable "metrics.json not found"-adjacent judge failure; a

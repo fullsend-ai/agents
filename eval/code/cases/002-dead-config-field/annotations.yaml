@@ -8,19 +8,12 @@ expected_files:
 labels:
   forbidden: []
 
-# Code agent budgets (sandbox work + retries). A deliberate ceiling, not a
-# prediction — this case has no observed run of its own yet, so the numbers
-# are bounded by two reference points rather than measured, and should be
-# re-derived from this case's first CI run.
-# Lower bound: 001-fix-add (same harness, trivial fixture) observed up to
-# 35 turns / $2.12 (CI run 30166455238). This is a harder, cross-file task,
-# so expect it to sit above that.
-# Upper bound: #5808 (same dead-config-removal pattern, ~50k-LOC codebase)
-# ran 75–79 turns / $3.85–$4.02 in the Round 4 A/B benchmark (2026-08-02,
-# guyoron1/fullsend; workflow runs 30729219887 / 30740388070). This fixture
-# is ~200 LOC, so expect it to stay below that.
-# 60 turns / $4.00 sits between the two, matching 001's ceiling for a task
-# one step harder. See: guyoron1/fullsend/docs/ab-benchmark-round4/
+# Code agent budgets (sandbox work + retries). Unmeasured ceiling: this case
+# has no CI run of its own yet — re-derive from its first run. Values mirror
+# 001-fix-add's ceiling (60 turns / $4.00) and eval.yaml's max_budget_usd.
+# For reference, 001 (a trivial fixture) observed 12 turns / $2.12 (CI run
+# 29424512121) and 35 turns / $0.98 (CI run 30166455238); this cross-file
+# task is harder, so its ceiling is set no lower.
 max_turns: 60
 max_cost_usd: 4.00
 
