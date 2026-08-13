@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "in-progress", "question", "not-planned"]
+      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "in-progress", "question", "not-planned", "split"]
     },
     "reasoning": {
       "type": "string",
@@ -88,6 +88,29 @@
       },
       "additionalProperties": false
     },
+    "sub_issues": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["title", "body"],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "label_actions": {
       "$ref": "#/$defs/label_actions"
     }
@@ -122,6 +145,10 @@
           }
         }
       }
+    },
+    {
+      "if": { "properties": { "action": { "const": "split" } }, "required": ["action"] },
+      "then": { "required": ["sub_issues"] }
     }
   ],
   "$defs": {

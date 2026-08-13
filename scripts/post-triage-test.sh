@@ -61,6 +61,31 @@ fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
+# Mock yq: parse the test config.yaml for create_issues.allow_targets.
+# Handles the two queries used by post-triage.sh's is_target_allowed().
+cat > "${MOCK_BIN}/yq" <<'YQEOF'
+#!/usr/bin/env bash
+FILTER="$2"
+FILE="$3"
+if [[ ! -f "${FILE}" ]]; then
+  exit 1
+fi
+case "${FILTER}" in
+  '.create_issues.allow_targets.orgs // [] | .[]')
+    # Extract lines under orgs: indented with "      - "
+    sed -n '/^    orgs:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    ;;
+  '.create_issues.allow_targets.repos // [] | .[]')
+    # Extract lines under repos: indented with "      - "
+    sed -n '/^    repos:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+YQEOF
+chmod +x "${MOCK_BIN}/yq"
+
 export PATH="${MOCK_BIN}:${PATH}"
 export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
@@ -1073,6 +1098,167 @@ run_test_with_env "auto-code-on-whitespace-tolerant" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
   $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance'
+
+# --- Split action tests (#756) ---
+
+SPLIT_FIXTURE='{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated and reference old API."}],"comment":"This issue covers two independent problems that should be tracked separately."}'
+
+run_test "split-posts-comment" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "split-creates-first-sub-issue" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Fix crash on save --body The save handler crashes when input is empty."
+
+run_test "split-creates-second-sub-issue" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Update error messages --body Error messages are outdated and reference old API."
+
+run_test "split-closes-original" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue close 42 --repo test-org/test-repo --reason completed"
+
+run_test "split-appends-sub-issue-links" \
+  "${SPLIT_FIXTURE}" \
+  "Split into:"
+
+run_test "split-removes-blocked-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "split-removes-needs-info-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "split-removes-ready-to-code-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-to-code -X DELETE --silent"
+
+run_test "split-removes-pr-open-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
+
+run_test "split-clears-stale-triaged-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
+
+run_test "split-missing-comment-fails" \
+  '{"action":"split","reasoning":"bundles independent concerns","sub_issues":[{"title":"A","body":"a"},{"title":"B","body":"b"}]}' \
+  "" \
+  "true"
+
+run_test "split-fewer-than-two-sub-issues-fails" \
+  '{"action":"split","reasoning":"bundles independent concerns","sub_issues":[{"title":"Only one","body":"single item"}],"comment":"Split."}' \
+  "" \
+  "true"
+
+run_test "split-three-sub-issues" \
+  '{"action":"split","reasoning":"bundles three concerns","sub_issues":[{"title":"A","body":"a"},{"title":"B","body":"b"},{"title":"C","body":"c"}],"comment":"Three independent items."}' \
+  "gh issue create --repo test-org/test-repo --title C --body c"
+
+# Cross-repo split: sub-issue targeting an allowed repo should be created there.
+run_test "split-creates-allowed-cross-repo-issue" \
+  '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"allowed-org/allowed-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}' \
+  "gh issue create --repo allowed-org/allowed-repo --title Upstream fix --body Fix upstream."
+
+# Cross-repo split: sub-issue targeting a disallowed repo should be skipped.
+run_test_stdout "split-skips-disallowed-cross-repo-issue" \
+  '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"disallowed-org/other-repo","title":"Remote fix","body":"Fix remote."}],"comment":"Split across repos."}' \
+  "::warning::Skipping sub-issue creation in 'disallowed-org/other-repo'"
+
+# Cross-repo split: sub-issue without repo field defaults to source repo.
+run_test "split-defaults-to-source-repo" \
+  '{"action":"split","reasoning":"no repo field","sub_issues":[{"title":"First","body":"a"},{"title":"Second","body":"b"}],"comment":"Split."}' \
+  "gh issue create --repo test-org/test-repo --title First --body a"
+
+# --- Split functional test: end-to-end flow (#756) ---
+# Runs the split action once and verifies the complete flow in a single test:
+# sub-issue creation, comment with appended links, label cleanup, and issue closure.
+
+SPLIT_FUNC_FIXTURE='{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated and reference old API."}],"comment":"This issue covers two independent problems that should be tracked separately."}'
+
+FUNC_TEST_NAME="split-functional-end-to-end"
+FUNC_RUN_DIR="${TMPDIR}/run-${FUNC_TEST_NAME}"
+mkdir -p "${FUNC_RUN_DIR}/iteration-1/output"
+echo "${SPLIT_FUNC_FIXTURE}" > "${FUNC_RUN_DIR}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+
+FUNC_EXIT=0
+(cd "${FUNC_RUN_DIR}" && bash "${POST_SCRIPT}") > "${TMPDIR}/func-stdout.log" 2>&1 || FUNC_EXIT=$?
+
+FUNC_FAILURES=0
+
+if [[ ${FUNC_EXIT} -ne 0 ]]; then
+  echo "FAIL: ${FUNC_TEST_NAME} — script exited with code ${FUNC_EXIT}"
+  cat "${TMPDIR}/func-stdout.log"
+  FUNC_FAILURES=$((FUNC_FAILURES + 1))
+else
+  # 1. Both sub-issues are created in the source repo.
+  if ! grep -qF "gh issue create --repo test-org/test-repo --title Fix crash on save --body The save handler crashes when input is empty." "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — first sub-issue not created"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+  if ! grep -qF "gh issue create --repo test-org/test-repo --title Update error messages --body Error messages are outdated and reference old API." "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — second sub-issue not created"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 2. Comment is posted on the original issue.
+  if ! grep -qF "gh issue comment 42 --repo test-org/test-repo --body-file -" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — comment not posted"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 3. Comment body includes "Split into:" with sub-issue URLs.
+  if ! grep -qF "Split into:" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — 'Split into:' not appended to comment"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+  if ! grep -qF "https://github.com/mock-org/mock-repo/issues/999" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — sub-issue URL not in comment body"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 4. Stale labels are cleaned up.
+  for label in blocked needs-info ready-to-code pr-open triaged; do
+    if ! grep -qF "gh api repos/test-org/test-repo/issues/42/labels/${label} -X DELETE --silent" "${GH_LOG}"; then
+      echo "FAIL: ${FUNC_TEST_NAME} — '${label}' label not removed"
+      FUNC_FAILURES=$((FUNC_FAILURES + 1))
+    fi
+  done
+
+  # 5. Original issue is closed with "completed" reason.
+  if ! grep -qF "gh issue close 42 --repo test-org/test-repo --reason completed" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — original issue not closed"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 6. Sub-issues are created BEFORE the comment is posted (order matters:
+  #    URLs must be collected before the comment is assembled and posted).
+  CREATE_LINE=$(grep -nF "gh issue create" "${GH_LOG}" | head -1 | cut -d: -f1)
+  COMMENT_LINE=$(grep -nF "gh issue comment" "${GH_LOG}" | head -1 | cut -d: -f1)
+  if [[ -n "${CREATE_LINE}" ]] && [[ -n "${COMMENT_LINE}" ]] && [[ "${CREATE_LINE}" -ge "${COMMENT_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — sub-issue creation should precede comment posting"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 7. Comment is posted BEFORE the issue is closed.
+  CLOSE_LINE=$(grep -nF "gh issue close" "${GH_LOG}" | head -1 | cut -d: -f1)
+  if [[ -n "${COMMENT_LINE}" ]] && [[ -n "${CLOSE_LINE}" ]] && [[ "${COMMENT_LINE}" -ge "${CLOSE_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — comment should be posted before issue is closed"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+fi
+
+if [[ ${FUNC_FAILURES} -gt 0 ]]; then
+  echo "FAIL: ${FUNC_TEST_NAME} — ${FUNC_FAILURES} assertion(s) failed"
+  echo "Actual gh calls:"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + FUNC_FAILURES))
+else
+  echo "PASS: ${FUNC_TEST_NAME}"
+fi
 
 # --- Summary ---
 
