@@ -18,10 +18,10 @@ help:
 	@echo "  lint-fix      - Apply skillsaw's automatic lint fixes"
 
 lint:
-	uvx skillsaw==$(SKILLSAW_VERSION) --strict
+	uvx skillsaw@$(SKILLSAW_VERSION) --strict
 
 lint-fix:
-	uvx skillsaw==$(SKILLSAW_VERSION) fix
+	uvx skillsaw@$(SKILLSAW_VERSION) fix
 
 define run-timed
 	@start=$$(date +%s); \
