@@ -4,7 +4,8 @@ description: >-
   Discover repository labels and recommend contextual labels to add or remove
   on issues and pull requests. Produces label_actions in the agent result
   JSON. Use when labeling an issue or pull request based on its content and
-  the repository's label conventions.
+  the repository's label conventions, or when delegated to by the review or
+  triage agent.
 ---
 
 # Issue Labels
