@@ -179,14 +179,9 @@ rules:
     #   instruction:
     #     warn: 4000
     #     error: 8000
-      # Raised from the defaults (warn 3000 / error 6000): code-implementation
-      # and pr-review are dense, production-tuned orchestration procedures.
-      # Both thresholds are set above pr-review's current size (~15k tokens)
-      # so neither warns nor errors; CI runs --strict, so a lingering warning
-      # would fail the build the same as an error.
-      skill:
-        warn: 16000
-        error: 20000
+    #   skill:
+    #     warn: 3000
+    #     error: 6000
     #   command:
     #     warn: 2000
     #     error: 4000
