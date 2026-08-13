@@ -37,13 +37,13 @@ on:
         default: main
     secrets:
       E2E_GCP_WIF_PROVIDER:
-        required: true
+        required: false
       E2E_GCP_SERVICE_ACCOUNT:
-        required: true
+        required: false
       E2E_GCP_PROJECT_ID:
-        required: true
+        required: false
       EVAL_GH_TOKEN:
-        required: true
+        required: false
 
 concurrency:
   group: >-
@@ -95,6 +95,7 @@ jobs:
     needs: gate
     if: >-
       !cancelled() &&
+      github.repository_owner == 'fullsend-ai' &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -160,7 +161,13 @@ jobs:
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
+          ref: >-
+            ${{ github.repository != 'fullsend-ai/agents'
+                && github.workflow_sha
+                || (github.event_name == 'pull_request_target'
+                    && github.event.pull_request.head.sha
+                    || github.sha) }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -193,6 +200,7 @@ jobs:
     needs: [gate, detect]
     if: >-
       !cancelled() &&
+      github.repository_owner == 'fullsend-ai' &&
       needs.detect.outputs.agents != '[]' &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
@@ -207,7 +215,13 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
+          ref: >-
+            ${{ github.repository != 'fullsend-ai/agents'
+                && github.workflow_sha
+                || (github.event_name == 'pull_request_target'
+                    && github.event.pull_request.head.sha
+                    || github.sha) }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           submodules: true
@@ -267,7 +281,7 @@ jobs:
 
       - name: Configure OpenShell gateway
         run: |
-          source "${FULLSEND_CHECKOUT}/.github/scripts/openshell-version.sh"
+          eval "$(grep -E '^OPENSHELL_(VERSION|SHA)=' "${FULLSEND_CHECKOUT}/.github/scripts/openshell-version.sh")"
           if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
             echo "::error::Failed to resolve OpenShell version from fullsend checkout"
             exit 1
@@ -392,6 +406,7 @@ jobs:
           GATE_RESULT: ${{ needs.gate.result }}
           DETECT_RESULT: ${{ needs.detect.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
+          CROSS_REPO: ${{ github.repository != 'fullsend-ai/agents' }}
         run: |
           if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
             echo "::error::Gate job ${GATE_RESULT}"
@@ -403,5 +418,9 @@ jobs:
           fi
           if [ "$TESTS_RESULT" = "failure" ] || [ "$TESTS_RESULT" = "cancelled" ]; then
             echo "::error::One or more functional tests ${TESTS_RESULT}"
+            exit 1
+          fi
+          if [ "$CROSS_REPO" = "true" ] && [ "$TESTS_RESULT" = "skipped" ]; then
+            echo "::error::Cross-repo call completed with zero functional tests — agents list was empty or detect was skipped"
             exit 1
           fi
