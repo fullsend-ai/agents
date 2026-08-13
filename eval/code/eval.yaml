@@ -65,8 +65,14 @@ execution:
     # timeout envelope; matches eval/fix/eval.yaml's value instead (see
     # execution.timeout above).
     #
-    # This fixture is a 2-line arithmetic bug and completes in well under a
-    # minute in practice, so this number essentially never fires. If a
+    # Two cases now share this window: 001-fix-add (a 2-line arithmetic bug
+    # that completes in well under a minute) and 002-dead-config-field (a
+    # cross-file dead-config removal with a larger 60-turn / $4.00 budget).
+    # Neither is expected to approach 1700s in practice — the code agent's
+    # own per-iteration budget (2100s, harness/code.yaml) bounds each run
+    # well before this backstop — so this number should still essentially
+    # never fire. 002 has no observed CI runtime yet, so treat its headroom
+    # as an open risk to revisit once a real run exists. If a
     # genuine hang did occur: a single-iteration hang gets caught here and
     # fullsend still writes a partial metrics.json before returning (see
     # writeMetricsJSON in run.go's error path), giving an inconclusive but
