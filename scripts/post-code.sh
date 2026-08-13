@@ -766,20 +766,32 @@ enable_auto_merge() {
 
   # Guard: only arm when PR is BLOCKED — immediate-merge states (CLEAN,
   # HAS_HOOKS, UNSTABLE) cause gh to merge on the spot, bypassing review/CI.
-  local pr_json
-  pr_json="$(gh pr view "${target_pr}" --repo "${repo}" \
-    --json mergeStateStatus,autoMergeRequest,baseRefName 2>/dev/null || true)"
-  if [ -z "${pr_json}" ]; then
-    gha_echo warning "Auto-merge: could not query PR #${target_pr} — skipping"
-    return 0
-  fi
+  # GitHub computes mergeStateStatus asynchronously after PR creation or
+  # push, so retry on UNKNOWN before giving up.
+  local pr_json merge_state
+  local _am_attempt
+  for _am_attempt in 1 2 3; do
+    pr_json="$(gh pr view "${target_pr}" --repo "${repo}" \
+      --json mergeStateStatus,autoMergeRequest,baseRefName 2>/dev/null || true)"
+    if [ -z "${pr_json}" ]; then
+      gha_echo warning "Auto-merge: could not query PR #${target_pr} — skipping"
+      return 0
+    fi
 
-  local merge_state
-  merge_state="$(echo "${pr_json}" | jq -r '.mergeStateStatus // "UNKNOWN"')"
+    merge_state="$(echo "${pr_json}" | jq -r '.mergeStateStatus // "UNKNOWN"')"
+    if [ "${merge_state}" != "UNKNOWN" ]; then
+      break
+    fi
+    if [ "${_am_attempt}" -lt 3 ]; then
+      echo "Auto-merge: merge state is UNKNOWN (attempt ${_am_attempt}/3) — retrying in 5s..."
+      sleep 5
+    fi
+  done
+
   case "${merge_state}" in
     BLOCKED) ;;
     UNKNOWN)
-      gha_echo warning "Auto-merge: could not determine PR merge state — skipping"
+      gha_echo warning "Auto-merge: could not determine PR merge state after 3 attempts — skipping"
       return 0
       ;;
     *)
