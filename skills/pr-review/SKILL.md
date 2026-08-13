@@ -5,8 +5,8 @@ description: >-
   sub-agents in parallel across review dimensions, synthesizes their
   findings, runs PR-specific checks, and produces a structured review
   result. Sub-agent definitions live in sub-agents/ relative to this
-  file. Use when reviewing a pull request end-to-end and producing a
-  structured review result.
+  file. Use when a pull request needs end-to-end review encompassing
+  triage, code quality, security, and documentation.
 ---
 
 # PR Review (Orchestrator)
@@ -691,7 +691,7 @@ runs in step 6d):
    reviewing PR" template, and include everything else verbatim
 
    **Part 3 — Doc review skill:** *If and only if* the roster key is
-   "docs-currency", read "[../docs-review/SKILL.md](../docs-review/SKILL.md)" and include its
+   "docs-currency", read [`../docs-review/SKILL.md`](../docs-review/SKILL.md) and include its
    contents verbatim
 
    **Part 4 — Context package:** the assembled context from step 3d,
