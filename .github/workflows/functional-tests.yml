@@ -28,6 +28,19 @@ on:
     types: [opened, synchronize, reopened, labeled]
   merge_group:
   workflow_dispatch:
+    inputs:
+      fullsend_ref:
+        description: 'fullsend ref to build from (default: main)'
+        required: false
+        type: string
+        default: main
+  workflow_call:
+    inputs:
+      fullsend_ref:
+        description: 'fullsend ref (branch, tag, or SHA) to build from'
+        required: false
+        type: string
+        default: main
 
 concurrency:
   group: >-
