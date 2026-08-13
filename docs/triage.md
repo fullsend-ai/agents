@@ -160,6 +160,16 @@ a `.fullsend/triage.yaml` with a `base:` pointing at
 [`harness/triage.yaml`](../harness/triage.yaml) and your own `env.runner`
 values, referenced from `.fullsend/config.yaml`.
 
+### Issue filing allowlist
+
+Cross-repo issue creation for prerequisites is governed by
+`create_issues.allow_targets` in `config.yaml`. Prerequisite issues
+targeting repos outside the allowlist are skipped with a warning and
+surfaced in the summary comment so they can be filed manually.
+
+The source repo (where the triaged issue lives) is always implicitly
+allowed.
+
 ## How the agent works
 
 The triage agent runs in a read-only sandbox. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
