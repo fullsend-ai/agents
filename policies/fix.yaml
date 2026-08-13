@@ -94,6 +94,11 @@ network_policies:
         enforcement: enforce
         access: read-only
         allow_encoded_slash: true
+      - host: "registry.yarnpkg.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
       - host: "pypi.org"
         port: 443
         protocol: rest
@@ -121,6 +126,10 @@ network_policies:
         access: read-only
     binaries:
       - path: "**/npm"
+      - path: "**/npx"
+      - path: "**/yarn"
+      - path: "**/yarnpkg"
+      - path: "**/pnpm"
       - path: "**/node"
       - path: "**/pip"
       - path: "**/pip3"
