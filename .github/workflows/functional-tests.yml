@@ -28,24 +28,29 @@ on:
     types: [opened, synchronize, reopened, labeled]
   merge_group:
   workflow_dispatch:
-    inputs:
-      fullsend_ref:
-        description: 'fullsend ref to build from (default: main)'
-        required: false
-        type: string
-        default: main
   workflow_call:
     inputs:
       fullsend_ref:
-        description: 'fullsend ref (branch, tag, or SHA) to build from'
+        description: 'fullsend ref to build from (main or release tag v*)'
         required: false
         type: string
         default: main
+    secrets:
+      E2E_GCP_WIF_PROVIDER:
+        required: true
+      E2E_GCP_SERVICE_ACCOUNT:
+        required: true
+      E2E_GCP_PROJECT_ID:
+        required: true
+      EVAL_GH_TOKEN:
+        required: true
 
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request_target'
         && format('functional-{0}', github.event.pull_request.number)
+        || github.repository != 'fullsend-ai/agents'
+        && format('functional-call-{0}', github.run_id)
         || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request_target'
@@ -100,7 +105,11 @@ jobs:
     steps:
       - name: Get changed files
         id: changes
-        if: github.event_name != 'workflow_dispatch'
+        if: >-
+          github.repository == 'fullsend-ai/agents' &&
+          (github.event_name == 'pull_request_target' ||
+           github.event_name == 'push' ||
+           github.event_name == 'merge_group')
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
@@ -224,28 +233,36 @@ jobs:
           git config --global user.name "fullsend-eval[bot]"
           git config --global user.email "fullsend-eval[bot]@users.noreply.github.com"
 
-      - name: Setup Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
-        with:
-          go-version: stable
+      - name: Validate fullsend ref
+        env:
+          FULLSEND_REF: ${{ inputs.fullsend_ref || 'main' }}
+        run: |
+          if [[ "${FULLSEND_REF}" != "main" && ! "${FULLSEND_REF}" =~ ^v[0-9] ]]; then
+            echo "::error::fullsend_ref must be 'main' or a release tag (v*), got '${FULLSEND_REF}'"
+            exit 1
+          fi
 
-      - name: Clone and build fullsend
+      - name: Clone fullsend
         env:
           GH_TOKEN: ${{ github.token }}
           FULLSEND_REF: ${{ inputs.fullsend_ref || 'main' }}
         run: |
           FULLSEND_CHECKOUT="${RUNNER_TEMP}/fullsend"
-          if ! git clone --depth 1 --branch "${FULLSEND_REF}" \
+          git clone --depth 1 --branch "${FULLSEND_REF}" \
             "https://x-access-token:${GH_TOKEN}@github.com/fullsend-ai/fullsend.git" \
-            "${FULLSEND_CHECKOUT}" 2>/dev/null; then
-            rm -rf "${FULLSEND_CHECKOUT}"
-            git clone "https://x-access-token:${GH_TOKEN}@github.com/fullsend-ai/fullsend.git" \
-              "${FULLSEND_CHECKOUT}"
-            git -C "${FULLSEND_CHECKOUT}" checkout "${FULLSEND_REF}"
-          fi
+            "${FULLSEND_CHECKOUT}"
+          echo "FULLSEND_CHECKOUT=${FULLSEND_CHECKOUT}" >> "$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: ${{ env.FULLSEND_CHECKOUT }}/go.mod
+          cache-dependency-path: ${{ env.FULLSEND_CHECKOUT }}/go.sum
+
+      - name: Build fullsend
+        run: |
           make -C "${FULLSEND_CHECKOUT}" go-build
           echo "${FULLSEND_CHECKOUT}/bin" >> "$GITHUB_PATH"
-          echo "FULLSEND_CHECKOUT=${FULLSEND_CHECKOUT}" >> "$GITHUB_ENV"
           "${FULLSEND_CHECKOUT}/bin/fullsend" --version
 
       - name: Configure OpenShell gateway
