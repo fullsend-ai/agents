@@ -121,6 +121,55 @@ After subagents return their findings, use your main context to:
 3. Form hypotheses about root causes
 4. Decide what changes to propose and where
 
+## Test flakiness
+
+Retro runs are well-positioned to detect test flakiness — the same test
+failing then passing across re-runs of the same commit with no relevant
+diff in between. When you spot this pattern, propose **resilience** fixes,
+not retry-budget increases.
+
+### Detection signal
+
+A test is likely flaky when:
+
+- It fails in one workflow run and passes in a subsequent run on the
+  same commit.
+- There is no code change between the two runs that could explain the
+  different outcome.
+- The failure message points to a timeout, connection error, race
+  condition, or non-deterministic ordering.
+
+### What to propose
+
+Apply this ordering — prefer the first option that fits:
+
+1. **Production-code resilience.** If the flaky test exercises a real
+   dependency (network call, external service, subprocess, database
+   connection), propose a retry-with-exponential-backoff handler in the
+   *production* code path. This is a reliability gap that would
+   eventually surface at runtime, not just in CI.
+2. **Test-fixture resilience.** If the flakiness is purely a
+   test-harness artifact (waiting for a service to start, racing a
+   background process, port allocation collision), propose a
+   backoff/retry helper in the fixture or setup step — not in the
+   assertion itself.
+
+### What not to propose
+
+Do not propose retry-budget approaches:
+
+- Bumping `MAX_RETRIES` or equivalent retry-count settings
+- Adding CI rerun triggers or automatic workflow re-dispatch
+- Wrapping individual assertions in retry loops
+
+These hide the symptom without addressing the underlying cause. They
+conflict with the "don't commit broken code" stance in the code and fix
+agent definitions.
+
+If you are unsure whether a failure is a genuine flake or a real bug,
+say so explicitly in your proposal and recommend investigation before
+applying either fix category.
+
 ## Before proposing: check for existing issues
 
 **This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
