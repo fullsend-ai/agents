@@ -36,9 +36,9 @@
 #                       branch is allowed. (default: auto-detected)
 #   CODE_NEEDS_INPUT_LABEL
 #                     — label applied when the agent sets needs_input instead
-#                       of committing. Set via env.runner in harness/code.yaml
-#                       as a hardcoded value (not forwarded from the runner
-#                       environment). (default: fs-code-needs-input)
+#                       of committing. Forwarded from the runner environment
+#                       via env.runner in harness/code.yaml. The script
+#                       defaults when unset. (default: fs-code-needs-input)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
 #   CODE_AUTO_MERGE    — "true" to enable auto-merge on the PR/MR after
@@ -1906,6 +1906,16 @@ post_needs_input_comment() {
     caveat_block="
 ${caveat}
 "
+    # Apply a machine-queryable conflict label so dashboards/automation can
+    # distinguish "clean needs_input" from "agent violated the needs_input
+    # contract" without reading comment prose.
+    local conflict_label="${label}-conflict"
+    gh label create "${conflict_label}" --repo "${REPO_FULL_NAME}" \
+      --description "Code agent set needs_input but left local commits or an open PR" --color "E4E669" \
+      --force 2>/dev/null || true
+    gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
+      -f "labels[]=${conflict_label}" --silent 2>/dev/null || \
+      gha_echo warning "Failed to apply conflict label '${conflict_label}' to issue #${safe_issue_number}"
   fi
 
   local body

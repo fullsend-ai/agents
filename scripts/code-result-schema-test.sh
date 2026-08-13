@@ -77,6 +77,10 @@ run_test "valid-with-needs-input" \
   '{"target_branch":"main","needs_input":"scan-secrets helper not found"}' \
   "true"
 
+run_test "valid-needs-input-without-target-branch" \
+  '{"needs_input":"sandbox tooling broken — cannot determine target branch"}' \
+  "true"
+
 run_test "invalid-needs-input-empty-string" \
   '{"target_branch":"main","needs_input":""}' \
   "false"

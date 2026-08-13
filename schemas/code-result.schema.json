@@ -4,7 +4,6 @@
   "title": "Code Agent Result",
   "description": "Structured output from the code agent documenting the target branch and PR body for PR creation.",
   "type": "object",
-  "required": ["target_branch"],
   "additionalProperties": false,
   "properties": {
     "target_branch": {
@@ -28,5 +27,13 @@
       "maxLength": 4000,
       "description": "Set when the agent cannot proceed without human input — either the environment/tooling is broken (can't verify changes) or the issue is genuinely uninterpretable. Explain specifically what is needed. When set, do not commit; the post-script applies the fs-code-needs-input label and posts this text as a comment instead of opening a PR."
     }
+  },
+  "if": {
+    "not": {
+      "required": ["needs_input"]
+    }
+  },
+  "then": {
+    "required": ["target_branch"]
   }
 }
