@@ -1,12 +1,13 @@
 ---
 name: pr-review
 description: >-
-  PR review orchestrator. Triages the change, dispatches specialized
+  Use when a pull request needs end-to-end review encompassing
+  triage, code quality, security, and documentation. PR review
+  orchestrator. Triages the change, dispatches specialized
   sub-agents in parallel across review dimensions, synthesizes their
   findings, runs PR-specific checks, and produces a structured review
   result. Sub-agent definitions live in sub-agents/ relative to this
-  file. Use when a pull request needs end-to-end review encompassing
-  triage, code quality, security, and documentation.
+  file.
 ---
 
 # PR Review (Orchestrator)
