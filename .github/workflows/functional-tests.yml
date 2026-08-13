@@ -268,7 +268,8 @@ jobs:
           EOF
 
       - name: Install OpenShell CLI
-        run: "${FULLSEND_CHECKOUT}/.github/scripts/install-openshell.sh"
+        run: |
+          "${FULLSEND_CHECKOUT}/.github/scripts/install-openshell.sh"
 
       - name: Install Podman
         run: |
