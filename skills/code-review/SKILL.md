@@ -4,7 +4,7 @@ description: >-
   Standalone procedure for reviewing any code change. Identifies the
   change, reads surrounding source, evaluates across six review
   dimensions, and compiles structured findings. Use when reviewing a
-  code change directly, or when delegated to by the pr-review skill.
+  code change, whether invoked directly or by the pr-review skill.
 ---
 
 # Code Review
