@@ -69,9 +69,21 @@ labels and apply them to PRs during review. This is the same skill used by the
 To overload the built-in skill, create your own `issue-labels` skill in
 `.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
 `.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-You can also overload it at the org level in your `.fullsend` config repo at
-`customized/skills/issue-labels/SKILL.md`. At runtime, your version replaces
-the upstream default — no other configuration needed.
+To override explicitly, create a custom harness with `base:`
+composition and include the replacement skill in the `skills:` array.
+At runtime, your version replaces the upstream default.
+
+For example, to override `issue-labels` for the review agent:
+
+```yaml
+# .fullsend/review.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/review.yaml#sha256=<sha256sum>
+skills:
+  - .agents/skills/issue-labels
+```
+
+See [Custom sandbox image — How to configure](code.md#how-to-configure)
+for how to obtain the `<SHA>` and `<sha256sum>` values.
 
 See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
 [Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).

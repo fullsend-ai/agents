@@ -34,7 +34,7 @@ Before writing code, answer:
 |---------|-------------|---------|
 | **Environment variable** | Runtime behavior toggle, simple values, specific to one agent — per ADR 0080 (fullsend-ai/fullsend), this is single-agent behavior tuning rather than a `config.yaml` field. Repo owners set it in their base-derived harness files, overriding via `base:` composition (ADR 0045). Per ADR 0049, it must use an `{AGENT}_` prefix. Per ADR 0081, the CI workflow `env:` block is reserved for infrastructure plumbing (credentials, project IDs, regions) — don't use workflow inputs to set a behavior knob's value, except for values only computable at CI runtime. We recommend picking one surface per option — either an env var or a `config.yaml` option, not both — to avoid two sources of truth. | `TRIAGE_AUTO_CODE` |
 | **`config.yaml` option** | The option should be respected by *every* agent, not just one — no agent-specific prefix, and not configurable via env var. | the cross-repo allow list |
-| **Skill override** | The behavior is best expressed as natural-language instructions to the agent. Repo owners drop a replacement skill in `.agents/skills/`. Org owners override via `base:` composition (ADR 0045) — inherit the upstream harness and add the skill under `skills:` with the same basename as the one being replaced, so the merge dedupes by basename (fullsend-ai/fullsend #5409) and it wins. The older `customized/skills/` overlay in the org `.fullsend` config repo is deprecated by ADR 0064. | `issue-labels` skill |
+| **Skill override** | The behavior is best expressed as natural-language instructions to the agent. Repo owners drop a replacement skill in `.agents/skills/`. Org owners override via `base:` composition (ADR 0045) — inherit the upstream harness and add the skill under `skills:` with the same basename as the one being replaced, so the merge dedupes by basename (fullsend-ai/fullsend #5409) and it wins. | `issue-labels` skill |
 
 Environment variables are the simplest for end users to configure.
 Skills are more flexible — they let repo or org owners override
@@ -133,8 +133,8 @@ agent prompt:
 - [ ] If the env var is agent-specific, consider whether or not it should be
       baked into that skill.  Keep agent-specific logic in the agent prompt;
       keep reusable judgment in the skill.
-- [ ] If you add a new skill, add it to `harness/<agent>.yaml` under
-      `skills:` and to the agent frontmatter `skills:` array.
+- [ ] If you add a new skill, add it to the harness `skills:` array
+      in `harness/<agent>.yaml`.
 
 ## 9. Update documentation
 
