@@ -1,11 +1,11 @@
 ---
 name: fix-review
 description: >-
+  Use when implementing fixes for review comments left on an open PR.
   Step-by-step procedure for addressing review feedback on an existing PR.
   Reads review comments, plans targeted fixes, implements, verifies with
   tests and linters, commits, and produces structured output for the
-  post-script. Use when implementing fixes for review comments left on
-  an open PR.
+  post-script.
 ---
 
 # Fix Review
