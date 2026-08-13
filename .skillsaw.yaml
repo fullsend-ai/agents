@@ -6,12 +6,12 @@ version: "0.18.0"
 rules:
 
   # Plugin must have .claude-plugin/plugin.json
-  plugin-json-required:
+  claude-plugin-json-required:
     enabled: auto
     severity: error
 
   # plugin.json must be valid JSON with required fields
-  plugin-json-valid:
+  claude-plugin-json-valid:
     enabled: auto
     severity: error
     recommended-fields:
@@ -20,54 +20,55 @@ rules:
     - author
 
   # Plugin names should use kebab-case
-  plugin-naming:
+  claude-plugin-naming:
     enabled: auto
     severity: warning
 
   # Command files should use kebab-case naming
-  command-naming:
+  claude-command-naming:
     enabled: true
     severity: warning
 
   # Command files must have valid frontmatter with description
-  command-frontmatter:
+  claude-command-frontmatter:
     enabled: true
     severity: error
 
   # Command files should have Name, Synopsis, Description, and Implementation sections
-  command-sections:
+  claude-command-sections:
     enabled: false
     severity: warning
 
   # Command Name section should be 'plugin-name:command-name'
-  command-name-format:
+  claude-command-name-format:
     enabled: false
     severity: warning
 
   # Marketplace.json must be valid JSON with required fields
-  # Disabled: this repo isn't a distributable Claude Code plugin
-  # marketplace — plugins/gopls-lsp is internal fullsend harness config
-  # (see harness/code.yaml), not a plugin skillsaw's marketplace rules
-  # apply to. Confirmed zero plugins are actually detected here either
-  # way, so marketplace-registration below is provably inert; re-enable
-  # both if this repo ever adds a real distributable plugin.
-  marketplace-json-valid:
+  # Disabled: this repo has no top-level .claude-plugin/marketplace.json,
+  # so it isn't a distributable Claude Code marketplace. plugins/gopls-lsp/
+  # plugin.json sits directly under plugins/gopls-lsp/, not under a
+  # .claude-plugin/ directory, so it's never recognized as a plugin either
+  # — confirmed zero plugins are detected here. Re-enable both this and
+  # claude-marketplace-registration below if this repo ever adds a real
+  # top-level .claude-plugin/marketplace.json.
+  claude-marketplace-json-valid:
     enabled: false
     severity: error
 
   # Plugins must be registered in marketplace.json
-  # Disabled: see marketplace-json-valid above.
-  marketplace-registration:
+  # Disabled: see claude-marketplace-json-valid above.
+  claude-marketplace-registration:
     enabled: false
     severity: error
 
   # Plugin should have a README.md file
-  plugin-readme:
+  claude-plugin-readme:
     enabled: auto
     severity: warning
 
   # Agent files must have valid frontmatter with name and description
-  agent-frontmatter:
+  claude-agent-frontmatter:
     enabled: true
     severity: error
 
@@ -100,7 +101,7 @@ rules:
     # allowlist: []
 
   # .claude/rules/ files must be markdown with valid optional paths frontmatter
-  rules-valid:
+  claude-rules-valid:
     enabled: auto
     severity: error
 
@@ -284,7 +285,7 @@ rules:
     severity: warning
 
   # Flags settings keys that execute arbitrary commands (apiKeyHelper, awsAuthRefresh, awsCredentialExport, gcpAuthRefresh, otelHeadersHelper) and dangerous env vars (LD_PRELOAD, NODE_OPTIONS, proxy settings, GIT_SSH_COMMAND, etc.)
-  settings-dangerous:
+  claude-settings-dangerous:
     enabled: auto
     severity: error
     # allow_command_exec_keys: []
