@@ -1,9 +1,12 @@
 ---
 name: issue-labels
 description: >-
-  Discover project labels and recommend contextual labels to add or remove
-  on issues and merge requests. GitLab variant using curl against the GitLab
-  REST API. Produces label_actions in the agent result JSON.
+  Use when labeling an issue or merge request based on its content and the
+  project's label conventions, or when delegated to by the review or
+  triage agent. Discover project labels and recommend contextual labels
+  to add or remove on issues and merge requests. GitLab variant using curl
+  against the GitLab REST API. Produces label_actions in the agent result
+  JSON.
 ---
 
 # Issue Labels (GitLab)
