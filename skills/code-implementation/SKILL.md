@@ -1,10 +1,10 @@
 ---
 name: code-implementation
 description: >-
-  Step-by-step procedure for implementing a GitHub issue. Gathers context,
-  discovers repo conventions, plans the change, implements, verifies with
-  tests and linters, and commits to a feature branch. Use when implementing
-  a triaged GitHub issue end-to-end into a committed, tested change.
+  Use when implementing a triaged GitHub issue end-to-end into a committed,
+  tested change. Step-by-step procedure for implementing a GitHub issue.
+  Gathers context, discovers repo conventions, plans the change, implements,
+  verifies with tests and linters, and commits to a feature branch.
 ---
 
 # Code Implementation
