@@ -1,8 +1,8 @@
 ---
 name: code-review
 description: >-
-  Use when reviewing a code change directly (local diff, pre-push, or
-  standalone) with no PR in context. Identifies the change, reads
+  Use when reviewing a code change (local diff, pre-push, standalone,
+  or delegated by another skill). Identifies the change, reads
   surrounding source, evaluates across six review dimensions, and
   compiles structured findings.
 ---
