@@ -57,6 +57,18 @@ esac
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
+# Mock gitleaks: the real gitleaks is installed later in the post-code script
+# (by install_gitleaks) — well past the needs_input early-exit path. On CI
+# runners, gitleaks is not pre-installed, so the scan in
+# post_needs_input_comment would fail with exit 127, causing the content to be
+# replaced with a generic redacted message and breaking test assertions.
+cat > "${MOCK_BIN}/gitleaks" <<'GLEOF'
+#!/usr/bin/env bash
+# No secrets found — exit 0.
+exit 0
+GLEOF
+chmod +x "${MOCK_BIN}/gitleaks"
+
 # Runs the real post-code script against a fixture agent-result.json.
 # Leaves the result in EXIT_CODE, the gh call log at ${GH_LOG}, and stdout
 # at ${TMPDIR}/stdout.log for assertions.
