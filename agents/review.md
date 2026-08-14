@@ -305,7 +305,7 @@ jq -n \
   --arg repo "<owner/repo>" \
   --arg head_sha "<sha>" \
   --arg body "<markdown review comment>" \
-  --argjson findings '[{"severity":"high","category":"<category>","file":"<path>","description":"<desc>","verified_variables":["<var1>"],"unchecked_variables":["<var2>"]}]' \
+  --argjson findings '[{"severity":"low","category":"<category>","file":"<path>","description":"<desc>","actionable":true,"verified_variables":["<var1>"],"unchecked_variables":["<var2>"]}]' \
   '{action: $action, pr_number: $pr_number, repo: $repo,
     head_sha: $head_sha, body: $body, findings: $findings}' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"

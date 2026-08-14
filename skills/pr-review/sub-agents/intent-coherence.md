@@ -39,7 +39,9 @@ For these changes, return a single info-level finding:
   "category": "scope-authorization-implicit",
   "file": "N/A",
   "description": "Authorization inferred from mechanical nature of change (value-only / digest bump). No architectural review required.",
-  "actionable": false
+  "actionable": false,
+  "verified_variables": [],
+  "unchecked_variables": []
 }
 ```
 
