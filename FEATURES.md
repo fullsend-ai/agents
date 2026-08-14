@@ -92,7 +92,8 @@ Ask yourself:
       that logic lives.
 - [ ] **Both:** Some features may require changes in both.
 - [ ] **Generated scripts:** `scripts/pre-code.sh`, `scripts/post-code.sh`,
-      `scripts/post-fix.sh`, and `scripts/post-prioritize.sh` are generated
+      `scripts/post-fix.sh`, `scripts/post-prioritize.sh`,
+      `scripts/pre-triage.sh`, and `scripts/post-triage.sh` are generated
       from the corresponding `scripts/<name>.src.sh` — edit the `.src.sh`
       file and run
       `make script-build` to regenerate the committed `.sh`. Run

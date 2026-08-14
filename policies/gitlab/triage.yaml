@@ -1,10 +1,10 @@
 version: 1
 
-# Sandbox policy for the triage agent.
+# Sandbox policy for the triage agent (GitLab forge).
 #
-# Needs GitHub API for issue/PR triage and Vertex AI for inference.
-# curl excluded from the binary allowlist to prevent raw HTTP access
-# with the injected GH_TOKEN.
+# Needs GitLab API for issue/MR triage and Vertex AI for inference.
+# gh excluded from the binary allowlist — only curl is permitted for
+# GitLab API access.
 
 filesystem_policy:
   include_workdir: true
@@ -34,19 +34,20 @@ network_policies:
       - path: "**/claude"
       - path: "**/node"
 
-  github_api:
-    name: github-api
+  gitlab_api:
+    name: gitlab-api
     endpoints:
-      - host: "api.github.com"
+      - host: "gitlab.com"
         port: 443
         protocol: rest
         enforcement: enforce
         access: read-write
-      - host: "github.com"
+      # Red Hat internal GitLab — supported deployment target for enrolled repos
+      - host: "gitlab.cee.redhat.com"
         port: 443
         protocol: rest
         enforcement: enforce
         access: read-write
     binaries:
-      - path: "**/gh"
+      - path: "**/curl"
       - path: "**/node"

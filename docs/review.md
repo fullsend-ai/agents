@@ -66,24 +66,18 @@ The review agent includes the `issue-labels` skill to discover your repo's
 labels and apply them to PRs during review. This is the same skill used by the
 [triage agent](triage.md) — overloading it affects both agents.
 
-To overload the built-in skill, create your own `issue-labels` skill in
-`.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
-`.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-To override explicitly, create a custom harness with `base:`
-composition and include the replacement skill in the `skills:` array.
-At runtime, your version replaces the upstream default.
-
-For example, to override `issue-labels` for the review agent:
-
-```yaml
-# .fullsend/review.yaml
-base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/review.yaml#sha256=<sha256sum>
-skills:
-  - .agents/skills/issue-labels
-```
-
-See [Custom sandbox image — How to configure](code.md#how-to-configure)
-for how to obtain the `<SHA>` and `<sha256sum>` values.
+The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`
+and `skills/issue-labels/gitlab/SKILL.md`), registered under
+`forge.<platform>.skills` in the harness. To overload the built-in skill,
+create your own skill in `.agents/skills/issue-labels/github/SKILL.md` and
+symlink `.claude/skills` to `.agents/skills` so it's discoverable by both
+fullsend and local agent tooling. At the org level, override via `base:`
+composition (ADR 0045) — inherit the upstream harness and replace the
+forge-specific skill entry under `forge.<platform>.skills` with your own path
+whose basename matches the built-in (`github` or `gitlab`), so `mergeSkills`
+dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
+The older `customized/skills/issue-labels/SKILL.md` overlay in the org
+`.fullsend` config repo is deprecated by ADR 0064.
 
 See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
 [Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).

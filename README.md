@@ -1,6 +1,6 @@
 # fullsend agents
 
-First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) platform. These agents automate the software development lifecycle on GitHub — from issue triage through code implementation, review, fix, prioritization, and retrospective analysis.
+First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) platform. These agents automate the software development lifecycle on GitHub and GitLab — from issue triage through code implementation, review, fix, prioritization, and retrospective analysis.
 
 ## Agents
 
@@ -24,7 +24,7 @@ harness/     Harness configurations (sandbox image, timeout, scripts, plugins)
 policies/    Sandbox security policies (filesystem, network, binary restrictions)
 env/         Per-agent environment variables
 schemas/     JSON Schema for validating agent structured output
-scripts/     Pre-scripts (input validation) and post-scripts (GitHub mutations)
+scripts/     Pre-scripts (input validation) and post-scripts (forge mutations)
 skills/      Reusable skill definitions loaded by agents at runtime
 plugins/     Sandbox plugins (e.g. gopls LSP for the code agent)
 common/      Shared configuration (GCP Vertex AI auth)
