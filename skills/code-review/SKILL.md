@@ -1,10 +1,10 @@
 ---
 name: code-review
 description: >-
-  Standalone procedure for reviewing any code change. Identifies the
-  change, reads surrounding source, evaluates across six review
-  dimensions, and compiles structured findings. Use when reviewing a
-  code change, whether invoked directly or by the pr-review skill.
+  Use when reviewing a code change, whether invoked directly or by the
+  pr-review skill. Standalone procedure that identifies the change,
+  reads surrounding source, evaluates across six review dimensions, and
+  compiles structured findings.
 ---
 
 # Code Review
