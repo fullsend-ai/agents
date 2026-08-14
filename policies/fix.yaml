@@ -3,10 +3,11 @@ version: 1
 
 # Sandbox policy for the fix agent.
 #
-# Identical to the code agent policy — the fix agent needs the same network
-# access (Vertex AI, GitHub API for gh pr view/diff, package registries)
-# because it runs tests and linters. The review body is pre-fetched by the
-# workflow; the sandbox GH_TOKEN is read-only scoped.
+# Shares much of the same network and sandbox needs as the code agent
+# (Vertex AI, GitHub API for gh pr view/diff, package registries) because
+# it runs tests and linters. The two policies may diverge when fix-specific
+# access is required. The review body is pre-fetched by the workflow; the
+# sandbox GH_TOKEN is read-only scoped.
 
 filesystem_policy:
   include_workdir: true
@@ -93,6 +94,12 @@ network_policies:
         enforcement: enforce
         access: read-only
         allow_encoded_slash: true
+      - host: "registry.yarnpkg.com"
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: read-only
+        allow_encoded_slash: true
       - host: "pypi.org"
         port: 443
         protocol: rest
@@ -120,6 +127,10 @@ network_policies:
         access: read-only
     binaries:
       - path: "**/npm"
+      - path: "**/npx"
+      - path: "**/yarn"
+      - path: "**/yarnpkg"
+      - path: "**/pnpm"
       - path: "**/node"
       - path: "**/pip"
       - path: "**/pip3"
