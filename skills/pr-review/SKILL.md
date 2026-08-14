@@ -810,6 +810,9 @@ When merging
 - Combine descriptions if they add complementary detail
 - Keep the more specific remediation
 - Preserve `actionable: true` if either finding had it
+- Union both findings' `verified_variables` arrays (deduplicate)
+- Union both findings' `unchecked_variables` arrays (deduplicate);
+  remove any entry that appears in the merged `verified_variables`
 
 #### 6c. Preserve distinct-category findings
 
@@ -1138,6 +1141,7 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 
 - **[<category>]** `<file>:<line>` — <description>
   Remediation: <remediation>
+  Unchecked: <comma-separated unchecked_variables, omit line if empty>
 
 #### High
 

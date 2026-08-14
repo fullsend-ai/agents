@@ -43,6 +43,10 @@ For each finding:
    higher severity and the more specific remediation.
 4. **Challenge weak reasoning.** If a finding's description is vague,
    speculative, or not supported by the diff, mark it for removal.
+5. **Preserve variable-coverage fields.** Copy `verified_variables` and
+   `unchecked_variables` from the original finding unmodified. The
+   challenger does not re-derive these — they are the security
+   sub-agent's output.
 
 ## Output format
 
@@ -59,8 +63,8 @@ Return a JSON object with two fields:
       "description": "<description, possibly amended>",
       "remediation": "<remediation, required for critical/high>",
       "actionable": true|false,
-      "verified_variables": [],
-      "unchecked_variables": [],
+      "verified_variables": ["<carried over unmodified from the original finding>"],
+      "unchecked_variables": ["<carried over unmodified from the original finding>"],
       "challenger_action": "kept|downgraded|merged|removed",
       "challenger_reason": "<why this finding was kept/changed/removed>"
     }
