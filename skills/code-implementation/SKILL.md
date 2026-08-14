@@ -656,7 +656,7 @@ git diff
 Read every line. Check for:
 
 - Changes that don't serve the issue (scope creep, unrelated formatting)
-<!-- skillsaw-disable-next-line content-placeholder-text -->
+  <!-- skillsaw-disable-next-line content-placeholder-text -->
 - Accidental artifacts: debug prints, commented-out code, TODO comments
 - Secret material: `.env`, `*.pem`, `*.key`, `credentials.json`
 - Protected-path files (see agent definition for the authoritative list)
