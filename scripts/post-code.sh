@@ -1882,24 +1882,35 @@ post_needs_input_comment() {
   # out-of-git-tree prose as pr_body, also posted as a public issue comment.
   # Run gitleaks to catch secrets that sanitize_failure_detail's fixed
   # pattern set does not cover (e.g. AWS keys, DB passwords).
-  local ni_tmp gl_stderr gl_rc
-  ni_tmp="$(mktemp)"
-  printf '%s\n' "${sanitized_input}" > "${ni_tmp}"
-  gl_stderr="$(mktemp)"
-  gl_rc=0
-  gitleaks detect --source "${ni_tmp}" --no-git --redact 2>"${gl_stderr}" || gl_rc=$?
-  if [ -s "${gl_stderr}" ]; then
-    sed 's/^/::debug::gitleaks: /' "${gl_stderr}"
+  #
+  # install_gitleaks is a no-op when gitleaks is already on PATH (sandbox
+  # images pre-install it).  On CI runners without a pre-installed binary
+  # it downloads and verifies the pinned release — the same function the
+  # main secret-scan step (step 3) calls later, but that step is past the
+  # needs_input early-exit, so we must ensure the binary is available here.
+  if ! install_gitleaks; then
+    gha_echo warning "Failed to install gitleaks for needs_input scan; replacing content with generic message"
+    sanitized_input="(Content redacted — secret scan of the agent's explanation could not run because gitleaks installation failed. Check the workflow log for details.)"
+  else
+    local ni_tmp gl_stderr gl_rc
+    ni_tmp="$(mktemp)"
+    printf '%s\n' "${sanitized_input}" > "${ni_tmp}"
+    gl_stderr="$(mktemp)"
+    gl_rc=0
+    gitleaks detect --source "${ni_tmp}" --no-git --redact 2>"${gl_stderr}" || gl_rc=$?
+    if [ -s "${gl_stderr}" ]; then
+      sed 's/^/::debug::gitleaks: /' "${gl_stderr}"
+    fi
+    rm -f "${gl_stderr}"
+    if [ "${gl_rc}" -eq 1 ]; then
+      gha_echo warning "BLOCKED — secret detected in needs_input text; replacing with generic message"
+      sanitized_input="(Content redacted — the agent's explanation contained a potential secret. Check the workflow log for details.)"
+    elif [ "${gl_rc}" -gt 1 ]; then
+      gha_echo warning "gitleaks scan of needs_input failed (exit ${gl_rc}); replacing with generic message"
+      sanitized_input="(Content redacted — secret scan of the agent's explanation failed. Check the workflow log for details.)"
+    fi
+    rm -f "${ni_tmp}"
   fi
-  rm -f "${gl_stderr}"
-  if [ "${gl_rc}" -eq 1 ]; then
-    gha_echo warning "BLOCKED — secret detected in needs_input text; replacing with generic message"
-    sanitized_input="(Content redacted — the agent's explanation contained a potential secret. Check the workflow log for details.)"
-  elif [ "${gl_rc}" -gt 1 ]; then
-    gha_echo warning "gitleaks scan of needs_input failed (exit ${gl_rc}); replacing with generic message"
-    sanitized_input="(Content redacted — secret scan of the agent's explanation failed. Check the workflow log for details.)"
-  fi
-  rm -f "${ni_tmp}"
 
   local caveat_block=""
   if [ -n "${caveat}" ]; then
