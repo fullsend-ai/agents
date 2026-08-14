@@ -1,9 +1,9 @@
 ---
 name: code-review
 description: >-
-  Use when reviewing a code change, whether invoked directly or by the
-  pr-review skill. Standalone procedure that identifies the change,
-  reads surrounding source, evaluates across six review dimensions, and
+  Use when reviewing a code change directly (local diff, pre-push, or
+  standalone) with no PR in context. Identifies the change, reads
+  surrounding source, evaluates across six review dimensions, and
   compiles structured findings.
 ---
 
