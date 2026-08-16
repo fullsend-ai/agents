@@ -825,10 +825,9 @@ ran pre-commit in step 9b (which is the same check). Commit with
 `--no-verify` to bypass the git hook and disclose the failure in the commit
 message. The post-script runs an authoritative pre-commit on the runner.
 
-**10c-verify. Verify the commit exists**
-
-After committing (and after gitlint validation, if applicable), verify
-that at least one commit exists on the feature branch:
+**Commit-existence verification:** After committing (and after gitlint
+validation, if applicable), verify that at least one commit exists on
+the feature branch:
 
 ```bash
 git log --oneline <target-branch>..HEAD
@@ -844,7 +843,9 @@ git status --porcelain
 
 - **If uncommitted changes exist:** Go back to step 10a and stage and
   commit them. This can happen if `git commit` failed silently (e.g.,
-  a hook rejection) or if you forgot to run `git commit`.
+  a hook rejection) or if you forgot to run `git commit`. If the
+  commit still does not appear after one retry, report the failure in
+  structured output and stop.
 - **If no uncommitted changes and no commits:** Your implementation
   was lost. Report this clearly in the structured output and stop.
 
