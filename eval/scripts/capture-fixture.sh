@@ -60,6 +60,21 @@ fetch_pr_files() {
   return 1
 }
 
+# Best-effort gh pr diff, written to output/pr-<num>.diff so content-level
+# judges (removed_symbols in eval/code/eval.yaml) can inspect what the PR
+# actually changed, not just which files it touched. On persistent failure
+# returns non-zero so callers can record diff_fetch_failed instead of a
+# missing file being indistinguishable from "capture never ran".
+fetch_pr_diff() {
+  local num="$1"
+  local diff
+  if diff=$(retry_cmd gh pr diff "$num" --repo "$EPHEMERAL_REPO"); then
+    printf '%s\n' "$diff" > "${OUTPUT_DIR}/pr-${num}.diff"
+    return 0
+  fi
+  return 1
+}
+
 # Resolve branch tip SHA via git refs API, polling if still at baseline.
 # Poll up to 6 times with linear backoff (~21s total, within 60s after_each timeout).
 # Prefer refs API over PR headRefOid — the latter can lag briefly after post-fix push.
@@ -157,14 +172,19 @@ case "${FIXTURE_TYPE}" in
     while IFS= read -r pr; do
       [[ -z "$pr" ]] && continue
       num=$(printf '%s' "$pr" | jq -r '.number')
+      diff_failed=false
+      if ! fetch_pr_diff "$num"; then
+        echo "WARNING: gh pr diff failed for PR #${num}; marking diff_fetch_failed" >&2
+        diff_failed=true
+      fi
       if files=$(fetch_pr_files "$num"); then
-        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" \
-          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false}
+        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" --argjson diff_failed "$diff_failed" \
+          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false, diff_fetch_failed: $diff_failed}
            | del(.headRefName, .baseRefName)')")
       else
         echo "WARNING: gh pr view failed for PR #${num}; marking files_fetch_failed" >&2
-        pr_lines+=("$(printf '%s' "$pr" | jq -c \
-          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true}
+        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson diff_failed "$diff_failed" \
+          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true, diff_fetch_failed: $diff_failed}
            | del(.headRefName, .baseRefName)')")
       fi
     done < <(printf '%s' "$prs_json" | jq -c '.[]')

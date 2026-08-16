@@ -8,6 +8,15 @@ expected_files:
 labels:
   forbidden: []
 
+# Consumed by eval.yaml's removed_symbols judge: each symbol must appear
+# only in deletion lines of the captured PR diff. Both the Go identifier
+# and its YAML key must vanish — a fix that drops the struct field but
+# leaves the SetField case, a test assertion, or the raw YAML literal in
+# TestLoad would keep one of these in a non-deletion line and fail.
+removed_symbols:
+  - VerboseLogging
+  - verbose_logging
+
 # Code agent budgets (sandbox work + retries). Unmeasured ceiling: this case
 # has no CI run of its own yet — re-derive from its first run. Values mirror
 # 001-fix-add's ceiling (60 turns / $4.00) and eval.yaml's max_budget_usd.
