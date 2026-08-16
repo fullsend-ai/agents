@@ -548,6 +548,14 @@ authoritative pre-commit check on the runner before pushing.
 4. **Do not refactor to satisfy a linter.** Fix the specific reported
    error — nothing more.
 
+**Step sequence guardrail:** After step 9b completes — whether hooks
+passed, failed, or encountered infrastructure errors — you MUST
+continue to step 9c. After step 9c, continue to step 9d. After step
+9d, proceed to step 10 (commit). Do NOT skip steps 9c–11 regardless
+of pre-commit outcome. Pre-commit failure is not a reason to stop or
+to declare success — the post-script handles pre-commit
+authoritatively on the runner.
+
 **9c. Tests and linters — MANDATORY**
 
 ```bash
@@ -817,6 +825,33 @@ ran pre-commit in step 9b (which is the same check). Commit with
 `--no-verify` to bypass the git hook and disclose the failure in the commit
 message. The post-script runs an authoritative pre-commit on the runner.
 
+**10c-verify. Verify the commit exists**
+
+After committing (and after gitlint validation, if applicable), verify
+that at least one commit exists on the feature branch:
+
+```bash
+git log --oneline <target-branch>..HEAD
+```
+
+Use the local `<target-branch>` ref discovered in step 3. If the
+command returns no output (zero commits), something went wrong — the
+commit was not created. Check for uncommitted changes:
+
+```bash
+git status --porcelain
+```
+
+- **If uncommitted changes exist:** Go back to step 10a and stage and
+  commit them. This can happen if `git commit` failed silently (e.g.,
+  a hook rejection) or if you forgot to run `git commit`.
+- **If no uncommitted changes and no commits:** Your implementation
+  was lost. Report this clearly in the structured output and stop.
+
+Do NOT proceed to step 10d or step 11 without at least one commit on
+the feature branch. This check prevents the agent from declaring
+success without committing — the root cause of silent work loss.
+
 **Do not push the branch.** The post-script handles pushing, PR creation,
 and failure reporting.
 
@@ -874,11 +909,28 @@ checks `$FULLSEND_OUTPUT_DIR/agent-result.json` against
 `schemas/code-result.schema.json`. If validation fails, the harness
 retries the agent. Producing a valid output file is not optional.
 
+```bash
+echo "::notice::STEP 11: Validate structured output"
+```
+
+**Commit-existence check:** Before finalizing, verify that you
+actually committed your work. If you made code changes, `git log`
+must show at least one commit on the feature branch:
+
+```bash
+git log --oneline <target-branch>..HEAD
+```
+
+If you made implementation changes but this shows zero commits, you
+MUST go back to step 10 and commit before continuing. Do NOT declare
+success without a commit. Do NOT write `agent-result.json` and exit.
+Staged-but-uncommitted changes are silently discarded by the
+post-script — the work is lost.
+
 You wrote the initial output file in step 3. Confirm it still exists
 and contains the correct target branch:
 
 ```bash
-echo "::notice::STEP 11: Validate structured output"
 cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
