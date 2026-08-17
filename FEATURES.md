@@ -162,7 +162,7 @@ agent prompt:
 If the new option requires the agent to reach a new external service
 from the sandbox:
 
-- [ ] Update `policies/<agent>.yaml` to allow the new host/port
+- [ ] Update `policies/<forge>/<agent>.yaml` to allow the new host/port
 - [ ] This is rare — most configuration changes don't need network
       changes
 

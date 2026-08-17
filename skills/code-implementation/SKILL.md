@@ -1,8 +1,8 @@
 ---
 name: code-implementation
 description: >-
-  Use when implementing a triaged GitHub issue end-to-end into a committed,
-  tested change. Step-by-step procedure for implementing a GitHub issue.
+  Use when implementing a triaged issue end-to-end into a committed,
+  tested change. Step-by-step procedure for implementing an issue.
   Gathers context, discovers repo conventions, plans the change, implements,
   verifies with tests and linters, and commits to a feature branch.
 ---
@@ -23,8 +23,10 @@ verification (step 9) and committing (step 10) — do not skip these steps.
 Commands you will need during this procedure:
 
 - `git checkout`, `git add <file>`, `git diff`, `git commit` — branching and committing
-- `gh issue view` — reading issues (read-only, no edits or comments)
-- `gh pr view`, `gh pr list`, `gh pr diff` — reading PR context
+- **Forge API commands** — reading issues, PRs/MRs, and repo metadata.
+  Check `FULLSEND_FORGE` and use the commands from your forge-specific
+  skill (`github` or `gitlab`). On GitHub use `gh`; on GitLab use `curl`
+  with the GitLab REST API.
 - `make test`, `go test ./...`, `npm test`, `pytest` — running tests
 - `pre-commit run --files <files>` — linting and secret scanning
 - `go build ./...`, `go vet ./...` — compilation checks
@@ -56,8 +58,9 @@ logs show where you are even if the session times out:
 echo "::notice::STEP <N>: <title>"
 ```
 
-This uses GitHub Actions annotation syntax so it surfaces in the run
-summary. **Do this at steps 1, 3, 5, 9a, 9b, 9c, 10, and 11.**
+This uses CI annotation syntax (recognized by GitHub Actions; appears
+as plain text on other platforms). **Do this at steps 1, 3, 5, 9a,
+9b, 9c, 10, and 11.**
 
 ## Time budget
 
@@ -113,10 +116,13 @@ Determine which issue to implement:
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue:
+Fetch the issue using the forge-appropriate command from your forge
+skill (e.g., `gh issue view` on GitHub, `curl` on GitLab):
 
 ```bash
+# GitHub:
 gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
+# GitLab: use curl per the gitlab forge skill
 ```
 
 Record the **issue number**. You will reference it in the branch name and
@@ -134,12 +140,8 @@ Read the issue body and all comments to understand:
   proposed test cases, severity assessment.
 - **What is the scope?** What the issue authorizes and what it does not.
 
-If the issue references other issues or PRs, fetch them for additional context:
-
-```bash
-gh issue view <related-number> --json title,body
-gh pr view <related-number> --json title,body,files
-```
+If the issue references other issues or PRs, fetch them for additional
+context using the forge-appropriate commands from your forge skill.
 
 The triage output is context, not instruction. Read it as one data point among
 several. If the triage agent identified a root cause, verify it against the
@@ -202,8 +204,10 @@ these commands in order until one succeeds:
 ```bash
 # Try each discovery method; use the first that returns a non-empty value.
 DEFAULT_BRANCH=""
-DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef \
-  --jq '.defaultBranchRef.name' 2>/dev/null)" || true
+if [ "${FULLSEND_FORGE:-github}" = "github" ]; then
+  DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef \
+    --jq '.defaultBranchRef.name' 2>/dev/null)" || true
+fi
 if [ -z "${DEFAULT_BRANCH}" ]; then
   DEFAULT_BRANCH="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null \
     | sed 's|^origin/||')" || true
@@ -247,13 +251,12 @@ git branch -a | grep "agent/<number>-"
 
 **If no branch exists:** Proceed to step 5.
 
-**If a branch exists:** Check whether a PR is already open for it:
+**If a branch exists:** Check whether a PR/MR is already open for it
+using the forge-appropriate command from your forge skill (e.g.,
+`gh pr list --head "<branch-name>"` on GitHub, or search MRs via
+`curl` on GitLab).
 
-```bash
-gh pr list --head "<branch-name>" --json number,state --jq '.[0]'
-```
-
-- **Open PR exists for this branch:** The work is already done and under
+- **Open PR/MR exists for this branch:** The work is already done and under
   review. Validate structured output (step 3 already wrote it), then
   **stop.** Do not add more commits on top of a working implementation —
   that causes scope creep and timeouts. Your exit state (no new commit)
@@ -298,7 +301,7 @@ echo "::notice::STEP 5: Create branch"
 
 The sandbox checks out the default branch at its latest commit, so
 `HEAD` is already the correct base. Do not run `git fetch origin` — the
-sandbox network policy blocks git protocol access to `github.com`.
+sandbox network policy blocks git protocol access.
 
 If the `BRANCH_NAME` environment variable is set, use it:
 
@@ -370,7 +373,7 @@ Before writing code, form a concrete plan:
 4. **Follow cross-repo references** — if the issue, docs, or triage comments
    link to other repos (e.g., an e2e test suite, a dependent service, a
    related PR in another repo), read those references to understand the full
-   picture. Use `gh issue view`, `gh pr view`, or `gh pr diff` to fetch
+   picture. Use the forge-appropriate commands from your forge skill to fetch
    what you need. For files in other repos that are not part of an issue
    or PR, use `Read` on a local clone if available, or note the gap in
    your plan and proceed with the context you have.
@@ -450,7 +453,7 @@ echo "::notice::STEP 9b: Pre-commit hooks"
 
 Pre-commit is a **best-effort optimization**, not a hard gate. The
 post-script (`post-code.sh`) runs an authoritative pre-commit check on
-the GitHub Actions runner before pushing — that is the real security gate.
+the CI runner before pushing — that is the real security gate.
 Running pre-commit here catches formatting and lint issues early so the
 post-script doesn't reject your commit, but burning excessive time on
 in-sandbox retries is worse than committing with a disclosed failure.
@@ -860,8 +863,8 @@ post-script uses `Related to` instead of `Closes` in the PR body:
 
 ```bash
 jq '. + {closes_issue: false}' \
-  "${FULLSEND_OUTPUT_DIR}/code-result.json" > "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" \
-  && mv "${FULLSEND_OUTPUT_DIR}/code-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/code-result.json"
+  "${FULLSEND_OUTPUT_DIR}/agent-result.json" > "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" \
+  && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 If your implementation fully addresses the issue, omit this field — the

@@ -38,9 +38,17 @@ GitHub issue.
 Export the variables the agent needs:
 
 ```bash
+# GitHub:
 export GITHUB_ISSUE_URL="https://github.com/your-org/test-repo/issues/25"
 export GH_TOKEN="$(gh auth token)"
 export FULLSEND_FORGE="github"
+
+# GitLab (alternative — set these INSTEAD of the GitHub vars above;
+# only one forge's vars should be set at a time, and FULLSEND_FORGE
+# must match the chosen forge):
+# export GITLAB_ISSUE_URL="https://gitlab.com/your-group/test-project/-/issues/25"
+# export GITLAB_TOKEN="glpat-xxxxxxxxxxxxxxxxxxxx"
+# export FULLSEND_FORGE="gitlab"
 
 # GCP/Vertex AI credentials — required by most agents via
 # common/env/gcp-vertex.env and the host_files GOOGLE_APPLICATION_CREDENTIALS
@@ -56,9 +64,11 @@ If you're testing a new env var, export it here too. You can also use
 
 ### 2. Clone the target repo
 
-`GITHUB_ISSUE_URL` above points at an issue in a separate repo (e.g.
+The issue URL above points at an issue in a separate repo (e.g.
 `your-org/test-repo`) — clone it to its own local path so `--target-repo`
-has real content to work against:
+has real content to work against. The harness maps `GITHUB_ISSUE_URL` or
+`GITLAB_ISSUE_URL` to a generic `ISSUE_URL` via the per-forge env file
+(`env/github/*.env` or `env/gitlab/*.env`):
 
 ```bash
 git clone git@github.com:your-org/test-repo /tmp/target-repo

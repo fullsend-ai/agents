@@ -2,7 +2,7 @@
 
 ![Code agent icon](icons/coder.png)
 
-Implementation specialist that reads triaged GitHub issues, implements fixes or features following repository conventions, runs tests and linters, and commits to a local feature branch.
+Implementation specialist that reads triaged issues, implements fixes or features following repository conventions, runs tests and linters, and commits to a local feature branch.
 
 ## Setup
 
@@ -45,8 +45,9 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script validates the agent's chosen target branch against this variable before pushing. Set via `env.runner` in `harness/code.yaml` (never injected into the sandbox). | Repo default branch (auto-detected via GitHub API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
-| `CODE_AUTO_MERGE` | Set to `"true"` to enable GitHub auto-merge on PRs created by the code agent. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
+| `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script validates the agent's chosen target branch against this variable before pushing. Set via `env.runner` in `harness/code.yaml` (never injected into the sandbox). | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
+| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
+| `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
 
 ## How the agent works
@@ -80,16 +81,17 @@ need a custom image.
 ### Image requirements
 
 A custom image must work within the constraints enforced by the sandbox
-policy ([`policies/base.yaml`](../policies/base.yaml)) and network
-profiles ([`profiles/`](../profiles/)):
+policy ([`policies/base.yaml`](../policies/base.yaml)), network
+profiles ([`profiles/`](../profiles/)), and forge-specific policy
+([`policies/gitlab/code.yaml`](../policies/gitlab/code.yaml) for GitLab):
 
 | Requirement | Detail |
 |-------------|--------|
 | **Base image** | Extend from `ghcr.io/fullsend-ai/fullsend-code:latest` to inherit the agent runtime, pre-installed tools, and security scanning binaries. |
 | **User/group** | The sandbox runs as `sandbox:sandbox`. Installed tools must be executable by this user. |
 | **Filesystem layout** | The working directory is `/sandbox/workspace`. Read-write access is limited to `/sandbox` and `/tmp`. System paths (`/usr`, `/lib`, `/etc`) are read-only at runtime — install packages at build time, not in an entrypoint. |
-| **Network access** | The sandbox restricts outbound network to specific hosts and binaries (Vertex AI, GitHub API, package registries). Arbitrary HTTP access is blocked. Tools that phone home at startup may fail. |
-| **Required binaries** | `git`, `gh`, `scan-secrets`, `pre-commit` must remain on `PATH`. Do not remove or shadow them. |
+| **Network access** | The sandbox restricts outbound network to specific hosts and binaries (Vertex AI, forge API, package registries). Arbitrary HTTP access is blocked. Tools that phone home at startup may fail. |
+| **Required binaries** | `git`, `scan-secrets`, `pre-commit` must remain on `PATH`. On GitHub, `gh` is also required; on GitLab, `curl` is used instead. Do not remove or shadow them. |
 
 ### How to build
 
@@ -111,7 +113,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 ```
 
 Build and push the image to a container registry accessible from your
-GitHub Actions runners:
+CI runners:
 
 ```bash
 docker build -t ghcr.io/<org>/<repo>-code:latest .
@@ -165,6 +167,28 @@ The precedence is as follows:
 
 **Note**: bots are filtered (`*[bot]`, `app/*`, `dependabot`). The resolution logic lives in
 [`scripts/lib/pr-assignee.lib.sh`](../scripts/lib/pr-assignee.lib.sh).
+
+## Multi-forge support
+
+The code agent supports both GitHub and GitLab. The harness
+`forge.<platform>` sections configure platform-specific policies,
+skills, env vars, and scripts. Key differences from single-forge
+setup:
+
+- **`FULLSEND_FORGE`** is required. Set automatically by the harness
+  `forge.<platform>.env` section (`"github"` or `"gitlab"`).
+- **`ISSUE_URL`** replaces `GITHUB_ISSUE_URL` in scripts. The
+  per-forge env file (`env/github/code.env` or `env/gitlab/code.env`)
+  maps the platform-specific variable to `ISSUE_URL`.
+- **Policy** is per-forge: `policies/github/code.yaml` or
+  `policies/gitlab/code.yaml`. Custom harnesses using `base:`
+  composition should override at the forge level if needed.
+- **GitLab uses `curl`** instead of `gh` for API access. The GitLab
+  sandbox policy allows `curl` for `gitlab_api` endpoints only.
+- **GitLab host allowlist** — `forge_validate_issue_url` in
+  `scripts/lib/gitlab-code-ops.lib.sh` and the network policy in
+  `policies/gitlab/code.yaml` both maintain an allowlist of GitLab
+  hosts. To support a self-hosted GitLab instance, update both files.
 
 ## Custom network policy
 
