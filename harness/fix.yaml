@@ -14,7 +14,16 @@ agent: agents/fix.md
 doc: docs/fix.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code@sha256:de3ecbd7719a1927c983142ada96475f3314d2505d0f258bcf19c31411856eb6
-policy: policies/fix.yaml
+policy: policies/base.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+    - profiles/fullsend-package-registries.yaml
+    - profiles/fullsend-gitleaks.yaml
+providers:
+  - providers/vertex-ai.yaml
+  - providers/package-registries.yaml
+  - providers/gitleaks.yaml
 
 role: coder
 slug: fullsend-ai-coder
@@ -28,11 +37,11 @@ validation_loop:
   max_iterations: 2
 
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
-  - src: env/fix.env
-    dest: /sandbox/workspace/.env.d/fix.env
+  - src: env/ssl-cainfo.env
+    dest: /sandbox/workspace/.env.d/ssl-cainfo.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
@@ -66,6 +75,11 @@ timeout_minutes: 25
 
 forge:
   github:
+    providers:
+      - providers/github-code.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-code.yaml
     pre_script: scripts/pre-fix.sh
     post_script: scripts/post-fix.sh
     env:

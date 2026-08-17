@@ -210,6 +210,8 @@ install -m 0600 /dev/null "$ENV_FILE"
   # fail closed in post-review.sh's severity-validation block.
   if [[ "$AGENT" == "review" ]]; then
     emit_env "REVIEW_FINDING_SEVERITY_THRESHOLD" "${REVIEW_FINDING_SEVERITY_THRESHOLD:-low}"
+    emit_env "PRIOR_REVIEW_SHA" "${PRIOR_REVIEW_SHA:-}"
+    emit_env "PRIOR_REVIEW_PROVENANCE" "${PRIOR_REVIEW_PROVENANCE:-}"
   fi
 
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"

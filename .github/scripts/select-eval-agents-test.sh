@@ -31,21 +31,29 @@ setup_fixture() {
   cat > "$tmpdir/harness/triage.yaml" << 'YAML'
 agent: agents/triage.md
 doc: docs/triage.md
+policy: policies/base.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+providers:
+  - providers/vertex-ai.yaml
 pre_script: scripts/pre-triage.sh
 post_script: scripts/post-triage.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/triage-result.schema.json
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
-  - src: env/${AGENT_NAME}.env
-    dest: /sandbox/workspace/.env.d/agent.env
 forge:
   github:
-    policy: policies/github/triage.yaml
+    providers:
+      - providers/github-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-ro.yaml
     pre_script: scripts/forge-pre-triage.sh
     post_script: scripts/forge-post-triage.sh
     skills:
@@ -54,11 +62,6 @@ forge:
     host_files:
       - src: env/github/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
-    providers:
-      - providers/github-ro.yaml
-    openshell:
-      profiles:
-        - profiles/github-code.yaml
   gitlab:
     policy: policies/gitlab/triage.yaml
     skills:
@@ -72,17 +75,20 @@ YAML
   cat > "$tmpdir/harness/review.yaml" << 'YAML'
 agent: agents/review.md
 doc: docs/review.md
-policy: policies/review.yaml
+policy: policies/base.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+providers:
+  - providers/vertex-ai.yaml
 pre_script: scripts/pre-review.sh
 post_script: scripts/post-review.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
-  - src: env/review.env
-    dest: /sandbox/workspace/.env.d/review.env
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
 skills:
@@ -90,18 +96,27 @@ skills:
   - skills/code-review
 plugins:
   - plugins/gopls-lsp
+forge:
+  github:
+    providers:
+      - providers/github-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-ro.yaml
 YAML
 
   # Agent with no eval config — should never be selected
   cat > "$tmpdir/harness/code.yaml" << 'YAML'
 agent: agents/code.md
 doc: docs/code.md
-policy: policies/code.yaml
+policy: policies/base.yaml
 pre_script: scripts/pre-code.sh
 post_script: scripts/post-code.sh
 host_files:
-  - src: env/code.env
-    dest: /sandbox/workspace/.env.d/code.env
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+  - src: env/ssl-cainfo.env
+    dest: /sandbox/workspace/.env.d/ssl-cainfo.env
 YAML
 
   # Minimal eval configs (just need to exist)
@@ -130,15 +145,16 @@ fi
 cleanup_fixture "$FIXTURE"
 
 # ---------------------------------------------------------------------------
-# Test: modifying env file selects agent that references it
+# Test: modifying shared policy file selects all referencing agents
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "env/github/triage.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
-  pass "env file change selects agent via harness reference"
+RESULT=$(echo "policies/base.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "shared policy change selects all referencing agents"
 else
-  fail "env file change selects agent via harness reference (got: '$RESULT')"
+  fail "shared policy change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
 fi
 cleanup_fixture "$FIXTURE"
 
@@ -147,7 +163,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "common/env/gcp-vertex.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+RESULT=$(echo "env/gcp-vertex.env" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
 EXPECTED=$(printf "review\ntriage")
 if [[ "$RESULT" == "$EXPECTED" ]]; then
   pass "shared file change selects all referencing agents"
@@ -226,7 +242,7 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(printf "env/github/triage.env\nagents/review.md\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+RESULT=$(printf "agents/triage.md\nagents/review.md\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
 EXPECTED=$(printf "review\ntriage")
 if [[ "$RESULT" == "$EXPECTED" ]]; then
   pass "multiple agents selected from mixed changes"
@@ -326,21 +342,23 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "providers/github-ro.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
-  pass "forge provider change selects agent"
+RESULT=$(echo "providers/github-ro.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "forge provider change selects all referencing agents"
 else
-  fail "forge provider change selects agent (got: '$RESULT')"
+  fail "forge provider change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
 fi
 cleanup_fixture "$FIXTURE"
 
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "profiles/github-code.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
-  pass "forge openshell profile change selects agent"
+RESULT=$(echo "profiles/fullsend-github-ro.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "forge openshell profile change selects all referencing agents"
 else
-  fail "forge openshell profile change selects agent (got: '$RESULT')"
+  fail "forge openshell profile change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
 fi
 cleanup_fixture "$FIXTURE"
 
@@ -349,30 +367,23 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-cat >> "$FIXTURE/harness/triage.yaml" << 'YAML'
-providers:
-  - providers/vertex-ai.yaml
-YAML
-RESULT=$(echo "providers/vertex-ai.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
-  pass "top-level provider change selects agent"
+RESULT=$(echo "providers/vertex-ai.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "top-level provider change selects all referencing agents"
 else
-  fail "top-level provider change selects agent (got: '$RESULT')"
+  fail "top-level provider change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
 fi
 cleanup_fixture "$FIXTURE"
 
 run_test
 FIXTURE="$(setup_fixture)"
-cat >> "$FIXTURE/harness/triage.yaml" << 'YAML'
-openshell:
-  profiles:
-    - profiles/code.yaml
-YAML
-RESULT=$(echo "profiles/code.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
-  pass "top-level openshell profile change selects agent"
+RESULT=$(echo "profiles/fullsend-vertex-ai.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "top-level openshell profile change selects all referencing agents"
 else
-  fail "top-level openshell profile change selects agent (got: '$RESULT')"
+  fail "top-level openshell profile change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
 fi
 cleanup_fixture "$FIXTURE"
 
@@ -407,6 +418,17 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
+# Overwrite triage harness with an embedded-variable host_file entry
+cat > "$FIXTURE/harness/triage.yaml" << 'YAML'
+agent: agents/triage.md
+doc: docs/triage.md
+policy: policies/base.yaml
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+  - src: env/${AGENT_NAME}.env
+    dest: /sandbox/workspace/.env.d/agent.env
+YAML
 RESULT=$(echo 'env/${AGENT_NAME}.env' | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 if [[ -z "$RESULT" ]]; then
   pass "embedded variable host_file paths are ignored"
@@ -480,11 +502,39 @@ fi
 cleanup_fixture "$FIXTURE"
 
 # ---------------------------------------------------------------------------
+# Test: modifying a profile file selects all agents referencing it
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "profiles/fullsend-vertex-ai.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "profile change selects all referencing agents"
+else
+  fail "profile change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
+# Test: modifying a provider file selects all agents referencing it
+# ---------------------------------------------------------------------------
+run_test
+FIXTURE="$(setup_fixture)"
+RESULT=$(echo "providers/github-ro.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE" | sort)
+EXPECTED=$(printf "review\ntriage")
+if [[ "$RESULT" == "$EXPECTED" ]]; then
+  pass "provider change selects all referencing agents"
+else
+  fail "provider change selects all referencing agents (got: '$RESULT', expected: '$EXPECTED')"
+fi
+cleanup_fixture "$FIXTURE"
+
+# ---------------------------------------------------------------------------
 # Test: duplicate file inputs produce deduplicated agent output
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(printf "env/github/triage.env\nenv/github/triage.env\nenv/github/triage.env\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+RESULT=$(printf "agents/triage.md\nagents/triage.md\nagents/triage.md\n" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 LINES=$(echo "$RESULT" | grep -c "triage")
 if [[ "$LINES" -eq 1 ]]; then
   pass "duplicate file inputs produce single agent output"

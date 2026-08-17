@@ -1,0 +1,5 @@
+---
+name: package-registries
+type: fullsend-package-registries
+credentials:
+  _NOOP_PACKAGE_REGISTRIES: ""

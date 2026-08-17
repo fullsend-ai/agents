@@ -50,8 +50,8 @@ execution:
     #
     # Deliberately far below the code agent's real production budget: each
     # validation_loop iteration is re-armed with its own fresh 2100s
-    # (harness/code.yaml timeout_minutes: 35, mirrored as TIMEOUT_SECONDS in
-    # env/code.env for the agent's own self-monitoring). internal/cli/run.go
+    # (harness/code.yaml timeout_minutes: 35, mirrored as TIMEOUT_SECONDS
+    # in harness/code.yaml env.sandbox for the agent's self-monitoring). internal/cli/run.go
     # computes that duration once before the iteration loop begins and
     # passes it into rt.Run() on each iteration; the fresh
     # context.WithTimeout(ctx, timeout) call actually happens in

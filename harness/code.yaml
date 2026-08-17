@@ -14,17 +14,26 @@ agent: agents/code.md
 doc: docs/code.md
 model: opus
 image: ghcr.io/fullsend-ai/fullsend-code@sha256:de3ecbd7719a1927c983142ada96475f3314d2505d0f258bcf19c31411856eb6
-policy: policies/code.yaml
+policy: policies/base.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+    - profiles/fullsend-package-registries.yaml
+    - profiles/fullsend-gitleaks.yaml
+providers:
+  - providers/vertex-ai.yaml
+  - providers/package-registries.yaml
+  - providers/gitleaks.yaml
 
 role: coder
 slug: fullsend-ai-coder
 
 host_files:
-  - src: common/env/gcp-vertex.env
+  - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
     expand: true
-  - src: env/code.env
-    dest: /sandbox/workspace/.env.d/code.env
+  - src: env/ssl-cainfo.env
+    dest: /sandbox/workspace/.env.d/ssl-cainfo.env
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
@@ -51,11 +60,21 @@ validation_loop:
 env:
   runner:
     CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
+  sandbox:
+    MAX_RETRIES: "1"
+    TIMEOUT_SECONDS: "2100"
+    GOPATH: "/sandbox/go"
+    GOMODCACHE: "/sandbox/go/pkg/mod"
 
 timeout_minutes: 35
 
 forge:
   github:
+    providers:
+      - providers/github-code.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-code.yaml
     pre_script: scripts/pre-code.sh
     post_script: scripts/post-code.sh
     env:
@@ -64,3 +83,11 @@ forge:
         PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
         REPO_FULL_NAME: "${REPO_FULL_NAME}"
         ISSUE_NUMBER: "${ISSUE_NUMBER}"
+      sandbox:
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
+        GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
+        GH_TOKEN: "${GH_TOKEN}"
+        GIT_AUTHOR_NAME: "fullsend-code"
+        GIT_AUTHOR_EMAIL: "${GIT_BOT_EMAIL}"
+        GIT_COMMITTER_NAME: "fullsend-code"
+        GIT_COMMITTER_EMAIL: "${GIT_BOT_EMAIL}"
