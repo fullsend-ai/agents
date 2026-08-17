@@ -3,10 +3,9 @@ name: triage
 description: Inspect an issue, assess information sufficiency, and produce a structured triage decision.
 skills:
   - issue-labels
-# curl: required by GitLab forge. On GitHub, the profile binary
-# allowlists (e.g. profiles/fullsend-github-ro.yaml) omit **/curl,
-# preventing it from making network requests even though it is
-# granted here.
+# curl: required by GitLab and Jira forges. On GitHub, the network policy
+# binary allowlist (policies/github/triage.yaml) excludes **/curl,
+# preventing it from making network requests even though it is granted here.
 tools: Bash(gh,curl,jq)
 model: opus
 ---
@@ -254,7 +253,7 @@ Progress on this issue depends on work that must happen first — either in this
 The `prerequisites` object contains two arrays:
 
 - `existing` — issues or PRs that already exist and block this work. Include the full HTML URL.
-- `create` — issues that need to be filed in other repos before this work can proceed. Include the target `repo` (project path — `owner/repo` on GitHub, `group/subgroup/project` on GitLab), a `title`, and a `body`. Write the body for the target repo's audience — include enough technical context for upstream maintainers to understand what is needed. Use your judgment on whether to include a back-reference to the originating issue; sometimes it provides helpful context, sometimes it leaks internal details.
+- `create` — issues that need to be filed in other repos before this work can proceed. Include the target `repo` (project path — `owner/repo` on GitHub, `group/subgroup/project` on GitLab, or a bare Jira project key like `PROJ` on Jira), a `title`, and a `body`. Write the body for the target repo's audience — include enough technical context for upstream maintainers to understand what is needed. Use your judgment on whether to include a back-reference to the originating issue; sometimes it provides helpful context, sometimes it leaks internal details.
 
 At least one of the two arrays must have entries.
 

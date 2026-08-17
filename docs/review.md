@@ -66,16 +66,17 @@ The review agent includes the `issue-labels` skill to discover your repo's
 labels and apply them to PRs during review. This is the same skill used by the
 [triage agent](triage.md) — overloading it affects both agents.
 
-The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`
-and `skills/issue-labels/gitlab/SKILL.md`), registered under
-`forge.<platform>.skills` in the harness. To overload the built-in skill,
-create your own skill in `.agents/skills/issue-labels/github/SKILL.md` and
-symlink `.claude/skills` to `.agents/skills` so it's discoverable by both
-fullsend and local agent tooling. At the org level, override via `base:`
-composition (ADR 0045) — inherit the upstream harness and replace the
-forge-specific skill entry under `forge.<platform>.skills` with your own path
-whose basename matches the built-in (`github` or `gitlab`), so `mergeSkills`
-dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
+The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`,
+`skills/issue-labels/gitlab/SKILL.md`, and `skills/issue-labels/jira/SKILL.md`),
+registered under `forge.<platform>.skills` in the harness. To overload the
+built-in skill, create your own skill in
+`.agents/skills/issue-labels/github/SKILL.md` and symlink `.claude/skills` to
+`.agents/skills` so it's discoverable by both fullsend and local agent tooling.
+At the org level, override via `base:` composition (ADR 0045) — inherit the
+upstream harness and replace the forge-specific skill entry under
+`forge.<platform>.skills` with your own path whose basename matches the built-in
+(`github`, `gitlab`, or `jira`), so `mergeSkills` dedupes by basename
+(fullsend-ai/fullsend #5409) and yours wins.
 The older `customized/skills/issue-labels/SKILL.md` overlay in the org
 `.fullsend` config repo is deprecated by ADR 0064.
 
