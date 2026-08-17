@@ -29,7 +29,7 @@ are for changing defaults, opting out, or scoring a custom agent.
 
 Executable logic stays in fullsend because `fullsend eval-measure` is the
 released binary that reads `run-telemetry.jsonl` (produced by fullsend). This
-repo is content/policy, not that binary. Platform checks like EM-001
+repo is content/policy, not that binary. Platform checks like em-001
 (`trace_fitness`) still get **enabled** here for each stock agent.
 
 | Change | PR |
@@ -39,8 +39,8 @@ repo is content/policy, not that binary. Platform checks like EM-001
 | Custom policy for one org or a BYOA agent | Local override in the consumer repo |
 
 Companion platform PR: [fullsend-ai/fullsend#6036](https://github.com/fullsend-ai/fullsend/pull/6036)
-([ADR 0087](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0087-eval-measurements-online-trace-scoring.md)
-lands with that PR).
+(ADR 0087 lands with that PR; the `docs/ADRs/0087-*.md` path is not on
+`fullsend` main until #6036 merges).
 
 ## First ship
 

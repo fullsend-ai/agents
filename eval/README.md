@@ -30,6 +30,7 @@ running:
 
 ```bash
 bash eval/lint-cases.sh <agent>
+bash eval/lint-measurements.sh
 ```
 
 ## Prerequisites
@@ -147,6 +148,6 @@ scenarios under `eval/<agent>/`.
 
 Scorer *implementations* live in `fullsend-ai/fullsend`; this repo only
 declares defaults. Jobs fetch these files from `agents@v0` unless a consumer
-overrides under `FULLSEND_DIR`. See [`eval/measurements/README.md`](./measurements/README.md),
-[fullsend#6036](https://github.com/fullsend-ai/fullsend/pull/6036), and
-[ADR 0087](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0087-eval-measurements-online-trace-scoring.md).
+overrides under `FULLSEND_DIR`. See [`eval/measurements/README.md`](./measurements/README.md)
+and [fullsend#6036](https://github.com/fullsend-ai/fullsend/pull/6036) (ADR 0087
+lands with that PR).
