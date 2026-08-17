@@ -724,7 +724,7 @@ runs in step 6d):
    **Note:** Not all changed files are included above due to PR size.
    Changed files not listed here should be treated as unavailable for
    PR-head verification. If you produce findings about files not included
-   above, state that the file contents could not be verified against the
+   above, you must state that the file contents could not be verified against the
    PR head. Do not read changed files from disk — disk contains
    base-branch code, not the PR head.
 
@@ -1208,7 +1208,8 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   — omit the `## Review` header and `### Findings` section entirely.
 - **No footer.** Do not append any footer, action-hints block, or
   boilerplate after findings. The post-review pipeline appends
-  action hints deterministically when the outcome is `request-changes`.
+  action hints deterministically for the `request-changes` action
+  (not for `reject`, `approve`, or `comment`).
 
 If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
 info-level finding in the review output:
