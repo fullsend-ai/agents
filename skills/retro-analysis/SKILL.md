@@ -129,14 +129,18 @@ Check whether the workflow exhibits fix-break oscillation. Flapping wastes agent
 
 Flapping detection applies to PR-based workflows with code/fix cycles. Derive the PR number from the originating URL, branching on its shape:
 
-- If `$ORIGINATING_URL` matches `/pull/`, extract directly: `PR_NUMBER="${ORIGINATING_URL##*/}"`
-- If it matches `/issues/`, check for a linked PR before skipping (issue-triggered retros routinely have downstream code dispatches once the issue reaches `ready-to-code`). Query `gh issue view "$ORIGINATING_URL" --json closedByPullRequestsReferences` and use the `repository` field on each entry to identify which repo the PR lives in. If no linked PR is found, skip flapping detection for this retro.
+- If `$ORIGINATING_URL` matches `/pull/`, extract directly: `PR_NUMBER="${ORIGINATING_URL##*/}"` and set `REPO="$REPO_FULL_NAME"`.
+- If it matches `/issues/`, check for a linked PR before skipping (issue-triggered retros routinely have downstream code dispatches once the issue reaches `ready-to-code`). Query `gh issue view "$ORIGINATING_URL" --json closedByPullRequestsReferences`. If multiple PRs are linked, prefer the one in `$REPO_FULL_NAME`; otherwise use the most recently updated entry and note the ambiguity in the retro summary. Set `REPO` to the matching entry's `repository.owner.login/repository.name` and `PR_NUMBER` to its `number`. If no linked PR is found, skip flapping detection for this retro.
 
-Dispatch subagents to gather the data. Substitute `<DISPATCH_REPO>`, `<REPO>`, and `<PR_NUMBER>` with the concrete values resolved in Setup before dispatching.
+Derive `ISSUE_REF` from the PR branch name using the `agent/{issue}-{slug}` convention documented in "From a PR" above (e.g. branch `agent/5512-flapping` yields `ISSUE_REF="5512"`).
 
-- **Run discovery:** "List all code, fix, and review workflow runs via `gh run list --workflow=code.yml --repo <DISPATCH_REPO> --limit 100`, `gh run list --workflow=fix.yml --repo <DISPATCH_REPO> --limit 100`, and `gh run list --workflow=review.yml --repo <DISPATCH_REPO> --limit 100`. Filter to runs belonging to PR #<PR_NUMBER> by grepping each run's logs (`gh run view <RUN_ID> --repo <DISPATCH_REPO> --log | grep -i '<issue-or-branch-reference>'`). For each matching code/fix run, correlate it to a PR commit by matching the run's timestamp against the PR's commit history (no direct run-to-SHA mapping is exposed); if two candidate commits/runs fall within a short window, mark the correlation as uncertain. Then fetch that commit's changed files via `gh api repos/<REPO>/commits/<SHA>` (`.files`). Use workflow-run boundaries to define 'runs', not individual commits; a single run may produce more than one commit."
+Dispatch subagents to gather the data. Substitute `<DISPATCH_REPO>` (from Setup), `<REPO>`, `<PR_NUMBER>`, and `<ISSUE_REF>` with the concrete values derived above before dispatching.
+
+Dispatch Run discovery and Review history in parallel. CI results depends on Run discovery's output (the correlated commit SHAs), so dispatch it after Run discovery returns.
+
+- **Run discovery:** "List all code, fix, and review workflow runs via `gh run list --workflow=code.yml --repo <DISPATCH_REPO> --limit 100`, `gh run list --workflow=fix.yml --repo <DISPATCH_REPO> --limit 100`, and `gh run list --workflow=review.yml --repo <DISPATCH_REPO> --limit 100`. Filter to runs belonging to PR #<PR_NUMBER> by grepping each run's logs (`gh run view <RUN_ID> --repo <DISPATCH_REPO> --log | grep -i '<ISSUE_REF>'`). For each matching code/fix run, correlate it to a PR commit by matching the run's timestamp against the PR's commit history (no direct run-to-SHA mapping is exposed); if two candidate commits/runs fall within a short window, mark the correlation as uncertain. Then fetch that commit's changed files via `gh api repos/<REPO>/commits/<SHA>` (`.files`). Use workflow-run boundaries to define 'runs', not individual commits; a single run may produce more than one commit."
 - **Review history:** "Fetch all reviews for PR #<PR_NUMBER> via `gh api repos/<REPO>/pulls/<PR_NUMBER>/reviews --paginate`, then fetch per-review comments. Summarize the findings from each review cycle so that finding content can be compared across cycles."
-- **CI results:** "For each commit correlated to a code/fix run, query `gh api repos/<REPO>/commits/<SHA>/check-runs` and report the test pass/fail results."
+- **CI results** (after Run discovery): "For each commit SHA from the Run discovery results, query `gh api repos/<REPO>/commits/<SHA>/check-runs` and report the test pass/fail results."
 
 Then check for these patterns:
 
