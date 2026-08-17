@@ -24,6 +24,7 @@
       "$ref": "#/$defs/clarity_scores"
     },
     "duplicate_of": {
+      "description": "Issue number (GitHub/GitLab integer) or Jira issue key (e.g. PROJ-123). Consumers should handle both types.",
       "anyOf": [
         { "type": "integer", "minimum": 1 },
         { "type": "string", "pattern": "^[A-Z][A-Z0-9]*-[0-9]+$" }
@@ -80,6 +81,7 @@
             "properties": {
               "repo": {
                 "type": "string",
+                "description": "GitHub/GitLab path-style identifier (org/repo) or bare Jira project key (e.g. PROJ). Consumers should handle both formats.",
                 "anyOf": [
                   { "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$" },
                   { "pattern": "^[A-Z][A-Z0-9]*$" }
@@ -109,6 +111,7 @@
         "properties": {
           "repo": {
             "type": "string",
+            "description": "GitHub/GitLab path-style identifier (org/repo) or bare Jira project key (e.g. PROJ). Consumers should handle both formats.",
             "anyOf": [
               { "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$" },
               { "pattern": "^[A-Z][A-Z0-9]*$" }

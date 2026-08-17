@@ -115,16 +115,17 @@ cat /tmp/fullsend/agent-triage-*/iteration-*/output/agent-result.json | jq .
 
 ## Testing triage with Jira
 
-Triage also supports Jira Cloud as a tracker (see [`docs/triage.md`](docs/triage.md#jira-setup)).
-The current fullsend runner only sets `FULLSEND_FORGE`, so exercising the
-Jira path locally means overriding the tracker selection by hand:
+Triage also supports Jira Cloud as a forge (see [`docs/triage.md`](docs/triage.md#jira-setup)).
+The default runner only sets `FULLSEND_FORGE` for GitHub/GitLab, so
+exercising the Jira path locally means overriding the forge selection by
+hand:
 
 ```bash
 export JIRA_ISSUE_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
-export FULLSEND_TRACKER="jira"
+export FULLSEND_FORGE="jira"
 
 # Transition names for closing issues — set to match your Jira workflow.
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
@@ -135,10 +136,7 @@ export JIRA_SPLIT_TRANSITION="Done"
 Run `fullsend run triage` the same way as step 3 above — `--target-repo`
 should still point at a local checkout of the codebase the Jira issue
 concerns, since triage reads repository context (docs, existing issues,
-PRs) regardless of which tracker hosts the issue itself. `FULLSEND_TRACKER`
-takes precedence over `FULLSEND_FORGE`, so leaving `FULLSEND_FORGE` unset
-(or set to something else) doesn't matter once `FULLSEND_TRACKER=jira` is
-exported.
+PRs) regardless of which forge hosts the issue itself.
 
 ## Testing a new configuration option
 

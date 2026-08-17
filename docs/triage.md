@@ -167,14 +167,12 @@ surfaced in the summary comment so they can be filed manually.
 The source repo (where the triaged issue lives) is always implicitly
 allowed.
 
-## Multi-tracker support
+## Multi-forge support
 
-The triage agent supports GitHub, GitLab, and Jira (Cloud only). The tracker
-is selected automatically at runtime via the `FULLSEND_TRACKER` environment
+The triage agent supports GitHub, GitLab, and Jira (Cloud only). The forge is
+selected automatically at runtime via the `FULLSEND_FORGE` environment
 variable, which the harness sets based on the detected CI platform (`github`,
-`gitlab`, or `jira`). If `FULLSEND_TRACKER` is unset, the scripts fall back to
-the older `FULLSEND_FORGE` variable for backward compatibility — `tracker`
-takes precedence when both are set.
+`gitlab`, or `jira`).
 
 ### Jira setup
 
@@ -217,38 +215,34 @@ If you use `base:` composition to override `harness/triage.yaml`:
 
 - **`ISSUE_URL` replaces `GITHUB_ISSUE_URL` inside scripts**: The sandbox and
   runner env var consumed by pre/post scripts is now `ISSUE_URL`
-  (tracker-neutral). `GITHUB_ISSUE_URL` (and its `GITLAB_ISSUE_URL` /
-  `JIRA_ISSUE_URL` equivalents) remain the workflow-level inputs per tracker;
+  (forge-neutral). `GITHUB_ISSUE_URL` (and its `GITLAB_ISSUE_URL` /
+  `JIRA_ISSUE_URL` equivalents) remain the workflow-level inputs per forge;
   the harness maps them to `ISSUE_URL` via `env.runner` / `env.sandbox`.
   Custom pre/post scripts that reference `GITHUB_ISSUE_URL` directly should
   switch to `ISSUE_URL`.
-- **`FULLSEND_TRACKER` is required**: Pre- and post-scripts require this env
-  var (or its `FULLSEND_FORGE` fallback) to select the correct tracker
-  operations. It is set automatically by the `tracker.<platform>` blocks in
-  the harness; if your override removes them, set it explicitly in
-  `env.runner` and `env.sandbox`.
-- **`policy`, `skills`, and `host_files` live in `tracker.<platform>`
-  blocks**: This harness defines policy, skills, and the tracker-specific env
-  file (`env/github/triage.env` / `env/gitlab/triage.env` /
-  `env/jira/triage.env`) under `tracker.<platform>` rather than at the top
+- **`FULLSEND_FORGE` is required**: Pre- and post-scripts require this env var
+  to select the correct forge operations. It is set automatically by the forge
+  sections in the harness; if your override removes the forge sections, set it
+  explicitly in `env.runner` and `env.sandbox`.
+- **`policy`, `skills`, and `host_files` live in forge sections**: This
+  harness defines policy, skills, and the forge-specific env file
+  (`env/github/triage.env` / `env/gitlab/triage.env` /
+  `env/jira/triage.env`) under `forge.<platform>` rather than at the top
   level. `pre_script` and `post_script` are set at both levels (identical
-  values — the tracker-level entries are redundant but kept explicit for
-  clarity). Top-level keys are still supported — a downstream harness using
-  `base:` composition can set top-level `policy:`, `skills:`, or
-  `host_files:` and they will work: policy (scalar) is overridden by the
-  tracker-level value, skills (list) are concatenated with tracker-level
-  skills and deduped by basename, host_files (list) are concatenated with
-  last-writer-wins dedup by `dest`. `providers` and `openshell` follow the
-  same merge rules and are also tracker-overridable
-  (fullsend-ai/fullsend#5970). This `tracker:` key requires a fullsend
-  runner version that understands it (see fullsend-ai/fullsend#5989); on an
-  older runner, `tracker.jira` is inert and only `FULLSEND_FORGE`-driven
-  github/gitlab runs work.
-- **Schema accepts all tracker URL/identifier shapes unconditionally**: The
+  values — the forge-level entries are redundant but kept explicit for
+  clarity). Top-level keys are still supported by `ResolveForge` — a
+  downstream harness using `base:` composition can set top-level `policy:`,
+  `skills:`, or `host_files:` and they will work: policy (scalar) is
+  overridden by the forge-level value, skills (list) are concatenated with
+  forge-level skills and deduped by basename, host_files (list) are
+  concatenated with last-writer-wins dedup by `dest`. `providers` and
+  `openshell` follow the same merge rules and are also forge-overridable
+  (fullsend-ai/fullsend#5970).
+- **Schema accepts all forge URL/identifier shapes unconditionally**: The
   result schema validates PR/issue URLs, `duplicate_of`, and repo identifiers
-  against GitHub, GitLab, and Jira patterns regardless of the active tracker.
-  This is intentional — the schema is tracker-neutral. Cross-tracker issue
-  creation (`prerequisites.create`) is enforced at runtime (the tracker API
+  against GitHub, GitLab, and Jira patterns regardless of the active forge.
+  This is intentional — the schema is forge-neutral. Cross-forge issue
+  creation (`prerequisites.create`) is enforced at runtime (the forge API
   rejects foreign project paths, and `create_issues.allow_targets` gates it
   further), but comment URLs (`pull_requests[].url`,
   `prerequisites.existing[].url`) are interpolated verbatim and are
@@ -258,7 +252,7 @@ If you use `base:` composition to override `harness/triage.yaml`:
   under `eval/triage/cases/` currently cover GitHub only. GitLab and Jira
   behavior is covered by unit-level bash tests in
   `scripts/post-triage-test.sh` and `scripts/pre-triage-test.sh` (mocked
-  curl/`fullsend` calls, tracker dispatch, label operations). End-to-end
+  curl/`fullsend` calls, forge dispatch, label operations). End-to-end
   GitLab/Jira eval cases require a matching test fixture environment and
   will be added as follow-up work.
 
