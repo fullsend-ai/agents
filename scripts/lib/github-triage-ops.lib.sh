@@ -5,7 +5,7 @@
 # Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
 # All functions use the gh CLI and the GitHub REST API.
 #
-# Expected globals (set by forge_parse_issue_url):
+# Expected globals (set by tracker_parse_issue_url):
 #   REPO         — owner/repo (e.g., "org/repo")
 #   ISSUE_NUMBER — issue number
 #
@@ -18,21 +18,21 @@ GITHUB_TRIAGE_OPS_SH_LOADED=1
 
 # --- URL handling ---
 
-forge_validate_issue_url() {
+tracker_validate_issue_url() {
   if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: ${ISSUE_URL}" >&2
     return 1
   fi
 }
 
-forge_parse_issue_url() {
+tracker_parse_issue_url() {
   REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 }
 
 # --- Labels ---
 
-forge_add_label() {
+tracker_add_label() {
   local label="$1"
   local endpoint="repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
   local err_output
@@ -43,14 +43,14 @@ forge_add_label() {
   fi
 }
 
-forge_remove_label() {
+tracker_remove_label() {
   local label="$1"
   local encoded
   encoded=$(printf '%s' "${label}" | jq -sRr @uri)
   gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
 }
 
-forge_strip_labels() {
+tracker_strip_labels() {
   local labels=("$@")
   for label in "${labels[@]}"; do
     local encoded
@@ -59,7 +59,7 @@ forge_strip_labels() {
   done
 }
 
-forge_verify_labels_stripped() {
+tracker_verify_labels_stripped() {
   local labels=("$@")
   local labels_json
   labels_json=$(printf '%s\n' "${labels[@]}" | jq -R . | jq -s .)
@@ -80,11 +80,11 @@ forge_verify_labels_stripped() {
   fi
 }
 
-forge_list_repo_labels() {
+tracker_list_repo_labels() {
   gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }
 
-forge_create_label() {
+tracker_create_label() {
   local name="$1"
   local description="$2"
   local color="$3"
@@ -95,12 +95,12 @@ forge_create_label() {
 
 # --- Comments ---
 
-forge_post_comment() {
+tracker_post_comment() {
   local body="$1"
   printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 }
 
-forge_post_sticky_comment() {
+tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
   printf '%s' "${body}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "${marker}" --token "${GH_TOKEN}" --result -
@@ -108,12 +108,12 @@ forge_post_sticky_comment() {
 
 # --- Issues ---
 
-forge_close_issue() {
+tracker_close_issue() {
   local reason="$1"
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "${reason}"
 }
 
-forge_create_issue() {
+tracker_create_issue() {
   local target_repo="$1"
   local title="$2"
   local body="$3"

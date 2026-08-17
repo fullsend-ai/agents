@@ -6,8 +6,8 @@
 # run output directory (e.g., /tmp/fullsend/agent-triage-<id>/iteration-1/).
 #
 # Required env vars:
-#   ISSUE_URL      — HTML URL of the issue
-#   FULLSEND_FORGE — "github" or "gitlab"
+#   ISSUE_URL        — HTML URL of the issue
+#   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
 #
 # The agent writes its decision to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
@@ -21,16 +21,18 @@
 set -euo pipefail
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
-: "${FULLSEND_FORGE:?FULLSEND_FORGE must be set}"
+FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
+: "${FULLSEND_TRACKER:?FULLSEND_TRACKER must be set}"
 
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/triage-ops.lib.sh
 # BEGIN bundled: lib/triage-ops.lib.sh
 # shellcheck shell=bash
-# triage-ops.lib.sh — Forge-dispatch wrapper for triage operations.
+# triage-ops.lib.sh — Tracker-dispatch wrapper for triage operations.
 #
-# Sources the correct forge-specific ops based on FULLSEND_FORGE.
+# Sources the correct tracker-specific ops based on FULLSEND_TRACKER
+# (falling back to FULLSEND_FORGE if FULLSEND_TRACKER is unset).
 # Bundled inline by bundle-sh.sh at build time.
 
 [[ -n "${TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
@@ -38,7 +40,9 @@ TRIAGE_OPS_SH_LOADED=1
 
 _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'; }
 
-case "${FULLSEND_FORGE:-}" in
+FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
+
+case "${FULLSEND_TRACKER:-}" in
   github)
 # BEGIN bundled: lib/github-triage-ops.lib.sh
 # shellcheck shell=bash
@@ -47,7 +51,7 @@ case "${FULLSEND_FORGE:-}" in
 # Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
 # All functions use the gh CLI and the GitHub REST API.
 #
-# Expected globals (set by forge_parse_issue_url):
+# Expected globals (set by tracker_parse_issue_url):
 #   REPO         — owner/repo (e.g., "org/repo")
 #   ISSUE_NUMBER — issue number
 #
@@ -60,21 +64,21 @@ GITHUB_TRIAGE_OPS_SH_LOADED=1
 
 # --- URL handling ---
 
-forge_validate_issue_url() {
+tracker_validate_issue_url() {
   if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: ${ISSUE_URL}" >&2
     return 1
   fi
 }
 
-forge_parse_issue_url() {
+tracker_parse_issue_url() {
   REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 }
 
 # --- Labels ---
 
-forge_add_label() {
+tracker_add_label() {
   local label="$1"
   local endpoint="repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
   local err_output
@@ -85,14 +89,14 @@ forge_add_label() {
   fi
 }
 
-forge_remove_label() {
+tracker_remove_label() {
   local label="$1"
   local encoded
   encoded=$(printf '%s' "${label}" | jq -sRr @uri)
   gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
 }
 
-forge_strip_labels() {
+tracker_strip_labels() {
   local labels=("$@")
   for label in "${labels[@]}"; do
     local encoded
@@ -101,7 +105,7 @@ forge_strip_labels() {
   done
 }
 
-forge_verify_labels_stripped() {
+tracker_verify_labels_stripped() {
   local labels=("$@")
   local labels_json
   labels_json=$(printf '%s\n' "${labels[@]}" | jq -R . | jq -s .)
@@ -122,11 +126,11 @@ forge_verify_labels_stripped() {
   fi
 }
 
-forge_list_repo_labels() {
+tracker_list_repo_labels() {
   gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }
 
-forge_create_label() {
+tracker_create_label() {
   local name="$1"
   local description="$2"
   local color="$3"
@@ -137,12 +141,12 @@ forge_create_label() {
 
 # --- Comments ---
 
-forge_post_comment() {
+tracker_post_comment() {
   local body="$1"
   printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
 }
 
-forge_post_sticky_comment() {
+tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
   printf '%s' "${body}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "${marker}" --token "${GH_TOKEN}" --result -
@@ -150,12 +154,12 @@ forge_post_sticky_comment() {
 
 # --- Issues ---
 
-forge_close_issue() {
+tracker_close_issue() {
   local reason="$1"
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "${reason}"
 }
 
-forge_create_issue() {
+tracker_create_issue() {
   local target_repo="$1"
   local title="$2"
   local body="$3"
@@ -182,7 +186,7 @@ forge_create_issue() {
 # Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
 # All functions use curl against the GitLab REST API.
 #
-# Expected globals (set by forge_parse_issue_url):
+# Expected globals (set by tracker_parse_issue_url):
 #   REPO           — plain project path (e.g., "group/project")
 #   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
 #   ISSUE_NUMBER   — issue IID
@@ -252,7 +256,7 @@ _gitlab_api_with_status() {
 
 # --- URL handling ---
 
-forge_validate_issue_url() {
+tracker_validate_issue_url() {
   if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitLab pattern: ${ISSUE_URL}" >&2
     return 1
@@ -265,7 +269,7 @@ forge_validate_issue_url() {
   esac
 }
 
-forge_parse_issue_url() {
+tracker_parse_issue_url() {
   # Extract host, project path, and issue IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
   GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
@@ -276,7 +280,7 @@ forge_parse_issue_url() {
 
 # --- Labels ---
 
-forge_add_label() {
+tracker_add_label() {
   local label="$1"
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "add_labels=${label}" > /dev/null; then
@@ -285,13 +289,13 @@ forge_add_label() {
   fi
 }
 
-forge_remove_label() {
+tracker_remove_label() {
   local label="$1"
   _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
 }
 
-forge_strip_labels() {
+tracker_strip_labels() {
   local labels=("$@")
   for label in "${labels[@]}"; do
     _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
@@ -299,7 +303,7 @@ forge_strip_labels() {
   done
 }
 
-forge_verify_labels_stripped() {
+tracker_verify_labels_stripped() {
   local labels=("$@")
   local current_labels
   current_labels=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null | jq -r '[.labels[]] | join(",")' 2>/dev/null || echo "VERIFY_FAILED")
@@ -329,7 +333,7 @@ forge_verify_labels_stripped() {
   fi
 }
 
-forge_list_repo_labels() {
+tracker_list_repo_labels() {
   local page=1 max_pages=50
   while [[ "${page}" -le "${max_pages}" ]]; do
     local batch
@@ -342,7 +346,7 @@ forge_list_repo_labels() {
   done
 }
 
-forge_create_label() {
+tracker_create_label() {
   local name="$1"
   local description="$2"
   local color="$3"
@@ -369,13 +373,13 @@ _gitlab_bot_username() {
 
 # --- Comments (notes in GitLab) ---
 
-forge_post_comment() {
+tracker_post_comment() {
   local body="$1"
   _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
     --data-urlencode "body=${body}" > /dev/null
 }
 
-forge_post_sticky_comment() {
+tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
   local marked_body="${marker}
@@ -434,7 +438,7 @@ ${body}"
 
 # --- Issues ---
 
-forge_close_issue() {
+tracker_close_issue() {
   local _reason="$1"  # GitLab has no close-reason API; accepted for interface parity
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "state_event=close" > /dev/null; then
@@ -443,7 +447,7 @@ forge_close_issue() {
   fi
 }
 
-forge_create_issue() {
+tracker_create_issue() {
   local target_repo="$1"
   local title="$2"
   local body="$3"
@@ -460,8 +464,294 @@ forge_create_issue() {
 }
 # END bundled: lib/gitlab-triage-ops.lib.sh
     ;;
+  jira)
+# BEGIN bundled: lib/jira-triage-ops.lib.sh
+# shellcheck shell=bash
+# jira-triage-ops.lib.sh — Jira Cloud tracker operations for triage scripts.
+#
+# Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
+# Labels, transitions, and cross-project issue creation use curl against
+# the Jira Cloud REST API v3. Comment posting shells out to
+# `fullsend issues post-comment --tracker jira`, which handles Jira's
+# markdown-to-ADF conversion and marker-based find-and-update semantics
+# that raw REST calls would otherwise have to reimplement.
+#
+# Jira Cloud only (v1): the issue host must match *.atlassian.net. Jira
+# Server/Data Center is not supported.
+#
+# Expected globals (set by tracker_parse_issue_url):
+#   REPO           — Jira project key (e.g., "PROJ")
+#   ISSUE_NUMBER   — full Jira issue key (e.g., "PROJ-123")
+#   JIRA_ISSUE_NUM — numeric issue suffix (e.g., "123"), for the
+#                    `fullsend issues` CLI's --number flag
+#   JIRA_BASE_URL  — Jira instance base URL (e.g., "https://myteam.atlassian.net")
+#
+# Expected env vars:
+#   ISSUE_URL       — HTML URL of the issue (https://<host>.atlassian.net/browse/PROJ-123)
+#   JIRA_USER_EMAIL — Jira account email for Basic auth
+#   JIRA_TOKEN      — Jira Cloud API token
+#
+# These are the same env var names the `fullsend issues` CLI commands read
+# by default (see `fullsend issues post-comment --help`) — using the same
+# names here means one set of credentials covers both the raw REST calls
+# in this file and the `fullsend` shell-outs below.
+#
+# Optional env vars:
+#   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
+#   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" action
+#   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
+#                                 creation (default: "Task")
+
+[[ -n "${JIRA_TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
+JIRA_TRIAGE_OPS_SH_LOADED=1
+
+_jira_api() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --request "${method}" \
+    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "$@"
+}
+
+_jira_api_with_status() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  local err_file
+  err_file=$(mktemp)
+  local raw
+  raw=$(curl --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --request "${method}" \
+    --write-out '\n%{http_code}' \
+    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "$@" 2>"${err_file}") || {
+    echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
+    rm -f "${err_file}"
+    return 1
+  }
+  rm -f "${err_file}"
+  local http_code
+  http_code=$(echo "${raw}" | tail -1)
+  local body
+  body=$(echo "${raw}" | sed '$d')
+  if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
+    echo "Jira API error (HTTP ${http_code}): ${body}" >&2
+    return 1
+  fi
+  echo "${body}"
+}
+
+# --- URL handling ---
+
+tracker_validate_issue_url() {
+  if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    echo "ERROR: ISSUE_URL does not match expected Jira pattern: ${ISSUE_URL}" >&2
+    return 1
+  fi
+  local host
+  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  case "${host}" in
+    *.atlassian.net) ;;
+    *) echo "ERROR: Jira host '${host}' is not in the allowed host list" >&2; return 1 ;;
+  esac
+}
+
+tracker_parse_issue_url() {
+  local host
+  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  JIRA_BASE_URL="https://${host}"
+  ISSUE_NUMBER=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+  REPO="${ISSUE_NUMBER%-*}"
+  JIRA_ISSUE_NUM="${ISSUE_NUMBER##*-}"
+}
+
+# --- Labels ---
+
+tracker_add_label() {
+  local label="$1"
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{add:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to add label '${label}' to issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
+}
+
+tracker_remove_label() {
+  local label="$1"
+  _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+}
+
+tracker_strip_labels() {
+  local labels=("$@")
+  for label in "${labels[@]}"; do
+    _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+      --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+  done
+}
+
+tracker_verify_labels_stripped() {
+  local labels=("$@")
+  local current_labels
+  current_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>/dev/null | jq -r '[.fields.labels[]] | join(",")' 2>/dev/null || echo "VERIFY_FAILED")
+
+  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
+    echo "ERROR: cannot verify label state — API call failed" >&2
+    return 1
+  fi
+
+  local remaining=""
+  IFS=',' read -ra current_array <<< "${current_labels}"
+  for current in "${current_array[@]}"; do
+    for check in "${labels[@]}"; do
+      if [[ "${current}" == "${check}" ]]; then
+        if [[ -n "${remaining}" ]]; then
+          remaining="${remaining}, ${current}"
+        else
+          remaining="${current}"
+        fi
+      fi
+    done
+  done
+
+  if [[ -n "${remaining}" ]]; then
+    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+    return 1
+  fi
+}
+
+# Jira has no per-project label registry like GitHub/GitLab — any string is
+# a valid label with no creation step. As the closest analog to "labels the
+# maintainers already established" (which the "will not auto-create" guard
+# in post-triage.src.sh relies on), this lists labels already used anywhere
+# in the Jira site via the global label-suggestion endpoint.
+tracker_list_repo_labels() {
+  local start_at=0 max_pages=50
+  for _ in $(seq 1 "${max_pages}"); do
+    local batch
+    batch=$(_jira_api GET "/label?startAt=${start_at}&maxResults=200" 2>/dev/null) || break
+    local count
+    count=$(echo "${batch}" | jq '.values | length') || break
+    [[ "${count}" -eq 0 ]] && break
+    echo "${batch}" | jq -r '.values[]'
+    if [[ "$(echo "${batch}" | jq -r '.isLast')" == "true" ]]; then
+      break
+    fi
+    start_at=$((start_at + count))
+  done
+}
+
+# Jira has no label-creation step (see tracker_list_repo_labels) — adding an
+# unused label to an issue works without registering it first.
+tracker_create_label() {
+  :
+}
+
+# --- Comments ---
+
+tracker_post_comment() {
+  local body="$1"
+  # `fullsend issues post-comment` always does marker-based find-and-update;
+  # there is no "always create new" mode. A marker unique to this invocation
+  # guarantees no prior comment matches it, so this always creates a new
+  # comment — matching tracker_post_comment's always-new contract on
+  # GitHub/GitLab.
+  local marker
+  marker="<!-- fullsend:triage-$(date +%s%N) -->"
+  printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
+    --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
+    --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
+    --marker "${marker}" --result -
+}
+
+tracker_post_sticky_comment() {
+  local body="$1"
+  local marker="$2"
+  printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
+    --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
+    --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
+    --marker "${marker}" --result -
+}
+
+# --- Issues ---
+
+tracker_close_issue() {
+  local reason="$1"
+  local transition_var
+  case "${reason}" in
+    duplicate) transition_var="JIRA_DUPLICATE_TRANSITION" ;;
+    "not planned") transition_var="JIRA_NOT_PLANNED_TRANSITION" ;;
+    completed) transition_var="JIRA_SPLIT_TRANSITION" ;;
+    *)
+      echo "ERROR: unknown close reason '${reason}' — no Jira transition mapping" >&2
+      return 1
+      ;;
+  esac
+
+  local transition_name="${!transition_var:-}"
+  if [[ -z "${transition_name}" ]]; then
+    echo "ERROR: ${transition_var} is not set — cannot close issue ${ISSUE_NUMBER} via Jira transition for reason '${reason}'" >&2
+    return 1
+  fi
+
+  local transitions
+  transitions=$(_jira_api GET "/issue/${ISSUE_NUMBER}/transitions" 2>/dev/null) || {
+    echo "ERROR: failed to list transitions for issue ${ISSUE_NUMBER}" >&2
+    return 1
+  }
+  local transition_id
+  transition_id=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
+    '[.transitions[] | select(.name == $name)][0].id // empty')
+  if [[ -z "${transition_id}" ]]; then
+    echo "ERROR: transition '${transition_name}' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}" >&2
+    return 1
+  fi
+
+  if ! _jira_api POST "/issue/${ISSUE_NUMBER}/transitions" \
+    --data "$(jq -cn --arg id "${transition_id}" '{transition:{id:$id}}')" > /dev/null; then
+    echo "ERROR: failed to transition issue ${ISSUE_NUMBER} via '${transition_name}'" >&2
+    return 1
+  fi
+}
+
+tracker_create_issue() {
+  local target_project="$1"
+  local title="$2"
+  local body="$3"
+  local issue_type="${JIRA_CREATE_ISSUE_TYPE:-Task}"
+  # Jira Cloud REST v3 requires the description as Atlassian Document
+  # Format, not plain text/markdown. A single-paragraph doc is sufficient
+  # here since prerequisite/sub-issue bodies are plain text.
+  local description_adf
+  description_adf=$(jq -cn --arg text "${body}" \
+    '{type:"doc",version:1,content:[{type:"paragraph",content:[{type:"text",text:$text}]}]}')
+  local response
+  response=$(_jira_api_with_status POST "/issue" \
+    --data "$(jq -cn --arg proj "${target_project}" --arg title "${title}" \
+      --arg itype "${issue_type}" --argjson desc "${description_adf}" \
+      '{fields:{project:{key:$proj},summary:$title,description:$desc,issuetype:{name:$itype}}}')") || {
+    echo "Jira API error: failed to create issue in ${target_project}" >&2
+    return 1
+  }
+  local key
+  key=$(echo "${response}" | jq -r '.key')
+  echo "${JIRA_BASE_URL}/browse/${key}"
+}
+# END bundled: lib/jira-triage-ops.lib.sh
+    ;;
   *)
-    echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
+    echo "ERROR: invalid FULLSEND_TRACKER: '${FULLSEND_TRACKER:-}' — pass --tracker <github|gitlab|jira> or set FULLSEND_TRACKER" >&2
     exit 1
     ;;
 esac
@@ -573,8 +863,8 @@ fi
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 
-forge_validate_issue_url
-forge_parse_issue_url
+tracker_validate_issue_url
+tracker_parse_issue_url
 
 echo "Action: ${ACTION}"
 echo "Repo: ${REPO}"
@@ -609,7 +899,7 @@ DEFERRED_LABEL=""
 # the new action. Every terminal action below resets its own set of control
 # labels, but "triaged" is only ever re-applied (never removed) by the
 # handlers themselves, so it must be cleared up front rather than per-branch.
-forge_remove_label "triaged"
+tracker_remove_label "triaged"
 
 # --- Cross-repo issue creation allowlist ---
 # Used by prerequisites and split actions. Read once before the case
@@ -623,12 +913,14 @@ fi
 
 ALLOWED_ORGS=""
 ALLOWED_REPOS=""
+ALLOWED_JIRA_PROJECTS=""
 if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
   echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
 fi
 if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
   ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
   ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+  ALLOWED_JIRA_PROJECTS=$(yq -r '.create_issues.allow_targets.jira_projects // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
 fi
 
 is_target_allowed() {
@@ -647,6 +939,10 @@ is_target_allowed() {
     return 0
   fi
 
+  if [[ -n "${ALLOWED_JIRA_PROJECTS}" ]] && echo "${ALLOWED_JIRA_PROJECTS}" | grep -qFx "${target_repo}"; then
+    return 0
+  fi
+
   return 1
 }
 
@@ -656,9 +952,9 @@ case "${ACTION}" in
       echo "ERROR: action is 'insufficient' but no comment provided" >&2
       exit 1
     fi
-    forge_remove_label "blocked"
-    forge_remove_label "pr-open"
-    forge_add_label "needs-info"
+    tracker_remove_label "blocked"
+    tracker_remove_label "pr-open"
+    tracker_add_label "needs-info"
     ;;
 
   duplicate)
@@ -667,13 +963,13 @@ case "${ACTION}" in
       exit 1
     fi
     DUPLICATE_OF=$(jq -r '.duplicate_of' "${RESULT_FILE}")
-    if [[ "${DUPLICATE_OF}" -eq "${ISSUE_NUMBER}" ]]; then
+    if [[ "${DUPLICATE_OF}" == "${ISSUE_NUMBER}" ]]; then
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
-    forge_remove_label "blocked"
-    forge_remove_label "pr-open"
-    forge_add_label "duplicate"
+    tracker_remove_label "blocked"
+    tracker_remove_label "pr-open"
+    tracker_add_label "duplicate"
     ;;
 
   prerequisites)
@@ -705,7 +1001,7 @@ ${ISSUE_BODY}
       fi
 
       echo "Creating prerequisite issue in $(_gha_sanitize "${TARGET_REPO}")..."
-      CREATED_URL=$(forge_create_issue "${TARGET_REPO}" "${ISSUE_TITLE}" "${ISSUE_BODY}") || {
+      CREATED_URL=$(tracker_create_issue "${TARGET_REPO}" "${ISSUE_TITLE}" "${ISSUE_BODY}") || {
         echo "::warning::Failed to create issue in '$(_gha_sanitize "${TARGET_REPO}")' (see stderr for details)"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
@@ -750,10 +1046,10 @@ ${ISSUE_BODY}
 ${FAILED_CREATES}"
     fi
 
-    forge_remove_label "ready-to-code"
-    forge_remove_label "needs-info"
-    forge_remove_label "pr-open"
-    forge_add_label "blocked"
+    tracker_remove_label "ready-to-code"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "blocked"
     ;;
 
   in-progress)
@@ -797,11 +1093,11 @@ ${FAILED_CREATES}"
 
 **Addressed by:**${PR_LIST}"
 
-    forge_remove_label "blocked"
-    forge_remove_label "ready-to-code"
-    forge_remove_label "needs-info"
-    forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
-    forge_add_label "pr-open"
+    tracker_remove_label "blocked"
+    tracker_remove_label "ready-to-code"
+    tracker_remove_label "needs-info"
+    tracker_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
+    tracker_add_label "pr-open"
     ;;
 
   sufficient)
@@ -867,9 +1163,9 @@ ${FAILED_CREATES}"
       fi
     fi
 
-    forge_remove_label "blocked"
-    forge_remove_label "needs-info"
-    forge_remove_label "pr-open"
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
@@ -934,31 +1230,31 @@ ${FAILED_CREATES}"
       echo "::warning::Triage detected workflow file changes required (#325)"
       if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
         echo "Applying triaged label (workflow changes required)..."
-        forge_add_label "triaged"
+        tracker_add_label "triaged"
         WORKFLOW_BLOCKED=true
       fi
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
-        forge_add_label "bug"
+        tracker_add_label "bug"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          forge_add_label "triaged"
+          tracker_add_label "triaged"
         fi
         ;;
       documentation)
         echo "Applying documentation label..."
-        forge_add_label "documentation"
+        tracker_add_label "documentation"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          forge_add_label "triaged"
+          tracker_add_label "triaged"
         fi
         ;;
       performance)
@@ -967,17 +1263,17 @@ ${FAILED_CREATES}"
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          forge_add_label "triaged"
+          tracker_add_label "triaged"
         fi
         ;;
       feature)
         echo "Applying feature + triaged labels..."
-        forge_add_label "feature"
-        forge_add_label "triaged"
+        tracker_add_label "feature"
+        tracker_add_label "triaged"
         ;;
       *)
         echo "Applying triaged label (${CATEGORY})..."
-        forge_add_label "triaged"
+        tracker_add_label "triaged"
         ;;
     esac
     ;;
@@ -1018,7 +1314,7 @@ ${SUB_BODY}
       fi
 
       echo "Creating sub-issue ${i}: $(_gha_sanitize "${SAFE_TITLE}") (repo: $(_gha_sanitize "${TARGET_REPO}"))..."
-      CREATED_URL=$(forge_create_issue "${TARGET_REPO}" "${SUB_TITLE}" "${SUB_BODY}") || {
+      CREATED_URL=$(tracker_create_issue "${TARGET_REPO}" "${SUB_TITLE}" "${SUB_BODY}") || {
         echo "::warning::Failed to create sub-issue '$(_gha_sanitize "${SAFE_TITLE}")' (see stderr for details)"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
@@ -1052,10 +1348,10 @@ ${SUB_BODY}
 ${FAILED_CREATES}"
     fi
 
-    forge_remove_label "blocked"
-    forge_remove_label "needs-info"
-    forge_remove_label "ready-to-code"
-    forge_remove_label "pr-open"
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "ready-to-code"
+    tracker_remove_label "pr-open"
     ;;
 
   question)
@@ -1063,10 +1359,10 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'question' but no comment provided" >&2
       exit 1
     fi
-    forge_remove_label "blocked"
-    forge_remove_label "needs-info"
-    forge_remove_label "pr-open"
-    forge_add_label "question"
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "question"
     ;;
 
   not-planned)
@@ -1074,10 +1370,10 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'not-planned' but no comment provided" >&2
       exit 1
     fi
-    forge_remove_label "blocked"
-    forge_remove_label "needs-info"
-    forge_remove_label "pr-open"
-    forge_add_label "not-planned"
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "not-planned"
     ;;
 
   *)
@@ -1095,7 +1391,7 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 
   echo "Processing ${LABEL_COUNT} label action(s)..."
 
-  EXISTING_LABELS=$(forge_list_repo_labels)
+  EXISTING_LABELS=$(tracker_list_repo_labels)
 
   label_exists() {
     local label="$1"
@@ -1125,12 +1421,12 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
           continue
         fi
         echo "Adding label '$(_gha_sanitize "${LA_LABEL}")'..."
-        forge_add_label "${LA_LABEL}"
+        tracker_add_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       remove)
         echo "Removing label '$(_gha_sanitize "${LA_LABEL}")'..."
-        forge_remove_label "${LA_LABEL}"
+        tracker_remove_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       *)
@@ -1171,25 +1467,25 @@ fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
-  forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
+  tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
 elif [[ "${ACTION}" == "in-progress" ]]; then
-  forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
+  tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
 else
-  forge_post_comment "${COMMENT}"
+  tracker_post_comment "${COMMENT}"
 fi
 
 # --- Post-action: close issues ---
 
 if [[ "${ACTION}" == "duplicate" ]]; then
-  forge_close_issue "duplicate"
+  tracker_close_issue "duplicate"
 fi
 
 if [[ "${ACTION}" == "not-planned" ]]; then
-  forge_close_issue "not planned"
+  tracker_close_issue "not planned"
 fi
 
 if [[ "${ACTION}" == "split" ]]; then
-  forge_close_issue "completed"
+  tracker_close_issue "completed"
 fi
 
 echo "Post-triage complete."

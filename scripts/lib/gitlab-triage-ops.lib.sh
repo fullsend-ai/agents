@@ -5,7 +5,7 @@
 # Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
 # All functions use curl against the GitLab REST API.
 #
-# Expected globals (set by forge_parse_issue_url):
+# Expected globals (set by tracker_parse_issue_url):
 #   REPO           — plain project path (e.g., "group/project")
 #   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
 #   ISSUE_NUMBER   — issue IID
@@ -75,7 +75,7 @@ _gitlab_api_with_status() {
 
 # --- URL handling ---
 
-forge_validate_issue_url() {
+tracker_validate_issue_url() {
   if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitLab pattern: ${ISSUE_URL}" >&2
     return 1
@@ -88,7 +88,7 @@ forge_validate_issue_url() {
   esac
 }
 
-forge_parse_issue_url() {
+tracker_parse_issue_url() {
   # Extract host, project path, and issue IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
   GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
@@ -99,7 +99,7 @@ forge_parse_issue_url() {
 
 # --- Labels ---
 
-forge_add_label() {
+tracker_add_label() {
   local label="$1"
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "add_labels=${label}" > /dev/null; then
@@ -108,13 +108,13 @@ forge_add_label() {
   fi
 }
 
-forge_remove_label() {
+tracker_remove_label() {
   local label="$1"
   _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
 }
 
-forge_strip_labels() {
+tracker_strip_labels() {
   local labels=("$@")
   for label in "${labels[@]}"; do
     _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
@@ -122,7 +122,7 @@ forge_strip_labels() {
   done
 }
 
-forge_verify_labels_stripped() {
+tracker_verify_labels_stripped() {
   local labels=("$@")
   local current_labels
   current_labels=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null | jq -r '[.labels[]] | join(",")' 2>/dev/null || echo "VERIFY_FAILED")
@@ -152,7 +152,7 @@ forge_verify_labels_stripped() {
   fi
 }
 
-forge_list_repo_labels() {
+tracker_list_repo_labels() {
   local page=1 max_pages=50
   while [[ "${page}" -le "${max_pages}" ]]; do
     local batch
@@ -165,7 +165,7 @@ forge_list_repo_labels() {
   done
 }
 
-forge_create_label() {
+tracker_create_label() {
   local name="$1"
   local description="$2"
   local color="$3"
@@ -192,13 +192,13 @@ _gitlab_bot_username() {
 
 # --- Comments (notes in GitLab) ---
 
-forge_post_comment() {
+tracker_post_comment() {
   local body="$1"
   _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
     --data-urlencode "body=${body}" > /dev/null
 }
 
-forge_post_sticky_comment() {
+tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
   local marked_body="${marker}
@@ -257,7 +257,7 @@ ${body}"
 
 # --- Issues ---
 
-forge_close_issue() {
+tracker_close_issue() {
   local _reason="$1"  # GitLab has no close-reason API; accepted for interface parity
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "state_event=close" > /dev/null; then
@@ -266,7 +266,7 @@ forge_close_issue() {
   fi
 }
 
-forge_create_issue() {
+tracker_create_issue() {
   local target_repo="$1"
   local title="$2"
   local body="$3"

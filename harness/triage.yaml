@@ -58,11 +58,11 @@ forge:
       runner:
         ISSUE_URL: ${GITHUB_ISSUE_URL}
         GH_TOKEN: ${GH_TOKEN}
-        FULLSEND_FORGE: github
+        FULLSEND_TRACKER: github
       sandbox:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
         GH_TOKEN: "${GH_TOKEN}"
-        FULLSEND_FORGE: github
+        FULLSEND_TRACKER: github
   gitlab:
     policy: policies/gitlab/triage.yaml
     pre_script: scripts/pre-triage.sh
@@ -78,8 +78,32 @@ forge:
       runner:
         ISSUE_URL: ${GITLAB_ISSUE_URL}
         GITLAB_TOKEN: ${GITLAB_TOKEN}
-        FULLSEND_FORGE: gitlab
+        FULLSEND_TRACKER: gitlab
       sandbox:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
-        FULLSEND_FORGE: gitlab
+        FULLSEND_TRACKER: gitlab
+  jira:
+    policy: policies/jira/triage.yaml
+    pre_script: scripts/pre-triage.sh
+    post_script: scripts/post-triage.sh
+    skills:
+      - skills/jira-tracker
+      - skills/issue-labels/jira
+    host_files:
+      - src: env/jira/triage.env
+        dest: /sandbox/workspace/.env.d/triage.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${JIRA_ISSUE_URL}
+        JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+        JIRA_TOKEN: ${JIRA_TOKEN}
+        JIRA_BASE_URL: ${JIRA_BASE_URL}
+        FULLSEND_TRACKER: jira
+      sandbox:
+        ISSUE_URL: "${JIRA_ISSUE_URL}"
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_TOKEN: "${JIRA_TOKEN}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        FULLSEND_TRACKER: jira
