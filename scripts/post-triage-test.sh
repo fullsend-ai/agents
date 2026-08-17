@@ -1891,6 +1891,92 @@ run_jira_test "jira-close-transition-not-configured-fails" \
   "true"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 
+# Jira duplicate self-reference: duplicate_of matching the current ISSUE_NUMBER
+# (TESTPROJ-42) is rejected, just as integer self-references are for GitHub.
+run_jira_test "jira-duplicate-self-reference-fails" \
+  '{"action":"duplicate","reasoning":"same issue","duplicate_of":"TESTPROJ-42","comment":"Duplicate of itself."}' \
+  "" \
+  "true"
+
+# Jira label API error propagation: when the label PUT fails, the error
+# propagates and the script fails rather than silently swallowing it.
+# Override the mock curl to fail on label PUT requests.
+JIRA_LABEL_FAIL_CURL_LOG="${TMPDIR}/jira-label-fail-curl.log"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${JIRA_LABEL_FAIL_CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+METHOD="GET"
+URL=""
+for arg in "$@"; do
+  case "${arg}" in
+    --request) shift_next=method ;;
+    --fail|--silent|--show-error) ;;
+    --connect-timeout|--max-time|--user|--header|--data|--write-out) shift_next=skip ;;
+    *)
+      if [[ "${shift_next:-}" == "method" ]]; then
+        METHOD="${arg}"
+        shift_next=""
+      elif [[ "${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "${arg}" =~ ^https:// ]]; then
+        URL="${arg}"
+      fi
+      ;;
+  esac
+done
+# Fail on label PUTs (issue endpoint with PUT method).
+if [[ "${URL}" =~ /issue/ ]] && [[ "${METHOD}" == "PUT" ]]; then
+  echo "Jira API error: mock label PUT failure" >&2
+  exit 1
+fi
+# Transitions listing still works.
+if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
+  exit 0
+fi
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+run_jira_test "jira-label-put-failure-propagates" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+
+# Restore the normal Jira mock curl for subsequent tests.
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${JIRA_CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+URL=""
+METHOD="GET"
+for arg in "$@"; do
+  case "${arg}" in
+    --request) shift_next=method ;;
+    --fail|--silent|--show-error) ;;
+    --connect-timeout|--max-time|--user|--header|--data|--write-out) shift_next=skip ;;
+    *)
+      if [[ "${shift_next:-}" == "method" ]]; then
+        METHOD="${arg}"
+        shift_next=""
+      elif [[ "${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "${arg}" =~ ^https:// ]]; then
+        URL="${arg}"
+      fi
+      ;;
+  esac
+done
+if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
+  exit 0
+fi
+if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
+  echo '{"key":"ALLOWEDPROJ-999"}'
+  printf '\n201'
+  exit 0
+fi
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
 # Restore GitHub tracker for any subsequent tests.
 export FULLSEND_TRACKER="github"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"

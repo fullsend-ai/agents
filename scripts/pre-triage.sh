@@ -568,7 +568,8 @@ tracker_parse_issue_url() {
   host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
   local parsed_base_url="https://${host}"
   if [[ -n "${JIRA_BASE_URL:-}" ]] && [[ "${JIRA_BASE_URL}" != "${parsed_base_url}" ]]; then
-    echo "WARNING: JIRA_BASE_URL ('${JIRA_BASE_URL}') differs from ISSUE_URL host ('${parsed_base_url}') — using ISSUE_URL host" >&2
+    echo "ERROR: JIRA_BASE_URL ('${JIRA_BASE_URL}') does not match ISSUE_URL host ('${parsed_base_url}') — refusing to redirect API calls to a different tenant" >&2
+    return 1
   fi
   JIRA_BASE_URL="${parsed_base_url}"
   ISSUE_NUMBER=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
@@ -603,17 +604,16 @@ tracker_strip_labels() {
 
 tracker_verify_labels_stripped() {
   local labels=("$@")
-  local current_labels
-  current_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>/dev/null | jq -r '[.fields.labels[]] | join(",")' 2>/dev/null || echo "VERIFY_FAILED")
-
-  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
+  local raw_labels
+  raw_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>/dev/null) || {
     echo "ERROR: cannot verify label state — API call failed" >&2
     return 1
-  fi
+  }
 
   local remaining=""
-  IFS=',' read -ra current_array <<< "${current_labels}"
-  for current in "${current_array[@]}"; do
+  local current
+  while IFS= read -r current; do
+    [[ -z "${current}" ]] && continue
     for check in "${labels[@]}"; do
       if [[ "${current}" == "${check}" ]]; then
         if [[ -n "${remaining}" ]]; then
@@ -623,7 +623,7 @@ tracker_verify_labels_stripped() {
         fi
       fi
     done
-  done
+  done < <(echo "${raw_labels}" | jq -r '.fields.labels[]' 2>/dev/null)
 
   if [[ -n "${remaining}" ]]; then
     echo "ERROR: triage labels still present after reset: ${remaining}" >&2
