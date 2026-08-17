@@ -4,7 +4,7 @@ description: Inspect an issue, assess information sufficiency, and produce a str
 skills:
   - issue-labels
 # curl: required by GitLab forge. On GitHub, the network policy binary
-# allowlist (policies/github/triage.yaml) excludes **/curl, preventing
+# allowlist (policies/base.yaml) excludes **/curl, preventing
 # it from making network requests even though it is granted here.
 tools: Bash(gh,curl,jq)
 model: opus

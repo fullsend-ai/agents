@@ -24,6 +24,14 @@ if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
   exit 1
 fi
 
+# Gate skips on pull_request_target when the trigger is a labeled event
+# for a label other than ok-to-test. This is expected — pass the rollup
+# so the non-relevant label event does not block the PR.
+if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$GATE_RESULT" = "skipped" ]; then
+  echo "Gate was skipped (non-relevant label event) — passing"
+  exit 0
+fi
+
 if [ "$EVENT_NAME" = "pull_request_target" ] && [ "$DETECT_RESULT" = "skipped" ]; then
   echo "::error::Detect was ${DETECT_RESULT} on pull_request_target — tests were not authorized to run"
   exit 1
