@@ -62,5 +62,6 @@ script-test:
 	$(call run-timed,bash .github/scripts/select-eval-agents-test.sh)
 	$(call run-timed,python3 scripts/process-fix-result-test.py)
 	$(call run-timed,bash eval/scripts/scrub-eval-results-test.sh)
+	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
 
 test: script-test
