@@ -1204,6 +1204,15 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   section. If there are no findings at all, set the body to
   the hidden SHA comment followed by a newline and "Looks good to me"
   — omit the `## Review` header and `### Findings` section entirely.
+- **No freeform verification sections.** Do not include sections
+  claiming to have verified properties beyond what the diff and source
+  files directly show (e.g., "Verified: ✅", "zero X remain",
+  "delivery chain verified"). The review agent performs static analysis
+  of the diff and source files — it cannot verify reference integrity,
+  credential flows, or runtime behavior. When a prior finding is no
+  longer present in the reviewed diff, state "not observed in current
+  diff" rather than "verified resolved." Never claim exhaustive
+  verification of any property that requires CI or runtime validation.
 - **No footer.** Do not append any footer, action-hints block, or
   boilerplate after findings. The post-review pipeline appends
   action hints deterministically when appropriate.
