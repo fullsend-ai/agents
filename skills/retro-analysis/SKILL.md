@@ -121,6 +121,43 @@ After subagents return their findings, use your main context to:
 3. Form hypotheses about root causes
 4. Decide what changes to propose and where
 
+## Flapping detection
+
+Check whether the workflow exhibits fix-break oscillation. Flapping wastes agent cycles and often indicates a deeper problem (conflicting instructions, flaky tests, or an approach the agent cannot converge on).
+
+### Applicability
+
+Flapping detection applies to PR-based workflows with code/fix cycles. If `$ORIGINATING_URL` is an issue URL, check whether a PR is linked (`gh issue view "$ORIGINATING_URL" --json closedByPullRequestsReferences`) before skipping. If no linked PR exists, skip flapping detection for this retro.
+
+### Data gathering
+
+Dispatch a subagent to identify code/fix/review workflow runs for the PR and collect the data needed for pattern detection:
+
+- **Flapping data collector:** "Find all code, fix, and review workflow runs related to PR #<PR_NUMBER> in `<DISPATCH_REPO>`. Each run's log contains an `event_payload` JSON line with `pull_request.head.sha` and `pull_request.number`; parse it to correlate runs to PR commits and to confirm the run belongs to this PR. For each matched run, fetch the commit's changed files and CI check-run results from `<REPO>`. Also fetch the PR's review comments/findings (`--paginate`) so finding content can be compared across review cycles."
+
+### Patterns to detect
+
+1. **File oscillation:** the same file was changed in two or more consecutive runs, and the changes reverse each other (lines added in run N were removed in run N+1, or vice versa).
+2. **Test result flipping:** a test that passed after run N fails after run N+1, then passes again after run N+2, and the flapping test covers a file the agent modified in the same run. Tests that flip independently of agent changes may be pre-existing flaky tests, not agent-caused oscillation.
+3. **Cycle count:** more than 2 review-fix cycles on the same PR without convergence (the review keeps raising the same or alternating findings, e.g. a fix for one issue reintroducing a previously resolved one). A single rework cycle where the fix addresses the feedback and the review approves is normal iteration, not flapping.
+
+### When flapping is detected
+
+Include a proposal with these specifics:
+
+- **target_repo:** the repo where the fix should land (see Localization guidance below)
+- **title:** start with "Flapping detected:" followed by what oscillated
+- **what_happened:** list each cycle with the run IDs, which files changed, and how the changes reversed
+- **what_could_go_better:** identify what might be causing the loop (conflicting review criteria, flaky test, ambiguous instructions)
+- **proposed_change:** suggest a concrete intervention (clarify the conflicting instruction, fix the flaky test, add a convergence guard)
+- **validation_criteria:** define a measurable outcome tied to the specific pattern, e.g. "The next 2 fix cycles touching `<file>` should not re-introduce the change reverted in run N+1."
+
+### When NOT to flag
+
+- A single rework cycle (review requested changes, fix addressed them, review approved) is normal.
+- Different files changing across runs is normal iteration, not oscillation.
+- Only flag when you see the same changes being applied and reversed repeatedly.
+
 ## Before proposing: check for existing issues
 
 **This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
