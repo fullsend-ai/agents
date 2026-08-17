@@ -76,6 +76,26 @@ gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
 gh run download <RUN_ID> --repo "$DISPATCH_REPO"
 ```
 
+### Correlating dispatch-repo runs to source-repo PRs
+
+Dispatch-repo run logs contain an `event_payload` JSON line with fields
+that map each run directly to its source-repo PR and commit — no
+timestamp heuristics or branch-name matching required.
+
+Key fields in `event_payload`:
+
+- `pull_request.head.sha` — the source-repo commit the run executed against
+- `pull_request.number` — the source-repo PR number
+- `pull_request.base.ref` — the target branch of the PR
+
+```bash
+# Extract event_payload from a dispatch-repo run log
+gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
+  | grep -o 'event_payload.*'
+```
+
+Use this as the primary method for run-to-PR/commit correlation.
+
 ## Exploration strategy
 
 You have a large amount of context to cover. Use subagents to avoid overflowing your main context window.
