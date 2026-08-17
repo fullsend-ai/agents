@@ -41,7 +41,7 @@ Export the variables the agent needs:
 # GitHub:
 export GITHUB_ISSUE_URL="https://github.com/your-org/test-repo/issues/25"
 export GH_TOKEN="$(gh auth token)"
-export FULLSEND_TRACKER="github"
+export FULLSEND_FORGE="github"
 
 # GitLab (alternative — set these INSTEAD of the GitHub vars above;
 # only one forge's vars should be set at a time, and FULLSEND_FORGE
@@ -116,16 +116,16 @@ cat /tmp/fullsend/agent-triage-*/iteration-*/output/agent-result.json | jq .
 ## Testing triage with Jira
 
 Triage also supports Jira Cloud as a forge (see [`docs/triage.md`](docs/triage.md#jira-setup)).
-The default runner only sets `FULLSEND_TRACKER` for GitHub/GitLab, so
-exercising the Jira path locally means overriding the forge selection by
-hand:
+Set `FULLSEND_FORGE=jira` instead of `github`/`gitlab`, along with the
+Jira-specific env vars — `forge.jira` resolves natively with the current
+runner, no override workaround needed:
 
 ```bash
 export JIRA_ISSUE_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
-export FULLSEND_TRACKER="jira"
+export FULLSEND_FORGE="jira"
 
 # Transition names for closing issues — set to match your Jira workflow.
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
