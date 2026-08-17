@@ -1833,6 +1833,56 @@ run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"DISALLOWEDPROJ","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
   "not in create_issues.allow_targets"
 
+# Jira sufficient action posts a comment and applies labels via curl.
+run_jira_test "jira-sufficient-posts-comment" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  "fullsend issues post-comment --tracker jira"
+
+# Jira sufficient bug action applies bug label.
+run_jira_test "jira-sufficient-bug-adds-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  '"add":"bug"'
+
+# Jira sufficient bug action with TRIAGE_AUTO_CODE=on applies ready-to-code.
+run_jira_test "jira-sufficient-bug-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  '"add":"ready-to-code"'
+
+# Jira sufficient feature action applies triaged label (not ready-to-code).
+run_jira_test "jira-sufficient-feature-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  '"add":"triaged"'
+
+# Jira in-progress action posts a sticky comment via fullsend.
+run_jira_test "jira-in-progress-posts-sticky-comment" \
+  '{"action":"in-progress","reasoning":"PR linked to issue","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "fullsend issues post-comment --tracker jira"
+
+# Jira in-progress action adds pr-open label.
+run_jira_test "jira-in-progress-adds-pr-open" \
+  '{"action":"in-progress","reasoning":"PR linked to issue","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  '"add":"pr-open"'
+
+# Jira in-progress action removes stale labels.
+run_jira_test "jira-in-progress-removes-blocked" \
+  '{"action":"in-progress","reasoning":"PR linked to issue","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  '"remove":"blocked"'
+
+# Jira question action posts a comment via fullsend.
+run_jira_test "jira-question-posts-comment" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  "fullsend issues post-comment --tracker jira"
+
+# Jira question action adds question label.
+run_jira_test "jira-question-adds-label" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  '"add":"question"'
+
+# Jira question action removes stale labels.
+run_jira_test "jira-question-removes-needs-info" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  '"remove":"needs-info"'
+
 # Jira not-planned fails loudly (not silently) when its transition is unconfigured.
 unset JIRA_NOT_PLANNED_TRANSITION
 run_jira_test "jira-close-transition-not-configured-fails" \

@@ -41,7 +41,7 @@ Export the variables the agent needs:
 # GitHub:
 export GITHUB_ISSUE_URL="https://github.com/your-org/test-repo/issues/25"
 export GH_TOKEN="$(gh auth token)"
-export FULLSEND_FORGE="github"
+export FULLSEND_TRACKER="github"
 
 # GitLab (alternative — set these INSTEAD of the GitHub vars above;
 # only one forge's vars should be set at a time, and FULLSEND_FORGE

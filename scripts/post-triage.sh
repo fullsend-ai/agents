@@ -570,7 +570,11 @@ tracker_validate_issue_url() {
 tracker_parse_issue_url() {
   local host
   host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
-  JIRA_BASE_URL="https://${host}"
+  local parsed_base_url="https://${host}"
+  if [[ -n "${JIRA_BASE_URL:-}" ]] && [[ "${JIRA_BASE_URL}" != "${parsed_base_url}" ]]; then
+    echo "WARNING: JIRA_BASE_URL ('${JIRA_BASE_URL}') differs from ISSUE_URL host ('${parsed_base_url}') — using ISSUE_URL host" >&2
+  fi
+  JIRA_BASE_URL="${parsed_base_url}"
   ISSUE_NUMBER=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
   REPO="${ISSUE_NUMBER%-*}"
   JIRA_ISSUE_NUM="${ISSUE_NUMBER##*-}"
@@ -726,7 +730,7 @@ tracker_close_issue() {
 }
 
 tracker_create_issue() {
-  local target_project="$1"
+  local target_repo="$1"
   local title="$2"
   local body="$3"
   local issue_type="${JIRA_CREATE_ISSUE_TYPE:-Task}"
@@ -738,10 +742,10 @@ tracker_create_issue() {
     '{type:"doc",version:1,content:[{type:"paragraph",content:[{type:"text",text:$text}]}]}')
   local response
   response=$(_jira_api_with_status POST "/issue" \
-    --data "$(jq -cn --arg proj "${target_project}" --arg title "${title}" \
+    --data "$(jq -cn --arg proj "${target_repo}" --arg title "${title}" \
       --arg itype "${issue_type}" --argjson desc "${description_adf}" \
       '{fields:{project:{key:$proj},summary:$title,description:$desc,issuetype:{name:$itype}}}')") || {
-    echo "Jira API error: failed to create issue in ${target_project}" >&2
+    echo "Jira API error: failed to create issue in ${target_repo}" >&2
     return 1
   }
   local key
