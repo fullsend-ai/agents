@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Post-script: push the agent's commit and create a PR.
+# Post-script: push the agent's commit and create a PR/MR.
 #
-# Runs on the GitHub Actions runner AFTER the sandbox is destroyed.
+# Runs on the CI runner AFTER the sandbox is destroyed.
 # This script has write access to the target repo — it is the most
 # security-sensitive component in the pipeline.
 #
@@ -19,10 +19,12 @@
 # agents/). The code agent is free to propose changes to any path.
 #
 # Required environment variables:
-#   PUSH_TOKEN        — token with contents:write + issues:write + pull-requests:write
-#                       on target repo (GitHub App installation token or PAT)
-#   REPO_FULL_NAME    — owner/repo (e.g. my-org/my-repo)
-#   ISSUE_NUMBER      — GitHub issue number
+#   PUSH_TOKEN        — token with write scopes on target repo
+#                       GitHub: contents:write + issues:write + pull-requests:write
+#                       GitLab: api scope (project or personal access token)
+#   REPO_FULL_NAME    — owner/repo or group/project path
+#   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab)
+#   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
 # Optional environment variables:
@@ -33,10 +35,8 @@
 #                       branch is allowed. (default: auto-detected)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
-#   CODE_AUTO_MERGE    — "true" to enable GitHub auto-merge on the PR after
-#                        creation. Requires branch protection with required
-#                        reviews or status checks on the target branch.
-#                        (default: "" — disabled)
+#   CODE_AUTO_MERGE    — "true" to enable auto-merge on the PR/MR after
+#                        creation. (default: "" — disabled)
 #   CODE_AUTO_MERGE_METHOD
 #                      — merge method for auto-merge: "squash", "rebase", or
 #                        "merge". When unset, auto-detected from the repo's
@@ -46,7 +46,7 @@
 #                        (default: auto-detected)
 #
 # Exit codes:
-#   0  — branch pushed and PR created, OR agent determined nothing to do
+#   0  — branch pushed and PR/MR created, OR agent determined nothing to do
 #   1  — validation failure or error (nothing pushed)
 set -euo pipefail
 
@@ -60,14 +60,22 @@ source "${SCRIPT_DIR_POST}/lib/pr-assignee.lib.sh"
 # shellcheck source=lib/branch-guard.lib.sh
 source "${SCRIPT_DIR_POST}/lib/branch-guard.lib.sh"
 
+# SCRIPT_DIR is used by code-ops.lib.sh dispatcher to locate forge-specific
+# ops libraries. Not directly referenced in this file.
+# shellcheck disable=SC2034
+SCRIPT_DIR="${SCRIPT_DIR_POST}"
+# shellcheck source=lib/code-ops.lib.sh
+source "${SCRIPT_DIR_POST}/lib/code-ops.lib.sh"
+
 # ---------------------------------------------------------------------------
-# enable_auto_merge — arm GitHub auto-merge on a PR (best-effort).
+# enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
 #
 # Guards:
-#   - PR must be in BLOCKED state (requires branch protection)
-#   - For existing PRs: skips if auto-merge is already enabled
+#   - GitHub: PR must be in BLOCKED state (requires branch protection)
+#   - GitHub: For existing PRs: skips if auto-merge is already enabled
+#   - GitLab: Uses merge_when_pipeline_succeeds
 #
-# Merge method resolution:
+# Merge method resolution (GitHub-specific):
 #   1. If target branch has a merge queue → omit method flag (gh negotiates)
 #   2. If CODE_AUTO_MERGE_METHOD is set → use it (warn on unknown values)
 #   3. Otherwise → auto-detect from repo's allowed merge methods (prefer squash)
@@ -77,22 +85,24 @@ source "${SCRIPT_DIR_POST}/lib/branch-guard.lib.sh"
 # ---------------------------------------------------------------------------
 enable_auto_merge() {
   local target_pr="$1"
-  local repo="$2"
+  local _repo="$2"  # accepted for interface parity; forge ops use REPO_FULL_NAME
   local is_existing="${3:-}"
 
   if [ "${CODE_AUTO_MERGE:-}" != "true" ]; then
     return 0
   fi
 
-  # Guard: only arm when PR is BLOCKED — immediate-merge states (CLEAN,
-  # HAS_HOOKS, UNSTABLE) cause gh to merge on the spot, bypassing review/CI.
-  # GitHub computes mergeStateStatus asynchronously after PR creation or
-  # push, so retry on UNKNOWN before giving up.
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    echo "Auto-merge: enabling merge_when_pipeline_succeeds on MR !${target_pr}..."
+    forge_enable_auto_merge "${target_pr}" ""
+    return 0
+  fi
+
+  # GitHub-specific merge state checks
   local pr_json merge_state
   local _am_attempt
   for _am_attempt in 1 2 3; do
-    pr_json="$(gh pr view "${target_pr}" --repo "${repo}" \
-      --json mergeStateStatus,autoMergeRequest,baseRefName 2>/dev/null || true)"
+    pr_json="$(forge_get_pr_details "${target_pr}" "mergeStateStatus,autoMergeRequest,baseRefName")" || true
     if [ -z "${pr_json}" ]; then
       gha_echo warning "Auto-merge: could not query PR #${target_pr} — skipping"
       return 0
@@ -136,13 +146,8 @@ enable_auto_merge() {
   base_branch="$(echo "${pr_json}" | jq -r '.baseRefName // "main"')"
 
   # Check for merge queue on the target branch — omit method flag if present.
-  local owner="${repo%%/*}"
-  local name="${repo##*/}"
   local mq_id
-  mq_id="$(gh api graphql -f query="
-    query { repository(owner: \"${owner}\", name: \"${name}\") {
-      mergeQueue(branch: \"${base_branch}\") { id }
-    }}" --jq '.data.repository.mergeQueue.id // empty' 2>/dev/null || true)"
+  mq_id="$(forge_check_merge_queue "${base_branch}")"
 
   if [ -n "${mq_id}" ]; then
     echo "Auto-merge: merge queue detected on ${base_branch} — omitting method flag"
@@ -150,8 +155,7 @@ enable_auto_merge() {
     local method="${CODE_AUTO_MERGE_METHOD:-}"
     if [ -z "${method}" ]; then
       local repo_info
-      repo_info="$(gh api "repos/${repo}" \
-        --jq '{s:.allow_squash_merge,m:.allow_merge_commit,r:.allow_rebase_merge}' 2>/dev/null || true)"
+      repo_info="$(forge_get_repo_merge_methods)"
       if [ -n "${repo_info}" ]; then
         if [ "$(echo "${repo_info}" | jq -r '.s')" = "true" ]; then method="squash"
         elif [ "$(echo "${repo_info}" | jq -r '.m')" = "true" ]; then method="merge"
@@ -175,15 +179,7 @@ enable_auto_merge() {
   fi
 
   echo "Auto-merge: enabling on PR #${target_pr}${method_flag:+ (${method_flag})}..."
-  local am_output
-  # shellcheck disable=SC2086
-  if ! am_output="$(gh pr merge "${target_pr}" --auto ${method_flag} \
-    --repo "${repo}" 2>&1)"; then
-    print_sanitized_gha_log "${am_output}"
-    gha_echo warning "Failed to enable auto-merge on PR #${target_pr} — continuing"
-  else
-    print_sanitized_gha_log "${am_output}"
-  fi
+  forge_enable_auto_merge "${target_pr}" "${method_flag}"
 }
 
 # ---------------------------------------------------------------------------
@@ -206,6 +202,28 @@ if [ "${REPO_DIR}" != "." ]; then
     post_fail_to_issue setup-error "Extracted repo not found at ${REPO_DIR}"
   fi
   cd "${REPO_DIR}"
+fi
+
+# GitLab needs REPO_ENCODED and GITLAB_HOST for API calls.
+# Always derive GITLAB_HOST from the validated ISSUE_URL. If GITLAB_HOST is
+# pre-set in the environment, verify it matches the URL host to prevent
+# token exfiltration to an unintended host.
+if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+  if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
+    gha_echo error "ISSUE_URL format invalid for GitLab: '${ISSUE_URL:-}'"
+    exit 1
+  fi
+  # shellcheck disable=SC2034
+  REPO_ENCODED="$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)"
+  # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
+  # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
+  # to the mismatched host.
+  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+  if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
+    gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
+    exit 1
+  fi
+  GITLAB_HOST="${_url_host}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -258,7 +276,7 @@ if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
     "Invalid branch name from agent output: '${AGENT_TARGET}'"
 fi
 
-DEFAULT_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null || echo 'main')"
+DEFAULT_BRANCH="$(forge_get_default_branch "${PUSH_TOKEN}")"
 
 if [ -n "${AGENT_TARGET}" ]; then
   if [ -n "${CODE_ALLOWED_TARGET_BRANCHES:-}" ]; then
@@ -303,7 +321,7 @@ post_noop_comment() {
   _post_failure_ensure_token
 
   local run_url
-  run_url="$(post_failure_workflow_run_url "${REPO_FULL_NAME}")"
+  run_url="$(forge_get_workflow_run_url)"
 
   # Try to extract agent reasoning from result file.
   # Note: RESULT_FILE is set at the top of the script and may point to a
@@ -336,9 +354,7 @@ ${detail_block}
 
 Retry with \`/fs-code\` if appropriate."
 
-  if ! gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null; then
+  if ! forge_post_issue_comment "${body}"; then
     gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
   fi
 }
@@ -359,7 +375,7 @@ fi
 #
 # The agent chooses its own branch name inside the sandbox. Rename it
 # deterministically using the trusted ISSUE_NUMBER (sourced from the
-# GitHub event, not from agent output) so agent-authored pushes are
+# CI event, not from agent output) so agent-authored pushes are
 # confined to this issue's namespace.
 # ---------------------------------------------------------------------------
 SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${ISSUE_NUMBER}")"
@@ -497,9 +513,10 @@ INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
 # ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
 # (per-repo) — see fullsend-ai/.fullsend reusable workflows. Try those paths
 # when the BASH_SOURCE-relative lookup misses.
+WORKSPACE_DIR="$(forge_get_workspace_dir)"
 if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
-    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+  if [ -n "${WORKSPACE_DIR}" ]; then
+    for _ws_candidate in "${WORKSPACE_DIR}/scripts" "${WORKSPACE_DIR}/.fullsend/scripts"; do
       if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
          && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
         RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
@@ -630,26 +647,28 @@ fi
 # ---------------------------------------------------------------------------
 # 6. Push branch
 # ---------------------------------------------------------------------------
-git remote set-url origin \
-  "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
+forge_set_push_remote "${PUSH_TOKEN}"
 
-export GH_TOKEN="${PUSH_TOKEN}"
+# Set token for forge CLI (GitHub uses GH_TOKEN, GitLab uses GITLAB_TOKEN)
+if [ "${FULLSEND_FORGE}" = "github" ]; then
+  export GH_TOKEN="${PUSH_TOKEN}"
+else
+  export GITLAB_TOKEN="${PUSH_TOKEN}"
+fi
 
 # ---------------------------------------------------------------------------
-# 7a. Delete stale remote branch if it exists with no open PR.
+# 7a. Delete stale remote branch if it exists with no open PR/MR.
 #
-# When a human closes a code agent PR and re-triggers /fs-code, the old
+# When a human closes a code agent PR/MR and re-triggers /fs-code, the old
 # remote branch still exists. A plain push will fail with non-fast-forward
 # because the local branch was created fresh from origin/main. Delete the
 # stale remote branch so the push succeeds.
 # ---------------------------------------------------------------------------
-REMOTE_REF_LINE="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 || true)"
+REMOTE_REF_LINE="$(forge_check_remote_branch "${BRANCH}")"
 if [ -n "${REMOTE_REF_LINE}" ]; then
   echo "Remote branch ${BRANCH} already exists — checking for open PRs..."
   PR_LIST_RC=0
-  OPEN_PR="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-    --state open --json number,headRepositoryOwner \
-    --jq '[.[] | select(.headRepositoryOwner.login == "'"${REPO_FULL_NAME%%/*}"'")] | .[0].number // empty' 2>/dev/null)" || PR_LIST_RC=$?
+  OPEN_PR="$(forge_list_prs_for_branch "${BRANCH}")" || PR_LIST_RC=$?
   if [ "${PR_LIST_RC}" -ne 0 ]; then
     post_fail_to_issue api-error \
       "Could not query open PRs for branch '${BRANCH}' — refusing to push."
@@ -660,14 +679,12 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
         "Branch '${BRANCH}' is outside agent/${ISSUE_NUMBER}-* namespace — refusing to delete."
     fi
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
-    git push origin --delete "${BRANCH}" 2>&1 || \
-      gha_echo warning "Failed to delete stale remote branch ${BRANCH}"
+    forge_delete_remote_branch "${BRANCH}"
   else
     # Verify the open PR belongs to this issue. With deterministic branch
     # naming (agent/<ISSUE_NUMBER>-*) this should always hold, but check
     # anyway as defense-in-depth against cross-issue commit injection.
-    PR_BODY_TEXT="$(gh pr view "${OPEN_PR}" --repo "${REPO_FULL_NAME}" \
-      --json body --jq '.body' 2>/dev/null || true)"
+    PR_BODY_TEXT="$(forge_get_pr_details "${OPEN_PR}" "body" | jq -r '.body // .description // empty' 2>/dev/null || true)"
     PR_CLOSES_THIS_ISSUE=false
     if pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
       PR_CLOSES_THIS_ISSUE=true
@@ -706,19 +723,16 @@ ${FORCE_PUSH_OUTPUT}"
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Create PR
+# 8. Create PR/MR
 # ---------------------------------------------------------------------------
 
-EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-  --state open --json number,headRepositoryOwner \
-  --jq '[.[] | select(.headRepositoryOwner.login == "'"${REPO_FULL_NAME%%/*}"'")] | .[0].number // empty' 2>/dev/null || true)"
+EXISTING_PR_NUM="$(forge_list_prs_for_branch "${BRANCH}")" || true
 
 if [ -n "${EXISTING_PR_NUM}" ]; then
-  EXISTING_PR_URL="$(gh pr view "${EXISTING_PR_NUM}" --repo "${REPO_FULL_NAME}" \
-    --json url --jq '.url' 2>/dev/null || true)"
+  EXISTING_PR_URL="$(forge_get_pr_url "${EXISTING_PR_NUM}")"
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
-  echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+  forge_write_output "pr_url" "${EXISTING_PR_URL}"
 
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   maybe_assign_pr "${EXISTING_PR_NUM}"
@@ -864,12 +878,11 @@ ${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}
 ${PR_BODY_SCAN_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
-if ! PR_URL=$(gh pr create \
-  --repo "${REPO_FULL_NAME}" \
-  --head "${BRANCH}" \
-  --base "${TARGET_BRANCH}" \
-  --title "${PR_TITLE}" \
-  --body "${PR_BODY}" 2>"${PR_CREATE_STDERR}"); then
+if ! PR_URL=$(forge_create_pr \
+  "${TARGET_BRANCH}" \
+  "${BRANCH}" \
+  "${PR_TITLE}" \
+  "${PR_BODY}" 2>"${PR_CREATE_STDERR}"); then
   PR_CREATE_OUTPUT="$(cat "${PR_CREATE_STDERR}")"
   rm -f "${PR_CREATE_STDERR}"
   post_fail_to_issue pr-creation-failed "${PR_CREATE_OUTPUT}"
@@ -877,18 +890,16 @@ fi
 rm -f "${PR_CREATE_STDERR}"
 
 echo "PR created: ${PR_URL}"
-echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+forge_write_output "pr_url" "${PR_URL}"
 
 # Apply ready-for-review label so the review agent is dispatched via the
 # issues.labeled path. pull_request_target.opened requires the PR author to
 # pass authorization checks that often exclude bot accounts; the label path
 # is used instead (label application requires repo write access). See
 # .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
+# Note: variable name is PR_NUMBER_FROM_URL (not PR_NUMBER) to avoid SC2153.
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
-gh issue edit "${PR_NUMBER_FROM_URL}" \
-  --repo "${REPO_FULL_NAME}" \
-  --add-label "ready-for-review" 2>/dev/null || \
-  gha_echo warning "Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 
 # ---------------------------------------------------------------------------
 # 9. Auto-merge

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # GENERATED from post-code.src.sh — DO NOT EDIT. Run: make script-build
-# Post-script: push the agent's commit and create a PR.
+# Post-script: push the agent's commit and create a PR/MR.
 #
-# Runs on the GitHub Actions runner AFTER the sandbox is destroyed.
+# Runs on the CI runner AFTER the sandbox is destroyed.
 # This script has write access to the target repo — it is the most
 # security-sensitive component in the pipeline.
 #
@@ -20,10 +20,12 @@
 # agents/). The code agent is free to propose changes to any path.
 #
 # Required environment variables:
-#   PUSH_TOKEN        — token with contents:write + issues:write + pull-requests:write
-#                       on target repo (GitHub App installation token or PAT)
-#   REPO_FULL_NAME    — owner/repo (e.g. my-org/my-repo)
-#   ISSUE_NUMBER      — GitHub issue number
+#   PUSH_TOKEN        — token with write scopes on target repo
+#                       GitHub: contents:write + issues:write + pull-requests:write
+#                       GitLab: api scope (project or personal access token)
+#   REPO_FULL_NAME    — owner/repo or group/project path
+#   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab)
+#   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
 # Optional environment variables:
@@ -34,10 +36,8 @@
 #                       branch is allowed. (default: auto-detected)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
-#   CODE_AUTO_MERGE    — "true" to enable GitHub auto-merge on the PR after
-#                        creation. Requires branch protection with required
-#                        reviews or status checks on the target branch.
-#                        (default: "" — disabled)
+#   CODE_AUTO_MERGE    — "true" to enable auto-merge on the PR/MR after
+#                        creation. (default: "" — disabled)
 #   CODE_AUTO_MERGE_METHOD
 #                      — merge method for auto-merge: "squash", "rebase", or
 #                        "merge". When unset, auto-detected from the repo's
@@ -47,7 +47,7 @@
 #                        (default: auto-detected)
 #
 # Exit codes:
-#   0  — branch pushed and PR created, OR agent determined nothing to do
+#   0  — branch pushed and PR/MR created, OR agent determined nothing to do
 #   1  — validation failure or error (nothing pushed)
 set -euo pipefail
 
@@ -191,8 +191,10 @@ sanitize_failure_detail() {
     | sed -E \
       -e 's/gh[pousr]_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
       -e 's/github_pat_[A-Za-z0-9_]+/[REDACTED]/g' \
+      -e 's/glpat-[A-Za-z0-9_-]{20,}/[REDACTED]/g' \
       -e 's/x-access-token:[^@[:space:]]+/x-access-token:[REDACTED]/g' \
-      -e 's/(Bearer|token)[[:space:]]+[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
+      -e 's/oauth2:[^@[:space:]]+/oauth2:[REDACTED]/g' \
+      -e 's/(Bearer|token|PRIVATE-TOKEN:)[[:space:]]*[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
     | _redact_multiline_pem)"
 
   if [ -n "${PUSH_TOKEN:-}" ]; then
@@ -200,6 +202,9 @@ sanitize_failure_detail() {
   fi
   if [ -n "${GH_TOKEN:-}" ] && [ "${GH_TOKEN}" != "${PUSH_TOKEN:-}" ]; then
     detail="$(_redact_literal_token "${detail}" "${GH_TOKEN}")"
+  fi
+  if [ -n "${GITLAB_TOKEN:-}" ] && [ "${GITLAB_TOKEN}" != "${PUSH_TOKEN:-}" ]; then
+    detail="$(_redact_literal_token "${detail}" "${GITLAB_TOKEN}")"
   fi
 
   detail="$(sanitize_comment_workflow_commands "${detail}")"
@@ -265,6 +270,10 @@ EOF
 
 post_failure_workflow_run_url() {
   local repo_full_name="$1"
+  if declare -F forge_get_workflow_run_url >/dev/null 2>&1; then
+    forge_get_workflow_run_url
+    return 0
+  fi
   local run_repo="${GITHUB_REPOSITORY:-${repo_full_name}}"
   printf '%s/%s/actions/runs/%s' \
     "${GITHUB_SERVER_URL:-https://github.com}" \
@@ -322,8 +331,14 @@ EOF
 }
 
 _post_failure_ensure_token() {
-  if [ -z "${GH_TOKEN:-}" ]; then
-    export GH_TOKEN="${PUSH_TOKEN:-}"
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [ -z "${GITLAB_TOKEN:-}" ]; then
+      export GITLAB_TOKEN="${PUSH_TOKEN:-}"
+    fi
+  else
+    if [ -z "${GH_TOKEN:-}" ]; then
+      export GH_TOKEN="${PUSH_TOKEN:-}"
+    fi
   fi
 }
 
@@ -350,10 +365,16 @@ report_post_failure_to_issue() {
     "${REPO_FULL_NAME}" "/fs-code")"
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
-  if ! gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null; then
-    gha_echo warning "Failed to post error comment to issue #${safe_issue_number} (check issues:write on PUSH_TOKEN)"
+  if declare -F forge_post_issue_comment >/dev/null 2>&1; then
+    if ! forge_post_issue_comment "${body}"; then
+      gha_echo warning "Failed to post error comment to issue #${safe_issue_number}"
+    fi
+  else
+    if ! gh issue comment "${ISSUE_NUMBER}" \
+      --repo "${REPO_FULL_NAME}" \
+      --body "${body}" 2>/dev/null; then
+      gha_echo warning "Failed to post error comment to issue #${safe_issue_number} (check issues:write on PUSH_TOKEN)"
+    fi
   fi
 }
 
@@ -379,10 +400,16 @@ report_post_failure_to_pr() {
     "${REPO_FULL_NAME}" "/fs-fix")"
 
   gha_echo warning "Posting failure comment to PR #${safe_pr_number}..."
-  if ! gh pr comment "${PR_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null; then
-    gha_echo warning "Failed to post error comment to PR #${safe_pr_number} (check pull-requests:write on PUSH_TOKEN)"
+  if declare -F forge_post_pr_comment >/dev/null 2>&1; then
+    if ! forge_post_pr_comment "${PR_NUMBER}" "${body}"; then
+      gha_echo warning "Failed to post error comment to PR #${safe_pr_number}"
+    fi
+  else
+    if ! gh pr comment "${PR_NUMBER}" \
+      --repo "${REPO_FULL_NAME}" \
+      --body "${body}" 2>/dev/null; then
+      gha_echo warning "Failed to post error comment to PR #${safe_pr_number} (check pull-requests:write on PUSH_TOKEN)"
+    fi
   fi
 }
 
@@ -626,6 +653,10 @@ _pr_assignee_warn() {
 
 # Fetch issue comments (paginated REST) as a single JSON array. Best-effort.
 fetch_issue_comments_json() {
+  if declare -F forge_get_issue_comments >/dev/null 2>&1; then
+    forge_get_issue_comments
+    return 0
+  fi
   local raw
   if ! raw="$(gh api --paginate \
     "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/comments" 2>/dev/null)"; then
@@ -639,12 +670,16 @@ fetch_issue_comments_json() {
   echo "${raw}" | jq -s 'add // []' 2>/dev/null || echo '[]'
 }
 
-# Resolve using issue comments + assignees/author via GitHub API.
+# Resolve using issue comments + assignees/author via forge API.
 resolve_pr_assignee() {
   local comments_json issue_json
   comments_json="$(fetch_issue_comments_json)"
-  issue_json="$(gh issue view "${ISSUE_NUMBER}" --repo "${REPO_FULL_NAME}" \
-    --json assignees,author 2>/dev/null || true)"
+  if declare -F forge_get_issue_details >/dev/null 2>&1; then
+    issue_json="$(forge_get_issue_details || true)"
+  else
+    issue_json="$(gh issue view "${ISSUE_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --json assignees,author 2>/dev/null || true)"
+  fi
   resolve_pr_assignee_from_context "${comments_json}" "${issue_json}"
 }
 
@@ -655,10 +690,19 @@ resolve_pr_assignee() {
 maybe_assign_pr() {
   local target_pr="$1"
   local existing_count
-  if ! existing_count="$(gh pr view "${target_pr}" --repo "${REPO_FULL_NAME}" \
-    --json assignees --jq '.assignees | length' 2>/dev/null)"; then
-    _pr_assignee_warn "Could not read assignees for PR #${target_pr} — skipping assignment"
-    return 0
+  if declare -F forge_get_pr_details >/dev/null 2>&1; then
+    local pr_json
+    pr_json="$(forge_get_pr_details "${target_pr}" "assignees" 2>/dev/null)" || {
+      _pr_assignee_warn "Could not read assignees for PR #${target_pr} — skipping assignment"
+      return 0
+    }
+    existing_count="$(echo "${pr_json}" | jq '[.assignees // .assignee // [] | if type == "array" then .[] else . end] | length' 2>/dev/null || echo "0")"
+  else
+    if ! existing_count="$(gh pr view "${target_pr}" --repo "${REPO_FULL_NAME}" \
+      --json assignees --jq '.assignees | length' 2>/dev/null)"; then
+      _pr_assignee_warn "Could not read assignees for PR #${target_pr} — skipping assignment"
+      return 0
+    fi
   fi
   if [[ "${existing_count}" != "0" ]]; then
     echo "PR #${target_pr} already has assignees — skipping assignment"
@@ -671,21 +715,25 @@ maybe_assign_pr() {
     echo "No human assignee candidate — leaving PR #${target_pr} unassigned"
     return 0
   fi
-  # Defense-in-depth: only pass GitHub-login-shaped values to gh.
-  if [[ ! "${assignee}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  # Defense-in-depth: only pass login-shaped values to the forge assign API.
+  if [[ ! "${assignee}" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
     _pr_assignee_warn "Unexpected assignee format '${assignee}' — skipping assignment"
     return 0
   fi
 
   echo "Assigning PR #${target_pr} to ${assignee}..."
-  local assign_err
-  assign_err="$(gh pr edit "${target_pr}" --repo "${REPO_FULL_NAME}" \
-    --add-assignee "${assignee}" 2>&1)" || {
-    _pr_assignee_warn "Failed to assign PR #${target_pr} to ${assignee} — continuing"
-    if [[ -n "${assign_err}" ]]; then
-      _pr_assignee_warn "${assign_err}"
-    fi
-  }
+  if declare -F forge_assign_pr >/dev/null 2>&1; then
+    forge_assign_pr "${target_pr}" "${assignee}"
+  else
+    local assign_err
+    assign_err="$(gh pr edit "${target_pr}" --repo "${REPO_FULL_NAME}" \
+      --add-assignee "${assignee}" 2>&1)" || {
+      _pr_assignee_warn "Failed to assign PR #${target_pr} to ${assignee} — continuing"
+      if [[ -n "${assign_err}" ]]; then
+        _pr_assignee_warn "${assign_err}"
+      fi
+    }
+  fi
 }
 # END bundled: lib/pr-assignee.lib.sh
 # shellcheck source=lib/branch-guard.lib.sh
@@ -740,14 +788,794 @@ classify_branch_vs_pr_head() {
 }
 # END bundled: lib/branch-guard.lib.sh
 
+# SCRIPT_DIR is used by code-ops.lib.sh dispatcher to locate forge-specific
+# ops libraries. Not directly referenced in this file.
+# shellcheck disable=SC2034
+SCRIPT_DIR="${SCRIPT_DIR_POST}"
+# shellcheck source=lib/code-ops.lib.sh
+# BEGIN bundled: lib/code-ops.lib.sh
+# shellcheck shell=bash
+# code-ops.lib.sh — Forge-dispatch wrapper for code agent operations.
+#
+# Sources the correct forge-specific ops based on FULLSEND_FORGE.
+# Bundled inline by bundle-sh.sh at build time.
+
+[[ -n "${CODE_OPS_SH_LOADED:-}" ]] && return 0
+CODE_OPS_SH_LOADED=1
+
+case "${FULLSEND_FORGE:-}" in
+  github)
+# BEGIN bundled: lib/github-code-ops.lib.sh
+# shellcheck shell=bash
+# github-code-ops.lib.sh — GitHub forge operations for code agent scripts.
+#
+# Bundled into pre-code.sh and post-code.sh via code-ops.lib.sh.
+# All functions use the gh CLI and the GitHub REST API.
+#
+# Expected globals (set by caller or forge_parse_issue_url):
+#   REPO_FULL_NAME — owner/repo (e.g., "org/repo")
+#   ISSUE_NUMBER   — issue number
+#
+# Expected env vars:
+#   GH_TOKEN       — GitHub token with appropriate scopes
+
+[[ -n "${GITHUB_CODE_OPS_SH_LOADED:-}" ]] && return 0
+GITHUB_CODE_OPS_SH_LOADED=1
+
+# --- URL handling ---
+
+forge_validate_issue_url() {
+  local url="${1:-${ISSUE_URL:-}}"
+  if [[ ! "${url}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+    echo "ERROR: ISSUE_URL does not match expected GitHub pattern: ${url}" >&2
+    return 1
+  fi
+}
+
+forge_parse_issue_url() {
+  local url="${1:-${ISSUE_URL:-}}"
+  REPO_FULL_NAME=$(echo "${url}" | sed 's|https://github.com/||; s|/issues/.*||')
+  ISSUE_NUMBER=$(basename "${url}")
+}
+
+forge_extract_repo_from_url() {
+  local url="$1"
+  echo "${url}" | sed -E 's|https://github.com/([^/]+/[^/]+)/issues/.*|\1|'
+}
+
+forge_extract_issue_from_url() {
+  local url="$1"
+  echo "${url}" | sed -E 's|.*/issues/([0-9]+)$|\1|'
+}
+
+# --- Label operations ---
+
+forge_add_label() {
+  local label="$1"
+  local target="${2:-issue}"
+  local number="${3:-${ISSUE_NUMBER}}"
+  if [ "${target}" = "pr" ]; then
+    gh issue edit "${number}" --repo "${REPO_FULL_NAME}" \
+      --add-label "${label}" 2>/dev/null || \
+      gha_echo warning "Failed to apply ${label} label to PR #${number}"
+  else
+    gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels" \
+      -f "labels[]=${label}" --silent 2>/dev/null || true
+  fi
+}
+
+forge_create_label() {
+  local name="$1"
+  local description="$2"
+  local color="$3"
+  gh label create "${name}" --repo "${REPO_FULL_NAME}" \
+    --description "${description}" --color "${color}" \
+    --force 2>/dev/null || true
+}
+
+# --- Comment operations ---
+
+forge_post_issue_comment() {
+  local body="$1"
+  printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null
+}
+
+forge_post_pr_comment() {
+  local target_pr="$1"
+  local body="$2"
+  gh pr comment "${target_pr}" \
+    --repo "${REPO_FULL_NAME}" \
+    --body "${body}" 2>/dev/null
+}
+
+# --- PR/MR lifecycle ---
+
+forge_list_prs_for_issue() {
+  local search_term="$1"
+  local bot_login="${2:-fullsend-ai[bot]}"
+  local coder_bot_login="${3:-fullsend-ai-coder[bot]}"
+  gh pr list --repo "${REPO_FULL_NAME}" --state open \
+    --search "${search_term} in:body,title" \
+    --json number,url,author \
+    --jq "[.[] | select(.author.login != \"${bot_login}\" and .author.login != \"${coder_bot_login}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
+    2>/dev/null || true
+}
+
+forge_list_prs_for_branch() {
+  local branch="$1"
+  local owner="${REPO_FULL_NAME%%/*}"
+  gh pr list --repo "${REPO_FULL_NAME}" --head "${branch}" \
+    --state open --json number,headRepositoryOwner \
+    --jq "[.[] | select(.headRepositoryOwner.login == \"${owner}\")] | .[0].number // empty" \
+    2>/dev/null
+}
+
+forge_create_pr() {
+  local base="$1"
+  local head="$2"
+  local title="$3"
+  local body="$4"
+  gh pr create \
+    --repo "${REPO_FULL_NAME}" \
+    --head "${head}" \
+    --base "${base}" \
+    --title "${title}" \
+    --body "${body}"
+}
+
+forge_get_pr_url() {
+  local target_pr="$1"
+  gh pr view "${target_pr}" --repo "${REPO_FULL_NAME}" \
+    --json url --jq '.url' 2>/dev/null || true
+}
+
+forge_get_pr_details() {
+  local target_pr="$1"
+  local fields="$2"
+  gh pr view "${target_pr}" --repo "${REPO_FULL_NAME}" \
+    --json "${fields}" 2>/dev/null
+}
+
+forge_assign_pr() {
+  local target_pr="$1"
+  local assignee="$2"
+  local assign_err
+  assign_err="$(gh pr edit "${target_pr}" --repo "${REPO_FULL_NAME}" \
+    --add-assignee "${assignee}" 2>&1)" || {
+    _pr_assignee_warn "Failed to assign PR #${target_pr} to ${assignee} — continuing"
+    if [[ -n "${assign_err}" ]]; then
+      _pr_assignee_warn "${assign_err}"
+    fi
+  }
+}
+
+# --- Repository operations ---
+
+forge_get_default_branch() {
+  local token="${1:-${PUSH_TOKEN:-}}"
+  GH_TOKEN="${token}" gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null || echo 'main'
+}
+
+forge_set_push_remote() {
+  local token="$1"
+  git remote set-url origin \
+    "https://x-access-token:${token}@github.com/${REPO_FULL_NAME}.git"
+}
+
+forge_check_remote_branch() {
+  local branch="$1"
+  git ls-remote origin "refs/heads/${branch}" 2>/dev/null | head -1 || true
+}
+
+forge_delete_remote_branch() {
+  local branch="$1"
+  local _del_output
+  _del_output="$(git push origin --delete "${branch}" 2>&1)" || {
+    # Sanitize before logging — git may echo the x-access-token:<token>@ remote URL.
+    if declare -F print_sanitized_gha_log >/dev/null 2>&1; then
+      print_sanitized_gha_log "${_del_output}"
+    fi
+    gha_echo warning "Failed to delete stale remote branch ${branch}"
+  }
+}
+
+# --- Merge queue / auto-merge ---
+
+forge_check_merge_queue() {
+  local base_branch="$1"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  gh api graphql -f query="
+    query { repository(owner: \"${owner}\", name: \"${name}\") {
+      mergeQueue(branch: \"${base_branch}\") { id }
+    }}" --jq '.data.repository.mergeQueue.id // empty' 2>/dev/null || true
+}
+
+forge_get_repo_merge_methods() {
+  gh api "repos/${REPO_FULL_NAME}" \
+    --jq '{s:.allow_squash_merge,m:.allow_merge_commit,r:.allow_rebase_merge}' 2>/dev/null || true
+}
+
+forge_enable_auto_merge() {
+  local target_pr="$1"
+  local method_flag="$2"
+  local merge_output
+  # shellcheck disable=SC2086
+  if ! merge_output="$(gh pr merge "${target_pr}" --auto ${method_flag} \
+    --repo "${REPO_FULL_NAME}" 2>&1)"; then
+    print_sanitized_gha_log "${merge_output}"
+    gha_echo warning "Failed to enable auto-merge on PR #${target_pr} — continuing"
+  else
+    print_sanitized_gha_log "${merge_output}"
+  fi
+}
+
+# --- Issue operations ---
+
+forge_get_issue_comments() {
+  local raw
+  if ! raw="$(gh api --paginate \
+    "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/comments" 2>/dev/null)"; then
+    echo '[]'
+    return 0
+  fi
+  if [[ -z "${raw}" ]]; then
+    echo '[]'
+    return 0
+  fi
+  echo "${raw}" | jq -s 'add // []' 2>/dev/null || echo '[]'
+}
+
+forge_get_issue_details() {
+  gh issue view "${ISSUE_NUMBER}" --repo "${REPO_FULL_NAME}" \
+    --json assignees,author 2>/dev/null || true
+}
+
+# --- CI operations ---
+
+forge_get_workflow_run_url() {
+  local run_repo="${GITHUB_REPOSITORY:-${REPO_FULL_NAME}}"
+  printf '%s/%s/actions/runs/%s' \
+    "${GITHUB_SERVER_URL:-https://github.com}" \
+    "${run_repo}" \
+    "${GITHUB_RUN_ID:-unknown}"
+}
+
+# --- Output operations ---
+
+forge_write_output() {
+  local key="$1"
+  local value="$2"
+  echo "${key}=${value}" >> "${GITHUB_OUTPUT:-/dev/null}"
+}
+
+# --- Workspace operations ---
+
+forge_get_workspace_dir() {
+  echo "${GITHUB_WORKSPACE:-}"
+}
+
+forge_get_repo_dir() {
+  echo "${REPO_DIR:-${GITHUB_WORKSPACE:-}/target-repo}"
+}
+
+forge_append_path() {
+  local dir="$1"
+  echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
+}
+# END bundled: lib/github-code-ops.lib.sh
+    ;;
+  gitlab)
+# BEGIN bundled: lib/gitlab-code-ops.lib.sh
+# shellcheck shell=bash
+# gitlab-code-ops.lib.sh — GitLab forge operations for code agent scripts.
+#
+# Bundled into pre-code.sh and post-code.sh via code-ops.lib.sh.
+# All functions use curl against the GitLab REST API.
+#
+# Expected globals (set by caller or forge_parse_issue_url):
+#   REPO_FULL_NAME — plain project path (e.g., "group/project")
+#   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
+#   ISSUE_NUMBER   — issue IID
+#   GITLAB_HOST    — API host (e.g., "gitlab.com")
+#
+# Expected env vars:
+#   ISSUE_URL      — HTML URL of the issue
+#   GITLAB_TOKEN   — GitLab personal/project access token
+#
+# Token scopes: GITLAB_TOKEN requires minimum scopes:
+#   - api (read/write issues, labels, notes, merge requests)
+
+[[ -n "${GITLAB_CODE_OPS_SH_LOADED:-}" ]] && return 0
+GITLAB_CODE_OPS_SH_LOADED=1
+
+if ! declare -F gha_echo >/dev/null 2>&1; then
+  gha_echo() { echo "::${1}::${2:-}"; }
+fi
+
+_gitlab_code_api() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request "${method}" \
+    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "$@"
+}
+
+_gitlab_code_api_with_status() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  local err_file
+  err_file=$(mktemp)
+  local raw
+  raw=$(curl --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request "${method}" \
+    --write-out '\n%{http_code}' \
+    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "$@" 2>"${err_file}") || {
+    echo "GitLab API error: curl failed — $(cat "${err_file}")" >&2
+    rm -f "${err_file}"
+    return 1
+  }
+  rm -f "${err_file}"
+  local http_code
+  http_code=$(echo "${raw}" | tail -1)
+  local body
+  body=$(echo "${raw}" | sed '$d')
+  if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
+    local _truncated
+    _truncated=$(printf '%.200s' "${body}")
+    echo "GitLab API error (HTTP ${http_code}): ${_truncated}" >&2
+    return 1
+  fi
+  echo "${body}"
+}
+
+# --- URL handling ---
+
+forge_validate_issue_url() {
+  local url="${1:-${ISSUE_URL:-}}"
+  if [[ ! "${url}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
+    echo "ERROR: ISSUE_URL does not match expected GitLab pattern: ${url}" >&2
+    return 1
+  fi
+  local host
+  host=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  # Allowed GitLab hosts. To support a self-hosted instance, add it here
+  # AND in the network policy (policies/gitlab/code.yaml).
+  case "${host}" in
+    gitlab.com|gitlab.cee.redhat.com) ;;
+    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list (see gitlab-code-ops.lib.sh and policies/gitlab/code.yaml)" >&2; return 1 ;;
+  esac
+}
+
+forge_parse_issue_url() {
+  local url="${1:-${ISSUE_URL:-}}"
+  GITLAB_HOST=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  REPO_FULL_NAME=$(echo "${url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+  REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
+  ISSUE_NUMBER=$(basename "${url}")
+}
+
+forge_extract_repo_from_url() {
+  local url="$1"
+  echo "${url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|'
+}
+
+forge_extract_issue_from_url() {
+  local url="$1"
+  echo "${url}" | sed -E 's|.*/issues/([0-9]+)$|\1|'
+}
+
+# --- Label operations ---
+
+forge_add_label() {
+  local label="$1"
+  local target="${2:-issue}"
+  local number="${3:-${ISSUE_NUMBER}}"
+  if [ "${target}" = "pr" ]; then
+    # On GitLab, MRs use the same label update mechanism
+    local mr_iid="${number}"
+    _gitlab_code_api PUT "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}" \
+      --data-urlencode "add_labels=${label}" > /dev/null 2>/dev/null || \
+      gha_echo warning "Failed to apply ${label} label to MR !${mr_iid}"
+  else
+    _gitlab_code_api PUT "/projects/${REPO_ENCODED}/issues/${number}" \
+      --data-urlencode "add_labels=${label}" > /dev/null 2>/dev/null || true
+  fi
+}
+
+forge_create_label() {
+  local name="$1"
+  local description="$2"
+  local color="$3"
+  local clean_color="${color#\#}"
+  _gitlab_code_api POST "/projects/${REPO_ENCODED}/labels" \
+    --data-urlencode "name=${name}" \
+    --data-urlencode "description=${description}" \
+    --data-urlencode "color=#${clean_color}" > /dev/null 2>/dev/null || true
+}
+
+# --- Comment operations ---
+
+forge_post_issue_comment() {
+  local body="$1"
+  _gitlab_code_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
+    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+}
+
+forge_post_pr_comment() {
+  local mr_iid="$1"
+  local body="$2"
+  _gitlab_code_api POST "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/notes" \
+    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+}
+
+# --- MR lifecycle ---
+
+forge_list_prs_for_issue() {
+  local search_term="$1"
+  local bot_login="${2:-}"
+  local coder_bot_login="${3:-}"
+  # GitLab API: search MRs referencing the issue. Best-effort — GitLab does not
+  # have a direct "MRs linked to issue" search like GitHub's "in:body,title".
+  # Search open MRs and filter by body/title containing #<IID> with word
+  # boundaries to avoid false positives (e.g., #42 must not match #142 or #420).
+  local all_mrs="[]"
+  local page=1 max_pages=10
+  while [[ "${page}" -le "${max_pages}" ]]; do
+    local batch
+    batch=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests?state=opened&per_page=100&page=${page}" 2>/dev/null) || {
+      if [ "${page}" -eq 1 ]; then
+        gha_echo warning "forge_list_prs_for_issue: GitLab API failed on first page — failing closed"
+        return 1
+      fi
+      break
+    }
+    local count
+    count=$(echo "${batch}" | jq 'length' 2>/dev/null) || break
+    [[ "${count}" -eq 0 ]] && break
+    all_mrs=$(echo "${all_mrs}" "${batch}" | jq -s 'add') || break
+    page=$((page + 1))
+  done
+  # Filter for MRs mentioning #<IID> (anchored — bare or qualified ref),
+  # exclude agent branches and known bot authors.
+  echo "${all_mrs}" | jq -r --arg term "${search_term}" \
+    --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
+    [.[] | select(
+      ((.title // "") | test("(^|\\W)([a-zA-Z0-9._/-]+)?#" + $term + "($|\\W)")) or
+      ((.description // "") | test("(^|\\W)([a-zA-Z0-9._/-]+)?#" + $term + "($|\\W)"))
+    ) | select(
+      ((.source_branch // "") | test("^agent/" + $term + "-") | not)
+    ) | select(
+      (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
+      (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and
+      (.author.username // "" | test("\\[bot\\]$") | not) and
+      (.author.username // "" | test("^fullsend") | not) and
+      (.author.username // "" | test("_bot$") | not)
+    )] | .[] | "\(.iid)\t\(.author.username)\t\(.web_url)"
+  ' 2>/dev/null || true
+}
+
+forge_list_prs_for_branch() {
+  local branch="$1"
+  local branch_encoded
+  branch_encoded=$(printf '%s' "${branch}" | jq -sRr @uri)
+  local mrs
+  mrs=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests?state=opened&source_branch=${branch_encoded}" 2>/dev/null) || return 1
+  # Filter to same-project MRs only (exclude fork MRs) — mirrors the GitHub
+  # implementation which filters by headRepositoryOwner.
+  local project_id
+  project_id=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}" 2>/dev/null | jq -r '.id // empty') || true
+  if [[ -z "${project_id}" ]]; then
+    gha_echo warning "Could not resolve project ID for fork-MR filtering — failing closed"
+    return 1
+  fi
+  echo "${mrs}" | jq -r --arg pid "${project_id}" \
+    '[.[] | select(.source_project_id == ($pid | tonumber))] | .[0].iid // empty'
+}
+
+forge_create_pr() {
+  local base="$1"
+  local head="$2"
+  local title="$3"
+  local body="$4"
+  local response
+  response=$(_gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
+    --data-urlencode "source_branch=${head}" \
+    --data-urlencode "target_branch=${base}" \
+    --data-urlencode "title=${title}" \
+    --data-urlencode "description=${body}") || return 1
+  local url
+  url=$(echo "${response}" | jq -r '.web_url // empty')
+  if [[ -z "${url}" ]]; then
+    echo "GitLab API error: MR created but response missing web_url" >&2
+    return 1
+  fi
+  echo "${url}"
+}
+
+forge_get_pr_url() {
+  local mr_iid="$1"
+  local mr_json
+  mr_json=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}" 2>/dev/null) || {
+    echo ""
+    return 0
+  }
+  echo "${mr_json}" | jq -r '.web_url // empty' 2>/dev/null || true
+}
+
+forge_get_pr_details() {
+  local mr_iid="$1"
+  local _fields="$2"  # accepted for interface parity but GitLab returns all fields
+  _gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}" 2>/dev/null
+}
+
+forge_assign_pr() {
+  local mr_iid="$1"
+  local assignee="$2"
+  # Resolve assignee username to user ID for GitLab
+  local user_json user_id
+  local assignee_encoded
+  assignee_encoded=$(printf '%s' "${assignee}" | jq -sRr @uri)
+  user_json=$(_gitlab_code_api GET "/users?username=${assignee_encoded}" 2>/dev/null) || {
+    _pr_assignee_warn "Failed to resolve GitLab user '${assignee}' — skipping assignment"
+    return 0
+  }
+  user_id=$(echo "${user_json}" | jq -r '.[0].id // empty' 2>/dev/null)
+  if [[ -z "${user_id}" ]]; then
+    _pr_assignee_warn "GitLab user '${assignee}' not found — skipping assignment"
+    return 0
+  fi
+  if ! _gitlab_code_api PUT "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}" \
+    --data-urlencode "assignee_ids[]=${user_id}" > /dev/null 2>/dev/null; then
+    _pr_assignee_warn "Failed to assign MR !${mr_iid} to ${assignee} — continuing"
+  fi
+}
+
+# --- Repository operations ---
+
+forge_get_default_branch() {
+  local token="${1:-${GITLAB_TOKEN:-}}"
+  local project_json
+  project_json=$(GITLAB_TOKEN="${token}" _gitlab_code_api GET "/projects/${REPO_ENCODED}" 2>/dev/null) || {
+    echo 'main'
+    return 0
+  }
+  echo "${project_json}" | jq -r '.default_branch // "main"' 2>/dev/null || echo 'main'
+}
+
+forge_set_push_remote() {
+  local token="$1"
+  git remote set-url origin \
+    "https://oauth2:${token}@${GITLAB_HOST}/${REPO_FULL_NAME}.git"
+}
+
+forge_check_remote_branch() {
+  local branch="$1"
+  git ls-remote origin "refs/heads/${branch}" 2>/dev/null | head -1 || true
+}
+
+forge_delete_remote_branch() {
+  local branch="$1"
+  local _del_output
+  _del_output="$(git push origin --delete "${branch}" 2>&1)" || {
+    # Sanitize before logging — git may echo the oauth2:<token>@ remote URL.
+    if declare -F print_sanitized_gha_log >/dev/null 2>&1; then
+      print_sanitized_gha_log "${_del_output}"
+    fi
+    gha_echo warning "Failed to delete stale remote branch ${branch}"
+  }
+}
+
+# --- Auto-merge ---
+
+forge_check_merge_queue() {
+  # GitLab does not have a merge queue equivalent; merge trains are configured
+  # per-project but have no API query like GitHub's mergeQueue.
+  echo ""
+}
+
+forge_get_repo_merge_methods() {
+  local project_json
+  project_json=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}" 2>/dev/null) || {
+    echo ""
+    return 0
+  }
+  local method
+  method=$(echo "${project_json}" | jq -r '.merge_method // "merge"' 2>/dev/null)
+  # Map GitLab merge_method to the same JSON shape as GitHub for compat
+  case "${method}" in
+    merge) echo '{"s":false,"m":true,"r":false}' ;;
+    rebase_merge) echo '{"s":false,"m":false,"r":true}' ;;
+    ff)    echo '{"s":false,"m":false,"r":true}' ;;
+    *)     echo '{"s":false,"m":true,"r":false}' ;;
+  esac
+}
+
+forge_enable_auto_merge() {
+  local mr_iid="$1"
+  local _method_flag="$2"
+
+  # Safety guard: merge_when_pipeline_succeeds merges immediately when the
+  # pipeline has already passed or no pipeline exists.  Match the GitHub path's
+  # BLOCKED-state guard by requiring that the MR is not immediately mergeable.
+  # Retry up to 3 times — new MRs may report "none" briefly.
+  local mr_json pipeline_status _am_attempt
+  for _am_attempt in 1 2 3; do
+    mr_json=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}" 2>/dev/null) || {
+      gha_echo warning "Auto-merge: could not query MR !${mr_iid} — skipping"
+      return 0
+    }
+    pipeline_status=$(echo "${mr_json}" | jq -r '.head_pipeline.status // "none"')
+
+    case "${pipeline_status}" in
+      running|pending|created|preparing|waiting_for_resource|scheduled)
+        break
+        ;;
+      none)
+        if [ "${_am_attempt}" -lt 3 ]; then
+          echo "Auto-merge: MR !${mr_iid} pipeline status is 'none' (attempt ${_am_attempt}/3) — retrying in 5s..."
+          sleep 5
+          continue
+        fi
+        gha_echo warning "Auto-merge: MR !${mr_iid} has no pipeline after 3 attempts — skipping (would merge immediately)"
+        return 0
+        ;;
+      success)
+        break
+        ;;
+      failed|canceled)
+        gha_echo warning "Auto-merge: MR !${mr_iid} pipeline status '${pipeline_status}' — skipping"
+        return 0
+        ;;
+      *)
+        gha_echo warning "Auto-merge: MR !${mr_iid} unrecognized pipeline status '${pipeline_status}' — skipping"
+        return 0
+        ;;
+    esac
+  done
+
+  # BLOCKED guard (parity with GitHub's mergeStateStatus check)
+  local merge_status
+  merge_status=$(echo "${mr_json}" | jq -r '.detailed_merge_status // .merge_status // "unknown"')
+  case "${merge_status}" in
+    mergeable|can_be_merged)
+      gha_echo warning "Auto-merge: MR !${mr_iid} is immediately mergeable — skipping. Requires merge request approvals or pipeline checks."
+      return 0
+      ;;
+    not_approved|ci_must_pass|ci_still_running|discussions_not_resolved|blocked_status|need_rebase)
+      ;;
+    checking|unchecked|preparing)
+      if [ "${pipeline_status}" = "success" ]; then
+        gha_echo warning "Auto-merge: MR !${mr_iid} merge status '${merge_status}' not settled but pipeline passed — skipping (could merge immediately)"
+        return 0
+      fi
+      ;;
+    *)
+      gha_echo warning "Auto-merge: MR !${mr_iid} unrecognized merge status '${merge_status}' — skipping"
+      return 0
+      ;;
+  esac
+
+  if [ "${pipeline_status}" = "success" ]; then
+    echo "Auto-merge: MR !${mr_iid} pipeline passed but MR is blocked (${merge_status}) — arming auto-merge"
+  fi
+
+  if ! _gitlab_code_api PUT "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/merge" \
+    --data-urlencode "merge_when_pipeline_succeeds=true" > /dev/null 2>/dev/null; then
+    gha_echo warning "Failed to enable auto-merge on MR !${mr_iid} — continuing"
+  fi
+}
+
+# --- Issue operations ---
+
+forge_get_issue_comments() {
+  local notes="[]"
+  local page=1 max_pages=50
+  while [[ "${page}" -le "${max_pages}" ]]; do
+    local batch
+    batch=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=asc&page=${page}" 2>/dev/null) || break
+    local count
+    count=$(echo "${batch}" | jq 'length') || break
+    [[ "${count}" -eq 0 ]] && break
+    notes=$(echo "${notes}" "${batch}" | jq -s 'add') || break
+    page=$((page + 1))
+  done
+  # Remap GitLab shape to match GitHub expected shape for pr-assignee.lib.sh;
+  # exclude system notes (timeline events GitHub doesn't return).
+  echo "${notes}" | jq '[.[] | select(.system != true) | {user: {login: .author.username}, body: .body}]' 2>/dev/null || echo '[]'
+}
+
+forge_get_issue_details() {
+  local issue_json
+  issue_json=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null) || {
+    echo ""
+    return 0
+  }
+  # Remap GitLab shape to match GitHub expected shape for pr-assignee.lib.sh
+  echo "${issue_json}" | jq '{
+    assignees: [(.assignees // [])[] | {login: .username}],
+    author: {login: (.author.username // "")}
+  }' 2>/dev/null || true
+}
+
+# --- CI operations ---
+
+forge_get_workflow_run_url() {
+  if [[ -n "${GITHUB_RUN_ID:-}" ]]; then
+    local run_repo="${GITHUB_REPOSITORY:-${REPO_FULL_NAME}}"
+    printf '%s/%s/actions/runs/%s' \
+      "${GITHUB_SERVER_URL:-https://github.com}" "${run_repo}" "${GITHUB_RUN_ID}"
+    return 0
+  fi
+  local server_url="${CI_SERVER_URL:-https://gitlab.com}"
+  local project_path="${CI_PROJECT_PATH:-${REPO_FULL_NAME}}"
+  local pipeline_id="${CI_PIPELINE_ID:-unknown}"
+  local job_id="${CI_JOB_ID:-}"
+  if [[ -n "${job_id}" ]]; then
+    printf '%s/%s/-/jobs/%s' "${server_url}" "${project_path}" "${job_id}"
+  else
+    printf '%s/%s/-/pipelines/%s' "${server_url}" "${project_path}" "${pipeline_id}"
+  fi
+}
+
+# --- Output operations ---
+
+forge_write_output() {
+  local key="$1"
+  local value="$2"
+  # GitLab CI uses artifacts or dotenv for output; write to GITHUB_OUTPUT
+  # if available (hybrid compatibility), otherwise no-op.
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    echo "${key}=${value}" >> "${GITHUB_OUTPUT}"
+  fi
+}
+
+# --- Workspace operations ---
+
+forge_get_workspace_dir() {
+  echo "${CI_PROJECT_DIR:-${GITHUB_WORKSPACE:-}}"
+}
+
+forge_get_repo_dir() {
+  echo "${REPO_DIR:-${CI_PROJECT_DIR:-${GITHUB_WORKSPACE:-}/target-repo}}"
+}
+
+forge_append_path() {
+  local dir="$1"
+  if [[ -n "${GITHUB_PATH:-}" ]]; then
+    echo "${dir}" >> "${GITHUB_PATH}"
+  fi
+  # On GitLab CI, PATH is modified directly (already done by caller)
+}
+# END bundled: lib/gitlab-code-ops.lib.sh
+    ;;
+  *)
+    echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
+    exit 1
+    ;;
+esac
+# END bundled: lib/code-ops.lib.sh
+
 # ---------------------------------------------------------------------------
-# enable_auto_merge — arm GitHub auto-merge on a PR (best-effort).
+# enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
 #
 # Guards:
-#   - PR must be in BLOCKED state (requires branch protection)
-#   - For existing PRs: skips if auto-merge is already enabled
+#   - GitHub: PR must be in BLOCKED state (requires branch protection)
+#   - GitHub: For existing PRs: skips if auto-merge is already enabled
+#   - GitLab: Uses merge_when_pipeline_succeeds
 #
-# Merge method resolution:
+# Merge method resolution (GitHub-specific):
 #   1. If target branch has a merge queue → omit method flag (gh negotiates)
 #   2. If CODE_AUTO_MERGE_METHOD is set → use it (warn on unknown values)
 #   3. Otherwise → auto-detect from repo's allowed merge methods (prefer squash)
@@ -757,22 +1585,24 @@ classify_branch_vs_pr_head() {
 # ---------------------------------------------------------------------------
 enable_auto_merge() {
   local target_pr="$1"
-  local repo="$2"
+  local _repo="$2"  # accepted for interface parity; forge ops use REPO_FULL_NAME
   local is_existing="${3:-}"
 
   if [ "${CODE_AUTO_MERGE:-}" != "true" ]; then
     return 0
   fi
 
-  # Guard: only arm when PR is BLOCKED — immediate-merge states (CLEAN,
-  # HAS_HOOKS, UNSTABLE) cause gh to merge on the spot, bypassing review/CI.
-  # GitHub computes mergeStateStatus asynchronously after PR creation or
-  # push, so retry on UNKNOWN before giving up.
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    echo "Auto-merge: enabling merge_when_pipeline_succeeds on MR !${target_pr}..."
+    forge_enable_auto_merge "${target_pr}" ""
+    return 0
+  fi
+
+  # GitHub-specific merge state checks
   local pr_json merge_state
   local _am_attempt
   for _am_attempt in 1 2 3; do
-    pr_json="$(gh pr view "${target_pr}" --repo "${repo}" \
-      --json mergeStateStatus,autoMergeRequest,baseRefName 2>/dev/null || true)"
+    pr_json="$(forge_get_pr_details "${target_pr}" "mergeStateStatus,autoMergeRequest,baseRefName")" || true
     if [ -z "${pr_json}" ]; then
       gha_echo warning "Auto-merge: could not query PR #${target_pr} — skipping"
       return 0
@@ -816,13 +1646,8 @@ enable_auto_merge() {
   base_branch="$(echo "${pr_json}" | jq -r '.baseRefName // "main"')"
 
   # Check for merge queue on the target branch — omit method flag if present.
-  local owner="${repo%%/*}"
-  local name="${repo##*/}"
   local mq_id
-  mq_id="$(gh api graphql -f query="
-    query { repository(owner: \"${owner}\", name: \"${name}\") {
-      mergeQueue(branch: \"${base_branch}\") { id }
-    }}" --jq '.data.repository.mergeQueue.id // empty' 2>/dev/null || true)"
+  mq_id="$(forge_check_merge_queue "${base_branch}")"
 
   if [ -n "${mq_id}" ]; then
     echo "Auto-merge: merge queue detected on ${base_branch} — omitting method flag"
@@ -830,8 +1655,7 @@ enable_auto_merge() {
     local method="${CODE_AUTO_MERGE_METHOD:-}"
     if [ -z "${method}" ]; then
       local repo_info
-      repo_info="$(gh api "repos/${repo}" \
-        --jq '{s:.allow_squash_merge,m:.allow_merge_commit,r:.allow_rebase_merge}' 2>/dev/null || true)"
+      repo_info="$(forge_get_repo_merge_methods)"
       if [ -n "${repo_info}" ]; then
         if [ "$(echo "${repo_info}" | jq -r '.s')" = "true" ]; then method="squash"
         elif [ "$(echo "${repo_info}" | jq -r '.m')" = "true" ]; then method="merge"
@@ -855,15 +1679,7 @@ enable_auto_merge() {
   fi
 
   echo "Auto-merge: enabling on PR #${target_pr}${method_flag:+ (${method_flag})}..."
-  local am_output
-  # shellcheck disable=SC2086
-  if ! am_output="$(gh pr merge "${target_pr}" --auto ${method_flag} \
-    --repo "${repo}" 2>&1)"; then
-    print_sanitized_gha_log "${am_output}"
-    gha_echo warning "Failed to enable auto-merge on PR #${target_pr} — continuing"
-  else
-    print_sanitized_gha_log "${am_output}"
-  fi
+  forge_enable_auto_merge "${target_pr}" "${method_flag}"
 }
 
 # ---------------------------------------------------------------------------
@@ -886,6 +1702,28 @@ if [ "${REPO_DIR}" != "." ]; then
     post_fail_to_issue setup-error "Extracted repo not found at ${REPO_DIR}"
   fi
   cd "${REPO_DIR}"
+fi
+
+# GitLab needs REPO_ENCODED and GITLAB_HOST for API calls.
+# Always derive GITLAB_HOST from the validated ISSUE_URL. If GITLAB_HOST is
+# pre-set in the environment, verify it matches the URL host to prevent
+# token exfiltration to an unintended host.
+if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+  if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
+    gha_echo error "ISSUE_URL format invalid for GitLab: '${ISSUE_URL:-}'"
+    exit 1
+  fi
+  # shellcheck disable=SC2034
+  REPO_ENCODED="$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)"
+  # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
+  # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
+  # to the mismatched host.
+  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+  if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
+    gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
+    exit 1
+  fi
+  GITLAB_HOST="${_url_host}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -938,7 +1776,7 @@ if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
     "Invalid branch name from agent output: '${AGENT_TARGET}'"
 fi
 
-DEFAULT_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null || echo 'main')"
+DEFAULT_BRANCH="$(forge_get_default_branch "${PUSH_TOKEN}")"
 
 if [ -n "${AGENT_TARGET}" ]; then
   if [ -n "${CODE_ALLOWED_TARGET_BRANCHES:-}" ]; then
@@ -983,7 +1821,7 @@ post_noop_comment() {
   _post_failure_ensure_token
 
   local run_url
-  run_url="$(post_failure_workflow_run_url "${REPO_FULL_NAME}")"
+  run_url="$(forge_get_workflow_run_url)"
 
   # Try to extract agent reasoning from result file.
   # Note: RESULT_FILE is set at the top of the script and may point to a
@@ -1016,9 +1854,7 @@ ${detail_block}
 
 Retry with \`/fs-code\` if appropriate."
 
-  if ! gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null; then
+  if ! forge_post_issue_comment "${body}"; then
     gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
   fi
 }
@@ -1039,7 +1875,7 @@ fi
 #
 # The agent chooses its own branch name inside the sandbox. Rename it
 # deterministically using the trusted ISSUE_NUMBER (sourced from the
-# GitHub event, not from agent output) so agent-authored pushes are
+# CI event, not from agent output) so agent-authored pushes are
 # confined to this issue's namespace.
 # ---------------------------------------------------------------------------
 SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${ISSUE_NUMBER}")"
@@ -1177,9 +2013,10 @@ INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
 # ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
 # (per-repo) — see fullsend-ai/.fullsend reusable workflows. Try those paths
 # when the BASH_SOURCE-relative lookup misses.
+WORKSPACE_DIR="$(forge_get_workspace_dir)"
 if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
-    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+  if [ -n "${WORKSPACE_DIR}" ]; then
+    for _ws_candidate in "${WORKSPACE_DIR}/scripts" "${WORKSPACE_DIR}/.fullsend/scripts"; do
       if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
          && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
         RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
@@ -1310,26 +2147,28 @@ fi
 # ---------------------------------------------------------------------------
 # 6. Push branch
 # ---------------------------------------------------------------------------
-git remote set-url origin \
-  "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
+forge_set_push_remote "${PUSH_TOKEN}"
 
-export GH_TOKEN="${PUSH_TOKEN}"
+# Set token for forge CLI (GitHub uses GH_TOKEN, GitLab uses GITLAB_TOKEN)
+if [ "${FULLSEND_FORGE}" = "github" ]; then
+  export GH_TOKEN="${PUSH_TOKEN}"
+else
+  export GITLAB_TOKEN="${PUSH_TOKEN}"
+fi
 
 # ---------------------------------------------------------------------------
-# 7a. Delete stale remote branch if it exists with no open PR.
+# 7a. Delete stale remote branch if it exists with no open PR/MR.
 #
-# When a human closes a code agent PR and re-triggers /fs-code, the old
+# When a human closes a code agent PR/MR and re-triggers /fs-code, the old
 # remote branch still exists. A plain push will fail with non-fast-forward
 # because the local branch was created fresh from origin/main. Delete the
 # stale remote branch so the push succeeds.
 # ---------------------------------------------------------------------------
-REMOTE_REF_LINE="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 || true)"
+REMOTE_REF_LINE="$(forge_check_remote_branch "${BRANCH}")"
 if [ -n "${REMOTE_REF_LINE}" ]; then
   echo "Remote branch ${BRANCH} already exists — checking for open PRs..."
   PR_LIST_RC=0
-  OPEN_PR="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-    --state open --json number,headRepositoryOwner \
-    --jq '[.[] | select(.headRepositoryOwner.login == "'"${REPO_FULL_NAME%%/*}"'")] | .[0].number // empty' 2>/dev/null)" || PR_LIST_RC=$?
+  OPEN_PR="$(forge_list_prs_for_branch "${BRANCH}")" || PR_LIST_RC=$?
   if [ "${PR_LIST_RC}" -ne 0 ]; then
     post_fail_to_issue api-error \
       "Could not query open PRs for branch '${BRANCH}' — refusing to push."
@@ -1340,14 +2179,12 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
         "Branch '${BRANCH}' is outside agent/${ISSUE_NUMBER}-* namespace — refusing to delete."
     fi
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
-    git push origin --delete "${BRANCH}" 2>&1 || \
-      gha_echo warning "Failed to delete stale remote branch ${BRANCH}"
+    forge_delete_remote_branch "${BRANCH}"
   else
     # Verify the open PR belongs to this issue. With deterministic branch
     # naming (agent/<ISSUE_NUMBER>-*) this should always hold, but check
     # anyway as defense-in-depth against cross-issue commit injection.
-    PR_BODY_TEXT="$(gh pr view "${OPEN_PR}" --repo "${REPO_FULL_NAME}" \
-      --json body --jq '.body' 2>/dev/null || true)"
+    PR_BODY_TEXT="$(forge_get_pr_details "${OPEN_PR}" "body" | jq -r '.body // .description // empty' 2>/dev/null || true)"
     PR_CLOSES_THIS_ISSUE=false
     if pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
       PR_CLOSES_THIS_ISSUE=true
@@ -1386,19 +2223,16 @@ ${FORCE_PUSH_OUTPUT}"
 fi
 
 # ---------------------------------------------------------------------------
-# 8. Create PR
+# 8. Create PR/MR
 # ---------------------------------------------------------------------------
 
-EXISTING_PR_NUM="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${BRANCH}" \
-  --state open --json number,headRepositoryOwner \
-  --jq '[.[] | select(.headRepositoryOwner.login == "'"${REPO_FULL_NAME%%/*}"'")] | .[0].number // empty' 2>/dev/null || true)"
+EXISTING_PR_NUM="$(forge_list_prs_for_branch "${BRANCH}")" || true
 
 if [ -n "${EXISTING_PR_NUM}" ]; then
-  EXISTING_PR_URL="$(gh pr view "${EXISTING_PR_NUM}" --repo "${REPO_FULL_NAME}" \
-    --json url --jq '.url' 2>/dev/null || true)"
+  EXISTING_PR_URL="$(forge_get_pr_url "${EXISTING_PR_NUM}")"
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
-  echo "pr_url=${EXISTING_PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+  forge_write_output "pr_url" "${EXISTING_PR_URL}"
 
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   maybe_assign_pr "${EXISTING_PR_NUM}"
@@ -1544,12 +2378,11 @@ ${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}
 ${PR_BODY_SCAN_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
-if ! PR_URL=$(gh pr create \
-  --repo "${REPO_FULL_NAME}" \
-  --head "${BRANCH}" \
-  --base "${TARGET_BRANCH}" \
-  --title "${PR_TITLE}" \
-  --body "${PR_BODY}" 2>"${PR_CREATE_STDERR}"); then
+if ! PR_URL=$(forge_create_pr \
+  "${TARGET_BRANCH}" \
+  "${BRANCH}" \
+  "${PR_TITLE}" \
+  "${PR_BODY}" 2>"${PR_CREATE_STDERR}"); then
   PR_CREATE_OUTPUT="$(cat "${PR_CREATE_STDERR}")"
   rm -f "${PR_CREATE_STDERR}"
   post_fail_to_issue pr-creation-failed "${PR_CREATE_OUTPUT}"
@@ -1557,18 +2390,16 @@ fi
 rm -f "${PR_CREATE_STDERR}"
 
 echo "PR created: ${PR_URL}"
-echo "pr_url=${PR_URL}" >> "${GITHUB_OUTPUT:-/dev/null}"
+forge_write_output "pr_url" "${PR_URL}"
 
 # Apply ready-for-review label so the review agent is dispatched via the
 # issues.labeled path. pull_request_target.opened requires the PR author to
 # pass authorization checks that often exclude bot accounts; the label path
 # is used instead (label application requires repo write access). See
 # .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
+# Note: variable name is PR_NUMBER_FROM_URL (not PR_NUMBER) to avoid SC2153.
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
-gh issue edit "${PR_NUMBER_FROM_URL}" \
-  --repo "${REPO_FULL_NAME}" \
-  --add-label "ready-for-review" 2>/dev/null || \
-  gha_echo warning "Failed to apply ready-for-review label to PR #${PR_NUMBER_FROM_URL}"
+forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 
 # ---------------------------------------------------------------------------
 # 9. Auto-merge
