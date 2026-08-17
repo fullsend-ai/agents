@@ -116,7 +116,7 @@ cat /tmp/fullsend/agent-triage-*/iteration-*/output/agent-result.json | jq .
 ## Testing triage with Jira
 
 Triage also supports Jira Cloud as a forge (see [`docs/triage.md`](docs/triage.md#jira-setup)).
-The default runner only sets `FULLSEND_FORGE` for GitHub/GitLab, so
+The default runner only sets `FULLSEND_TRACKER` for GitHub/GitLab, so
 exercising the Jira path locally means overriding the forge selection by
 hand:
 
@@ -125,7 +125,7 @@ export JIRA_ISSUE_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
-export FULLSEND_FORGE="jira"
+export FULLSEND_TRACKER="jira"
 
 # Transition names for closing issues — set to match your Jira workflow.
 export JIRA_DUPLICATE_TRANSITION="Duplicate"

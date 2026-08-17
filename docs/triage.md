@@ -170,9 +170,10 @@ allowed.
 ## Multi-forge support
 
 The triage agent supports GitHub, GitLab, and Jira (Cloud only). The forge is
-selected automatically at runtime via the `FULLSEND_FORGE` environment
+selected automatically at runtime via the `FULLSEND_TRACKER` environment
 variable, which the harness sets based on the detected CI platform (`github`,
-`gitlab`, or `jira`).
+`gitlab`, or `jira`). Scripts also accept `FULLSEND_FORGE` as a
+backward-compatible fallback when `FULLSEND_TRACKER` is not set.
 
 ### Jira setup
 
@@ -220,10 +221,11 @@ If you use `base:` composition to override `harness/triage.yaml`:
   the harness maps them to `ISSUE_URL` via `env.runner` / `env.sandbox`.
   Custom pre/post scripts that reference `GITHUB_ISSUE_URL` directly should
   switch to `ISSUE_URL`.
-- **`FULLSEND_FORGE` is required**: Pre- and post-scripts require this env var
-  to select the correct forge operations. It is set automatically by the forge
-  sections in the harness; if your override removes the forge sections, set it
-  explicitly in `env.runner` and `env.sandbox`.
+- **`FULLSEND_TRACKER` is required**: Pre- and post-scripts require this env var
+  to select the correct forge operations (falls back to `FULLSEND_FORGE` if
+  unset). It is set automatically by the forge sections in the harness; if your
+  override removes the forge sections, set it explicitly in `env.runner` and
+  `env.sandbox`.
 - **`policy`, `skills`, and `host_files` live in forge sections**: This
   harness defines policy, skills, and the forge-specific env file
   (`env/github/triage.env` / `env/gitlab/triage.env` /
