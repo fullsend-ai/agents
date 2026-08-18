@@ -65,7 +65,7 @@ PROTECTED_PATHS=(
   ".claude/" ".cursor/" ".gitattributes" ".github/"
   ".pre-commit-config.yaml" "AGENTS.md" "agents/" "api-servers/"
   "CLAUDE.md" "CODEOWNERS" "Containerfile" "Dockerfile"
-  "harness/" "images/" "plugins/" "policies/" "scripts/" "skills/"
+  "harness/" "images/" "plugins/" "policies/" "profiles/" "providers/" "scripts/" "skills/"
 )
 
 count_protected_paths() {

@@ -46,12 +46,15 @@ relative to this file.
 | `style-conventions`    | parallel   | Repo-specific naming, error-handling idioms, API shape, code organization                                               |
 | `docs-currency`        | parallel   | Documentation staleness (follows docs-review skill inline)                                                              |
 | `cross-repo-contracts` | parallel   | API contract breakage affecting other repos (conditional)                                                               |
+| `risk-assessment`      | pre-pass   | Composite risk score (metadata, git history, linked issue)                                                              |
 | `challenger`           | sequential | Adversarial challenge of findings, false-positive removal, deduplication                                                |
 
-**Non-standard dispatch types:** `security-triage` (pre-pass) and
-`challenger` (sequential) are not dimension sub-agents and are NOT
-dispatched in step 4's parallel loop. `security-triage` runs as a
-preprocessing classifier in step 3c-1; `challenger` runs as a
+**Non-standard dispatch types:** `security-triage` (pre-pass),
+`risk-assessment` (pre-pass), and `challenger` (sequential) are not
+dimension sub-agents and are NOT dispatched in step 4's parallel loop.
+`security-triage` runs as a preprocessing classifier in step 3c-1;
+`risk-assessment` runs as a risk scorer in step 3c-2 (gated by
+`FULLSEND_RISK_ASSESSMENT_ENABLED`); `challenger` runs as a
 post-processing adversarial pass in step 6d. Both produce different
 output formats from the standard findings array.
 
@@ -510,6 +513,67 @@ incident.
   files treated as security-critical). Log an info-level note in the
   review output.
 
+#### 3c-2. Risk assessment pre-pass
+
+When `FULLSEND_RISK_ASSESSMENT_ENABLED` is set to `true` (the
+default), run a risk assessment pre-pass to compute a composite risk
+score before preparing context packages. If the env var is `false`
+or empty, skip this step entirely — the `risk_assessment` field will
+be absent from the result JSON.
+
+**Procedure:**
+
+1. Read `sub-agents/risk-assessment.md` for the sub-agent definition.
+2. Read the linked skill from the skill-loading table (Part 3):
+   `../pr-risk-assessment/SKILL.md`.
+3. Compose a spawn prompt containing:
+
+   **Part 1 — Sub-agent definition:** the full markdown body of the
+   risk-assessment sub-agent file (everything after the frontmatter)
+
+   **Part 2 — Linked skill:** the full contents of
+   `skills/pr-risk-assessment/SKILL.md` (everything after the
+   frontmatter)
+
+   **Part 3 — Context:** the PR's changed file list with per-file
+   diff stats (additions, deletions), PR metadata (title, body,
+   author, labels), and linked issue context (if any). Format as:
+
+   ```markdown
+   ## Context
+
+   ### Changed files
+   | File | Additions | Deletions |
+   |------|-----------|-----------|
+   | <path> | <n> | <n> |
+
+   ### PR metadata
+   <title, body, author, labels>
+
+   ### Issue context
+   <linked issue content or "no linked issue">
+   ```
+
+4. Spawn via Agent tool with:
+   - `model`: `sonnet` (from the sub-agent frontmatter)
+   - `prompt`: composed from parts 1–3
+   - Run **synchronously** (not in the background) — the result is
+     stored for inclusion in the final review result
+
+5. Parse the risk assessment output. The sub-agent returns a JSON
+   object with `score`, `level`, `rationale`, and optional signal
+   arrays.
+
+6. Store the `risk_assessment` object for inclusion in
+   `agent-result.json` (step 7).
+
+**Failure fallback:** If the risk-assessment sub-agent fails
+(timeout, parse error, empty response), log an info-level note and
+proceed without a risk score. The `risk_assessment` field is
+optional in the schema — its absence is not an error. Do not record
+a finding for this failure (risk assessment is informational, not
+safety-critical).
+
 #### 3d. Prepare context packages
 
 For each selected sub-agent, assemble a context package containing:
@@ -644,9 +708,15 @@ runs in step 6d):
    **Part 2 — Meta-prompt:** Read `meta-prompt.md`, fill in the "You are
    reviewing PR" template, and include everything else verbatim
 
-   **Part 3 — Doc review skill:** *If and only if* the roster key is
-   "docs-currency", read [`../docs-review/SKILL.md`](../docs-review/SKILL.md) and include its
-   contents verbatim
+   **Part 3 — Linked skill (conditional):** Check the skill-loading
+   table below. If the sub-agent has a linked skill, read the skill
+   file and include its contents verbatim after the sub-agent
+   definition.
+
+   | Sub-agent          | Linked skill                         |
+   |--------------------|--------------------------------------|
+   | docs-currency      | ../docs-review/SKILL.md              |
+   | risk-assessment    | ../pr-risk-assessment/SKILL.md       |
 
    **Part 4 — Context package:** the assembled context from step 3d,
    formatted as clearly labeled sections:
