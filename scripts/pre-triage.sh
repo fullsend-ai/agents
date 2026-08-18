@@ -569,9 +569,10 @@ tracker_parse_issue_url() {
   local parsed_base_url="https://${host}"
   # Strip trailing slash(es) from JIRA_BASE_URL so that a copy-pasted
   # "https://acme.atlassian.net/" matches the parsed "https://acme.atlassian.net".
-  if [[ -n "${JIRA_BASE_URL:-}" ]]; then
+  # Loop rather than a single ${VAR%/} so that "…net//" normalises too.
+  while [[ -n "${JIRA_BASE_URL:-}" && "${JIRA_BASE_URL}" == */ ]]; do
     JIRA_BASE_URL="${JIRA_BASE_URL%/}"
-  fi
+  done
   if [[ -n "${JIRA_BASE_URL:-}" ]] && [[ "${JIRA_BASE_URL}" != "${parsed_base_url}" ]]; then
     echo "ERROR: JIRA_BASE_URL ('${JIRA_BASE_URL}') does not match ISSUE_URL host ('${parsed_base_url}') — refusing to redirect API calls to a different tenant" >&2
     return 1

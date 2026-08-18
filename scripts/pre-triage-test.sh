@@ -158,6 +158,13 @@ run_test "jira-base-url-trailing-slash-ok" \
   '"remove":"needs-info"'
 unset JIRA_BASE_URL
 
+# More than one trailing slash must normalise too.
+export JIRA_BASE_URL="https://test.atlassian.net//"
+run_test "jira-base-url-multiple-trailing-slashes-ok" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  '"remove":"needs-info"'
+unset JIRA_BASE_URL
+
 # --- Summary ---
 
 echo ""

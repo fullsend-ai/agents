@@ -66,9 +66,10 @@ If you're testing a new env var, export it here too. You can also use
 
 The issue URL above points at an issue in a separate repo (e.g.
 `your-org/test-repo`) — clone it to its own local path so `--target-repo`
-has real content to work against. The harness maps `GITHUB_ISSUE_URL` or
-`GITLAB_ISSUE_URL` to a generic `ISSUE_URL` via the per-forge env file
-(`env/github/*.env` or `env/gitlab/*.env`):
+has real content to work against. The harness maps `GITHUB_ISSUE_URL`,
+`GITLAB_ISSUE_URL`, or `JIRA_ISSUE_URL` to a generic `ISSUE_URL` via the
+per-forge env file (`env/github/*.env`, `env/gitlab/*.env`, or
+`env/jira/triage.env`):
 
 ```bash
 git clone git@github.com:your-org/test-repo /tmp/target-repo
