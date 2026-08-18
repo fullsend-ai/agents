@@ -26,6 +26,31 @@
     },
     "label_actions": {
       "$ref": "#/$defs/label_actions"
+    },
+    "risk_assessment": {
+      "type": "object",
+      "required": ["score", "level", "rationale"],
+      "properties": {
+        "score": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "level": {
+          "type": "string",
+          "enum": ["low", "moderate", "elevated", "high", "critical"]
+        },
+        "tier1_signals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/risk_signal" }
+        },
+        "tier2_signals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/risk_signal" }
+        },
+        "tier3_signals": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/risk_signal" }
+        },
+        "rationale": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
     }
   },
   "allOf": [
@@ -110,6 +135,15 @@
             "additionalProperties": false
           }
         }
+      },
+      "additionalProperties": false
+    },
+    "risk_signal": {
+      "type": "object",
+      "required": ["dimension", "value"],
+      "properties": {
+        "dimension": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "minLength": 1 }
       },
       "additionalProperties": false
     }
