@@ -1683,9 +1683,14 @@ if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
   exit 0
 fi
 
-# Cross-project issue creation.
+# Cross-project issue creation. A 201 whose body carries no .key must not be
+# reported as a created issue; MOCK_JIRA_CREATE_NO_KEY simulates that response.
 if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
-  echo '{"key":"ALLOWEDPROJ-999"}'
+  if [[ -n "${MOCK_JIRA_CREATE_NO_KEY:-}" ]]; then
+    echo '{"id":"10042"}'
+  else
+    echo '{"key":"ALLOWEDPROJ-999"}'
+  fi
   printf '\n201'
   exit 0
 fi
@@ -1860,6 +1865,14 @@ run_jira_test "jira-prerequisites-creates-allowed-issue" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"ALLOWEDPROJ","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
   '"key":"ALLOWEDPROJ"'
 
+# A 201 create response carrying no issue key must be reported as a failed
+# create, not announced as "Created: .../browse/null".
+export MOCK_JIRA_CREATE_NO_KEY=1
+run_jira_test_stdout "jira-prerequisites-create-without-key-warns" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"ALLOWEDPROJ","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
+  "Failed to create issue"
+unset MOCK_JIRA_CREATE_NO_KEY
+
 # Jira prerequisites: cross-project creation in a disallowed target project is skipped.
 run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"DISALLOWEDPROJ","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
@@ -1879,6 +1892,36 @@ run_jira_test "jira-sufficient-bug-adds-label" \
 run_jira_test "jira-sufficient-bug-ready-to-code" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   '"add":"ready-to-code"'
+
+# The deferred-label path must not shell out to `gh` on Jira: REPO is a project
+# key rather than an OWNER/REPO, and Jira has no label registry to create into.
+# Self-contained (does not read a previous test's log) so that reordering or
+# inserting tests cannot make this assertion pass vacuously.
+jira_no_gh_dir="${TMPDIR}/run-jira-ready-to-code-skips-gh-label-create"
+jira_no_gh_json='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+mkdir -p "${jira_no_gh_dir}/iteration-1/output"
+echo "${jira_no_gh_json}" > "${jira_no_gh_dir}/iteration-1/output/agent-result.json"
+: > "${JIRA_CURL_LOG}"
+: > "${GH_LOG}"
+jira_no_gh_exit=0
+(cd "${jira_no_gh_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || jira_no_gh_exit=$?
+if [[ ${jira_no_gh_exit} -ne 0 ]]; then
+  echo "FAIL: jira-ready-to-code-skips-gh-label-create — post script exited ${jira_no_gh_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- '"add":"ready-to-code"' "${JIRA_CURL_LOG}"; then
+  # Guard against the assertion going vacuous: the deferred label must actually
+  # have been applied for "no gh call" to mean anything.
+  echo "FAIL: jira-ready-to-code-skips-gh-label-create — deferred ready-to-code label was never applied"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "label create" "${GH_LOG}"; then
+  echo "FAIL: jira-ready-to-code-skips-gh-label-create — gh label create ran on the Jira path"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-ready-to-code-skips-gh-label-create"
+fi
 
 # Jira sufficient feature action applies triaged label (not ready-to-code).
 run_jira_test "jira-sufficient-feature-gets-triaged" \

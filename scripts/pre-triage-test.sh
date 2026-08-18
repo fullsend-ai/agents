@@ -143,6 +143,14 @@ run_test "jira-label-not-stripped-fails" \
   "true"
 echo '[]' > "${MOCK_LABELS_FILE}"
 
+# An unexpected response shape must fail loudly, not read as "no labels left".
+echo 'null' > "${MOCK_LABELS_FILE}"
+run_test "jira-label-verify-malformed-response-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "cannot verify label state" \
+  "true"
+echo '[]' > "${MOCK_LABELS_FILE}"
+
 # JIRA_BASE_URL with trailing slash should still match the parsed URL.
 export JIRA_BASE_URL="https://test.atlassian.net/"
 run_test "jira-base-url-trailing-slash-ok" \

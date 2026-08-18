@@ -655,7 +655,12 @@ fi
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
-  forge_ensure_label "${DEFERRED_LABEL}"
+  # forge_ensure_label creates the label via `gh` against REPO. On Jira, REPO
+  # is a project key, not an OWNER/REPO, and Jira has no label registry to
+  # create into — any string is already a valid label.
+  if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
+    forge_ensure_label "${DEFERRED_LABEL}"
+  fi
   tracker_add_label "${DEFERRED_LABEL}"
 fi
 

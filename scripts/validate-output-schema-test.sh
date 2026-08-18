@@ -90,6 +90,22 @@ run_test "valid-split" \
   '{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated."}],"comment":"Splitting into independent sub-issues."}' \
   "true"
 
+# --- Jira tracker shapes ---
+# duplicate_of is an integer on GitHub/GitLab but a full issue key on Jira.
+run_test "valid-jira-duplicate-key" \
+  '{"action":"duplicate","reasoning":"same as PROJ-45","duplicate_of":"PROJ-45","comment":"Duplicate of PROJ-45."}' \
+  "true"
+
+# Jira prerequisite targets are bare project keys, not owner/name paths.
+run_test "valid-jira-prerequisites-create-project-key" \
+  '{"action":"prerequisites","reasoning":"needs upstream issue","prerequisites":{"existing":[{"url":"https://test.atlassian.net/browse/OTHERPROJ-7"}],"create":[{"repo":"OTHERPROJ","title":"Add X","body":"Need X."}]},"comment":"Blocked on upstream."}' \
+  "true"
+
+# Cross-project Jira sub-issues also use a bare project key in repo.
+run_test "valid-jira-split-project-key" \
+  '{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"repo":"OTHERPROJ","title":"Update error messages","body":"Error messages are outdated."}],"comment":"Splitting into independent sub-issues."}' \
+  "true"
+
 # --- Conditional requirement failures ---
 
 run_test "insufficient-missing-clarity-scores" \

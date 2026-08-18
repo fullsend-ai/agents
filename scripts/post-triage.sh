@@ -619,6 +619,16 @@ tracker_verify_labels_stripped() {
     return 1
   }
 
+  # An unparseable body must not read as "no labels remaining" — parse it up
+  # front so a bad shape fails loudly, matching the GitHub/GitLab sentinel.
+  local current_labels
+  current_labels=$(echo "${raw_labels}" | jq -r '[.fields.labels[]] | join("\n")' 2>/dev/null) \
+    || current_labels="VERIFY_FAILED"
+  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
+    echo "ERROR: cannot verify label state — unexpected response shape" >&2
+    return 1
+  fi
+
   local remaining=""
   local current
   while IFS= read -r current; do
@@ -632,7 +642,7 @@ tracker_verify_labels_stripped() {
         fi
       fi
     done
-  done < <(echo "${raw_labels}" | jq -r '.fields.labels[]' 2>/dev/null)
+  done <<< "${current_labels}"
 
   if [[ -n "${remaining}" ]]; then
     echo "ERROR: triage labels still present after reset: ${remaining}" >&2
@@ -789,7 +799,11 @@ tracker_create_issue() {
     return 1
   }
   local key
-  key=$(echo "${response}" | jq -r '.key')
+  key=$(echo "${response}" | jq -r '.key // empty' 2>/dev/null)
+  if [[ -z "${key}" ]]; then
+    echo "ERROR: Jira create-issue response for ${target_repo} contained no issue key" >&2
+    return 1
+  fi
   echo "${JIRA_BASE_URL}/browse/${key}"
 }
 # END bundled: lib/jira-triage-ops.lib.sh
@@ -1492,7 +1506,12 @@ fi
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
-  forge_ensure_label "${DEFERRED_LABEL}"
+  # forge_ensure_label creates the label via `gh` against REPO. On Jira, REPO
+  # is a project key, not an OWNER/REPO, and Jira has no label registry to
+  # create into — any string is already a valid label.
+  if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
+    forge_ensure_label "${DEFERRED_LABEL}"
+  fi
   tracker_add_label "${DEFERRED_LABEL}"
 fi
 
