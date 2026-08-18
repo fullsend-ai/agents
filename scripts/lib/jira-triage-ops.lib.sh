@@ -104,6 +104,11 @@ tracker_parse_issue_url() {
   local host
   host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
   local parsed_base_url="https://${host}"
+  # Strip trailing slash(es) from JIRA_BASE_URL so that a copy-pasted
+  # "https://acme.atlassian.net/" matches the parsed "https://acme.atlassian.net".
+  if [[ -n "${JIRA_BASE_URL:-}" ]]; then
+    JIRA_BASE_URL="${JIRA_BASE_URL%/}"
+  fi
   if [[ -n "${JIRA_BASE_URL:-}" ]] && [[ "${JIRA_BASE_URL}" != "${parsed_base_url}" ]]; then
     echo "ERROR: JIRA_BASE_URL ('${JIRA_BASE_URL}') does not match ISSUE_URL host ('${parsed_base_url}') — refusing to redirect API calls to a different tenant" >&2
     return 1
@@ -262,17 +267,52 @@ tracker_close_issue() {
   fi
 }
 
+_text_to_adf() {
+  # Convert plain text to Atlassian Document Format (ADF) JSON.
+  # Splits on blank lines into separate paragraphs; within a paragraph,
+  # single newlines become hardBreak nodes.
+  local text="$1"
+  jq -cn --arg text "${text}" '
+    # Split into paragraphs on blank lines (two or more consecutive newlines).
+    ($text | split("\n\n")) as $paragraphs |
+    {
+      type: "doc",
+      version: 1,
+      content: [
+        $paragraphs[] |
+        select(length > 0) |
+        # Split each paragraph on single newlines and interleave hardBreak nodes.
+        (split("\n") | map(select(length > 0))) as $lines |
+        select(($lines | length) > 0) |
+        {
+          type: "paragraph",
+          content: (
+            reduce $lines[] as $line (
+              {idx: 0, nodes: []};
+              if .idx > 0 then
+                .nodes += [{type: "hardBreak"}, {type: "text", text: $line}]
+              else
+                .nodes += [{type: "text", text: $line}]
+              end | .idx += 1
+            ) | .nodes
+          )
+        }
+      ]
+    }
+  '
+}
+
 tracker_create_issue() {
   local target_repo="$1"
   local title="$2"
   local body="$3"
   local issue_type="${JIRA_CREATE_ISSUE_TYPE:-Task}"
   # Jira Cloud REST v3 requires the description as Atlassian Document
-  # Format, not plain text/markdown. A single-paragraph doc is sufficient
-  # here since prerequisite/sub-issue bodies are plain text.
+  # Format, not plain text/markdown. Multi-line bodies are split into
+  # ADF paragraphs (on blank lines) with hardBreak nodes for single
+  # newlines within a paragraph.
   local description_adf
-  description_adf=$(jq -cn --arg text "${body}" \
-    '{type:"doc",version:1,content:[{type:"paragraph",content:[{type:"text",text:$text}]}]}')
+  description_adf=$(_text_to_adf "${body}")
   local response
   response=$(_jira_api_with_status POST "/issue" \
     --data "$(jq -cn --arg proj "${target_repo}" --arg title "${title}" \

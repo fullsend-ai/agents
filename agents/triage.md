@@ -235,12 +235,25 @@ Information is missing that would change the triage outcome. Ask ONE focused, sp
 
 This issue describes the same problem as an existing open issue.
 
+On GitHub/GitLab, `duplicate_of` is the issue number (integer). On Jira, it
+is the full issue key (string, e.g. `"PROJ-45"`).
+
 ```json
 {
   "action": "duplicate",
   "reasoning": "Brief explanation of why this is a duplicate",
   "duplicate_of": 123,
   "comment": "A professional comment explaining the duplicate finding and linking to the canonical issue. Be kind — the reporter may not have found the original."
+}
+```
+
+Jira example:
+```json
+{
+  "action": "duplicate",
+  "reasoning": "Brief explanation of why this is a duplicate",
+  "duplicate_of": "PROJ-45",
+  "comment": "A professional comment explaining the duplicate finding and linking to the canonical issue."
 }
 ```
 

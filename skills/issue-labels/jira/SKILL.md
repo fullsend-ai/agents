@@ -47,11 +47,12 @@ issues in the project. The sub-agent should:
 
 1. Query recent issues via JQL:
    ```bash
-   curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+   curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+     --header "Content-Type: application/json" \
      --get --data-urlencode "jql=project = ${PROJECT_KEY} ORDER BY updated DESC" \
      --data-urlencode "maxResults=50" \
      --data-urlencode "fields=summary,labels" \
-     "${JIRA_BASE_URL}/rest/api/3/search"
+     "${JIRA_BASE_URL}/rest/api/3/search/jql"
    ```
 2. Analyze which labels appear together and in what contexts.
 3. Return a short summary (under 500 characters) describing the labeling

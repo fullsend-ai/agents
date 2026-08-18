@@ -1823,6 +1823,38 @@ run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   '{"transition":{"id":"51"}}'
 
+# Jira split with multi-paragraph body produces ADF with separate paragraph nodes.
+# Verifies that newlines in sub-issue bodies are converted to hardBreak / separate
+# paragraphs in the ADF payload, not flattened into a single text node.
+jira_multiline_run_dir="${TMPDIR}/run-jira-split-multiline-body"
+mkdir -p "${jira_multiline_run_dir}/iteration-1/output"
+printf '{"action":"split","reasoning":"two tasks","sub_issues":[{"title":"Task A","body":"line1\\nline2\\n\\nparagraph two"},{"title":"Task B","body":"simple body"}],"comment":"Splitting."}' \
+  > "${jira_multiline_run_dir}/iteration-1/output/agent-result.json"
+: > "${JIRA_CURL_LOG}"
+: > "${GH_LOG}"
+jira_multiline_exit=0
+(cd "${jira_multiline_run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || jira_multiline_exit=$?
+if [[ ${jira_multiline_exit} -ne 0 ]]; then
+  echo "FAIL: jira-split-multiline-body — exit code ${jira_multiline_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'hardBreak' "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-split-multiline-body — expected hardBreak in ADF payload"
+  echo "Actual curl calls:"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  # Verify we get two separate paragraph nodes (blank-line split).
+  paragraph_count=$(grep -o '"type":"paragraph"' "${JIRA_CURL_LOG}" | wc -l)
+  if [[ ${paragraph_count} -lt 2 ]]; then
+    echo "FAIL: jira-split-multiline-body — expected ≥2 paragraph nodes, got ${paragraph_count}"
+    cat "${JIRA_CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-split-multiline-body"
+  fi
+fi
+
 # Jira prerequisites: cross-project creation in an allowed target project.
 run_jira_test "jira-prerequisites-creates-allowed-issue" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"ALLOWEDPROJ","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \

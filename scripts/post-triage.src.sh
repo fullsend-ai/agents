@@ -656,7 +656,7 @@ fi
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
   forge_ensure_label "${DEFERRED_LABEL}"
-  forge_add_label "${DEFERRED_LABEL}"
+  tracker_add_label "${DEFERRED_LABEL}"
 fi
 
 # --- Append action-hints footer (sufficient only) ---

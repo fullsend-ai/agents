@@ -39,32 +39,45 @@ curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
   "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=created"
 
 # List open issues in the project
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+  --header "Content-Type: application/json" \
   --get --data-urlencode "jql=project = ${PROJECT_KEY} AND statusCategory != Done" \
-  "${JIRA_BASE_URL}/rest/api/3/search"
+  "${JIRA_BASE_URL}/rest/api/3/search/jql"
 ```
+
+**Pagination:** The `/rest/api/3/search/jql` endpoint uses `nextPageToken`
+(not `startAt`). To page through results, pass `&nextPageToken=<token>` from
+the previous response's `nextPageToken` field. Stop when the field is absent
+or null.
+
+**Error handling:** Always use `--fail-with-body` so HTTP errors (e.g. 410
+Gone) cause curl to exit non-zero instead of silently returning an error body
+that could be mistaken for an empty result set.
 
 ## Searching for Duplicates and Related Issues
 
 ```bash
 # Search issues by keyword (JQL text search)
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+  --header "Content-Type: application/json" \
   --get --data-urlencode "jql=project = ${PROJECT_KEY} AND text ~ \"keyword\"" \
-  "${JIRA_BASE_URL}/rest/api/3/search"
+  "${JIRA_BASE_URL}/rest/api/3/search/jql"
 
 # Search across all projects visible to the account
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+  --header "Content-Type: application/json" \
   --get --data-urlencode "jql=text ~ \"keyword\" ORDER BY updated DESC" \
-  "${JIRA_BASE_URL}/rest/api/3/search"
+  "${JIRA_BASE_URL}/rest/api/3/search/jql"
 ```
 
 ## Cross-Project Searches
 
 ```bash
 # Search issues in another project (use its project key)
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+  --header "Content-Type: application/json" \
   --get --data-urlencode "jql=project = OTHERPROJ AND text ~ \"keyword\"" \
-  "${JIRA_BASE_URL}/rest/api/3/search"
+  "${JIRA_BASE_URL}/rest/api/3/search/jql"
 ```
 
 ## Key Differences from GitHub/GitLab
