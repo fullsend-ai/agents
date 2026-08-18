@@ -197,7 +197,15 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       --color "0E8A16" 2>&1); then
       case "${_lbl_err}" in
         *already\ exists*) ;;
-        *) echo "Warning: gh label create ready-for-triage: ${_lbl_err}" >&2 ;;
+        *)
+          _lbl_err="${_lbl_err//$'\n'/ }"
+          _lbl_err="${_lbl_err//::/:}"
+          _lbl_err="${_lbl_err//%0A/}"
+          _lbl_err="${_lbl_err//%0a/}"
+          _lbl_err="${_lbl_err//%0D/}"
+          _lbl_err="${_lbl_err//%0d/}"
+          echo "Warning: gh label create ready-for-triage: ${_lbl_err}" >&2
+          ;;
       esac
     fi
 

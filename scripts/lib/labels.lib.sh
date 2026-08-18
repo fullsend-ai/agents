@@ -50,7 +50,15 @@ forge_ensure_label() {
   if ! err=$(gh label create "${create_args[@]}" 2>&1); then
     case "${err}" in
       *already\ exists*) ;;
-      *) echo "Warning: gh label create ${name}: ${err}" >&2 ;;
+      *)
+        err="${err//$'\n'/ }"
+        err="${err//::/:}"
+        err="${err//%0A/}"
+        err="${err//%0a/}"
+        err="${err//%0D/}"
+        err="${err//%0d/}"
+        echo "Warning: gh label create ${name}: ${err}" >&2
+        ;;
     esac
   fi
 }
