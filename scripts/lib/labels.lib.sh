@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# labels.lib.sh — Mandatory label management for fullsend agent scripts.
+#
+# Provides forge_ensure_label() which creates mandatory dispatch labels
+# without --force, preserving admin customizations. Non-mandatory labels
+# are silently skipped (no-op).
+
+# shellcheck shell=bash
+
+[[ -n "${LABELS_LIB_SH_LOADED:-}" ]] && return 0
+LABELS_LIB_SH_LOADED=1
+
+MANDATORY_LABELS=("ready-for-review" "ready-to-code" "ready-for-triage")
+
+_mandatory_label_defaults() {
+  printf '%s\t%s\t%s\n' \
+    "ready-for-review" "Triggers review agent dispatch" "0E8A16" \
+    "ready-to-code" "Triggers code agent dispatch" "0E8A16" \
+    "ready-for-triage" "Triggers triage agent dispatch" "0E8A16"
+}
+
+forge_ensure_label() {
+  local name="$1"
+  local description="${2:-}"
+  local color="${3:-}"
+
+  local is_mandatory=false
+  local m
+  for m in "${MANDATORY_LABELS[@]}"; do
+    [[ "${m}" == "${name}" ]] && is_mandatory=true && break
+  done
+  if [[ "${is_mandatory}" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ -z "${description}" || -z "${color}" ]]; then
+    local line
+    line=$(_mandatory_label_defaults | grep "^${name}	" || true)
+    if [[ -n "${line}" ]]; then
+      [[ -z "${description}" ]] && description=$(printf '%s' "${line}" | cut -f2)
+      [[ -z "${color}" ]] && color=$(printf '%s' "${line}" | cut -f3)
+    fi
+  fi
+
+  local create_args=("${name}" --repo "${REPO_FULL_NAME:-${REPO}}")
+  [[ -n "${description}" ]] && create_args+=(--description "${description}")
+  [[ -n "${color}" ]] && create_args+=(--color "${color}")
+
+  local err
+  if ! err=$(gh label create "${create_args[@]}" 2>&1); then
+    case "${err}" in
+      *already\ exists*) ;;
+      *) echo "Warning: gh label create ${name}: ${err}" >&2 ;;
+    esac
+  fi
+}
