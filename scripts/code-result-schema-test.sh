@@ -81,6 +81,10 @@ run_test "valid-needs-input-without-target-branch" \
   '{"needs_input":"sandbox tooling broken — cannot determine target branch"}' \
   "true"
 
+run_test "valid-needs-input-with-pr-body-without-target-branch" \
+  '{"needs_input":"Environment broken — pip not available","pr_body":"partial context"}' \
+  "true"
+
 run_test "invalid-needs-input-empty-string" \
   '{"target_branch":"main","needs_input":""}' \
   "false"

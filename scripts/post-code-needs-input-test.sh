@@ -314,6 +314,25 @@ assert_log_pattern "needs-input-conflict-label-applied-on-existing-pr" \
 assert_log_pattern "needs-input-existing-pr-caveat-omits-discarded-commits" \
   "were not pushed and will be discarded" "no"
 
+# PR URLs from gh pr list should be validated before interpolation into the
+# comment body (defense-in-depth against injection via forged API responses).
+# A URL containing unexpected characters must be replaced with a placeholder.
+MOCK_EXISTING_PR_URL='https://github.com/owner/repo/pull/7?x=`whoami`' \
+  run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+
+assert_comment_body_pattern "needs-input-bad-pr-url-omitted-from-comment" \
+  '`whoami`' "no"
+
+assert_comment_body_pattern "needs-input-bad-pr-url-placeholder-used" \
+  "PR URL omitted" "yes"
+
+# A valid PR URL must pass through normally.
+MOCK_EXISTING_PR_URL="https://github.com/${REPO_FULL_NAME}/pull/7" \
+  run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+
+assert_comment_body_pattern "needs-input-valid-pr-url-included" \
+  "https://github.com/${REPO_FULL_NAME}/pull/7" "yes"
+
 # Branch names are chosen by the code agent and git ref names permit
 # backticks — a branch name containing one must never be interpolated raw
 # into the posted comment body, since it would break out of the markdown

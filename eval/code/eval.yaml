@@ -192,7 +192,12 @@ judges:
       if not raw:
           return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
       state = json.loads(raw)
+      expect_pr = outputs.get("annotations", {}).get("expect_pr", True)
       expected = outputs.get("annotations", {}).get("expected_files") or []
+      if not expect_pr:
+          if expected:
+              return False, "expected_files declared but expect_pr is false — contradictory annotation"
+          return True, "expected_files not checked when expect_pr is false (needs_input case)"
       if not expected:
           return True, "No expected_files declared"
       # Filter to OPEN/MERGED like pr_created — a closed/superseded PR's
