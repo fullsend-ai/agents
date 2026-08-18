@@ -405,6 +405,18 @@ if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate
   exit 0
 fi
 
+# gh pr edit ... --remove-label risk/* → log and succeed
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "edit" ]] && [[ "\$*" == *"--remove-label"* ]] && [[ "\$*" == *"risk/"* ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  exit 0
+fi
+
+# gh label create risk/* → log and succeed
+if [[ "\$1" == "label" ]] && [[ "\$2" == "create" ]] && [[ "\$3" == risk/* ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  exit 0
+fi
+
 # Log all other calls
 echo "gh \$*" >> "${GH_LOG}"
 MOCKEOF
@@ -1614,6 +1626,48 @@ run_protected_paths_default_drift_test() {
   echo "PASS: ${test_name}"
 }
 run_protected_paths_default_drift_test
+
+# ---------------------------------------------------------------------------
+# Risk assessment label + comment tests
+# ---------------------------------------------------------------------------
+
+# Result with risk_assessment → risk label applied
+RISK_HIGH_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Auth middleware refactor.","tier1_signals":[{"dimension":"blast_radius","value":"large"}]}}'
+
+run_label_test "risk-label-high-applied" \
+  "${RISK_HIGH_RESULT}" \
+  "gh label create risk/high"
+
+# Result with risk_assessment → sticky comment posted
+run_label_test "risk-comment-posted" \
+  "${RISK_HIGH_RESULT}" \
+  "fullsend post-comment"
+
+# Stdout should mention risk label
+run_label_test_stdout "risk-label-log-message" \
+  "${RISK_HIGH_RESULT}" \
+  "Applying risk/high label"
+
+# Result WITHOUT risk_assessment → no risk label
+APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+
+run_label_test_no_pattern "risk-absent-no-label" \
+  "${APPROVE_NO_RISK}" \
+  "risk/"
+
+# Result with risk_assessment level=low → risk/low label
+RISK_LOW_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo fix."}}'
+
+run_label_test "risk-label-low-applied" \
+  "${RISK_LOW_RESULT}" \
+  "gh label create risk/low"
+
+# Risk labels work with request-changes too
+RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+
+run_label_test "risk-label-with-request-changes" \
+  "${RISK_RC_RESULT}" \
+  "gh label create risk/elevated"
 
 # --- Summary ---
 
