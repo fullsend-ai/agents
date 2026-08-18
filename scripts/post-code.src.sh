@@ -66,6 +66,8 @@ source "${SCRIPT_DIR_POST}/lib/branch-guard.lib.sh"
 SCRIPT_DIR="${SCRIPT_DIR_POST}"
 # shellcheck source=lib/code-ops.lib.sh
 source "${SCRIPT_DIR_POST}/lib/code-ops.lib.sh"
+# shellcheck source=lib/labels.lib.sh
+source "${SCRIPT_DIR_POST}/lib/labels.lib.sh"
 
 # ---------------------------------------------------------------------------
 # enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
@@ -902,6 +904,7 @@ forge_write_output "pr_url" "${PR_URL}"
 # .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
 # Note: variable name is PR_NUMBER_FROM_URL (not PR_NUMBER) to avoid SC2153.
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
+forge_ensure_label "ready-for-review"
 forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 
 # ---------------------------------------------------------------------------
