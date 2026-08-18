@@ -11,14 +11,19 @@
 # Checks:
 #   - Filename stem equals the top-level `agent:` field
 #   - `agent:` matches an existing agents/<name>.md
+#     (having agents/<name>.md is necessary but not sufficient for stock
+#     fetch: fullsend only pulls agents in defaultAgentsRepoKnownAgents —
+#     triage/code/fix/review/retro/prioritize today; see measurements README)
 #   - Each measurement has id, scorer, and a positive integer version
+#   - optional name: is allowed (fullsend MeasurementSpec) and rejects pipe/newline
 #   - ids are unique per file
 #   - scorer is in the known-scorer allow-list (fullsend evalmeasure registry)
 #   - id matches em-001-style lowercase — agents-repo stock-manifest style,
-#     stricter than fullsend LoadRegistry (which only requires a non-empty id
-#     without pipe/newline)
-#   - YAML must be the shipped block-style three-field shape; other shapes
-#     fail closed as "unsupported YAML shape"
+#     stricter than fullsend LoadRegistry (non-empty id/scorer, version>=1,
+#     no pipe/newline in id/scorer/name)
+#   - YAML must be the shipped block-style shape; other shapes fail closed
+#     as "unsupported YAML shape" (including unknown top-level keys after
+#     the measurements list)
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -39,11 +44,22 @@ import sys
 MEASUREMENTS_DIR, AGENTS_DIR = sys.argv[1], sys.argv[2]
 KNOWN_SCORERS = frozenset({"trace_fitness"})
 ID_STYLE = re.compile(r"^[a-z][a-z0-9]*-[0-9]+$")
-FIELD_KEYS = frozenset({"id", "scorer", "version"})
+# Matches fullsend MeasurementSpec yaml tags shipped today (id/scorer/version/name).
+FIELD_KEYS = frozenset({"id", "scorer", "version", "name"})
+TOP_LEVEL_KEYS = frozenset({"agent", "measurements"})
+FIELD_INLINE = re.compile(r"^(id|scorer|version|name):\s*(.*)$")
+FIELD_INDENTED = re.compile(r"^\s+(id|scorer|version|name):\s*(.*)$")
+UNKNOWN_INDENTED = re.compile(r"^\s+([A-Za-z0-9_]+):\s*(.*)$")
 
 
 class UnsupportedShape(Exception):
     pass
+
+
+def require_top_level(stripped):
+    key = stripped.split(":", 1)[0]
+    if key not in TOP_LEVEL_KEYS:
+        raise UnsupportedShape("unsupported top-level field %r" % key)
 
 
 def parse_manifest(text):
@@ -55,6 +71,12 @@ def parse_manifest(text):
     measurements_key = False
     list_indent = None
 
+    def close_current():
+        nonlocal current
+        if current is not None:
+            items.append(current)
+            current = None
+
     for raw in text.splitlines():
         stripped = raw.split("#", 1)[0].rstrip()
         if not stripped or stripped == "---":
@@ -62,48 +84,81 @@ def parse_manifest(text):
         if re.search(r"measurements:\s*[\[{]", stripped):
             raise UnsupportedShape("flow-style measurements are not supported")
         indent = len(raw) - len(raw.lstrip(" "))
+
         if re.match(r"^agent:\s*\S", stripped):
+            if in_measurements:
+                close_current()
+                in_measurements = False
             agent = stripped.split(":", 1)[1].strip().strip("'\"")
             continue
+
         if re.match(r"^measurements:\s*$", stripped):
+            if in_measurements:
+                close_current()
             in_measurements = True
             measurements_key = True
+            list_indent = None
             continue
+
         if in_measurements and re.match(r"^-\s+", stripped.lstrip()):
             dash_indent = indent
             if list_indent is None:
                 list_indent = dash_indent
             if dash_indent > (list_indent or 0) and current is not None:
                 raise UnsupportedShape("nested list under a measurement is not supported")
-            if current is not None:
-                items.append(current)
+            close_current()
             current = {}
             rest = re.sub(r"^-\s+", "", stripped.lstrip())
-            m = re.match(r"(id|scorer|version):\s*(.*)$", rest)
+            m = FIELD_INLINE.match(rest)
             if rest and not m:
                 raise UnsupportedShape("unsupported field on measurement list item")
             if m:
                 current[m.group(1)] = m.group(2).strip().strip("'\"")
             continue
+
         if in_measurements and current is not None:
-            fm = re.match(r"^\s+(id|scorer|version):\s*(.*)$", stripped)
-            um = re.match(r"^\s+([A-Za-z0-9_]+):\s*(.*)$", stripped)
+            fm = FIELD_INDENTED.match(stripped)
+            um = UNKNOWN_INDENTED.match(stripped)
             if fm:
                 current[fm.group(1)] = fm.group(2).strip().strip("'\"")
                 continue
             if um and um.group(1) not in FIELD_KEYS:
                 raise UnsupportedShape("unsupported field %r" % um.group(1))
             if re.match(r"^\S", stripped):
+                # End of measurements list — validate this line as top-level.
+                close_current()
                 in_measurements = False
-                items.append(current)
-                current = None
+                require_top_level(stripped)
+                if re.match(r"^agent:\s*\S", stripped):
+                    agent = stripped.split(":", 1)[1].strip().strip("'\"")
+                elif re.match(r"^measurements:\s*$", stripped):
+                    in_measurements = True
+                    measurements_key = True
+                    list_indent = None
                 continue
             raise UnsupportedShape("unrecognized line in measurements list")
-        if re.match(r"^\S", stripped) and stripped.split(":", 1)[0] not in ("agent", "measurements"):
-            raise UnsupportedShape("unsupported top-level field %r" % stripped.split(":", 1)[0])
 
-    if current is not None:
-        items.append(current)
+        if in_measurements and current is None:
+            # measurements: present but we are between items / after empty list.
+            if re.match(r"^\S", stripped):
+                in_measurements = False
+                require_top_level(stripped)
+                if re.match(r"^agent:\s*\S", stripped):
+                    agent = stripped.split(":", 1)[1].strip().strip("'\"")
+                elif re.match(r"^measurements:\s*$", stripped):
+                    in_measurements = True
+                    measurements_key = True
+                    list_indent = None
+                continue
+            raise UnsupportedShape("indented content outside a measurement item")
+
+        # Outside measurements: no silent fallthrough for unknown keys or orphans.
+        if re.match(r"^\S", stripped):
+            require_top_level(stripped)
+            continue
+        raise UnsupportedShape("indented content outside measurements list")
+
+    close_current()
     if measurements_key and not items:
         raise UnsupportedShape("measurements present but no block-style items parsed")
     return agent, items
@@ -159,6 +214,7 @@ def main():
             mid = it.get("id", "")
             scorer = it.get("scorer", "")
             version = it.get("version", "")
+            display = it.get("name", "")
             if not mid:
                 print("  ERROR: %s: measurement #%d missing id" % (name, idx))
                 errors += 1
@@ -181,12 +237,20 @@ def main():
                 print("  ERROR: %s: measurement %r missing scorer" % (name, mid))
                 errors += 1
                 file_errors += 1
+            elif "|" in scorer or "\n" in scorer:
+                print("  ERROR: %s: scorer %r contains characters fullsend LoadRegistry rejects" % (name, scorer))
+                errors += 1
+                file_errors += 1
             elif scorer not in KNOWN_SCORERS:
                 print("  ERROR: %s: unknown scorer %r (allowed: %s)" % (name, scorer, ", ".join(sorted(KNOWN_SCORERS))))
                 errors += 1
                 file_errors += 1
             if not re.match(r"^[1-9][0-9]*$", version or ""):
                 print("  ERROR: %s: measurement %r version must be a positive integer, got %r" % (name, mid, version))
+                errors += 1
+                file_errors += 1
+            if display and ("|" in display or "\n" in display):
+                print("  ERROR: %s: name %r contains characters fullsend LoadRegistry rejects" % (name, display))
                 errors += 1
                 file_errors += 1
 

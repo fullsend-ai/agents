@@ -14,16 +14,21 @@ Managed fullsend jobs resolve manifests as:
 
 1. Local `${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml` if present (override / BYOA)
 2. Else a SHA-pinned fetch from `fullsend-ai/agents` at the `v0` tag:
-   `fullsend eval-measure` resolves `tags/v0` via GitHub `GetRef` (managed jobs
-   pass `GH_TOKEN` / `GITHUB_TOKEN`) and then fetches
-   `eval/measurements/${AGENT}.yaml` at that commit. It does **not** curl the
-   floating `raw.githubusercontent.com/fullsend-ai/agents/v0/...` URL.
+   `fullsend eval-measure` resolves `tags/v0` via GitHub `GetRef` and then
+   fetches `eval/measurements/${AGENT}.yaml` at that commit. It does **not**
+   curl the floating `raw.githubusercontent.com/fullsend-ai/agents/v0/...` URL.
+   GitHub Actions jobs pass `GH_TOKEN` / `GITHUB_TOKEN` for that `GetRef`.
+   GitLab-managed jobs do not have a GitHub token by default, so stock
+   manifests skip unless an operator wires one — use a local `FULLSEND_DIR`
+   override there.
 
 Installs that only use stock agents **do not copy these files**. Local files
 are for changing defaults, opting out, or scoring a custom agent.
 
 Stock manifests in this directory use lowercase ids like `em-001` (an
-agents-repo style convention; fullsend's loader only requires a non-empty id).
+agents-repo style convention). fullsend's `LoadRegistry` requires a non-empty
+`id` and `scorer`, `version >= 1`, and rejects pipe/newline in `id` / `scorer`
+/ optional `name`.
 
 ## What lives where
 
@@ -40,8 +45,8 @@ repo is content/policy, not that binary. Platform checks like em-001
 
 | Change | PR |
 |---|---|
-| New Go scorer or (future) new declarative `assert:` | `fullsend` |
-| New measurement id / enable / disable / thresholds for a stock agent using an existing scorer | **agents** (this repo) |
+| New Go scorer or (future) new declarative `assert:` / thresholds | `fullsend` |
+| New measurement id / enable / disable for a stock agent using an existing scorer | **agents** (this repo) |
 | Custom policy for one org or a BYOA agent | Local override in the consumer repo |
 
 Companion platform PR: [fullsend-ai/fullsend#6036](https://github.com/fullsend-ai/fullsend/pull/6036)
@@ -52,7 +57,11 @@ Companion platform PR: [fullsend-ai/fullsend#6036](https://github.com/fullsend-a
 
 Six agents enable `trace_fitness` (em-001): code, fix, prioritize, retro,
 review, and triage. Omit a file to leave an agent without defaults (e.g.
-scribe has no forge work-item identity today).
+scribe has no forge work-item identity today). A file under this directory
+only takes effect for agents in fullsend's first-party fetch allow-list
+(`defaultAgentsRepoKnownAgents` in `internal/cli/run.go` — currently those
+six). Adding a stock manifest for a new agent (or scribe) needs a fullsend
+change first; `agents/<name>.md` alone is not enough.
 
 ```yaml
 agent: code

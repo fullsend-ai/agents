@@ -130,6 +130,45 @@ measurements:
       - path: x
 " 1 "unsupported YAML shape"
 
+run_case "trailing-unknown-top-level" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+not_a_real_key: true
+" 1 "unsupported top-level field"
+
+run_case "typo-mesurements-after-list" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+mesurements:
+  - id: em-002
+    scorer: totally_bogus_scorer
+    version: 1
+" 1 "unsupported top-level field"
+
+run_case "optional-name-allowed" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name: Trace Fitness
+" 0 "code.yaml: OK"
+
+run_case "name-pipe-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name: bad|name
+" 1 "contains characters fullsend LoadRegistry rejects"
+
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
