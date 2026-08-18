@@ -13,6 +13,10 @@
 #
 # Required env (set by harness):
 #   CASE_WORKSPACE  — path to the case workspace
+#
+# Optional env (set by harness):
+#   CASE_SOURCE_DIR — original case directory; read to decide whether the case
+#                     needs a PR diff captured. Missing means "capture it".
 set -euo pipefail
 
 CASE_WORKSPACE="${CASE_WORKSPACE:?CASE_WORKSPACE is required}"
@@ -67,12 +71,36 @@ fetch_pr_files() {
 # missing file being indistinguishable from "capture never ran".
 fetch_pr_diff() {
   local num="$1"
-  local diff
+  local diff attempt
   if diff=$(retry_cmd gh pr diff "$num" --repo "$EPHEMERAL_REPO"); then
     printf '%s\n' "$diff" > "${OUTPUT_DIR}/pr-${num}.diff"
     return 0
   fi
+  # retry_cmd's ~3s of backoff lands immediately after PR creation, exactly
+  # when the API may still be replicating. Poll a little longer before giving
+  # up: removed_symbols runs at min_pass_rate 1.0, so a transient miss here
+  # fails an otherwise-correct fix. Mirrors resolve_head_sha's readiness poll;
+  # worst case ~10s more, well inside the 60s after_each timeout.
+  echo "WARNING: gh pr diff not ready for PR #${num}; polling..." >&2
+  for attempt in 1 2 3 4; do
+    sleep $((attempt))
+    if diff=$(gh pr diff "$num" --repo "$EPHEMERAL_REPO" 2>/dev/null); then
+      printf '%s\n' "$diff" > "${OUTPUT_DIR}/pr-${num}.diff"
+      return 0
+    fi
+  done
   return 1
+}
+
+# Only cases declaring removed_symbols consume output/pr-<num>.diff, so the
+# extra `gh pr diff` call and its failure surface are skipped for the rest
+# (001-fix-add declares none). Defaults to capturing when the annotations
+# cannot be read — a judge must never fail for want of an artifact this
+# script decided on its own to skip.
+case_wants_pr_diff() {
+  local annotations="${CASE_SOURCE_DIR:-}/annotations.yaml"
+  [[ -n "${CASE_SOURCE_DIR:-}" && -f "$annotations" ]] || return 0
+  grep -qE '^[[:space:]]*removed_symbols[[:space:]]*:' "$annotations"
 }
 
 # Resolve branch tip SHA via git refs API, polling if still at baseline.
@@ -173,9 +201,11 @@ case "${FIXTURE_TYPE}" in
       [[ -z "$pr" ]] && continue
       num=$(printf '%s' "$pr" | jq -r '.number')
       diff_failed=false
-      if ! fetch_pr_diff "$num"; then
-        echo "WARNING: gh pr diff failed for PR #${num}; marking diff_fetch_failed" >&2
-        diff_failed=true
+      if case_wants_pr_diff; then
+        if ! fetch_pr_diff "$num"; then
+          echo "WARNING: gh pr diff failed for PR #${num}; marking diff_fetch_failed" >&2
+          diff_failed=true
+        fi
       fi
       if files=$(fetch_pr_files "$num"); then
         pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" --argjson diff_failed "$diff_failed" \
