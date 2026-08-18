@@ -3,7 +3,7 @@
 # whose functional tests should run.
 #
 # Usage:
-#   echo "env/triage.env" | ./select-eval-agents.sh [--repo-root <path>]
+#   echo "env/gcp-vertex.env" | ./select-eval-agents.sh [--repo-root <path>]
 #
 # Logic:
 #   For each harness/*.yaml that has a corresponding eval/<agent>/eval.yaml,
@@ -39,7 +39,9 @@ extract_refs() {
       (.host_files[]?.src),
       (.skills[]?),
       (.plugins[]?),
-      .forge.github.pre_script, .forge.github.post_script
+      (.providers[]?),
+      (.openshell?.profiles[]?),
+      (.forge[]? | (.pre_script, .post_script, .policy, (.skills[]?), (.host_files[]?.src), (.providers[]?), (.openshell?.profiles[]?)))
     ] | .[] | select(. != null)
   ' "$harness_file" | { grep -v '\$' || true; } | sort -u
 }

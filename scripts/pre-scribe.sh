@@ -39,14 +39,28 @@ CLOSED_ISSUES_FILE="${WORK_DIR}/closed-issues.json"
 OPEN_PRS_FILE="${WORK_DIR}/open-prs.json"
 REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
 
-# Open issues with bodies (truncated to 500 chars to keep context lean)
+# Open issues with bodies (truncated to 500 chars to keep context lean).
+# Use gh api --paginate to fetch ALL open issues, avoiding truncation on
+# repos with >1000 open issues (see #705). The REST /issues endpoint
+# includes pull requests; save raw output first so we can count total items
+# (issues+PRs) for truncation detection, then filter PRs out for the backlog.
 echo "Fetching open issues from ${SCRIBE_REPO}..."
-gh issue list --repo "${SCRIBE_REPO}" --state open \
-  --json number,title,body,labels,milestone,url --limit 1000 \
+RAW_PAGINATED_FILE="${WORK_DIR}/raw-paginated-issues.json"
+gh api --paginate "repos/${SCRIBE_REPO}/issues?state=open&per_page=100" \
+  > "${RAW_PAGINATED_FILE}"
+
+# Count total items (issues + PRs) from paginated response before filtering.
+# Used later for truncation detection — avoids depending on PR_COUNT from
+# gh pr list which caps at its --limit value (see edge-case in review #708).
+PAGINATED_TOTAL=$(jq -s '[.[][]] | length' "${RAW_PAGINATED_FILE}")
+
+# Filter out PRs, extract fields, truncate bodies
+jq -s '[.[][] | select(.pull_request == null) | {number, title, body, labels, milestone, url: .html_url}]' "${RAW_PAGINATED_FILE}" \
   | jq '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
   > "${BACKLOG_FILE}"
+rm -f "${RAW_PAGINATED_FILE}"
 ISSUE_COUNT=$(jq 'length' "${BACKLOG_FILE}")
-echo "Fetched ${ISSUE_COUNT} open issues for backlog context."
+echo "Fetched ${ISSUE_COUNT} open issues for backlog context (${PAGINATED_TOTAL} total items including PRs)."
 
 # Recently closed issues (last 50) — helps avoid duplicates and enables
 # "this was resolved in #N" references
@@ -67,6 +81,30 @@ GH_TOKEN="${CONTENTS_GH}" gh pr list --repo "${SCRIBE_REPO}" --state open \
   > "${OPEN_PRS_FILE}"
 PR_COUNT=$(jq 'length' "${OPEN_PRS_FILE}")
 echo "Fetched ${PR_COUNT} open pull requests."
+
+# Fetch authoritative open-issues count for truncation detection (#705).
+# GitHub's open_issues_count includes PRs. Compare directly against
+# PAGINATED_TOTAL (issues + PRs fetched via pagination) to detect truncation
+# without relying on PR_COUNT (which caps at gh pr list's --limit value).
+#
+# Note: REPO_OPEN_COUNT is fetched in a separate API call after pagination
+# completes. Issues or PRs created/closed between the two calls can cause
+# small discrepancies. A tolerance of 5 items absorbs typical churn and
+# prevents false-positive backlog_truncated=true from API timing (#708).
+REPO_OPEN_COUNT=$(gh api "repos/${SCRIBE_REPO}" --jq '.open_issues_count' 2>/dev/null || echo "")
+TRUNCATION_TOLERANCE=5
+if [[ -n "${REPO_OPEN_COUNT}" ]]; then
+  SHORTFALL=$((REPO_OPEN_COUNT - PAGINATED_TOTAL))
+  [[ "${SHORTFALL}" -gt "${TRUNCATION_TOLERANCE}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
+  # Derive issue-only total: subtract observed PR count from API total
+  OBSERVED_PR_COUNT=$((PAGINATED_TOTAL - ISSUE_COUNT))
+  OPEN_ISSUE_TOTAL=$((REPO_OPEN_COUNT - OBSERVED_PR_COUNT))
+  [[ "${OPEN_ISSUE_TOTAL}" -lt 0 ]] && OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+else
+  # API call failed; fall back to fetched count
+  OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  BACKLOG_TRUNCATED=false
+fi
 
 # Repo doc index — ADRs, problem docs, guides. One API call using the
 # git tree (recursive) so the agent can reference docs by path.
@@ -173,10 +211,12 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --arg repo "${SCRIBE_REPO}" \
     --argjson doc_count 0 \
     --argjson issue_count "${ISSUE_COUNT}" \
+    --argjson open_total "${OPEN_ISSUE_TOTAL}" \
+    --argjson truncated "${BACKLOG_TRUNCATED}" \
     --argjson closed_count "${CLOSED_COUNT}" \
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
@@ -307,6 +347,8 @@ jq -n \
   --arg repo "${SCRIBE_REPO}" \
   --argjson doc_count "${DOC_COUNT}" \
   --argjson issue_count "${ISSUE_COUNT}" \
+  --argjson open_total "${OPEN_ISSUE_TOTAL}" \
+  --argjson truncated "${BACKLOG_TRUNCATED}" \
   --argjson closed_count "${CLOSED_COUNT}" \
   --argjson pr_count "${PR_COUNT}" \
   --argjson doc_path_count "${DOC_PATH_COUNT}" \
@@ -316,6 +358,8 @@ jq -n \
     repo: $repo,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
+    open_issue_total: $open_total,
+    backlog_truncated: $truncated,
     closed_issues: $closed_count,
     open_prs: $pr_count,
     repo_docs: $doc_path_count

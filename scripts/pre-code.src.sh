@@ -2,7 +2,7 @@
 # Pre-script: validate workflow_dispatch inputs before the agent runs.
 #
 # Prevents malformed or malicious event_payload from reaching the sandbox.
-# Runs on the GitHub Actions runner BEFORE sandbox creation.
+# Runs on the CI runner BEFORE sandbox creation.
 #
 # Skip signalling uses the pre-script output protocol
 # (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
@@ -15,14 +15,17 @@
 # Required environment variables (set by the workflow):
 #   ISSUE_NUMBER       — must be a positive integer
 #   REPO_FULL_NAME     — must be owner/repo format
-#   GITHUB_ISSUE_URL   — must be a valid GitHub issue URL
+#   ISSUE_URL          — must be a valid issue URL for the forge
+#   FULLSEND_FORGE     — "github" or "gitlab"
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
 source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
+# shellcheck source=lib/code-ops.lib.sh
+source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 
-echo "::notice::🔗 Code target: ${GITHUB_ISSUE_URL:-}"
+echo "::notice::🔗 Code target: ${ISSUE_URL:-}"
 
 errors=0
 
@@ -31,18 +34,18 @@ if [[ ! "${ISSUE_NUMBER:-}" =~ ^[1-9][0-9]*$ ]]; then
   errors=$((errors + 1))
 fi
 
-if [[ ! "${REPO_FULL_NAME:-}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
-  echo "::error::REPO_FULL_NAME must be owner/repo format, got: '${REPO_FULL_NAME:-}'"
+if [[ ! "${REPO_FULL_NAME:-}" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$ ]]; then
+  echo "::error::REPO_FULL_NAME must be owner/repo (or group/subgroup/project) format, got: '${REPO_FULL_NAME:-}'"
   errors=$((errors + 1))
 fi
 
-if [[ ! "${GITHUB_ISSUE_URL:-}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "::error::GITHUB_ISSUE_URL format invalid, got: '${GITHUB_ISSUE_URL:-}'"
+if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
+  echo "::error::ISSUE_URL format invalid, got: '${ISSUE_URL:-}'"
   errors=$((errors + 1))
 fi
 
-URL_REPO="$(echo "${GITHUB_ISSUE_URL:-}" | sed -E 's|https://github.com/([^/]+/[^/]+)/issues/.*|\1|')"
-URL_ISSUE="$(echo "${GITHUB_ISSUE_URL:-}" | sed -E 's|.*/issues/([0-9]+)$|\1|')"
+URL_REPO="$(forge_extract_repo_from_url "${ISSUE_URL:-}" 2>/dev/null || true)"
+URL_ISSUE="$(forge_extract_issue_from_url "${ISSUE_URL:-}" 2>/dev/null || true)"
 
 if [[ -n "${URL_REPO}" && "${URL_REPO}" != "${REPO_FULL_NAME:-}" ]]; then
   echo "::error::REPO_FULL_NAME does not match issue URL repo ('${REPO_FULL_NAME:-}' vs '${URL_REPO}')"
@@ -61,14 +64,34 @@ fi
 echo "Input validation passed:"
 echo "  ISSUE_NUMBER=${ISSUE_NUMBER}"
 echo "  REPO_FULL_NAME=${REPO_FULL_NAME}"
-echo "  GITHUB_ISSUE_URL=${GITHUB_ISSUE_URL}"
+echo "  ISSUE_URL=${ISSUE_URL}"
+
+# GitLab needs REPO_ENCODED and GITLAB_HOST for API calls — set them before
+# any forge function that hits the API (forge_list_prs_for_issue, labels, etc.).
+# Always derive GITLAB_HOST from the validated ISSUE_URL. If GITLAB_HOST is
+# pre-set in the environment, verify it matches the URL host to prevent
+# token exfiltration to an unintended host.
+if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+  # shellcheck disable=SC2034
+  REPO_ENCODED="$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)"
+  if [[ -n "${ISSUE_URL:-}" ]]; then
+    _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+    if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
+      echo "::error::GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
+      exit 1
+    fi
+    GITLAB_HOST="${_url_host}"
+  fi
+  GITLAB_HOST="${GITLAB_HOST:-gitlab.com}"
+fi
 
 # ---------------------------------------------------------------------------
 # Check for existing human PRs linked to this issue
 # ---------------------------------------------------------------------------
-# Skip if GH_TOKEN is not available (best-effort check).
-if [[ -z "${GH_TOKEN:-}" ]]; then
-  echo "GH_TOKEN not set — skipping existing-PR check"
+# Skip if the forge-specific token is not available (best-effort check).
+if { [ "${FULLSEND_FORGE}" = "github" ] && [ -z "${GH_TOKEN:-}" ]; } || \
+   { [ "${FULLSEND_FORGE}" = "gitlab" ] && [ -z "${GITLAB_TOKEN:-}" ]; }; then
+  echo "No ${FULLSEND_FORGE} token set — skipping existing-PR check"
   exit 0
 fi
 
@@ -92,34 +115,30 @@ CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
 
 echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 
-# Search for open PRs in the repo that mention the issue number.
-# This catches PRs with "Closes #N", "Fixes #N", or "#N" in the body/title.
-# Use gh's built-in --jq to filter out bot-authored PRs in one call.
-HUMAN_PR_LINES="$(gh pr list --repo "${REPO_FULL_NAME}" --state open \
-  --search "${ISSUE_NUMBER} in:body,title" \
-  --json number,url,author \
-  --jq "[.[] | select(.author.login != \"${BOT_LOGIN}\" and .author.login != \"${CODER_BOT_LOGIN}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
-  2>/dev/null || true)"
+HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}")"
 
 if [[ -n "${HUMAN_PR_LINES}" ]]; then
   # Parse the first PR for the notice.
   FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
   FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
 
-  echo "::notice::Found existing human PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+  # GitLab uses ! for MR references; GitHub uses #.
+  _pr_prefix="#"
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    _pr_prefix="!"
+  fi
+
+  echo "::notice::Found existing human PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
 
   # Apply pr-open label to signal work is already underway.
-  gh label create "pr-open" --repo "${REPO_FULL_NAME}" \
-    --description "An open PR already addresses this issue" --color "D4C5F9" \
-    --force 2>/dev/null || true
-  gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
-    -f "labels[]=pr-open" --silent 2>/dev/null || true
+  forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
+  forge_add_label "pr-open"
 
   # Build a markdown list of existing PRs.
   PR_LIST_MD=""
   while IFS=$'\t' read -r pr_num pr_author _pr_url; do
     PR_LIST_MD="${PR_LIST_MD}
-- #${pr_num} by @${pr_author}"
+- ${_pr_prefix}${pr_num} by @${pr_author}"
   done <<< "${HUMAN_PR_LINES}"
 
   SKIP_COMMENT="An open PR already addresses this issue — skipping automated implementation.
@@ -129,12 +148,11 @@ To override, comment \`/fs-code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-  printf '%s' "${SKIP_COMMENT}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null || true
+  forge_post_issue_comment "${SKIP_COMMENT}" || true
 
   echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
   prescript_output "skipped" "true"
-  prescript_output "reason" "open PR #${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR} already addresses issue #${ISSUE_NUMBER}"
+  prescript_output "reason" "open PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR} already addresses issue #${ISSUE_NUMBER}"
   exit 0
 fi
 
@@ -143,7 +161,7 @@ echo "No existing human PRs found — proceeding with code agent"
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-TARGET_REPO="${REPO_DIR:-${GITHUB_WORKSPACE:-}/target-repo}"
+TARGET_REPO="$(forge_get_repo_dir)"
 RESOLVE_SCRIPT="${SCRIPT_DIR}/resolve-precommit-tools.py"
 INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
 
@@ -153,9 +171,10 @@ INSTALL_SCRIPT="${SCRIPT_DIR}/install-precommit-tools.sh"
 # materializes the full scripts/ directory (from fullsend's own scaffold)
 # at ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
 # (per-repo). Try those paths when the BASH_SOURCE-relative lookup misses.
+WORKSPACE_DIR="$(forge_get_workspace_dir)"
 if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
-    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+  if [ -n "${WORKSPACE_DIR}" ]; then
+    for _ws_candidate in "${WORKSPACE_DIR}/scripts" "${WORKSPACE_DIR}/.fullsend/scripts"; do
       if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
          && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
         RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
@@ -200,4 +219,4 @@ if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
   rm -f "${MANIFEST}" "${LOCAL_REG}"
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
-echo "${HOME}/.local/bin" >> "${GITHUB_PATH:-/dev/null}"
+forge_append_path "${HOME}/.local/bin"

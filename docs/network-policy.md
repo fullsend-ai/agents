@@ -14,15 +14,16 @@ The policy controls two things:
 
 A request is allowed only when both the destination host and the calling
 binary match an entry in the policy. Even if a host is in the allowlist,
-only the listed binaries can reach it. `curl` is excluded from every
-policy to prevent raw HTTP access with injected credentials.
+only the listed binaries can reach it. `curl` is excluded from GitHub-forge policies to prevent raw HTTP
+access with injected credentials. The GitLab forge policy allows `curl`
+because GitLab API access requires it (the `gh` CLI is not available).
 
 Each agent has its own default policy under
-[`policies/`](../policies/). The defaults cover Vertex AI, the GitHub
-API, package registries, and gitleaks releases; other agents have
-smaller subsets (for example, the scribe agent only needs Vertex AI).
-See the individual policy files for the full list of allowed hosts and
-binaries.
+[`policies/`](../policies/). The defaults cover Vertex AI, the forge
+API (GitHub or GitLab), package registries, and gitleaks releases;
+other agents have smaller subsets (for example, the scribe agent only
+needs Vertex AI). See the individual policy files for the full list of
+allowed hosts and binaries.
 
 ## Before you start
 
@@ -39,7 +40,7 @@ binaries.
 ### 1. Create a policy file
 
 Copy the default policy for the agent you are configuring (for example,
-[`policies/code.yaml`](../policies/code.yaml) for the code agent) to
+[`policies/base.yaml`](../policies/base.yaml) for the code agent) to
 `.fullsend/policies/<agent>.yaml` in your repository and append a
 block for the host you need:
 
@@ -95,9 +96,9 @@ succeeds.
 Each agent has its own policy file with similar but not identical
 defaults. If multiple agents need the same custom hosts, create a
 separate override for each one. For example, the
-[code](code.md) and [fix](fix.md) agents use
-[`policies/code.yaml`](../policies/code.yaml) and
-[`policies/fix.yaml`](../policies/fix.yaml) respectively.
+[code](code.md) and [fix](fix.md) agents both use
+[`policies/base.yaml`](../policies/base.yaml)
+(code agent also has a GitLab equivalent under `policies/gitlab/`).
 
 ## Troubleshooting
 

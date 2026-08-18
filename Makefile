@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help script-build check-bundle script-test test
 
-BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/post-fix.src.sh scripts/post-prioritize.src.sh
+BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/post-fix.src.sh scripts/post-prioritize.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
 LIB_DEPS := $(wildcard scripts/lib/*.lib.sh)
 
@@ -53,6 +53,7 @@ script-test:
 	$(call run-timed,bash scripts/post-review-test.sh)
 	$(call run-timed,bash scripts/post-fix-test.sh)
 	$(call run-timed,bash scripts/post-retro-test.sh)
+	$(call run-timed,bash scripts/pre-scribe-test.sh)
 	$(call run-timed,bash scripts/post-scribe-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
@@ -61,6 +62,7 @@ script-test:
 	$(call run-timed,bash .github/scripts/select-eval-agents-test.sh)
 	$(call run-timed,python3 scripts/process-fix-result-test.py)
 	$(call run-timed,bash eval/scripts/scrub-eval-results-test.sh)
+	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
 	$(call run-timed,bash eval/scripts/capture-fixture-test.sh)
 	$(call run-timed,python3 eval/scripts/removed-symbols-judge-test.py)
 

@@ -1,23 +1,471 @@
 #!/usr/bin/env bash
-# post-triage.sh — Parse triage agent JSON output and perform GitHub mutations.
+# GENERATED from post-triage.src.sh — DO NOT EDIT. Run: make script-build
+# post-triage.sh — Parse triage agent JSON output and perform mutations.
 #
 # Runs on the host after sandbox cleanup. Working directory is the fullsend
 # run output directory (e.g., /tmp/fullsend/agent-triage-<id>/iteration-1/).
 #
 # Required env vars:
-#   GITHUB_ISSUE_URL  — HTML URL of the issue (e.g., https://github.com/org/repo/issues/42)
-#   GH_TOKEN          — GitHub token with issues read/write scope
+#   ISSUE_URL      — HTML URL of the issue
+#   FULLSEND_FORGE — "github" or "gitlab"
 #
 # The agent writes its decision to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
 #
-# IMPORTANT: Label mutations use the labels API directly (gh api) instead of
-# gh issue edit. gh issue edit uses PATCH /issues/{number} which fires
+# IMPORTANT: Label mutations use the labels API directly instead of issue edit
+# commands. On GitHub, gh issue edit uses PATCH /issues/{number} which fires
 # issues.edited, re-triggering the triage dispatch in the shim workflow.
 # The labels API (POST/DELETE /issues/{number}/labels) only fires
 # issues.labeled/issues.unlabeled, avoiding the re-triage loop.
 
 set -euo pipefail
+
+: "${ISSUE_URL:?ISSUE_URL must be set}"
+: "${FULLSEND_FORGE:?FULLSEND_FORGE must be set}"
+
+# shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/triage-ops.lib.sh
+# BEGIN bundled: lib/triage-ops.lib.sh
+# shellcheck shell=bash
+# triage-ops.lib.sh — Forge-dispatch wrapper for triage operations.
+#
+# Sources the correct forge-specific ops based on FULLSEND_FORGE.
+# Bundled inline by bundle-sh.sh at build time.
+
+[[ -n "${TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
+TRIAGE_OPS_SH_LOADED=1
+
+_gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'; }
+
+case "${FULLSEND_FORGE:-}" in
+  github)
+# BEGIN bundled: lib/github-triage-ops.lib.sh
+# shellcheck shell=bash
+# github-triage-ops.lib.sh — GitHub forge operations for triage scripts.
+#
+# Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
+# All functions use the gh CLI and the GitHub REST API.
+#
+# Expected globals (set by forge_parse_issue_url):
+#   REPO         — owner/repo (e.g., "org/repo")
+#   ISSUE_NUMBER — issue number
+#
+# Expected env vars:
+#   ISSUE_URL    — HTML URL of the issue
+#   GH_TOKEN     — GitHub token with issues read/write scope
+
+[[ -n "${GITHUB_TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
+GITHUB_TRIAGE_OPS_SH_LOADED=1
+
+# --- URL handling ---
+
+forge_validate_issue_url() {
+  if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+    echo "ERROR: ISSUE_URL does not match expected pattern: ${ISSUE_URL}" >&2
+    return 1
+  fi
+}
+
+forge_parse_issue_url() {
+  REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
+  ISSUE_NUMBER=$(basename "${ISSUE_URL}")
+}
+
+# --- Labels ---
+
+forge_add_label() {
+  local label="$1"
+  local endpoint="repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
+  local err_output
+  if ! err_output=$(gh api "${endpoint}" -f "labels[]=${label}" --silent 2>&1); then
+    echo "ERROR: failed to add label '${label}' to issue #${ISSUE_NUMBER} (POST ${endpoint})" >&2
+    [[ -n "${err_output}" ]] && echo "ERROR: ${err_output}" >&2
+    return 1
+  fi
+}
+
+forge_remove_label() {
+  local label="$1"
+  local encoded
+  encoded=$(printf '%s' "${label}" | jq -sRr @uri)
+  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
+}
+
+forge_strip_labels() {
+  local labels=("$@")
+  for label in "${labels[@]}"; do
+    local encoded
+    encoded=$(printf '%s' "${label}" | jq -sRr @uri)
+    gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
+  done
+}
+
+forge_verify_labels_stripped() {
+  local labels=("$@")
+  local labels_json
+  labels_json=$(printf '%s\n' "${labels[@]}" | jq -R . | jq -s .)
+
+  local remaining
+  remaining=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" 2>/dev/null \
+    | jq -r --argjson check "${labels_json}" \
+        '[.[] | select(.name as $n | $check | index($n)) | .name] | join(", ")' \
+    || echo "VERIFY_FAILED")
+
+  if [[ "${remaining}" == "VERIFY_FAILED" ]]; then
+    echo "ERROR: cannot verify label state — API call failed" >&2
+    return 1
+  fi
+  if [[ -n "${remaining}" ]]; then
+    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+    return 1
+  fi
+}
+
+forge_list_repo_labels() {
+  gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
+}
+
+forge_create_label() {
+  local name="$1"
+  local description="$2"
+  local color="$3"
+  gh label create "${name}" --repo "${REPO}" \
+    --description "${description}" --color "${color}" \
+    --force 2>/dev/null || true
+}
+
+# --- Comments ---
+
+forge_post_comment() {
+  local body="$1"
+  printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+}
+
+forge_post_sticky_comment() {
+  local body="$1"
+  local marker="$2"
+  printf '%s' "${body}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "${marker}" --token "${GH_TOKEN}" --result -
+}
+
+# --- Issues ---
+
+forge_close_issue() {
+  local reason="$1"
+  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "${reason}"
+}
+
+forge_create_issue() {
+  local target_repo="$1"
+  local title="$2"
+  local body="$3"
+  local err_file
+  err_file=$(mktemp)
+  local url
+  if ! url=$(gh issue create --repo "${target_repo}" --title "${title}" --body "${body}" 2>"${err_file}"); then
+    local err_msg
+    err_msg=$(cat "${err_file}")
+    rm -f "${err_file}"
+    echo "GitHub API error: failed to create issue in ${target_repo}: ${err_msg}" >&2
+    return 1
+  fi
+  rm -f "${err_file}"
+  echo "${url}"
+}
+# END bundled: lib/github-triage-ops.lib.sh
+    ;;
+  gitlab)
+# BEGIN bundled: lib/gitlab-triage-ops.lib.sh
+# shellcheck shell=bash
+# gitlab-triage-ops.lib.sh — GitLab forge operations for triage scripts.
+#
+# Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
+# All functions use curl against the GitLab REST API.
+#
+# Expected globals (set by forge_parse_issue_url):
+#   REPO           — plain project path (e.g., "group/project")
+#   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
+#   ISSUE_NUMBER   — issue IID
+#   GITLAB_HOST    — API host (e.g., "gitlab.com")
+#
+# Expected env vars:
+#   ISSUE_URL      — HTML URL of the issue
+#   GITLAB_TOKEN   — GitLab personal/project access token
+#
+# Token scopes: GITLAB_TOKEN requires minimum scopes:
+#   - api (read/write issues, labels, notes, merge requests)
+#   Prefer project access tokens scoped to the target project over
+#   personal access tokens with broader access.
+#
+# Token identity: GITLAB_TOKEN must resolve to an identity the fullsend
+# GitLab dispatcher's bot detection recognizes (project access token or
+# configured bot user). Label writes use PUT /issues/:iid which bumps
+# updated_at; the dispatcher's isBotEvent filter prevents re-triggering
+# triage only if the token owner is recognized as a bot.
+
+[[ -n "${GITLAB_TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
+GITLAB_TRIAGE_OPS_SH_LOADED=1
+
+_gitlab_api() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request "${method}" \
+    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "$@"
+}
+
+_gitlab_api_with_status() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  local err_file
+  err_file=$(mktemp)
+  local raw
+  raw=$(curl --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request "${method}" \
+    --write-out '\n%{http_code}' \
+    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "$@" 2>"${err_file}") || {
+    echo "GitLab API error: curl failed — $(cat "${err_file}")" >&2
+    rm -f "${err_file}"
+    return 1
+  }
+  rm -f "${err_file}"
+  local http_code
+  http_code=$(echo "${raw}" | tail -1)
+  local body
+  body=$(echo "${raw}" | sed '$d')
+  if [[ "${http_code}" -lt 200 || "${http_code}" -ge 300 ]]; then
+    echo "GitLab API error (HTTP ${http_code}): ${body}" >&2
+    return 1
+  fi
+  echo "${body}"
+}
+
+# --- URL handling ---
+
+forge_validate_issue_url() {
+  if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
+    echo "ERROR: ISSUE_URL does not match expected GitLab pattern: ${ISSUE_URL}" >&2
+    return 1
+  fi
+  local host
+  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  case "${host}" in
+    gitlab.com|gitlab.cee.redhat.com) ;;
+    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list" >&2; return 1 ;;
+  esac
+}
+
+forge_parse_issue_url() {
+  # Extract host, project path, and issue IID from URL.
+  # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
+  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+  REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
+  ISSUE_NUMBER=$(basename "${ISSUE_URL}")
+}
+
+# --- Labels ---
+
+forge_add_label() {
+  local label="$1"
+  if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
+    --data-urlencode "add_labels=${label}" > /dev/null; then
+    echo "ERROR: failed to add label '${label}' to issue #${ISSUE_NUMBER} via PUT /projects/${REPO}/issues/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
+}
+
+forge_remove_label() {
+  local label="$1"
+  _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
+    --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
+}
+
+forge_strip_labels() {
+  local labels=("$@")
+  for label in "${labels[@]}"; do
+    _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
+      --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
+  done
+}
+
+forge_verify_labels_stripped() {
+  local labels=("$@")
+  local current_labels
+  current_labels=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null | jq -r '[.labels[]] | join(",")' 2>/dev/null || echo "VERIFY_FAILED")
+
+  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
+    echo "ERROR: cannot verify label state — API call failed" >&2
+    return 1
+  fi
+
+  local remaining=""
+  IFS=',' read -ra current_array <<< "${current_labels}"
+  for current in "${current_array[@]}"; do
+    for check in "${labels[@]}"; do
+      if [[ "${current}" == "${check}" ]]; then
+        if [[ -n "${remaining}" ]]; then
+          remaining="${remaining}, ${current}"
+        else
+          remaining="${current}"
+        fi
+      fi
+    done
+  done
+
+  if [[ -n "${remaining}" ]]; then
+    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+    return 1
+  fi
+}
+
+forge_list_repo_labels() {
+  local page=1 max_pages=50
+  while [[ "${page}" -le "${max_pages}" ]]; do
+    local batch
+    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/labels?per_page=100&page=${page}" 2>/dev/null) || break
+    local count
+    count=$(echo "${batch}" | jq 'length') || break
+    [[ "${count}" -eq 0 ]] && break
+    echo "${batch}" | jq -r '.[].name'
+    page=$((page + 1))
+  done
+}
+
+forge_create_label() {
+  local name="$1"
+  local description="$2"
+  local color="$3"
+  _gitlab_api POST "/projects/${REPO_ENCODED}/labels" \
+    --data-urlencode "name=${name}" \
+    --data-urlencode "description=${description}" \
+    --data-urlencode "color=#${color}" > /dev/null 2>/dev/null || true
+}
+
+# --- Bot identity (for sticky-comment author filtering) ---
+
+_GITLAB_BOT_USERNAME=""
+
+_gitlab_bot_username() {
+  if [[ -z "${_GITLAB_BOT_USERNAME}" ]]; then
+    _GITLAB_BOT_USERNAME=$(_gitlab_api GET "/user" 2>/dev/null | jq -r '.username // empty')
+    if [[ -z "${_GITLAB_BOT_USERNAME}" ]]; then
+      echo "ERROR: failed to determine GitLab token owner via GET /user" >&2
+      return 1
+    fi
+  fi
+  echo "${_GITLAB_BOT_USERNAME}"
+}
+
+# --- Comments (notes in GitLab) ---
+
+forge_post_comment() {
+  local body="$1"
+  _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
+    --data-urlencode "body=${body}" > /dev/null
+}
+
+forge_post_sticky_comment() {
+  local body="$1"
+  local marker="$2"
+  local marked_body="${marker}
+${body}"
+
+  local bot_user
+  bot_user=$(_gitlab_bot_username) || {
+    _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
+      --data-urlencode "body=${marked_body}" > /dev/null
+    return
+  }
+
+  local notes="[]"
+  local page=1 max_pages=50
+  while [[ "${page}" -le "${max_pages}" ]]; do
+    local batch
+    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=asc&page=${page}" 2>/dev/null) || break
+    local count
+    count=$(echo "${batch}" | jq 'length') || break
+    [[ "${count}" -eq 0 ]] && break
+    notes=$(echo "${notes}" "${batch}" | jq -s 'add')
+    page=$((page + 1))
+  done
+
+  local match
+  match=$(echo "${notes}" | jq --arg marker "${marker}" --arg user "${bot_user}" \
+    '[.[] | select(.author.username == $user and (.body | startswith($marker)))][0] // empty')
+
+  local note_id
+  note_id=$(echo "${match}" | jq -r '.id // empty')
+
+  if [[ -n "${note_id}" ]]; then
+    local old_body
+    old_body=$(echo "${match}" | jq -r '.body // empty')
+    local stripped_old
+    local escaped_marker
+    escaped_marker=$(printf '%s' "${marker}" | sed 's/[].[*^$()+?{|\\]/\\&/g; s|/|\\/|g')
+    stripped_old=$(echo "${old_body}" | sed "1{/^${escaped_marker}$/d;}")
+    if [[ -n "${stripped_old}" ]]; then
+      local history
+      history=$(printf '\n\n<details>\n<summary>Previous run</summary>\n\n%s\n\n</details>' "${stripped_old}")
+      local max_len=60000
+      if [[ ${#history} -gt ${max_len} ]]; then
+        history="${history:0:${max_len}}
+...(truncated)"
+      fi
+      marked_body="${marked_body}${history}"
+    fi
+    _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes/${note_id}" \
+      --data-urlencode "body=${marked_body}" > /dev/null
+  else
+    _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
+      --data-urlencode "body=${marked_body}" > /dev/null
+  fi
+}
+
+# --- Issues ---
+
+forge_close_issue() {
+  local _reason="$1"  # GitLab has no close-reason API; accepted for interface parity
+  if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
+    --data-urlencode "state_event=close" > /dev/null; then
+    echo "ERROR: failed to close issue #${ISSUE_NUMBER} in ${REPO}" >&2
+    return 1
+  fi
+}
+
+forge_create_issue() {
+  local target_repo="$1"
+  local title="$2"
+  local body="$3"
+  local encoded_target
+  encoded_target=$(printf '%s' "${target_repo}" | jq -sRr @uri)
+  local response
+  response=$(_gitlab_api_with_status POST "/projects/${encoded_target}/issues" \
+    --data-urlencode "title=${title}" \
+    --data-urlencode "description=${body}") || {
+    echo "GitLab API error: failed to create issue in ${target_repo}" >&2
+    return 1
+  }
+  echo "${response}" | jq -r '.web_url'
+}
+# END bundled: lib/gitlab-triage-ops.lib.sh
+    ;;
+  *)
+    echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
+    exit 1
+    ;;
+esac
+# END bundled: lib/triage-ops.lib.sh
 
 # Find the triage result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -59,36 +507,12 @@ fi
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 
-# Validate and extract repo and issue number from the HTML URL.
-# GITHUB_ISSUE_URL is e.g. https://github.com/org/repo/issues/42
-if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}" >&2
-  exit 1
-fi
-REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
-ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
+forge_validate_issue_url
+forge_parse_issue_url
 
 echo "Action: ${ACTION}"
 echo "Repo: ${REPO}"
 echo "Issue: #${ISSUE_NUMBER}"
-
-# add_label uses the labels API to avoid firing issues.edited.
-add_label() {
-  local endpoint="repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
-  local err_output
-  if ! err_output=$(gh api "${endpoint}" -f "labels[]=$1" --silent 2>&1); then
-    echo "ERROR: failed to add label '$1' to issue #${ISSUE_NUMBER} (POST ${endpoint})" >&2
-    [[ -n "${err_output}" ]] && echo "ERROR: ${err_output}" >&2
-    exit 1
-  fi
-}
-
-# remove_label silently removes a label (no error if absent).
-remove_label() {
-  local encoded
-  encoded=$(printf '%s' "$1" | jq -sRr @uri)
-  gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
-}
 
 # Control labels managed by the triage pipeline. The post script refuses to
 # add or remove these via label_actions. pre-triage.sh resets needs-info,
@@ -119,7 +543,46 @@ DEFERRED_LABEL=""
 # the new action. Every terminal action below resets its own set of control
 # labels, but "triaged" is only ever re-applied (never removed) by the
 # handlers themselves, so it must be cleared up front rather than per-branch.
-remove_label "triaged"
+forge_remove_label "triaged"
+
+# --- Cross-repo issue creation allowlist ---
+# Used by prerequisites and split actions. Read once before the case
+# statement so both handlers share the same config and helper.
+
+WORKSPACE="${GITHUB_WORKSPACE:-${CI_PROJECT_DIR:-/tmp}}"
+CONFIG_FILE="${WORKSPACE}/config.yaml"
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  CONFIG_FILE="${WORKSPACE}/.fullsend/config.yaml"
+fi
+
+ALLOWED_ORGS=""
+ALLOWED_REPOS=""
+if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+  echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+fi
+if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
+  ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+  ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+fi
+
+is_target_allowed() {
+  local target_repo="$1"
+  local target_org="${target_repo%%/*}"
+
+  if [[ "${target_repo}" == "${REPO}" ]]; then
+    return 0
+  fi
+
+  if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
+    return 0
+  fi
+
+  if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+    return 0
+  fi
+
+  return 1
+}
 
 case "${ACTION}" in
   insufficient)
@@ -127,9 +590,9 @@ case "${ACTION}" in
       echo "ERROR: action is 'insufficient' but no comment provided" >&2
       exit 1
     fi
-    remove_label "blocked"
-    remove_label "pr-open"
-    add_label "needs-info"
+    forge_remove_label "blocked"
+    forge_remove_label "pr-open"
+    forge_add_label "needs-info"
     ;;
 
   duplicate)
@@ -142,9 +605,9 @@ case "${ACTION}" in
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
-    remove_label "blocked"
-    remove_label "pr-open"
-    add_label "duplicate"
+    forge_remove_label "blocked"
+    forge_remove_label "pr-open"
+    forge_add_label "duplicate"
     ;;
 
   prerequisites)
@@ -152,47 +615,6 @@ case "${ACTION}" in
       echo "ERROR: action is 'prerequisites' but no comment provided" >&2
       exit 1
     fi
-
-    # Read the allowlist from config.yaml. The config repo is checked out
-    # at $GITHUB_WORKSPACE by the reusable workflow.
-    CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/config.yaml"
-    if [[ ! -f "${CONFIG_FILE}" ]]; then
-      # Per-repo mode: config is under .fullsend/
-      CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/.fullsend/config.yaml"
-    fi
-
-    ALLOWED_ORGS=""
-    ALLOWED_REPOS=""
-    if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
-      echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
-    fi
-    if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
-      ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-      ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-    fi
-
-    # The source repo is always implicitly allowed.
-    is_target_allowed() {
-      local target_repo="$1"
-      local target_org="${target_repo%%/*}"
-
-      # Source repo is always allowed.
-      if [[ "${target_repo}" == "${REPO}" ]]; then
-        return 0
-      fi
-
-      # Check org allowlist.
-      if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
-        return 0
-      fi
-
-      # Check repo allowlist.
-      if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
-        return 0
-      fi
-
-      return 1
-    }
 
     # Process create entries: create issues, collect URLs.
     CREATE_COUNT=$(jq '.prerequisites.create // [] | length' "${RESULT_FILE}")
@@ -205,7 +627,7 @@ case "${ACTION}" in
       ISSUE_BODY=$(jq -r ".prerequisites.create[${i}].body" "${RESULT_FILE}")
 
       if ! is_target_allowed "${TARGET_REPO}"; then
-        echo "::warning::Skipping issue creation in '${TARGET_REPO}' — not in create_issues.allow_targets"
+        echo "::warning::Skipping issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in create_issues.allow_targets"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
@@ -216,9 +638,9 @@ ${ISSUE_BODY}
         continue
       fi
 
-      echo "Creating prerequisite issue in ${TARGET_REPO}..."
-      CREATED_URL=$(gh issue create --repo "${TARGET_REPO}" --title "${ISSUE_TITLE}" --body "${ISSUE_BODY}" 2>&1) || {
-        echo "::warning::Failed to create issue in '${TARGET_REPO}': ${CREATED_URL}"
+      echo "Creating prerequisite issue in $(_gha_sanitize "${TARGET_REPO}")..."
+      CREATED_URL=$(forge_create_issue "${TARGET_REPO}" "${ISSUE_TITLE}" "${ISSUE_BODY}") || {
+        echo "::warning::Failed to create issue in '$(_gha_sanitize "${TARGET_REPO}")' (see stderr for details)"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
@@ -262,10 +684,10 @@ ${ISSUE_BODY}
 ${FAILED_CREATES}"
     fi
 
-    remove_label "ready-to-code"
-    remove_label "needs-info"
-    remove_label "pr-open"
-    add_label "blocked"
+    forge_remove_label "ready-to-code"
+    forge_remove_label "needs-info"
+    forge_remove_label "pr-open"
+    forge_add_label "blocked"
     ;;
 
   in-progress)
@@ -309,13 +731,11 @@ ${FAILED_CREATES}"
 
 **Addressed by:**${PR_LIST}"
 
-    remove_label "blocked"
-    remove_label "ready-to-code"
-    remove_label "needs-info"
-    gh label create "pr-open" --repo "${REPO}" \
-      --description "An open PR already addresses this issue" --color "D4C5F9" \
-      --force 2>/dev/null || true
-    add_label "pr-open"
+    forge_remove_label "blocked"
+    forge_remove_label "ready-to-code"
+    forge_remove_label "needs-info"
+    forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
+    forge_add_label "pr-open"
     ;;
 
   sufficient)
@@ -361,7 +781,7 @@ ${FAILED_CREATES}"
           '.label_actions.actions[] | select(.label as $l | $bad | index($l)) | .label' \
           "${RESULT_FILE}")
         for lbl in ${STRIPPED}; do
-          echo "::warning::Stripping label '${lbl}' from label_actions — contradicts triage_summary.category '${CATEGORY_CHECK}'"
+          echo "::warning::Stripping label '$(_gha_sanitize "${lbl}")' from label_actions — contradicts triage_summary.category '$(_gha_sanitize "${CATEGORY_CHECK}")'"
         done
 
         # Remove contradicting labels from the actions array.
@@ -381,9 +801,9 @@ ${FAILED_CREATES}"
       fi
     fi
 
-    remove_label "blocked"
-    remove_label "needs-info"
-    remove_label "pr-open"
+    forge_remove_label "blocked"
+    forge_remove_label "needs-info"
+    forge_remove_label "pr-open"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
@@ -424,7 +844,7 @@ ${FAILED_CREATES}"
         off) return 1 ;;
         on) category_in_auto_code_list ;;
         *)
-          echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '${AUTO_CODE}' — falling back to 'on'"
+          echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '$(_gha_sanitize "${AUTO_CODE}")' — falling back to 'on'"
           category_in_auto_code_list
           ;;
       esac
@@ -448,31 +868,31 @@ ${FAILED_CREATES}"
       echo "::warning::Triage detected workflow file changes required (#325)"
       if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
         echo "Applying triaged label (workflow changes required)..."
-        add_label "triaged"
+        forge_add_label "triaged"
         WORKFLOW_BLOCKED=true
       fi
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
-        add_label "bug"
+        forge_add_label "bug"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          add_label "triaged"
+          forge_add_label "triaged"
         fi
         ;;
       documentation)
         echo "Applying documentation label..."
-        add_label "documentation"
+        forge_add_label "documentation"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          add_label "triaged"
+          forge_add_label "triaged"
         fi
         ;;
       performance)
@@ -481,19 +901,95 @@ ${FAILED_CREATES}"
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          add_label "triaged"
+          forge_add_label "triaged"
         fi
         ;;
       feature)
         echo "Applying feature + triaged labels..."
-        add_label "feature"
-        add_label "triaged"
+        forge_add_label "feature"
+        forge_add_label "triaged"
         ;;
       *)
         echo "Applying triaged label (${CATEGORY})..."
-        add_label "triaged"
+        forge_add_label "triaged"
         ;;
     esac
+    ;;
+
+  split)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'split' but no comment provided" >&2
+      exit 1
+    fi
+
+    SUB_ISSUE_COUNT=$(jq '.sub_issues // [] | length' "${RESULT_FILE}")
+    if [[ "${SUB_ISSUE_COUNT}" -lt 2 ]]; then
+      echo "ERROR: action is 'split' but fewer than 2 sub-issues provided" >&2
+      exit 1
+    fi
+
+    CREATED_URLS=""
+    FAILED_CREATES=""
+    for i in $(seq 0 $((SUB_ISSUE_COUNT - 1))); do
+      SUB_TITLE=$(jq -r ".sub_issues[${i}].title" "${RESULT_FILE}")
+      SUB_BODY=$(jq -r ".sub_issues[${i}].body" "${RESULT_FILE}")
+      TARGET_REPO=$(jq -r ".sub_issues[${i}].repo // empty" "${RESULT_FILE}")
+      TARGET_REPO="${TARGET_REPO:-${REPO}}"
+
+      SAFE_TITLE="${SUB_TITLE//$'\n'/ }"
+      SAFE_TITLE="${SAFE_TITLE//::/-}"
+
+      if ! is_target_allowed "${TARGET_REPO}"; then
+        echo "::warning::Skipping sub-issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in create_issues.allow_targets"
+        FAILED_CREATES="${FAILED_CREATES}
+<details>
+<summary>Sub-issue: ${TARGET_REPO} — ${SUB_TITLE}</summary>
+
+${SUB_BODY}
+
+</details>"
+        continue
+      fi
+
+      echo "Creating sub-issue ${i}: $(_gha_sanitize "${SAFE_TITLE}") (repo: $(_gha_sanitize "${TARGET_REPO}"))..."
+      CREATED_URL=$(forge_create_issue "${TARGET_REPO}" "${SUB_TITLE}" "${SUB_BODY}") || {
+        echo "::warning::Failed to create sub-issue '$(_gha_sanitize "${SAFE_TITLE}")' (see stderr for details)"
+        FAILED_CREATES="${FAILED_CREATES}
+<details>
+<summary>Sub-issue: ${TARGET_REPO} — ${SUB_TITLE}</summary>
+
+${SUB_BODY}
+
+</details>"
+        continue
+      }
+      echo "Created: ${CREATED_URL}"
+      CREATED_URLS="${CREATED_URLS}
+- ${CREATED_URL}"
+    done
+
+    if [[ -z "${CREATED_URLS}" ]] && [[ -n "${FAILED_CREATES}" ]]; then
+      echo "ERROR: all sub-issue creations failed — not closing the original issue" >&2
+      exit 1
+    fi
+
+    if [[ -n "${CREATED_URLS}" ]]; then
+      COMMENT="${COMMENT}
+
+**Split into:**${CREATED_URLS}"
+    fi
+
+    if [[ -n "${FAILED_CREATES}" ]]; then
+      COMMENT="${COMMENT}
+
+**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+${FAILED_CREATES}"
+    fi
+
+    forge_remove_label "blocked"
+    forge_remove_label "needs-info"
+    forge_remove_label "ready-to-code"
+    forge_remove_label "pr-open"
     ;;
 
   question)
@@ -501,10 +997,10 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'question' but no comment provided" >&2
       exit 1
     fi
-    remove_label "blocked"
-    remove_label "needs-info"
-    remove_label "pr-open"
-    add_label "question"
+    forge_remove_label "blocked"
+    forge_remove_label "needs-info"
+    forge_remove_label "pr-open"
+    forge_add_label "question"
     ;;
 
   not-planned)
@@ -512,10 +1008,10 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'not-planned' but no comment provided" >&2
       exit 1
     fi
-    remove_label "blocked"
-    remove_label "needs-info"
-    remove_label "pr-open"
-    add_label "not-planned"
+    forge_remove_label "blocked"
+    forge_remove_label "needs-info"
+    forge_remove_label "pr-open"
+    forge_add_label "not-planned"
     ;;
 
   *)
@@ -533,14 +1029,10 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 
   echo "Processing ${LABEL_COUNT} label action(s)..."
 
-  # Fetch existing repo labels once so we can reject labels that don't exist.
-  # This prevents the agent from accidentally creating labels the org removed.
-  EXISTING_LABELS=$(gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true)
+  EXISTING_LABELS=$(forge_list_repo_labels)
 
   label_exists() {
     local label="$1"
-    # Use grep with fixed-string and line-match to avoid regex issues with
-    # label names that contain special characters (e.g., "c++").
     echo "${EXISTING_LABELS}" | grep -qFx "${label}"
   }
 
@@ -551,32 +1043,32 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 
     # Validate label name to prevent path injection from untrusted agent output.
     if [[ ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
-      echo "::warning::Refused label '${LA_LABEL}' -- contains invalid characters"
+      echo "::warning::Refused label '$(_gha_sanitize "${LA_LABEL}")' -- contains invalid characters"
       continue
     fi
 
     if is_control_label "${LA_LABEL}"; then
-      echo "::warning::Refused to ${LA_ACTION} control label '${LA_LABEL}' -- control labels are managed by the triage pipeline"
+      echo "::warning::Refused to $(_gha_sanitize "${LA_ACTION}") control label '$(_gha_sanitize "${LA_LABEL}")' -- control labels are managed by the triage pipeline"
       continue
     fi
 
     case "${LA_ACTION}" in
       add)
         if ! label_exists "${LA_LABEL}"; then
-          echo "::warning::Skipping label '${LA_LABEL}' -- does not exist in repo (will not auto-create)"
+          echo "::warning::Skipping label '$(_gha_sanitize "${LA_LABEL}")' -- does not exist in repo (will not auto-create)"
           continue
         fi
-        echo "Adding label '${LA_LABEL}'..."
-        add_label "${LA_LABEL}"
+        echo "Adding label '$(_gha_sanitize "${LA_LABEL}")'..."
+        forge_add_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       remove)
-        echo "Removing label '${LA_LABEL}'..."
-        remove_label "${LA_LABEL}"
+        echo "Removing label '$(_gha_sanitize "${LA_LABEL}")'..."
+        forge_remove_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       *)
-        echo "::warning::Unknown label action '${LA_ACTION}' for label '${LA_LABEL}'"
+        echo "::warning::Unknown label action '$(_gha_sanitize "${LA_ACTION}")' for label '$(_gha_sanitize "${LA_LABEL}")'"
         ;;
     esac
   done
@@ -594,7 +1086,7 @@ fi
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
-  add_label "${DEFERRED_LABEL}"
+  forge_add_label "${DEFERRED_LABEL}"
 fi
 
 # --- Append action-hints footer (sufficient only) ---
@@ -612,29 +1104,25 @@ fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
-  # Summaries use sticky comments — there's one logical summary per issue and
-  # updating it in-place avoids flooding. See #602.
-  printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-agent -->" --token "${GH_TOKEN}" --result -
+  forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
 elif [[ "${ACTION}" == "in-progress" ]]; then
-  # in-progress is a durable status, not an interactive prompt: it holds for the
-  # whole life of the PR while triage re-runs on every issue edit. Stick it to
-  # its own marker so re-runs update in place instead of re-posting. Distinct
-  # from the triage-agent marker so it does not clobber the summary comment.
-  printf '%s' "${COMMENT}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "<!-- fullsend:triage-in-progress -->" --token "${GH_TOKEN}" --result -
+  forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
 else
-  # Interactive comments (needs-info questions, blocked notices, duplicates)
-  # post as new comments so the conversation reads chronologically.
-  printf '%s' "${COMMENT}" | gh issue comment "${ISSUE_NUMBER}" --repo "${REPO}" --body-file -
+  forge_post_comment "${COMMENT}"
 fi
 
 # --- Post-action: close issues ---
 
 if [[ "${ACTION}" == "duplicate" ]]; then
-  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "duplicate"
+  forge_close_issue "duplicate"
 fi
 
 if [[ "${ACTION}" == "not-planned" ]]; then
-  gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "not planned"
+  forge_close_issue "not planned"
+fi
+
+if [[ "${ACTION}" == "split" ]]; then
+  forge_close_issue "completed"
 fi
 
 echo "Post-triage complete."

@@ -1,6 +1,7 @@
 ---
 name: fix-review
 description: >-
+  Use when implementing fixes for review comments left on an open PR.
   Step-by-step procedure for addressing review feedback on an existing PR.
   Reads review comments, plans targeted fixes, implements, verifies with
   tests and linters, commits, and produces structured output for the
@@ -327,6 +328,7 @@ git diff
 
 Read every line. Check for:
 - Changes that don't trace to a review comment
+  <!-- skillsaw-disable-next-line content-placeholder-text -->
 - Debug prints, commented-out code, TODO comments
 - Secret material
 - Protected-path files
@@ -424,10 +426,10 @@ Write a JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 object. Any extra fields you invent will cause validation to fail. Only use
 the fields shown in this section.
 
-**`trigger_source` field:** This must be the **normalized trigger type** you
-derived in step 1 — either `"bot"` or `"human"`. Do NOT use the raw
-`TRIGGER_SOURCE` environment variable value (the GitHub username). The schema
-enforces an enum of `["bot", "human"]`; any other value fails validation.
+**`trigger_source` field:** Use the **normalized trigger type** you derived
+in step 1 — `"bot"` or `"human"` — not the raw `TRIGGER_SOURCE` environment
+variable value (the GitHub username). The schema enforces an enum of
+`["bot", "human"]`; any other value fails validation.
 
 **Action types:**
 

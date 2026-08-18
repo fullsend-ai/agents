@@ -172,7 +172,8 @@ install -m 0600 /dev/null "$ENV_FILE"
     issue)
       emit_env "GITHUB_ISSUE_URL" "${FIXTURE_URL}"
       # Code (and other issue-driven agents) require these explicitly;
-      # triage derives them inside its pre-script from GITHUB_ISSUE_URL alone.
+      # triage derives them from ISSUE_URL (mapped from GITHUB_ISSUE_URL
+      # by the harness forge section).
       emit_env "ISSUE_NUMBER" "${FIXTURE_NUMBER}"
       emit_env "REPO_FULL_NAME" "${EPHEMERAL_REPO}"
       ;;
@@ -200,6 +201,17 @@ install -m 0600 /dev/null "$ENV_FILE"
     emit_env "TARGET_BRANCH" "main"
     emit_env "PRE_AGENT_HEAD" "${PRE_AGENT_HEAD}"
     emit_env "REVIEW_BODY_FILE" "${REVIEW_BODY_FILE}"
+  fi
+
+  # Review agent: both REVIEW_PROTECTED_PATHS and
+  # REVIEW_FINDING_SEVERITY_THRESHOLD are literal defaults baked into
+  # harness/review.yaml's env.runner/env.sandbox stanzas. Default here to
+  # the same value ("low") so eval cases that don't set this var don't
+  # fail closed in post-review.sh's severity-validation block.
+  if [[ "$AGENT" == "review" ]]; then
+    emit_env "REVIEW_FINDING_SEVERITY_THRESHOLD" "${REVIEW_FINDING_SEVERITY_THRESHOLD:-low}"
+    emit_env "PRIOR_REVIEW_SHA" "${PRIOR_REVIEW_SHA:-}"
+    emit_env "PRIOR_REVIEW_PROVENANCE" "${PRIOR_REVIEW_PROVENANCE:-}"
   fi
 
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"

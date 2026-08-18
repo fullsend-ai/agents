@@ -136,8 +136,10 @@ sanitize_failure_detail() {
     | sed -E \
       -e 's/gh[pousr]_[A-Za-z0-9_]{20,}/[REDACTED]/g' \
       -e 's/github_pat_[A-Za-z0-9_]+/[REDACTED]/g' \
+      -e 's/glpat-[A-Za-z0-9_-]{20,}/[REDACTED]/g' \
       -e 's/x-access-token:[^@[:space:]]+/x-access-token:[REDACTED]/g' \
-      -e 's/(Bearer|token)[[:space:]]+[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
+      -e 's/oauth2:[^@[:space:]]+/oauth2:[REDACTED]/g' \
+      -e 's/(Bearer|token|PRIVATE-TOKEN:)[[:space:]]*[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
     | _redact_multiline_pem)"
 
   if [ -n "${PUSH_TOKEN:-}" ]; then
@@ -145,6 +147,9 @@ sanitize_failure_detail() {
   fi
   if [ -n "${GH_TOKEN:-}" ] && [ "${GH_TOKEN}" != "${PUSH_TOKEN:-}" ]; then
     detail="$(_redact_literal_token "${detail}" "${GH_TOKEN}")"
+  fi
+  if [ -n "${GITLAB_TOKEN:-}" ] && [ "${GITLAB_TOKEN}" != "${PUSH_TOKEN:-}" ]; then
+    detail="$(_redact_literal_token "${detail}" "${GITLAB_TOKEN}")"
   fi
 
   detail="$(sanitize_comment_workflow_commands "${detail}")"
@@ -210,6 +215,10 @@ EOF
 
 post_failure_workflow_run_url() {
   local repo_full_name="$1"
+  if declare -F forge_get_workflow_run_url >/dev/null 2>&1; then
+    forge_get_workflow_run_url
+    return 0
+  fi
   local run_repo="${GITHUB_REPOSITORY:-${repo_full_name}}"
   printf '%s/%s/actions/runs/%s' \
     "${GITHUB_SERVER_URL:-https://github.com}" \
@@ -267,8 +276,14 @@ EOF
 }
 
 _post_failure_ensure_token() {
-  if [ -z "${GH_TOKEN:-}" ]; then
-    export GH_TOKEN="${PUSH_TOKEN:-}"
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [ -z "${GITLAB_TOKEN:-}" ]; then
+      export GITLAB_TOKEN="${PUSH_TOKEN:-}"
+    fi
+  else
+    if [ -z "${GH_TOKEN:-}" ]; then
+      export GH_TOKEN="${PUSH_TOKEN:-}"
+    fi
   fi
 }
 
@@ -295,10 +310,16 @@ report_post_failure_to_issue() {
     "${REPO_FULL_NAME}" "/fs-code")"
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
-  if ! gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null; then
-    gha_echo warning "Failed to post error comment to issue #${safe_issue_number} (check issues:write on PUSH_TOKEN)"
+  if declare -F forge_post_issue_comment >/dev/null 2>&1; then
+    if ! forge_post_issue_comment "${body}"; then
+      gha_echo warning "Failed to post error comment to issue #${safe_issue_number}"
+    fi
+  else
+    if ! gh issue comment "${ISSUE_NUMBER}" \
+      --repo "${REPO_FULL_NAME}" \
+      --body "${body}" 2>/dev/null; then
+      gha_echo warning "Failed to post error comment to issue #${safe_issue_number} (check issues:write on PUSH_TOKEN)"
+    fi
   fi
 }
 
@@ -324,10 +345,16 @@ report_post_failure_to_pr() {
     "${REPO_FULL_NAME}" "/fs-fix")"
 
   gha_echo warning "Posting failure comment to PR #${safe_pr_number}..."
-  if ! gh pr comment "${PR_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null; then
-    gha_echo warning "Failed to post error comment to PR #${safe_pr_number} (check pull-requests:write on PUSH_TOKEN)"
+  if declare -F forge_post_pr_comment >/dev/null 2>&1; then
+    if ! forge_post_pr_comment "${PR_NUMBER}" "${body}"; then
+      gha_echo warning "Failed to post error comment to PR #${safe_pr_number}"
+    fi
+  else
+    if ! gh pr comment "${PR_NUMBER}" \
+      --repo "${REPO_FULL_NAME}" \
+      --body "${body}" 2>/dev/null; then
+      gha_echo warning "Failed to post error comment to PR #${safe_pr_number} (check pull-requests:write on PUSH_TOKEN)"
+    fi
   fi
 }
 

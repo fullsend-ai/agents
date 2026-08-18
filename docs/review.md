@@ -66,12 +66,18 @@ The review agent includes the `issue-labels` skill to discover your repo's
 labels and apply them to PRs during review. This is the same skill used by the
 [triage agent](triage.md) — overloading it affects both agents.
 
-To overload the built-in skill, create your own `issue-labels` skill in
-`.agents/skills/issue-labels/SKILL.md` and symlink `.claude/skills` to
-`.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-You can also overload it at the org level in your `.fullsend` config repo at
-`customized/skills/issue-labels/SKILL.md`. At runtime, your version replaces
-the upstream default — no other configuration needed.
+The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`
+and `skills/issue-labels/gitlab/SKILL.md`), registered under
+`forge.<platform>.skills` in the harness. To overload the built-in skill,
+create your own skill in `.agents/skills/issue-labels/github/SKILL.md` and
+symlink `.claude/skills` to `.agents/skills` so it's discoverable by both
+fullsend and local agent tooling. At the org level, override via `base:`
+composition (ADR 0045) — inherit the upstream harness and replace the
+forge-specific skill entry under `forge.<platform>.skills` with your own path
+whose basename matches the built-in (`github` or `gitlab`), so `mergeSkills`
+dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
+The older `customized/skills/issue-labels/SKILL.md` overlay in the org
+`.fullsend` config repo is deprecated by ADR 0064.
 
 See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
 [Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
@@ -82,11 +88,12 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 |----------|-------------|---------|--------------|
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`). | `low` | `info`, `low`, `medium`, `high`, `critical` |
 | `REVIEW_SKIP_AUTHORS` | Comma-separated list of GitHub usernames to skip review for. When a PR is opened by a user in this list, the review dispatch exits early without running the agent. Set in `env.runner` in your harness YAML (consumed by the pre-script on the runner). | _(empty — all PRs are reviewed)_ | Comma-separated GitHub logins, e.g. `app/renovate,app/dependabot` |
+| `REVIEW_PROTECTED_PATHS` | Comma-separated list of path prefixes the review agent treats as protected. PRs that modify files under these paths cannot be approved by the agent — only a human can grant approval. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`); an unset value is a misconfiguration (fail-closed). Set to an empty string to deliberately disable protected-path enforcement entirely. When set to a value that parses to no valid paths (e.g. stray or consecutive commas), the script aborts (fail-closed) as a likely misconfiguration. | See [`harness/review.yaml`](../harness/review.yaml) | Comma-separated path prefixes (e.g. `.github/,deploy/,manifests/`) |
 
-Override by extending the harness file via a `base` reference and setting `env.runner` / `env.sandbox` in your custom harness YAML. `base` composition merges `env.runner`/`env.sandbox` per-key — child values override, everything else inherits from the base (ADR 0045, ADR 0055). Per ADR 0080 and ADR 0081, this harness-level override is the correct path; the CI workflow `env:` block is reserved for infrastructure plumbing, not agent behavior knobs like this one.
+Override either variable by extending the harness file via a `base` reference and setting `env.runner` / `env.sandbox` in your custom harness YAML. `base` composition merges `env.runner`/`env.sandbox` per-key — child values override, everything else inherits from the base (ADR 0045, ADR 0055). Per ADR 0080 and ADR 0081, this harness-level override is the correct path; the CI workflow `env:` block is reserved for infrastructure plumbing, not agent behavior knobs like these.
 
-When filtering removes all findings from a negative review verdict, the verdict
-is downgraded to a comment (applying the `requires-manual-review` label).
+When severity filtering removes all findings from a negative review verdict, the
+verdict is downgraded to a comment (applying the `requires-manual-review` label).
 
 ## How the agent works
 

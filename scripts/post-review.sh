@@ -15,6 +15,11 @@
 #   REVIEW_FINDING_SEVERITY_THRESHOLD — minimum severity for findings
 #                                       (info|low|medium|high|critical);
 #                                       default supplied by harness/review.yaml
+#   REVIEW_PROTECTED_PATHS            — comma-separated protected path prefixes,
+#                                       or empty string to opt out; required
+#                                       (non-empty-or-explicitly-empty) for
+#                                       approve actions; default supplied by
+#                                       harness/review.yaml
 #
 # Exit codes:
 #   0 — review posted
@@ -183,69 +188,99 @@ ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # "comment" so only a human can grant approval. This is the sole enforcement
 # point — the code agent is free to propose changes to any path.
 # ---------------------------------------------------------------------------
-REVIEW_PROTECTED_PATHS=(
-  ".claude/"
-  ".cursor/"
-  ".gitattributes"
-  ".github/"
-  ".pre-commit-config.yaml"
-  "AGENTS.md"
-  "agents/"
-  "api-servers/"
-  "CLAUDE.md"
-  "CODEOWNERS"
-  "Containerfile"
-  "Dockerfile"
-  "harness/"
-  "images/"
-  "plugins/"
-  "policies/"
-  "scripts/"
-  "skills/"
-)
-
 DOWNGRADED=false
 if [ "${ACTION}" = "approve" ]; then
+  # harness/review.yaml always sets REVIEW_PROTECTED_PATHS (with a default,
+  # overridable per-repo via harness composition), so an unset value here
+  # indicates a genuine misconfiguration rather than an intentional opt-out.
+  if [[ "${REVIEW_PROTECTED_PATHS+set}" != "set" ]]; then
+    echo "::error::REVIEW_PROTECTED_PATHS is not set — check harness/review.yaml" >&2
+    exit 1
+  fi
+
+  if [[ -z "${REVIEW_PROTECTED_PATHS}" ]]; then
+    # Explicitly empty — operator has opted out of protected-path
+    # enforcement for this repo. Distinct from comma-noise below, which
+    # is treated as a likely misconfiguration rather than an intentional
+    # opt-out.
+    echo "::notice::REVIEW_PROTECTED_PATHS is explicitly empty — protected-path enforcement disabled"
+    REVIEW_ACTIVE_PROTECTED_PATHS=()
+  else
+    IFS=',' read -ra REVIEW_ACTIVE_PROTECTED_PATHS <<< "${REVIEW_PROTECTED_PATHS}"
+    # Trim leading/trailing whitespace and drop empty entries.
+    trimmed=()
+    for entry in "${REVIEW_ACTIVE_PROTECTED_PATHS[@]}"; do
+      entry="$(echo "${entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+      [[ -n "${entry}" ]] && trimmed+=("${entry}")
+    done
+    REVIEW_ACTIVE_PROTECTED_PATHS=()
+    [[ ${#trimmed[@]} -gt 0 ]] && REVIEW_ACTIVE_PROTECTED_PATHS=("${trimmed[@]}")
+    unset trimmed entry
+    if [[ ${#REVIEW_ACTIVE_PROTECTED_PATHS[@]} -eq 0 ]]; then
+      # Sanitize before interpolating into a workflow command. Strip raw
+      # newlines, then strip every '%' and ':' character outright rather
+      # than collapsing fixed-width tokens (e.g. "::", "%0A") — matching
+      # fixed-width tokens is not idempotent and can be bypassed by
+      # adjacent fragments reassembling after a single pass. Same
+      # approach as the REVIEW_FINDING_SEVERITY_THRESHOLD sanitization
+      # above.
+      sanitized_paths="${REVIEW_PROTECTED_PATHS//$'\n'/}"
+      sanitized_paths="${sanitized_paths//$'\r'/}"
+      sanitized_paths="${sanitized_paths//%/}"
+      sanitized_paths="${sanitized_paths//:/}"
+      echo "::error::REVIEW_PROTECTED_PATHS=\"${sanitized_paths}\" contains no valid path entries after trimming — likely misconfigured (stray/consecutive commas?). Refusing to continue (fail-closed)." >&2
+      unset sanitized_paths
+      exit 1
+    fi
+  fi
+
+  # PR-files fetch and the empty-result guard are an independent safety
+  # net (refuse to approve if we can't establish what changed) and must
+  # run regardless of whether protected-path enforcement itself is
+  # enabled — only the pattern-matching loop below is gated on a
+  # non-empty REVIEW_ACTIVE_PROTECTED_PATHS.
   PR_FILES=$(gh pr view "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" --json files --jq '.files[].path')
   if [ -z "${PR_FILES}" ]; then
     echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve (gh pr view --json files)" >&2
     exit 1
   fi
 
-  PROTECTED_MATCHES=""
-  while IFS= read -r file; do
-    [ -z "${file}" ] && continue
-    for pattern in "${REVIEW_PROTECTED_PATHS[@]}"; do
-      if [[ "${file}" == "${pattern}"* ]]; then
-        PROTECTED_MATCHES="${PROTECTED_MATCHES}${file}"$'\n'
-        break
-      fi
-    done
-  done <<< "${PR_FILES}"
+  if [[ ${#REVIEW_ACTIVE_PROTECTED_PATHS[@]} -gt 0 ]]; then
+    PROTECTED_MATCHES=""
+    while IFS= read -r file; do
+      [ -z "${file}" ] && continue
+      for pattern in "${REVIEW_ACTIVE_PROTECTED_PATHS[@]}"; do
+        if [[ "${file}" == "${pattern}"* ]]; then
+          PROTECTED_MATCHES="${PROTECTED_MATCHES}${file}"$'\n'
+          break
+        fi
+      done
+    done <<< "${PR_FILES}"
 
-  if [ -n "${PROTECTED_MATCHES}" ]; then
-    echo "PR touches protected paths — downgrading approve to comment"
-    echo "${PROTECTED_MATCHES}" | sed '/^$/d' | sed 's/^/  /'
+    if [ -n "${PROTECTED_MATCHES}" ]; then
+      echo "PR touches protected paths — downgrading approve to comment"
+      echo "${PROTECTED_MATCHES}" | sed '/^$/d' | sed 's/^/  /'
 
-    PROTECTED_NOTICE=$'\n\n---\n\n'
-    PROTECTED_NOTICE+=$'> **Protected paths detected** — this PR modifies files under one or more\n'
-    PROTECTED_NOTICE+=$'> protected paths. The review agent cannot approve PRs that touch these paths.\n'
-    PROTECTED_NOTICE+=$'> A human reviewer must approve this PR.\n'
-    PROTECTED_NOTICE+=$'>\n'
-    PROTECTED_NOTICE+=$'> Protected files in this PR:\n'
-    while IFS= read -r f; do
-      [ -z "${f}" ] && continue
-      PROTECTED_NOTICE+="> - \`${f}\`"$'\n'
-    done <<< "${PROTECTED_MATCHES}"
+      PROTECTED_NOTICE=$'\n\n---\n\n'
+      PROTECTED_NOTICE+=$'> **Protected paths detected** — this PR modifies files under one or more\n'
+      PROTECTED_NOTICE+=$'> protected paths. The review agent cannot approve PRs that touch these paths.\n'
+      PROTECTED_NOTICE+=$'> A human reviewer must approve this PR.\n'
+      PROTECTED_NOTICE+=$'>\n'
+      PROTECTED_NOTICE+=$'> Protected files in this PR:\n'
+      while IFS= read -r f; do
+        [ -z "${f}" ] && continue
+        PROTECTED_NOTICE+="> - \`${f}\`"$'\n'
+      done <<< "${PROTECTED_MATCHES}"
 
-    # Rewrite the result file with downgraded action and appended notice.
-    MODIFIED_RESULT=$(mktemp)
-    CLEANUP_FILES+=("${MODIFIED_RESULT}")
-    jq --arg notice "${PROTECTED_NOTICE}" \
-      '.action = "comment" | .body = (.body + $notice)' \
-      "${RESULT_FILE}" > "${MODIFIED_RESULT}"
-    RESULT_FILE="${MODIFIED_RESULT}"
-    DOWNGRADED=true
+      # Rewrite the result file with downgraded action and appended notice.
+      MODIFIED_RESULT=$(mktemp)
+      CLEANUP_FILES+=("${MODIFIED_RESULT}")
+      jq --arg notice "${PROTECTED_NOTICE}" \
+        '.action = "comment" | .body = (.body + $notice)' \
+        "${RESULT_FILE}" > "${MODIFIED_RESULT}"
+      RESULT_FILE="${MODIFIED_RESULT}"
+      DOWNGRADED=true
+    fi
   fi
 fi
 

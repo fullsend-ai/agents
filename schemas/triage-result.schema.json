@@ -9,7 +9,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "in-progress", "question", "not-planned"]
+      "enum": ["insufficient", "duplicate", "sufficient", "prerequisites", "in-progress", "question", "not-planned", "split"]
     },
     "reasoning": {
       "type": "string",
@@ -39,7 +39,10 @@
         "properties": {
           "url": {
             "type": "string",
-            "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$"
+            "anyOf": [
+              { "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$" },
+              { "pattern": "^https://(gitlab\\.com|gitlab\\.cee\\.redhat\\.com)(/[a-zA-Z0-9._-]+)+/-/merge_requests/[0-9]+$" }
+            ]
           }
         },
         "additionalProperties": false
@@ -57,7 +60,10 @@
             "properties": {
               "url": {
                 "type": "string",
-                "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$"
+                "anyOf": [
+                  { "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$" },
+                  { "pattern": "^https://(gitlab\\.com|gitlab\\.cee\\.redhat\\.com)(/[a-zA-Z0-9._-]+)+/-/(issues|merge_requests)/[0-9]+$" }
+                ]
               }
             },
             "additionalProperties": false
@@ -71,7 +77,7 @@
             "properties": {
               "repo": {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$"
+                "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$"
               },
               "title": {
                 "type": "string",
@@ -87,6 +93,29 @@
         }
       },
       "additionalProperties": false
+    },
+    "sub_issues": {
+      "type": "array",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["title", "body"],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$"
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1
+          },
+          "body": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      }
     },
     "label_actions": {
       "$ref": "#/$defs/label_actions"
@@ -122,6 +151,10 @@
           }
         }
       }
+    },
+    {
+      "if": { "properties": { "action": { "const": "split" } }, "required": ["action"] },
+      "then": { "required": ["sub_issues"] }
     }
   ],
   "$defs": {

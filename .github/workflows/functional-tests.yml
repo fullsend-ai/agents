@@ -28,11 +28,29 @@ on:
     types: [opened, synchronize, reopened, labeled]
   merge_group:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      fullsend_ref:
+        description: 'fullsend ref to build from (main or release tag v*)'
+        required: false
+        type: string
+        default: main
+    secrets:
+      E2E_GCP_WIF_PROVIDER:
+        required: false
+      E2E_GCP_SERVICE_ACCOUNT:
+        required: false
+      E2E_GCP_PROJECT_ID:
+        required: false
+      EVAL_GH_TOKEN:
+        required: false
 
 concurrency:
   group: >-
     ${{ github.event_name == 'pull_request_target'
         && format('functional-{0}', github.event.pull_request.number)
+        || github.repository != 'fullsend-ai/agents'
+        && format('functional-call-{0}', github.run_id)
         || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: >-
     ${{ github.event_name == 'pull_request_target'
@@ -77,6 +95,7 @@ jobs:
     needs: gate
     if: >-
       !cancelled() &&
+      github.repository_owner == 'fullsend-ai' &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -87,7 +106,11 @@ jobs:
     steps:
       - name: Get changed files
         id: changes
-        if: github.event_name != 'workflow_dispatch'
+        if: >-
+          github.repository == 'fullsend-ai/agents' &&
+          (github.event_name == 'pull_request_target' ||
+           github.event_name == 'push' ||
+           github.event_name == 'merge_group')
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
@@ -138,7 +161,13 @@ jobs:
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
+          ref: >-
+            ${{ github.repository != 'fullsend-ai/agents'
+                && github.workflow_sha
+                || (github.event_name == 'pull_request_target'
+                    && github.event.pull_request.head.sha
+                    || github.sha) }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
 
@@ -171,6 +200,7 @@ jobs:
     needs: [gate, detect]
     if: >-
       !cancelled() &&
+      github.repository_owner == 'fullsend-ai' &&
       needs.detect.outputs.agents != '[]' &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
@@ -185,7 +215,13 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
+          ref: >-
+            ${{ github.repository != 'fullsend-ai/agents'
+                && github.workflow_sha
+                || (github.event_name == 'pull_request_target'
+                    && github.event.pull_request.head.sha
+                    || github.sha) }}
           persist-credentials: false
           allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
           submodules: true
@@ -211,37 +247,43 @@ jobs:
           git config --global user.name "fullsend-eval[bot]"
           git config --global user.email "fullsend-eval[bot]@users.noreply.github.com"
 
-      - name: Install fullsend
+      - name: Validate fullsend ref
         env:
-          GH_TOKEN: ${{ github.token }}
+          FULLSEND_REF: ${{ inputs.fullsend_ref || 'main' }}
         run: |
-          FULLSEND_VERSION="${FULLSEND_VERSION:-latest}"
-          if [ "$FULLSEND_VERSION" = "latest" ]; then
-            FULLSEND_VERSION=$(gh release view --repo fullsend-ai/fullsend --json tagName -q .tagName)
-          fi
-          if [ -z "$FULLSEND_VERSION" ]; then
-            echo "::error::Failed to resolve fullsend version"
+          if [[ "${FULLSEND_REF}" != "main" && ! "${FULLSEND_REF}" =~ ^v[0-9] ]]; then
+            echo "::error::fullsend_ref must be 'main' or a release tag (v*), got '${FULLSEND_REF}'"
             exit 1
           fi
-          { echo 'FULLSEND_VERSION<<GHEOF'; echo "${FULLSEND_VERSION}"; echo 'GHEOF'; } >> "$GITHUB_ENV"
-          VERSION_NUM="${FULLSEND_VERSION#v}"
-          TARBALL="fullsend_${VERSION_NUM}_linux_amd64.tar.gz"
-          gh release download "$FULLSEND_VERSION" \
-            --repo fullsend-ai/fullsend \
-            --pattern "$TARBALL" \
-            --dir /tmp
-          tar xzf "/tmp/${TARBALL}" -C /usr/local/bin fullsend
-          chmod +x /usr/local/bin/fullsend
-          fullsend --version
 
-      - name: Configure OpenShell gateway
+      - name: Clone fullsend
         env:
           GH_TOKEN: ${{ github.token }}
+          FULLSEND_REF: ${{ inputs.fullsend_ref || 'main' }}
         run: |
-          eval "$(gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/openshell-version.sh?ref=${FULLSEND_VERSION}" --jq .content | base64 -d | grep -E '^OPENSHELL_(VERSION|SHA)=')"
+          FULLSEND_CHECKOUT="${RUNNER_TEMP}/fullsend"
+          git clone --depth 1 --branch "${FULLSEND_REF}" \
+            "https://x-access-token:${GH_TOKEN}@github.com/fullsend-ai/fullsend.git" \
+            "${FULLSEND_CHECKOUT}"
+          echo "FULLSEND_CHECKOUT=${FULLSEND_CHECKOUT}" >> "$GITHUB_ENV"
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: ${{ env.FULLSEND_CHECKOUT }}/go.mod
+          cache-dependency-path: ${{ env.FULLSEND_CHECKOUT }}/go.sum
+
+      - name: Build fullsend
+        run: |
+          make -C "${FULLSEND_CHECKOUT}" go-build
+          echo "${FULLSEND_CHECKOUT}/bin" >> "$GITHUB_PATH"
+          "${FULLSEND_CHECKOUT}/bin/fullsend" --version
+
+      - name: Configure OpenShell gateway
+        run: |
+          eval "$(grep -E '^OPENSHELL_(VERSION|SHA)=' "${FULLSEND_CHECKOUT}/.github/scripts/openshell-version.sh")"
           if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
-            SAFE_VERSION=$(echo "$FULLSEND_VERSION" | tr -d '\n\r' | sed -e 's/%0[aAdD]//g' -e 's/::/: :/g')
-            echo "::error::Failed to resolve OpenShell version from fullsend tag ${SAFE_VERSION}"
+            echo "::error::Failed to resolve OpenShell version from fullsend checkout"
             exit 1
           fi
           echo "OPENSHELL_VERSION=${OPENSHELL_VERSION}" >> "$GITHUB_ENV"
@@ -257,14 +299,8 @@ jobs:
           EOF
 
       - name: Install OpenShell CLI
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          SCRIPT_DIR="$(mktemp -d)"
-          gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/install-openshell.sh?ref=${FULLSEND_VERSION}" --jq .content | base64 -d > "${SCRIPT_DIR}/install-openshell.sh"
-          gh api "repos/fullsend-ai/fullsend/contents/.github/scripts/openshell-version.sh?ref=${FULLSEND_VERSION}" --jq .content | base64 -d > "${SCRIPT_DIR}/openshell-version.sh"
-          chmod +x "${SCRIPT_DIR}/install-openshell.sh"
-          "${SCRIPT_DIR}/install-openshell.sh"
+          "${FULLSEND_CHECKOUT}/.github/scripts/install-openshell.sh"
 
       - name: Install Podman
         run: |
@@ -364,22 +400,22 @@ jobs:
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 1
+    permissions:
+      contents: read
     steps:
+      # Base branch only -- a PR must not be able to rewrite this script
+      # to force-pass its own roll-up check.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
       - name: Check results
         env:
+          EVENT_NAME: ${{ github.event_name }}
           GATE_RESULT: ${{ needs.gate.result }}
           DETECT_RESULT: ${{ needs.detect.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
-        run: |
-          if [ "$GATE_RESULT" = "failure" ] || [ "$GATE_RESULT" = "cancelled" ]; then
-            echo "::error::Gate job ${GATE_RESULT}"
-            exit 1
-          fi
-          if [ "$DETECT_RESULT" = "failure" ] || [ "$DETECT_RESULT" = "cancelled" ]; then
-            echo "::error::Detect job ${DETECT_RESULT}"
-            exit 1
-          fi
-          if [ "$TESTS_RESULT" = "failure" ] || [ "$TESTS_RESULT" = "cancelled" ]; then
-            echo "::error::One or more functional tests ${TESTS_RESULT}"
-            exit 1
-          fi
+          CROSS_REPO: ${{ github.repository != 'fullsend-ai/agents' }}
+        run: bash .github/scripts/check-rollup-result.sh
