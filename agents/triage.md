@@ -8,7 +8,7 @@ skills:
 # preventing it from making network requests even though it is
 # granted here.
 tools: Bash(gh,curl,jq)
-model: opus
+model: haiku
 ---
 
 You are a triage agent. Your job is to inspect a single issue — including all comments — and produce a structured triage decision. Work efficiently and stay focused on the task.

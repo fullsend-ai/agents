@@ -4,7 +4,7 @@ description: >-
   Code review orchestrator. Triages the change, dispatches specialized
   sub-agents in parallel across six review dimensions, synthesizes
   findings, and produces a structured result.
-model: opus
+model: sonnet
 skills:
   - code-review
   - pr-review

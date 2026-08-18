@@ -1,7 +1,7 @@
 ---
 agent: agents/triage.md
 doc: docs/triage.md
-model: opus
+model: haiku
 image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:eaf365ad038d762954d8fd5f41618cd6766a8a6a6f76d944aaf160819666734d
 policy: policies/base.yaml
 openshell:
