@@ -1,9 +1,9 @@
 ---
-name: jira-tracker
+name: jira
 description: >-
   Jira Cloud REST API commands for reading issue content, comments, and
   searching for duplicate or related issues via curl. Shared by all agents
-  running with the Jira tracker.
+  running on the Jira forge.
 ---
 
 # Jira Cloud API

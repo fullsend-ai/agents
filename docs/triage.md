@@ -69,15 +69,16 @@ it with your own version to encode your team's labeling knowledge directly in
 the skill, keeping it out of `AGENTS.md` (where it would bloat context for
 every agent).
 
-The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`
-and `skills/issue-labels/gitlab/SKILL.md`), registered under
+The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`,
+`skills/issue-labels/gitlab/SKILL.md`, and
+`skills/issue-labels/jira/SKILL.md`), registered under
 `forge.<platform>.skills` in the harness. To overload the built-in skill,
 create your own skill in `.agents/skills/issue-labels/github/SKILL.md` and
 symlink `.claude/skills` to `.agents/skills` so it's discoverable by both
 fullsend and local agent tooling. At the org level, override via `base:`
 composition (ADR 0045) — inherit the upstream harness and replace the
 forge-specific skill entry under `forge.<platform>.skills` with your own path
-whose basename matches the built-in (`github` or `gitlab`), so `mergeSkills`
+whose basename matches the built-in (`github`, `gitlab`, or `jira`), so `mergeSkills`
 dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
 The older `customized/skills/issue-labels/SKILL.md` overlay in the org
 `.fullsend` config repo (and the per-repo `.fullsend/customized/skills/...`

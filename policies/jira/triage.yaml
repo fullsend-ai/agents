@@ -5,7 +5,7 @@ version: 1
 # Needs Jira Cloud REST API for issue triage and Vertex AI for inference.
 # gh excluded from the binary allowlist — only curl is permitted for
 # Jira API access. Jira access is read-only: the sandbox only fetches
-# issue content (skills/jira-tracker teaches GET-only curl commands);
+# issue content (skills/jira-forge teaches GET-only curl commands);
 # all mutations (labels, comments, transitions, cross-project create)
 # run host-side in pre-triage.sh/post-triage.sh, outside this policy.
 
