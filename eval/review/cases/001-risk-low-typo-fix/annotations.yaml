@@ -1,0 +1,16 @@
+state: open
+
+labels:
+  required:
+    - risk/low
+  forbidden:
+    - risk/high
+    - risk/critical
+
+max_turns: 60
+max_cost_usd: 5.00
+
+review_expectations: |
+  Single-file README typo fix. Risk assessment should produce a low
+  score (1). The risk/low label should be applied. No security or
+  protected path concerns.
