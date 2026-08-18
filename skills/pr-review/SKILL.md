@@ -55,7 +55,7 @@ dimension sub-agents and are NOT dispatched in step 4's parallel loop.
 `security-triage` runs as a preprocessing classifier in step 3c-1;
 `risk-assessment` runs as a risk scorer in step 3c-2 (gated by
 `FULLSEND_RISK_ASSESSMENT_ENABLED`); `challenger` runs as a
-post-processing adversarial pass in step 6d. Both produce different
+post-processing adversarial pass in step 6d. All three produce different
 output formats from the standard findings array.
 
 ## Findings vs inline comments
