@@ -115,6 +115,21 @@ measurements:
 run_case "empty-dir" \
   "" 1 "no eval/measurements/*.yaml files found"
 
+run_case "flow-style-unsupported" \
+  "agent: code
+measurements: [{id: em-001, scorer: trace_fitness, version: 1}]
+" 1 "unsupported YAML shape"
+
+run_case "nested-assert-unsupported" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    assert:
+      - path: x
+" 1 "unsupported YAML shape"
+
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

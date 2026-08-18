@@ -13,11 +13,17 @@ and here is what we measure on wild `code` runs.”
 Managed fullsend jobs resolve manifests as:
 
 1. Local `${FULLSEND_DIR}/eval/measurements/${AGENT}.yaml` if present (override / BYOA)
-2. Else this repo at the `v0` pin:
-   `https://raw.githubusercontent.com/fullsend-ai/agents/v0/eval/measurements/${AGENT}.yaml`
+2. Else a SHA-pinned fetch from `fullsend-ai/agents` at the `v0` tag:
+   `fullsend eval-measure` resolves `tags/v0` via GitHub `GetRef` (managed jobs
+   pass `GH_TOKEN` / `GITHUB_TOKEN`) and then fetches
+   `eval/measurements/${AGENT}.yaml` at that commit. It does **not** curl the
+   floating `raw.githubusercontent.com/fullsend-ai/agents/v0/...` URL.
 
 Installs that only use stock agents **do not copy these files**. Local files
 are for changing defaults, opting out, or scoring a custom agent.
+
+Stock manifests in this directory use lowercase ids like `em-001` (an
+agents-repo style convention; fullsend's loader only requires a non-empty id).
 
 ## What lives where
 
