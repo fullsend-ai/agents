@@ -74,17 +74,19 @@ if [[ ! -f "${FILE}" ]]; then
   exit 1
 fi
 case "${FILTER}" in
+  # Each block selects the key's range, then strips the "      - " prefix in a
+  # second pass. Nested `{ ... { ... } }` blocks are a GNU sed extension that
+  # BSD/macOS sed rejects outright ("extra characters at the end of } command"),
+  # which silently yielded an empty allowlist and failed every allow_targets
+  # test on macOS — keep these single-level.
   '.create_issues.allow_targets.orgs // [] | .[]')
-    # Extract lines under orgs: indented with "      - "
-    sed -n '/^    orgs:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    sed -n '/^    orgs:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
     ;;
   '.create_issues.allow_targets.repos // [] | .[]')
-    # Extract lines under repos: indented with "      - "
-    sed -n '/^    repos:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    sed -n '/^    repos:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
     ;;
   '.create_issues.allow_targets.jira_projects // [] | .[]')
-    # Extract lines under jira_projects: indented with "      - "
-    sed -n '/^    jira_projects:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    sed -n '/^    jira_projects:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
     ;;
   *)
     exit 1
@@ -1877,6 +1879,49 @@ unset MOCK_JIRA_CREATE_NO_KEY
 run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"DISALLOWEDPROJ","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
   "not in create_issues.allow_targets"
+
+# On a date(1) without %N support (BSD/macOS before nanosecond support), the
+# comment marker must still be unique to this invocation — a literal "N" would
+# repeat for every call in the same second and break the always-create-new
+# contract. Self-contained so reordering cannot make it pass vacuously.
+cat > "${MOCK_BIN}/date" <<'DATEMOCK'
+#!/usr/bin/env bash
+# Simulate a date(1) that does not understand %N.
+if [[ "$1" == "+%s%N" ]]; then
+  echo "$(/bin/date +%s)N"
+  exit 0
+fi
+exec /bin/date "$@"
+DATEMOCK
+chmod +x "${MOCK_BIN}/date"
+marker_dir="${TMPDIR}/run-jira-marker-without-nanoseconds"
+# Must be an action that takes the always-create-new path (tracker_post_comment).
+# `sufficient` and `in-progress` post sticky comments with fixed markers and
+# would never exercise the timestamp marker at all.
+marker_json='{"action":"question","reasoning":"this is a support question","comment":"Based on the docs, that mode is unsupported. Would you like to open a feature request?"}'
+mkdir -p "${marker_dir}/iteration-1/output"
+echo "${marker_json}" > "${marker_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+marker_exit=0
+(cd "${marker_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || marker_exit=$?
+rm -f "${MOCK_BIN}/date"
+if [[ ${marker_exit} -ne 0 ]]; then
+  echo "FAIL: jira-comment-marker-without-nanoseconds — post script exited ${marker_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qE 'fullsend:triage-[0-9]' "${GH_LOG}"; then
+  # Vacuity guard: a timestamp-based marker must actually have been emitted —
+  # matching the fixed sticky markers here would make the check meaningless.
+  echo "FAIL: jira-comment-marker-without-nanoseconds — no timestamp marker was emitted"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE 'fullsend:triage-[0-9]*N' "${GH_LOG}"; then
+  echo "FAIL: jira-comment-marker-without-nanoseconds — marker kept the literal %N"
+  grep -o 'fullsend:triage-[^ ]*' "${GH_LOG}" | head -1
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-comment-marker-without-nanoseconds"
+fi
 
 # Jira sufficient action posts a comment and applies labels via curl.
 run_jira_test "jira-sufficient-posts-comment" \

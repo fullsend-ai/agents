@@ -682,8 +682,15 @@ tracker_post_comment() {
   # guarantees no prior comment matches it, so this always creates a new
   # comment — matching tracker_post_comment's always-new contract on
   # GitHub/GitLab.
-  local marker
-  marker="<!-- fullsend:triage-$(date +%s%N) -->"
+  local marker stamp
+  stamp=$(date +%s%N)
+  # BSD date without %N support leaves the literal "N" in place, which would
+  # make the marker identical for every invocation within the same second and
+  # break the always-create-new contract. Fall back to a random suffix.
+  if [[ "${stamp}" == *N* ]]; then
+    stamp="$(date +%s)${RANDOM}${RANDOM}"
+  fi
+  marker="<!-- fullsend:triage-${stamp} -->"
   printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
