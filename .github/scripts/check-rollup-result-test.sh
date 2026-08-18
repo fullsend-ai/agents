@@ -51,7 +51,7 @@ assert_fail "merge_group, tests fail"   merge_group           skipped   success 
 
 assert_pass "PRT, all success"          pull_request_target   success   success   success   ""
 assert_fail "PRT, detect skipped"       pull_request_target   success   skipped   skipped   ""
-assert_pass "PRT, gate skipped (label)"  pull_request_target   skipped   skipped   skipped   ""
+assert_fail "PRT, all skipped"          pull_request_target   skipped   skipped   skipped   ""
 
 assert_fail "gate cancelled"            pull_request_target   cancelled skipped   skipped   ""
 assert_fail "detect failure"            push                  skipped   failure   skipped   ""
