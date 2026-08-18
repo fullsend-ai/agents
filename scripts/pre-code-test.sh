@@ -106,6 +106,8 @@ run_test() {
     ISSUE_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
     GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    FULLSEND_FORGE="github"
     GH_TOKEN="fake-token"
     GITHUB_OUTPUT="${gh_output}"
   )
@@ -171,6 +173,8 @@ run_test_stdout() {
     ISSUE_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
     GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    FULLSEND_FORGE="github"
     GH_TOKEN="fake-token"
     GITHUB_OUTPUT="${gh_output}"
   )
@@ -232,6 +236,8 @@ run_test_stdout_excludes() {
     ISSUE_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
     GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    FULLSEND_FORGE="github"
     GH_TOKEN="fake-token"
     GITHUB_OUTPUT="${gh_output}"
   )
@@ -347,7 +353,7 @@ run_test_stdout "force-override-comment-body" \
 # No GH_TOKEN → skips check entirely, exits 0.
 run_test_stdout "no-gh-token-skips-check" \
   "" \
-  "GH_TOKEN not set" \
+  "No github token set" \
   0 \
   "GH_TOKEN="
 
@@ -472,6 +478,8 @@ run_test_prescript_output() {
     ISSUE_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
     GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    FULLSEND_FORGE="github"
     GH_TOKEN="fake-token"
     GITHUB_OUTPUT="${gh_output}"
     FULLSEND_PRESCRIPT_OUTPUT="${proto_out}"

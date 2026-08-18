@@ -80,13 +80,29 @@ stable (non-prerelease) version. Downstream consumers can reference
 
 ## 7. Skill resolution
 
-Skills declared in agent frontmatter `skills:` arrays are resolved at
-runtime from multiple sources in priority order: repo-level
-(`.agents/skills/`), org-level (`fullsend-ai/.fullsend/customized/skills/`),
-and upstream platform (`fullsend-ai/fullsend/skills/`). A skill reference
-in frontmatter is valid even if no matching directory exists in this repo.
-Do not treat missing local skill directories as bugs without first
-verifying the skill does not exist at org or platform level.
+Skills listed in harness `skills:` arrays are resolved at runtime from
+multiple sources in priority order: repo-level (`.agents/skills/`) and
+upstream platform (`fullsend-ai/fullsend/skills/`). A skill reference is
+valid even if no matching directory exists in this repo. Do not treat
+missing local skill directories as bugs without first verifying the skill
+does not exist at platform level.
+
+To override an upstream skill, create a custom harness with `base:`
+composition pointing to the upstream harness and include the replacement
+skill in the `skills:` array. The override path's basename must match
+the upstream skill's basename so `mergeSkills` dedupes by basename and
+yours wins. For example, to override `issue-labels/github` for the
+review agent:
+
+```yaml
+# .fullsend/review.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/review.yaml#sha256=<sha256sum>
+skills:
+  - .agents/skills/issue-labels/github
+```
+
+See [Custom sandbox image — How to configure](docs/code.md#how-to-configure)
+for how to obtain the `<SHA>` and `<sha256sum>` values.
 
 ### Valid SKILL.md frontmatter fields
 
@@ -111,3 +127,35 @@ following fields are part of the skill specification:
 These fields are defined by the skill spec. A field's first appearance
 in a skill file in this repo is not a novel pattern and should not be
 flagged as a code-organization concern.
+
+## 8. Harness env var literals are not "hardcoded" mistakes
+
+A literal value in a harness `env.runner`/`env.sandbox` block (e.g.
+`REVIEW_FINDING_SEVERITY_THRESHOLD: "low"` in `harness/review.yaml`)
+is the correct, intended shape for a static agent-behavior-tuning
+default — not a bug. Per fullsend-ai/fullsend
+[ADR 0080](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0080-config-yaml-vs-agent-env-var-scope.md)
+and [ADR 0081](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0081-reserve-workflow-env-for-infra-plumbing.md),
+the only supported override path for these defaults is extending the
+harness via `base:` composition and setting the var there. Do not
+"fix" a static default into `${VAR}` passthrough (harness env blocks
+resolve `${VAR}` as host-variable expansion, not shell defaulting —
+it changes semantics, and it will fail when the referenced host
+variable is unset or when unsupported defaulting syntax like
+`${VAR:-default}` is used) or into a CI workflow `env:` block
+(reserved for infrastructure plumbing). The one exception
+(per ADR 0081) is a value that can only be computed at CI
+runtime — derived from `github.event.*`, a build matrix
+variable, or a non-static secret — which may live in the
+workflow `env:` block even if it configures agent behavior.
+
+This rule is scoped to static, tunable defaults. It does not cover
+values that are genuinely computed per-repo or per-run, such as
+branch lists, tokens, or PR/issue numbers — those must stay as
+`${VAR}` passthrough, as already used by `CODE_ALLOWED_TARGET_BRANCHES`
+in `harness/code.yaml`'s `env.runner` block and by `REVIEW_TOKEN`,
+`REPO_FULL_NAME`, `PR_NUMBER`, and `GITHUB_PR_URL` in the
+`forge.github.env.runner` blocks. When reviewing PRs, do not flag a
+static literal default in these blocks as hardcoded, but do flag a
+regression that replaces one of these computed passthrough values
+with a literal.

@@ -34,7 +34,7 @@ Build two sets from the PR timeline:
 
 - **Novel** -- the agent raised something no human commented on. This is not a gap, but it is worth noting: a pattern of novel findings with no human agreement may signal false positives.
 
-**Handle silent approvals correctly:**
+**Classify silent approvals as inconclusive:**
 
 When a human approved the PR without leaving any comments or inline feedback, classify the delta as **inconclusive**. A reviewer who reads code and finds nothing wrong has no reason to write comments. Do not treat zero human findings as zero gaps. The absence of human comments means the delta cannot be meaningfully computed for this PR — report it as inconclusive rather than treating all agent findings as unmatched novel discoveries.
 
@@ -99,4 +99,4 @@ When in doubt, prefer the smaller change. One directory before an entire subtree
 
 Think broadly about what would make a difference. Common categories include tests, CI gates, documentation, CODEOWNERS changes, protected path rules, agent permissions, and auto-merge scope -- but do not limit yourself to these. If you identify a novel change that would close a gap or justify more autonomy, propose it.
 
-In particular, consider adding new agent skills to the target repo's `.claude/` directory. Skills added there are automatically picked up by both the fullsend review agent and casual Claude Code users. If a human reviewer consistently catches a class of issue that the agent misses, a repo-level skill teaching that pattern may be more effective than any other single change.
+In particular, propose new agent skills for the target repo's `.claude/` directory when a human reviewer consistently catches a class of issue that the agent misses. Skills added there are automatically picked up by both the fullsend review agent and casual Claude Code users, and a repo-level skill teaching the pattern may be more effective than any other single change.

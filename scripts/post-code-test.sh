@@ -41,6 +41,14 @@ else
   echo "PASS: bundled-script-has-pr-assignee"
 fi
 
+if ! grep -q 'CODE_AUTO_MERGE' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-auto-merge"
+  echo "  ${POST_SCRIPT} missing CODE_AUTO_MERGE"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-auto-merge"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -1723,7 +1731,7 @@ setup_sec_code_repo() {
 
   ${REAL_GIT} -C "${repo_dir}" checkout -q -b "${branch_name}"
   echo "changed content" > "${repo_dir}/file.txt"
-  ${REAL_GIT} -C "${repo_dir}" add file.txt
+  ${REAL_GIT} -C "${repo_dir}" add -f file.txt
   ${REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
 }
 
@@ -1753,6 +1761,7 @@ _sec_ns_rc=0
   export REPO_FULL_NAME="test-org/test-repo"
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-namespace.log" 2>&1 || _sec_ns_rc=$?
 
@@ -1777,7 +1786,7 @@ cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
 case "$1 $2" in
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     exit 1 ;;
-  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; cat 2>/dev/null || true; exit 0 ;;
   *)             exit 0 ;;
 esac
 MOCKEOF
@@ -1788,7 +1797,7 @@ setup_sec_code_repo "${_sec_api_dir}" "agent/99-test-fix"
 ${REAL_GIT} -C "${_sec_api_dir}/repo" push -q origin agent/99-test-fix
 
 _sec_api_rc=0
-# shellcheck disable=SC2031
+# shellcheck disable=SC2030,SC2031
 (
   cd "${_sec_api_dir}"
   export HOME="${SEC_CODE_TMPDIR}"
@@ -1797,6 +1806,7 @@ _sec_api_rc=0
   export REPO_FULL_NAME="test-org/test-repo"
   export ISSUE_NUMBER="99"
   export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
   bash "${POST_SCRIPT}"
 ) > "${SEC_CODE_TMPDIR}/stdout-api-failure.log" 2>&1 || _sec_api_rc=$?
 
@@ -1813,6 +1823,860 @@ else
 fi
 
 rm -rf "${SEC_CODE_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the auto-merge decision logic from post-code.sh
+# section 9. Given the CODE_AUTO_MERGE env var value, returns the action.
+# ---------------------------------------------------------------------------
+decide_auto_merge() {
+  local code_auto_merge="$1"
+
+  if [ "${code_auto_merge}" = "true" ]; then
+    echo "enable"
+  else
+    echo "skip"
+  fi
+}
+
+run_auto_merge_test() {
+  local test_name="$1"
+  local code_auto_merge="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(decide_auto_merge "${code_auto_merge}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  code_auto_merge: '${code_auto_merge}'"
+    echo "  expected:        '${expected}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Auto-merge test cases ---
+
+# CODE_AUTO_MERGE=true → enable auto-merge
+run_auto_merge_test "auto-merge-enabled" \
+  "true" "enable"
+
+# CODE_AUTO_MERGE unset/empty → skip
+run_auto_merge_test "auto-merge-unset" \
+  "" "skip"
+
+# CODE_AUTO_MERGE=false → skip (only "true" enables)
+run_auto_merge_test "auto-merge-false" \
+  "false" "skip"
+
+# CODE_AUTO_MERGE=TRUE → skip (case-sensitive)
+run_auto_merge_test "auto-merge-uppercase" \
+  "TRUE" "skip"
+
+# CODE_AUTO_MERGE=1 → skip (only exact "true" match)
+run_auto_merge_test "auto-merge-numeric" \
+  "1" "skip"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the merge method flag resolution from the
+# enable_auto_merge function's case statement. Given a CODE_AUTO_MERGE_METHOD
+# value, returns the flag (and "WARN" prefix for unknown values).
+# ---------------------------------------------------------------------------
+resolve_merge_method_flag() {
+  local method="${1:-}"
+  case "${method}" in
+    squash) echo "--squash" ;;
+    rebase) echo "--rebase" ;;
+    merge|"") echo "--merge"  ;;
+    *)      echo "WARN:--merge"  ;;
+  esac
+}
+
+run_merge_method_test() {
+  local test_name="$1"
+  local method="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(resolve_merge_method_flag "${method}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  method:   '${method}'"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Merge method test cases ---
+
+run_merge_method_test "merge-method-squash" \
+  "squash" "--squash"
+
+run_merge_method_test "merge-method-merge" \
+  "merge" "--merge"
+
+run_merge_method_test "merge-method-rebase" \
+  "rebase" "--rebase"
+
+run_merge_method_test "merge-method-default" \
+  "" "--merge"
+
+run_merge_method_test "merge-method-unknown" \
+  "fast-forward" "WARN:--merge"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the auto-detect priority logic from
+# enable_auto_merge: squash > merge > rebase, fallback to merge.
+# ---------------------------------------------------------------------------
+resolve_auto_detect_method() {
+  local allow_squash="$1"
+  local allow_merge="$2"
+  local allow_rebase="$3"
+
+  if [ "${allow_squash}" = "true" ]; then echo "squash"
+  elif [ "${allow_merge}" = "true" ]; then echo "merge"
+  elif [ "${allow_rebase}" = "true" ]; then echo "rebase"
+  else echo "merge"
+  fi
+}
+
+run_auto_detect_test() {
+  local test_name="$1"
+  local allow_squash="$2"
+  local allow_merge="$3"
+  local allow_rebase="$4"
+  local expected="$5"
+
+  local actual
+  actual="$(resolve_auto_detect_method "${allow_squash}" "${allow_merge}" "${allow_rebase}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  squash=${allow_squash} merge=${allow_merge} rebase=${allow_rebase}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Auto-detect priority test cases ---
+
+run_auto_detect_test "auto-detect-all-enabled" \
+  "true" "true" "true" "squash"
+
+run_auto_detect_test "auto-detect-merge-and-rebase" \
+  "false" "true" "true" "merge"
+
+run_auto_detect_test "auto-detect-rebase-only" \
+  "false" "false" "true" "rebase"
+
+run_auto_detect_test "auto-detect-none-enabled" \
+  "false" "false" "false" "merge"
+
+run_auto_detect_test "auto-detect-squash-only" \
+  "true" "false" "false" "squash"
+
+# ===========================================================================
+# GitLab forge tests — validate URL handling, token sanitization, and
+# push auth patterns added by the multi-forge code agent work.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the GitLab issue URL validation regex from
+# gitlab-code-ops.lib.sh forge_validate_issue_url.
+# ---------------------------------------------------------------------------
+validate_gitlab_issue_url() {
+  local url="$1"
+  if [[ ! "${url}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
+    echo "invalid:pattern"
+    return 0
+  fi
+  local host
+  host=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  case "${host}" in
+    gitlab.com|gitlab.cee.redhat.com) echo "valid" ;;
+    *) echo "invalid:host:${host}" ;;
+  esac
+}
+
+run_gitlab_url_test() {
+  local test_name="$1"
+  local url="$2"
+  local expected_prefix="$3"
+
+  local actual
+  actual="$(validate_gitlab_issue_url "${url}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  url:             '${url}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- GitLab URL validation test cases ---
+
+run_gitlab_url_test "gitlab-url-valid-gitlab-com" \
+  "https://gitlab.com/group/project/-/issues/42" "valid"
+
+run_gitlab_url_test "gitlab-url-valid-redhat" \
+  "https://gitlab.cee.redhat.com/gallen/integration-service/-/issues/1" "valid"
+
+run_gitlab_url_test "gitlab-url-valid-nested-group" \
+  "https://gitlab.com/org/sub-group/project/-/issues/99" "valid"
+
+run_gitlab_url_test "gitlab-url-invalid-no-dash-segment" \
+  "https://gitlab.com/group/project/issues/42" "invalid:pattern"
+
+run_gitlab_url_test "gitlab-url-invalid-github-url" \
+  "https://github.com/owner/repo/issues/42" "invalid:pattern"
+
+run_gitlab_url_test "gitlab-url-invalid-unknown-host" \
+  "https://git.example.com/group/project/-/issues/42" "invalid:host"
+
+run_gitlab_url_test "gitlab-url-invalid-http-scheme" \
+  "http://gitlab.com/group/project/-/issues/42" "invalid:pattern"
+
+run_gitlab_url_test "gitlab-url-invalid-non-numeric-issue" \
+  "https://gitlab.com/group/project/-/issues/abc" "invalid:pattern"
+
+run_gitlab_url_test "gitlab-url-invalid-mr-not-issue" \
+  "https://gitlab.com/group/project/-/merge_requests/42" "invalid:pattern"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the GitLab issue URL parsing from
+# gitlab-code-ops.lib.sh forge_parse_issue_url.
+# ---------------------------------------------------------------------------
+parse_gitlab_issue_url() {
+  local url="$1"
+  local host repo_full issue_number repo_encoded
+  host=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  repo_full=$(echo "${url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+  issue_number=$(basename "${url}")
+  repo_encoded=$(printf '%s' "${repo_full}" | jq -sRr @uri)
+  echo "host=${host} repo=${repo_full} encoded=${repo_encoded} issue=${issue_number}"
+}
+
+run_gitlab_parse_test() {
+  local test_name="$1"
+  local url="$2"
+  local check_pattern="$3"
+
+  local actual
+  actual="$(parse_gitlab_issue_url "${url}")"
+
+  if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+    echo "FAIL: ${test_name}"
+    echo "  url:       '${url}'"
+    echo "  expected:  '${check_pattern}'"
+    echo "  actual:    '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- GitLab URL parsing test cases ---
+
+run_gitlab_parse_test "gitlab-parse-host" \
+  "https://gitlab.com/group/project/-/issues/42" \
+  "host=gitlab.com"
+
+run_gitlab_parse_test "gitlab-parse-repo" \
+  "https://gitlab.com/group/project/-/issues/42" \
+  "repo=group/project"
+
+run_gitlab_parse_test "gitlab-parse-issue-number" \
+  "https://gitlab.com/group/project/-/issues/42" \
+  "issue=42"
+
+run_gitlab_parse_test "gitlab-parse-encoded-path" \
+  "https://gitlab.com/group/project/-/issues/42" \
+  "encoded=group%2Fproject"
+
+run_gitlab_parse_test "gitlab-parse-nested-group" \
+  "https://gitlab.com/org/sub-group/project/-/issues/99" \
+  "repo=org/sub-group/project"
+
+run_gitlab_parse_test "gitlab-parse-nested-encoded" \
+  "https://gitlab.com/org/sub-group/project/-/issues/99" \
+  "encoded=org%2Fsub-group%2Fproject"
+
+run_gitlab_parse_test "gitlab-parse-redhat-host" \
+  "https://gitlab.cee.redhat.com/gallen/integration-service/-/issues/1" \
+  "host=gitlab.cee.redhat.com"
+
+# ---------------------------------------------------------------------------
+# GitLab token sanitization — tests the sed patterns added to
+# sanitize_failure_detail for GitLab tokens and auth headers.
+#
+# Reimplements the token-stripping regex to test patterns in isolation.
+# ---------------------------------------------------------------------------
+sanitize_gitlab_tokens() {
+  local detail="$1"
+  printf '%s\n' "${detail}" | sed -E \
+    -e 's/glpat-[A-Za-z0-9_-]{20,}/[REDACTED]/g' \
+    -e 's/oauth2:[^@[:space:]]+/oauth2:[REDACTED]/g' \
+    -e 's/(Bearer|token|PRIVATE-TOKEN:)[[:space:]]*[A-Za-z0-9._-]+/\1 [REDACTED]/gi' \
+    -e 's/x-access-token:[^@[:space:]]+/x-access-token:[REDACTED]/g'
+}
+
+run_gitlab_sanitize_test() {
+  local test_name="$1"
+  local input="$2"
+  local check_pattern="$3"
+  local expect_present="$4"  # "yes" or "no"
+
+  local actual
+  actual="$(sanitize_gitlab_tokens "${input}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in output:        '${actual}'"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in output:            '${actual}'"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- GitLab token sanitization test cases ---
+
+# glpat- personal access tokens should be redacted
+run_gitlab_sanitize_test "sanitize-glpat-token" \
+  "fatal: Authentication failed: glpat-xxxxxxxxxxxxxxxxxxxx" \
+  "glpat-" "no"
+
+run_gitlab_sanitize_test "sanitize-glpat-replaced" \
+  "fatal: Authentication failed: glpat-xxxxxxxxxxxxxxxxxxxx" \
+  "[REDACTED]" "yes"
+
+# oauth2:TOKEN in push URLs should be redacted
+run_gitlab_sanitize_test "sanitize-oauth2-push-url" \
+  "https://oauth2:glpat-secret-token@gitlab.com/group/project.git" \
+  "glpat-secret-token" "no"
+
+run_gitlab_sanitize_test "sanitize-oauth2-replaced" \
+  "https://oauth2:glpat-secret-token@gitlab.com/group/project.git" \
+  "oauth2:[REDACTED]" "yes"
+
+# PRIVATE-TOKEN header should be redacted (value constructed to avoid gitleaks)
+_pt_val="glpat-secret"
+_pt_val="${_pt_val}123456789abc"
+run_gitlab_sanitize_test "sanitize-private-token-header" \
+  "curl --header \"PRIVATE-TOKEN: ${_pt_val}\" https://api.example.com" \
+  "${_pt_val}" "no"
+
+# Bearer token should be redacted (value constructed to avoid gitleaks)
+_bearer_val="eyJhbGciOiJSUzI1"
+_bearer_val="${_bearer_val}NiJ9.payload"
+run_gitlab_sanitize_test "sanitize-bearer-token" \
+  "Authorization: Bearer ${_bearer_val}" \
+  "${_bearer_val}" "no"
+
+# x-access-token should still be redacted (existing GitHub pattern)
+run_gitlab_sanitize_test "sanitize-x-access-token" \
+  "https://x-access-token:ghs_abcdef123456@github.com/org/repo.git" \
+  "ghs_abcdef123456" "no"
+
+# Non-token text should be preserved
+run_gitlab_sanitize_test "sanitize-preserves-normal-text" \
+  "fatal: remote origin already exists" \
+  "fatal: remote origin already exists" "yes"
+
+# ---------------------------------------------------------------------------
+# GitLab push remote URL construction — tests the oauth2 auth URL format
+# used by forge_set_push_remote.
+# ---------------------------------------------------------------------------
+build_gitlab_push_url() {
+  local token="$1"
+  local host="$2"
+  local repo="$3"
+  printf 'https://oauth2:%s@%s/%s.git' "${token}" "${host}" "${repo}"
+}
+
+run_gitlab_push_url_test() {
+  local test_name="$1"
+  local token="$2"
+  local host="$3"
+  local repo="$4"
+  local check_pattern="$5"
+
+  local actual
+  actual="$(build_gitlab_push_url "${token}" "${host}" "${repo}")"
+
+  if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+    echo "FAIL: ${test_name}"
+    echo "  expected to find: '${check_pattern}'"
+    echo "  actual:           '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- GitLab push URL test cases ---
+
+run_gitlab_push_url_test "gitlab-push-url-format" \
+  "glpat-testtoken1234567890" "gitlab.com" "group/project" \
+  "https://oauth2:glpat-testtoken1234567890@gitlab.com/group/project.git"
+
+run_gitlab_push_url_test "gitlab-push-url-nested-group" \
+  "token123" "gitlab.cee.redhat.com" "org/sub/project" \
+  "https://oauth2:token123@gitlab.cee.redhat.com/org/sub/project.git"
+
+# ---------------------------------------------------------------------------
+# Forge dispatch pattern — tests that the declare -F dispatch pattern used
+# in post-failure-report.lib.sh and pr-assignee.lib.sh works correctly.
+# ---------------------------------------------------------------------------
+run_forge_dispatch_test() {
+  local test_name="$1"
+  local define_fn="$2"  # "yes" or "no"
+  local expected="$3"
+
+  local actual
+  if [ "${define_fn}" = "yes" ]; then
+    actual="$(
+      _test_forge_fn() { echo "forge"; }
+      if declare -F _test_forge_fn >/dev/null 2>&1; then
+        _test_forge_fn
+      else
+        echo "fallback"
+      fi
+    )"
+  else
+    actual="$(
+      if declare -F _test_forge_fn >/dev/null 2>&1; then
+        _test_forge_fn
+      else
+        echo "fallback"
+      fi
+    )"
+  fi
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  define_fn: '${define_fn}'"
+    echo "  expected:  '${expected}'"
+    echo "  actual:    '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Forge dispatch test cases ---
+
+run_forge_dispatch_test "dispatch-with-forge-fn" \
+  "yes" "forge"
+
+run_forge_dispatch_test "dispatch-without-forge-fn" \
+  "no" "fallback"
+
+# ---------------------------------------------------------------------------
+# GitLab integration test — runs the REAL post-code.sh with FULLSEND_FORGE=gitlab
+# against a minimal repo with mock binaries to verify the GitLab forge path
+# executes end-to-end (namespace enforcement, push, MR creation).
+# ---------------------------------------------------------------------------
+
+GL_INT_TMPDIR="$(mktemp -d)"
+GL_INT_MOCK_BIN="${GL_INT_TMPDIR}/bin"
+mkdir -p "${GL_INT_MOCK_BIN}"
+
+cat > "${GL_INT_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${GL_INT_MOCK_BIN}/sleep"
+
+cat > "${GL_INT_MOCK_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${GL_INT_MOCK_BIN}/gitleaks"
+
+GL_REAL_GIT="$(which git)"
+cat > "${GL_INT_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+exec ${GL_REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${GL_INT_MOCK_BIN}/git"
+
+# Mock curl to simulate GitLab API responses for MR lifecycle
+cat > "${GL_INT_MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+url=""
+method="GET"
+for arg in "$@"; do
+  case "${arg}" in
+    https://*) url="${arg}" ;;
+  esac
+done
+prev=""
+for arg in "$@"; do
+  if [[ "${prev}" == "--request" || "${prev}" == "-X" ]]; then
+    method="${arg}"
+  fi
+  prev="${arg}"
+done
+case "${method} ${url}" in
+  *merge_requests\?state=opened*source_branch*)
+    echo '[]'; exit 0 ;;
+  *merge_requests\?state=opened*)
+    echo '[]'; exit 0 ;;
+  POST*merge_requests)
+    echo '{"iid":1,"web_url":"https://gitlab.com/test-group/test-project/-/merge_requests/1"}'; exit 0 ;;
+  PUT*merge_requests/*)
+    echo '{}'; exit 0 ;;
+  *projects/*)
+    echo '{"id":1,"default_branch":"main","merge_method":"merge"}'; exit 0 ;;
+  *users*)
+    echo '[]'; exit 0 ;;
+  *issues/*)
+    echo '{}'; exit 0 ;;
+  *)
+    echo '{}'; exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${GL_INT_MOCK_BIN}/curl"
+
+setup_gl_int_repo() {
+  local run_dir="$1"
+  local branch_name="${2:-evil-branch}"
+  local bare_dir="${run_dir}/remote.git"
+  local repo_dir="${run_dir}/repo"
+
+  ${GL_REAL_GIT} init -q --bare -b main "${bare_dir}"
+  ${GL_REAL_GIT} clone -q "${bare_dir}" "${repo_dir}"
+  ${GL_REAL_GIT} -C "${repo_dir}" config user.email "test@example.com"
+  ${GL_REAL_GIT} -C "${repo_dir}" config user.name "Test"
+  echo "init" > "${repo_dir}/README.md"
+  ${GL_REAL_GIT} -C "${repo_dir}" add README.md
+  ${GL_REAL_GIT} -C "${repo_dir}" commit -q -m "init"
+  ${GL_REAL_GIT} -C "${repo_dir}" push -q origin main
+
+  ${GL_REAL_GIT} -C "${repo_dir}" checkout -q -b "${branch_name}"
+  echo "changed content" > "${repo_dir}/file.txt"
+  ${GL_REAL_GIT} -C "${repo_dir}" add -f file.txt
+  ${GL_REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
+}
+
+# --- GitLab namespace enforcement: arbitrary branch renamed to agent/<issue>-* ---
+_gl_ns_dir="${GL_INT_TMPDIR}/run-gl-namespace"
+setup_gl_int_repo "${_gl_ns_dir}" "evil-branch"
+
+_gl_ns_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_gl_ns_dir}"
+  export HOME="${GL_INT_TMPDIR}"
+  export PATH="${GL_INT_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="glpat-fake-token-for-test"
+  export REPO_FULL_NAME="test-group/test-project"
+  export ISSUE_NUMBER="99"
+  export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="gitlab"
+  export GITLAB_TOKEN="${PUSH_TOKEN}"
+  export GITLAB_HOST="gitlab.com"
+  bash "${POST_SCRIPT}"
+) > "${GL_INT_TMPDIR}/stdout-gl-namespace.log" 2>&1 || _gl_ns_rc=$?
+
+_gl_ns_safe="$(${GL_REAL_GIT} -C "${_gl_ns_dir}/remote.git" branch --list "agent/99-evil-branch" 2>/dev/null)"
+_gl_ns_evil="$(${GL_REAL_GIT} -C "${_gl_ns_dir}/remote.git" branch --list "evil-branch" 2>/dev/null)"
+
+if [ -n "${_gl_ns_safe}" ] && [ -z "${_gl_ns_evil}" ]; then
+  echo "PASS: gitlab-integration-namespace-enforcement"
+else
+  echo "FAIL: gitlab-integration-namespace-enforcement"
+  echo "  exit code:      ${_gl_ns_rc}"
+  echo "  agent/99-*:     '${_gl_ns_safe}'"
+  echo "  evil-branch:    '${_gl_ns_evil}'"
+  echo "  remote refs:    $(${GL_REAL_GIT} -C "${_gl_ns_dir}/remote.git" branch --list)"
+  cat "${GL_INT_TMPDIR}/stdout-gl-namespace.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+rm -rf "${GL_INT_TMPDIR}"
+
+# =============================================================================
+# GitLab auto-merge unit tests
+# =============================================================================
+
+run_am_test() {
+  local test_name="$1"
+  local mock_body="$2"
+  local expect_pattern="$3"  # grep -qE pattern expected in combined output
+  local expect_absent="${4:-}"  # optional pattern that must NOT appear
+
+  local am_output
+  am_output=$(
+    # Source the lib first, then override the API function
+    unset GITLAB_CODE_OPS_SH_LOADED
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+
+    # Override _gitlab_code_api with the test mock (AFTER source)
+    eval "${mock_body}"
+
+    # Stub gha_echo to write to stdout so we can capture it
+    # shellcheck disable=SC2317
+    gha_echo() { echo "::${1}::${2:-}"; }
+    # Stub sleep to no-op
+    # shellcheck disable=SC2317
+    sleep() { :; }
+
+    export REPO_ENCODED="test-group%2Ftest-project"
+    forge_enable_auto_merge "1" "--squash"
+  ) 2>&1
+
+  local pass=true
+  if [ -n "${expect_pattern}" ]; then
+    if ! echo "${am_output}" | grep -qE "${expect_pattern}"; then
+      pass=false
+    fi
+  fi
+  if [ -n "${expect_absent}" ]; then
+    if echo "${am_output}" | grep -qE "${expect_absent}"; then
+      pass=false
+    fi
+  fi
+
+  if ${pass}; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name}"
+    echo "  expected pattern: ${expect_pattern}"
+    [ -n "${expect_absent}" ] && echo "  absent pattern:   ${expect_absent}"
+    echo "  output: ${am_output}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Test 1: pipeline running — should arm auto-merge
+run_am_test "gitlab-auto-merge-pipeline-running" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"running\"},\"detailed_merge_status\":\"not_approved\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "" "merge immediately"
+
+# Test 2: pipeline pending — should arm auto-merge
+run_am_test "gitlab-auto-merge-pipeline-pending" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"pending\"},\"detailed_merge_status\":\"not_approved\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "" "merge immediately"
+
+# Test 3: pipeline preparing (transitional) — should arm auto-merge
+run_am_test "gitlab-auto-merge-pipeline-preparing" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"preparing\"},\"detailed_merge_status\":\"not_approved\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "" "merge immediately"
+
+# Test 4: no pipeline after 3 retries — should skip
+run_am_test "gitlab-auto-merge-no-pipeline" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":null,\"detailed_merge_status\":\"unknown\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "no pipeline after 3 attempts"
+
+# Test 5: pipeline failed — should skip
+run_am_test "gitlab-auto-merge-pipeline-failed" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"failed\"},\"detailed_merge_status\":\"ci_must_pass\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "pipeline status .failed."
+
+# Test 6: pipeline canceled — should skip
+run_am_test "gitlab-auto-merge-pipeline-canceled" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"canceled\"},\"detailed_merge_status\":\"ci_must_pass\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "pipeline status .canceled."
+
+# Test 7: API failure — should skip gracefully
+run_am_test "gitlab-auto-merge-api-failure" '
+_gitlab_code_api() { return 1; }' \
+  "could not query MR"
+
+# Test 8: pipeline success + MR immediately mergeable — BLOCKED guard should skip
+run_am_test "gitlab-auto-merge-blocked-guard-mergeable" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"success\"},\"detailed_merge_status\":\"mergeable\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "immediately mergeable"
+
+# Test 9: pipeline success + MR blocked (approvals needed) — should arm
+run_am_test "gitlab-auto-merge-blocked-guard-not-approved" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"success\"},\"detailed_merge_status\":\"not_approved\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "pipeline passed but MR is blocked" "immediately mergeable"
+
+# Test 10: pipeline running + MR immediately mergeable — BLOCKED guard should skip
+run_am_test "gitlab-auto-merge-running-but-mergeable" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"running\"},\"detailed_merge_status\":\"mergeable\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "immediately mergeable"
+
+# Test 11: legacy can_be_merged status — BLOCKED guard should skip
+run_am_test "gitlab-auto-merge-can-be-merged" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"success\"},\"merge_status\":\"can_be_merged\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "immediately mergeable"
+
+# Test 12: checking status + pipeline running — should arm (pipeline provides safety)
+run_am_test "gitlab-auto-merge-checking-running" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"running\"},\"detailed_merge_status\":\"checking\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "" "skipping"
+
+# Test 13: checking status + pipeline success — should skip (could merge immediately)
+run_am_test "gitlab-auto-merge-checking-success" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"success\"},\"detailed_merge_status\":\"checking\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "not settled but pipeline passed"
+
+# Test 14: unknown merge status — should skip conservatively
+run_am_test "gitlab-auto-merge-unknown-merge-status" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"running\"},\"detailed_merge_status\":\"some_future_status\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "unrecognized merge status"
+
+# Test 15: preparing status + pipeline running — should arm (new MR transitional state)
+run_am_test "gitlab-auto-merge-preparing-running" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"running\"},\"detailed_merge_status\":\"preparing\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "" "skipping"
+
+# Test 16: preparing status + pipeline success — should skip (could merge immediately)
+run_am_test "gitlab-auto-merge-preparing-success" '
+_gitlab_code_api() {
+  case "$2" in
+    */merge_requests/1) echo "{\"head_pipeline\":{\"status\":\"success\"},\"detailed_merge_status\":\"preparing\"}" ;;
+    */merge) return 0 ;;
+  esac
+}' "not settled but pipeline passed"
+
+# =============================================================================
+# GitLab workflow-run-url tests
+# =============================================================================
+
+run_workflow_url_test() {
+  local test_name="$1"
+  local env_setup="$2"
+  local expected_url="$3"
+
+  local actual_url
+  actual_url=$(
+    unset GITLAB_CODE_OPS_SH_LOADED
+    unset GITHUB_RUN_ID GITHUB_REPOSITORY GITHUB_SERVER_URL
+    unset CI_SERVER_URL CI_PROJECT_PATH CI_PIPELINE_ID CI_JOB_ID
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+    eval "${env_setup}"
+    # shellcheck disable=SC2031
+    export REPO_FULL_NAME="test-group/test-project"
+    forge_get_workflow_run_url
+  ) 2>&1
+
+  if [ "${actual_url}" = "${expected_url}" ]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name}"
+    echo "  expected: ${expected_url}"
+    echo "  actual:   ${actual_url}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+# Test 1: GitLab CI with job ID
+run_workflow_url_test "gitlab-workflow-url-job" \
+  'export CI_SERVER_URL="https://gitlab.com"; export CI_PROJECT_PATH="grp/proj"; export CI_JOB_ID="12345"' \
+  "https://gitlab.com/grp/proj/-/jobs/12345"
+
+# Test 2: GitLab CI with pipeline ID only
+run_workflow_url_test "gitlab-workflow-url-pipeline" \
+  'export CI_SERVER_URL="https://gitlab.com"; export CI_PROJECT_PATH="grp/proj"; export CI_PIPELINE_ID="67890"' \
+  "https://gitlab.com/grp/proj/-/pipelines/67890"
+
+# Test 3: GHA fallback — GITHUB_RUN_ID present
+run_workflow_url_test "gitlab-workflow-url-gha-fallback" \
+  'export GITHUB_RUN_ID="111"; export GITHUB_REPOSITORY="org/repo"; export GITHUB_SERVER_URL="https://github.com"' \
+  "https://github.com/org/repo/actions/runs/111"
+
+# Test 4: GHA fallback takes precedence over GitLab CI vars
+run_workflow_url_test "gitlab-workflow-url-gha-precedence" \
+  'export GITHUB_RUN_ID="111"; export GITHUB_REPOSITORY="org/repo"; export CI_SERVER_URL="https://gitlab.com"; export CI_JOB_ID="999"' \
+  "https://github.com/org/repo/actions/runs/111"
 
 # --- Summary ---
 

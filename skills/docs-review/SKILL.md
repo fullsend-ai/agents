@@ -1,11 +1,12 @@
 ---
 name: docs-review
 description: >-
-  Evaluates whether a PR's code changes have made in-repo documentation
-  stale. Discovers documentation files, matches changed identifiers
-  against doc content, and produces findings for stale or missing
-  documentation. Read-only — flags staleness but does not update docs.
-  Can be delegated to by the pr-review skill.
+  Use when checking whether a PR's code changes require documentation
+  updates, or when delegated to by the pr-review skill. Evaluates whether
+  a PR's code changes have made in-repo documentation stale. Discovers
+  documentation files, matches changed identifiers against doc content,
+  and produces findings for stale or missing documentation. Read-only —
+  flags staleness but does not update docs.
 ---
 
 # Docs Review

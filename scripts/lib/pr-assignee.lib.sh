@@ -120,6 +120,10 @@ _pr_assignee_warn() {
 
 # Fetch issue comments (paginated REST) as a single JSON array. Best-effort.
 fetch_issue_comments_json() {
+  if declare -F forge_get_issue_comments >/dev/null 2>&1; then
+    forge_get_issue_comments
+    return 0
+  fi
   local raw
   if ! raw="$(gh api --paginate \
     "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/comments" 2>/dev/null)"; then
@@ -133,12 +137,16 @@ fetch_issue_comments_json() {
   echo "${raw}" | jq -s 'add // []' 2>/dev/null || echo '[]'
 }
 
-# Resolve using issue comments + assignees/author via GitHub API.
+# Resolve using issue comments + assignees/author via forge API.
 resolve_pr_assignee() {
   local comments_json issue_json
   comments_json="$(fetch_issue_comments_json)"
-  issue_json="$(gh issue view "${ISSUE_NUMBER}" --repo "${REPO_FULL_NAME}" \
-    --json assignees,author 2>/dev/null || true)"
+  if declare -F forge_get_issue_details >/dev/null 2>&1; then
+    issue_json="$(forge_get_issue_details || true)"
+  else
+    issue_json="$(gh issue view "${ISSUE_NUMBER}" --repo "${REPO_FULL_NAME}" \
+      --json assignees,author 2>/dev/null || true)"
+  fi
   resolve_pr_assignee_from_context "${comments_json}" "${issue_json}"
 }
 
@@ -149,10 +157,19 @@ resolve_pr_assignee() {
 maybe_assign_pr() {
   local target_pr="$1"
   local existing_count
-  if ! existing_count="$(gh pr view "${target_pr}" --repo "${REPO_FULL_NAME}" \
-    --json assignees --jq '.assignees | length' 2>/dev/null)"; then
-    _pr_assignee_warn "Could not read assignees for PR #${target_pr} — skipping assignment"
-    return 0
+  if declare -F forge_get_pr_details >/dev/null 2>&1; then
+    local pr_json
+    pr_json="$(forge_get_pr_details "${target_pr}" "assignees" 2>/dev/null)" || {
+      _pr_assignee_warn "Could not read assignees for PR #${target_pr} — skipping assignment"
+      return 0
+    }
+    existing_count="$(echo "${pr_json}" | jq '[.assignees // .assignee // [] | if type == "array" then .[] else . end] | length' 2>/dev/null || echo "0")"
+  else
+    if ! existing_count="$(gh pr view "${target_pr}" --repo "${REPO_FULL_NAME}" \
+      --json assignees --jq '.assignees | length' 2>/dev/null)"; then
+      _pr_assignee_warn "Could not read assignees for PR #${target_pr} — skipping assignment"
+      return 0
+    fi
   fi
   if [[ "${existing_count}" != "0" ]]; then
     echo "PR #${target_pr} already has assignees — skipping assignment"
@@ -165,19 +182,23 @@ maybe_assign_pr() {
     echo "No human assignee candidate — leaving PR #${target_pr} unassigned"
     return 0
   fi
-  # Defense-in-depth: only pass GitHub-login-shaped values to gh.
-  if [[ ! "${assignee}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+  # Defense-in-depth: only pass login-shaped values to the forge assign API.
+  if [[ ! "${assignee}" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
     _pr_assignee_warn "Unexpected assignee format '${assignee}' — skipping assignment"
     return 0
   fi
 
   echo "Assigning PR #${target_pr} to ${assignee}..."
-  local assign_err
-  assign_err="$(gh pr edit "${target_pr}" --repo "${REPO_FULL_NAME}" \
-    --add-assignee "${assignee}" 2>&1)" || {
-    _pr_assignee_warn "Failed to assign PR #${target_pr} to ${assignee} — continuing"
-    if [[ -n "${assign_err}" ]]; then
-      _pr_assignee_warn "${assign_err}"
-    fi
-  }
+  if declare -F forge_assign_pr >/dev/null 2>&1; then
+    forge_assign_pr "${target_pr}" "${assignee}"
+  else
+    local assign_err
+    assign_err="$(gh pr edit "${target_pr}" --repo "${REPO_FULL_NAME}" \
+      --add-assignee "${assignee}" 2>&1)" || {
+      _pr_assignee_warn "Failed to assign PR #${target_pr} to ${assignee} — continuing"
+      if [[ -n "${assign_err}" ]]; then
+        _pr_assignee_warn "${assign_err}"
+      fi
+    }
+  fi
 }

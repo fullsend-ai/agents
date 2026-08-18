@@ -1,0 +1,50 @@
+# The agent should decompose this into sub-issues and close the original.
+# Three independent maintenance items across different files — a textbook
+# case for the split action.
+state: closed
+
+labels:
+  forbidden:
+    - ready-to-code
+    - needs-info
+    - triaged
+    - blocked
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue explicitly bundles three independent maintenance items that
+  touch different files (validators.py, views.py, README.md) with no
+  dependency between them. The reporter even states "none of these depend
+  on each other."
+
+  This is a textbook case for the split action. A good triage should:
+
+  1. Recognize the bundled structure — three numbered items across
+     unrelated files with no dependency chain.
+  2. Choose action "split" with at least 3 sub-issues.
+  3. Write each sub-issue body with enough context to stand alone —
+     a developer reading a sub-issue should not need to refer back
+     to the original.
+  4. Post a comment explaining the decomposition before closing.
+  5. NOT treat this as a single "sufficient" issue. The items are
+     genuinely independent and resolving one leaves the others open.
+  6. NOT use "insufficient" — each item is clear enough to act on.
+
+  What a good split looks like:
+  - Sub-issue 1 covers the misleading docstring in validators.py.
+    The agent should verify that the regex pattern does accept '+'.
+  - Sub-issue 2 covers the missing None check in login_handler.
+    The agent should note the TypeError risk.
+  - Sub-issue 3 covers the empty README and the documentation gaps.
+
+  A score of 1 means the agent triaged this as a single issue
+  (sufficient or insufficient) without splitting.
+  A score of 3 means the agent correctly split but the sub-issue
+  bodies are thin copies of the original list items rather than
+  self-contained descriptions.
+  A score of 5 means the agent split into well-written, standalone
+  sub-issues that each provide enough context for independent triage,
+  posted a clear explanatory comment, and verified the claims against
+  the source code.

@@ -1,0 +1,25 @@
+forge: github
+fixture:
+  type: issue
+  title: "Several maintenance items for the auth module"
+  body: |
+    I've been reviewing the auth codebase and found a few things that need
+    attention:
+
+    1. **Wrong docstring in validators.py**: The `validate_email` docstring
+       says "This regex rejects '+' in the local part" but the actual pattern
+       `[a-zA-Z0-9._%+-]` includes `+`. The docstring is misleading and will
+       confuse anyone reading the code.
+
+    2. **Missing input validation in login_handler**: `login_handler` in
+       `views.py` passes `request.params.get("email")` directly to
+       `validate_email` without checking for `None`. If the email parameter
+       is absent, `re.match(pattern, None)` raises a `TypeError` instead of
+       returning a 400 error.
+
+    3. **README is essentially empty**: `README.md` has just a title and one
+       sentence. It needs setup instructions, API endpoint documentation,
+       dependency requirements, and development guidelines.
+
+    None of these depend on each other — they touch different files and can
+    be fixed independently.

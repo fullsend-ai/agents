@@ -61,7 +61,7 @@ dataset:
 outputs:
   - path: output
     schema: |
-      fixture-state.json: Captured state of the GitHub issue/PR after the
+      fixture-state.json: Captured state of the issue/PR after the
       full agent pipeline (pre-script, agent, post-script) has run.
       Contains: state, labels, comments, assignees, and for PRs: reviews.
 
@@ -75,7 +75,7 @@ judges:
       were applied, but whether the agent's comment demonstrates understanding
       of the issue and provides actionable guidance.
     prompt: |
-      You are evaluating a triage agent's work on a GitHub issue.
+      You are evaluating a triage agent's work on an issue.
 
       The agent was given an issue filed against a repo, and ran a full
       triage pipeline: it read the source code, analyzed the issue, posted

@@ -1,0 +1,5 @@
+---
+name: github-artifacts
+type: fullsend-github-artifacts
+credentials:
+  GH_TOKEN: "${GH_TOKEN}"

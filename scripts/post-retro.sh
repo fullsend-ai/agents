@@ -65,6 +65,47 @@ ORIGINATING_NUMBER=$(basename "${ORIGINATING_URL}")
 
 echo "Originating: ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
 
+# Read the allowlist from config.yaml. The config repo is checked out
+# at $GITHUB_WORKSPACE by the reusable workflow.
+CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/config.yaml"
+if [[ ! -f "${CONFIG_FILE}" ]]; then
+  # Per-repo mode: config is under .fullsend/
+  CONFIG_FILE="${GITHUB_WORKSPACE:-/tmp}/.fullsend/config.yaml"
+fi
+
+ALLOWED_ORGS=""
+ALLOWED_REPOS=""
+if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+  echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+fi
+if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
+  ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+  ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+fi
+
+# The originating repo is always implicitly allowed.
+is_target_allowed() {
+  local target_repo="$1"
+  local target_org="${target_repo%%/*}"
+
+  # Source repo is always allowed.
+  if [[ "${target_repo}" == "${ORIGINATING_REPO}" ]]; then
+    return 0
+  fi
+
+  # Check org allowlist.
+  if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
+    return 0
+  fi
+
+  # Check repo allowlist.
+  if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
+    return 0
+  fi
+
+  return 1
+}
+
 # File an issue for each proposal.
 PROPOSAL_COUNT=$(jq '.proposals | length' "${RESULT_FILE}")
 echo "Found ${PROPOSAL_COUNT} proposal(s)"
@@ -97,6 +138,7 @@ echo "All ${PROPOSAL_COUNT} proposal(s) validated"
 ISSUE_LINKS=""
 EVIDENCE_NOTES=""
 FILTERED_COUNT=0
+SKIPPED_TARGETS=""
 if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
   for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
@@ -121,6 +163,14 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       EVIDENCE_NOTES="${EVIDENCE_NOTES}
 - **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
       FILTERED_COUNT=$((FILTERED_COUNT + 1))
+      continue
+    fi
+
+    # Allowlist gate: reject proposals targeting repos not in allow_targets.
+    if ! is_target_allowed "${TARGET_REPO}"; then
+      echo "::warning::Skipping issue creation in '${TARGET_REPO}' — not in create_issues.allow_targets"
+      SKIPPED_TARGETS="${SKIPPED_TARGETS}
+- **${TITLE}** (\`${TARGET_REPO}\`)"
       continue
     fi
 
@@ -190,6 +240,9 @@ if [[ -n "${ISSUE_LINKS}" ]]; then
 fi
 if [[ -n "${EVIDENCE_NOTES}" ]]; then
   COMMENT=$(printf '%s\n\n### Evidence notes (not filed as issues)\n%s' "${COMMENT}" "${EVIDENCE_NOTES}")
+fi
+if [[ -n "${SKIPPED_TARGETS}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals skipped (target repo not allowed)\n\nFile manually or update `create_issues.allow_targets` in config.yaml:\n%s' "${COMMENT}" "${SKIPPED_TARGETS}")
 fi
 
 # GitHub comment limit is 65536 chars. Truncate EVIDENCE_NOTES first if over.

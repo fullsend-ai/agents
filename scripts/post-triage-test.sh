@@ -7,7 +7,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POST_SCRIPT="${SCRIPT_DIR}/post-triage.sh"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+POST_SCRIPT="$(resolve_agent_script post-triage "${SCRIPT_DIR}")"
 FAILURES=0
 
 # Create a temp directory for test fixtures and mock state.
@@ -61,9 +64,35 @@ fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
+# Mock yq: parse the test config.yaml for create_issues.allow_targets.
+# Handles the two queries used by post-triage.sh's is_target_allowed().
+cat > "${MOCK_BIN}/yq" <<'YQEOF'
+#!/usr/bin/env bash
+FILTER="$2"
+FILE="$3"
+if [[ ! -f "${FILE}" ]]; then
+  exit 1
+fi
+case "${FILTER}" in
+  '.create_issues.allow_targets.orgs // [] | .[]')
+    # Extract lines under orgs: indented with "      - "
+    sed -n '/^    orgs:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    ;;
+  '.create_issues.allow_targets.repos // [] | .[]')
+    # Extract lines under repos: indented with "      - "
+    sed -n '/^    repos:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+YQEOF
+chmod +x "${MOCK_BIN}/yq"
+
 export PATH="${MOCK_BIN}:${PATH}"
-export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
+export FULLSEND_FORGE="github"
 # Harness defaults — post-triage.sh expects these from the harness env.
 export TRIAGE_AUTO_CODE="on"
 export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
@@ -1073,6 +1102,522 @@ run_test_with_env "auto-code-on-whitespace-tolerant" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
   $'TRIAGE_AUTO_CODE=on\nTRIAGE_AUTO_CODE_CATEGORIES=bug, documentation, performance'
+
+# --- Split action tests (#756) ---
+
+SPLIT_FIXTURE='{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated and reference old API."}],"comment":"This issue covers two independent problems that should be tracked separately."}'
+
+run_test "split-posts-comment" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "split-creates-first-sub-issue" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Fix crash on save --body The save handler crashes when input is empty."
+
+run_test "split-creates-second-sub-issue" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Update error messages --body Error messages are outdated and reference old API."
+
+run_test "split-closes-original" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue close 42 --repo test-org/test-repo --reason completed"
+
+run_test "split-appends-sub-issue-links" \
+  "${SPLIT_FIXTURE}" \
+  "Split into:"
+
+run_test "split-removes-blocked-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "split-removes-needs-info-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "split-removes-ready-to-code-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-to-code -X DELETE --silent"
+
+run_test "split-removes-pr-open-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
+
+run_test "split-clears-stale-triaged-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
+
+run_test "split-missing-comment-fails" \
+  '{"action":"split","reasoning":"bundles independent concerns","sub_issues":[{"title":"A","body":"a"},{"title":"B","body":"b"}]}' \
+  "" \
+  "true"
+
+run_test "split-fewer-than-two-sub-issues-fails" \
+  '{"action":"split","reasoning":"bundles independent concerns","sub_issues":[{"title":"Only one","body":"single item"}],"comment":"Split."}' \
+  "" \
+  "true"
+
+run_test "split-three-sub-issues" \
+  '{"action":"split","reasoning":"bundles three concerns","sub_issues":[{"title":"A","body":"a"},{"title":"B","body":"b"},{"title":"C","body":"c"}],"comment":"Three independent items."}' \
+  "gh issue create --repo test-org/test-repo --title C --body c"
+
+# Cross-repo split: sub-issue targeting an allowed repo should be created there.
+run_test "split-creates-allowed-cross-repo-issue" \
+  '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"allowed-org/allowed-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}' \
+  "gh issue create --repo allowed-org/allowed-repo --title Upstream fix --body Fix upstream."
+
+# Cross-repo split: sub-issue targeting a disallowed repo should be skipped.
+run_test_stdout "split-skips-disallowed-cross-repo-issue" \
+  '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"disallowed-org/other-repo","title":"Remote fix","body":"Fix remote."}],"comment":"Split across repos."}' \
+  "::warning::Skipping sub-issue creation in 'disallowed-org/other-repo'"
+
+# Cross-repo split: sub-issue without repo field defaults to source repo.
+run_test "split-defaults-to-source-repo" \
+  '{"action":"split","reasoning":"no repo field","sub_issues":[{"title":"First","body":"a"},{"title":"Second","body":"b"}],"comment":"Split."}' \
+  "gh issue create --repo test-org/test-repo --title First --body a"
+
+# --- Split functional test: end-to-end flow (#756) ---
+# Runs the split action once and verifies the complete flow in a single test:
+# sub-issue creation, comment with appended links, label cleanup, and issue closure.
+
+SPLIT_FUNC_FIXTURE='{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated and reference old API."}],"comment":"This issue covers two independent problems that should be tracked separately."}'
+
+FUNC_TEST_NAME="split-functional-end-to-end"
+FUNC_RUN_DIR="${TMPDIR}/run-${FUNC_TEST_NAME}"
+mkdir -p "${FUNC_RUN_DIR}/iteration-1/output"
+echo "${SPLIT_FUNC_FIXTURE}" > "${FUNC_RUN_DIR}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+
+FUNC_EXIT=0
+(cd "${FUNC_RUN_DIR}" && bash "${POST_SCRIPT}") > "${TMPDIR}/func-stdout.log" 2>&1 || FUNC_EXIT=$?
+
+FUNC_FAILURES=0
+
+if [[ ${FUNC_EXIT} -ne 0 ]]; then
+  echo "FAIL: ${FUNC_TEST_NAME} — script exited with code ${FUNC_EXIT}"
+  cat "${TMPDIR}/func-stdout.log"
+  FUNC_FAILURES=$((FUNC_FAILURES + 1))
+else
+  # 1. Both sub-issues are created in the source repo.
+  if ! grep -qF "gh issue create --repo test-org/test-repo --title Fix crash on save --body The save handler crashes when input is empty." "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — first sub-issue not created"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+  if ! grep -qF "gh issue create --repo test-org/test-repo --title Update error messages --body Error messages are outdated and reference old API." "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — second sub-issue not created"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 2. Comment is posted on the original issue.
+  if ! grep -qF "gh issue comment 42 --repo test-org/test-repo --body-file -" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — comment not posted"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 3. Comment body includes "Split into:" with sub-issue URLs.
+  if ! grep -qF "Split into:" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — 'Split into:' not appended to comment"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+  if ! grep -qF "https://github.com/mock-org/mock-repo/issues/999" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — sub-issue URL not in comment body"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 4. Stale labels are cleaned up.
+  for label in blocked needs-info ready-to-code pr-open triaged; do
+    if ! grep -qF "gh api repos/test-org/test-repo/issues/42/labels/${label} -X DELETE --silent" "${GH_LOG}"; then
+      echo "FAIL: ${FUNC_TEST_NAME} — '${label}' label not removed"
+      FUNC_FAILURES=$((FUNC_FAILURES + 1))
+    fi
+  done
+
+  # 5. Original issue is closed with "completed" reason.
+  if ! grep -qF "gh issue close 42 --repo test-org/test-repo --reason completed" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — original issue not closed"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 6. Sub-issues are created BEFORE the comment is posted (order matters:
+  #    URLs must be collected before the comment is assembled and posted).
+  CREATE_LINE=$(grep -nF "gh issue create" "${GH_LOG}" | head -1 | cut -d: -f1)
+  COMMENT_LINE=$(grep -nF "gh issue comment" "${GH_LOG}" | head -1 | cut -d: -f1)
+  if [[ -n "${CREATE_LINE}" ]] && [[ -n "${COMMENT_LINE}" ]] && [[ "${CREATE_LINE}" -ge "${COMMENT_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — sub-issue creation should precede comment posting"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 7. Comment is posted BEFORE the issue is closed.
+  CLOSE_LINE=$(grep -nF "gh issue close" "${GH_LOG}" | head -1 | cut -d: -f1)
+  if [[ -n "${COMMENT_LINE}" ]] && [[ -n "${CLOSE_LINE}" ]] && [[ "${COMMENT_LINE}" -ge "${CLOSE_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — comment should be posted before issue is closed"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+fi
+
+if [[ ${FUNC_FAILURES} -gt 0 ]]; then
+  echo "FAIL: ${FUNC_TEST_NAME} — ${FUNC_FAILURES} assertion(s) failed"
+  echo "Actual gh calls:"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + FUNC_FAILURES))
+else
+  echo "PASS: ${FUNC_TEST_NAME}"
+fi
+
+# ---------------------------------------------------------------------------
+# GitLab forge tests
+# Verify that post-triage.sh works correctly with FULLSEND_FORGE=gitlab.
+# ---------------------------------------------------------------------------
+
+# Switch to GitLab forge. Replace mock curl to handle GitLab API patterns.
+export FULLSEND_FORGE="gitlab"
+export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+export GITLAB_TOKEN="fake-gitlab-token"
+unset GH_TOKEN
+
+# GitLab mock curl: record calls and return appropriate responses.
+CURL_LOG="${TMPDIR}/curl-calls.log"
+MOCK_NOTES_FILE="${TMPDIR}/mock-notes-override.json"
+MOCK_CURL_ISSUE_FAIL="${TMPDIR}/mock-curl-issue-fail"
+MOCK_CURL_LABEL_FAIL="${TMPDIR}/mock-curl-label-fail"
+MOCK_CURL_CLOSE_FAIL="${TMPDIR}/mock-curl-close-fail"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_NOTES_FILE=%s\nMOCK_CURL_ISSUE_FAIL=%s\nMOCK_CURL_LABEL_FAIL=%s\nMOCK_CURL_CLOSE_FAIL=%s\n' "${CURL_LOG}" "${MOCK_NOTES_FILE}" "${MOCK_CURL_ISSUE_FAIL}" "${MOCK_CURL_LABEL_FAIL}" "${MOCK_CURL_CLOSE_FAIL}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+
+# Parse the URL from args (last non-flag argument or after --request METHOD).
+URL=""
+METHOD="GET"
+WRITE_OUT=""
+HAS_FAIL=""
+HAS_LABEL_DATA=""
+HAS_CLOSE_DATA=""
+for arg in "$@"; do
+  case "${arg}" in
+    --request) shift_next=method ;;
+    --fail) HAS_FAIL=1 ;;
+    --silent|--show-error) ;;
+    --header|--connect-timeout|--max-time) shift_next=skip ;;
+    --data-urlencode) shift_next=data ;;
+    --write-out) shift_next=writeout ;;
+    *)
+      if [[ "${shift_next:-}" == "method" ]]; then
+        METHOD="${arg}"
+        shift_next=""
+      elif [[ "${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "${shift_next:-}" == "data" ]]; then
+        if [[ "${arg}" =~ ^(add_labels|remove_labels)= ]]; then
+          HAS_LABEL_DATA=1
+        fi
+        if [[ "${arg}" =~ ^state_event=close ]]; then
+          HAS_CLOSE_DATA=1
+        fi
+        shift_next=""
+      elif [[ "${shift_next:-}" == "writeout" ]]; then
+        WRITE_OUT="${arg}"
+        shift_next=""
+      elif [[ "${arg}" =~ ^https:// ]]; then
+        URL="${arg}"
+      fi
+      ;;
+  esac
+done
+
+# Return bot user identity.
+if [[ "${URL}" =~ /user$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"username":"fullsend-bot","id":12345,"name":"Fullsend Bot"}'
+  exit 0
+fi
+
+# Return labels for the issue when queried.
+if [[ "${URL}" =~ /issues/42$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"iid":42,"title":"Test issue","labels":["area/api","old-label"],"state":"opened"}'
+  exit 0
+fi
+
+# Return labels list for the project (only page 1).
+if [[ "${URL}" =~ /labels\? ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ "${URL}" =~ page=1(&|$) ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
+    echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"},{"name":"enhancement"},{"name":"bug"},{"name":"documentation"},{"name":"pr-open"}]'
+  else
+    echo '[]'
+  fi
+  exit 0
+fi
+
+# Return notes list — check for test-specific override file (page 1 only).
+if [[ "${URL}" =~ /notes\? ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ "${URL}" =~ page=1(&|$) ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
+    if [[ -f "${MOCK_NOTES_FILE}" ]]; then
+      cat "${MOCK_NOTES_FILE}"
+    else
+      echo '[]'
+    fi
+  else
+    echo '[]'
+  fi
+  exit 0
+fi
+
+# Simulate label API failure when flagged.
+if [[ -n "${HAS_LABEL_DATA}" ]] && [[ -f "${MOCK_CURL_LABEL_FAIL}" ]] && [[ -n "${HAS_FAIL}" ]]; then
+  echo "curl: (22) The requested URL returned error: 403" >&2
+  exit 22
+fi
+
+# Simulate close API failure when flagged.
+if [[ -n "${HAS_CLOSE_DATA}" ]] && [[ -f "${MOCK_CURL_CLOSE_FAIL}" ]] && [[ -n "${HAS_FAIL}" ]]; then
+  echo "curl: (22) The requested URL returned error: 403" >&2
+  exit 22
+fi
+
+# Accept PUT/POST calls silently.
+if [[ "${METHOD}" == "PUT" ]] || [[ "${METHOD}" == "POST" ]]; then
+  # For issue creation, return a web_url (or fail if flagged).
+  if [[ "${URL}" =~ /issues$ ]] && [[ "${METHOD}" == "POST" ]]; then
+    if [[ -f "${MOCK_CURL_ISSUE_FAIL}" ]]; then
+      echo '{"message":"403 Forbidden"}'
+      if [[ -n "${WRITE_OUT}" ]]; then
+        printf '\n403'
+      fi
+      exit 0
+    fi
+    echo '{"web_url":"https://gitlab.com/mock-group/mock-project/-/issues/999"}'
+    if [[ -n "${WRITE_OUT}" ]]; then
+      printf '\n201'
+    fi
+  else
+    if [[ -n "${WRITE_OUT}" ]]; then
+      printf '\n200'
+    fi
+  fi
+  exit 0
+fi
+
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+# GitLab test runner — uses curl log instead of gh log.
+run_gitlab_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local expect_failure="${4:-false}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit code ${exit_code})"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_pattern}" ]] && ! grep -qF -- "${expected_pattern}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected curl call pattern '${expected_pattern}' not found"
+    echo "Actual curl calls:"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_test_no_gh() {
+  local test_name="$1"
+  local json_content="$2"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -s "${GH_LOG}" ]]; then
+    echo "FAIL: ${test_name} — gh was called but should not be on gitlab forge"
+    echo "gh calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Core test: GitLab forge uses curl, not gh.
+run_gitlab_test_no_gh "gitlab-no-gh-calls" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}'
+
+# GitLab insufficient action posts a comment via curl.
+run_gitlab_test "gitlab-insufficient-posts-comment" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+# GitLab insufficient action adds needs-info label via curl PUT.
+run_gitlab_test "gitlab-insufficient-adds-needs-info" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42"
+
+# GitLab sufficient action applies labels.
+run_gitlab_test "gitlab-sufficient-applies-labels" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42"
+
+# GitLab duplicate action closes the issue.
+run_gitlab_test "gitlab-duplicate-closes-issue" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "state_event=close"
+
+# GitLab question action posts a comment.
+run_gitlab_test "gitlab-question-posts-comment" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+# GitLab not-planned action closes the issue.
+run_gitlab_test "gitlab-not-planned-closes-issue" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
+  "state_event=close"
+
+# GitLab label_actions are processed.
+run_gitlab_test "gitlab-label-actions-applied" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "api/v4/projects/test-group%2Ftest-project/labels"
+
+# GitLab control label refused.
+run_gitlab_test_stdout "gitlab-control-label-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
+  "::warning::Refused to add control label 'ready-to-code' -- control labels are managed by the triage pipeline"
+
+# GitLab in-progress action.
+run_gitlab_test "gitlab-in-progress-posts-sticky-comment" \
+  '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
+  "api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+# --- GitLab sticky-comment author filtering ---
+
+# Test: sticky comment ignores notes from other users (spoofing protection).
+# Set up notes with a spoofed marker from a non-bot user.
+printf '%s' '[{"id":100,"body":"<!-- fullsend:triage-in-progress -->\nSpoofed content","author":{"username":"attacker"}}]' > "${MOCK_NOTES_FILE}"
+run_gitlab_test "gitlab-sticky-comment-ignores-spoofed-notes" \
+  '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
+  "POST"
+rm -f "${MOCK_NOTES_FILE}"
+
+# Test: sticky comment updates own note when bot-authored note exists.
+printf '%s' '[{"id":200,"body":"<!-- fullsend:triage-in-progress -->\nOld triage content","author":{"username":"fullsend-bot"}}]' > "${MOCK_NOTES_FILE}"
+run_gitlab_test "gitlab-sticky-comment-updates-own-note" \
+  '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
+  "notes/200"
+rm -f "${MOCK_NOTES_FILE}"
+
+# Test: sticky comment preserves history in <details> block.
+printf '%s' '[{"id":300,"body":"<!-- fullsend:triage-in-progress -->\nPrevious triage summary here","author":{"username":"fullsend-bot"}}]' > "${MOCK_NOTES_FILE}"
+run_gitlab_test "gitlab-sticky-comment-preserves-history" \
+  '{"action":"in-progress","reasoning":"MR !50 fixes the reported bug","pull_requests":[{"url":"https://gitlab.com/test-group/test-project/-/merge_requests/50"}],"comment":"An open MR is already addressing this issue."}' \
+  "Previous run"
+rm -f "${MOCK_NOTES_FILE}"
+
+# Test: curl timeout flags are present in API calls.
+: > "${CURL_LOG}"
+run_gitlab_test "gitlab-curl-has-timeout-flags" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "--connect-timeout 10 --max-time 30"
+
+run_gitlab_test "gitlab-prerequisites-creates-issue" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/test-project","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
+  "title=Need X --data-urlencode description=We need X for downstream."
+
+touch "${MOCK_CURL_ISSUE_FAIL}"
+run_gitlab_test_stdout "gitlab-prerequisites-api-error-warns" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/test-project","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
+  "Failed to create issue"
+rm -f "${MOCK_CURL_ISSUE_FAIL}"
+
+touch "${MOCK_CURL_LABEL_FAIL}"
+run_gitlab_test "gitlab-add-label-api-error-fails" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+rm -f "${MOCK_CURL_LABEL_FAIL}"
+
+run_gitlab_test_stdout "gitlab-prerequisites-skips-disallowed-target" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"disallowed-org/other-repo","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
+  "not in create_issues.allow_targets"
+
+touch "${MOCK_CURL_CLOSE_FAIL}"
+run_gitlab_test "gitlab-close-issue-api-error-fails" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "" \
+  "true"
+rm -f "${MOCK_CURL_CLOSE_FAIL}"
+
+# Restore GitHub forge for any subsequent tests.
+export FULLSEND_FORGE="github"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export GH_TOKEN="fake-token"
+unset GITLAB_TOKEN
 
 # --- Summary ---
 

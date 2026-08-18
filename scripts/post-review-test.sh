@@ -371,6 +371,13 @@ GH_LOG="${TMPDIR}/gh-calls.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 
+# harness/review.yaml always sets REVIEW_PROTECTED_PATHS (default, or a
+# per-repo override via harness composition). Export it here so generic
+# integration tests below — which don't exercise protected-path behavior —
+# reflect that reality instead of leaving it unset. Tests that specifically
+# cover protected-path resolution set or unset it within their own subshell.
+export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock gh: handle specific subcommands, log everything else.
@@ -383,9 +390,12 @@ if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* 
   exit 0
 fi
 
-# gh pr view ... --json files ... → no protected files
+# gh pr view ... --json files ... → configurable via MOCK_PR_FILES.
+# Uses \${VAR-default} (not \${VAR:-default}) so an explicitly-empty
+# MOCK_PR_FILES="" can simulate "no changed files" instead of falling
+# back to the default.
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
-  echo "src/main.go"
+  echo "\${MOCK_PR_FILES-src/main.go}"
   exit 0
 fi
 
@@ -1021,6 +1031,392 @@ run_body_test "label-actions-plus-action-hints-has-labels-section" \
 
 run_body_test "label-actions-plus-action-hints-has-next-steps" \
   "${LABEL_PLUS_HINTS_JSON}" "**Next steps:**"
+
+# ---------------------------------------------------------------------------
+# REVIEW_PROTECTED_PATHS override tests
+# Verify that setting REVIEW_PROTECTED_PATHS overrides the default list.
+# ---------------------------------------------------------------------------
+
+# Helper that sets two env vars (reuses run_label_test_with_env pattern but
+# needs two env vars: REVIEW_PROTECTED_PATHS + MOCK_PR_FILES).
+run_protected_paths_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local match_mode="$4"  # "present" or "absent"
+  local protected_paths="$5"
+  local mock_files="$6"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_PR_FILES="${mock_files}"
+    if [[ -n "${protected_paths}" ]]; then
+      export REVIEW_PROTECTED_PATHS="${protected_paths}"
+    else
+      unset REVIEW_PROTECTED_PATHS
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${match_mode}" == "present" ]]; then
+    if ! grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — expected '${expected_pattern}' in stdout"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+      echo "FAIL: ${test_name} — '${expected_pattern}' should NOT be in stdout"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+
+# Custom REVIEW_PROTECTED_PATHS: .github/ is no longer protected
+run_protected_paths_test "custom-paths-removes-default" \
+  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
+  "deploy/,manifests/" ".github/workflows/ci.yml"
+
+# Custom REVIEW_PROTECTED_PATHS: deploy/ is now protected
+run_protected_paths_test "custom-paths-adds-new" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  "deploy/,manifests/" "deploy/production.yaml"
+
+# Custom REVIEW_PROTECTED_PATHS with whitespace around entries
+run_protected_paths_test "custom-paths-whitespace-trimmed" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  " deploy/ , manifests/ " "deploy/production.yaml"
+
+# Custom REVIEW_PROTECTED_PATHS: non-matching file is not protected
+run_protected_paths_test "custom-paths-no-match" \
+  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
+  "deploy/,manifests/" "src/main.go"
+
+# Empty entries from leading/trailing/consecutive commas must not match all files
+run_protected_paths_test "custom-paths-empty-entries-ignored" \
+  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
+  ",deploy/,,manifests/," "src/main.go"
+
+# Empty entries still allow valid entries to match
+run_protected_paths_test "custom-paths-empty-entries-valid-match" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  ",deploy/,,manifests/," "deploy/production.yaml"
+
+# Abort when REVIEW_PROTECTED_PATHS is unset. harness/review.yaml always
+# sets it (with a default, overridable per-repo via harness composition),
+# so an unset value on an approve indicates a genuine misconfiguration.
+run_unset_env_var_test() {
+  local test_name="unset-env-var-aborts"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    unset REVIEW_PROTECTED_PATHS
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "REVIEW_PROTECTED_PATHS is not set" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected abort message in stderr"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_unset_env_var_test
+
+# Degenerate REVIEW_PROTECTED_PATHS that trims to empty must abort (fail-closed).
+run_empty_paths_test() {
+  local test_name="degenerate-paths-aborts"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=",,, ,"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "likely misconfigured" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected misconfiguration abort message in stderr"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF 'REVIEW_PROTECTED_PATHS=",,, ,"' "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected abort message to include the raw value"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_empty_paths_test
+
+# Non-approve action must succeed even with degenerate REVIEW_PROTECTED_PATHS.
+run_nonapprove_degenerate_test() {
+  local test_name="nonapprove-degenerate-paths-succeeds"
+  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=",,, ,"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected success but got exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_nonapprove_degenerate_test
+
+# Non-approve action must succeed even when REVIEW_PROTECTED_PATHS is unset —
+# the protected-path block only runs for "approve".
+run_nonapprove_unset_env_var_test() {
+  local test_name="nonapprove-unset-env-var-succeeds"
+  local comment_json='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Looks good overall."}'
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${comment_json}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    unset REVIEW_PROTECTED_PATHS
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected success but got exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_nonapprove_unset_env_var_test
+
+# Explicitly empty REVIEW_PROTECTED_PATHS="" disables protected-path
+# enforcement entirely — this is a deliberate operator opt-out, distinct
+# from the comma-noise case above (degenerate-paths-aborts), which is
+# treated as a likely misconfiguration and fails closed instead.
+run_explicit_empty_test() {
+  local test_name="explicit-empty-string-disables-protection"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES=".github/workflows/ci.yml"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected success but got exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "protected-path enforcement disabled" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected disabled-enforcement notice in output"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "PR touches protected paths" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — approve should not be downgraded when protection is disabled"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_explicit_empty_test
+
+# The "PR has no changed files" safety net is independent of
+# protected-path enforcement and must still apply even when an operator
+# has explicitly opted out of protected-path enforcement.
+run_empty_pr_files_with_protection_disabled_test() {
+  local test_name="empty-pr-files-safety-net-independent-of-protected-paths"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES=""
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected empty-PR-files abort message in output"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_empty_pr_files_with_protection_disabled_test
+
+# The REVIEW_PROTECTED_PATHS default above is duplicated verbatim in
+# harness/review.yaml's env.runner/env.sandbox (there's no single structural
+# source of truth since env/default-review-protected-paths.txt was removed).
+# Guard against silent drift: if a future edit updates one copy and misses
+# another, this test suite would otherwise keep passing against a stale
+# default. Skips (doesn't fail) when yq is unavailable, matching the
+# fallback pattern in post-triage.sh.
+run_protected_paths_default_drift_test() {
+  local test_name="protected-paths-default-matches-harness-review-yaml"
+
+  if ! command -v yq &>/dev/null; then
+    echo "SKIP: ${test_name} — yq not found"
+    return
+  fi
+
+  local harness_file="${SCRIPT_DIR}/../harness/review.yaml"
+  local runner_default sandbox_default
+  runner_default="$(yq -r '.env.runner.REVIEW_PROTECTED_PATHS' "${harness_file}")"
+  sandbox_default="$(yq -r '.env.sandbox.REVIEW_PROTECTED_PATHS' "${harness_file}")"
+
+  # shellcheck disable=SC2030,SC2031
+  if [[ "${runner_default}" != "${REVIEW_PROTECTED_PATHS}" ]]; then
+    echo "FAIL: ${test_name} — harness/review.yaml env.runner.REVIEW_PROTECTED_PATHS does not match this test file's default"
+    echo "  harness/review.yaml: ${runner_default}"
+    echo "  post-review-test.sh: ${REVIEW_PROTECTED_PATHS}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # shellcheck disable=SC2030,SC2031
+  if [[ "${sandbox_default}" != "${REVIEW_PROTECTED_PATHS}" ]]; then
+    echo "FAIL: ${test_name} — harness/review.yaml env.sandbox.REVIEW_PROTECTED_PATHS does not match this test file's default"
+    echo "  harness/review.yaml: ${sandbox_default}"
+    echo "  post-review-test.sh: ${REVIEW_PROTECTED_PATHS}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_protected_paths_default_drift_test
 
 # --- Summary ---
 
