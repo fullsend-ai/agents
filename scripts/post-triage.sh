@@ -476,12 +476,12 @@ esac
 
 # shellcheck shell=bash
 
-[[ -n "${LABELS_LIB_SH_LOADED:-}" ]] && return 0
-LABELS_LIB_SH_LOADED=1
+[[ -n "${LABELS_SH_LOADED:-}" ]] && return 0
+LABELS_SH_LOADED=1
 
 MANDATORY_LABELS=("ready-for-review" "ready-to-code" "ready-for-triage")
 
-_mandatory_label_defaults() {
+_labels_mandatory_defaults() {
   printf '%s\t%s\t%s\n' \
     "ready-for-review" "Triggers review agent dispatch" "0E8A16" \
     "ready-to-code" "Triggers code agent dispatch" "0E8A16" \
@@ -504,7 +504,7 @@ forge_ensure_label() {
 
   if [[ -z "${description}" || -z "${color}" ]]; then
     local line
-    line=$(_mandatory_label_defaults | grep "^${name}	" || true)
+    line=$(_labels_mandatory_defaults | grep "^${name}	" || true)
     if [[ -n "${line}" ]]; then
       [[ -z "${description}" ]] && description=$(printf '%s' "${line}" | cut -f2)
       [[ -z "${color}" ]] && color=$(printf '%s' "${line}" | cut -f3)
