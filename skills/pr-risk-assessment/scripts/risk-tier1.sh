@@ -46,7 +46,7 @@ if [ -z "${PR_FILES_JSON}" ]; then
 fi
 
 # --- Parse file list ---
-FILES=($(echo "${PR_FILES_JSON}" | jq -r '.[].filename'))
+mapfile -t FILES < <(echo "${PR_FILES_JSON}" | jq -r '.[].filename')
 FILES_CHANGED=${#FILES[@]}
 LINES_CHANGED=$(echo "${PR_FILES_JSON}" | jq '[.[].additions + .[].deletions] | add // 0')
 
