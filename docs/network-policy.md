@@ -40,7 +40,7 @@ allowed hosts and binaries.
 ### 1. Create a policy file
 
 Copy the default policy for the agent you are configuring (for example,
-[`policies/github/code.yaml`](../policies/github/code.yaml) for the code agent) to
+[`policies/base.yaml`](../policies/base.yaml) for the code agent) to
 `.fullsend/policies/<agent>.yaml` in your repository and append a
 block for the host you need:
 
@@ -96,9 +96,8 @@ succeeds.
 Each agent has its own policy file with similar but not identical
 defaults. If multiple agents need the same custom hosts, create a
 separate override for each one. For example, the
-[code](code.md) and [fix](fix.md) agents use
-[`policies/github/code.yaml`](../policies/github/code.yaml) and
-[`policies/fix.yaml`](../policies/fix.yaml) respectively
+[code](code.md) and [fix](fix.md) agents both use
+[`policies/base.yaml`](../policies/base.yaml)
 (code agent also has a GitLab equivalent under `policies/gitlab/`).
 
 ## Troubleshooting

@@ -180,8 +180,8 @@ setup:
 - **`ISSUE_URL`** replaces `GITHUB_ISSUE_URL` in scripts. The
   per-forge env file (`env/github/code.env` or `env/gitlab/code.env`)
   maps the platform-specific variable to `ISSUE_URL`.
-- **Policy** is per-forge: `policies/github/code.yaml` or
-  `policies/gitlab/code.yaml`. Custom harnesses using `base:`
+- **Policy** is per-forge: `policies/base.yaml` (GitHub) or
+  `policies/gitlab/code.yaml` (GitLab). Custom harnesses using `base:`
   composition should override at the forge level if needed.
 - **GitLab uses `curl`** instead of `gh` for API access. The GitLab
   sandbox policy allows `curl` for `gitlab_api` endpoints only.

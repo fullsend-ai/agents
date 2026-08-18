@@ -3,9 +3,10 @@ name: triage
 description: Inspect an issue, assess information sufficiency, and produce a structured triage decision.
 skills:
   - issue-labels
-# curl: required by GitLab forge. On GitHub, the network policy binary
-# allowlist (policies/github/triage.yaml) excludes **/curl, preventing
-# it from making network requests even though it is granted here.
+# curl: required by GitLab forge. On GitHub, the profile binary
+# allowlists (e.g. profiles/fullsend-github-ro.yaml) omit **/curl,
+# preventing it from making network requests even though it is
+# granted here.
 tools: Bash(gh,curl,jq)
 model: opus
 ---

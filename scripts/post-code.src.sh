@@ -305,6 +305,9 @@ else
 fi
 
 echo "::add-mask::${PUSH_TOKEN}"
+if [ -n "${GITLAB_TOKEN:-}" ]; then
+  echo "::add-mask::${GITLAB_TOKEN}"
+fi
 
 # ---------------------------------------------------------------------------
 # No-op comment helper
