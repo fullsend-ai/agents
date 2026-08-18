@@ -1852,6 +1852,15 @@ post_needs_input_comment() {
     existing_pr_url="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${current_branch}" \
       --json url --jq '.[0].url // empty' 2>/dev/null || true)"
     if [ -n "${existing_pr_url}" ]; then
+      # Sanitize existing_pr_url before interpolating into the comment body.
+      # The value comes from the GitHub/GitLab API (constrained to https://
+      # URLs), so exploitation is practically impossible — but defense-in-depth
+      # against injection matches the treatment applied to current_branch above.
+      existing_pr_url="$(_sanitize_workflow_value "${existing_pr_url}")"
+      if [[ ! "${existing_pr_url}" =~ ^https://[a-zA-Z0-9._:/-]+$ ]]; then
+        gha_echo warning "needs_input: existing PR URL contains unexpected characters; omitting from issue comment"
+        existing_pr_url="(PR URL omitted — unexpected format, see workflow log)"
+      fi
       caveat="⚠️ An open PR already exists for branch \`${display_branch}\`: ${existing_pr_url}. The agent set \`needs_input\` on this run — check whether that PR is still current."
       gha_echo warning "needs_input set but an open PR already exists for branch '${current_branch}': ${existing_pr_url}"
     else
