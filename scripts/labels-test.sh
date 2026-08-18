@@ -22,7 +22,7 @@ export GH_CALLS_FILE
 trap 'rm -f "${GH_CALLS_FILE}"' EXIT
 
 setup_test() {
-  > "${GH_CALLS_FILE}"  # Clear the file
+  true > "${GH_CALLS_FILE}"
   export GH_EXIT_CODE=0
   export GH_STDERR=""
   export REPO_FULL_NAME="test-org/test-repo"
