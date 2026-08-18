@@ -1,0 +1,17 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "docs: fix typo in README"
+  body: |
+    Fixes a minor typo in the project README.
+  base: main
+  files:
+    - path: README.md
+      content: |
+        # Test Project
+
+        This is a test project for evaluating the review agent.
+
+        ## Getting Started
+
+        Run `make build` to compile the project.
