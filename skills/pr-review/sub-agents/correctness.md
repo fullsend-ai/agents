@@ -52,6 +52,25 @@ Exclude the files already in the diff. Any hit outside the diff is a
 medium-severity finding: "stale reference to removed/renamed
 `<identifier>` in `<file>:<line>`."
 
+### Test-plan claims vs measured coverage
+
+A test plan in `pr_metadata.body` is a claim, not evidence. A checked
+box (`- [x] Unit tests for ResolveOverlays`) records what the author
+asserts, not what ran. The `coverage` field in your context package
+carries the measured patch coverage for the PR head, taken from
+Codecov's `codecov/patch` check run.
+
+- Patch coverage below the target Codecov reports, while the body
+  claims the change is tested → `test-inadequate`, medium. Quote both
+  sides: "PR body claims unit tests for `ResolveOverlays`;
+  `codecov/patch` reports 28.24% of diff hit (target 80.00%)."
+- `coverage` is `no coverage signal` → the claim is unverified. That
+  alone is not a finding, and it is not a pass either: judge test
+  adequacy from the diff, as you would with no test plan at all.
+
+Never convert a test-plan claim into a statement that the change is
+adequately tested. Adequacy comes from the diff and the measurement.
+
 ### CI coverage regression severity
 
 When a change reduces which file paths trigger CI checks (e.g.,
