@@ -1,0 +1,66 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "refactor: restructure auth middleware"
+  body: |
+    Refactors the authentication middleware to support multiple auth
+    providers. Touches RBAC policy evaluation and token validation.
+
+    Closes #42
+  base: main
+  files:
+    - path: internal/auth/handler.go
+      content: |
+        package auth
+
+        import "net/http"
+
+        // Handler validates requests against the configured auth provider.
+        func Handler(provider string) func(http.Handler) http.Handler {
+            return func(next http.Handler) http.Handler {
+                return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+                    token := r.Header.Get("Authorization")
+                    if token == "" {
+                        http.Error(w, "unauthorized", http.StatusUnauthorized)
+                        return
+                    }
+                    if !validateToken(token, provider) {
+                        http.Error(w, "forbidden", http.StatusForbidden)
+                        return
+                    }
+                    next.ServeHTTP(w, r)
+                })
+            }
+        }
+
+        func validateToken(token, provider string) bool {
+            switch provider {
+            case "oidc":
+                return validateOIDC(token)
+            case "static":
+                return token == "valid-token"
+            default:
+                return false
+            }
+        }
+
+        func validateOIDC(token string) bool {
+            // Placeholder OIDC validation
+            return len(token) > 10
+        }
+    - path: internal/auth/rbac.go
+      content: |
+        package auth
+
+        // CheckPermission verifies the user has the required role.
+        func CheckPermission(userRoles []string, required string) bool {
+            for _, role := range userRoles {
+                if role == required || role == "admin" {
+                    return true
+                }
+            }
+            return false
+        }
+    - path: CODEOWNERS
+      content: |
+        internal/auth/ @security-team
