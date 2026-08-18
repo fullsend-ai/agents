@@ -1,6 +1,6 @@
 # fullsend agents
 
-First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) platform. These agents automate the software development lifecycle on GitHub and GitLab — from issue triage through code implementation, review, fix, prioritization, and retrospective analysis.
+First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) platform. These agents automate the software development lifecycle on GitHub, GitLab, and Jira Cloud — from issue triage through code implementation, review, fix, prioritization, and retrospective analysis.
 
 ## Agents
 

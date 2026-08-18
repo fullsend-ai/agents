@@ -24,8 +24,11 @@
       "$ref": "#/$defs/clarity_scores"
     },
     "duplicate_of": {
-      "type": "integer",
-      "minimum": 1
+      "description": "Issue number (GitHub/GitLab integer) or Jira issue key (e.g. PROJ-123). Consumers should handle both types.",
+      "anyOf": [
+        { "type": "integer", "minimum": 1 },
+        { "type": "string", "pattern": "^[A-Z][A-Z0-9]*-[0-9]+$" }
+      ]
     },
     "triage_summary": {
       "$ref": "#/$defs/triage_summary"
@@ -62,7 +65,8 @@
                 "type": "string",
                 "anyOf": [
                   { "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$" },
-                  { "pattern": "^https://(gitlab\\.com|gitlab\\.cee\\.redhat\\.com)(/[a-zA-Z0-9._-]+)+/-/(issues|merge_requests)/[0-9]+$" }
+                  { "pattern": "^https://(gitlab\\.com|gitlab\\.cee\\.redhat\\.com)(/[a-zA-Z0-9._-]+)+/-/(issues|merge_requests)/[0-9]+$" },
+                  { "pattern": "^https://[a-zA-Z0-9-]+\\.atlassian\\.net/browse/[A-Z][A-Z0-9]*-[0-9]+$" }
                 ]
               }
             },
@@ -77,7 +81,11 @@
             "properties": {
               "repo": {
                 "type": "string",
-                "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$"
+                "description": "GitHub/GitLab path-style identifier (org/repo) or bare Jira project key (e.g. PROJ). Consumers should handle both formats.",
+                "anyOf": [
+                  { "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$" },
+                  { "pattern": "^[A-Z][A-Z0-9]*$" }
+                ]
               },
               "title": {
                 "type": "string",
@@ -103,7 +111,11 @@
         "properties": {
           "repo": {
             "type": "string",
-            "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$"
+            "description": "GitHub/GitLab path-style identifier (org/repo) or bare Jira project key (e.g. PROJ). Consumers should handle both formats.",
+            "anyOf": [
+              { "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$" },
+              { "pattern": "^[A-Z][A-Z0-9]*$" }
+            ]
           },
           "title": {
             "type": "string",

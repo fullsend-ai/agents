@@ -83,3 +83,30 @@ forge:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
+  jira:
+    policy: policies/jira/triage.yaml
+    pre_script: scripts/pre-triage.sh
+    post_script: scripts/post-triage.sh
+    skills:
+      - skills/jira-forge
+      - skills/issue-labels/jira
+    host_files:
+      - src: env/jira/triage.env
+        dest: /sandbox/workspace/.env.d/triage.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${JIRA_ISSUE_URL}
+        JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+        JIRA_TOKEN: ${JIRA_TOKEN}
+        JIRA_BASE_URL: ${JIRA_BASE_URL}
+        JIRA_DUPLICATE_TRANSITION: ${JIRA_DUPLICATE_TRANSITION}
+        JIRA_NOT_PLANNED_TRANSITION: ${JIRA_NOT_PLANNED_TRANSITION}
+        JIRA_SPLIT_TRANSITION: ${JIRA_SPLIT_TRANSITION}
+        FULLSEND_FORGE: jira
+      sandbox:
+        ISSUE_URL: "${JIRA_ISSUE_URL}"
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_TOKEN: "${JIRA_TOKEN}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        FULLSEND_FORGE: jira

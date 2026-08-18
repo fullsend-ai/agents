@@ -66,9 +66,10 @@ If you're testing a new env var, export it here too. You can also use
 
 The issue URL above points at an issue in a separate repo (e.g.
 `your-org/test-repo`) — clone it to its own local path so `--target-repo`
-has real content to work against. The harness maps `GITHUB_ISSUE_URL` or
-`GITLAB_ISSUE_URL` to a generic `ISSUE_URL` via the per-forge env file
-(`env/github/*.env` or `env/gitlab/*.env`):
+has real content to work against. The harness maps `GITHUB_ISSUE_URL`,
+`GITLAB_ISSUE_URL`, or `JIRA_ISSUE_URL` to a generic `ISSUE_URL` via the
+per-forge env file (`env/github/*.env`, `env/gitlab/*.env`, or
+`env/jira/triage.env`):
 
 ```bash
 git clone git@github.com:your-org/test-repo /tmp/target-repo
@@ -112,6 +113,31 @@ produced the expected output:
 ```bash
 cat /tmp/fullsend/agent-triage-*/iteration-*/output/agent-result.json | jq .
 ```
+
+## Testing triage with Jira
+
+Triage also supports Jira Cloud as a forge (see [`docs/triage.md`](docs/triage.md#jira-setup)).
+Set `FULLSEND_FORGE=jira` instead of `github`/`gitlab`, along with the
+Jira-specific env vars — `forge.jira` resolves natively with the current
+runner, no override workaround needed:
+
+```bash
+export JIRA_ISSUE_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
+export JIRA_USER_EMAIL="you@example.com"
+export JIRA_TOKEN="your-jira-api-token"
+export JIRA_BASE_URL="https://your-site.atlassian.net"
+export FULLSEND_FORGE="jira"
+
+# Transition names for closing issues — set to match your Jira workflow.
+export JIRA_DUPLICATE_TRANSITION="Duplicate"
+export JIRA_NOT_PLANNED_TRANSITION="Won't Do"
+export JIRA_SPLIT_TRANSITION="Done"
+```
+
+Run `fullsend run triage` the same way as step 3 above — `--target-repo`
+should still point at a local checkout of the codebase the Jira issue
+concerns, since triage reads repository context (docs, existing issues,
+PRs) regardless of which forge hosts the issue itself.
 
 ## Testing a new configuration option
 

@@ -15,8 +15,9 @@ The policy controls two things:
 A request is allowed only when both the destination host and the calling
 binary match an entry in the policy. Even if a host is in the allowlist,
 only the listed binaries can reach it. `curl` is excluded from GitHub-forge policies to prevent raw HTTP
-access with injected credentials. The GitLab forge policy allows `curl`
-because GitLab API access requires it (the `gh` CLI is not available).
+access with injected credentials. The GitLab and Jira forge policies
+allow `curl` because their API access requires it (the `gh` CLI is not
+available for GitLab or Jira).
 
 Each agent has its own default policy under
 [`policies/`](../policies/). The defaults cover Vertex AI, the forge

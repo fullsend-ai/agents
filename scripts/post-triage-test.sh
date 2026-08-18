@@ -74,13 +74,19 @@ if [[ ! -f "${FILE}" ]]; then
   exit 1
 fi
 case "${FILTER}" in
+  # Each block selects the key's range, then strips the "      - " prefix in a
+  # second pass. Nested `{ ... { ... } }` blocks are a GNU sed extension that
+  # BSD/macOS sed rejects outright ("extra characters at the end of } command"),
+  # which silently yielded an empty allowlist and failed every allow_targets
+  # test on macOS — keep these single-level.
   '.create_issues.allow_targets.orgs // [] | .[]')
-    # Extract lines under orgs: indented with "      - "
-    sed -n '/^    orgs:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    sed -n '/^    orgs:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
     ;;
   '.create_issues.allow_targets.repos // [] | .[]')
-    # Extract lines under repos: indented with "      - "
-    sed -n '/^    repos:/,/^    [^ ]/{ /^      - /{ s/^      - //; p; } }' "${FILE}"
+    sed -n '/^    repos:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
+    ;;
+  '.create_issues.allow_targets.jira_projects // [] | .[]')
+    sed -n '/^    jira_projects:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
     ;;
   *)
     exit 1
@@ -92,7 +98,7 @@ chmod +x "${MOCK_BIN}/yq"
 export PATH="${MOCK_BIN}:${PATH}"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
-export FULLSEND_FORGE="github"
+export FULLSEND_TRACKER="github"
 # Harness defaults — post-triage.sh expects these from the harness env.
 export TRIAGE_AUTO_CODE="on"
 export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
@@ -110,6 +116,8 @@ create_issues:
       - test-org
     repos:
       - allowed-org/allowed-repo
+    jira_projects:
+      - ALLOWEDPROJ
 CFGEOF
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
@@ -1265,12 +1273,26 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# GitLab forge tests
-# Verify that post-triage.sh works correctly with FULLSEND_FORGE=gitlab.
+# FULLSEND_FORGE backward-compat fallback test
+# Verify that post-triage.sh still dispatches correctly when only the legacy
+# FULLSEND_FORGE is set (FULLSEND_TRACKER unset).
 # ---------------------------------------------------------------------------
 
-# Switch to GitLab forge. Replace mock curl to handle GitLab API patterns.
-export FULLSEND_FORGE="gitlab"
+unset FULLSEND_TRACKER
+export FULLSEND_FORGE="github"
+run_test "fullsend-forge-fallback-still-dispatches-github" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+unset FULLSEND_FORGE
+export FULLSEND_TRACKER="github"
+
+# ---------------------------------------------------------------------------
+# GitLab tracker tests
+# Verify that post-triage.sh works correctly with FULLSEND_TRACKER=gitlab.
+# ---------------------------------------------------------------------------
+
+# Switch to GitLab tracker. Replace mock curl to handle GitLab API patterns.
+export FULLSEND_TRACKER="gitlab"
 export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
 export GITLAB_TOKEN="fake-gitlab-token"
 unset GH_TOKEN
@@ -1496,7 +1518,7 @@ run_gitlab_test_no_gh() {
   fi
 
   if [[ -s "${GH_LOG}" ]]; then
-    echo "FAIL: ${test_name} — gh was called but should not be on gitlab forge"
+    echo "FAIL: ${test_name} — gh was called but should not be on gitlab tracker"
     echo "gh calls:"
     cat "${GH_LOG}"
     FAILURES=$((FAILURES + 1))
@@ -1506,7 +1528,7 @@ run_gitlab_test_no_gh() {
   echo "PASS: ${test_name}"
 }
 
-# Core test: GitLab forge uses curl, not gh.
+# Core test: GitLab tracker uses curl, not gh.
 run_gitlab_test_no_gh "gitlab-no-gh-calls" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}'
 
@@ -1613,11 +1635,474 @@ run_gitlab_test "gitlab-close-issue-api-error-fails" \
   "true"
 rm -f "${MOCK_CURL_CLOSE_FAIL}"
 
-# Restore GitHub forge for any subsequent tests.
-export FULLSEND_FORGE="github"
+# ---------------------------------------------------------------------------
+# Jira tracker tests
+# Verify that post-triage.sh works correctly with FULLSEND_TRACKER=jira.
+# Comment posting shells out to `fullsend issues post-comment --tracker
+# jira` (captured by the generic fullsend mock into GH_LOG, above); labels,
+# transitions, and issue creation go through curl against the Jira Cloud
+# REST API (captured into JIRA_CURL_LOG by the mock below).
+# ---------------------------------------------------------------------------
+
+export FULLSEND_TRACKER="jira"
+export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
+export JIRA_USER_EMAIL="triage@example.com"
+export JIRA_TOKEN="fake-jira-token"
+export JIRA_DUPLICATE_TRANSITION="Duplicate"
+export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
+export JIRA_SPLIT_TRANSITION="Done"
+unset GH_TOKEN
+
+# Jira mock curl: record calls and return appropriate responses.
+JIRA_CURL_LOG="${TMPDIR}/jira-curl-calls.log"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${JIRA_CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+
+# Parse the method and URL from args.
+URL=""
+METHOD="GET"
+for arg in "$@"; do
+  case "${arg}" in
+    --request) shift_next=method ;;
+    --fail|--silent|--show-error) ;;
+    --connect-timeout|--max-time|--user|--header|--data|--write-out) shift_next=skip ;;
+    *)
+      if [[ "${shift_next:-}" == "method" ]]; then
+        METHOD="${arg}"
+        shift_next=""
+      elif [[ "${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "${arg}" =~ ^https:// ]]; then
+        URL="${arg}"
+      fi
+      ;;
+  esac
+done
+
+# List transitions available on the issue.
+if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
+  exit 0
+fi
+
+# Cross-project issue creation. A 201 whose body carries no .key must not be
+# reported as a created issue; MOCK_JIRA_CREATE_NO_KEY simulates that response.
+if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
+  if [[ -n "${MOCK_JIRA_CREATE_NO_KEY:-}" ]]; then
+    echo '{"id":"10042"}'
+  else
+    echo '{"key":"ALLOWEDPROJ-999"}'
+  fi
+  printf '\n201'
+  exit 0
+fi
+
+# Everything else (label add/remove PUTs, transition POSTs): accept silently.
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+run_jira_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local expect_failure="${4:-false}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${JIRA_CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit code ${exit_code})"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_pattern}" ]] && ! grep -qF -- "${expected_pattern}" "${JIRA_CURL_LOG}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected call pattern '${expected_pattern}' not found"
+    echo "Actual curl calls:"
+    cat "${JIRA_CURL_LOG}"
+    echo "Actual fullsend calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_jira_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${JIRA_CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Core test: Jira tracker never invokes gh (only curl and fullsend).
+run_dir="${TMPDIR}/run-jira-no-gh-calls"
+mkdir -p "${run_dir}/iteration-1/output"
+echo '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' > "${run_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+jira_no_gh_exit=0
+(cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || jira_no_gh_exit=$?
+if [[ ${jira_no_gh_exit} -ne 0 ]]; then
+  echo "FAIL: jira-no-gh-calls — exit code ${jira_no_gh_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -q '^gh ' "${GH_LOG}"; then
+  echo "FAIL: jira-no-gh-calls — gh was called but should not be on jira tracker"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-no-gh-calls"
+fi
+
+# Jira insufficient action posts a comment via `fullsend issues post-comment --tracker jira`.
+run_jira_test "jira-insufficient-posts-comment" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "fullsend issues post-comment --tracker jira"
+
+# Jira insufficient action adds needs-info label via curl PUT.
+run_jira_test "jira-insufficient-adds-needs-info" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  '"add":"needs-info"'
+
+# Jira control-label reset: every run clears a stale "triaged" label up front.
+run_jira_test "jira-clears-stale-triaged-label" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  '"remove":"triaged"'
+
+# Jira duplicate action transitions the issue via JIRA_DUPLICATE_TRANSITION.
+run_jira_test "jira-duplicate-transitions" \
+  '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"This appears to be a duplicate of TESTPROJ-10."}' \
+  '{"transition":{"id":"31"}}'
+
+# Jira not-planned action transitions the issue via JIRA_NOT_PLANNED_TRANSITION.
+run_jira_test "jira-not-planned-transitions" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
+  '{"transition":{"id":"41"}}'
+
+# Jira split action closes the original issue via JIRA_SPLIT_TRANSITION
+# after creating both sub-issues (defaulting to the source project).
+run_jira_test "jira-split-closes-via-transition" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  '{"transition":{"id":"51"}}'
+
+# Jira split with multi-paragraph body produces ADF with separate paragraph nodes.
+# Verifies that newlines in sub-issue bodies are converted to hardBreak / separate
+# paragraphs in the ADF payload, not flattened into a single text node.
+jira_multiline_run_dir="${TMPDIR}/run-jira-split-multiline-body"
+mkdir -p "${jira_multiline_run_dir}/iteration-1/output"
+printf '{"action":"split","reasoning":"two tasks","sub_issues":[{"title":"Task A","body":"line1\\nline2\\n\\nparagraph two"},{"title":"Task B","body":"simple body"}],"comment":"Splitting."}' \
+  > "${jira_multiline_run_dir}/iteration-1/output/agent-result.json"
+: > "${JIRA_CURL_LOG}"
+: > "${GH_LOG}"
+jira_multiline_exit=0
+(cd "${jira_multiline_run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || jira_multiline_exit=$?
+if [[ ${jira_multiline_exit} -ne 0 ]]; then
+  echo "FAIL: jira-split-multiline-body — exit code ${jira_multiline_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'hardBreak' "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-split-multiline-body — expected hardBreak in ADF payload"
+  echo "Actual curl calls:"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  # Verify we get two separate paragraph nodes (blank-line split).
+  paragraph_count=$(grep -o '"type":"paragraph"' "${JIRA_CURL_LOG}" | wc -l)
+  if [[ ${paragraph_count} -lt 2 ]]; then
+    echo "FAIL: jira-split-multiline-body — expected ≥2 paragraph nodes, got ${paragraph_count}"
+    cat "${JIRA_CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-split-multiline-body"
+  fi
+fi
+
+# Jira prerequisites: cross-project creation in an allowed target project.
+run_jira_test "jira-prerequisites-creates-allowed-issue" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"ALLOWEDPROJ","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
+  '"key":"ALLOWEDPROJ"'
+
+# A 201 create response carrying no issue key must be reported as a failed
+# create, not announced as "Created: .../browse/null".
+export MOCK_JIRA_CREATE_NO_KEY=1
+run_jira_test_stdout "jira-prerequisites-create-without-key-warns" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"ALLOWEDPROJ","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
+  "Failed to create issue"
+unset MOCK_JIRA_CREATE_NO_KEY
+
+# Jira prerequisites: cross-project creation in a disallowed target project is skipped.
+run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"DISALLOWEDPROJ","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
+  "not in create_issues.allow_targets"
+
+# On a date(1) without %N support (BSD/macOS before nanosecond support), the
+# comment marker must still be unique to this invocation — a literal "N" would
+# repeat for every call in the same second and break the always-create-new
+# contract. Self-contained so reordering cannot make it pass vacuously.
+cat > "${MOCK_BIN}/date" <<'DATEMOCK'
+#!/usr/bin/env bash
+# Simulate a date(1) that does not understand %N.
+if [[ "$1" == "+%s%N" ]]; then
+  echo "$(/bin/date +%s)N"
+  exit 0
+fi
+exec /bin/date "$@"
+DATEMOCK
+chmod +x "${MOCK_BIN}/date"
+marker_dir="${TMPDIR}/run-jira-marker-without-nanoseconds"
+# Must be an action that takes the always-create-new path (tracker_post_comment).
+# `sufficient` and `in-progress` post sticky comments with fixed markers and
+# would never exercise the timestamp marker at all.
+marker_json='{"action":"question","reasoning":"this is a support question","comment":"Based on the docs, that mode is unsupported. Would you like to open a feature request?"}'
+mkdir -p "${marker_dir}/iteration-1/output"
+echo "${marker_json}" > "${marker_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+marker_exit=0
+(cd "${marker_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || marker_exit=$?
+rm -f "${MOCK_BIN}/date"
+if [[ ${marker_exit} -ne 0 ]]; then
+  echo "FAIL: jira-comment-marker-without-nanoseconds — post script exited ${marker_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qE 'fullsend:triage-[0-9]' "${GH_LOG}"; then
+  # Vacuity guard: a timestamp-based marker must actually have been emitted —
+  # matching the fixed sticky markers here would make the check meaningless.
+  echo "FAIL: jira-comment-marker-without-nanoseconds — no timestamp marker was emitted"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE 'fullsend:triage-[0-9]*N' "${GH_LOG}"; then
+  echo "FAIL: jira-comment-marker-without-nanoseconds — marker kept the literal %N"
+  grep -o 'fullsend:triage-[^ ]*' "${GH_LOG}" | head -1
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-comment-marker-without-nanoseconds"
+fi
+
+# Jira sufficient action posts a comment and applies labels via curl.
+run_jira_test "jira-sufficient-posts-comment" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  "fullsend issues post-comment --tracker jira"
+
+# Jira sufficient bug action applies bug label.
+run_jira_test "jira-sufficient-bug-adds-label" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  '"add":"bug"'
+
+# Jira sufficient bug action with TRIAGE_AUTO_CODE=on applies ready-to-code.
+run_jira_test "jira-sufficient-bug-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  '"add":"ready-to-code"'
+
+# The deferred-label path must not shell out to `gh` on Jira: REPO is a project
+# key rather than an OWNER/REPO, and Jira has no label registry to create into.
+# Self-contained (does not read a previous test's log) so that reordering or
+# inserting tests cannot make this assertion pass vacuously.
+jira_no_gh_dir="${TMPDIR}/run-jira-ready-to-code-skips-gh-label-create"
+jira_no_gh_json='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+mkdir -p "${jira_no_gh_dir}/iteration-1/output"
+echo "${jira_no_gh_json}" > "${jira_no_gh_dir}/iteration-1/output/agent-result.json"
+: > "${JIRA_CURL_LOG}"
+: > "${GH_LOG}"
+jira_no_gh_exit=0
+(cd "${jira_no_gh_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || jira_no_gh_exit=$?
+if [[ ${jira_no_gh_exit} -ne 0 ]]; then
+  echo "FAIL: jira-ready-to-code-skips-gh-label-create — post script exited ${jira_no_gh_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- '"add":"ready-to-code"' "${JIRA_CURL_LOG}"; then
+  # Guard against the assertion going vacuous: the deferred label must actually
+  # have been applied for "no gh call" to mean anything.
+  echo "FAIL: jira-ready-to-code-skips-gh-label-create — deferred ready-to-code label was never applied"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "label create" "${GH_LOG}"; then
+  echo "FAIL: jira-ready-to-code-skips-gh-label-create — gh label create ran on the Jira path"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-ready-to-code-skips-gh-label-create"
+fi
+
+# Jira sufficient feature action applies triaged label (not ready-to-code).
+run_jira_test "jira-sufficient-feature-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  '"add":"triaged"'
+
+# Jira in-progress action posts a sticky comment via fullsend.
+run_jira_test "jira-in-progress-posts-sticky-comment" \
+  '{"action":"in-progress","reasoning":"PR linked to issue","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  "fullsend issues post-comment --tracker jira"
+
+# Jira in-progress action adds pr-open label.
+run_jira_test "jira-in-progress-adds-pr-open" \
+  '{"action":"in-progress","reasoning":"PR linked to issue","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  '"add":"pr-open"'
+
+# Jira in-progress action removes stale labels.
+run_jira_test "jira-in-progress-removes-blocked" \
+  '{"action":"in-progress","reasoning":"PR linked to issue","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
+  '"remove":"blocked"'
+
+# Jira question action posts a comment via fullsend.
+run_jira_test "jira-question-posts-comment" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  "fullsend issues post-comment --tracker jira"
+
+# Jira question action adds question label.
+run_jira_test "jira-question-adds-label" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  '"add":"question"'
+
+# Jira question action removes stale labels.
+run_jira_test "jira-question-removes-needs-info" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  '"remove":"needs-info"'
+
+# Jira not-planned fails loudly (not silently) when its transition is unconfigured.
+unset JIRA_NOT_PLANNED_TRANSITION
+run_jira_test "jira-close-transition-not-configured-fails" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
+  "" \
+  "true"
+export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
+
+# Jira duplicate self-reference: duplicate_of matching the current ISSUE_NUMBER
+# (TESTPROJ-42) is rejected, just as integer self-references are for GitHub.
+run_jira_test "jira-duplicate-self-reference-fails" \
+  '{"action":"duplicate","reasoning":"same issue","duplicate_of":"TESTPROJ-42","comment":"Duplicate of itself."}' \
+  "" \
+  "true"
+
+# Jira label API error propagation: when the label PUT fails, the error
+# propagates and the script fails rather than silently swallowing it.
+# Override the mock curl to fail on label PUT requests.
+JIRA_LABEL_FAIL_CURL_LOG="${TMPDIR}/jira-label-fail-curl.log"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${JIRA_LABEL_FAIL_CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+METHOD="GET"
+URL=""
+for arg in "$@"; do
+  case "${arg}" in
+    --request) shift_next=method ;;
+    --fail|--silent|--show-error) ;;
+    --connect-timeout|--max-time|--user|--header|--data|--write-out) shift_next=skip ;;
+    *)
+      if [[ "${shift_next:-}" == "method" ]]; then
+        METHOD="${arg}"
+        shift_next=""
+      elif [[ "${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "${arg}" =~ ^https:// ]]; then
+        URL="${arg}"
+      fi
+      ;;
+  esac
+done
+# Fail on label PUTs (issue endpoint with PUT method).
+if [[ "${URL}" =~ /issue/ ]] && [[ "${METHOD}" == "PUT" ]]; then
+  echo "Jira API error: mock label PUT failure" >&2
+  exit 1
+fi
+# Transitions listing still works.
+if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
+  exit 0
+fi
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+run_jira_test "jira-label-put-failure-propagates" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+
+# Restore the normal Jira mock curl for subsequent tests.
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${JIRA_CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+URL=""
+METHOD="GET"
+for arg in "$@"; do
+  case "${arg}" in
+    --request) shift_next=method ;;
+    --fail|--silent|--show-error) ;;
+    --connect-timeout|--max-time|--user|--header|--data|--write-out) shift_next=skip ;;
+    *)
+      if [[ "${shift_next:-}" == "method" ]]; then
+        METHOD="${arg}"
+        shift_next=""
+      elif [[ "${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "${arg}" =~ ^https:// ]]; then
+        URL="${arg}"
+      fi
+      ;;
+  esac
+done
+if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
+  exit 0
+fi
+if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
+  echo '{"key":"ALLOWEDPROJ-999"}'
+  printf '\n201'
+  exit 0
+fi
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+# Restore GitHub tracker for any subsequent tests.
+export FULLSEND_TRACKER="github"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
 unset GITLAB_TOKEN
+unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
 
 # --- Summary ---
 

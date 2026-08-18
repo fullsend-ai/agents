@@ -3,10 +3,9 @@ name: triage
 description: Inspect an issue, assess information sufficiency, and produce a structured triage decision.
 skills:
   - issue-labels
-# curl: required by GitLab forge. On GitHub, the profile binary
-# allowlists (e.g. profiles/fullsend-github-ro.yaml) omit **/curl,
-# preventing it from making network requests even though it is
-# granted here.
+# curl: required by GitLab and Jira forges. On GitHub, the network policy
+# binary allowlist (policies/github/triage.yaml) excludes **/curl,
+# preventing it from making network requests even though it is granted here.
 tools: Bash(gh,curl,jq)
 model: opus
 ---
@@ -29,7 +28,7 @@ Extract the project/repo identifier from `ISSUE_URL`.
 
 ### 2a. Read repository context
 
-Check for architectural context that may inform triage. Use your forge skill to list repository files and read key documentation (README, CLAUDE.md, AGENTS.md, CONTRIBUTING.md, architecture docs, ADRs).
+Check for architectural context that may inform triage. Use your forge skill to list repository files and read key documentation (README, CLAUDE.md, AGENTS.md, CONTRIBUTING.md, architecture docs, ADRs). On a tracker that hosts no code (Jira) there is no repository to browse — skip this step rather than attempting it, and note the missing repository context in your reasoning.
 
 Only read deeper files under docs/ if they appear directly relevant to the issue being triaged. This context helps you identify cross-cutting concerns, upstream dependencies, and whether the issue touches areas with known constraints.
 
@@ -71,6 +70,8 @@ Only skip this rule if the PR/MR is closed without merging (the work was abandon
 If the issue mentions other repositories, libraries, or upstream projects, use your forge skill to search those too.
 
 If a cross-repo search fails or returns an error (e.g., due to access restrictions), note this in your reasoning as an information gap rather than concluding no blocking work exists.
+
+On a tracker that hosts no code (Jira), there is no PR/MR search to run. Check the issue's remote links for a linked change, as described in your forge skill, but treat a negative result as unknown rather than "no PR exists" — integration-provided development information (linked branches and PRs) is not reachable from the sandbox, and neither is the PR host. When you cannot check, record in your reasoning that PR/MR status was unverifiable. This particular gap does not by itself make the issue `insufficient` — `insufficient` is about the reporter's description being unclear, not about tracker capabilities — so continue to the action you would otherwise choose and state the caveat in `reasoning`.
 
 ### 2c. Check existing prerequisites
 
@@ -236,12 +237,25 @@ Information is missing that would change the triage outcome. Ask ONE focused, sp
 
 This issue describes the same problem as an existing open issue.
 
+On GitHub/GitLab, `duplicate_of` is the issue number (integer). On Jira, it
+is the full issue key (string, e.g. `"PROJ-45"`).
+
 ```json
 {
   "action": "duplicate",
   "reasoning": "Brief explanation of why this is a duplicate",
   "duplicate_of": 123,
   "comment": "A professional comment explaining the duplicate finding and linking to the canonical issue. Be kind — the reporter may not have found the original."
+}
+```
+
+Jira example:
+```json
+{
+  "action": "duplicate",
+  "reasoning": "Brief explanation of why this is a duplicate",
+  "duplicate_of": "PROJ-45",
+  "comment": "A professional comment explaining the duplicate finding and linking to the canonical issue."
 }
 ```
 
@@ -254,7 +268,7 @@ Progress on this issue depends on work that must happen first — either in this
 The `prerequisites` object contains two arrays:
 
 - `existing` — issues or PRs that already exist and block this work. Include the full HTML URL.
-- `create` — issues that need to be filed in other repos before this work can proceed. Include the target `repo` (project path — `owner/repo` on GitHub, `group/subgroup/project` on GitLab), a `title`, and a `body`. Write the body for the target repo's audience — include enough technical context for upstream maintainers to understand what is needed. Use your judgment on whether to include a back-reference to the originating issue; sometimes it provides helpful context, sometimes it leaks internal details.
+- `create` — issues that need to be filed in other repos before this work can proceed. Include the target `repo` (project path — `owner/repo` on GitHub, `group/subgroup/project` on GitLab, or a bare Jira project key like `PROJ` on Jira), a `title`, and a `body`. Write the body for the target repo's audience — include enough technical context for upstream maintainers to understand what is needed. Use your judgment on whether to include a back-reference to the originating issue; sometimes it provides helpful context, sometimes it leaks internal details.
 
 At least one of the two arrays must have entries.
 
@@ -285,7 +299,7 @@ The issue bundles multiple independent concerns that should each be tracked sepa
 
 Each sub-issue must have a clear, self-contained title and body. Write sub-issue bodies for a developer who has not read the original issue — include enough context to understand and act on the sub-issue independently. Do not include the sub-issue URLs in `comment` — the post-script appends a "Split into:" list automatically.
 
-**Cross-repo sub-issues:** Sub-issues default to the source repo when `repo` is omitted. To file a sub-issue in a different repository, include the `repo` field in `owner/name` format. The target must be listed in `create_issues.allow_targets` in config.yaml (by org or by repo) — the source repo is always implicitly allowed. Sub-issues targeting disallowed repos are skipped and reported in the comment so a human can file them manually.
+**Cross-repo sub-issues:** Sub-issues default to the source repo when `repo` is omitted. To file a sub-issue in a different repository, include the `repo` field in `owner/name` format on GitHub/GitLab, or as a bare Jira project key (e.g. `OTHERPROJ`) on Jira — an `owner/name` value is not a valid Jira project and the create call will be rejected. The target must be listed in `create_issues.allow_targets` in config.yaml (by org or by repo) — the source repo is always implicitly allowed. Sub-issues targeting disallowed repos are skipped and reported in the comment so a human can file them manually.
 
 ```json
 {
