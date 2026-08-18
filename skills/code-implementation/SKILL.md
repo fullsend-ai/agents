@@ -836,6 +836,22 @@ from step 6 and structure `pr_body` to match its sections. Otherwise,
 write a best-effort description covering what changed, why, testing
 approach, and any caveats.
 
+**Testing section — measured, not claimed.** Whatever the template
+calls it (`## Testing`, `## Test plan`), it reports what step 9c
+actually ran. Do not write checkbox claims like
+`- [x] Unit tests for ResolveOverlays`: a checked box asserts a result
+nobody measured, and it reaches the reviewer looking like evidence.
+
+- Name the command and its outcome:
+  `go test ./internal/harness/... — 47 passed, 0 failed`.
+- If the test command already prints coverage (the repo configures
+  `go test -cover`, `pytest --cov`, `jest --coverage`, or similar),
+  report the number it printed. Do not compute one by hand, and do not
+  enable a coverage flag the repo does not use.
+- Anything you did not run — a suite that would not install, a manual
+  path you did not exercise — is `not measured`, with the reason. This
+  is the same disclosure step 9c requires in the commit message.
+
 **Cross-repo ordering:** When the motivating issue references a
 different repository (e.g., a failure observed in an upstream repo),
 lead the summary with what files in **this** repository are changing
