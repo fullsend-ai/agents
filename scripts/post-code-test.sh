@@ -49,6 +49,14 @@ else
   echo "PASS: bundled-script-has-auto-merge"
 fi
 
+if ! grep -q 'forge_ensure_label' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-ensure-label"
+  echo "  ${POST_SCRIPT} missing forge_ensure_label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-ensure-label"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -2180,10 +2188,12 @@ run_gitlab_sanitize_test "sanitize-glpat-replaced" \
   "[REDACTED]" "yes"
 
 # oauth2:TOKEN in push URLs should be redacted
+# gitleaks:allow
 run_gitlab_sanitize_test "sanitize-oauth2-push-url" \
   "https://oauth2:glpat-secret-token@gitlab.com/group/project.git" \
   "glpat-secret-token" "no"
 
+# gitleaks:allow
 run_gitlab_sanitize_test "sanitize-oauth2-replaced" \
   "https://oauth2:glpat-secret-token@gitlab.com/group/project.git" \
   "oauth2:[REDACTED]" "yes"
@@ -2248,11 +2258,11 @@ run_gitlab_push_url_test() {
 
 run_gitlab_push_url_test "gitlab-push-url-format" \
   "glpat-testtoken1234567890" "gitlab.com" "group/project" \
-  "https://oauth2:glpat-testtoken1234567890@gitlab.com/group/project.git"
+  "https://oauth2:glpat-testtoken1234567890@gitlab.com/group/project.git" # gitleaks:allow
 
 run_gitlab_push_url_test "gitlab-push-url-nested-group" \
   "token123" "gitlab.cee.redhat.com" "org/sub/project" \
-  "https://oauth2:token123@gitlab.cee.redhat.com/org/sub/project.git"
+  "https://oauth2:token123@gitlab.cee.redhat.com/org/sub/project.git" # gitleaks:allow
 
 # ---------------------------------------------------------------------------
 # Forge dispatch pattern — tests that the declare -F dispatch pattern used

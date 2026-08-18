@@ -191,13 +191,23 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     # Ensure the label exists in the target repo before applying it.
-    # Follows the same pattern as post-review.sh for ready-for-merge.
-    # --force makes this idempotent (no error if the label already exists).
-    gh label create "ready-for-triage" \
+    if ! _lbl_err=$(gh label create "ready-for-triage" \
       --repo "${TARGET_REPO}" \
-      --description "Retro-filed issue awaiting triage agent" \
-      --color "ededed" \
-      --force 2>/dev/null || true
+      --description "Triggers triage agent dispatch" \
+      --color "0E8A16" 2>&1); then
+      case "${_lbl_err}" in
+        *already\ exists*) ;;
+        *)
+          _lbl_err="${_lbl_err//$'\n'/ }"
+          _lbl_err="${_lbl_err//::/:}"
+          _lbl_err="${_lbl_err//%0A/}"
+          _lbl_err="${_lbl_err//%0a/}"
+          _lbl_err="${_lbl_err//%0D/}"
+          _lbl_err="${_lbl_err//%0d/}"
+          echo "Warning: gh label create ready-for-triage: ${_lbl_err}" >&2
+          ;;
+      esac
+    fi
 
     SAFE_TITLE="${TITLE//::/}"
     SAFE_TITLE="${SAFE_TITLE//%0A/}"

@@ -26,6 +26,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/triage-ops.lib.sh
 source "${SCRIPT_DIR}/lib/triage-ops.lib.sh"
+# shellcheck source=lib/labels.lib.sh
+source "${SCRIPT_DIR}/lib/labels.lib.sh"
 
 # Find the triage result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -646,6 +648,7 @@ fi
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
+  forge_ensure_label "${DEFERRED_LABEL}"
   forge_add_label "${DEFERRED_LABEL}"
 fi
 
