@@ -81,6 +81,7 @@ run_post_code() {
     PUSH_TOKEN="fake-token" \
     REPO_FULL_NAME="${REPO_FULL_NAME}" \
     ISSUE_NUMBER="${ISSUE_NUMBER}" \
+    FULLSEND_FORGE="github" \
     FULLSEND_VALIDATED_ITERATION_DIR="${fixture_dir}" \
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout.log" 2>&1 || EXIT_CODE=$?
@@ -105,6 +106,7 @@ run_post_code_with_label() {
     PUSH_TOKEN="fake-token" \
     REPO_FULL_NAME="${REPO_FULL_NAME}" \
     ISSUE_NUMBER="${ISSUE_NUMBER}" \
+    FULLSEND_FORGE="github" \
     CODE_NEEDS_INPUT_LABEL="${label}" \
     FULLSEND_VALIDATED_ITERATION_DIR="${fixture_dir}" \
     bash "${POST_SCRIPT}"
@@ -281,6 +283,7 @@ run_post_code_in_git_workdir() {
     PUSH_TOKEN="fake-token" \
     REPO_FULL_NAME="${REPO_FULL_NAME}" \
     ISSUE_NUMBER="${ISSUE_NUMBER}" \
+    FULLSEND_FORGE="github" \
     FULLSEND_VALIDATED_ITERATION_DIR="${fixture_dir}" \
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout.log" 2>&1 || EXIT_CODE=$?
