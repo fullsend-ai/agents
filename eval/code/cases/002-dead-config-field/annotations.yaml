@@ -8,14 +8,25 @@ expected_files:
 labels:
   forbidden: []
 
-# Consumed by eval.yaml's removed_symbols judge: each symbol must appear
-# only in deletion lines of the captured PR diff. Both the Go identifier
-# and its YAML key must vanish — a fix that drops the struct field but
-# leaves the SetField case, a test assertion, or the raw YAML literal in
-# TestLoad would keep one of these in a non-deletion line and fail.
+# Consumed by eval.yaml's removed_symbols judge: each symbol must have a
+# deletion line in EVERY file listed under it, and must not survive in any
+# added or context line of the diff. Both the Go identifier and its YAML key
+# must vanish from all three sites.
+#
+# Per-file rather than a bare symbol list on purpose: a global "deleted at
+# least once" count is already satisfied by config.go alone, so a fix that
+# drops the struct field but leaves the raw `verbose_logging: true` literal
+# in TestLoad would still pass — and that literal breaks Load(), since
+# SetField rejects unknown keys. Naming the sites makes each one required.
 removed_symbols:
-  - VerboseLogging
-  - verbose_logging
+  VerboseLogging:
+    - config/config.go
+    - config/fields.go
+    - config/config_test.go
+  verbose_logging:
+    - config/config.go
+    - config/fields.go
+    - config/config_test.go
 
 # Code agent budgets (sandbox work + retries). Unmeasured ceiling: this case
 # has no CI run of its own yet — re-derive from its first run. Values mirror
