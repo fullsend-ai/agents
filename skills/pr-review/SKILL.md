@@ -54,7 +54,7 @@ relative to this file.
 dimension sub-agents and are NOT dispatched in step 4's parallel loop.
 `security-triage` runs as a preprocessing classifier in step 3c-1;
 `risk-assessment` runs as a risk scorer in step 3c-2 (gated by
-`FULLSEND_RISK_ASSESSMENT_ENABLED`); `challenger` runs as a
+`REVIEW_RISK_ASSESSMENT_ENABLED`); `challenger` runs as a
 post-processing adversarial pass in step 6d. All three produce different
 output formats from the standard findings array.
 
@@ -280,8 +280,9 @@ dimensions are relevant:
 #### 3c. Select sub-agents
 
 Based on the domain classification, select sub-agents for dispatch.
-All selected sub-agents run in parallel (with the exception of the
-challenger, which runs by itself after all other sub-agents have finished).
+All selected sub-agents run in parallel (with the exception of
+`risk-assessment`, which runs as a pre-pass in step 3c-2, and
+`challenger`, which runs by itself after all other sub-agents have finished).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -515,7 +516,7 @@ incident.
 
 #### 3c-2. Risk assessment pre-pass
 
-When `FULLSEND_RISK_ASSESSMENT_ENABLED` is set to `true` (the
+When `REVIEW_RISK_ASSESSMENT_ENABLED` is set to `true` (the
 default), run a risk assessment pre-pass to compute a composite risk
 score before preparing context packages. If the env var is `false`
 or empty, skip this step entirely — the `risk_assessment` field will
@@ -555,7 +556,7 @@ be absent from the result JSON.
    ```
 
 4. Spawn via Agent tool with:
-   - `model`: `sonnet` (from the sub-agent frontmatter)
+   - `model`: `sonnet`
    - `prompt`: composed from parts 1–3
    - Run **synchronously** (not in the background) — the result is
      stored for inclusion in the final review result
@@ -685,8 +686,8 @@ prioritization.
 ### 4. Dispatch sub-agents
 
 For each selected **dimension** sub-agent (from step 3c — excludes
-`security-triage` which runs in step 3c-1, and `challenger` which
-runs in step 6d):
+`security-triage` which runs in step 3c-1, `risk-assessment` which
+runs in step 3c-2, and `challenger` which runs in step 6d):
 
 1. Compose the spawn prompt from:
 
@@ -711,7 +712,9 @@ runs in step 6d):
    **Part 3 — Linked skill (conditional):** Check the skill-loading
    table below. If the sub-agent has a linked skill, read the skill
    file and include its contents verbatim after the sub-agent
-   definition.
+   definition. (This table is also referenced by step 3c-2 for the
+   risk-assessment pre-pass — `risk-assessment` is not dispatched
+   in this step's parallel loop.)
 
    | Sub-agent          | Linked skill                         |
    |--------------------|--------------------------------------|

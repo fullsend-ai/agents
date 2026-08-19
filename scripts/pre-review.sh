@@ -450,4 +450,23 @@ if [[ -n "${REVIEW_SKIP_AUTHORS:-}" ]]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Deepen shallow clone for git history analysis (risk assessment Tier 2).
+# Controlled by REVIEW_GIT_FETCH_DEPTH: "0" = full unshallow, unset = no-op.
+# ---------------------------------------------------------------------------
+if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
+  _TARGET_DIR="${TARGET_REPO_DIR:-target-repo}"
+  if [[ -d "${_TARGET_DIR}" ]] && git -C "${_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
+    echo "Deepening shallow clone for git history analysis..."
+    if [[ "${FULLSEND_FORGE}" == "github" && -n "${GH_TOKEN:-}" && -n "${REPO_FULL_NAME:-}" ]]; then
+      git -C "${_TARGET_DIR}" fetch --unshallow \
+        "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL_NAME}.git" 2>/dev/null \
+        && echo "Clone deepened successfully" \
+        || echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
+    else
+      echo "::warning::Cannot deepen clone — missing credentials or unsupported forge"
+    fi
+  fi
+fi
+
 echo "PR #${PR_NUMBER} is open — proceeding with review agent"

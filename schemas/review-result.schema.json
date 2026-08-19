@@ -28,6 +28,7 @@
       "$ref": "#/$defs/label_actions"
     },
     "risk_assessment": {
+      "description": "Score and level must be consistent: 1=low, 2=moderate, 3=elevated, 4=high, 5=critical. Post-script validates both independently.",
       "type": "object",
       "required": ["score", "level", "rationale"],
       "properties": {

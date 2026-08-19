@@ -663,6 +663,10 @@ is_control_label() {
       return 0
     fi
   done
+  # Pipeline-managed label prefixes
+  if [[ "${label}" == risk/* ]]; then
+    return 0
+  fi
   return 1
 }
 
@@ -845,9 +849,19 @@ if [[ "${HAS_RISK}" == "true" ]]; then
   RISK_LEVEL=$(jq -r '.risk_assessment.level' "${RESULT_FILE}")
   RISK_SCORE=$(jq -r '.risk_assessment.score' "${RESULT_FILE}")
 
-  # Sanitize level value
+  # Validate score is an integer 1-5.  Do NOT interpolate the raw value
+  # into the workflow command — it failed validation and may contain
+  # control sequences.
+  if [[ ! "${RISK_SCORE}" =~ ^[1-5]$ ]]; then
+    echo "::warning::Invalid risk score, defaulting to level-only"
+    RISK_SCORE="?"
+  fi
+
+  # Sanitize level value (same pattern as lines 108-116)
   RISK_LEVEL="${RISK_LEVEL//$'\n'/}"
   RISK_LEVEL="${RISK_LEVEL//$'\r'/}"
+  RISK_LEVEL="${RISK_LEVEL//%/}"
+  RISK_LEVEL="${RISK_LEVEL//:/}"
 
   case "${RISK_LEVEL}" in
     low|moderate|elevated|high|critical) ;;
@@ -861,8 +875,7 @@ if [[ "${HAS_RISK}" == "true" ]]; then
     # Remove prior risk/* labels
     for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
       [ "risk/${RISK_LEVEL}" = "${stale_risk}" ] && continue
-      gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
-        --remove-label "${stale_risk}" 2>/dev/null || true
+      forge_remove_label_edit "${stale_risk}"
     done
 
     # Label color by level
@@ -875,15 +888,12 @@ if [[ "${HAS_RISK}" == "true" ]]; then
     esac
 
     echo "Applying risk/${RISK_LEVEL} label"
-    gh label create "risk/${RISK_LEVEL}" --repo "${REPO_FULL_NAME}" \
-      --description "PR risk: ${RISK_LEVEL}" --color "${RISK_COLOR}" \
-      2>/dev/null || true
-    gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
-      --add-label "risk/${RISK_LEVEL}" || true
+    forge_create_label "risk/${RISK_LEVEL}" "PR risk: ${RISK_LEVEL}" "${RISK_COLOR}"
+    forge_add_label_edit "risk/${RISK_LEVEL}"
 
-    # Post sticky risk comment (mirrors post-prioritize.sh pattern)
+    # Post sticky risk comment
     RISK_RATIONALE=$(jq -r '.risk_assessment.rationale // "No rationale provided."' "${RESULT_FILE}" \
-      | sed 's/<[^>]*>//g; s/|/\\|/g')
+      | sed 's/<[^>]*>//g; s/!\[[^]]*\]([^)]*)//g; s/\[\([^]]*\)\]([^)]*)/\1/g; s/|/\\|/g' | head -c 2000)
 
     RISK_COMMENT=$(jq -n \
       --arg score "${RISK_SCORE}" \
@@ -892,12 +902,17 @@ if [[ "${HAS_RISK}" == "true" ]]; then
       -r '"<!-- fullsend:risk-assessment -->\n**Risk Assessment: \($level) (\($score)/5)**\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>"')
 
     printf '%s' "${RISK_COMMENT}" | fullsend post-comment \
-      --repo "${REPO_FULL_NAME}" \
+      --repo "${REPO}" \
       --number "${PR_NUMBER}" \
       --marker "<!-- fullsend:risk-assessment -->" \
       --token "${REVIEW_TOKEN}" \
       --result - >/dev/null 2>&1 || echo "::warning::Failed to post risk comment"
   fi
+else
+  # Risk assessment absent (disabled or failed) — remove stale risk labels.
+  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
+    forge_remove_label_edit "${stale_risk}"
+  done
 fi
 
 # ---------------------------------------------------------------------------
