@@ -1,7 +1,7 @@
 ---
 agent: agents/review.md
 doc: docs/review.md
-model: sonnet
+model: opus
 image: ghcr.io/fullsend-ai/fullsend-code@sha256:de3ecbd7719a1927c983142ada96475f3314d2505d0f258bcf19c31411856eb6
 policy: policies/base.yaml
 readonly_repo: true

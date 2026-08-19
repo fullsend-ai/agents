@@ -12,7 +12,7 @@
 # Only the post-script, running on the runner with PUSH_TOKEN, can write.
 agent: agents/fix.md
 doc: docs/fix.md
-model: opus
+model: sonnet
 image: ghcr.io/fullsend-ai/fullsend-code@sha256:de3ecbd7719a1927c983142ada96475f3314d2505d0f258bcf19c31411856eb6
 policy: policies/base.yaml
 openshell:
