@@ -1,21 +1,65 @@
 #!/usr/bin/env bash
 # GENERATED from post-prioritize.src.sh — DO NOT EDIT. Run: make script-build
-# post-prioritize.src.sh — Write RICE scores to the project board and post a reasoning comment.
+# post-prioritize.sh — Write RICE scores to the project board and post a reasoning comment.
 #
 # Runs on the host after sandbox cleanup. Working directory is the fullsend
 # run output directory (e.g., /tmp/fullsend/agent-prioritize-<id>/).
 #
 # Required env vars:
-#   GITHUB_ISSUE_URL  — HTML URL of the issue
-#   GH_TOKEN          — GitHub token with project write + issues write scope
-#   ORG               — GitHub organization
-#   PROJECT_NUMBER    — Project board number
+#   ISSUE_URL      — HTML URL of the issue
+#   FULLSEND_FORGE — "github" or "gitlab"
+#
+# GitHub-specific env vars (consumed inside github-prioritize-ops.lib.sh):
+#   GH_TOKEN       — GitHub token with project write + issues write scope
+#   ORG            — GitHub organization
+#   PROJECT_NUMBER — Project board number
+#
+# GitLab-specific env vars (consumed inside gitlab-prioritize-ops.lib.sh):
+#   GITLAB_TOKEN   — GitLab personal/project access token
 
 set -euo pipefail
 
+: "${ISSUE_URL:?ISSUE_URL must be set}"
+: "${FULLSEND_FORGE:?FULLSEND_FORGE must be set}"
+
 # shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/github-api-csma.lib.sh
+# shellcheck source=lib/prioritize-ops.lib.sh
+# BEGIN bundled: lib/prioritize-ops.lib.sh
+# shellcheck shell=bash
+# prioritize-ops.lib.sh — Forge-dispatch wrapper for prioritize operations.
+#
+# Sources the correct forge-specific ops based on FULLSEND_FORGE.
+# Bundled inline by bundle-sh.sh at build time.
+
+[[ -n "${PRIORITIZE_OPS_SH_LOADED:-}" ]] && return 0
+PRIORITIZE_OPS_SH_LOADED=1
+
+_gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'; }
+
+case "${FULLSEND_FORGE:-}" in
+  github)
+# BEGIN bundled: lib/github-prioritize-ops.lib.sh
+# shellcheck shell=bash
+# github-prioritize-ops.lib.sh — GitHub forge operations for prioritize scripts.
+#
+# Bundled into pre-prioritize.sh and post-prioritize.sh via prioritize-ops.lib.sh.
+# All functions use the gh CLI and the GitHub REST/GraphQL API via CSMA helpers.
+#
+# Expected globals (set by forge_parse_issue_url):
+#   REPO         — owner/repo (e.g., "org/repo")
+#   ISSUE_NUMBER — issue number
+#
+# Expected env vars:
+#   ISSUE_URL      — HTML URL of the issue
+#   GH_TOKEN       — GitHub token with project write + issues write scope
+#   ORG            — GitHub organization
+#   PROJECT_NUMBER — Project board number
+
+[[ -n "${GITHUB_PRIORITIZE_OPS_SH_LOADED:-}" ]] && return 0
+GITHUB_PRIORITIZE_OPS_SH_LOADED=1
+
+# shellcheck source=github-api-csma.lib.sh
 # BEGIN bundled: lib/github-api-csma.lib.sh
 # github-api-csma.lib.sh — CSMA/CD-style resilience for GitHub API calls via gh/fullsend.
 #
@@ -334,16 +378,295 @@ github_csma_run_cmd() {
   return 1
 }
 # END bundled: lib/github-api-csma.lib.sh
-: "${GITHUB_ISSUE_URL:?GITHUB_ISSUE_URL must be set}"
-: "${GH_TOKEN:?GH_TOKEN must be set}"
-: "${ORG:?ORG must be set}"
-: "${PROJECT_NUMBER:?PROJECT_NUMBER must be set}"
 
-# Validate URL format early, before any parsing or API calls.
-if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}" >&2
-  exit 1
-fi
+# --- URL handling ---
+
+forge_validate_issue_url() {
+  if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+    echo "ERROR: ISSUE_URL does not match expected pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
+    return 1
+  fi
+}
+
+forge_parse_issue_url() {
+  REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
+  ISSUE_NUMBER=$(basename "${ISSUE_URL}")
+}
+
+# --- Project board operations ---
+
+forge_update_project_scores() {
+  local reach="$1"
+  local impact="$2"
+  local confidence="$3"
+  local effort="$4"
+  local score="$5"
+
+  if [[ -z "${ORG:-}" || -z "${PROJECT_NUMBER:-}" ]]; then
+    echo "::notice::ORG or PROJECT_NUMBER not set — skipping project board update"
+    return 0
+  fi
+
+  # Resolve project and item IDs.
+  local project_id
+  project_id=$(github_csma_run graphql project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
+
+  local issue_node_id
+  issue_node_id=$(github_csma_run core api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
+
+  # Find the project item ID for this issue via the issue's projectItems connection.
+  local item_response
+  item_response=$(github_csma_run graphql api graphql -f query='
+    query($issueId: ID!) {
+      node(id: $issueId) {
+        ... on Issue {
+          projectItems(first: 10) {
+            nodes {
+              id
+              project { id }
+            }
+          }
+        }
+      }
+    }
+  ' -f issueId="${issue_node_id}")
+
+  local item_id
+  item_id=$(echo "${item_response}" | jq -r --arg pid "${project_id}" \
+    '(.data.node.projectItems.nodes // [])[] | select(.project.id == $pid) | .id')
+
+  if [[ -z "${item_id}" || "${item_id}" == "null" ]]; then
+    echo "ERROR: issue $(_gha_sanitize "${ISSUE_URL}") not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG})" >&2
+    return 1
+  fi
+
+  # Get field IDs for all RICE fields.
+  local fields_json
+  fields_json=$(github_csma_run graphql project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json)
+
+  _get_field_id() {
+    echo "${fields_json}" | jq -r --arg name "$1" '.fields[] | select(.name == $name) | .id'
+  }
+
+  local reach_field_id impact_field_id confidence_field_id effort_field_id score_field_id
+  reach_field_id=$(_get_field_id "RICE Reach")
+  impact_field_id=$(_get_field_id "RICE Impact")
+  confidence_field_id=$(_get_field_id "RICE Confidence")
+  effort_field_id=$(_get_field_id "RICE Effort")
+  score_field_id=$(_get_field_id "RICE Score")
+
+  local fid_var
+  for fid_var in reach_field_id impact_field_id confidence_field_id effort_field_id score_field_id; do
+    if [[ -z "${!fid_var}" ]]; then
+      echo "ERROR: ${fid_var} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG}). Run scripts/setup-prioritize.sh first." >&2
+      return 1
+    fi
+  done
+
+  # Update each field on the project item.
+  _update_field() {
+    local field_id="$1"
+    local value="$2"
+    jq -n \
+      --arg pid "${project_id}" \
+      --arg iid "${item_id}" \
+      --arg fid "${field_id}" \
+      --argjson val "${value}" \
+      '{
+        query: "mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) { updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { number: $value } }) { projectV2Item { id } } }",
+        variables: {projectId: $pid, itemId: $iid, fieldId: $fid, value: $val}
+      }' | github_csma_run_pipe graphql api graphql --input -
+  }
+
+  echo "Writing scores to project board (CSMA-aware)..."
+  _update_field "${reach_field_id}" "${reach}"
+  _update_field "${impact_field_id}" "${impact}"
+  _update_field "${confidence_field_id}" "${confidence}"
+  _update_field "${effort_field_id}" "${effort}"
+  _update_field "${score_field_id}" "${score}"
+  echo "Project fields updated."
+}
+
+# --- Comments ---
+
+forge_post_sticky_comment() {
+  : "${GH_TOKEN:?GH_TOKEN must be set}"
+  local body="$1"
+  local marker="$2"
+  printf '%s' "${body}" | github_csma_run_cmd core fullsend post-comment \
+    --repo "${REPO}" \
+    --number "${ISSUE_NUMBER}" \
+    --marker "${marker}" \
+    --token "${GH_TOKEN}" \
+    --result - >/dev/null
+}
+# END bundled: lib/github-prioritize-ops.lib.sh
+    ;;
+  gitlab)
+# BEGIN bundled: lib/gitlab-prioritize-ops.lib.sh
+# shellcheck shell=bash
+# gitlab-prioritize-ops.lib.sh — GitLab forge operations for prioritize scripts.
+#
+# Bundled into pre-prioritize.sh and post-prioritize.sh via prioritize-ops.lib.sh.
+# All functions use curl against the GitLab REST API.
+#
+# Expected globals (set by forge_parse_issue_url):
+#   REPO           — plain project path (e.g., "group/project")
+#   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
+#   ISSUE_NUMBER   — issue IID
+#   GITLAB_HOST    — API host (e.g., "gitlab.com")
+#
+# Expected env vars:
+#   ISSUE_URL      — HTML URL of the issue
+#   GITLAB_TOKEN   — GitLab personal/project access token
+
+[[ -n "${GITLAB_PRIORITIZE_OPS_SH_LOADED:-}" ]] && return 0
+GITLAB_PRIORITIZE_OPS_SH_LOADED=1
+
+_gitlab_api() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call forge_parse_issue_url first" >&2
+    return 1
+  fi
+  case "${GITLAB_HOST}" in
+    gitlab.com|gitlab.cee.redhat.com) ;;
+    *) echo "ERROR: GITLAB_HOST '$(_gha_sanitize "${GITLAB_HOST}")' is not in the allowed host list" >&2; return 1 ;;
+  esac
+  curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request "${method}" \
+    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "$@"
+}
+
+_GITLAB_BOT_USERNAME=""
+
+_gitlab_bot_username() {
+  if [[ -z "${_GITLAB_BOT_USERNAME}" ]]; then
+    _GITLAB_BOT_USERNAME=$(_gitlab_api GET "/user" 2>/dev/null | jq -r '.username // empty')
+    if [[ -z "${_GITLAB_BOT_USERNAME}" ]]; then
+      echo "ERROR: failed to determine GitLab token owner via GET /user" >&2
+      return 1
+    fi
+  fi
+  echo "${_GITLAB_BOT_USERNAME}"
+}
+
+# --- URL handling ---
+
+forge_validate_issue_url() {
+  if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
+    echo "ERROR: ISSUE_URL does not match expected GitLab pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
+    return 1
+  fi
+  local host
+  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  case "${host}" in
+    gitlab.com|gitlab.cee.redhat.com) ;;
+    *) echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' is not in the allowed host list" >&2; return 1 ;;
+  esac
+}
+
+forge_parse_issue_url() {
+  # Extract host, project path, and issue IID from URL.
+  # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
+  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+  REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
+  ISSUE_NUMBER=$(basename "${ISSUE_URL}")
+}
+
+# --- Project board operations ---
+
+forge_update_project_scores() {
+  # GitLab custom fields API integration deferred. The GitLab Issues API
+  # ignores unknown top-level keys (returns 200 silently), so writing RICE
+  # field names there is a no-op. The correct Custom Fields API requires
+  # field IDs resolved at runtime and is only available on Premium/Ultimate.
+  # Scores are always available in the reasoning comment.
+  echo "::notice::GitLab custom fields not yet implemented — scores are in comment only"
+  return 0
+}
+
+# --- Comments ---
+
+forge_post_sticky_comment() {
+  : "${GITLAB_TOKEN:?GITLAB_TOKEN must be set}"
+  local body="$1"
+  local marker="$2"
+  local marked_body="${marker}
+${body}"
+
+  local bot_user
+  bot_user=$(_gitlab_bot_username) || {
+    echo "::warning::Could not resolve bot username; falling back to non-sticky comment" >&2
+    _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
+      --data-urlencode "body=${marked_body}" > /dev/null \
+      || echo "::warning::Failed to post fallback comment" >&2
+    return 0
+  }
+
+  local notes="[]"
+  local page=1 max_pages=50
+  while [[ "${page}" -le "${max_pages}" ]]; do
+    local batch
+    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=asc&page=${page}" 2>/dev/null) || break
+    local count
+    count=$(echo "${batch}" | jq 'length') || break
+    [[ "${count}" -eq 0 ]] && break
+    notes=$(echo "${notes}" "${batch}" | jq -s 'add')
+    page=$((page + 1))
+  done
+
+  local match
+  match=$(echo "${notes}" | jq --arg marker "${marker}" --arg user "${bot_user}" \
+    '[.[] | select(.author.username == $user and (.body | startswith($marker)))][0] // empty')
+
+  local note_id
+  note_id=$(echo "${match}" | jq -r '.id // empty')
+
+  if [[ -n "${note_id}" ]]; then
+    local old_body
+    old_body=$(echo "${match}" | jq -r '.body // empty')
+    local stripped_old
+    local escaped_marker
+    escaped_marker=$(printf '%s' "${marker}" | sed 's/[].[*^$()+?{|\\]/\\&/g; s|/|\\/|g')
+    stripped_old=$(echo "${old_body}" | sed "1{/^${escaped_marker}$/d;}")
+    if [[ -n "${stripped_old}" ]]; then
+      local history
+      history=$(printf '\n\n<details>\n<summary>Previous run</summary>\n\n%s\n\n</details>' "${stripped_old}")
+      local max_len=60000
+      if [[ ${#history} -gt ${max_len} ]]; then
+        history="${history:0:${max_len}}
+...(truncated)"
+      fi
+      marked_body="${marked_body}${history}"
+    fi
+    _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes/${note_id}" \
+      --data-urlencode "body=${marked_body}" > /dev/null \
+      || { echo "::warning::Failed to update sticky comment (note ${note_id})" >&2; return 1; }
+  else
+    _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
+      --data-urlencode "body=${marked_body}" > /dev/null \
+      || { echo "::warning::Failed to post comment" >&2; return 1; }
+  fi
+}
+# END bundled: lib/gitlab-prioritize-ops.lib.sh
+    ;;
+  *)
+    echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
+    exit 1
+    ;;
+esac
+# END bundled: lib/prioritize-ops.lib.sh
+
+forge_validate_issue_url
+forge_parse_issue_url
 
 # Find the result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -421,84 +744,7 @@ REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}" | sed 's/<[^>]*>//
 
 # --- Write scores to the project board ---
 
-# Resolve project and item IDs.
-PROJECT_ID=$(github_csma_run graphql project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
-
-# Parse repo and issue number from URL.
-REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
-ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
-ISSUE_NODE_ID=$(github_csma_run core api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
-
-# Find the project item ID for this issue via the issue's projectItems connection.
-# This is a single API call regardless of project size, avoiding pagination and timeouts.
-ITEM_RESPONSE=$(github_csma_run graphql api graphql -f query='
-  query($issueId: ID!) {
-    node(id: $issueId) {
-      ... on Issue {
-        projectItems(first: 10) {
-          nodes {
-            id
-            project { id }
-          }
-        }
-      }
-    }
-  }
-' -f issueId="${ISSUE_NODE_ID}")
-
-ITEM_ID=$(echo "${ITEM_RESPONSE}" | jq -r --arg pid "${PROJECT_ID}" \
-  '(.data.node.projectItems.nodes // [])[] | select(.project.id == $pid) | .id')
-
-if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
-  echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG})" >&2
-  exit 1
-fi
-
-# Get field IDs for all RICE fields.
-FIELDS_JSON=$(github_csma_run graphql project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json)
-
-get_field_id() {
-  echo "${FIELDS_JSON}" | jq -r --arg name "$1" '.fields[] | select(.name == $name) | .id'
-}
-
-REACH_FIELD_ID=$(get_field_id "RICE Reach")
-IMPACT_FIELD_ID=$(get_field_id "RICE Impact")
-CONFIDENCE_FIELD_ID=$(get_field_id "RICE Confidence")
-EFFORT_FIELD_ID=$(get_field_id "RICE Effort")
-SCORE_FIELD_ID=$(get_field_id "RICE Score")
-
-for fid_var in REACH_FIELD_ID IMPACT_FIELD_ID CONFIDENCE_FIELD_ID EFFORT_FIELD_ID SCORE_FIELD_ID; do
-  if [[ -z "${!fid_var}" ]]; then
-    echo "ERROR: ${fid_var} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG}). Run scripts/setup-prioritize.sh first." >&2
-    exit 1
-  fi
-done
-
-# Update each field on the project item.
-# Uses --input - with jq-built JSON variables to ensure proper Float coercion.
-# The gh CLI's -F flag does not reliably coerce strings to GraphQL Float.
-# The entire JSON body is built with jq to avoid unquoted heredoc expansion.
-update_field() {
-  local field_id="$1"
-  local value="$2"
-  jq -n \
-    --arg pid "${PROJECT_ID}" \
-    --arg iid "${ITEM_ID}" \
-    --arg fid "${field_id}" \
-    --argjson val "${value}" \
-    '{
-      query: "mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) { updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { number: $value } }) { projectV2Item { id } } }",
-      variables: {projectId: $pid, itemId: $iid, fieldId: $fid, value: $val}
-    }' | github_csma_run_pipe graphql api graphql --input -
-}
-
-echo "Writing scores to project board (CSMA-aware)..."
-update_field "${REACH_FIELD_ID}" "${REACH}"
-update_field "${IMPACT_FIELD_ID}" "${IMPACT}"
-update_field "${CONFIDENCE_FIELD_ID}" "${CONFIDENCE}"
-update_field "${EFFORT_FIELD_ID}" "${EFFORT}"
-update_field "${SCORE_FIELD_ID}" "${SCORE}"
-echo "Project fields updated."
+forge_update_project_scores "${REACH}" "${IMPACT}" "${CONFIDENCE}" "${EFFORT}" "${SCORE}"
 
 # Board reranking by RICE Score is deferred — the Projects V2 board supports
 # sorting by custom fields natively, avoiding N sequential API mutations and
@@ -519,8 +765,7 @@ COMMENT=$(jq -n \
   --arg r_impact "${REASONING_IMPACT}" \
   --arg r_confidence "${REASONING_CONFIDENCE}" \
   --arg r_effort "${REASONING_EFFORT}" \
-  -r '"<!-- fullsend:prioritize-agent -->
-**RICE Priority Score: \($score)**
+  -r '"**RICE Priority Score: \($score)**
 
 <details>
 <summary>Score breakdown</summary>
@@ -537,10 +782,5 @@ COMMENT=$(jq -n \
 </details>"')
 
 echo "Posting RICE comment..."
-printf '%s' "${COMMENT}" | github_csma_run_cmd core fullsend post-comment \
-  --repo "${REPO}" \
-  --number "${ISSUE_NUMBER}" \
-  --marker "<!-- fullsend:prioritize-agent -->" \
-  --token "${GH_TOKEN}" \
-  --result - >/dev/null
+forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:prioritize-agent -->"
 echo "Post-prioritize complete."
