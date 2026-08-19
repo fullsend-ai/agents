@@ -181,11 +181,11 @@ run_filter_test() {
 # --- Severity filter test cases ---
 
 MIXED_FINDINGS='{"action":"request-changes","findings":[
-  {"severity":"info","category":"style","file":"a.go","description":"x"},
-  {"severity":"low","category":"style","file":"b.go","description":"y"},
-  {"severity":"medium","category":"bug","file":"c.go","description":"z"},
-  {"severity":"high","category":"security","file":"d.go","description":"w"},
-  {"severity":"critical","category":"security","file":"e.go","description":"v"}
+  {"severity":"info","category":"style","file":"a.go","description":"x","verified_variables":[],"unchecked_variables":[]},
+  {"severity":"low","category":"style","file":"b.go","description":"y","verified_variables":[],"unchecked_variables":[]},
+  {"severity":"medium","category":"bug","file":"c.go","description":"z","verified_variables":[],"unchecked_variables":[]},
+  {"severity":"high","category":"security","file":"d.go","description":"w","verified_variables":[],"unchecked_variables":[]},
+  {"severity":"critical","category":"security","file":"e.go","description":"v","verified_variables":[],"unchecked_variables":[]}
 ]}'
 
 run_filter_test "threshold-low-drops-info" \
@@ -266,8 +266,8 @@ run_downgrade_test() {
 
 # All findings are info-level; threshold=low removes them all → downgrade
 ALL_INFO='{"action":"request-changes","findings":[
-  {"severity":"info","category":"style","file":"a.go","description":"x"},
-  {"severity":"info","category":"style","file":"b.go","description":"y"}
+  {"severity":"info","category":"style","file":"a.go","description":"x","verified_variables":[],"unchecked_variables":[]},
+  {"severity":"info","category":"style","file":"b.go","description":"y","verified_variables":[],"unchecked_variables":[]}
 ]}'
 
 run_downgrade_test "request-changes-all-filtered-downgrade" \
@@ -275,7 +275,7 @@ run_downgrade_test "request-changes-all-filtered-downgrade" \
 
 # Same scenario with reject action
 ALL_INFO_REJECT='{"action":"reject","findings":[
-  {"severity":"info","category":"style","file":"a.go","description":"x"}
+  {"severity":"info","category":"style","file":"a.go","description":"x","verified_variables":[],"unchecked_variables":[]}
 ]}'
 
 run_downgrade_test "reject-all-filtered-downgrade" \
@@ -287,14 +287,14 @@ run_downgrade_test "request-changes-partial-filter-no-downgrade" \
 
 # comment with all findings filtered → action stays comment, findings removed
 COMMENT_ALL_INFO='{"action":"comment","body":"text","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[
-  {"severity":"info","category":"style","file":"a.go","description":"x"}
+  {"severity":"info","category":"style","file":"a.go","description":"x","verified_variables":[],"unchecked_variables":[]}
 ]}'
 run_downgrade_test "comment-all-filtered-removes-findings" \
   "$COMMENT_ALL_INFO" "low" "comment" "false"
 
 # approve with all findings filtered → action stays approve, findings removed
 APPROVE_ALL_INFO='{"action":"approve","body":"LGTM","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[
-  {"severity":"info","category":"style","file":"a.go","description":"x"}
+  {"severity":"info","category":"style","file":"a.go","description":"x","verified_variables":[],"unchecked_variables":[]}
 ]}'
 run_downgrade_test "approve-all-filtered-removes-findings" \
   "$APPROVE_ALL_INFO" "low" "approve" "false"
@@ -768,7 +768,7 @@ run_label_test "label-actions-absent-still-posts" \
 
 # request-changes with label_actions — labels should still be applied
 run_label_test "label-actions-with-request-changes" \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches CI config.","actions":[{"action":"add","label":"area/api"}]}}' \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref","verified_variables":[],"unchecked_variables":[]}],"label_actions":{"reason":"Touches CI config.","actions":[{"action":"add","label":"area/api"}]}}' \
   "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=area/api --silent"
 
 # Label with embedded newline (GHA command injection attempt) — should be refused
@@ -834,7 +834,7 @@ run_label_test_with_env() {
 }
 
 run_label_test_with_env "severity-filter-downgrade-integration" \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor","verified_variables":[],"unchecked_variables":[]}]}' \
   "requires-manual-review" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
@@ -885,7 +885,7 @@ run_label_test_with_env_stdout() {
 }
 
 run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor"}]}' \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor","verified_variables":[],"unchecked_variables":[]}]}' \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
@@ -1204,7 +1204,7 @@ run_body_count_test() {
 }
 
 # request-changes + label_actions → body has label notice (---) AND action-hints footer (---)
-LABEL_PLUS_HINTS_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}'
+LABEL_PLUS_HINTS_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref","verified_variables":[],"unchecked_variables":[]}],"label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}'
 
 run_body_count_test "label-actions-plus-action-hints-two-hrs" \
   "${LABEL_PLUS_HINTS_JSON}" "---" "2"
