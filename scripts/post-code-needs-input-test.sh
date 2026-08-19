@@ -57,9 +57,18 @@ esac
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
-# No gitleaks mock needed: post_needs_input_comment now calls
-# install_gitleaks itself before scanning, so gitleaks is available on
-# all platforms (sandbox images pre-install it; CI runners download it).
+# Mock gitleaks: post_needs_input_comment calls install_gitleaks then
+# gitleaks detect. On CI runners where the real binary isn't pre-installed
+# and install_gitleaks can't download it (network restrictions, missing
+# deps), the scan would fail and the agent's explanation would be replaced
+# with a generic placeholder — defeating the feature. A no-op mock (exit 0
+# = no secrets found) ensures tests exercise the actual comment text path
+# regardless of the host environment.
+cat > "${MOCK_BIN}/gitleaks" <<'GLEOF'
+#!/usr/bin/env bash
+exit 0
+GLEOF
+chmod +x "${MOCK_BIN}/gitleaks"
 
 # Runs the real post-code script against a fixture agent-result.json.
 # Leaves the result in EXIT_CODE, the gh call log at ${GH_LOG}, and stdout
@@ -225,11 +234,14 @@ assert_log_pattern "no-needs-input-field-unaffected" \
 # (default 30) must not be truncated from the start. sanitize_failure_detail
 # defaults to tail-based truncation (recent lines of command/log output);
 # needs_input is forward, human-authored prose and must be posted in full.
+# Build the multi-line text with real newlines (not literal \n), then use
+# jq to produce valid JSON with proper escaping.
 NEEDS_INPUT_LONG_TEXT="opening context that must not be dropped"
 for i in $(seq 1 35); do
-  NEEDS_INPUT_LONG_TEXT="${NEEDS_INPUT_LONG_TEXT}\nline ${i} of a long explanation"
+  NEEDS_INPUT_LONG_TEXT="${NEEDS_INPUT_LONG_TEXT}
+line ${i} of a long explanation"
 done
-FIXTURE_NEEDS_INPUT_LONG="{\"target_branch\":\"main\",\"needs_input\":\"${NEEDS_INPUT_LONG_TEXT}\"}"
+FIXTURE_NEEDS_INPUT_LONG="$(jq -n --arg ni "${NEEDS_INPUT_LONG_TEXT}" '{target_branch:"main",needs_input:$ni}')"
 
 run_post_code "${FIXTURE_NEEDS_INPUT_LONG}"
 
@@ -358,6 +370,62 @@ assert_comment_body_pattern "needs-input-backtick-branch-omitted-from-comment" \
 
 assert_comment_body_pattern "needs-input-backtick-branch-placeholder-used" \
   "branch name omitted" "yes"
+
+# --- Default-branch commits check ---
+# The commits_ahead guard must fire even when the agent is on the default
+# branch (e.g. the agent never created a feature branch). Previously the
+# check was gated on current_branch != default_branch, which silently
+# skipped it in that scenario.
+setup_git_workdir_on_default_branch() {
+  rm -rf "${GIT_WORKDIR}"
+  git init -q -b main "${GIT_WORKDIR}"
+  git -C "${GIT_WORKDIR}" config user.email "test@example.com"
+  git -C "${GIT_WORKDIR}" config user.name "Test"
+  git -C "${GIT_WORKDIR}" commit --allow-empty -m "init" -q
+  git -C "${GIT_WORKDIR}" update-ref refs/remotes/origin/main HEAD
+  # Stay on main, add a commit ahead of origin/main
+  git -C "${GIT_WORKDIR}" commit --allow-empty -m "agent work on main" -q
+}
+
+setup_git_workdir_on_default_branch
+run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+
+assert_log_pattern "needs-input-warns-on-commits-ahead-on-default-branch" \
+  "were not pushed and will be discarded" "yes"
+
+assert_log_pattern "needs-input-conflict-label-on-default-branch-commits" \
+  "labels[]=fs-code-needs-input-conflict" "yes"
+
+# --- Uncommitted files check ---
+# The agent may modify files without committing. The guard should surface
+# uncommitted working-tree changes via a git status --porcelain check.
+setup_git_workdir_with_dirty_files() {
+  rm -rf "${GIT_WORKDIR}"
+  git init -q -b main "${GIT_WORKDIR}"
+  git -C "${GIT_WORKDIR}" config user.email "test@example.com"
+  git -C "${GIT_WORKDIR}" config user.name "Test"
+  git -C "${GIT_WORKDIR}" commit --allow-empty -m "init" -q
+  git -C "${GIT_WORKDIR}" update-ref refs/remotes/origin/main HEAD
+  git -C "${GIT_WORKDIR}" checkout -q -b feature/dirty-needs-input
+  # Create an uncommitted file
+  echo "uncommitted agent work" > "${GIT_WORKDIR}/agent-changes.txt"
+}
+
+setup_git_workdir_with_dirty_files
+run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+
+assert_log_pattern "needs-input-warns-on-uncommitted-files" \
+  "uncommitted file(s) in the working tree" "yes"
+
+assert_log_pattern "needs-input-conflict-label-on-uncommitted-files" \
+  "labels[]=fs-code-needs-input-conflict" "yes"
+
+# --- Label validation ---
+# CODE_NEEDS_INPUT_LABEL with unexpected characters must fall back to default.
+run_post_code_with_label "${FIXTURE_NEEDS_INPUT}" 'bad-label`inject`'
+
+assert_log_pattern "needs-input-bad-label-falls-back-to-default" \
+  "labels[]=fs-code-needs-input" "yes"
 
 # --- Summary ---
 
