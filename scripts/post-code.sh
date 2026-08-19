@@ -1820,6 +1820,16 @@ post_needs_input_comment() {
   _post_failure_ensure_token
 
   local label="${CODE_NEEDS_INPUT_LABEL:-fs-code-needs-input}"
+  # Defense-in-depth: validate the label name against a safe-charset regex
+  # before using it in API calls and interpolating into the comment body.
+  # The env var is controlled by the repository owner (acceptable trust
+  # boundary), but a typo or adversarial override could inject unexpected
+  # characters into gh API calls or the posted Markdown comment.
+  local _label_re='^[a-zA-Z0-9._:/ -]+$'
+  if [[ ! "${label}" =~ ${_label_re} ]]; then
+    gha_echo warning "CODE_NEEDS_INPUT_LABEL contains unexpected characters ('${label}'); falling back to default"
+    label="fs-code-needs-input"
+  fi
   gh label create "${label}" --repo "${REPO_FULL_NAME}" \
     --description "Code agent needs human input to proceed" --color "D93F0B" \
     --force 2>/dev/null || gha_echo warning "Failed to create/update label '${label}' on ${REPO_FULL_NAME}"
@@ -1869,12 +1879,33 @@ post_needs_input_comment() {
         default_branch="main"
         gha_echo warning "Failed to determine default branch for ${REPO_FULL_NAME}; assuming 'main' — the discarded-commits check may be inaccurate"
       fi
-      if [ "${current_branch}" != "${default_branch}" ]; then
-        commits_ahead="$(git rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null || echo 0)"
-        if [ "${commits_ahead}" -gt 0 ]; then
-          caveat="⚠️ The agent made ${commits_ahead} local commit(s) on branch \`${display_branch}\` before setting \`needs_input\` — these were not pushed and will be discarded."
-          gha_echo warning "needs_input set but ${commits_ahead} local commit(s) exist on branch '${current_branch}' — discarding"
+      # Check for commits ahead of origin/default regardless of whether
+      # current_branch equals default_branch — the agent might leave
+      # local-only commits on the default branch too, and
+      # origin/${default_branch}..HEAD is still meaningful in that case.
+      commits_ahead=""
+      if ! commits_ahead="$(git rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null)"; then
+        gha_echo warning "Failed to count commits ahead of origin/${default_branch} — discarded-commits check skipped"
+      fi
+      if [ -n "${commits_ahead}" ] && [ "${commits_ahead}" -gt 0 ]; then
+        caveat="⚠️ The agent made ${commits_ahead} local commit(s) on branch \`${display_branch}\` before setting \`needs_input\` — these were not pushed and will be discarded."
+        gha_echo warning "needs_input set but ${commits_ahead} local commit(s) exist on branch '${current_branch}' — discarding"
+      fi
+      # Also check for uncommitted-but-unstaged changes — if the agent
+      # modified files without committing, those changes are silently
+      # lost. Surface them so the human knows work was discarded.
+      local dirty_files
+      dirty_files="$(git status --porcelain 2>/dev/null || true)"
+      if [ -n "${dirty_files}" ]; then
+        local dirty_count
+        dirty_count="$(echo "${dirty_files}" | wc -l | tr -d ' ')"
+        if [ -z "${caveat}" ]; then
+          caveat="⚠️ The agent left ${dirty_count} uncommitted file(s) in the working tree before setting \`needs_input\` — these will be discarded."
+        else
+          caveat="${caveat}
+⚠️ Additionally, the agent left ${dirty_count} uncommitted file(s) in the working tree — these will also be discarded."
         fi
+        gha_echo warning "needs_input set but ${dirty_count} uncommitted file(s) exist in the working tree — discarding"
       fi
     fi
   fi
