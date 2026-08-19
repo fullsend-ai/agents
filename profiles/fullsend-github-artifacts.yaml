@@ -1,5 +1,4 @@
 ---
-# Also mirrored by fullsend-github-ro-artifacts.yaml — keep in sync.
 id: fullsend-github-artifacts
 display_name: Fullsend GitHub Artifacts
 description: GitHub Actions artifact download endpoints

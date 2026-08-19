@@ -42,10 +42,12 @@ timeout_minutes: 30
 forge:
   github:
     providers:
-      - providers/github-ro-artifacts.yaml
+      - providers/github-ro.yaml
+      - providers/github-artifacts.yaml
     openshell:
       profiles:
-        - profiles/fullsend-github-ro-artifacts.yaml
+        - profiles/fullsend-github-ro.yaml
+        - profiles/fullsend-github-artifacts.yaml
     pre_script: scripts/pre-retro.sh
     post_script: scripts/post-retro.sh
     env:

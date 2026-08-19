@@ -8,6 +8,7 @@ execution:
   timeout: 300  # 5 min — smoke test; agent will fail fast (no real artifacts)
   parallelism: 1
   env:
+    EVAL_TIMEOUT: "240"
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
     FULLSEND_DIR: $FULLSEND_DIR
