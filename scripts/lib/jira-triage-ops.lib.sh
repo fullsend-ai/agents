@@ -39,15 +39,19 @@
 [[ -n "${JIRA_TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
 JIRA_TRIAGE_OPS_SH_LOADED=1
 
+_jira_require_vars() {
+  if [[ -z "${JIRA_BASE_URL:-}" ]]; then echo "ERROR: JIRA_BASE_URL is not set" >&2; exit 1; fi
+  if [[ -z "${JIRA_USER_EMAIL:-}" ]]; then echo "ERROR: JIRA_USER_EMAIL is not set" >&2; exit 1; fi
+  if [[ -z "${JIRA_TOKEN:-}" ]]; then echo "ERROR: JIRA_TOKEN is not set" >&2; exit 1; fi
+}
+
 _jira_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
 
-  if [[ -z "${JIRA_JIRA_BASE_URL}" ]]; then echo "ERROR: JIRA_JIRA_BASE_URL is not set"; exit 1; fi
-  if [[ -z "${JIRA_USER_EMAIL}" ]]; then echo "ERROR: JIRA_USER_EMAIL is not set"; exit 1; fi
-  if [[ -z "${JIRA_TOKEN}" ]]; then echo "ERROR: JIRA_TOKEN is not set"; exit 1; fi
+  _jira_require_vars
 
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
@@ -63,6 +67,9 @@ _jira_api_with_status() {
   shift
   local endpoint="$1"
   shift
+
+  _jira_require_vars
+
   local err_file
   err_file=$(mktemp)
   local raw
