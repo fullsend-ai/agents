@@ -169,6 +169,47 @@ measurements:
     name: bad|name
 " 1 "contains characters fullsend LoadRegistry rejects"
 
+run_case "hash-in-agent-rejected" \
+  "agent: code#x
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+" 1 "must not contain '#'"
+
+run_case "hash-in-scorer-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness#typo
+    version: 1
+" 1 "must not contain '#'"
+
+run_case "quoted-version-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: \"1\"
+" 1 "unquoted integer"
+
+run_case "duplicate-agent-key-rejected" \
+  "agent: code
+agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+" 1 "duplicate top-level key"
+
+run_case "real-comment-still-ok" \
+  "agent: code  # stock agent
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+" 0 "code.yaml: OK"
+
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

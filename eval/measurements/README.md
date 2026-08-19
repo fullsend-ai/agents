@@ -17,10 +17,11 @@ Managed fullsend jobs resolve manifests as:
    `fullsend eval-measure` resolves `tags/v0` via GitHub `GetRef` and then
    fetches `eval/measurements/${AGENT}.yaml` at that commit. It does **not**
    curl the floating `raw.githubusercontent.com/fullsend-ai/agents/v0/...` URL.
-   GitHub Actions jobs pass `GH_TOKEN` / `GITHUB_TOKEN` for that `GetRef`.
-   GitLab-managed jobs do not have a GitHub token by default, so stock
-   manifests skip unless an operator wires one — use a local `FULLSEND_DIR`
-   override there.
+   `agents` is public, so the `GetRef` works without a token on both GitHub
+   Actions and GitLab; unauthenticated calls share GitHub's ~60 req/hr per-IP
+   limit, so export `GH_TOKEN`/`GITHUB_TOKEN` on busy shared runners (GitHub
+   Actions passes `GH_TOKEN` automatically). A local `FULLSEND_DIR` manifest
+   skips the fetch entirely.
 
 Installs that only use stock agents **do not copy these files**. Local files
 are for changing defaults, opting out, or scoring a custom agent.

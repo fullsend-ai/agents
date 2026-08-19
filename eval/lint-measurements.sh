@@ -8,22 +8,21 @@
 # Usage:
 #   ./eval/lint-measurements.sh
 #
-# Checks:
+# Checks (mirrored LoadRegistry rules + agents-repo style extras):
 #   - Filename stem equals the top-level `agent:` field
 #   - `agent:` matches an existing agents/<name>.md
-#     (having agents/<name>.md is necessary but not sufficient for stock
-#     fetch: fullsend only pulls agents in defaultAgentsRepoKnownAgents —
-#     triage/code/fix/review/retro/prioritize today; see measurements README)
-#   - Each measurement has id, scorer, and a positive integer version
-#   - optional name: is allowed (fullsend MeasurementSpec) and rejects pipe/newline
-#   - ids are unique per file
-#   - scorer is in the known-scorer allow-list (fullsend evalmeasure registry)
-#   - id matches em-001-style lowercase — agents-repo stock-manifest style,
-#     stricter than fullsend LoadRegistry (non-empty id/scorer, version>=1,
-#     no pipe/newline in id/scorer/name)
-#   - YAML must be the shipped block-style shape; other shapes fail closed
-#     as "unsupported YAML shape" (including unknown top-level keys after
-#     the measurements list)
+#     (necessary but not sufficient for stock fetch: fullsend only pulls
+#     agents in defaultAgentsRepoKnownAgents — triage/code/fix/review/
+#     retro/prioritize today; see measurements README)
+#   - Each measurement has id, scorer, and a positive unquoted integer version
+#     (LoadRegistry: Version is int — quoted "1" fails yaml.v3)
+#   - optional name: allowed; rejects pipe/newline in id/scorer/name
+#   - ids unique per file; no duplicate top-level agent:/measurements:
+#   - scorer in known-scorer allow-list (fullsend ScorerFitness)
+#   - id matches em-001-style lowercase (agents-repo style, not LoadRegistry)
+#   - YAML comment stripping matches YAML (# only after whitespace / col 0);
+#     residual # inside agent/id/scorer/name values is rejected
+#   - Shipped block-style shape only; other shapes fail closed
 set -euo pipefail
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -56,10 +55,38 @@ class UnsupportedShape(Exception):
     pass
 
 
+def strip_yaml_comment(raw):
+    """Strip a YAML comment: '#' only at column 0 or after whitespace."""
+    return re.split(r"(?:^|\s)#", raw, maxsplit=1)[0].rstrip()
+
+
+def parse_scalar(key, raw_token):
+    """Parse a scalar the way LoadRegistry / yaml.v3 expects for this schema."""
+    token = raw_token.strip()
+    if key == "version":
+        # MeasurementSpec.Version is int; yaml.v3 rejects !!str ("1" / '1').
+        if (len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'"):
+            raise UnsupportedShape(
+                "version must be an unquoted integer (LoadRegistry int field), got %r" % token
+            )
+        if not re.match(r"^[1-9][0-9]*$", token):
+            raise UnsupportedShape("version must be a positive integer, got %r" % token)
+        return token
+    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+        token = token[1:-1]
+    if "#" in token:
+        raise UnsupportedShape(
+            "%s value must not contain '#' (got %r); YAML treats it as part of the scalar"
+            % (key, token)
+        )
+    return token
+
+
 def require_top_level(stripped):
     key = stripped.split(":", 1)[0]
     if key not in TOP_LEVEL_KEYS:
         raise UnsupportedShape("unsupported top-level field %r" % key)
+    return key
 
 
 def parse_manifest(text):
@@ -70,6 +97,7 @@ def parse_manifest(text):
     in_measurements = False
     measurements_key = False
     list_indent = None
+    seen_top = set()
 
     def close_current():
         nonlocal current
@@ -77,8 +105,25 @@ def parse_manifest(text):
             items.append(current)
             current = None
 
+    def note_top(key):
+        if key in seen_top:
+            raise UnsupportedShape("duplicate top-level key %r (yaml.v3 rejects this)" % key)
+        seen_top.add(key)
+
+    def set_agent(stripped):
+        nonlocal agent
+        note_top("agent")
+        agent = parse_scalar("agent", stripped.split(":", 1)[1])
+
+    def start_measurements():
+        nonlocal in_measurements, measurements_key, list_indent
+        note_top("measurements")
+        in_measurements = True
+        measurements_key = True
+        list_indent = None
+
     for raw in text.splitlines():
-        stripped = raw.split("#", 1)[0].rstrip()
+        stripped = strip_yaml_comment(raw)
         if not stripped or stripped == "---":
             continue
         if re.search(r"measurements:\s*[\[{]", stripped):
@@ -89,15 +134,13 @@ def parse_manifest(text):
             if in_measurements:
                 close_current()
                 in_measurements = False
-            agent = stripped.split(":", 1)[1].strip().strip("'\"")
+            set_agent(stripped)
             continue
 
         if re.match(r"^measurements:\s*$", stripped):
             if in_measurements:
                 close_current()
-            in_measurements = True
-            measurements_key = True
-            list_indent = None
+            start_measurements()
             continue
 
         if in_measurements and re.match(r"^-\s+", stripped.lstrip()):
@@ -113,46 +156,39 @@ def parse_manifest(text):
             if rest and not m:
                 raise UnsupportedShape("unsupported field on measurement list item")
             if m:
-                current[m.group(1)] = m.group(2).strip().strip("'\"")
+                current[m.group(1)] = parse_scalar(m.group(1), m.group(2))
             continue
 
         if in_measurements and current is not None:
             fm = FIELD_INDENTED.match(stripped)
             um = UNKNOWN_INDENTED.match(stripped)
             if fm:
-                current[fm.group(1)] = fm.group(2).strip().strip("'\"")
+                current[fm.group(1)] = parse_scalar(fm.group(1), fm.group(2))
                 continue
             if um and um.group(1) not in FIELD_KEYS:
                 raise UnsupportedShape("unsupported field %r" % um.group(1))
             if re.match(r"^\S", stripped):
-                # End of measurements list — validate this line as top-level.
                 close_current()
                 in_measurements = False
-                require_top_level(stripped)
-                if re.match(r"^agent:\s*\S", stripped):
-                    agent = stripped.split(":", 1)[1].strip().strip("'\"")
-                elif re.match(r"^measurements:\s*$", stripped):
-                    in_measurements = True
-                    measurements_key = True
-                    list_indent = None
+                key = require_top_level(stripped)
+                if key == "agent":
+                    set_agent(stripped)
+                elif key == "measurements":
+                    start_measurements()
                 continue
             raise UnsupportedShape("unrecognized line in measurements list")
 
         if in_measurements and current is None:
-            # measurements: present but we are between items / after empty list.
             if re.match(r"^\S", stripped):
                 in_measurements = False
-                require_top_level(stripped)
-                if re.match(r"^agent:\s*\S", stripped):
-                    agent = stripped.split(":", 1)[1].strip().strip("'\"")
-                elif re.match(r"^measurements:\s*$", stripped):
-                    in_measurements = True
-                    measurements_key = True
-                    list_indent = None
+                key = require_top_level(stripped)
+                if key == "agent":
+                    set_agent(stripped)
+                elif key == "measurements":
+                    start_measurements()
                 continue
             raise UnsupportedShape("indented content outside a measurement item")
 
-        # Outside measurements: no silent fallthrough for unknown keys or orphans.
         if re.match(r"^\S", stripped):
             require_top_level(stripped)
             continue
