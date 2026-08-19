@@ -1,0 +1,4 @@
+# Smoke test: we only care that the sandbox created successfully.
+# The agent will fail its actual task (no real workflow run to analyze)
+# but that's expected — the sandbox_started judge checks metrics.json.
+state: open

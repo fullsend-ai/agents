@@ -203,6 +203,11 @@ install -m 0600 /dev/null "$ENV_FILE"
     emit_env "REVIEW_BODY_FILE" "${REVIEW_BODY_FILE}"
   fi
 
+  if [[ "$AGENT" == "retro" ]]; then
+    emit_env "ORIGINATING_URL" "${FIXTURE_URL}"
+    emit_env "RETRO_COMMENT" "${RETRO_COMMENT:-}"
+  fi
+
   # Review agent: both REVIEW_PROTECTED_PATHS and
   # REVIEW_FINDING_SEVERITY_THRESHOLD are literal defaults baked into
   # harness/review.yaml's env.runner/env.sandbox stanzas. Default here to

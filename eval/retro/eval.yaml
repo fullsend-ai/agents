@@ -1,0 +1,89 @@
+name: retro-eval
+description: Smoke test — verifies sandbox creation succeeds for the retro agent
+
+skill: retro
+
+execution:
+  mode: case
+  timeout: 300  # 5 min — smoke test; agent will fail fast (no real artifacts)
+  parallelism: 1
+  env:
+    EVAL_ORG: $EVAL_ORG
+    GH_TOKEN: $GH_TOKEN
+    FULLSEND_DIR: $FULLSEND_DIR
+    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
+    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
+    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
+    CLOUD_ML_REGION: $CLOUD_ML_REGION
+
+hooks:
+  before_each:
+    - command: "setup-fixture.sh"
+      timeout: 120
+      description: "Create ephemeral repo and fixture"
+
+  after_each:
+    - command: "capture-fixture.sh"
+      timeout: 30
+      description: "Capture fixture state for judges"
+    - command: "teardown-fixture.sh"
+      timeout: 30
+      on_failure: continue
+      description: "Delete ephemeral repo"
+
+runner:
+  type: cli
+  command:
+    - "run-fullsend.sh"
+    - "{agent}"
+    - "{workspace}"
+    - "{output_dir}"
+  env:
+    FULLSEND_DIR: $FULLSEND_DIR
+    GH_TOKEN: $GH_TOKEN
+    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
+    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
+    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
+    CLOUD_ML_REGION: $CLOUD_ML_REGION
+
+models:
+  skill: claude-opus-4-6
+  judge: claude-opus-4-6
+
+dataset:
+  path: cases
+  schema: |
+    Each case directory contains:
+    - input.yaml: Fixture definition with forge, fixture type, title, body.
+    - annotations.yaml: Expected outcomes.
+    - repo/: Directory with base repo contents.
+
+outputs:
+  - path: output
+    schema: |
+      metrics.json: Agent run metrics. Presence indicates the sandbox
+      was created and the agent started.
+
+# ---------------------------------------------------------------------------
+# Judges — smoke test only: did the sandbox start?
+# ---------------------------------------------------------------------------
+judges:
+  - name: sandbox_started
+    description: Sandbox creation succeeded and agent ran at least one turn
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found — sandbox likely failed to create (credential conflict?)"
+      metrics = json.loads(raw)
+      turns = metrics.get("num_turns", 0)
+      if int(turns) < 1:
+          return False, f"Agent ran 0 turns — sandbox may have failed"
+      return True, f"Sandbox started, agent ran {turns} turn(s)"
+
+# ---------------------------------------------------------------------------
+# Thresholds
+# ---------------------------------------------------------------------------
+thresholds:
+  sandbox_started:
+    min_pass_rate: 1.0

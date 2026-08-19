@@ -1,5 +1,6 @@
 ---
 # Endpoints mirror fullsend-github-code.yaml — keep both in sync.
+# Also mirrored by fullsend-github-ro-artifacts.yaml — keep in sync.
 # This profile omits git/pre-commit binaries (API-only agents).
 id: fullsend-github-ro
 display_name: Fullsend GitHub (read-only)
