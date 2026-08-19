@@ -1,24 +1,264 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-08-14T00:51:52.809910+00:00",
+  "generated_at": "2026-08-19T19:54:18.112467+00:00",
   "violations": [
     {
-      "fingerprint": "22073290a7e46a35",
+      "fingerprint": "70a9a56828d2dfcb",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "AGENTS.md",
+      "line": 64,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "68b6fdd00a0f8e31",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "AGENTS.md",
+      "line": 94,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "55509662c39801c0",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "AGENTS.md",
+      "line": 101,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "df33a344b028e9f3",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "AGENTS.md",
+      "line": 137,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "d546fd6a3df9ae4b",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "AGENTS.md",
+      "line": 138,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "ab2ed6906bb04b60",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "AGENTS.md",
+      "line": 148,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "68b6fdd00a0f8e31",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "AGENTS.md",
+      "line": 94,
+      "message": "Stale reference to renamed skill 'issue-labels' (renamed to 'jira')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "55509662c39801c0",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "AGENTS.md",
+      "line": 101,
+      "message": "Stale reference to renamed skill 'issue-labels' (renamed to 'jira')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "ec2837e203470a07",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 28,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "6097d785bf1f09d1",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 173,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "86ae0ada448f6e70",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 207,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "ec2837e203470a07",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 28,
+      "message": "Stale reference to renamed skill 'gitlab' (renamed to 'gitlab-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "4e4639404b71babc",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 125,
+      "message": "Stale reference to renamed skill 'gitlab' (renamed to 'gitlab-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "ba80dd3446acbf38",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/code-review/SKILL.md",
+      "line": 158,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "8a9f9f0b5f5822f4",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/finding-agent-runs/SKILL.md",
+      "line": 127,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "3fff86a1881924e1",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 98,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "ad80c251203b925f",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 412,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "aa7e8b154a4658c6",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 497,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "8d0b39317fb5b450",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 1036,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "3fff86a1881924e1",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 98,
+      "message": "Stale reference to renamed skill 'gitlab' (renamed to 'gitlab-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "51eb0d8cf8b3f758",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/merge-queue/SKILL.md",
+      "line": 24,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "9f59c02978058060",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/merge-queue/SKILL.md",
+      "line": 64,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "54f429f082d12ae7",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/github-forge/SKILL.md",
+      "line": 61,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "655100bbcc080608",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/issue-labels/github/SKILL.md",
+      "line": 2,
+      "message": "Stale reference to renamed skill 'github' (renamed to 'github-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "e7356f0a0e400206",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/issue-labels/gitlab/SKILL.md",
+      "line": 2,
+      "message": "Stale reference to renamed skill 'gitlab' (renamed to 'gitlab-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "810bb6886b6c683b",
+      "rule_id": "agentskill-rename-refs",
+      "file_path": "skills/issue-labels/jira/SKILL.md",
+      "line": 2,
+      "message": "Stale reference to renamed skill 'jira' (renamed to 'jira-forge')",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "d66b9238bd44f406",
+      "rule_id": "content-description-routing",
+      "file_path": "skills/github-forge/SKILL.md",
+      "line": 3,
+      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "9753a56258c53ca9",
+      "rule_id": "content-description-routing",
+      "file_path": "skills/gitlab-forge/SKILL.md",
+      "line": 3,
+      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "59bf2f3e5c517665",
+      "rule_id": "content-description-routing",
+      "file_path": "skills/issue-labels/jira/SKILL.md",
+      "line": 3,
+      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "5866111aafe00b56",
+      "rule_id": "content-description-routing",
+      "file_path": "skills/jira-forge/SKILL.md",
+      "line": 3,
+      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "8aba1d160bb4c413",
       "rule_id": "context-budget",
-      "file_path": "skills/retro-analysis/SKILL.md",
-      "message": "Estimated 3,434 tokens exceeds skill warn limit of 3,000",
-      "severity": "warning",
-      "value": 3434,
+      "file_path": "skills/code-implementation/SKILL.md",
+      "message": "Estimated 9,204 tokens exceeds skill error limit of 6,000",
+      "severity": "error",
+      "value": 9204,
       "baseline_mode": "ceiling"
     },
     {
-      "fingerprint": "0285e1a7243ebead",
+      "fingerprint": "43a3bb24cb22288e",
       "rule_id": "context-budget",
-      "file_path": "skills/pr-review/SKILL.md",
-      "message": "Estimated 15,058 tokens exceeds skill error limit of 6,000",
-      "severity": "error",
-      "value": 15058,
+      "file_path": "skills/code-review/SKILL.md",
+      "message": "Estimated 3,833 tokens exceeds skill warn limit of 3,000",
+      "severity": "warning",
+      "value": 3833,
       "baseline_mode": "ceiling"
     },
     {
@@ -31,21 +271,21 @@
       "baseline_mode": "ceiling"
     },
     {
-      "fingerprint": "43a3bb24cb22288e",
+      "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
-      "file_path": "skills/code-review/SKILL.md",
-      "message": "Estimated 3,842 tokens exceeds skill warn limit of 3,000",
-      "severity": "warning",
-      "value": 3842,
+      "file_path": "skills/pr-review/SKILL.md",
+      "message": "Estimated 14,648 tokens exceeds skill error limit of 6,000",
+      "severity": "error",
+      "value": 14648,
       "baseline_mode": "ceiling"
     },
     {
-      "fingerprint": "8aba1d160bb4c413",
+      "fingerprint": "22073290a7e46a35",
       "rule_id": "context-budget",
-      "file_path": "skills/code-implementation/SKILL.md",
-      "message": "Estimated 9,116 tokens exceeds skill error limit of 6,000",
-      "severity": "error",
-      "value": 9116,
+      "file_path": "skills/retro-analysis/SKILL.md",
+      "message": "Estimated 3,434 tokens exceeds skill warn limit of 3,000",
+      "severity": "warning",
+      "value": 3434,
       "baseline_mode": "ceiling"
     }
   ]

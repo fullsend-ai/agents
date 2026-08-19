@@ -1,0 +1,20 @@
+{
+  "renames": [
+    {
+      "old": "github",
+      "new": "github-forge"
+    },
+    {
+      "old": "gitlab",
+      "new": "gitlab-forge"
+    },
+    {
+      "old": "issue-labels",
+      "new": "jira"
+    },
+    {
+      "old": "jira",
+      "new": "jira-forge"
+    }
+  ]
+}

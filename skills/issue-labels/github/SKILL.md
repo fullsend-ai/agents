@@ -1,5 +1,5 @@
 ---
-name: issue-labels
+name: github
 description: >-
   Use when labeling an issue or pull request based on its content and the
   repository's label conventions, or when delegated to by the review or
