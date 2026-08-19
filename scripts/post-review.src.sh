@@ -551,6 +551,82 @@ elif [ "${ACTION}" = "request-changes" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Risk assessment: apply risk/* label and post breakdown comment.
+# Risk level is informational only — it does not gate the review outcome.
+# Label logic is mirrored in post-review-test.sh — update both.
+# ---------------------------------------------------------------------------
+HAS_RISK=$(jq 'has("risk_assessment")' "${RESULT_FILE}")
+if [[ "${HAS_RISK}" == "true" ]]; then
+  RISK_LEVEL=$(jq -r '.risk_assessment.level' "${RESULT_FILE}")
+  RISK_SCORE=$(jq -r '.risk_assessment.score' "${RESULT_FILE}")
+
+  # Validate score is an integer 1-5.  Do NOT interpolate the raw value
+  # into the workflow command — it failed validation and may contain
+  # control sequences.
+  if [[ ! "${RISK_SCORE}" =~ ^[1-5]$ ]]; then
+    echo "::warning::Invalid risk score, defaulting to level-only"
+    RISK_SCORE="?"
+  fi
+
+  # Sanitize level value (same pattern as lines 108-116)
+  RISK_LEVEL="${RISK_LEVEL//$'\n'/}"
+  RISK_LEVEL="${RISK_LEVEL//$'\r'/}"
+  RISK_LEVEL="${RISK_LEVEL//%/}"
+  RISK_LEVEL="${RISK_LEVEL//:/}"
+
+  case "${RISK_LEVEL}" in
+    low|moderate|elevated|high|critical) ;;
+    *)
+      echo "::warning::Invalid risk level '${RISK_LEVEL}', skipping risk label"
+      RISK_LEVEL=""
+      ;;
+  esac
+
+  if [[ -n "${RISK_LEVEL}" ]]; then
+    # Remove prior risk/* labels
+    for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
+      [ "risk/${RISK_LEVEL}" = "${stale_risk}" ] && continue
+      forge_remove_label_edit "${stale_risk}"
+    done
+
+    # Label color by level
+    case "${RISK_LEVEL}" in
+      low)      RISK_COLOR="0E8A16" ;;
+      moderate) RISK_COLOR="FBCA04" ;;
+      elevated) RISK_COLOR="E4A221" ;;
+      high)     RISK_COLOR="D93F0B" ;;
+      critical) RISK_COLOR="B60205" ;;
+    esac
+
+    echo "Applying risk/${RISK_LEVEL} label"
+    forge_create_label "risk/${RISK_LEVEL}" "PR risk: ${RISK_LEVEL}" "${RISK_COLOR}"
+    forge_add_label_edit "risk/${RISK_LEVEL}"
+
+    # Post sticky risk comment
+    RISK_RATIONALE=$(jq -r '.risk_assessment.rationale // "No rationale provided."' "${RESULT_FILE}" \
+      | sed 's/<[^>]*>//g; s/!\[[^]]*\]([^)]*)//g; s/\[\([^]]*\)\]([^)]*)/\1/g; s/|/\\|/g' | head -c 2000)
+
+    RISK_COMMENT=$(jq -n \
+      --arg score "${RISK_SCORE}" \
+      --arg level "${RISK_LEVEL}" \
+      --arg rationale "${RISK_RATIONALE}" \
+      -r '"<!-- fullsend:risk-assessment -->\n**Risk Assessment: \($level) (\($score)/5)**\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>"')
+
+    printf '%s' "${RISK_COMMENT}" | fullsend post-comment \
+      --repo "${REPO}" \
+      --number "${PR_NUMBER}" \
+      --marker "<!-- fullsend:risk-assessment -->" \
+      --token "${REVIEW_TOKEN}" \
+      --result - >/dev/null 2>&1 || echo "::warning::Failed to post risk comment"
+  fi
+else
+  # Risk assessment absent (disabled or failed) — remove stale risk labels.
+  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
+    forge_remove_label_edit "${stale_risk}"
+  done
+fi
+
+# ---------------------------------------------------------------------------
 # Contextual labels: apply validated label mutations from label_actions.
 # ---------------------------------------------------------------------------
 for label in "${VALIDATED_LABEL_ADDS[@]}"; do
