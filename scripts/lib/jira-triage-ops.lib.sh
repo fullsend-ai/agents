@@ -44,6 +44,11 @@ _jira_api() {
   shift
   local endpoint="$1"
   shift
+
+  if [[ -z "${JIRA_JIRA_BASE_URL}" ]]; then echo "ERROR: JIRA_JIRA_BASE_URL is not set"; exit 1; fi
+  if [[ -z "${JIRA_USER_EMAIL}" ]]; then echo "ERROR: JIRA_USER_EMAIL is not set"; exit 1; fi
+  if [[ -z "${JIRA_TOKEN}" ]]; then echo "ERROR: JIRA_TOKEN is not set"; exit 1; fi
+
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
