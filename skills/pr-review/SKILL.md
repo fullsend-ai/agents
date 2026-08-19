@@ -29,8 +29,8 @@ directly — the `docs-currency` sub-agent follows the `docs-review`
 skill inline.
 
 In pipeline mode (`$FULLSEND_OUTPUT_DIR` set), it writes JSON for the
-post-script to post. In interactive mode, it posts directly via
-`gh pr review`. The orchestrator is the sole producer of
+post-script to post. In interactive mode, it posts directly via the
+forge-specific review skill. The orchestrator is the sole producer of
 `agent-result.json`.
 
 ## Sub-agent roster
@@ -65,9 +65,9 @@ comment-only.
 
 Inline comments are a **delivery mechanism** for findings, not the
 findings themselves. When findings have file and line locations, the
-CLI attempts to attach them as inline diff comments on the GitHub PR
+CLI attempts to attach them as inline diff comments on the PR
 review so reviewers see feedback on the relevant code lines. However,
-the GitHub API rejects review comments on lines that are not part of
+the forge API rejects review comments on lines that are not part of
 the PR diff. This means:
 
 - **Findings whose file is not in the PR diff** cannot be posted as
@@ -94,13 +94,10 @@ Determine which PR to review:
 - If a PR URL was provided, extract the number and repo from the URL.
 - If none was provided, stop and report the failure rather than guessing.
 
-Fetch the PR head SHA:
-
-```bash
-PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
-HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
-IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
-```
+Fetch the PR head SHA using the forge-specific review skill
+(`pr-review/github` or `pr-review/gitlab`, selected by the harness
+based on `FULLSEND_FORGE`). The forge skill provides the exact CLI
+commands for fetching PR/MR data.
 
 Record the **PR head SHA** and **draft status**. You will include the
 head SHA in the review comment and in the result JSON. This SHA pins
@@ -112,21 +109,17 @@ guessing.
 
 ### 2. Fetch PR context
 
-Retrieve PR metadata and the full diff:
+Retrieve PR metadata and the full diff using the forge-specific review
+skill commands:
 
-```bash
-# PR metadata: title, body, author, labels
-PR_META=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
-
-# PR files list (paginated — loop if needed)
-PR_FILES=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100")
-FILE_COUNT=$(echo "$PR_FILES" | jq 'length')
-LINE_COUNT=$(echo "$PR_FILES" | jq '[.[].additions + .[].deletions] | add')
-```
+- Fetch PR/MR metadata (title, body, author, labels)
+- Fetch the changed files list with per-file stats (additions,
+  deletions) — paginate if the forge API requires it
+- Compute `FILE_COUNT` and `LINE_COUNT` from the response
 
 From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 
-1. FILE_COUNT<50, LINE_COUNT<3000: small PR — proceed as-is with `gh pr diff`
+1. FILE_COUNT<50, LINE_COUNT<3000: small PR — fetch the full unified diff
 2. FILE_COUNT~=50-200, LINE_COUNT~=3000-10000: large PR — switch to per-file
    mode
 
@@ -146,44 +139,21 @@ the PR head revision. These will be passed to sub-agents so they do not
 need to re-read files from disk (which would read base-branch code, not
 PR-head code, and waste tokens on redundant I/O).
 
-Use `HEAD_SHA` from step 1 (already extracted from `PR_DATA`). Filter
-out removed files (they do not exist at the PR head and the contents API
-will return 404) and binary files (images, compiled artifacts — they
-waste tokens). Skip files that exceed the GitHub contents API's 1 MB
-limit (the API returns a 200 with an empty `content` field for files
-between 1–100 MB); log a warning so the orchestrator knows which files
-were omitted.
+Use `HEAD_SHA` from step 1. Filter out removed files (they do not
+exist at the PR head and the contents API will return 404) and binary
+files (images, compiled artifacts — they waste tokens). Skip files
+that exceed the forge's file-size limit; log a warning so the
+orchestrator knows which files were omitted.
 
-```bash
-# Filter to non-removed, non-binary/generated files
-FETCH_FILES=$(echo "$PR_FILES" \
-  | jq -r '.[] | select(.status != "removed") | .filename' \
-  | grep -v -E '\.(png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot|pdf|zip|tar|gz|bin|exe|dll|so|dylib|wasm|pb\.go|lock)$')
+Use the forge-specific review skill's "File contents at PR head"
+commands to fetch each file. Emit with per-file header and fenced
+code block:
 
-# For small PRs (≤20 files and ≤5000 lines), fetch all; for large PRs,
-# select a subset per dimension in step 3d.
-echo "$FETCH_FILES" | while IFS= read -r FILE; do
-  [ -z "$FILE" ] && continue
-  CONTENT=$(gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}" \
-    --jq '.content // empty' 2>/dev/null) || {
-    SAFE_FILE=$(printf '%s' "$FILE" | tr -d '\n\r' | sed 's/:://g')
-    echo "::warning::Skipping ${SAFE_FILE}: contents API error" >&2
-    continue
-  }
-  [ -z "$CONTENT" ] && {
-    SAFE_FILE=$(printf '%s' "$FILE" | tr -d '\n\r' | sed 's/:://g')
-    echo "::warning::Skipping ${SAFE_FILE}: empty content (file may exceed 1 MB)" >&2
-    continue
-  }
-  # Emit with per-file header and fenced code block
-  EXT="${FILE##*.}"
-  echo "#### ${FILE}"
-  echo "\`\`\`${EXT}"
-  echo "$CONTENT" | base64 --decode
-  echo ""
-  echo "\`\`\`"
-  echo ""
-done
+```markdown
+#### path/to/file.go
+```go
+<decoded file contents>
+```
 ```
 
 **Size guard for large PRs:** If the PR exceeds 20 changed files or
@@ -204,15 +174,8 @@ omitted files must state that the file contents could not be verified
 against the PR head. Sub-agents must not read omitted changed files
 from disk, since disk contains base-branch code, not the PR head.
 
-If the PR body references linked issues, fetch them for intent context:
-
-```bash
-# Fetch issue metadata
-gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
-
-# Fetch issue comments
-gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
-```
+If the PR body references linked issues, fetch them for intent context
+using the forge-specific review skill's "Issue context" commands.
 
 The PR description is a starting point, not a source of truth. Do not
 treat its claims about the change as verified facts — confirm them
@@ -232,25 +195,15 @@ review file is empty and this run should proceed as a first review.
 Note the provenance failure as an info-level finding (see step 7).
 
 If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
-changed since the prior review:
-
-```bash
-# REPO_FULL_NAME and PR_NUMBER are set in forge.github.env.sandbox in harness/review.yaml
-head_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" --jq '.head.sha')
-COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${head_SHA}")
-TOTAL_COMMITS=$(echo "$COMPARE" | jq '.total_commits')
-FILE_COUNT=$(echo "$COMPARE" | jq '.files | length')
-if [ "$TOTAL_COMMITS" -gt 250 ] || [ "$FILE_COUNT" -ge 300 ]; then
-  CHANGED_FILES="all"
-else
-  CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
-fi
-```
+changed since the prior review using the forge-specific review skill's
+"Prior review comparison" commands. Extract the list of changed file
+paths from the response.
 
 If the compare API fails (e.g., 404 from force-push or history
-rewrite), or if `total_commits` exceeds 250 (the compare API
-silently truncates file lists at 300 files), treat all files as
-changed — no anchoring for this run.
+rewrite), or if the response indicates a truncated result (e.g.,
+GitHub's compare API silently truncates file lists at 300 files when
+`total_commits` exceeds 250), treat all files as changed — no
+anchoring for this run.
 
 ### 3. Triage
 
@@ -562,7 +515,7 @@ incident.
 For each selected sub-agent, assemble a context package containing:
 
 - `diff`: For small PRs (< 50 files, < 3000 lines), the full unified PR
-  diff from `gh pr diff`. For large PRs (step 2 criteria), a concatenation
+  diff (fetched via the forge-specific review skill). For large PRs (step 2 criteria), a concatenation
   of per-file diffs, each produced by
   `git diff <merge-base>..HEAD -- <file>`. Each per-file diff is preceded
   by a `### File: <relative-path>` header so sub-agents can identify file
@@ -575,7 +528,7 @@ For each selected sub-agent, assemble a context package containing:
   lines), include only the files most relevant to the sub-agent's
   dimension; omitted changed files should be treated as unavailable for
   PR-head verification (sub-agents do not have Bash access to fetch them
-  via the GitHub API).
+  via the forge API).
 - `head_sha`: the PR head commit SHA (from step 1), included for
   reference in sub-agent findings and review anchoring
 - `repo_full_name`: the full `owner/repo` string, included for reference
@@ -819,8 +772,8 @@ call outputs and conclusions are authoritative evidence. During
 synthesis, the orchestrator MUST:
 
 1. **Consume subagent evidence as-is.** Do not re-execute commands
-   that a subagent already ran (e.g., `npm view`, `gh api` for tags,
-   releases, or commits, `curl` to registries). The subagent's output
+   that a subagent already ran (e.g., `npm view`, forge API calls for
+   tags, releases, or commits). The subagent's output
    is the evidence — re-running the same command wastes tool calls and
    adds latency without producing new information.
 2. **Re-investigate only on conflict.** The only justification for
@@ -983,7 +936,7 @@ scanning step is required.
 
 Before including any finding that makes a claim about PR state —
 draft status, label presence, merge state, or review status — verify
-the claim against the PR metadata fetched via the GitHub API in step 1
+the claim against the PR metadata fetched via the forge API in step 1
 (`PR_DATA`). Specifically:
 
 - **Draft status:** Use the `draft` field from `PR_DATA` (extracted as
@@ -1195,9 +1148,9 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   It is not shown to reviewers but is required for re-review anchoring
   (the `pre-fetch-prior-review.sh` script extracts it).
 - **No visible SHA, timestamp, or outcome lines.** These are implicit
-  in the GitHub PR review process (the SHA is pinned via the formal
+  in the PR review process (the SHA is pinned via the formal
   review API, the timestamp is on the comment, and the outcome is
-  conveyed via GitHub's approve/request-changes mechanism).
+  conveyed via the forge's approve/request-changes mechanism).
 - **No summary section.** The PR description already explains the
   change; the review should focus on findings.
 - **Only include finding severity sections that have findings.** If
@@ -1234,7 +1187,7 @@ The table below lists the **additional** required fields per action:
 
 Write the result to `$FULLSEND_OUTPUT_DIR/agent-result.json` following
 the output schema in the agent definition (`agents/review.md`). Do NOT
-call `gh pr review` — the post-script handles all GitHub mutations.
+post the review directly — the post-script handles all forge mutations.
 
 After writing the file, validate it before exiting:
 
@@ -1248,35 +1201,15 @@ JSON you have and exit.
 
 #### Interactive mode (`$FULLSEND_OUTPUT_DIR` is not set)
 
-Post the review directly using the appropriate flag:
+Post the review directly using the forge-specific review skill's
+interactive-mode commands (e.g., `gh pr review` on GitHub). Use the
+appropriate action flag for the verdict:
 
-```bash
-# Approve
-gh pr review <number> --approve --body "$(cat <<'EOF'
-<review comment>
-EOF
-)"
+- **approve** — approve the PR/MR
+- **request-changes** — request changes (also used for reject)
+- **comment** — comment only, no approve/reject decision
 
-# Request changes
-gh pr review <number> --request-changes --body "$(cat <<'EOF'
-<review comment>
-EOF
-)"
-
-# Comment only (no approve/reject decision)
-gh pr review <number> --comment --body "$(cat <<'EOF'
-<review comment>
-EOF
-)"
-
-# Reject
-gh pr review <number> --request-changes --body "$(cat <<'EOF'
-<rejection comment>
-EOF
-)"
-```
-
-Use `--comment` when findings are medium/low/info and you are not
+Use comment when findings are medium/low/info and you are not
 prepared to give a definitive approve or request-changes verdict.
 
 ## Constraints
@@ -1308,12 +1241,12 @@ wins.
   SHA must appear in the format described in step 7 so the re-review
   anchoring script can extract it, but it must not be visible to
   reviewers.
-- **In pipeline mode, `gh pr review` is reserved for the post-script.**
+- **In pipeline mode, review posting is reserved for the post-script.**
   The sandbox token is read-only. Write JSON to
   `$FULLSEND_OUTPUT_DIR/agent-result.json` and exit.
 - **Do not re-execute subagent investigation commands during
   synthesis.** Subagent tool call outputs are authoritative evidence.
   The orchestrator must not re-run the same external commands (npm
-  view, gh api, curl, etc.) that a subagent already executed unless
+  view, forge API calls, etc.) that a subagent already executed unless
   resolving a specific conflict between subagent findings. See step 6
   for details.

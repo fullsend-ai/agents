@@ -108,7 +108,8 @@ run_test_stdout() {
     PATH="${mock_bin}:${PATH}"
     PR_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
-    GITHUB_PR_URL="https://github.com/test-org/test-repo/pull/42"
+    PR_URL="https://github.com/test-org/test-repo/pull/42"
+    FULLSEND_FORGE="github"
     REVIEW_TOKEN="fake-token"
     GH_TOKEN="fake-token"
   )
@@ -160,7 +161,8 @@ run_test_gh_call() {
     PATH="${mock_bin}:${PATH}"
     PR_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
-    GITHUB_PR_URL="https://github.com/test-org/test-repo/pull/42"
+    PR_URL="https://github.com/test-org/test-repo/pull/42"
+    FULLSEND_FORGE="github"
     REVIEW_TOKEN="fake-token"
     GH_TOKEN="fake-token"
   )
@@ -211,7 +213,8 @@ run_test_no_gh_call() {
     PATH="${mock_bin}:${PATH}"
     PR_NUMBER="42"
     REPO_FULL_NAME="test-org/test-repo"
-    GITHUB_PR_URL="https://github.com/test-org/test-repo/pull/42"
+    PR_URL="https://github.com/test-org/test-repo/pull/42"
+    FULLSEND_FORGE="github"
     REVIEW_TOKEN="fake-token"
     GH_TOKEN="fake-token"
   )
@@ -330,6 +333,158 @@ run_test_stdout "case-insensitive-skip" \
   "skipping review (REVIEW_SKIP_AUTHORS)" \
   0 \
   "REVIEW_SKIP_AUTHORS=app/renovate"
+
+# ---------------------------------------------------------------------------
+# GitLab forge pre-review tests
+# ---------------------------------------------------------------------------
+
+build_gitlab_mock() {
+  local mr_state="$1"
+  local mr_author="$2"
+  local mock_bin="${TMPDIR}/bin-gitlab"
+  local call_log="${TMPDIR}/curl-calls.log"
+
+  rm -rf "${mock_bin}"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+
+  printf '%s' "${mr_state}" > "${TMPDIR}/mr-state.txt"
+  printf '%s' "${mr_author}" > "${TMPDIR}/mr-author.txt"
+
+  cat > "${mock_bin}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+CALL_LOG="${call_log}"
+echo "curl \$*" >> "\${CALL_LOG}"
+
+URL=""
+METHOD="GET"
+PREV=""
+for arg in "\$@"; do
+  case "\${arg}" in
+    https://*) URL="\${arg}" ;;
+  esac
+  if [[ "\${PREV}" == "--request" ]] || [[ "\${PREV}" == "-X" ]]; then
+    METHOD="\${arg}"
+  fi
+  PREV="\${arg}"
+done
+
+# POST /notes → success (skip comment)
+if [[ "\${METHOD}" == "POST" ]]; then
+  echo '{"id":1}'
+  exit 0
+fi
+
+# GET /merge_requests/:iid → MR metadata
+if [[ "\${URL}" == *"/merge_requests/"* ]]; then
+  MR_STATE=\$(cat "${TMPDIR}/mr-state.txt")
+  MR_AUTHOR=\$(cat "${TMPDIR}/mr-author.txt")
+  echo "{\"state\":\"\${MR_STATE}\",\"draft\":false,\"author\":{\"username\":\"\${MR_AUTHOR}\"},\"iid\":42}"
+  exit 0
+fi
+
+exit 0
+MOCKEOF
+
+  chmod +x "${mock_bin}/curl"
+  echo "${mock_bin}"
+}
+
+run_gitlab_test_stdout() {
+  local test_name="$1"
+  local mr_state="$2"
+  local mr_author="$3"
+  local expected_stdout="$4"
+  local expect_exit="$5"
+  local extra_env="${6:-}"
+
+  local mock_bin
+  mock_bin="$(build_gitlab_mock "${mr_state}" "${mr_author}")"
+
+  local env_cmd=(
+    env
+    PATH="${mock_bin}:${PATH}"
+    PR_NUMBER="42"
+    REPO_FULL_NAME="test-group/test-project"
+    PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42"
+    FULLSEND_FORGE="gitlab"
+    REVIEW_TOKEN="fake-gitlab-token"
+  )
+
+  if [[ -n "${extra_env}" ]]; then
+    while IFS= read -r kv; do
+      [[ -n "${kv}" ]] && env_cmd+=("${kv}")
+    done <<< "${extra_env}"
+  fi
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${SCRIPT_DIR}/pre-review.sh" \
+    > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# GitLab: open MR proceeds with review
+run_gitlab_test_stdout "gitlab-open-mr-proceeds" \
+  "opened" "some-user" \
+  "proceeding with review agent" \
+  0
+
+# GitLab: merged MR skips review
+run_gitlab_test_stdout "gitlab-merged-mr-skips" \
+  "merged" "some-user" \
+  "skipping review" \
+  0
+
+# GitLab: author in skip list → skip
+run_gitlab_test_stdout "gitlab-skip-bot-author" \
+  "opened" "app/renovate" \
+  "skipping review (REVIEW_SKIP_AUTHORS)" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=app/renovate"
+
+# GitLab: author NOT in skip list → proceed
+run_gitlab_test_stdout "gitlab-no-skip-human" \
+  "opened" "some-human" \
+  "proceeding with review agent" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=app/renovate"
+
+# GitLab: invalid URL pattern rejected
+run_gitlab_test_stdout "gitlab-invalid-url-rejected" \
+  "opened" "some-user" \
+  "ERROR: PR_URL does not match expected GitLab MR pattern" \
+  1 \
+  "PR_URL=https://gitlab.com/group/project/pull/42"
+
+# GitLab: disallowed host rejected
+run_gitlab_test_stdout "gitlab-disallowed-host-rejected" \
+  "opened" "some-user" \
+  "ERROR: GitLab host" \
+  1 \
+  "PR_URL=https://gitlab.evil.com/group/project/-/merge_requests/42"
+
+# GitLab: no token → skip state check, proceed
+run_gitlab_test_stdout "gitlab-no-token-proceeds" \
+  "opened" "some-user" \
+  "No token available" \
+  0 \
+  "REVIEW_TOKEN="
 
 # --- Summary ---
 

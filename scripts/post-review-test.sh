@@ -429,6 +429,171 @@ echo "fullsend \$*" >> "${GH_LOG}"
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
+# Mock curl for GitLab forge tests — returns canned responses for
+# GitLab REST API endpoints used by gitlab-review-ops.lib.sh.
+cat > "${MOCK_BIN}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+# Mock curl: handle GitLab API endpoints, log everything else.
+
+URL=""
+METHOD="GET"
+for arg in "\$@"; do
+  case "\${arg}" in
+    https://*) URL="\${arg}" ;;
+  esac
+done
+# Extract explicit --request METHOD
+PREV=""
+for arg in "\$@"; do
+  if [[ "\${PREV}" == "--request" ]] || [[ "\${PREV}" == "-X" ]]; then
+    METHOD="\${arg}"
+  fi
+  PREV="\${arg}"
+done
+
+# PUT /merge_requests/:iid (add/remove labels) → success
+if [[ "\${METHOD}" == "PUT" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+# POST /merge_requests/:iid/notes → success
+if [[ "\${METHOD}" == "POST" ]]; then
+  echo '{"id":1}'
+  exit 0
+fi
+
+# GET /merge_requests/:iid → MR metadata
+if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" != *"/notes"* ]] && [[ "\${URL}" != *"/changes"* ]] && [[ "\${URL}" != *"/labels"* ]]; then
+  DRAFT="\${MOCK_MR_IS_DRAFT:-false}"
+  echo '{"state":"opened","draft":'"\${DRAFT}"',"author":{"username":"testuser"},"iid":99}'
+  exit 0
+fi
+
+# GET /merge_requests/:iid/changes → changed files
+if [[ "\${URL}" == *"/changes"* ]]; then
+  echo '{"changes":[{"new_path":"'"\${MOCK_MR_FILES:-src/main.go}"'"}]}'
+  exit 0
+fi
+
+# GET /labels → repo labels
+if [[ "\${URL}" == *"/labels"* ]] && [[ "\${URL}" != *"/merge_requests/"* ]]; then
+  echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"}]'
+  exit 0
+fi
+
+echo "curl \$*" >> "${GH_LOG}"
+MOCKEOF
+chmod +x "${MOCK_BIN}/curl"
+
+# ---------------------------------------------------------------------------
+# GitLab forge integration tests
+# ---------------------------------------------------------------------------
+
+run_gitlab_label_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_label_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# GitLab: approve posts review via fullsend
+run_gitlab_label_test "gitlab-approve-posts-review" \
+  '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
+  "fullsend post-review --forge gitlab"
+
+# GitLab: label_actions applied
+run_gitlab_label_test_stdout "gitlab-label-actions-applied" \
+  '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "Adding contextual label 'area/api'"
+
+# GitLab: control label refused
+run_gitlab_label_test_stdout "gitlab-control-label-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
+  "::warning::Refused to add control label 'ready-for-merge'"
+
+# GitLab: no label_actions field works without errors
+run_gitlab_label_test "gitlab-no-label-actions-still-posts" \
+  '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
+  "fullsend post-review"
+
 run_label_test() {
   local test_name="$1"
   local json_content="$2"
@@ -440,13 +605,15 @@ run_label_test() {
   : > "${GH_LOG}"
 
   local exit_code=0
-  # shellcheck disable=SC2030
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${MOCK_BIN}:${PATH}"
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -487,6 +654,8 @@ run_label_test_stdout() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -527,6 +696,8 @@ run_label_test_no_pattern() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -637,6 +808,8 @@ run_label_test_with_env() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export "${env_var}=${env_val}"
     bash "${POST_SCRIPT}"
@@ -686,6 +859,8 @@ run_label_test_with_env_stdout() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export "${env_var}=${env_val}"
     bash "${POST_SCRIPT}"
@@ -738,6 +913,8 @@ run_severity_sanitize_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="${threshold_value}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -830,6 +1007,8 @@ run_validated_dir_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
@@ -937,6 +1116,8 @@ run_body_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -987,6 +1168,8 @@ run_body_count_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1060,6 +1243,8 @@ run_protected_paths_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export MOCK_PR_FILES="${mock_files}"
     if [[ -n "${protected_paths}" ]]; then
@@ -1148,6 +1333,8 @@ run_unset_env_var_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     unset REVIEW_PROTECTED_PATHS
     bash "${POST_SCRIPT}"
@@ -1187,6 +1374,8 @@ run_empty_paths_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=",,, ,"
     bash "${POST_SCRIPT}"
@@ -1234,6 +1423,8 @@ run_nonapprove_degenerate_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=",,, ,"
     bash "${POST_SCRIPT}"
@@ -1268,6 +1459,8 @@ run_nonapprove_unset_env_var_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     unset REVIEW_PROTECTED_PATHS
     bash "${POST_SCRIPT}"
@@ -1303,6 +1496,8 @@ run_explicit_empty_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=""
     export MOCK_PR_FILES=".github/workflows/ci.yml"
@@ -1352,6 +1547,8 @@ run_empty_pr_files_with_protection_disabled_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=""
     export MOCK_PR_FILES=""
