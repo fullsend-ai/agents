@@ -140,11 +140,68 @@ CASES = [
          COMPLETE,
          hunk("config/other.go", "+\tVerboseLoggingEnabled bool", "+\tverbose_logging_v2 := 1"),
      ])), True),
-    ("comment-only lines may still mention the symbol",
+    ("line comments in source may still mention the symbol",
      outputs_for("\n".join([
          COMPLETE,
-         hunk("CHANGELOG.md", "+# Removed unused VerboseLogging",
-              "+// drop verbose_logging", "+ * VerboseLogging is gone"),
+         hunk("runner/runner.go", "+\t// VerboseLogging was removed in #7"),
+         hunk("config/gen.mk", "+# verbose_logging is gone"),
+     ])), True),
+    # A bare "*" is a pointer deref in Go, not a comment marker: this line is
+    # executable code and must read as a survivor.
+    ("pointer deref is not a comment",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("runner/runner.go", "+\t*VerboseLogging = true"),
+     ])), False),
+    # Block-comment continuations are indistinguishable from a deref by
+    # prefix, so they fail closed too — documented in the judge description.
+    ("block-comment continuation fails closed",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("runner/runner.go", "+ * VerboseLogging is gone"),
+     ])), False),
+    # Comment markers are keyed by extension: "#" is not a comment in Go, and
+    # an unknown extension gets no exemption at all.
+    ("comment marker from another language is not exempt",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("runner/runner.go", "+\t# verbose_logging"),
+     ])), False),
+    ("unknown extension gets no comment exemption",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("config/testdata/sample.cfg", "+# verbose_logging: true"),
+     ])), False),
+    # Documentation is exempt wholesale: the markdown "-" bullet and plain
+    # prose have no comment prefix, yet documenting the removal is correct.
+    ("README bullet and prose may mention the symbol",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("README.md", "+- Removed the unused verbose_logging option (VerboseLogging field).",
+              "+The verbose_logging key is no longer supported."),
+         hunk("docs/config.rst", "+VerboseLogging was dropped."),
+     ])), True),
+    # A surviving literal in a non-doc data file is still a survivor even
+    # though it is not a declared site.
+    ("survivor in an undeclared yaml fixture",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("config/testdata/full.yaml", " verbose_logging: true"),
+     ])), False),
+    # Whole-file deletion: git emits "+++ /dev/null", so the lines must be
+    # attributed to the "--- a/" path or the declared file looks untouched.
+    ("whole-file deletion satisfies the declared file",
+     outputs_for("\n".join([
+         DELETE_CONFIG, DELETE_FIELDS,
+         "diff --git a/config/config_test.go b/config/config_test.go",
+         "deleted file mode 100644",
+         "index 2222222..0000000",
+         "--- a/config/config_test.go",
+         "+++ /dev/null",
+         "@@ -1,3 +0,0 @@",
+         "-verbose_logging: true",
+         "-\tif cfg.VerboseLogging != true {",
+         "-}",
      ])), True),
     ("no removed_symbols declared passes trivially",
      outputs_for(DELETE_CONFIG, symbols={}), True),
