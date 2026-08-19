@@ -13,7 +13,10 @@ fixture:
       content: |
         package auth
 
-        import "net/http"
+        import (
+            "context"
+            "net/http"
+        )
 
         // Handler validates requests against the configured auth provider.
         func Handler(provider string) func(http.Handler) http.Handler {
@@ -24,7 +27,7 @@ fixture:
                         http.Error(w, "unauthorized", http.StatusUnauthorized)
                         return
                     }
-                    if !validateToken(token, provider) {
+                    if !validateToken(r.Context(), token, provider) {
                         http.Error(w, "forbidden", http.StatusForbidden)
                         return
                     }
@@ -33,20 +36,16 @@ fixture:
             }
         }
 
-        func validateToken(token, provider string) bool {
+        func validateToken(ctx context.Context, token, provider string) bool {
             switch provider {
             case "oidc":
-                return validateOIDC(token)
+                _, err := oidcVerifier.Verify(ctx, token)
+                return err == nil
             case "static":
-                return token == "valid-token"
+                return constantTimeEqual(token, staticToken)
             default:
                 return false
             }
-        }
-
-        func validateOIDC(token string) bool {
-            // Placeholder OIDC validation
-            return len(token) > 10
         }
     - path: internal/auth/rbac.go
       content: |

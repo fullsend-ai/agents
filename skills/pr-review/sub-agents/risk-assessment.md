@@ -4,7 +4,7 @@ description: >-
   Computes composite PR risk score from metadata, git history,
   and linked issue signals.
 model: claude-sonnet-4-6@default
-tools: Read, Bash, Grep
+tools: Read, Bash, Grep, Glob
 permissionMode: dontAsk
 background: false
 ---
@@ -24,7 +24,7 @@ review verdicts.
 
 1. Run the Tier 1 metadata script:
    ```bash
-   bash skills/pr-risk-assessment/scripts/risk-tier1.sh
+   bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"
    ```
    Capture the KEY=VALUE output. Each line is one signal.
 

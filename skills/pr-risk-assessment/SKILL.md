@@ -40,25 +40,34 @@ the weighted sum, rounded to the nearest integer.
 ## Tier 1: Metadata Signals
 
 The `risk-tier1.sh` script outputs these KEY=VALUE signals. Evaluate
-each dimension and assign a 1-5 sub-score. Then average the sub-scores
-for the Tier 1 composite.
+each dimension and assign a 1-5 sub-score. Then average the dimension
+sub-scores for the Tier 1 composite (8 dimensions, not 10 — see the
+"Change size" composite below).
 
 | Signal | Meaning | Scoring Guidance (1-5) |
 |--------|---------|------------------------|
-| `FILES_CHANGED` | Number of files modified | 1-3 files = 1, 4-10 = 2, 11-25 = 3, 26-50 = 4, >50 = 5 |
-| `LINES_CHANGED` | Total lines added + deleted | <100 = 1, 100-299 = 2, 300-799 = 3, 800-1999 = 4, ≥2000 = 5 |
-| `BLAST_RADIUS` | Size classification | small = 1, medium = 3, large = 5 |
+| **Change size** (composite) | Combines `FILES_CHANGED`, `LINES_CHANGED`, and `BLAST_RADIUS` into a single dimension. Score each individually per the rows below, then take the **max** as one sub-score. This prevents raw diff size from dominating qualitative signals. | max(FILES score, LINES score, BLAST score) |
+| ↳ `FILES_CHANGED` | Number of files modified | 1-3 files = 1, 4-10 = 2, 11-25 = 3, 26-50 = 4, >50 = 5 |
+| ↳ `LINES_CHANGED` | Total lines added + deleted | <100 = 1, 100-299 = 2, 300-799 = 3, 800-1999 = 4, ≥2000 = 5 |
+| ↳ `BLAST_RADIUS` | Size classification (derived from FILES_CHANGED × LINES_CHANGED) | small = 1, medium = 3, large = 5 |
 | `PROTECTED_PATH_COUNT` | Count of protected path changes | 0 = 1, 1 = 3, ≥2 = 5 |
 | `SECURITY_SENSITIVE_COUNT` | Count of security-sensitive path changes | 0 = 1, 1 = 3, 2-3 = 4, ≥4 = 5 |
 | `CI_WORKFLOW_CHANGED` | Boolean: CI/workflow files changed | false = 1, true = 4 |
 | `DEPENDENCY_FILES_CHANGED` | List of dependency files (comma-separated) or "none" | none = 1, 1 file = 3, ≥2 files = 5 |
-| `TEST_FILE_RATIO` | Ratio of test files to total files (0.00-1.00) | ≥0.50 = 1, 0.30-0.49 = 2, 0.10-0.29 = 3, 0.01-0.09 = 4, 0.00 = 5 |
+| `TEST_FILE_RATIO` | Ratio of test files to total files (0.00-1.00). For docs/config-only PRs (no source files), treat 0.00 as neutral (score 1, not 5) | ≥0.50 = 1, 0.30-0.49 = 2, 0.10-0.29 = 3, 0.01-0.09 = 4, 0.00 = 5 |
 | `AUTHOR_IS_BOT` | Boolean: authored by bot account | true = 1, false = 2 |
 | `AUTHOR_IS_FIRST_TIME` | Boolean: first-time contributor | false = 1, true = 4 |
 
 **Handling UNKNOWN values:** If a signal is `UNKNOWN`, skip it when
 computing the Tier 1 average (do not count it as 0 or any default).
-Only average the successfully computed sub-scores.
+Only average the successfully computed sub-scores. For the Change size
+composite, if all three component signals are UNKNOWN, skip the entire
+composite dimension.
+
+**Tier 1 degenerate case:** If all dimensions are UNKNOWN (e.g., the
+initial API call failed), treat Tier 1 as unavailable and redistribute
+its weight to Tiers 2 and 3 (or just Tier 2 if Tier 3 is also absent),
+mirroring the pattern used for Tier 2 and Tier 3 degradation.
 
 ## Tier 2: Git History Signals
 
@@ -81,6 +90,18 @@ average across all changed files. Round the average to the nearest
 integer for the dimension sub-score. Then average the seven dimension
 sub-scores for the Tier 2 composite.
 
+**Shallow repository detection:** Before running git log commands, check
+`git rev-parse --is-shallow-repository`. If the repo is shallow, Tier 2
+signals are unreliable — treat the entire tier as unavailable and
+redistribute its weight to Tiers 1 and 3 (or just Tier 1 if Tier 3 is
+also absent). The pre-review script deepens the clone when
+`REVIEW_GIT_FETCH_DEPTH=0` is set, but the sub-agent must handle the
+case where deepening failed or was not configured.
+
+**Per-file cap:** For PRs with more than 20 changed files, sample the
+top 20 files by lines changed instead of analyzing all files. This
+prevents unbounded command fan-out.
+
 **Error handling:** If a file does not exist in git history (e.g., newly
 added), skip it for Tier 2 analysis. If all files are new, Tier 2 = 2
 (moderate baseline).
@@ -98,6 +119,7 @@ redistributed to Tiers 1 and 2).
 | **Acceptance criteria coverage** | Does the PR address all acceptance criteria in the issue? | All criteria met = 1, most met = 2, some met = 3, few met = 4, none met or no criteria = 5 |
 | **Discussion history** | Count of unresolved threads in the linked issue | 0 = 1, 1-2 = 2, 3-5 = 3, 6-10 = 4, >10 = 5 |
 | **Issue age and staleness** | Time since issue opened vs last activity. Compute: days_open = (now - created_at), days_stale = (now - last_activity). | Recent active (open <7d, stale <2d) = 1, moderate (open 7-30d, stale 2-7d) = 2, aging (open 31-90d, stale 8-30d) = 3, old (open 91-180d, stale 31-90d) = 4, stale (open >180d or stale >90d) = 5 |
+| **Rollback safety** | Check the PR diff for feature flags, env-var gates, or config toggles that allow the change to be disabled without a code change. Environment variables that guard new behavior (e.g., `FEATURE_X_ENABLED`) count as feature flags — check the diff and any referenced config files for these. Also consider whether the change is additive-only (new files/endpoints) vs modifying existing behavior. | Feature flag, default disabled (opt-in) = 1, feature flag, default enabled (opt-out) = 2, additive-only change, no flag but easily revertible = 3, modifies existing behavior, no flag = 4, irreversible change (schema migration, data format, breaking API) = 5 |
 
 **Procedure:** Evaluate each dimension, assign a 1-5 sub-score, then
 average for the Tier 3 composite.
@@ -112,12 +134,13 @@ Use these examples to calibrate scoring across tiers.
 
 | Scenario | Tier 1 | Tier 2 | Tier 3 | Composite | Level |
 |----------|--------|--------|--------|-----------|-------|
-| Typo fix in README, 1 file, 2 lines, no issue | 1.2 | 1.5 | N/A | **1** (0.62×1.2 + 0.38×1.5 ≈ 1.3 → 1) | low |
-| Add logging to existing function, 3 files, 80 lines, issue with clear scope | 1.8 | 2.0 | 1.5 | **2** (0.50×1.8 + 0.30×2.0 + 0.20×1.5 = 1.8 → 2) | moderate |
-| Refactor auth module, 12 files, 450 lines, high churn, issue scope matches | 3.2 | 3.8 | 2.0 | **3** (0.50×3.2 + 0.30×3.8 + 0.20×2.0 = 3.1 → 3) | elevated |
-| New feature with CI changes, 25 files, 1200 lines, no issue | 4.0 | 3.5 | N/A | **4** (0.62×4.0 + 0.38×3.5 ≈ 3.8 → 4) | high |
-| Dependency upgrade + protected path edits, 8 files, 300 lines, breaking-change label | 4.5 | 3.0 | 4.0 | **4** (0.50×4.5 + 0.30×3.0 + 0.20×4.0 = 3.9 → 4) | high |
-| Security fix in crypto module, 2 files, 60 lines, urgent issue with unresolved threads | 3.0 | 4.5 | 4.5 | **4** (0.50×3.0 + 0.30×4.5 + 0.20×4.5 = 3.8 → 4) | high |
+| Typo fix in README, 1 file, 2 lines, no issue | 1.1 | 1.0 | N/A | **1** (0.62×1.1 + 0.38×1.0 = 1.06 → 1) | low |
+| Add logging to existing function, 3 files, 80 lines, issue with clear scope | 1.3 | 2.0 | 1.5 | **2** (0.50×1.3 + 0.30×2.0 + 0.20×1.5 = 1.55 → 2) | moderate |
+| Refactor auth module, 12 files, 450 lines, high churn, issue scope matches | 2.6 | 3.8 | 2.0 | **3** (0.50×2.6 + 0.30×3.8 + 0.20×2.0 = 2.84 → 3) | elevated |
+| Dependency upgrade + protected path edits, 8 files, 300 lines, breaking-change label | 2.9 | 3.0 | 4.0 | **3** (0.50×2.9 + 0.30×3.0 + 0.20×4.0 = 3.15 → 3) | elevated |
+| Security fix in crypto module, 2 files, 60 lines, protected paths, urgent issue with unresolved threads | 2.6 | 4.5 | 4.5 | **4** (0.50×2.6 + 0.30×4.5 + 0.20×4.5 = 3.55 → 4) | high |
+| Large feature with CI + dependency changes, 40 files, 2000+ lines, first-time contributor, no issue | 4.0 | 3.5 | N/A | **4** (0.62×4.0 + 0.38×3.5 = 3.81 → 4) | high |
+| New feature behind opt-out flag, 15 files, 600 lines, issue scope matches, flag in env var | 2.4 | 2.5 | 1.8 | **2** (0.50×2.4 + 0.30×2.5 + 0.20×1.8 = 2.31 → 2) | moderate |
 
 ## Output Format
 
@@ -165,7 +188,7 @@ response directly.
 
 1. **Run Tier 1 script:**
    ```bash
-   bash skills/pr-risk-assessment/scripts/risk-tier1.sh
+   bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"
    ```
    Capture KEY=VALUE output. Parse each line and store signals.
 
@@ -199,7 +222,7 @@ response directly.
 
 7. **Write rationale:**
    One sentence summarizing the key factors (file count, churn, labels,
-   protected paths, etc.) that drove the score.
+   protected paths, rollback safety, etc.) that drove the score.
 
 8. **Return JSON:**
    Construct the JSON object per the schema above. Return it as raw
