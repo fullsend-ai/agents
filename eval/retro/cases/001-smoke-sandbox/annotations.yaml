@@ -2,3 +2,6 @@
 # The agent will fail its actual task (no real workflow run to analyze)
 # but that's expected — the sandbox_started judge checks metrics.json.
 state: open
+
+max_turns: 15
+max_cost_usd: 2.00
