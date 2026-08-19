@@ -70,12 +70,12 @@ execution:
     # execution.timeout above).
     #
     # Two cases now share this window: 001-fix-add (a 2-line arithmetic bug
-    # that completes in well under a minute) and 002-dead-config-field (a
+    # that completes in well under a minute) and 003-dead-config-field (a
     # cross-file dead-config removal with a larger 60-turn / $4.00 budget).
     # Neither is expected to approach 1700s in practice: these small fixtures
     # finish far under it. Note the 1700s outer backstop — not the larger
     # 2100s per-iteration agent budget — is the binding limit, so a genuine
-    # hang is caught by 1700s first. 002 has no observed CI runtime yet, so
+    # hang is caught by 1700s first. 003 has no observed CI runtime yet, so
     # treat its headroom as an open risk to revisit once a real run exists.
     # If a genuine hang did occur: a single-iteration hang gets caught here and
     # fullsend still writes a partial metrics.json before returning (see
@@ -197,9 +197,18 @@ judges:
       global "deleted somewhere" count is satisfied by the first file alone,
       which would let a partial removal pass. Passes trivially when a case
       declares no removed_symbols. Matching is word-boundary aware, so a
-      renamed identifier that merely contains the symbol is not a survivor,
-      and comment-only lines are exempt so a changelog-style note may mention
-      it. Diff-scoped: a symbol surviving in a file the PR never touched is
+      renamed identifier that merely contains the symbol is not a survivor.
+      The survivor scan covers every non-documentation file in the diff (not
+      only the declared ones, so a new use added in runner.go still fails);
+      documentation files (*.md, *.rst, *.txt, *.adoc, docs/**) are exempt
+      wholesale so a README or changelog note may mention the symbol, and
+      inside source files only line comments are exempt, keyed by extension
+      (// for .go, # for .py/.sh/.yaml/...). Unknown extensions get no
+      comment exemption, and a Go block-comment continuation (" * text") is
+      not recognised either — a bare "*" prefix is a pointer deref — so both
+      fail closed. Whole-file deletions (+++ /dev/null) are attributed to the
+      deleted path, so deleting a now-empty file satisfies its requirement.
+      Diff-scoped: a symbol surviving in a file the PR never touched is
       invisible here (naming the file makes its absence a failure instead),
       and no judge runs the fixture's tests. Reads state["pull_requests"],
       which only capture-fixture.sh's issue-fixture branch writes — reusing
@@ -231,19 +240,29 @@ judges:
       # start content lines; everything else is metadata (diff/index/@@,
       # rename from|to, old|new mode, similarity index, Binary files ...),
       # which must never count as a survivor. The "+++ b/<path>" header is
-      # itself a "+" line, so headers are consumed before that test.
+      # itself a "+" line, so headers are consumed before that test. A file
+      # is identified by its "+++ b/" path, or by its "--- a/" path when the
+      # "+++" side is /dev/null (whole-file deletion: every line is a
+      # deletion line and must count toward that path). "diff --git" resets
+      # the identity so a header-less block (mode-only change) cannot
+      # inherit the previous file's.
       per_file = {}
-      current = None
+      current = old_path = None
       for pr in prs:
           chunk = outputs["files"].get(f"output/pr-{pr.get('number')}.diff")
           if chunk is None:
               return False, f"output/pr-{pr.get('number')}.diff not captured"
           for line in chunk.splitlines():
-              if line.startswith("+++ "):
-                  path = line[4:].strip().split("\t")[0]
-                  current = None if path == "/dev/null" else re.sub(r"^b/", "", path)
+              if line.startswith("diff --git "):
+                  current = old_path = None
                   continue
               if line.startswith("--- "):
+                  path = line[4:].strip().split("\t")[0]
+                  old_path = None if path == "/dev/null" else re.sub(r"^a/", "", path)
+                  continue
+              if line.startswith("+++ "):
+                  path = line[4:].strip().split("\t")[0]
+                  current = old_path if path == "/dev/null" else re.sub(r"^b/", "", path)
                   continue
               if not line or line[0] not in " +-":
                   continue
@@ -253,9 +272,28 @@ judges:
           # Word-boundary: VerboseLoggingEnabled must not match VerboseLogging.
           return re.search(r"\b" + re.escape(sym) + r"\b", line) is not None
 
-      def is_comment(line):
-          body = line[1:].strip()
-          return body.startswith(("//", "#", "*"))
+      # Documentation is exempt from the survivor scan wholesale: prose and
+      # markdown list markers (-, >, |, ...) have no reliable comment prefix,
+      # and a note explaining the removal is a feature, not a survivor.
+      DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+      def is_doc(path):
+          p = (path or "").lower()
+          return p.endswith(DOC_SUFFIXES) or p.startswith("docs/") or "/docs/" in p
+
+      # Line-comment prefixes by extension. A bare "*" is deliberately NOT a
+      # marker: in Go it is a pointer deref (`*VerboseLogging = true`), so a
+      # block-comment continuation line is indistinguishable by prefix and
+      # fails closed. Unknown extensions get no exemption at all.
+      COMMENT_PREFIXES = {
+          ".go": ("//",), ".js": ("//",), ".ts": ("//",), ".java": ("//",),
+          ".c": ("//",), ".h": ("//",), ".rs": ("//",),
+          ".py": ("#",), ".sh": ("#",), ".bash": ("#",), ".yaml": ("#",),
+          ".yml": ("#",), ".toml": ("#",), ".mk": ("#",), ".rb": ("#",),
+      }
+      def is_comment(path, line):
+          ext = "." + (path or "").rsplit(".", 1)[-1].lower() if "." in (path or "") else ""
+          prefixes = COMMENT_PREFIXES.get(ext, ())
+          return bool(prefixes) and line[1:].strip().startswith(prefixes)
 
       problems = []
       for sym, required_files in sorted(symbols.items()):
@@ -263,10 +301,12 @@ judges:
               required_files = [required_files]
           survivors = []
           for path, lines in per_file.items():
+              if is_doc(path):
+                  continue
               for line in lines:
                   if line.startswith("-") or not mentions(sym, line):
                       continue
-                  if is_comment(line):
+                  if is_comment(path, line):
                       continue
                   survivors.append(path or "<unknown file>")
                   break
