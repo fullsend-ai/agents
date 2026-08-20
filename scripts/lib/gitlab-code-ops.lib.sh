@@ -181,13 +181,13 @@ forge_list_prs_for_issue() {
   # Filter for MRs with closing keywords (Closes, Fixes, Resolves, etc.)
   # targeting #<IID>. Plain mentions without closing keywords are excluded
   # to avoid false positives (e.g., "Related: #42" should not block).
-  echo "${all_mrs}" | jq -r --arg term "${issue_number}" \
+  echo "${all_mrs}" | jq -r --arg issue_number "${issue_number}" \
     --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
     [.[] | select(
-      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i")) or
-      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i"))
+      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
+      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
     ) | select(
-      ((.source_branch // "") | test("^agent/" + $term + "-") | not)
+      ((.source_branch // "") | test("^agent/" + $issue_number + "-") | not)
     ) | select(
       (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
       (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and

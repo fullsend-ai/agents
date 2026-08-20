@@ -93,10 +93,12 @@ forge_list_prs_for_issue() {
   # Use closedByPullRequestsReferences to find only PRs with closing keywords
   # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
   # from text-search matching (e.g., #1 matching #12 in a PR title).
-  gh api graphql -f query="
-    query {
-      repository(owner: \"${owner}\", name: \"${name}\") {
-        issue(number: ${issue_number}) {
+  gh api graphql \
+    -F owner="${owner}" -F name="${name}" -F number:="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
           closedByPullRequestsReferences(first: 50) {
             nodes {
               number
@@ -107,7 +109,7 @@ forge_list_prs_for_issue() {
           }
         }
       }
-    }" --jq "
+    }' --jq "
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == \"OPEN\")
            | select(.author.login != \"${bot_login}\"

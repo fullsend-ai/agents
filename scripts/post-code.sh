@@ -900,10 +900,12 @@ forge_list_prs_for_issue() {
   # Use closedByPullRequestsReferences to find only PRs with closing keywords
   # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
   # from text-search matching (e.g., #1 matching #12 in a PR title).
-  gh api graphql -f query="
-    query {
-      repository(owner: \"${owner}\", name: \"${name}\") {
-        issue(number: ${issue_number}) {
+  gh api graphql \
+    -F owner="${owner}" -F name="${name}" -F number:="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
           closedByPullRequestsReferences(first: 50) {
             nodes {
               number
@@ -914,7 +916,7 @@ forge_list_prs_for_issue() {
           }
         }
       }
-    }" --jq "
+    }' --jq "
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == \"OPEN\")
            | select(.author.login != \"${bot_login}\"
@@ -1271,13 +1273,13 @@ forge_list_prs_for_issue() {
   # Filter for MRs with closing keywords (Closes, Fixes, Resolves, etc.)
   # targeting #<IID>. Plain mentions without closing keywords are excluded
   # to avoid false positives (e.g., "Related: #42" should not block).
-  echo "${all_mrs}" | jq -r --arg term "${issue_number}" \
+  echo "${all_mrs}" | jq -r --arg issue_number "${issue_number}" \
     --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
     [.[] | select(
-      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i")) or
-      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i"))
+      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
+      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
     ) | select(
-      ((.source_branch // "") | test("^agent/" + $term + "-") | not)
+      ((.source_branch // "") | test("^agent/" + $issue_number + "-") | not)
     ) | select(
       (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
       (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and
