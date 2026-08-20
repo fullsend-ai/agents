@@ -72,6 +72,11 @@ workflow after GoReleaser succeeds.
 - `release.yml` — repo-specific release automation. Triggered by
   semver tag pushes from fullsend's release workflow. Creates a GitHub
   Release and moves the `v0` floating tag.
+- `notify-agent-sync.yml` — fires a `repository_dispatch` event to
+  `fullsend-ai/.fullsend` on every push to `main`, triggering
+  cross-repo agent digest sync. Requires `SYNC_CLIENT_ID` variable,
+  `SYNC_PRIVATE_KEY` secret (the fullsend-ai-sync GitHub App), and
+  `SLACK_WEBHOOK_URL` secret (for failure alerts).
 
 **The `v0` tag** is a floating tag that always points to the latest
 stable (non-prerelease) version. Downstream consumers can reference
