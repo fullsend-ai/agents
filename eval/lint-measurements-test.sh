@@ -110,7 +110,7 @@ agent: code
 measurements:
   - id: em-001
     scorer: trace_fitness
-" 1 "version must be a positive integer"
+" 1 "missing version"
 
 run_case "empty-dir" \
   "" 1 "no eval/measurements/*.yaml files found"
@@ -274,6 +274,24 @@ measurements:
     version: 1
     name: null
 " 1 "YAML literal"
+
+run_case "quoted-hash-in-name-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name: \"foo # bar\"
+" 1 "must not contain '#'"
+
+run_case "quoted-name-with-trailing-comment-ok" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name: \"Trace Fitness\"  # display label
+" 0 "code.yaml: OK"
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

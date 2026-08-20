@@ -56,8 +56,46 @@ class UnsupportedShape(Exception):
 
 
 def strip_yaml_comment(raw):
-    """Strip a YAML comment: '#' only at column 0 or after whitespace."""
-    return re.split(r"(?:^|\s)#", raw, maxsplit=1)[0].rstrip()
+    """Strip a YAML comment: '#' at column 0 or after whitespace, outside quotes.
+
+    A '#' inside a single- or double-quoted scalar is part of the value, not a
+    comment start — otherwise quoted values like name: "foo # bar" are truncated
+    before parse_scalar can reject residual '#'.
+    """
+    in_single = False
+    in_double = False
+    i = 0
+    while i < len(raw):
+        c = raw[i]
+        if in_single:
+            if c == "'":
+                # YAML single-quoted escape: '' → literal '
+                if i + 1 < len(raw) and raw[i + 1] == "'":
+                    i += 2
+                    continue
+                in_single = False
+            i += 1
+            continue
+        if in_double:
+            if c == "\\" and i + 1 < len(raw):
+                i += 2
+                continue
+            if c == '"':
+                in_double = False
+            i += 1
+            continue
+        if c == "'":
+            in_single = True
+            i += 1
+            continue
+        if c == '"':
+            in_double = True
+            i += 1
+            continue
+        if c == "#" and (i == 0 or raw[i - 1].isspace()):
+            return raw[:i].rstrip()
+        i += 1
+    return raw.rstrip()
 
 
 def parse_scalar(key, raw_token):
@@ -296,7 +334,6 @@ def main():
         for idx, it in enumerate(items, 1):
             mid = it.get("id", "")
             scorer = it.get("scorer", "")
-            version = it.get("version", "")
             display = it.get("name", "")
             if not mid:
                 print("  ERROR: %s: measurement #%d missing id" % (name, idx))
@@ -328,8 +365,10 @@ def main():
                 print("  ERROR: %s: unknown scorer %r (allowed: %s)" % (name, scorer, ", ".join(sorted(KNOWN_SCORERS))))
                 errors += 1
                 file_errors += 1
-            if not re.match(r"^[1-9][0-9]*$", version or ""):
-                print("  ERROR: %s: measurement %r version must be a positive integer, got %r" % (name, mid, version))
+            if "version" not in it:
+                # parse_scalar already validates present version values; this only
+                # catches a missing version key (item never saw a version: line).
+                print("  ERROR: %s: measurement %r missing version" % (name, mid))
                 errors += 1
                 file_errors += 1
             if display and ("|" in display or "\n" in display):
