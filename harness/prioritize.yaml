@@ -35,19 +35,43 @@ timeout_minutes: 10
 
 forge:
   github:
+    policy: policies/github/prioritize.yaml
     providers:
       - providers/github-ro.yaml
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
-    pre_script: scripts/pre-prioritize.sh
-    post_script: scripts/post-prioritize.sh
+    skills:
+      - skills/github-forge
+    host_files:
+      - src: env/github/prioritize.env
+        dest: /sandbox/workspace/.env.d/prioritize.env
+        expand: true
     env:
       runner:
-        GITHUB_ISSUE_URL: ${GITHUB_ISSUE_URL}
+        ISSUE_URL: ${GITHUB_ISSUE_URL}
         GH_TOKEN: ${GH_TOKEN}
         ORG: ${ORG}
         PROJECT_NUMBER: ${PROJECT_NUMBER}
+        FULLSEND_FORGE: github
       sandbox:
-        GITHUB_ISSUE_URL: "${GITHUB_ISSUE_URL}"
+        ISSUE_URL: "${GITHUB_ISSUE_URL}"
         GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
+  gitlab:
+    policy: policies/gitlab/prioritize.yaml
+    skills:
+      - skills/gitlab-forge
+    host_files:
+      - src: env/gitlab/prioritize.env
+        dest: /sandbox/workspace/.env.d/prioritize.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${GITLAB_ISSUE_URL}
+        GITLAB_TOKEN: ${GITLAB_TOKEN}
+        FULLSEND_FORGE: gitlab
+      sandbox:
+        ISSUE_URL: "${GITLAB_ISSUE_URL}"
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab

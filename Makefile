@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help script-build check-bundle script-test test
 
-BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/post-fix.src.sh scripts/post-prioritize.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh
+BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/post-fix.src.sh scripts/pre-prioritize.src.sh scripts/post-prioritize.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
 LIB_DEPS := $(wildcard scripts/lib/*.lib.sh)
 
@@ -48,6 +48,7 @@ script-test:
 	$(call run-timed,bash scripts/labels-test.sh)
 	$(call run-timed,bash scripts/post-triage-test.sh)
 	$(call run-timed,bash scripts/pre-triage-test.sh)
+	$(call run-timed,bash scripts/pre-prioritize-test.sh)
 	$(call run-timed,bash scripts/post-prioritize-test.sh)
 	$(call run-timed,bash scripts/pre-code-test.sh)
 	$(call run-timed,bash scripts/post-code-test.sh)

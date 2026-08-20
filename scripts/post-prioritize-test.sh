@@ -133,10 +133,11 @@ export GH_FAIL_COUNT="${GH_FAIL_COUNT}"
 export MOCK_PROJECT_ID="${MOCK_PROJECT_ID}"
 export MOCK_ITEM_ID="${MOCK_ITEM_ID}"
 export MOCK_ISSUE_NODE_ID="${MOCK_ISSUE_NODE_ID}"
-export GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
 export ORG="test-org"
 export PROJECT_NUMBER="1"
+export FULLSEND_FORGE="github"
 export GITHUB_CSMA_SLOT_MAX_MS=0
 export GITHUB_CSMA_BACKOFF_CAP_SEC=1
 export GITHUB_CSMA_SPREAD_MAX_SEC=0
@@ -717,6 +718,299 @@ run_validated_dir_test "validated-dir-neither-filename" \
   "none" \
   "" \
   "true"
+
+# ---------------------------------------------------------------------------
+# GitLab forge tests
+# Verify that post-prioritize.sh works correctly with FULLSEND_FORGE=gitlab.
+# ---------------------------------------------------------------------------
+
+# Switch to GitLab forge.
+export FULLSEND_FORGE="gitlab"
+export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+export GITLAB_TOKEN="fake-gitlab-token"
+unset GH_TOKEN
+unset GITLAB_HOST
+unset ORG
+unset PROJECT_NUMBER
+
+CURL_LOG="${TEST_TMPDIR}/curl-calls.log"
+MOCK_NOTES_FILE="${TEST_TMPDIR}/mock-notes-override.json"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_NOTES_FILE=%s\n' "${CURL_LOG}" "${MOCK_NOTES_FILE}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+
+# Parse the URL from args.
+URL=""
+METHOD="GET"
+WRITE_OUT=""
+HAS_FAIL=""
+for arg in "$@"; do
+  case "${arg}" in
+    --request) shift_next=method ;;
+    --fail) HAS_FAIL=1 ;;
+    --silent|--show-error) ;;
+    --header|--connect-timeout|--max-time|--data|--data-urlencode) shift_next=skip ;;
+    --write-out) shift_next=writeout ;;
+    *)
+      if [[ "${shift_next:-}" == "method" ]]; then
+        METHOD="${arg}"
+        shift_next=""
+      elif [[ "${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "${shift_next:-}" == "writeout" ]]; then
+        WRITE_OUT="${arg}"
+        shift_next=""
+      elif [[ "${arg}" =~ ^https:// ]]; then
+        URL="${arg}"
+      fi
+      ;;
+  esac
+done
+
+# Return bot user identity.
+if [[ "${URL}" =~ /user$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"username":"fullsend-bot","id":12345,"name":"Fullsend Bot"}'
+  exit 0
+fi
+
+# Return notes list — check for test-specific override file (page 1 only).
+if [[ "${URL}" =~ /notes\? ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ "${URL}" =~ page=1 ]] || [[ ! "${URL}" =~ page=[0-9] ]]; then
+    if [[ -f "${MOCK_NOTES_FILE}" ]]; then
+      cat "${MOCK_NOTES_FILE}"
+    else
+      echo '[]'
+    fi
+  else
+    echo '[]'
+  fi
+  exit 0
+fi
+
+# PUT to notes — sticky comment update.
+if [[ "${URL}" =~ /notes/[0-9]+$ ]] && [[ "${METHOD}" == "PUT" ]]; then
+  echo '{"id":1}'
+  exit 0
+fi
+
+# POST to notes — comment posting.
+if [[ "${URL}" =~ /notes$ ]] && [[ "${METHOD}" == "POST" ]]; then
+  echo '{"id":1}'
+  exit 0
+fi
+
+echo '{"ok":true}'
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+run_gitlab_test() {
+  local test_name="$1"
+  local expect_failure="${2:-false}"
+  local custom_fixture="${3:-}"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  if [[ -n "${custom_fixture}" ]]; then
+    echo "${custom_fixture}" > "${run_dir}/iteration-1/output/agent-result.json"
+  else
+    echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  fi
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure)"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_test_no_gh() {
+  local test_name="$1"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -s "${GH_LOG}" ]]; then
+    echo "FAIL: ${test_name} — gh was called but should not be on gitlab forge"
+    echo "gh calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_test_curl_pattern() {
+  local test_name="$1"
+  local expected_pattern="$2"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected curl call pattern '${expected_pattern}' not found"
+    echo "Actual curl calls:"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_test_stdout() {
+  local test_name="$1"
+  local expected_stdout="$2"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TEST_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Core test: GitLab forge uses curl, not gh.
+run_gitlab_test_no_gh "gitlab-no-gh-calls"
+
+# GitLab happy path: scores posted and comment posted.
+run_gitlab_test "gitlab-happy-path"
+
+# GitLab posts comment via curl POST to notes API.
+run_gitlab_test_curl_pattern "gitlab-posts-comment" \
+  "--request POST https://gitlab.com/api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+# GitLab curl calls use timeout flags.
+run_gitlab_test_curl_pattern "gitlab-curl-has-timeout-flags" \
+  "--connect-timeout 10 --max-time 30"
+
+# GitLab custom fields: stub logs notice that feature is not yet implemented.
+run_gitlab_test_stdout "gitlab-custom-fields-stub" \
+  "custom fields not yet implemented"
+
+# GitLab URL validation: reject non-allowlisted host.
+SAVED_ISSUE_URL="${ISSUE_URL}"
+export ISSUE_URL="https://evil.example/group/project/-/issues/1"
+run_gitlab_test "gitlab-rejects-non-allowlisted-host" "true"
+export ISSUE_URL="${SAVED_ISSUE_URL}"
+
+# --- GitLab sticky-comment author filtering ---
+
+# Test: sticky comment ignores notes from other users (spoofing protection).
+printf '%s' '[{"id":100,"body":"<!-- fullsend:prioritize-agent -->\nSpoofed content","author":{"username":"attacker"}}]' > "${MOCK_NOTES_FILE}"
+run_gitlab_test_curl_pattern "gitlab-sticky-comment-ignores-spoofed-notes" \
+  "--request POST"
+if grep -qF "notes/100" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-sticky-comment-ignores-spoofed-notes — attacker note 100 was updated (PUT)"
+  FAILURES=$((FAILURES + 1))
+fi
+rm -f "${MOCK_NOTES_FILE}"
+
+# Test: sticky comment updates own note when bot-authored note exists.
+printf '%s' '[{"id":200,"body":"<!-- fullsend:prioritize-agent -->\nOld RICE scores","author":{"username":"fullsend-bot"}}]' > "${MOCK_NOTES_FILE}"
+run_gitlab_test_curl_pattern "gitlab-sticky-comment-updates-own-note" \
+  "notes/200"
+rm -f "${MOCK_NOTES_FILE}"
+
+# Test: sticky comment preserves history in <details> block.
+printf '%s' '[{"id":300,"body":"<!-- fullsend:prioritize-agent -->\nPrevious RICE summary here","author":{"username":"fullsend-bot"}}]' > "${MOCK_NOTES_FILE}"
+run_gitlab_test_curl_pattern "gitlab-sticky-comment-preserves-history" \
+  "Previous run"
+rm -f "${MOCK_NOTES_FILE}"
+
+# --- GitLab subgroup URL parsing ---
+
+# Test: forge_parse_issue_url handles subgroup URLs correctly.
+SAVED_ISSUE_URL="${ISSUE_URL}"
+export ISSUE_URL="https://gitlab.com/top/sub/deep/project/-/issues/99"
+run_gitlab_test_curl_pattern "gitlab-subgroup-url-parsing" \
+  "projects/top%2Fsub%2Fdeep%2Fproject/issues/99/notes"
+export ISSUE_URL="${SAVED_ISSUE_URL}"
+
+# Test: unset GITLAB_TOKEN triggers guard error.
+SAVED_GITLAB_TOKEN="${GITLAB_TOKEN}"
+unset GITLAB_TOKEN
+run_gitlab_test "gitlab-unset-token-fails" "true"
+export GITLAB_TOKEN="${SAVED_GITLAB_TOKEN}"
+
+# Restore GitHub forge for any subsequent tests.
+export FULLSEND_FORGE="github"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export GH_TOKEN="fake-token"
+export ORG="test-org"
+export PROJECT_NUMBER="1"
+unset GITLAB_TOKEN
+
+# Smoke test: GitHub forge still works after GitLab section (catches state leakage).
+run_test "github-after-gitlab-smoke" "" 8
+
+# --- Summary ---
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo ""
