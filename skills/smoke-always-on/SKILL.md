@@ -7,7 +7,7 @@ metadata:
   apply: always
 ---
 
-# Caveman (smoke-always-on)
+# Caveman
 
 **Job:** Make the text humans read short. Keep the structured data complete.
 
