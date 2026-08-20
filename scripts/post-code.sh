@@ -1250,9 +1250,9 @@ forge_list_prs_for_issue() {
   local bot_login="${2:-}"
   local coder_bot_login="${3:-}"
   # GitLab API: search MRs referencing the issue. Best-effort — GitLab does not
-  # have a direct "MRs linked to issue" search like GitHub's "in:body,title".
-  # Search open MRs and filter by body/title containing #<IID> with word
-  # boundaries to avoid false positives (e.g., #42 must not match #142 or #420).
+  # have a direct "MRs linked to issue" endpoint. Fetch open MRs and filter for
+  # closing keywords (Close, Fix, Resolve variants) targeting #<IID>. Plain
+  # mentions without closing keywords are excluded to avoid false positives.
   local all_mrs="[]"
   local page=1 max_pages=10
   while [[ "${page}" -le "${max_pages}" ]]; do
@@ -1276,8 +1276,8 @@ forge_list_prs_for_issue() {
   echo "${all_mrs}" | jq -r --arg issue_number "${issue_number}" \
     --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
     [.[] | select(
-      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
-      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
+      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s*,\\s*))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
+      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s*,\\s*))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
     ) | select(
       ((.source_branch // "") | test("^agent/" + $issue_number + "-") | not)
     ) | select(
