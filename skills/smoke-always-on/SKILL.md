@@ -3,6 +3,8 @@ name: smoke-always-on
 description: >
   Force short user-facing triage comments (caveman style). Keep structured
   JSON complete. Ban filler, hedging, and repetition. Playground proof skill.
+metadata:
+  apply: always
 ---
 
 # Caveman
