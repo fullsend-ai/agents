@@ -248,6 +248,33 @@ measurements:
     name: Also Fitness
 " 1 "duplicate key"
 
+run_case "flow-map-name-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name: {a: 1}
+" 1 "flow collection"
+
+run_case "flow-seq-name-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name: [Trace]
+" 1 "flow collection"
+
+run_case "yaml-null-name-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name: null
+" 1 "YAML literal"
+
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

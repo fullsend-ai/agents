@@ -63,6 +63,15 @@ def strip_yaml_comment(raw):
 def parse_scalar(key, raw_token):
     """Parse a scalar the way LoadRegistry / yaml.v3 expects for this schema."""
     token = raw_token.strip()
+    if not token:
+        if key in ("id", "scorer", "agent", "version"):
+            raise UnsupportedShape("%s: requires a non-empty value" % key)
+        return token
+    # Flow collections cannot unmarshal into string/int MeasurementSpec fields.
+    if token[0] in "{[":
+        raise UnsupportedShape(
+            "%s must be a plain scalar, not a flow collection (got %r)" % (key, token)
+        )
     if key == "version":
         # MeasurementSpec.Version is int; yaml.v3 rejects !!str ("1" / '1').
         if (len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'"):
@@ -77,6 +86,12 @@ def parse_scalar(key, raw_token):
     if "#" in token:
         raise UnsupportedShape(
             "%s value must not contain '#' (got %r); YAML treats it as part of the scalar"
+            % (key, token)
+        )
+    # Unquoted YAML literals that yaml.v3 would not keep as plain strings for our fields.
+    if token in ("null", "Null", "NULL", "~", "true", "True", "TRUE", "false", "False", "FALSE"):
+        raise UnsupportedShape(
+            "%s must not be the unquoted YAML literal %r (LoadRegistry string/int fields)"
             % (key, token)
         )
     return token
