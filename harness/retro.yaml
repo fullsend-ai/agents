@@ -32,6 +32,15 @@ skills:
 pre_script: scripts/pre-retro.sh
 post_script: scripts/post-retro.sh
 
+env:
+  runner:
+    ORIGINATING_URL: "${ORIGINATING_URL}"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+  sandbox:
+    ORIGINATING_URL: "${ORIGINATING_URL}"
+    RETRO_COMMENT: "${RETRO_COMMENT}"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/retro-result.schema.json
@@ -48,15 +57,35 @@ forge:
       profiles:
         - profiles/fullsend-github-ro.yaml
         - profiles/fullsend-github-artifacts.yaml
-    pre_script: scripts/pre-retro.sh
-    post_script: scripts/post-retro.sh
+    skills:
+      - skills/github-forge
+      - skills/retro-analysis/github
+      - skills/finding-agent-runs/github
+    host_files:
+      - src: env/github/retro.env
+        dest: /sandbox/workspace/.env.d/retro.env
+        expand: true
     env:
       runner:
-        ORIGINATING_URL: "${ORIGINATING_URL}"
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
       sandbox:
-        ORIGINATING_URL: "${ORIGINATING_URL}"
-        RETRO_COMMENT: "${RETRO_COMMENT}"
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
+  gitlab:
+    policy: policies/gitlab/retro.yaml
+    skills:
+      - skills/gitlab-forge
+      - skills/retro-analysis/gitlab
+      - skills/finding-agent-runs/gitlab
+    host_files:
+      - src: env/gitlab/retro.env
+        dest: /sandbox/workspace/.env.d/retro.env
+        expand: true
+    env:
+      runner:
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab
+      sandbox:
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab
