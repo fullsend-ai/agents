@@ -111,8 +111,80 @@ ATTRIBUTION = (
 )
 
 
+def _post_comment_github(repo, pr_number, full):
+    """Post a comment via the GitHub CLI."""
+    subprocess.run(
+        ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body-file", "-"],
+        input=full,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+# Allowed GitLab hosts. To support a self-hosted instance, add it here,
+# in gitlab-fix-ops.lib.sh (ALLOWED_GITLAB_HOSTS case), AND in the network
+# policy (policies/gitlab/fix.yaml).
+ALLOWED_GITLAB_HOSTS = {"gitlab.com", "gitlab.cee.redhat.com"}
+
+
+def _post_comment_gitlab(repo, pr_number, full):
+    """Post a comment via the GitLab REST API."""
+    from urllib.parse import quote, urlparse
+
+    gitlab_host = os.environ.get("GITLAB_HOST", "")
+    gitlab_token = os.environ.get("GITLAB_TOKEN", "")
+    if not gitlab_host:
+        pr_url = os.environ.get("PR_URL", "")
+        if pr_url:
+            parsed = urlparse(pr_url)
+            gitlab_host = parsed.hostname or ""
+        if not gitlab_host:
+            raise ValueError("GITLAB_HOST is not set and cannot be derived from PR_URL")
+    if gitlab_host not in ALLOWED_GITLAB_HOSTS:
+        raise ValueError(
+            f"GITLAB_HOST '{gitlab_host}' is not in the allowed host list: "
+            f"{', '.join(sorted(ALLOWED_GITLAB_HOSTS))}"
+        )
+    if not gitlab_token:
+        raise ValueError("GITLAB_TOKEN is not set")
+
+    repo_encoded = quote(repo, safe="")
+    api_url = (
+        f"https://{gitlab_host}/api/v4"
+        f"/projects/{repo_encoded}/merge_requests/{pr_number}/notes"
+    )
+    # Pass token via curl config on stdin so it never appears in
+    # CalledProcessError.cmd tracebacks.
+    config_stdin = f'header = "PRIVATE-TOKEN: {gitlab_token}"'
+    subprocess.run(
+        [
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "30",
+            "--config",
+            "-",
+            "--request",
+            "POST",
+            "--data-urlencode",
+            f"body={full}",
+            api_url,
+        ],
+        input=config_stdin,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def post_summary(repo, pr_number, body, suffix="", dry_run=False):
     """Post a summary comment on the PR."""
+    forge = os.environ.get("FULLSEND_FORGE", "github")
     full = body + suffix
     if len(full) > MAX_COMMENT_LENGTH:
         truncation_notice = "\n\n*[truncated — output exceeded comment size limit]*"
@@ -126,18 +198,21 @@ def post_summary(repo, pr_number, body, suffix="", dry_run=False):
         print(f"  [dry-run] Would post PR summary ({len(full)} chars)")
         return True
     try:
-        subprocess.run(
-            ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body-file", "-"],
-            input=full,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        if forge == "gitlab":
+            _post_comment_gitlab(repo, pr_number, full)
+        else:
+            _post_comment_github(repo, pr_number, full)
         return True
     except subprocess.CalledProcessError as e:
         sanitized = e.stderr.replace("\r", "").replace("\n", " ").replace("::", ": :")
         print(
             f"::warning::Failed to post PR summary: {sanitized}",
+            file=sys.stderr,
+        )
+        return False
+    except ValueError as e:
+        print(
+            f"::warning::Failed to post PR summary: {e}",
             file=sys.stderr,
         )
         return False

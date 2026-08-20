@@ -509,5 +509,143 @@ class TestSchemaEnvVar(unittest.TestCase):
                 os.unlink(f.name)
 
 
+_post_comment_gitlab = mod._post_comment_gitlab
+
+
+class TestGitLabPostComment(unittest.TestCase):
+    """Tests for GitLab comment posting logic (#807)."""
+
+    def _valid_data(self):
+        return {
+            "pr_number": 42,
+            "trigger_source": "bot",
+            "actions": [
+                {"type": "fix", "finding": "nil check", "description": "Fixed"},
+            ],
+            "summary": "All good.",
+            "tests_passed": True,
+            "files_changed": ["foo.go"],
+        }
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "gitlab.com",
+            "GITLAB_TOKEN": "fake-token",
+        },
+    )
+    @patch("subprocess.run")
+    def test_gitlab_uses_curl_not_gh(self, mock_run):
+        """GitLab mode calls curl, not gh."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        data = self._valid_data()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            f.flush()
+            try:
+                result = main([f.name, "org/repo", "42"])
+                self.assertEqual(result, 0)
+                args_list = mock_run.call_args[0][0]
+                self.assertEqual(args_list[0], "curl")
+                # Token must NOT appear in the command args (security).
+                for arg in args_list:
+                    self.assertNotIn("fake-token", arg)
+                # Token is passed via --config - (stdin).
+                self.assertIn("--config", args_list)
+                self.assertIn("-", args_list)
+                config_input = mock_run.call_args[1].get("input", "")
+                self.assertIn("PRIVATE-TOKEN: fake-token", config_input)
+            finally:
+                os.unlink(f.name)
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "evil.example.com",
+            "GITLAB_TOKEN": "fake-token",
+        },
+    )
+    def test_rejected_host_raises(self):
+        """A host not in ALLOWED_GITLAB_HOSTS raises ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            _post_comment_gitlab("org/repo", "42", "body")
+        self.assertIn("evil.example.com", str(ctx.exception))
+        self.assertIn("not in the allowed host list", str(ctx.exception))
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_TOKEN": "fake-token",
+        },
+        clear=False,
+    )
+    def test_missing_host_and_url_raises(self):
+        """Missing both GITLAB_HOST and PR_URL raises ValueError."""
+        os.environ.pop("GITLAB_HOST", None)
+        os.environ.pop("PR_URL", None)
+        with self.assertRaises(ValueError) as ctx:
+            _post_comment_gitlab("org/repo", "42", "body")
+        self.assertIn("cannot be derived", str(ctx.exception))
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_TOKEN": "fake-token",
+            "PR_URL": "https://gitlab.com/group/project/-/merge_requests/42",
+        },
+        clear=False,
+    )
+    @patch("subprocess.run")
+    def test_host_derived_from_pr_url(self, mock_run):
+        """GITLAB_HOST is derived from PR_URL when not set directly."""
+        os.environ.pop("GITLAB_HOST", None)
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        _post_comment_gitlab("group/project", "42", "body")
+        args_list = mock_run.call_args[0][0]
+        # The API URL should use gitlab.com derived from PR_URL
+        api_url = args_list[-1]
+        self.assertIn("gitlab.com", api_url)
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "gitlab.com",
+        },
+        clear=False,
+    )
+    def test_missing_token_raises(self):
+        """Missing GITLAB_TOKEN raises ValueError."""
+        os.environ.pop("GITLAB_TOKEN", None)
+        with self.assertRaises(ValueError) as ctx:
+            _post_comment_gitlab("org/repo", "42", "body")
+        self.assertIn("GITLAB_TOKEN is not set", str(ctx.exception))
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "gitlab.com",
+            "GITLAB_TOKEN": "fake-token",
+        },
+    )
+    @patch("subprocess.run")
+    def test_allowed_host_accepted(self, mock_run):
+        """A host in ALLOWED_GITLAB_HOSTS is accepted."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        _post_comment_gitlab("org/repo", "42", "body")
+        mock_run.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -99,7 +99,7 @@ defaults. If multiple agents need the same custom hosts, create a
 separate override for each one. For example, the
 [code](code.md) and [fix](fix.md) agents both use
 [`policies/base.yaml`](../policies/base.yaml)
-(code agent also has a GitLab equivalent under `policies/gitlab/`).
+(both agents also have GitLab equivalents under `policies/gitlab/`).
 
 ## Troubleshooting
 
