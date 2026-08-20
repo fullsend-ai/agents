@@ -50,7 +50,6 @@ forge:
     skills:
       - skills/github-forge
       - skills/issue-labels/github
-      - skills/smoke-always-on
     host_files:
       - src: env/github/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
