@@ -737,6 +737,11 @@ of findings in the standard format:
 }
 ```
 
+Both `verified_variables` and `unchecked_variables` are **required** on
+every finding. Security sub-agents populate them with the names of
+variables they verified or could not verify; non-security sub-agents
+set both to `[]`.
+
 If a sub-agent fails to return findings (timeout, error, empty
 response), record a finding noting the gap. The severity depends on
 the sub-agent's tier:

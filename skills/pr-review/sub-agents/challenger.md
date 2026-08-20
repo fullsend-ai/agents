@@ -46,7 +46,10 @@ For each finding:
 5. **Preserve variable-coverage fields.** Copy `verified_variables` and
    `unchecked_variables` from the original finding unmodified. The
    challenger does not re-derive these — they are the security
-   sub-agent's output.
+   sub-agent's output. When merging duplicate findings, union both
+   findings' arrays per the step 6b rules in `SKILL.md` (deduplicate
+   `verified_variables`; deduplicate `unchecked_variables` and remove
+   any entry that appears in the merged `verified_variables`).
 
 ## Output format
 
