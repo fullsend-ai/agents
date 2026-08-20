@@ -178,13 +178,14 @@ forge_list_prs_for_issue() {
     all_mrs=$(echo "${all_mrs}" "${batch}" | jq -s 'add') || break
     page=$((page + 1))
   done
-  # Filter for MRs mentioning #<IID> (anchored — bare or qualified ref),
-  # exclude agent branches and known bot authors.
+  # Filter for MRs with closing keywords (Closes, Fixes, Resolves, etc.)
+  # targeting #<IID>. Plain mentions without closing keywords are excluded
+  # to avoid false positives (e.g., "Related: #42" should not block).
   echo "${all_mrs}" | jq -r --arg term "${search_term}" \
     --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
     [.[] | select(
-      ((.title // "") | test("(^|\\W)([a-zA-Z0-9._/-]+)?#" + $term + "($|\\W)")) or
-      ((.description // "") | test("(^|\\W)([a-zA-Z0-9._/-]+)?#" + $term + "($|\\W)"))
+      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?)\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i")) or
+      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?)\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i"))
     ) | select(
       ((.source_branch // "") | test("^agent/" + $term + "-") | not)
     ) | select(

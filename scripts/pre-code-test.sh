@@ -47,7 +47,7 @@ PR_OUTPUT="OUTPUT_PLACEHOLDER"
 echo "gh $*" >> "${CALL_LOG}"
 
 # Route by subcommand
-if [[ "$1" == "pr" && "$2" == "list" ]]; then
+if [[ "$1" == "api" && "$2" == "graphql" ]]; then
   # Parse --jq flag from arguments, just like the real gh CLI.
   JQ_EXPR=""
   shift 2
@@ -289,28 +289,41 @@ run_test_stdout_excludes() {
 
 # --- Test cases ---
 
-# JSON helpers — build unfiltered PR JSON that the mock returns to the
+# JSON helpers — build GraphQL response JSON that the mock returns to the
 # script.  The mock pipes this through jq using the real --jq expression
 # from pre-code.sh, so the filter is exercised end-to-end.
+# The response format matches GitHub's closedByPullRequestsReferences query.
+
+_gql_wrap() {
+  # Wrap a JSON array of PR nodes into a closedByPullRequestsReferences response.
+  local nodes="$1"
+  printf '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":%s}}}}}' "${nodes}"
+}
+
+# Empty response (no closing PRs).
+EMPTY_GQL_JSON="$(_gql_wrap '[]')"
 
 # Single human PR.
-HUMAN_PR_JSON='[{"number":99,"author":{"login":"human-dev"},"url":"https://github.com/test-org/test-repo/pull/99"}]'
+HUMAN_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]')"
 
 # Single fullsend-ai[bot] PR.
-BOT_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"}]'
+BOT_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"}]')"
 
 # Single fullsend-ai-coder[bot] PR.
-CODER_BOT_PR_JSON='[{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]'
+CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"}]')"
 
 # Both bot PRs plus a human PR.
-MIXED_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"},{"number":99,"author":{"login":"human-dev"},"url":"https://github.com/test-org/test-repo/pull/99"}]'
+MIXED_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"},{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]')"
 
 # Multiple human PRs.
-MULTI_HUMAN_PR_JSON='[{"number":50,"author":{"login":"dev-a"},"url":"https://github.com/test-org/test-repo/pull/50"},{"number":51,"author":{"login":"dev-b"},"url":"https://github.com/test-org/test-repo/pull/51"}]'
+MULTI_HUMAN_PR_JSON="$(_gql_wrap '[{"number":50,"url":"https://github.com/test-org/test-repo/pull/50","author":{"login":"dev-a"},"state":"OPEN"},{"number":51,"url":"https://github.com/test-org/test-repo/pull/51","author":{"login":"dev-b"},"state":"OPEN"}]')"
+
+# Both bots only (no human PRs).
+BOTH_BOTS_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"}]')"
 
 # No existing PRs → agent proceeds (exit 0, no label/comment).
 run_test_stdout "no-existing-prs-proceeds" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "No existing human PRs found" \
   0
 
@@ -352,7 +365,7 @@ run_test_stdout "force-override-comment-body" \
 
 # No GH_TOKEN → skips check entirely, exits 0.
 run_test_stdout "no-gh-token-skips-check" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "No github token set" \
   0 \
   "GH_TOKEN="
@@ -371,7 +384,7 @@ run_test_stdout "coder-bot-pr-plus-human-pr-blocks" \
 
 # Both bots only → jq filter removes all → script proceeds.
 run_test_stdout "both-bots-do-not-block" \
-  '[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]' \
+  "${BOTH_BOTS_JSON}" \
   "No existing human PRs found" \
   0
 
@@ -393,11 +406,10 @@ run_test "pr-label-created" \
   0
 
 # --- Regression tests: --force bypasses PR search (issue #1697) ---
-TAB=$'\t'
 
 # COMMENT_BODY with --force must exit before PR search is reached.
 run_test_stdout_excludes "force-comment-body-no-pr-search" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "Force override" \
   "Checking for existing open PRs" \
   0 \
@@ -405,7 +417,7 @@ run_test_stdout_excludes "force-comment-body-no-pr-search" \
 
 # CODE_FORCE=true must exit before PR search is reached.
 run_test_stdout_excludes "force-code-force-no-pr-search" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "Force override" \
   "Checking for existing open PRs" \
   0 \
@@ -413,14 +425,14 @@ run_test_stdout_excludes "force-code-force-no-pr-search" \
 
 # Force check logs COMMENT_BODY value for debuggability.
 run_test_stdout "force-check-logs-comment-body" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "Evaluating force override:" \
   0 \
   "COMMENT_BODY=/fs-code --force"
 
 # Without --force, PR search IS reached (no false bypass).
 run_test_stdout "no-force-reaches-pr-search" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "Checking for existing open PRs" \
   0 \
   "COMMENT_BODY=/fs-code"
@@ -531,7 +543,7 @@ run_test_prescript_output "protocol-skip-on-existing-pr" \
 
 # No existing PRs → file stays empty (absent skipped = proceed).
 run_test_prescript_output "protocol-empty-on-no-prs" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "" \
   0
 
@@ -544,7 +556,7 @@ run_test_prescript_output "protocol-empty-on-force" \
 
 # No GH_TOKEN → check skipped, run proceeds → file stays empty.
 run_test_prescript_output "protocol-empty-on-no-token" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "" \
   0 \
   "GH_TOKEN="
