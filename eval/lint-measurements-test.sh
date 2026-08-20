@@ -210,6 +210,44 @@ measurements:
     version: 1
 " 0 "code.yaml: OK"
 
+run_case "nested-block-map-under-name-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name:
+      id: em-001
+" 1 "nested block map"
+
+run_case "empty-then-filled-agent-duplicate" \
+  "agent:
+agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+" 1 "duplicate top-level key"
+
+run_case "duplicate-id-in-item-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    id: em-002
+" 1 "duplicate key"
+
+run_case "duplicate-name-in-item-rejected" \
+  "agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+    name: Trace Fitness
+    name: Also Fitness
+" 1 "duplicate key"
+
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

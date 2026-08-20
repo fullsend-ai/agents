@@ -19,9 +19,10 @@ Managed fullsend jobs resolve manifests as:
    curl the floating `raw.githubusercontent.com/fullsend-ai/agents/v0/...` URL.
    `agents` is public, so the `GetRef` works without a token on both GitHub
    Actions and GitLab; unauthenticated calls share GitHub's ~60 req/hr per-IP
-   limit, so export `GH_TOKEN`/`GITHUB_TOKEN` on busy shared runners (GitHub
-   Actions passes `GH_TOKEN` automatically). A local `FULLSEND_DIR` manifest
-   skips the fetch entirely.
+   limit, so export `GH_TOKEN`/`GITHUB_TOKEN` on busy shared runners. The
+   managed fullsend Action forwards `inputs.github_token` as `GH_TOKEN` into
+   the measure step; callers outside that Action must export a token
+   themselves. A local `FULLSEND_DIR` manifest skips the fetch entirely.
 
 Installs that only use stock agents **do not copy these files**. Local files
 are for changing defaults, opting out, or scoring a custom agent.

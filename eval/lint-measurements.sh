@@ -97,23 +97,46 @@ def parse_manifest(text):
     in_measurements = False
     measurements_key = False
     list_indent = None
+    item_field_indent = None
     seen_top = set()
+    seen_item_keys = set()
 
     def close_current():
-        nonlocal current
+        nonlocal current, item_field_indent, seen_item_keys
         if current is not None:
             items.append(current)
             current = None
+        item_field_indent = None
+        seen_item_keys = set()
 
     def note_top(key):
         if key in seen_top:
             raise UnsupportedShape("duplicate top-level key %r (yaml.v3 rejects this)" % key)
         seen_top.add(key)
 
+    def set_item_field(key, raw_token, field_indent):
+        nonlocal item_field_indent
+        if item_field_indent is None:
+            item_field_indent = field_indent
+        elif field_indent > item_field_indent:
+            raise UnsupportedShape(
+                "nested block map under measurement field is not supported (deeper than item field indent)"
+            )
+        elif field_indent < item_field_indent:
+            raise UnsupportedShape("inconsistent measurement field indentation")
+        if key in seen_item_keys:
+            raise UnsupportedShape("duplicate key %r in measurement item (yaml.v3 rejects this)" % key)
+        seen_item_keys.add(key)
+        current[key] = parse_scalar(key, raw_token)
+
     def set_agent(stripped):
         nonlocal agent
         note_top("agent")
-        agent = parse_scalar("agent", stripped.split(":", 1)[1])
+        raw = stripped.split(":", 1)[1]
+        if not raw.strip():
+            # Empty first occurrence still counts so a later agent: value is a duplicate.
+            return
+        agent = parse_scalar("agent", raw)
 
     def start_measurements():
         nonlocal in_measurements, measurements_key, list_indent
@@ -121,6 +144,16 @@ def parse_manifest(text):
         in_measurements = True
         measurements_key = True
         list_indent = None
+
+    def handle_top_level(stripped):
+        nonlocal in_measurements
+        key = require_top_level(stripped)
+        if key == "agent":
+            set_agent(stripped)
+        elif key == "measurements":
+            start_measurements()
+        else:
+            note_top(key)
 
     for raw in text.splitlines():
         stripped = strip_yaml_comment(raw)
@@ -130,7 +163,7 @@ def parse_manifest(text):
             raise UnsupportedShape("flow-style measurements are not supported")
         indent = len(raw) - len(raw.lstrip(" "))
 
-        if re.match(r"^agent:\s*\S", stripped):
+        if re.match(r"^agent:", stripped):
             if in_measurements:
                 close_current()
                 in_measurements = False
@@ -156,6 +189,13 @@ def parse_manifest(text):
             if rest and not m:
                 raise UnsupportedShape("unsupported field on measurement list item")
             if m:
+                # Dash-line field records the key but does not set item_field_indent —
+                # the first indented field below establishes the item's field column.
+                if m.group(1) in seen_item_keys:
+                    raise UnsupportedShape(
+                        "duplicate key %r in measurement item (yaml.v3 rejects this)" % m.group(1)
+                    )
+                seen_item_keys.add(m.group(1))
                 current[m.group(1)] = parse_scalar(m.group(1), m.group(2))
             continue
 
@@ -163,34 +203,26 @@ def parse_manifest(text):
             fm = FIELD_INDENTED.match(stripped)
             um = UNKNOWN_INDENTED.match(stripped)
             if fm:
-                current[fm.group(1)] = parse_scalar(fm.group(1), fm.group(2))
+                set_item_field(fm.group(1), fm.group(2), indent)
                 continue
             if um and um.group(1) not in FIELD_KEYS:
                 raise UnsupportedShape("unsupported field %r" % um.group(1))
             if re.match(r"^\S", stripped):
                 close_current()
                 in_measurements = False
-                key = require_top_level(stripped)
-                if key == "agent":
-                    set_agent(stripped)
-                elif key == "measurements":
-                    start_measurements()
+                handle_top_level(stripped)
                 continue
             raise UnsupportedShape("unrecognized line in measurements list")
 
         if in_measurements and current is None:
             if re.match(r"^\S", stripped):
                 in_measurements = False
-                key = require_top_level(stripped)
-                if key == "agent":
-                    set_agent(stripped)
-                elif key == "measurements":
-                    start_measurements()
+                handle_top_level(stripped)
                 continue
             raise UnsupportedShape("indented content outside a measurement item")
 
         if re.match(r"^\S", stripped):
-            require_top_level(stripped)
+            handle_top_level(stripped)
             continue
         raise UnsupportedShape("indented content outside measurements list")
 
