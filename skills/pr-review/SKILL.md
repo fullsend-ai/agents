@@ -732,8 +732,8 @@ of findings in the standard format:
   "description": "<explanation>",
   "remediation": "<fix, required for critical/high>",
   "actionable": true|false,
-  "verified_variables": [],
-  "unchecked_variables": []
+  "verified_variables": ["<verified-input>"],
+  "unchecked_variables": ["<unchecked-input>"]
 }
 ```
 
@@ -1141,6 +1141,7 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 
 - **[<category>]** `<file>:<line>` — <description>
   Remediation: <remediation>
+  Verified: <comma-separated verified_variables, omit line if empty>
   Unchecked: <comma-separated unchecked_variables, omit line if empty>
 
 #### High
