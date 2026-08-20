@@ -501,7 +501,7 @@ forge_post_pr_comment() {
 # --- MR lifecycle ---
 
 forge_list_prs_for_issue() {
-  local search_term="$1"
+  local issue_number="$1"
   local bot_login="${2:-}"
   local coder_bot_login="${3:-}"
   # GitLab API: search MRs referencing the issue. Best-effort — GitLab does not
@@ -528,11 +528,11 @@ forge_list_prs_for_issue() {
   # Filter for MRs with closing keywords (Closes, Fixes, Resolves, etc.)
   # targeting #<IID>. Plain mentions without closing keywords are excluded
   # to avoid false positives (e.g., "Related: #42" should not block).
-  echo "${all_mrs}" | jq -r --arg term "${search_term}" \
+  echo "${all_mrs}" | jq -r --arg term "${issue_number}" \
     --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
     [.[] | select(
-      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?)\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i")) or
-      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?)\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i"))
+      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i")) or
+      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving|implement(?:s|ed|ing)?):?\\s+(?:[a-zA-Z0-9._/-]+)?#" + $term + "(?:$|\\W)"; "i"))
     ) | select(
       ((.source_branch // "") | test("^agent/" + $term + "-") | not)
     ) | select(
