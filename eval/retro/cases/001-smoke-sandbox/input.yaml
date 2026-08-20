@@ -1,0 +1,19 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "chore: update README formatting"
+  body: |
+    Minor formatting fix in the README.
+
+    This PR is a fixture for the retro agent smoke test. It exists only
+    to provide a valid ORIGINATING_URL (the PR URL) for the retro harness.
+  files:
+    - path: README.md
+      content: |
+        # Test Repository
+
+        This is a test repository for functional evaluation.
+
+        ## Overview
+
+        Updated formatting for consistency.
