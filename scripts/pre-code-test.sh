@@ -321,6 +321,12 @@ MULTI_HUMAN_PR_JSON="$(_gql_wrap '[{"number":50,"url":"https://github.com/test-o
 # Both bots only (no human PRs).
 BOTH_BOTS_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"}]')"
 
+# Human PR in MERGED state (should be filtered out by .state == "OPEN").
+MERGED_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"MERGED"}]')"
+
+# Human PR in CLOSED state (should be filtered out by .state == "OPEN").
+CLOSED_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"CLOSED"}]')"
+
 # No existing PRs → agent proceeds (exit 0, no label/comment).
 run_test_stdout "no-existing-prs-proceeds" \
   "${EMPTY_GQL_JSON}" \
@@ -573,6 +579,70 @@ run_test_prescript_output "protocol-empty-on-bot-prs" \
 # All earlier tests in this file also run with the variable unset; this
 # one documents the skip path explicitly.
 run_test_stdout "protocol-unset-env-old-cli-fails-open" \
+  "${HUMAN_PR_JSON}" \
+  "Skipping code agent" \
+  0
+
+# --- Regression tests: false-positive PR matching (issue #847) ---
+# The old text-search approach (gh pr list --search "N in:body,title") caused
+# false positives.  The new GraphQL closedByPullRequestsReferences query
+# returns only PRs with closing keywords (Fixes, Closes, etc.), eliminating
+# these scenarios at the API level.  The mock returns an empty response
+# because the API would not match these PRs.
+
+# Issue #1 must NOT be blocked by a PR titled "docs(#12): add fullsend-
+# managed file exemption" that has no closing reference to issue #1.
+# Old text search matched because "1" appears as a substring of "#12".
+run_test_stdout "fp-issue847-title-substring-no-closing-ref" \
+  "${EMPTY_GQL_JSON}" \
+  "No existing human PRs found" \
+  0 \
+  "ISSUE_NUMBER=1
+GITHUB_ISSUE_URL=https://github.com/test-org/test-repo/issues/1
+ISSUE_URL=https://github.com/test-org/test-repo/issues/1"
+
+# Issue #42 must NOT be blocked by a PR whose body contains "Related: #42"
+# without a closing keyword.  The old text search matched on the bare "#42"
+# mention; closedByPullRequestsReferences ignores non-closing references.
+run_test_stdout "fp-issue847-related-without-closing-keyword" \
+  "${EMPTY_GQL_JSON}" \
+  "No existing human PRs found" \
+  0
+
+# Issue #1 must NOT be blocked by a PR whose body contains "#10" — a
+# different issue number that merely shares a digit prefix.  The old text
+# search for "1" matched "#10" as a substring.
+run_test_stdout "fp-issue847-different-issue-substring" \
+  "${EMPTY_GQL_JSON}" \
+  "No existing human PRs found" \
+  0 \
+  "ISSUE_NUMBER=1
+GITHUB_ISSUE_URL=https://github.com/test-org/test-repo/issues/1
+ISSUE_URL=https://github.com/test-org/test-repo/issues/1"
+
+# --- Closed/merged PR filtering ---
+# closedByPullRequestsReferences may return PRs in any state (OPEN, MERGED,
+# CLOSED).  The jq filter selects only .state == "OPEN"; non-open PRs must
+# not block.
+
+# MERGED human PR → filtered out → script proceeds.
+run_test_stdout "merged-pr-does-not-block" \
+  "${MERGED_PR_JSON}" \
+  "No existing human PRs found" \
+  0
+
+# CLOSED human PR → filtered out → script proceeds.
+run_test_stdout "closed-pr-does-not-block" \
+  "${CLOSED_PR_JSON}" \
+  "No existing human PRs found" \
+  0
+
+# --- Positive closing-keyword match (happy-path) ---
+# A PR returned by closedByPullRequestsReferences with state OPEN and a
+# human author must still block.  This confirms the happy path works end-
+# to-end with the new GraphQL response format (e.g. a PR whose body
+# contains "Fixes #42" or "Closes #42").
+run_test_stdout "closing-ref-open-pr-still-blocks" \
   "${HUMAN_PR_JSON}" \
   "Skipping code agent" \
   0
