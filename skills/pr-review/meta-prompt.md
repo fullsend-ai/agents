@@ -20,8 +20,8 @@ For each finding, return a JSON array as follows
   "description": "<explanation>",
   "remediation": "<fix, required for critical/high>",
   "actionable": true|false,
-  "verified_variables": [],
-  "unchecked_variables": []
+  "verified_variables": ["<verified-input>"],
+  "unchecked_variables": ["<unchecked-input>"]
 }
 ```
 
