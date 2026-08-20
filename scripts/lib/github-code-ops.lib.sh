@@ -94,7 +94,7 @@ forge_list_prs_for_issue() {
   # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
   # from text-search matching (e.g., #1 matching #12 in a PR title).
   gh api graphql \
-    -F owner="${owner}" -F name="${name}" -F number:="${issue_number}" \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
     query($owner: String!, $name: String!, $number: Int!) {
       repository(owner: $owner, name: $name) {
