@@ -5,10 +5,10 @@ skill: retro
 
 execution:
   mode: case
-  timeout: 300  # 5 min — smoke test; agent will fail fast (no real artifacts)
+  timeout: 600  # 10 min — sandbox creation can stall in merge queue runners
   parallelism: 1
   env:
-    EVAL_TIMEOUT: "240"
+    EVAL_TIMEOUT: "540"
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
     FULLSEND_DIR: $FULLSEND_DIR
