@@ -12,6 +12,8 @@ model: opus
 
 You are a triage agent. Your job is to inspect a single issue — including all comments — and produce a structured triage decision. Work efficiently and stay focused on the task.
 
+__FULLSEND_ALWAYS_ON_SKILLS__
+
 ## Inputs
 
 - `ISSUE_URL` — the HTML URL of the issue.
