@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # post-retro-test.sh — Test post-retro.sh with fixture JSON inputs.
 #
-# Uses a mock gh command to capture calls without hitting GitHub.
+# Uses mock gh/curl commands to capture calls without hitting real APIs.
 # Run from the repo root: bash scripts/post-retro-test.sh
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-POST_SCRIPT="${SCRIPT_DIR}/post-retro.sh"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+
+POST_SCRIPT="$(resolve_agent_script post-retro)"
 FAILURES=0
 
 # Create a temp directory for test fixtures and mock state.
@@ -84,6 +88,76 @@ exit 0
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
+# --- Mock curl (for GitLab tests) ---
+# CURL_MOCK_COMMENT_FAIL controls how the mock responds to note-posting calls.
+CURL_LOG="${TMPDIR}/curl-calls.log"
+cat > "${MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "curl $*" >> "${CURL_LOG}"
+
+# Detect endpoint from the URL argument (last positional before data args).
+URL=""
+for arg in "$@"; do
+  if [[ "${arg}" == https://* ]]; then
+    URL="${arg}"
+  fi
+done
+
+# Label creation — succeed silently
+if [[ "${URL}" == *"/labels" ]] && [[ " $* " == *" POST "* || " $* " == *" -X POST "* ]]; then
+  echo '{"id": 1, "name": "ready-for-triage"}'
+  exit 0
+fi
+
+# Issue creation — return a fake issue URL
+if [[ "${URL}" == *"/issues" ]] && [[ " $* " == *" POST "* || " $* " == *" -X POST "* ]] && [[ "${URL}" != *"/notes" ]]; then
+  case "${CURL_MOCK_ISSUE_FAIL:-}" in
+    null-url)
+      echo '{"iid": 99}'
+      exit 0
+      ;;
+    api-error)
+      echo "curl: (22) The requested URL returned error: 403" >&2
+      exit 22
+      ;;
+    *)
+      echo '{"web_url": "https://gitlab.com/test-group/target-project/-/issues/99", "iid": 99}'
+      exit 0
+      ;;
+  esac
+fi
+
+# Comment posting (notes) — controlled by CURL_MOCK_COMMENT_FAIL
+if [[ "${URL}" == *"/notes" ]] && [[ " $* " == *" POST "* || " $* " == *" -X POST "* ]]; then
+  case "${CURL_MOCK_COMMENT_FAIL:-}" in
+    403)
+      echo "curl: (22) The requested URL returned error: 403" >&2
+      exit 22
+      ;;
+    401)
+      echo "curl: (22) The requested URL returned error: 401" >&2
+      exit 22
+      ;;
+    500)
+      echo "curl: (22) The requested URL returned error: 500" >&2
+      exit 22
+      ;;
+    422)
+      echo "curl: (22) The requested URL returned error: 422" >&2
+      exit 22
+      ;;
+    *)
+      echo '{"id": 1}'
+      exit 0
+      ;;
+  esac
+fi
+
+# Default: succeed silently
+exit 0
+MOCKEOF
+chmod +x "${MOCK_BIN}/curl"
+
 # Mock jq is not needed — we use the real jq.
 # Mock sed is not needed — we use the real sed.
 
@@ -91,9 +165,12 @@ GH_STDIN_LOG="${TMPDIR}/gh-stdin.log"
 
 export PATH="${MOCK_BIN}:${PATH}"
 export GH_LOG="${GH_LOG}"
+export CURL_LOG="${CURL_LOG}"
 export GH_STDIN_LOG="${GH_STDIN_LOG}"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export GH_TOKEN="fake-token"
+# shellcheck disable=SC2031 # FULLSEND_FORGE exported for subshell test runs
+export FULLSEND_FORGE="github"
 
 # allow_targets handler reads config.yaml from GITHUB_WORKSPACE.
 # Create a minimal workspace with an allowlist so existing tests pass
@@ -360,6 +437,8 @@ run_test() {
   # Clear gh call log and stdin log.
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL="${comment_fail}"
 
   # Run the post-script.
@@ -406,6 +485,8 @@ run_test_stdout() {
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL="${comment_fail}"
 
   local exit_code=0
@@ -457,6 +538,8 @@ run_test_no_gh_call() {
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL=""
 
   local exit_code=0
@@ -498,6 +581,8 @@ run_test_stdin() {
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL=""
 
   local exit_code=0
@@ -532,6 +617,8 @@ run_test_stdout_absent() {
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL=""
 
   local exit_code=0
@@ -563,7 +650,9 @@ run_test_stdout_absent() {
   echo "PASS: ${test_name}"
 }
 
-# --- Test cases ---
+# ===========================================================================
+# GitHub test cases (FULLSEND_FORGE=github)
+# ===========================================================================
 
 # Happy path: one proposal filed, comment posted successfully.
 run_test "happy-path-one-proposal" \
@@ -735,10 +824,12 @@ run_test "allow-targets-repo-level-filed" \
 # Originating repo is always allowed even without explicit allowlist entry.
 # Override ORIGINATING_URL to an org NOT in the allowlist so this test
 # isolates the originating-repo check from the org-allowlist check.
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://github.com/unlisted-org/originating-repo/pull/10"
 run_test "allow-targets-originating-repo-allowed" \
   "${FIXTURE_ORIGINATING_REPO_TARGET}" \
   "gh issue create"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 
 # Mixed targets: allowed proposal filed, disallowed skipped.
@@ -758,11 +849,14 @@ run_test_no_gh_call "allow-targets-no-workspace-cross-repo-blocked" \
   "gh issue create" \
   "::warning::Skipping issue creation in 'test-org/target-repo'"
 
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://github.com/unlisted-org/originating-repo/pull/10"
 run_test "allow-targets-no-workspace-originating-allowed" \
   "${FIXTURE_ORIGINATING_REPO_TARGET}" \
   "gh issue create"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+# shellcheck disable=SC2031 # GITHUB_WORKSPACE exported for subshell test run
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
 # ---------------------------------------------------------------------------
@@ -793,11 +887,14 @@ run_validated_dir_test() {
 
   : > "${GH_LOG}"
   : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  # shellcheck disable=SC2031 # GH_MOCK_COMMENT_FAIL exported for subshell test run
   export GH_MOCK_COMMENT_FAIL=""
 
   local exit_code=0
   (
     cd "${run_dir}"
+    # shellcheck disable=SC2031,SC2030 # FULLSEND_VALIDATED_ITERATION_DIR exported for subshell
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
@@ -845,6 +942,530 @@ run_validated_dir_test "validated-dir-neither-filename" \
   "none" \
   "" \
   "true"
+
+# ===========================================================================
+# GitLab test cases (FULLSEND_FORGE=gitlab)
+# ===========================================================================
+
+# Switch to GitLab forge context.
+# shellcheck disable=SC2031 # FULLSEND_FORGE exported for subshell test runs
+export FULLSEND_FORGE="gitlab"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test runs
+export ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+# shellcheck disable=SC2031 # GITLAB_TOKEN exported for subshell test runs
+export GITLAB_TOKEN="fake-gitlab-token"
+unset GH_TOKEN
+
+# GitLab workspace config — same allowlist structure.
+GL_WORKSPACE="${TMPDIR}/gl-workspace"
+mkdir -p "${GL_WORKSPACE}"
+cat > "${GL_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+create_issues:
+  allow_targets:
+    orgs:
+      - test-group
+    repos:
+      - allowed-org/allowed-repo
+CFGEOF
+# shellcheck disable=SC2031 # CI_PROJECT_DIR exported for subshell test runs
+export CI_PROJECT_DIR="${GL_WORKSPACE}"
+
+# GitLab fixture: one proposal targeting a GitLab project.
+GL_FIXTURE_ONE_PROPOSAL='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-group/target-project",
+      "title": "Improve error handling in widget service",
+      "what_happened": "The widget service crashed on empty input.",
+      "what_could_go_better": "Input validation should reject empty payloads.",
+      "proposed_change": "Add a nil check at the entry point.",
+      "validation_criteria": "Widget service returns 400 on empty input."
+    }
+  ]
+}'
+
+GL_FIXTURE_NO_PROPOSALS='{
+  "summary": "The retro analysis found no actionable improvements.",
+  "proposals": []
+}'
+
+# GitLab fixture: evidence-for (should be filtered same as GitHub).
+GL_FIXTURE_EVIDENCE_FOR='{
+  "summary": "The retro analysis found corroborating evidence.",
+  "proposals": [
+    {
+      "target_repo": "test-group/target-project",
+      "title": "Evidence for #1234: review agent missed authorization check",
+      "what_happened": "The review agent did not flag a missing auth check.",
+      "what_could_go_better": "Authorization checks should be flagged.",
+      "proposed_change": "Add auth-check detection to review prompts.",
+      "validation_criteria": "Review agent flags missing auth checks."
+    }
+  ]
+}'
+
+# GitLab fixture: subgroup repo (tests multi-segment path support).
+GL_FIXTURE_SUBGROUP='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "test-group/subgroup/target-project",
+      "title": "Fix subgroup project issue",
+      "what_happened": "Something broke in a subgroup project.",
+      "what_could_go_better": "It should not break.",
+      "proposed_change": "Fix the thing.",
+      "validation_criteria": "Thing works."
+    }
+  ]
+}'
+
+# GitLab fixture: proposal targeting originating repo in an unlisted org.
+# Tests that is_target_allowed always allows the originating repo regardless
+# of allow_targets — the GitLab analogue of allow-targets-originating-repo-allowed.
+GL_FIXTURE_ORIGINATING_REPO_TARGET='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "unlisted-group/originating-project",
+      "title": "Improve self-repo handling",
+      "what_happened": "The originating repo had a gap.",
+      "what_could_go_better": "Should be handled.",
+      "proposed_change": "Add handling.",
+      "validation_criteria": "Handling works."
+    }
+  ]
+}'
+
+# GitLab fixture: evidence-for with MR reference (! prefix instead of #).
+GL_FIXTURE_EVIDENCE_FOR_MR='{
+  "summary": "The retro analysis found corroborating evidence for an MR.",
+  "proposals": [
+    {
+      "target_repo": "test-group/target-project",
+      "title": "Evidence for !42: review agent missed authorization check",
+      "what_happened": "The review agent did not flag a missing auth check.",
+      "what_could_go_better": "Authorization checks should be flagged.",
+      "proposed_change": "Add auth-check detection to review prompts.",
+      "validation_criteria": "Review agent flags missing auth checks."
+    }
+  ]
+}'
+
+# GitLab fixture: proposal targeting a disallowed org (not in allow_targets).
+GL_FIXTURE_DISALLOWED_TARGET='{
+  "summary": "The retro analysis found one improvement opportunity.",
+  "proposals": [
+    {
+      "target_repo": "disallowed-org/some-project",
+      "title": "Improve logging in external project",
+      "what_happened": "Logs were insufficient.",
+      "what_could_go_better": "Add structured logging.",
+      "proposed_change": "Add log fields.",
+      "validation_criteria": "Logs contain expected fields."
+    }
+  ]
+}'
+
+run_gl_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local expect_failure="${4:-false}"
+  local comment_fail="${5:-}"
+  local issue_fail="${6:-}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  # shellcheck disable=SC2031 # CURL_MOCK_COMMENT_FAIL exported for subshell test run
+  export CURL_MOCK_COMMENT_FAIL="${comment_fail}"
+  # shellcheck disable=SC2031 # CURL_MOCK_ISSUE_FAIL exported for subshell test run
+  export CURL_MOCK_ISSUE_FAIL="${issue_fail}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  # Verify no gh CLI calls were made on GitLab paths (checked for both
+  # success and expected-failure runs to catch regressions in intermediate
+  # operations like forge_create_label / forge_create_issue).
+  if [[ -s "${GH_LOG}" ]]; then
+    echo "FAIL: ${test_name} — gh CLI was called (expected none for GitLab)"
+    echo "Actual gh calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if [[ -n "${expected_stdout}" ]] && ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+      echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure)"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_stdout}" ]] && ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gl_test_no_gh_call() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  # shellcheck disable=SC2031 # CURL_MOCK_COMMENT_FAIL exported for subshell test run
+  export CURL_MOCK_COMMENT_FAIL=""
+  # shellcheck disable=SC2031 # CURL_MOCK_ISSUE_FAIL exported for subshell test run
+  export CURL_MOCK_ISSUE_FAIL=""
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  # Verify no gh CLI calls were made (checked before exit-code handling to
+  # catch leaks even on failure paths, matching run_gl_test's structure).
+  if [[ -s "${GH_LOG}" ]]; then
+    echo "FAIL: ${test_name} — gh CLI was called (expected none for GitLab)"
+    echo "Actual gh calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_stdout}" ]] && ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# GitLab happy path: one proposal filed, no gh calls.
+run_gl_test_no_gh_call "gl-happy-path-one-proposal" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete."
+
+# GitLab: no proposals, comment posted.
+run_gl_test_no_gh_call "gl-happy-path-no-proposals" \
+  "${GL_FIXTURE_NO_PROPOSALS}" \
+  "Post-retro complete."
+
+# GitLab: curl is used for issue creation.
+run_gl_test "gl-issue-created-via-curl" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Created:"
+
+# GitLab: evidence-for filtering works the same.
+run_gl_test "gl-evidence-for-rejected" \
+  "${GL_FIXTURE_EVIDENCE_FOR}" \
+  "::warning::proposal[0] rejected"
+
+# GitLab: subgroup repo paths accepted.
+run_gl_test "gl-subgroup-accepted" \
+  "${GL_FIXTURE_SUBGROUP}" \
+  "Post-retro complete."
+
+# GitLab: subgroup originating URL — verifies forge_parse_originating_url
+# handles multi-segment paths (group/subgroup/project), not just two-segment.
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/subgroup/test-project/-/merge_requests/42"
+run_gl_test_no_gh_call "gl-subgroup-originating-url" \
+  "${GL_FIXTURE_NO_PROPOSALS}" \
+  "Post-retro complete."
+# Verify comment was posted to the correct subgroup project notes endpoint.
+if ! grep -q "test-group%2Fsubgroup%2Ftest-project" "${CURL_LOG}"; then
+  echo "FAIL: gl-subgroup-originating-url-endpoint — CURL_LOG missing URL-encoded subgroup originating path"
+  echo "Actual curl calls:"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-subgroup-originating-url-endpoint (notes posted to subgroup project)"
+fi
+if ! grep -q "/merge_requests/42/notes" "${CURL_LOG}"; then
+  echo "FAIL: gl-subgroup-originating-url-mr — CURL_LOG missing /merge_requests/42/notes"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-subgroup-originating-url-mr (correct MR number in notes endpoint)"
+fi
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+
+# GitLab: disallowed target org is skipped with warning.
+run_gl_test "gl-disallowed-target-skipped" \
+  "${GL_FIXTURE_DISALLOWED_TARGET}" \
+  "not in create_issues.allow_targets"
+
+# GitLab: originating repo is always allowed even when its org is NOT in the
+# allowlist — isolates the originating-repo bypass from the org allowlist.
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/unlisted-group/originating-project/-/merge_requests/10"
+run_gl_test_no_gh_call "gl-originating-repo-always-allowed" \
+  "${GL_FIXTURE_ORIGINATING_REPO_TARGET}" \
+  "Post-retro complete."
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+
+# GitLab: no CI_PROJECT_DIR — cross-repo proposals blocked, originating allowed.
+# Mirrors the GitHub allow-targets-no-workspace tests.
+unset CI_PROJECT_DIR
+run_gl_test "gl-no-workspace-cross-repo-blocked" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "::warning::Skipping issue creation in 'test-group/target-project'"
+
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/unlisted-group/originating-project/-/merge_requests/10"
+run_gl_test_no_gh_call "gl-no-workspace-originating-allowed" \
+  "${GL_FIXTURE_ORIGINATING_REPO_TARGET}" \
+  "Post-retro complete."
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+# shellcheck disable=SC2031 # CI_PROJECT_DIR exported for subshell test run
+export CI_PROJECT_DIR="${GL_WORKSPACE}"
+
+# GitLab: invalid originating URL rejected.
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+run_gl_test "gl-rejects-github-url" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "ORIGINATING_URL does not match expected GitLab pattern" \
+  "true"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+
+# GitLab: disallowed host rejected.
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://evil.com/test-group/test-project/-/issues/10"
+run_gl_test "gl-rejects-disallowed-host" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "not in the allowed host list" \
+  "true"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+
+# GitLab: issue URL accepted (not just MR).
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+run_gl_test_no_gh_call "gl-issue-url-accepted" \
+  "${GL_FIXTURE_NO_PROPOSALS}" \
+  "Post-retro complete."
+# Verify comment was posted to /issues/42/notes (not /merge_requests/42/notes).
+if ! grep -q "/issues/42/notes" "${CURL_LOG}"; then
+  echo "FAIL: gl-issue-url-resource-path — CURL_LOG missing /issues/42/notes"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-issue-url-resource-path (notes posted to /issues/ not /merge_requests/)"
+fi
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+
+# GitLab: gitlab.cee.redhat.com host accepted.
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.cee.redhat.com/team/project/-/issues/5"
+run_gl_test_no_gh_call "gl-redhat-host-accepted" \
+  "${GL_FIXTURE_NO_PROPOSALS}" \
+  "Post-retro complete."
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+
+# GitLab: forge_get_comment_max_len returns 1000000 (not 65000).
+# Use an oversized summary > 65000 chars (GitHub limit) but < 1000000 (GitLab limit).
+# On GitLab this should NOT be truncated.
+GL_BIG_SUMMARY=$(printf 'x%.0s' $(seq 1 70000))
+GL_FIXTURE_BIG=$(jq -nc --arg s "${GL_BIG_SUMMARY}" '{summary: $s, proposals: []}')
+run_gl_test "gl-no-truncation-at-65k" \
+  "${GL_FIXTURE_BIG}" \
+  "Post-retro complete."
+# Verify the body was NOT truncated (contrast with GitHub's 65000 limit).
+if grep -q "truncated" "${CURL_LOG}"; then
+  echo "FAIL: gl-no-truncation-at-65k-body — body was truncated (should not be under GitLab's 1MB limit)"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-no-truncation-at-65k-body (body posted untruncated)"
+fi
+
+# GitLab: 403 on comment posting is non-fatal.
+run_gl_test "gl-comment-403-non-fatal" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "::warning::Could not post summary comment" \
+  "false" \
+  "403"
+
+# GitLab: 401 on comment posting is non-fatal.
+run_gl_test "gl-comment-401-non-fatal" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "::warning::Could not post summary comment" \
+  "false" \
+  "401"
+
+# GitLab: 500 on comment posting remains fatal.
+run_gl_test "gl-comment-500-fatal" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "ERROR: failed to post summary comment" \
+  "true" \
+  "500"
+
+# GitLab: 422 on comment posting remains fatal.
+run_gl_test "gl-comment-422-fatal" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "ERROR: failed to post summary comment" \
+  "true" \
+  "422"
+
+# GitLab: issue creation returns response without web_url — should fail.
+run_gl_test "gl-issue-null-web-url-fatal" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "GitLab API error: unexpected response from issue creation" \
+  "true" \
+  "" \
+  "null-url"
+
+# GitLab: issue creation HTTP error (curl fails) — should fail.
+run_gl_test "gl-issue-api-error-fatal" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "GitLab API error: issue creation failed" \
+  "true" \
+  "" \
+  "api-error"
+
+# GitLab: verify curl calls hit expected API endpoints (not just exit code).
+# Catches regressions in URL construction that the mock would silently accept.
+run_gl_test_no_gh_call "gl-curl-endpoints-correct" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete."
+if ! grep -q "/projects/" "${CURL_LOG}"; then
+  echo "FAIL: gl-curl-endpoints-correct — CURL_LOG missing /projects/ endpoint"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-curl-endpoints-correct (CURL_LOG has /projects/ calls)"
+fi
+if ! grep -q "/labels" "${CURL_LOG}"; then
+  echo "FAIL: gl-curl-endpoints-labels — CURL_LOG missing /labels endpoint"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-curl-endpoints-labels (CURL_LOG has /labels calls)"
+fi
+if ! grep -q "/issues" "${CURL_LOG}"; then
+  echo "FAIL: gl-curl-endpoints-issues — CURL_LOG missing /issues endpoint"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-curl-endpoints-issues (CURL_LOG has /issues calls)"
+fi
+if ! grep -q "/merge_requests/10/notes" "${CURL_LOG}"; then
+  echo "FAIL: gl-curl-endpoints-notes — CURL_LOG missing /merge_requests/10/notes endpoint"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-curl-endpoints-notes (CURL_LOG has /merge_requests/10/notes)"
+fi
+
+# GitLab: subgroup project paths are correctly URL-encoded in API calls.
+run_gl_test_no_gh_call "gl-subgroup-url-encoding" \
+  "${GL_FIXTURE_SUBGROUP}" \
+  "Post-retro complete."
+if ! grep -q "test-group%2Fsubgroup%2Ftarget-project" "${CURL_LOG}"; then
+  echo "FAIL: gl-subgroup-url-encoding — CURL_LOG missing URL-encoded subgroup path"
+  echo "Actual curl calls:"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-subgroup-url-encoding (CURL_LOG has encoded subgroup path)"
+fi
+
+# GitLab: evidence-for with MR reference (!) filtered same as # reference.
+run_gl_test "gl-evidence-for-mr-ref-rejected" \
+  "${GL_FIXTURE_EVIDENCE_FOR_MR}" \
+  "::warning::proposal[0] rejected"
+
+# GitLab: single-segment project path rejected by URL validation.
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/only-one-segment/-/issues/1"
+run_gl_test "gl-rejects-single-segment-url" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "ORIGINATING_URL does not match expected GitLab pattern" \
+  "true"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+
+# GitLab: FULLSEND_VALIDATED_ITERATION_DIR path works with GitLab forge.
+# Mirrors the GitHub validated-dir-expected-filename test under GL context.
+gl_vdir_run="${TMPDIR}/run-gl-validated-dir"
+gl_vdir="${gl_vdir_run}/validated-output"
+mkdir -p "${gl_vdir}"
+echo "${GL_FIXTURE_ONE_PROPOSAL}" > "${gl_vdir}/agent-result.json"
+mkdir -p "${gl_vdir_run}/iteration-2/output"
+echo '{}' > "${gl_vdir_run}/iteration-2/output/agent-result.json"
+: > "${GH_LOG}"
+: > "${CURL_LOG}"
+# shellcheck disable=SC2031 # CURL_MOCK_COMMENT_FAIL exported for subshell test run
+export CURL_MOCK_COMMENT_FAIL=""
+# shellcheck disable=SC2031 # CURL_MOCK_ISSUE_FAIL exported for subshell test run
+export CURL_MOCK_ISSUE_FAIL=""
+gl_vdir_exit=0
+(
+  cd "${gl_vdir_run}"
+  # shellcheck disable=SC2031,SC2030 # FULLSEND_VALIDATED_ITERATION_DIR exported for subshell
+  export FULLSEND_VALIDATED_ITERATION_DIR="${gl_vdir}"
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout.log" 2>&1 || gl_vdir_exit=$?
+if [[ ${gl_vdir_exit} -ne 0 ]]; then
+  echo "FAIL: gl-validated-dir — exit code ${gl_vdir_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF "Reading retro result from: ${gl_vdir}/agent-result.json" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gl-validated-dir — expected validated dir path in stdout"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif [[ -s "${GH_LOG}" ]]; then
+  echo "FAIL: gl-validated-dir — gh CLI was called (expected none for GitLab)"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-validated-dir (FULLSEND_VALIDATED_ITERATION_DIR works under GitLab)"
+fi
 
 # --- Results ---
 
