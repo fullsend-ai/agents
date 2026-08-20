@@ -151,7 +151,19 @@ install -m 0600 /dev/null "$ENV_FILE"
 {
   emit_env "GH_TOKEN" "${GH_TOKEN}"
   emit_env "PUSH_TOKEN" "${GH_TOKEN}"
-  emit_env "REVIEW_TOKEN" "${GH_TOKEN}"
+
+  # Mint a separate REVIEW_TOKEN so the reviewer identity differs from the
+  # PR author (GitHub rejects REQUEST_CHANGES on your own PR).
+  EVAL_MINT_URL="${FULLSEND_MINT_URL:-https://fullsend-mint-gljhbkcloq-uc.a.run.app}"
+  if [[ "$FIXTURE_TYPE" == "pull_request" && "$AGENT" == "review" ]]; then
+    REPO_NAME="${EPHEMERAL_REPO#*/}"
+    if ! REVIEW_TOKEN=$(fullsend mint token --role review --repos "$REPO_NAME" \
+                          --mint-url "$EVAL_MINT_URL" 2>&1); then
+      echo "ERROR: mint failed for REVIEW_TOKEN (review agent cannot use GH_TOKEN — GitHub rejects REQUEST_CHANGES on your own PR): $REVIEW_TOKEN" >&2
+      exit 1
+    fi
+  fi
+  emit_env "REVIEW_TOKEN" "${REVIEW_TOKEN:-${GH_TOKEN}}"
 
   # Code/fix harness env.runner refs — mint normally sets these; eval skips mint.
   # Only override GITHUB_WORKSPACE for agents whose post-scripts expand
@@ -225,6 +237,10 @@ EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 
 mkdir -p "$OUTPUT_DIR"
 printf '%s\n' "$PRE_AGENT_HEAD" > "${OUTPUT_DIR}/pre-agent-head.txt"
+
+# Unset FULLSEND_MINT_URL so fullsend run does not attempt its own internal
+# mint against the eval org (which lacks enrolled roles).
+unset FULLSEND_MINT_URL
 
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
