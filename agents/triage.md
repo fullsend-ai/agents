@@ -6,7 +6,7 @@ skills:
 # curl: required by GitLab and Jira forges. On GitHub, the network policy
 # binary allowlist (policies/github/triage.yaml) excludes **/curl,
 # preventing it from making network requests even though it is granted here.
-tools: Bash(gh,curl,jq)
+tools: Bash(gh,curl,jq), Skill
 model: opus
 ---
 
