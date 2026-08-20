@@ -39,10 +39,17 @@
 [[ -n "${JIRA_TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
 JIRA_TRIAGE_OPS_SH_LOADED=1
 
+# Validate credentials at source time — fails once, early, on unredirected
+# stderr, before any call site can swallow the diagnostic with 2>/dev/null.
+# Matches the idiom pre-triage.src.sh / post-triage.src.sh already use for
+# ISSUE_URL and FULLSEND_TRACKER.
+: "${JIRA_USER_EMAIL:?JIRA_USER_EMAIL must be set}"
+: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+
+# JIRA_BASE_URL is derived at runtime by tracker_parse_issue_url, so it
+# cannot be validated at source time — keep a per-call guard for it.
 _jira_require_vars() {
-  if [[ -z "${JIRA_BASE_URL:-}" ]]; then echo "ERROR: JIRA_BASE_URL is not set" >&2; exit 1; fi
-  if [[ -z "${JIRA_USER_EMAIL:-}" ]]; then echo "ERROR: JIRA_USER_EMAIL is not set" >&2; exit 1; fi
-  if [[ -z "${JIRA_TOKEN:-}" ]]; then echo "ERROR: JIRA_TOKEN is not set" >&2; exit 1; fi
+  if [[ -z "${JIRA_BASE_URL:-}" ]]; then echo "ERROR: JIRA_BASE_URL is not set" >&2; return 1; fi
 }
 
 _jira_api() {
@@ -51,7 +58,7 @@ _jira_api() {
   local endpoint="$1"
   shift
 
-  _jira_require_vars
+  _jira_require_vars || return 1
 
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
@@ -68,7 +75,7 @@ _jira_api_with_status() {
   local endpoint="$1"
   shift
 
-  _jira_require_vars
+  _jira_require_vars || return 1
 
   local err_file
   err_file=$(mktemp)
@@ -227,6 +234,7 @@ tracker_create_label() {
 
 tracker_post_comment() {
   local body="$1"
+  _jira_require_vars || return 1
   # `fullsend issues post-comment` always does marker-based find-and-update;
   # there is no "always create new" mode. A marker unique to this invocation
   # guarantees no prior comment matches it, so this always creates a new
@@ -250,6 +258,7 @@ tracker_post_comment() {
 tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
+  _jira_require_vars || return 1
   printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
