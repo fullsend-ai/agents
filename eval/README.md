@@ -30,6 +30,7 @@ running:
 
 ```bash
 bash eval/lint-cases.sh <agent>
+bash eval/lint-measurements.sh
 ```
 
 ## Prerequisites
@@ -137,3 +138,16 @@ Each test case follows this lifecycle:
 - **`checkStatus` drops string errors.** fullsend's `checkStatus` does
   not handle string-typed error responses from the GitHub API, causing
   silent failures.
+
+## Measurement manifests (online scoring)
+
+Per-agent manifests under [`eval/measurements/`](./measurements/) are the
+**default online-scoring policy** for stock agents (which scorers run after
+managed jobs via `fullsend eval-measure`). They are **not** functional PR-gate
+scenarios under `eval/<agent>/`.
+
+Scorer *implementations* live in `fullsend-ai/fullsend`; this repo only
+declares defaults. Jobs fetch these files from `agents@v0` unless a consumer
+overrides under `FULLSEND_DIR`. See [`eval/measurements/README.md`](./measurements/README.md)
+and [fullsend#6036](https://github.com/fullsend-ai/fullsend/pull/6036) (ADR 0087
+lands with that PR).

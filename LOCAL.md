@@ -176,8 +176,10 @@ fullsend run triage \
 ## Functional eval tests
 
 The `eval/` directory contains functional test scenarios that run agents
-against ephemeral GitHub repos and score the results. See
-[eval/README.md](eval/README.md) for setup and usage.
+against ephemeral GitHub repos and score the results, plus default
+online-scoring manifests under [`eval/measurements/`](eval/measurements/README.md)
+consumed by `fullsend eval-measure`. See [eval/README.md](eval/README.md)
+for setup and usage.
 
 To run triage evals:
 

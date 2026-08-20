@@ -29,6 +29,7 @@ schemas/     JSON Schema for validating agent structured output
 scripts/     Pre-scripts (input validation) and post-scripts (forge mutations)
 skills/      Reusable skill definitions loaded by agents at runtime
 plugins/     Sandbox plugins (e.g. gopls LSP for the code agent)
+eval/        Functional eval harness and default online-scoring manifests
 ```
 
 ## Architecture
