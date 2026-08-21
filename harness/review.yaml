@@ -32,6 +32,9 @@ host_files:
     dest: /sandbox/workspace/prior-review.txt
     optional: true
 
+pre_script: scripts/pre-review.sh
+post_script: scripts/post-review.sh
+
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
@@ -47,9 +50,13 @@ env:
   runner:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
+    PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
 
 timeout_minutes: 20
 
@@ -61,8 +68,6 @@ forge:
       profiles:
         - profiles/fullsend-github-ro.yaml
     policy: policies/github/review.yaml
-    pre_script: scripts/pre-review.sh
-    post_script: scripts/post-review.sh
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -74,23 +79,17 @@ forge:
     env:
       runner:
         REVIEW_TOKEN: "${REVIEW_TOKEN}"
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         PR_NUMBER: "${PR_NUMBER}"
         PR_URL: "${GITHUB_PR_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
       sandbox:
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         PR_NUMBER: "${PR_NUMBER}"
         PR_URL: "${GITHUB_PR_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
-        PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
-        PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
   gitlab:
     policy: policies/gitlab/review.yaml
-    pre_script: scripts/pre-review.sh
-    post_script: scripts/post-review.sh
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab
@@ -102,16 +101,12 @@ forge:
     env:
       runner:
         REVIEW_TOKEN: "${GITLAB_TOKEN}"
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         PR_NUMBER: "${MR_NUMBER}"
         PR_URL: "${GITLAB_MR_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
       sandbox:
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         PR_NUMBER: "${MR_NUMBER}"
         PR_URL: "${GITLAB_MR_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
-        PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
-        PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"

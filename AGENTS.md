@@ -159,8 +159,9 @@ values that are genuinely computed per-repo or per-run, such as
 branch lists, tokens, or PR/issue numbers — those must stay as
 `${VAR}` passthrough, as already used by `CODE_ALLOWED_TARGET_BRANCHES`
 in `harness/code.yaml`'s `env.runner` block and by `REVIEW_TOKEN`,
-`REPO_FULL_NAME`, `PR_NUMBER`, and `PR_URL` in the
-`forge.<platform>.env.runner` blocks. When reviewing PRs, do not flag a
+`PR_NUMBER`, and `PR_URL` in the `forge.<platform>.env.runner` blocks
+(some passthroughs like `REPO_FULL_NAME` live at top-level `env.runner`
+when identical across forges). When reviewing PRs, do not flag a
 static literal default in these blocks as hardcoded, but do flag a
 regression that replaces one of these computed passthrough values
 with a literal.

@@ -45,8 +45,6 @@ forge:
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
-    pre_script: scripts/pre-triage.sh
-    post_script: scripts/post-triage.sh
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -65,8 +63,6 @@ forge:
         FULLSEND_FORGE: github
   gitlab:
     policy: policies/gitlab/triage.yaml
-    pre_script: scripts/pre-triage.sh
-    post_script: scripts/post-triage.sh
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab
@@ -85,8 +81,6 @@ forge:
         FULLSEND_FORGE: gitlab
   jira:
     policy: policies/jira/triage.yaml
-    pre_script: scripts/pre-triage.sh
-    post_script: scripts/post-triage.sh
     skills:
       - skills/jira-forge
       - skills/issue-labels/jira

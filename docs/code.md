@@ -172,7 +172,7 @@ The precedence is as follows:
 
 The code agent supports both GitHub and GitLab. The harness
 `forge.<platform>` sections configure platform-specific policies,
-skills, env vars, and scripts. Key differences from single-forge
+skills, and env vars. Key differences from single-forge
 setup:
 
 - **`FULLSEND_FORGE`** is required. Set automatically by the harness
