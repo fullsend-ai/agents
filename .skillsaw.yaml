@@ -1,6 +1,7 @@
 # skillsaw configuration
 # https://github.com/stbenjam/skillsaw
 
+# Source of truth for skillsaw version across Makefile and CI
 version: "0.18.0"
 
 rules:
