@@ -113,6 +113,10 @@ rules:
     # required-metadata: []
 
   # Skill name must be lowercase with hyphens and match directory name
+  # EXCEPTION (baselined): The following skills violate this rule intentionally:
+  # - skills/issue-labels/{github,gitlab,jira}/ all share name "issue-labels"
+  # - skills/{github,gitlab,jira}-forge/ use names "github", "gitlab", "jira"
+  # These exceptions are captured in .skillsaw-baseline.json
   agentskill-name:
     enabled: auto
     severity: error

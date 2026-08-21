@@ -1,5 +1,5 @@
 ---
-name: jira
+name: issue-labels
 description: >-
   Discover labels already in use and recommend contextual labels to add or
   remove on Jira issues. Jira variant using curl against the Jira Cloud REST

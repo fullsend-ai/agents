@@ -1,39 +1,116 @@
 {
   "version": "1",
-  "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-08-20T20:18:13.396193+00:00",
+  "generated_by": "skillsaw 0.14.1",
+  "generated_at": "2026-08-21T14:47:12.842531+00:00",
   "violations": [
     {
-      "fingerprint": "d66b9238bd44f406",
-      "rule_id": "content-description-routing",
-      "file_path": "skills/github-forge/SKILL.md",
-      "line": 3,
-      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
+      "fingerprint": "bd8187359ce1e375",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-plugin-json-required' in config \u2014 rule does not exist and will be ignored",
       "severity": "warning"
     },
     {
-      "fingerprint": "9753a56258c53ca9",
-      "rule_id": "content-description-routing",
-      "file_path": "skills/gitlab-forge/SKILL.md",
-      "line": 3,
-      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
+      "fingerprint": "a050c29e4f3a0068",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-plugin-json-valid' in config \u2014 rule does not exist and will be ignored",
       "severity": "warning"
     },
     {
-      "fingerprint": "59bf2f3e5c517665",
-      "rule_id": "content-description-routing",
+      "fingerprint": "e3a8127097b897fa",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-plugin-naming' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "a1717bbc7498eeef",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-command-naming' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "0a5a0a1bb3e99c26",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-command-frontmatter' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "010c9f82b59ea4d0",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-command-sections' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "d54df5893822c89a",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-command-name-format' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "ecdf4a79e416f8c5",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-marketplace-json-valid' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "c6ea9e1a0d5fb296",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-marketplace-registration' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "d050b33695636787",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-plugin-readme' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "97850540df010a64",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-agent-frontmatter' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "3a0659d444891944",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-rules-valid' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "66df0bcd2893f6a5",
+      "rule_id": "invalid-config",
+      "message": "Unknown rule 'claude-settings-dangerous' in config \u2014 rule does not exist and will be ignored",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "7912d622aa42e517",
+      "rule_id": "marketplace-json-valid",
+      "file_path": ".claude-plugin/marketplace.json",
+      "message": "Marketplace file not found",
+      "severity": "error"
+    },
+    {
+      "fingerprint": "a44e1496f6fe3e11",
+      "rule_id": "agentskill-name",
+      "file_path": "skills/issue-labels/github/SKILL.md",
+      "line": 2,
+      "message": "Name 'issue-labels' does not match directory name 'github'",
+      "severity": "error"
+    },
+    {
+      "fingerprint": "d9a273225a48337f",
+      "rule_id": "agentskill-name",
+      "file_path": "skills/issue-labels/gitlab/SKILL.md",
+      "line": 2,
+      "message": "Name 'issue-labels' does not match directory name 'gitlab'",
+      "severity": "error"
+    },
+    {
+      "fingerprint": "327f1f40724439b7",
+      "rule_id": "agentskill-name",
       "file_path": "skills/issue-labels/jira/SKILL.md",
-      "line": 3,
-      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
-      "severity": "warning"
-    },
-    {
-      "fingerprint": "5866111aafe00b56",
-      "rule_id": "content-description-routing",
-      "file_path": "skills/jira-forge/SKILL.md",
-      "line": 3,
-      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
-      "severity": "warning"
+      "line": 2,
+      "message": "Name 'issue-labels' does not match directory name 'jira'",
+      "severity": "error"
     },
     {
       "fingerprint": "8aba1d160bb4c413",
@@ -79,6 +156,110 @@
       "severity": "warning",
       "value": 3434,
       "baseline_mode": "ceiling"
+    },
+    {
+      "fingerprint": "e801ecaa5373bbc5",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 560,
+      "message": "'MUST' instruction at line 552 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "16fda78b27f175e3",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 594,
+      "message": "'MUST' instruction at line 586 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "b90a2629f64d3cae",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 706,
+      "message": "'NEVER' instruction at line 698 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "7b05f86782b1b3d5",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/code-review/SKILL.md",
+      "line": 133,
+      "message": "'NEVER' instruction at line 125 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "c2c3a9990a003c7a",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/fix-review/SKILL.md",
+      "line": 357,
+      "message": "'NEVER' instruction at line 348 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "58c38e1e2b43bc08",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 638,
+      "message": "'MUST' instruction at line 627 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "929dc16224233ce8",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 715,
+      "message": "'MUST' instruction at line 704 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "bd947478e1e5d68b",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 772,
+      "message": "'MUST' instruction at line 761 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "d02e92a04745d0b8",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 817,
+      "message": "'ALWAYS' instruction at line 806 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "0dd6159a871dc207",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 966,
+      "message": "'MUST' instruction at line 955 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "3ac690b505a64ab5",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 983,
+      "message": "'MUST' instruction at line 972 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "895b827cfb1423e2",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 993,
+      "message": "'MUST' instruction at line 982 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "e7f99e15b05e7391",
+      "rule_id": "content-critical-position",
+      "file_path": "skills/pr-review/SKILL.md",
+      "line": 1000,
+      "message": "'MUST' instruction at line 989 is in the attention dead zone (20-80%) \u2014 Move to the first 20% or last 20% of the file for better attention",
+      "severity": "warning"
     }
   ]
 }
