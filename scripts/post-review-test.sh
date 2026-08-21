@@ -1663,10 +1663,10 @@ run_label_test "risk-label-high-applied" \
   "${RISK_HIGH_RESULT}" \
   "gh label create risk/high"
 
-# Result with risk_assessment → sticky comment posted
+# Result with risk_assessment → sticky comment posted via tracker-aware command
 run_label_test "risk-comment-posted" \
   "${RISK_HIGH_RESULT}" \
-  "fullsend post-comment"
+  "fullsend issues post-comment --tracker github"
 
 # Stdout should mention risk label
 run_label_test_stdout "risk-label-log-message" \

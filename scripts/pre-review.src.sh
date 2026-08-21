@@ -95,6 +95,25 @@ if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
         "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL_NAME}.git" 2>/dev/null \
         && echo "Clone deepened successfully" \
         || echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
+    elif [[ "${FULLSEND_FORGE}" == "gitlab" && -n "${REPO_FULL_NAME:-}" ]]; then
+      _gl_token="${REVIEW_TOKEN:-${CI_JOB_TOKEN:-}}"
+      if [[ -n "${REVIEW_TOKEN:-}" ]]; then
+        _gl_user="oauth2"
+      else
+        _gl_user="gitlab-ci-token"
+      fi
+      _gl_host="${GITLAB_HOST:-}"
+      if [[ -z "${_gl_host}" && -n "${PR_URL:-}" ]]; then
+        _gl_host=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+      fi
+      if [[ -n "${_gl_token}" && -n "${_gl_host}" ]]; then
+        git -C "${_TARGET_DIR}" fetch --unshallow \
+          "https://${_gl_user}:${_gl_token}@${_gl_host}/${REPO_FULL_NAME}.git" 2>/dev/null \
+          && echo "Clone deepened successfully" \
+          || echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
+      else
+        echo "::warning::Cannot deepen clone — missing GitLab credentials (REVIEW_TOKEN or CI_JOB_TOKEN) or host"
+      fi
     else
       echo "::warning::Cannot deepen clone — missing credentials or unsupported forge"
     fi

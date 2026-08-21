@@ -487,6 +487,98 @@ run_gitlab_test_stdout "gitlab-no-token-proceeds" \
   0 \
   "REVIEW_TOKEN="
 
+# ---------------------------------------------------------------------------
+# Clone deepening tests (GitLab)
+# ---------------------------------------------------------------------------
+
+clone_deepen_gitlab_test() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "${tmpdir}"' RETURN
+
+  # Create a fake shallow git repo
+  git -C "${tmpdir}" init -q
+  git -C "${tmpdir}" commit --allow-empty -m "init" -q
+  # Simulate shallow by creating .git/shallow
+  echo "$(git -C "${tmpdir}" rev-parse HEAD)" > "${tmpdir}/.git/shallow"
+
+  local mock_bin
+  mock_bin="$(build_gitlab_mock "opened" "some-user")"
+
+  # Add git stub that records fetch --unshallow calls
+  local git_log="${tmpdir}/git-calls.log"
+  : > "${git_log}"
+  cat > "${mock_bin}/git" <<GITSTUB
+#!/usr/bin/env bash
+echo "git \$*" >> "${git_log}"
+case "\$*" in
+  *rev-parse\ --is-shallow-repository*)
+    echo "true"
+    ;;
+  *fetch\ --unshallow*)
+    echo "Unshallowed"
+    exit 0
+    ;;
+  *)
+    /usr/bin/git "\$@"
+    ;;
+esac
+GITSTUB
+  chmod +x "${mock_bin}/git"
+
+  local exit_code=0
+  env \
+    PATH="${mock_bin}:${PATH}" \
+    PR_NUMBER="42" \
+    REPO_FULL_NAME="test-group/test-project" \
+    PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42" \
+    FULLSEND_FORGE="gitlab" \
+    REVIEW_TOKEN="fake-gitlab-token" \
+    REVIEW_GIT_FETCH_DEPTH="0" \
+    REPO_DIR="${tmpdir}" \
+    bash "${SCRIPT_DIR}/pre-review.sh" \
+    > "${tmpdir}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ "${exit_code}" -ne 0 ]]; then
+    echo "FAIL: gitlab-clone-deepening — expected exit code 0, got ${exit_code}"
+    echo "Stdout:"
+    cat "${tmpdir}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Check that clone deepening was attempted with GitLab-style URL
+  if ! grep -qF "fetch --unshallow" "${git_log}" 2>/dev/null; then
+    echo "FAIL: gitlab-clone-deepening — expected git fetch --unshallow call"
+    echo "Git calls:"
+    cat "${git_log}" 2>/dev/null || echo "(none)"
+    echo "Stdout:"
+    cat "${tmpdir}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -q "oauth2.*@gitlab.com" "${git_log}" 2>/dev/null; then
+    echo "FAIL: gitlab-clone-deepening — expected GitLab oauth2 URL in fetch"
+    echo "Git calls:"
+    cat "${git_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -q "Clone deepened successfully" "${tmpdir}/stdout.log" 2>/dev/null; then
+    echo "FAIL: gitlab-clone-deepening — expected 'Clone deepened successfully' in stdout"
+    echo "Stdout:"
+    cat "${tmpdir}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: gitlab-clone-deepening"
+}
+
+clone_deepen_gitlab_test
+
 # --- Summary ---
 
 echo ""

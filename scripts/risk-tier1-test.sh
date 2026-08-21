@@ -275,6 +275,117 @@ AUTHOR_IS_FIRST_TIME=false"
 e2e_pagination_test
 
 # ---------------------------------------------------------------------------
+# End-to-end (GitLab): stub curl, run main(), verify complete output
+# ---------------------------------------------------------------------------
+
+e2e_gitlab_test() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "${tmpdir}"' RETURN
+
+  # curl stub — returns GitLab-style fixture data for MR !42.
+  # Same logical PR as the GitHub e2e: 5 files, 64 total lines.
+  cat > "${tmpdir}/curl" <<'STUB'
+#!/usr/bin/env bash
+URL=""
+for arg in "$@"; do
+  if [[ "${arg}" == https://* ]]; then
+    URL="${arg}"
+  fi
+done
+case "${URL}" in
+  */merge_requests/42/diffs*)
+    cat <<'JSON'
+[
+  {"new_path":"src/main.go","diff":"@@ -1,5 +1,10 @@\n context\n+added1\n+added2\n+added3\n+added4\n+added5\n+added6\n+added7\n+added8\n+added9\n+added10\n-removed1\n-removed2\n-removed3\n-removed4\n-removed5\n context"},
+  {"new_path":".github/workflows/ci.yaml","diff":"@@ -1,1 +1,3 @@\n context\n+added1\n+added2\n+added3\n-removed1\n context"},
+  {"new_path":"go.mod","diff":"@@ -1,1 +1,1 @@\n+added1\n-removed1\n context"},
+  {"new_path":"internal/auth/handler.go","diff":"@@ -1,8 +1,20 @@\n context\n+a1\n+a2\n+a3\n+a4\n+a5\n+a6\n+a7\n+a8\n+a9\n+a10\n+a11\n+a12\n+a13\n+a14\n+a15\n+a16\n+a17\n+a18\n+a19\n+a20\n-r1\n-r2\n-r3\n-r4\n-r5\n-r6\n-r7\n-r8\n context"},
+  {"new_path":"internal/auth/handler_test.go","diff":"@@ -0,0 +1,15 @@\n+t1\n+t2\n+t3\n+t4\n+t5\n+t6\n+t7\n+t8\n+t9\n+t10\n+t11\n+t12\n+t13\n+t14\n+t15\n context"}
+]
+JSON
+    ;;
+  */merge_requests/42)
+    echo '{"author":{"username":"octocat"},"first_contribution":false}'
+    ;;
+  *)
+    echo "curl stub: unhandled URL: ${URL}" >&2; exit 1
+    ;;
+esac
+STUB
+  chmod +x "${tmpdir}/curl"
+
+  local actual expected
+  actual=$(
+    PATH="${tmpdir}:${PATH}" \
+    FULLSEND_FORGE=gitlab \
+    REVIEW_TOKEN=test-token \
+    PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42" \
+    PR_NUMBER=42 \
+    REPO_FULL_NAME="test-group/test-project" \
+    main 2>/dev/null
+  )
+
+  expected="FILES_CHANGED=5
+LINES_CHANGED=64
+BLAST_RADIUS=medium
+PROTECTED_PATH_COUNT=1
+SECURITY_SENSITIVE_COUNT=2
+CI_WORKFLOW_CHANGED=true
+DEPENDENCY_FILES_CHANGED=go.mod
+TEST_FILE_RATIO=0.20
+AUTHOR_IS_BOT=false
+AUTHOR_IS_FIRST_TIME=false"
+
+  run_test "e2e-gitlab-full-output" "${actual}" "${expected}"
+}
+
+e2e_gitlab_test
+
+# ---------------------------------------------------------------------------
+# End-to-end (GitLab): API failure falls back to UNKNOWN values
+# ---------------------------------------------------------------------------
+
+e2e_gitlab_fallback_test() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "${tmpdir}"' RETURN
+
+  # curl stub that always fails
+  cat > "${tmpdir}/curl" <<'STUB'
+#!/usr/bin/env bash
+exit 1
+STUB
+  chmod +x "${tmpdir}/curl"
+
+  local actual expected
+  actual=$(
+    PATH="${tmpdir}:${PATH}" \
+    FULLSEND_FORGE=gitlab \
+    REVIEW_TOKEN=test-token \
+    PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99" \
+    PR_NUMBER=99 \
+    REPO_FULL_NAME="test-group/test-project" \
+    main 2>/dev/null
+  )
+
+  expected="FILES_CHANGED=UNKNOWN
+LINES_CHANGED=UNKNOWN
+BLAST_RADIUS=UNKNOWN
+PROTECTED_PATH_COUNT=UNKNOWN
+SECURITY_SENSITIVE_COUNT=UNKNOWN
+CI_WORKFLOW_CHANGED=UNKNOWN
+DEPENDENCY_FILES_CHANGED=UNKNOWN
+TEST_FILE_RATIO=UNKNOWN
+AUTHOR_IS_BOT=UNKNOWN
+AUTHOR_IS_FIRST_TIME=UNKNOWN"
+
+  run_test "e2e-gitlab-fallback" "${actual}" "${expected}"
+}
+
+e2e_gitlab_fallback_test
+
+# ---------------------------------------------------------------------------
 # PROTECTED_PATHS drift: hardcoded fallback must match harness/review.yaml
 # ---------------------------------------------------------------------------
 

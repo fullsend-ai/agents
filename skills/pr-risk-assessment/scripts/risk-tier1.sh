@@ -4,7 +4,10 @@
 # Run by the risk-assessment sub-agent inside the sandbox:
 #   bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"
 #
-# Required env vars: PR_NUMBER, REPO_FULL_NAME, GH_TOKEN
+# Required env vars: PR_NUMBER, REPO_FULL_NAME
+#   GitHub: GH_TOKEN
+#   GitLab: REVIEW_TOKEN, PR_URL (for host derivation)
+# Forge selection: FULLSEND_FORGE (default: github)
 # Output: KEY=VALUE pairs on stdout, one per line.
 # Exit code: always 0 — individual signal failures fall back to UNKNOWN.
 #
@@ -18,7 +21,7 @@ set -uo pipefail
 # --- Protected paths (from REVIEW_PROTECTED_PATHS env var, or hardcoded fallback) ---
 if [[ "${REVIEW_PROTECTED_PATHS+set}" != "set" ]]; then
   PROTECTED_PATHS=(
-    ".claude/" ".cursor/" ".pi/" ".gitattributes" ".github/"
+    ".claude/" ".cursor/" ".gitattributes" ".github/"
     ".pre-commit-config.yaml" "AGENTS.md" "agents/" "api-servers/"
     "CLAUDE.md" "CODEOWNERS" "Containerfile" "Dockerfile"
     "harness/" "images/" "plugins/" "policies/" "profiles/" "providers/" "scripts/" "skills/"
@@ -97,7 +100,7 @@ find_dependency_files() {
     local base="${file##*/}"
     case "${base}" in
       go.mod|go.sum|package.json|package-lock.json|yarn.lock|\
-      requirements*.txt|Pipfile|Pipfile.lock|\
+      requirements.txt|requirements*.txt|Pipfile|Pipfile.lock|\
       Gemfile|Gemfile.lock|pom.xml|build.gradle|Cargo.toml|Cargo.lock)
         deps+=("${file}") ;;
     esac
@@ -113,8 +116,7 @@ compute_test_ratio() {
   local test_count=0 total=0
   for file in "$@"; do
     total=$((total + 1))
-    local base="${file##*/}"
-    case "${base}" in
+    case "${file}" in
       *_test.go|*_test.py|*-test.sh|*-test.py|test_*|*_spec.*|*.test.*)
         test_count=$((test_count + 1)) ;;
     esac
@@ -136,6 +138,71 @@ is_bot_author() {
 }
 
 # ---------------------------------------------------------------------------
+# Forge-aware API functions
+# ---------------------------------------------------------------------------
+
+_gitlab_api_call() {
+  local endpoint="$1"
+  shift
+  local host="${GITLAB_HOST:-}"
+  if [[ -z "${host}" && -n "${PR_URL:-}" ]]; then
+    host=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  fi
+  : "${host:?GITLAB_HOST or PR_URL required for GitLab API calls}"
+  # Defense-in-depth: mirror the allowlist in gitlab-review-ops.lib.sh
+  case "${host}" in
+    gitlab.com|gitlab.cee.redhat.com) ;;
+    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list" >&2; return 1 ;;
+  esac
+  curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${REVIEW_TOKEN}" \
+    "https://${host}/api/v4${endpoint}" "$@"
+}
+
+_fetch_pr_files_json() {
+  case "${FULLSEND_FORGE:-github}" in
+    github)
+      gh api --paginate "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100" 2>/dev/null \
+        | jq -s 'add'
+      ;;
+    gitlab)
+      local repo_encoded
+      repo_encoded=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
+      # /diffs is the paginated replacement for /changes (deprecated since 15.7).
+      # GitLab returns raw unified diffs, not pre-computed counts like GitHub,
+      # so we parse +/- lines (excluding +++ and --- headers) to match the shape.
+      _gitlab_api_call "/projects/${repo_encoded}/merge_requests/${PR_NUMBER}/diffs?per_page=100" 2>/dev/null \
+        | jq '[.[] | {
+            filename: .new_path,
+            additions: ([.diff | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | length),
+            deletions: ([.diff | split("\n")[] | select(startswith("-") and (startswith("---") | not))] | length)
+          }]'
+      ;;
+    *) echo "::warning::Unsupported forge: ${FULLSEND_FORGE}" >&2 ;;
+  esac
+}
+
+_fetch_pr_meta() {
+  case "${FULLSEND_FORGE:-github}" in
+    github)
+      gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" \
+        --jq '{author: .user.login, assoc: .author_association}' 2>/dev/null
+      ;;
+    gitlab)
+      local repo_encoded
+      repo_encoded=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
+      _gitlab_api_call "/projects/${repo_encoded}/merge_requests/${PR_NUMBER}" 2>/dev/null \
+        | jq '{
+            author: .author.username,
+            assoc: (if .first_contribution == true then "FIRST_TIME_CONTRIBUTOR" else "CONTRIBUTOR" end)
+          }'
+      ;;
+    *) echo "::warning::Unsupported forge: ${FULLSEND_FORGE}" >&2 ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
 # Main flow — orchestrates API calls and signal output
 # ---------------------------------------------------------------------------
 
@@ -145,10 +212,9 @@ main() {
 
   # --- Fetch PR file list ---
   local PR_FILES_JSON
-  PR_FILES_JSON=$(gh api --paginate "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100" 2>/dev/null \
-    | jq -s 'add') || PR_FILES_JSON=""
+  PR_FILES_JSON=$(_fetch_pr_files_json) || PR_FILES_JSON=""
 
-  if [ -z "${PR_FILES_JSON}" ] || ! echo "${PR_FILES_JSON}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  if [ -z "${PR_FILES_JSON}" ]; then
     echo "FILES_CHANGED=UNKNOWN"
     echo "LINES_CHANGED=UNKNOWN"
     echo "BLAST_RADIUS=UNKNOWN"
@@ -184,11 +250,11 @@ main() {
 
   # --- Author signals ---
   local PR_META
-  PR_META=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" \
-    --jq '[.user.login, .author_association] | @tsv' 2>/dev/null) || PR_META=""
+  PR_META=$(_fetch_pr_meta) || PR_META=""
   if [ -n "${PR_META}" ]; then
     local AUTHOR ASSOC
-    IFS=$'\t' read -r AUTHOR ASSOC <<< "${PR_META}"
+    AUTHOR=$(echo "${PR_META}" | jq -r '.author')
+    ASSOC=$(echo "${PR_META}" | jq -r '.assoc')
     echo "AUTHOR_IS_BOT=$(is_bot_author "${AUTHOR}")"
     if [ "${ASSOC}" = "FIRST_TIME_CONTRIBUTOR" ]; then
       echo "AUTHOR_IS_FIRST_TIME=true"
