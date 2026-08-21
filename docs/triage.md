@@ -233,9 +233,9 @@ If you use `base:` composition to override `harness/triage.yaml`:
   harness defines policy, skills, and the forge-specific env file
   (`env/github/triage.env` / `env/gitlab/triage.env` /
   `env/jira/triage.env`) under `forge.<platform>` rather than at the top
-  level. `pre_script` and `post_script` are set at both levels (identical
-  values — the forge-level entries are redundant but kept explicit for
-  clarity). Top-level keys are still supported by `ResolveForge` — a
+  level. `pre_script` and `post_script` are set at the top level only;
+  forge sections inherit them via `ResolveForge`.
+  Top-level keys are still supported by `ResolveForge` — a
   downstream harness using `base:` composition can set top-level `policy:`,
   `skills:`, or `host_files:` and they will work: policy (scalar) is
   overridden by the forge-level value, skills (list) are concatenated with
