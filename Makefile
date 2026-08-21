@@ -5,7 +5,8 @@ BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/pre-fix.
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
 LIB_DEPS := $(wildcard scripts/lib/*.lib.sh)
 
-SKILLSAW_VERSION := 0.18.0
+# Source of truth: .skillsaw.yaml version field
+SKILLSAW_VERSION := $(shell grep '^version:' .skillsaw.yaml | sed 's/version: "\(.*\)"/\1/')
 
 help:
 	@echo "Available targets:"
