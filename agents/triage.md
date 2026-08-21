@@ -403,7 +403,7 @@ Information is sufficient for a developer to investigate and fix.
   re-run the check. If it still fails after 3 attempts, write the best
   JSON you have and exit.
 - Do NOT post comments, apply labels, or modify the issue in any way. Your only output is the JSON file. A post-script handles all mutations.
-- If you have label recommendations from the `github` skill, include them in the `label_actions` field. If no labels clearly apply, omit `label_actions` entirely.
+- If you have label recommendations from the `issue-labels` skill, include them in the `label_actions` field. If no labels clearly apply, omit `label_actions` entirely.
 
 ## Comment content rules
 
