@@ -9,7 +9,7 @@ skills:
   - code-review
   - pr-review
   - docs-review
-  - issue-labels
+  - github
 ---
 
 # Review Agent
@@ -124,7 +124,7 @@ review across all reviewed PRs.
 
 ## Contextual labels
 
-After producing the review verdict, invoke the `issue-labels` skill to
+After producing the review verdict, invoke the `github` skill to
 recommend contextual labels for the PR based on the diff's area and domain.
 
 - Emit `label_actions` in the result JSON alongside the review verdict.
@@ -247,7 +247,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `body`      | string  | conditional     | Markdown review comment (min 1 char)             |
 | `findings`  | array   | conditional     | Array of finding objects (min 1 item when present)|
 | `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit` |
-| `label_actions` | object | no | Contextual label recommendations (see `issue-labels` skill) |
+| `label_actions` | object | no | Contextual label recommendations (see `github` skill) |
 
 **Required fields per action:**
 

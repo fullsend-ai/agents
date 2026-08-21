@@ -52,6 +52,13 @@ make test
 
 This is an alias for `make script-test`, which runs the `scripts/*-test.sh` suites. CI also runs `make check-bundle` and executes `make script-test` twice (source and bundled modes) via `.github/workflows/script-test.yml`.
 
+Lint skills, agents, and instructions with [skillsaw](https://github.com/stbenjam/skillsaw):
+
+```bash
+make lint       # check for issues (strict: warnings fail)
+make lint-fix   # apply automatic fixes
+```
+
 ## Script bundling
 
 Harness fetches each runner script as an isolated blob, so post-scripts cannot `source` files from `scripts/lib/` at runtime. Scripts that use shared libraries are maintained as source files and bundled before commit:
@@ -91,4 +98,5 @@ This repository is versioned in lockstep with [fullsend](https://github.com/full
 | `fullsend.yaml` | fullsend (centrally managed) | Routes GitHub events to agent dispatch workflows |
 | `release.yml` | This repo | Creates GitHub Releases and moves the `v0` tag on version tag push |
 | `notify-agent-sync.yml` | This repo | Dispatches `agents-updated` event to `.fullsend` for cross-repo digest sync |
+| `lint.yml` | This repo | Runs pre-commit checks, commit-message linting, and skillsaw on PRs and main branch pushes |
 | `script-test.yml` | This repo | Runs agent shell script tests on PRs and main branch pushes |

@@ -1,8 +1,8 @@
 ---
-name: gitlab
+name: gitlab-forge
 description: >-
-  GitLab REST API commands for interacting with projects, issues, and merge
-  requests via curl. Shared by all agents running on the GitLab forge.
+  Use when interacting with GitLab projects, issues, or merge requests via curl
+  against the GitLab REST API. Shared by all agents running on the GitLab forge.
 ---
 
 # GitLab API

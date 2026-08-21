@@ -1,8 +1,8 @@
 ---
-name: jira
+name: jira-forge
 description: >-
-  Jira Cloud REST API commands for reading issue content, comments, and
-  searching for duplicate or related issues via curl. Shared by all agents
+  Use when reading Jira issue content, comments, or searching for duplicate or
+  related issues via curl against the Jira Cloud REST API. Shared by all agents
   running on the Jira forge.
 ---
 
