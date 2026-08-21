@@ -208,6 +208,71 @@ AUTHOR_IS_FIRST_TIME=false"
 e2e_test
 
 # ---------------------------------------------------------------------------
+# End-to-end: multi-page pagination (jq -s 'add' merge)
+# ---------------------------------------------------------------------------
+
+e2e_pagination_test() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "${tmpdir}"' RETURN
+
+  # gh stub — simulates two-page paginated response for PR #99.
+  # gh api --paginate outputs one JSON array per page on separate lines.
+  cat > "${tmpdir}/gh" <<'STUB'
+#!/usr/bin/env bash
+JQ_FILTER="" prev=""
+for arg in "$@"; do
+  [[ "${prev}" == "--jq" ]] && JQ_FILTER="${arg}"
+  prev="${arg}"
+done
+case "$*" in
+  *pulls/99/files*)
+    PAGE1='[{"filename":"src/main.go","additions":5,"deletions":2}]'
+    PAGE2='[{"filename":"src/util.go","additions":3,"deletions":1}]'
+    echo "${PAGE1}"
+    echo "${PAGE2}"
+    return
+    ;;
+  *pulls/99*)
+    JSON='{"user":{"login":"testbot[bot]"},"author_association":"CONTRIBUTOR"}'
+    ;;
+  *)
+    echo "gh stub: unhandled: $*" >&2; exit 1
+    ;;
+esac
+if [[ -n "${JQ_FILTER}" ]]; then
+  echo "${JSON}" | jq -r "${JQ_FILTER}"
+else
+  echo "${JSON}"
+fi
+STUB
+  chmod +x "${tmpdir}/gh"
+
+  local actual expected
+  actual=$(
+    PATH="${tmpdir}:${PATH}" \
+    PR_NUMBER=99 \
+    REPO_FULL_NAME="test-org/test-repo" \
+    main 2>/dev/null
+  )
+
+  expected="FILES_CHANGED=2
+LINES_CHANGED=11
+BLAST_RADIUS=small
+PROTECTED_PATH_COUNT=0
+SECURITY_SENSITIVE_COUNT=0
+CI_WORKFLOW_CHANGED=false
+DEPENDENCY_FILES_CHANGED=none
+TEST_FILE_RATIO=0.00
+AUTHOR_IS_BOT=true
+AUTHOR_IS_FIRST_TIME=false"
+
+  run_test "e2e-multi-page-pagination" "${actual}" "${expected}"
+}
+
+e2e_pagination_test
+
+# ---------------------------------------------------------------------------
 # PROTECTED_PATHS drift: hardcoded fallback must match harness/review.yaml
 # ---------------------------------------------------------------------------
 

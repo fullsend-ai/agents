@@ -184,11 +184,10 @@ main() {
   # --- Author signals ---
   local PR_META
   PR_META=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" \
-    --jq '{author: .user.login, assoc: .author_association}' 2>/dev/null) || PR_META=""
+    --jq '[.user.login, .author_association] | @tsv' 2>/dev/null) || PR_META=""
   if [ -n "${PR_META}" ]; then
     local AUTHOR ASSOC
-    AUTHOR=$(echo "${PR_META}" | jq -r '.author')
-    ASSOC=$(echo "${PR_META}" | jq -r '.assoc')
+    IFS=$'\t' read -r AUTHOR ASSOC <<< "${PR_META}"
     echo "AUTHOR_IS_BOT=$(is_bot_author "${AUTHOR}")"
     if [ "${ASSOC}" = "FIRST_TIME_CONTRIBUTOR" ]; then
       echo "AUTHOR_IS_FIRST_TIME=true"
