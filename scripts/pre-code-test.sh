@@ -24,11 +24,11 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # build_mock creates a mock gh binary that returns preconfigured responses.
 # Arguments:
-#   $1 — JSON array to return for "gh pr list" calls. When the caller
+#   $1 — JSON string to return for "gh api graphql" calls. When the caller
 #        passes --jq, the mock pipes this JSON through jq so the real
 #        filter expression is exercised.  Pass an empty string for no PRs.
 build_mock() {
-  local pr_list_output="$1"
+  local graphql_output="$1"
   local mock_bin="${TMPDIR}/bin"
   local gh_log="${TMPDIR}/gh-calls.log"
 
@@ -37,7 +37,7 @@ build_mock() {
   : > "${gh_log}"
 
   # Write the pr list output to a file so the mock can read it.
-  printf '%s' "${pr_list_output}" > "${TMPDIR}/pr-list-output.txt"
+  printf '%s' "${graphql_output}" > "${TMPDIR}/graphql-output.txt"
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -77,7 +77,7 @@ MOCKEOF
   # Patch placeholders with actual paths (avoid sed on source files,
   # but this is a generated mock — not repo source code).
   local escaped_log="${gh_log//\//\\/}"
-  local escaped_out="${TMPDIR//\//\\/}\/pr-list-output.txt"
+  local escaped_out="${TMPDIR//\//\\/}\/graphql-output.txt"
   perl -pi -e "s/LOGFILE_PLACEHOLDER/${escaped_log}/g" "${mock_bin}/gh"
   perl -pi -e "s/OUTPUT_PLACEHOLDER/${escaped_out}/g" "${mock_bin}/gh"
 
@@ -88,13 +88,13 @@ MOCKEOF
 
 run_test() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local graphql_output="$2"
   local expected_pattern="$3"
   local expect_exit="$4"         # 0 = success, 1 = failure
   local extra_env="${5:-}"       # additional env vars (KEY=VAL KEY2=VAL2)
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${graphql_output}")"
   local gh_log="${TMPDIR}/gh-calls.log"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${gh_output}"
@@ -157,13 +157,13 @@ run_test() {
 # Check stdout contains a specific string.
 run_test_stdout() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local graphql_output="$2"
   local expected_stdout="$3"
   local expect_exit="$4"
   local extra_env="${5:-}"
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${graphql_output}")"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${gh_output}"
 
@@ -219,14 +219,14 @@ run_test_stdout() {
 # Check stdout contains one string and does NOT contain another.
 run_test_stdout_excludes() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local graphql_output="$2"
   local expected_stdout="$3"
   local excluded_stdout="$4"
   local expect_exit="$5"
   local extra_env="${6:-}"
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${graphql_output}")"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${gh_output}"
 
@@ -478,13 +478,13 @@ run_test_stdout "force-third-token-does-not-bypass" \
 # protocol file's exact content ("" = must stay empty).
 run_test_prescript_output() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local graphql_output="$2"
   local expected_content="$3"
   local expect_exit="$4"
   local extra_env="${5:-}"
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${graphql_output}")"
   local proto_out="${TMPDIR}/prescript-output.txt"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${proto_out}"
