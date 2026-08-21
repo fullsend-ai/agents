@@ -60,6 +60,7 @@ validation_loop:
 env:
   runner:
     CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
+    CODE_NEEDS_INPUT_LABEL: "fs-code-needs-input"
   sandbox:
     MAX_RETRIES: "1"
     TIMEOUT_SECONDS: "2100"

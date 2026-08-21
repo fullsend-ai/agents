@@ -33,6 +33,11 @@
 #                     — comma-separated list of branches the agent may target,
 #                       or "*" for any. When unset, only the repo's default
 #                       branch is allowed. (default: auto-detected)
+#   CODE_NEEDS_INPUT_LABEL
+#                     — label applied when the agent sets needs_input instead
+#                       of committing. Forwarded from the runner environment
+#                       via env.runner in harness/code.yaml. The script
+#                       defaults when unset. (default: fs-code-needs-input)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
 #   CODE_AUTO_MERGE    — "true" to enable auto-merge on the PR/MR after
@@ -191,6 +196,10 @@ REPO_DIR="${REPO_DIR:-repo}"
 RUN_DIR="$(pwd)"
 
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
+echo "::add-mask::${PUSH_TOKEN}"
+if [ -n "${GITLAB_TOKEN:-}" ]; then
+  echo "::add-mask::${GITLAB_TOKEN}"
+fi
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
 trap 'report_post_failure_to_issue' ERR
@@ -227,6 +236,191 @@ if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
   fi
   GITLAB_HOST="${_url_host}"
 fi
+
+# ---------------------------------------------------------------------------
+# Needs-input comment helper
+#
+# Posts a comment on the source issue, applies the needs-input label, and
+# removes ready-to-code when the agent stops before implementing a fix
+# because it needs human input (broken tooling or a genuinely
+# uninterpretable issue). Defined here — before branch validation, before
+# any git/gh-branch/secret-scan work — since the early-exit check that uses
+# it must run first. Best-effort — a failure to post does not change the
+# exit code.
+# ---------------------------------------------------------------------------
+post_needs_input_comment() {
+  local needs_input="$1"
+  local safe_issue_number
+  safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
+
+  _post_failure_ensure_token
+
+  local label="${CODE_NEEDS_INPUT_LABEL:-fs-code-needs-input}"
+  # Defense-in-depth: validate the label name against a safe-charset regex
+  # before using it in API calls and interpolating into the comment body.
+  # The env var is controlled by the repository owner (acceptable trust
+  # boundary), but a typo or adversarial override could inject unexpected
+  # characters into gh API calls or the posted Markdown comment.
+  local _label_re='^[a-zA-Z0-9._:/ -]+$'
+  if [[ ! "${label}" =~ ${_label_re} ]]; then
+    gha_echo warning "CODE_NEEDS_INPUT_LABEL contains unexpected characters ('${label}'); falling back to default"
+    label="fs-code-needs-input"
+  fi
+  gh label create "${label}" --repo "${REPO_FULL_NAME}" \
+    --description "Code agent needs human input to proceed" --color "D93F0B" \
+    --force 2>/dev/null || gha_echo warning "Failed to create/update label '${label}' on ${REPO_FULL_NAME}"
+  gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
+    -f "labels[]=${label}" --silent 2>/dev/null || \
+    gha_echo warning "Failed to apply label '${label}' to issue #${safe_issue_number}"
+  gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels/ready-to-code" \
+    -X DELETE --silent 2>/dev/null || \
+    gha_echo warning "Failed to remove 'ready-to-code' label from issue #${safe_issue_number}"
+
+  # Guard against a contract violation: needs_input means "stop before
+  # implementing," so there should be no local commits and no open PR for
+  # this branch. Check anyway — cheaply — so a violation surfaces to the
+  # human instead of silently discarding the agent's work or leaving
+  # contradictory state (an open PR alongside a "no PR" comment).
+  local caveat=""
+  local current_branch
+  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  if [ -n "${current_branch}" ]; then
+    # current_branch is chosen by the code agent inside the sandbox while
+    # processing potentially adversarial issue content, and git ref names
+    # permit backticks — never interpolate it raw into the comment body
+    # below. Same safe-charset check already applied to AGENT_TARGET.
+    local display_branch="${current_branch}"
+    if [[ ! "${current_branch}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+      display_branch="(branch name omitted — contains unexpected characters, see workflow log)"
+      gha_echo warning "needs_input set on a branch with unexpected characters in its name; omitting the raw name from the issue comment"
+    fi
+    local existing_pr_url
+    existing_pr_url="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${current_branch}" \
+      --json url --jq '.[0].url // empty' 2>/dev/null || true)"
+    if [ -n "${existing_pr_url}" ]; then
+      # Sanitize existing_pr_url before interpolating into the comment body.
+      # The value comes from the GitHub/GitLab API (constrained to https://
+      # URLs), so exploitation is practically impossible — but defense-in-depth
+      # against injection matches the treatment applied to current_branch above.
+      existing_pr_url="$(_sanitize_workflow_value "${existing_pr_url}")"
+      if [[ ! "${existing_pr_url}" =~ ^https://[a-zA-Z0-9._:/-]+$ ]]; then
+        gha_echo warning "needs_input: existing PR URL contains unexpected characters; omitting from issue comment"
+        existing_pr_url="(PR URL omitted — unexpected format, see workflow log)"
+      fi
+      caveat="⚠️ An open PR already exists for branch \`${display_branch}\`: ${existing_pr_url}. The agent set \`needs_input\` on this run — check whether that PR is still current."
+      gha_echo warning "needs_input set but an open PR already exists for branch '${current_branch}': ${existing_pr_url}"
+    else
+      local default_branch commits_ahead
+      if ! default_branch="$(gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null)"; then
+        default_branch="main"
+        gha_echo warning "Failed to determine default branch for ${REPO_FULL_NAME}; assuming 'main' — the discarded-commits check may be inaccurate"
+      fi
+      # Check for commits ahead of origin/default regardless of whether
+      # current_branch equals default_branch — the agent might leave
+      # local-only commits on the default branch too, and
+      # origin/${default_branch}..HEAD is still meaningful in that case.
+      commits_ahead=""
+      if ! commits_ahead="$(git rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null)"; then
+        gha_echo warning "Failed to count commits ahead of origin/${default_branch} — discarded-commits check skipped"
+      fi
+      if [ -n "${commits_ahead}" ] && [ "${commits_ahead}" -gt 0 ]; then
+        caveat="⚠️ The agent made ${commits_ahead} local commit(s) on branch \`${display_branch}\` before setting \`needs_input\` — these were not pushed and will be discarded."
+        gha_echo warning "needs_input set but ${commits_ahead} local commit(s) exist on branch '${current_branch}' — discarding"
+      fi
+      # Also check for uncommitted-but-unstaged changes — if the agent
+      # modified files without committing, those changes are silently
+      # lost. Surface them so the human knows work was discarded.
+      local dirty_files
+      dirty_files="$(git status --porcelain 2>/dev/null || true)"
+      if [ -n "${dirty_files}" ]; then
+        local dirty_count
+        dirty_count="$(echo "${dirty_files}" | wc -l | tr -d ' ')"
+        if [ -z "${caveat}" ]; then
+          caveat="⚠️ The agent left ${dirty_count} uncommitted file(s) in the working tree before setting \`needs_input\` — these will be discarded."
+        else
+          caveat="${caveat}
+⚠️ Additionally, the agent left ${dirty_count} uncommitted file(s) in the working tree — these will also be discarded."
+        fi
+        gha_echo warning "needs_input set but ${dirty_count} uncommitted file(s) exist in the working tree — discarding"
+      fi
+    fi
+  fi
+
+  local sanitized_input
+  # max_lines=0 disables tail-based truncation: needs_input is forward,
+  # human-authored prose already length-capped by the schema (maxLength
+  # 4000), not command/log output where tail-ing to recent lines makes
+  # sense. Truncating from the tail would silently drop the opening
+  # framing of a long explanation.
+  sanitized_input="$(sanitize_failure_detail "${needs_input}" 0)"
+
+  # Secret-scan needs_input — same category of free-form, agent-authored,
+  # out-of-git-tree prose as pr_body, also posted as a public issue comment.
+  # Run gitleaks to catch secrets that sanitize_failure_detail's fixed
+  # pattern set does not cover (e.g. AWS keys, DB passwords).
+  #
+  # install_gitleaks is a no-op when gitleaks is already on PATH (sandbox
+  # images pre-install it).  On CI runners without a pre-installed binary
+  # it downloads and verifies the pinned release — the same function the
+  # main secret-scan step (step 3) calls later, but that step is past the
+  # needs_input early-exit, so we must ensure the binary is available here.
+  if ! install_gitleaks; then
+    gha_echo warning "Failed to install gitleaks for needs_input scan; replacing content with generic message"
+    sanitized_input="(Content redacted — secret scan of the agent's explanation could not run because gitleaks installation failed. Check the workflow log for details.)"
+  else
+    local ni_tmp gl_stderr gl_rc
+    ni_tmp="$(mktemp)"
+    printf '%s\n' "${sanitized_input}" > "${ni_tmp}"
+    gl_stderr="$(mktemp)"
+    gl_rc=0
+    gitleaks detect --source "${ni_tmp}" --no-git --redact 2>"${gl_stderr}" || gl_rc=$?
+    if [ -s "${gl_stderr}" ]; then
+      sed 's/^/::debug::gitleaks: /' "${gl_stderr}"
+    fi
+    rm -f "${gl_stderr}"
+    if [ "${gl_rc}" -eq 1 ]; then
+      gha_echo warning "BLOCKED — secret detected in needs_input text; replacing with generic message"
+      sanitized_input="(Content redacted — the agent's explanation contained a potential secret. Check the workflow log for details.)"
+    elif [ "${gl_rc}" -gt 1 ]; then
+      gha_echo warning "gitleaks scan of needs_input failed (exit ${gl_rc}); replacing with generic message"
+      sanitized_input="(Content redacted — secret scan of the agent's explanation failed. Check the workflow log for details.)"
+    fi
+    rm -f "${ni_tmp}"
+  fi
+
+  local caveat_block=""
+  if [ -n "${caveat}" ]; then
+    caveat_block="
+${caveat}
+"
+    # Apply a machine-queryable conflict label so dashboards/automation can
+    # distinguish "clean needs_input" from "agent violated the needs_input
+    # contract" without reading comment prose.
+    local conflict_label="${label}-conflict"
+    gh label create "${conflict_label}" --repo "${REPO_FULL_NAME}" \
+      --description "Code agent set needs_input but left local commits or an open PR" --color "E4E669" \
+      --force 2>/dev/null || true
+    gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
+      -f "labels[]=${conflict_label}" --silent 2>/dev/null || \
+      gha_echo warning "Failed to apply conflict label '${conflict_label}' to issue #${safe_issue_number}"
+  fi
+
+  local body
+  body="🚧 **Code agent needs input** — issue #${safe_issue_number}
+
+The code agent stopped before implementing a fix because it needs input from a human before it can proceed safely.
+
+**What it needs:**
+${sanitized_input}
+${caveat_block}
+Once this is resolved, remove the \`${label}\` label and re-trigger with \`/fs-code\`."
+
+  if ! gh issue comment "${ISSUE_NUMBER}" \
+    --repo "${REPO_FULL_NAME}" \
+    --body "${body}" 2>/dev/null; then
+    gha_echo warning "Failed to post needs-input comment to issue #${safe_issue_number}"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Resolve target branch (ADR 0053)
@@ -266,13 +460,22 @@ else
   done
 fi
 CLOSES_ISSUE="true"
+NEEDS_INPUT=""
 if [ -n "${RESULT_FILE}" ]; then
   AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
   AGENT_CLOSES="$(jq -r '.closes_issue // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+  NEEDS_INPUT="$(jq -r '.needs_input // empty' "${RESULT_FILE}" 2>/dev/null || true)"
   if [ "${AGENT_CLOSES}" = "false" ]; then
     CLOSES_ISSUE="false"
   fi
 fi
+
+if [ -n "${NEEDS_INPUT}" ]; then
+  gha_echo notice "Agent needs input — posting comment and stopping (no PR)"
+  post_needs_input_comment "${NEEDS_INPUT}"
+  exit 0
+fi
+
 if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
   post_fail_to_issue branch-validation \
     "Invalid branch name from agent output: '${AGENT_TARGET}'"
@@ -304,11 +507,6 @@ if [ -n "${AGENT_TARGET}" ]; then
 else
   TARGET_BRANCH="${DEFAULT_BRANCH}"
   echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
-fi
-
-echo "::add-mask::${PUSH_TOKEN}"
-if [ -n "${GITLAB_TOKEN:-}" ]; then
-  echo "::add-mask::${GITLAB_TOKEN}"
 fi
 
 # ---------------------------------------------------------------------------

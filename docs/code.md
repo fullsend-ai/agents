@@ -35,6 +35,7 @@ on issues (not PRs).
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
+| `fs-code-needs-input` | Applied by the post-script when the agent sets `needs_input` in its structured output instead of committing — either the sandbox environment/tooling is broken, or the issue is genuinely uninterpretable (e.g. contradictory requirements). Removes `ready-to-code`. No PR is opened; the agent posts a comment explaining what it needs. Remove the label and re-trigger with `/fs-code` once resolved. |
 
 ## Configuration
 
@@ -49,6 +50,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
+| `CODE_NEEDS_INPUT_LABEL` | Label applied when the agent sets `needs_input` instead of committing. Forwarded from the runner environment via `env.runner` in `harness/code.yaml`. The script defaults to `fs-code-needs-input` when unset. | `fs-code-needs-input` | Any valid GitHub label name |
 
 ## How the agent works
 
