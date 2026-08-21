@@ -1,8 +1,8 @@
 ---
 name: github-forge
 description: >-
-  GitHub CLI commands for interacting with repositories, issues, and pull
-  requests via the gh CLI. Shared by all agents running on the GitHub forge.
+  Use when interacting with GitHub repositories, issues, or pull requests via
+  the gh CLI. Shared by all agents running on the GitHub forge.
 ---
 
 # GitHub CLI

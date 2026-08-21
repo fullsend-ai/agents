@@ -17,39 +17,11 @@ produces fixes that introduce new issues or miss the reviewer's point.
 
 ## Tools reminder
 
-You have the `Bash` tool for all CLI operations. **You must use it** for
-verification and committing — do not skip these steps.
-
-Commands you will need during this procedure:
-
-- Forge-specific CLI commands for reading PR/MR state and diff (see forge skill)
-- `git add <file>`, `git diff`, `git commit` — staging and committing
-- `make test`, `go test ./...`, `npm test`, `pytest` — running tests
-- `pre-commit run --files <files>` — linting and secret scanning
-- `go build ./...`, `go vet ./...` — compilation checks
-
-Use `Read`/`Write`/`Grep`/`Glob` for file operations.
-
-### Secret scanning
-
-The `scan-secrets` helper is pre-installed in the sandbox image at
-`/usr/local/bin/scan-secrets`. Before starting step 7, verify it exists:
-
-```bash
-command -v scan-secrets
-```
-
-If missing, **STOP**. Do not improvise a replacement or skip scanning.
+Use `Bash` for verification and committing. Use `Read`/`Write`/`Grep`/`Glob` for file operations. The `scan-secrets` helper is at `/usr/local/bin/scan-secrets` — verify with `command -v scan-secrets`. If missing, **STOP**.
 
 ## Progress markers
 
-At the start of each major step, emit a progress marker:
-
-```bash
-echo "::notice::STEP <N>: <title>"
-```
-
-**Do this at steps 1, 2, 4, 7a, 7b, 7c, and 8.**
+At steps 1, 2, 4, 7a, 7b, 7c, and 8: `echo "::notice::STEP <N>: <title>"`
 
 ## Time budget
 
@@ -129,73 +101,27 @@ GitHub, `curl` to fetch MR changes on GitLab).
 
 **Step 2a — Read the pre-fetched review body:**
 
-The review agent posts all of its findings as a single review comment
-(via `gh pr review` on GitHub, or a merge request note on GitLab).
-The workflow pre-fetches this review body before the sandbox starts
-and places it at a known path. Read it:
+The workflow pre-fetches the review body to `/sandbox/workspace/review-body.txt`. Read it:
 
 ```bash
 REVIEW_BODY_FILE="/sandbox/workspace/review-body.txt"
-if [ ! -s "${REVIEW_BODY_FILE}" ]; then
-  echo "::error::No review body found at ${REVIEW_BODY_FILE}"
-  # Fallback: the file may not exist in local testing; check env.
-fi
+[ -s "${REVIEW_BODY_FILE}" ] || echo "::error::No review body found"
 cat "${REVIEW_BODY_FILE}"
 ```
 
-The file contains the complete review. This is your primary input. You do NOT need to call the forge API to fetch it — the workflow already
-did that on the runner (where the API token has appropriate scope).
-
 **Step 2b — Understand the review before acting:**
 
-Read the entire review body carefully before planning any fixes. Write down:
-
-1. **The reviewer's overall concern.** What is the high-level theme? Is the
-   reviewer asking for a pattern change, a correctness fix, a style
-   adjustment, or a rethinking of the approach? Summarize it in one sentence.
-2. **Individual findings.** Parse the review body for distinct issues. The
-   review agent typically structures findings with file paths, line references,
-   and remediation suggestions. Extract each finding into your action list.
-3. **Whether findings are independent or interconnected.** Multiple findings
-   may be symptoms of one root-cause issue. If so, the correct fix addresses
-   the root cause — not each symptom separately, which can produce
-   contradictory or redundant changes.
+Read the entire review carefully. Identify: (1) the reviewer's overall concern, (2) individual findings with file/line references, (3) whether findings share a root cause.
 
 **Step 2c — Build your action list:**
 
-For each finding extracted from the review body, record:
-- `finding` — a short label for the issue (e.g., "missing nil check in handler")
-- `path` — file path referenced in the finding
-- `description` — the reviewer's feedback text
-- `related_findings` — other findings that share a root cause (if any)
+For each finding, record: `finding`, `path`, `description`, `related_findings`. Ignore `<details>` blocks (prior iterations). Inline PR comments are not used; humans direct fixes via `/fs-fix`.
 
-Ignore any content wrapped in `<details>` blocks — these are collapsed
-summaries from previous iterations and have already been addressed.
-
-**Important:** The fix agent does not read or respond to inline PR comments.
-Inline comments are not part of the review agent's output. If humans need to
-direct the fix agent, they use the `/fs-fix` command.
-
-**If trigger type is `"human"` (human-triggered):**
-
-The human instruction is in `HUMAN_INSTRUCTION`. This is your primary directive.
-The PR diff you already fetched provides context. The human instruction
-supersedes any prior bot review feedback. If the human's instruction is
-vague, use the PR diff and file list to infer the most conservative
-interpretation.
+**If trigger type is `"human"`:** Use `HUMAN_INSTRUCTION` as primary directive. If vague, infer conservatively from PR diff.
 
 ### 3. Discover repo conventions
 
-Before writing any code, understand how this repository works:
-
-1. Read `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md` if they exist.
-2. Discover test and lint commands from `Makefile`, `package.json`, etc.
-3. Check for linter config (`.golangci.yml`, `.pre-commit-config.yaml`, etc.).
-
-Determine:
-- Test command (e.g., `make test`, `go test ./...`)
-- Lint command (e.g., `make lint`, `pre-commit run --files`)
-- Commit conventions (message format)
+Read `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`. Discover test/lint commands from `Makefile`, `package.json`, linter configs. Determine test command, lint command, commit conventions.
 
 ### 4. Plan fixes
 
@@ -203,69 +129,17 @@ Determine:
 echo "::notice::STEP 4: Plan fixes"
 ```
 
-**Start from the whole-review theme**, not from individual findings. Your
-plan should address the reviewer's overarching concern first, then confirm
-that each finding is satisfied by that plan. This prevents the common
-failure mode of making independent micro-fixes that individually address
-each finding but collectively don't satisfy the reviewer's actual intent.
+Start from the whole-review theme, not individual findings. Plan a single coherent fix for related findings; individual fixes for standalone findings. For each, determine: (1) Is feedback valid? (2) What's the minimal fix? (3) Should I disagree?
 
-For related findings (from step 2c), plan a single coherent fix for the
-group. For standalone findings, plan individually.
-
-For each finding or group, determine:
-
-1. **Is the feedback valid?** Read the code at the referenced path and line.
-   Does the issue the reviewer describes actually exist?
-
-2. **What is the minimal fix?** Identify the smallest change that addresses
-   the feedback without side effects. For grouped findings, the minimal fix
-   addresses the root cause — not each symptom separately.
-
-3. **Should I disagree?** If the feedback is incorrect, out of scope for this
-   PR, or would introduce a regression, prepare a reasoned disagreement.
-
-**Strategy escalation:** If `FIX_ITERATION` is set and exceeds
-`STRATEGY_ESCALATION_THRESHOLD` (default: 3), the same approach has failed
-multiple times. Before planning, read the PR's commit history to understand
-what was already tried:
-
-```bash
-git log --oneline "${BASE_BRANCH}..HEAD" | head -20
-```
-
-Use the local `${BASE_BRANCH}` ref — not `origin/${BASE_BRANCH}`. The
-sandbox checks out the base branch at its latest commit, so the local
-ref is already current. Origin refs may not be available when the
-sandbox network policy blocks git protocol access.
-
-Try a fundamentally different approach: different algorithm, different data
-structure, different error handling strategy. Note the strategy change in
-your structured output.
+**Strategy escalation:** If `FIX_ITERATION` > `STRATEGY_ESCALATION_THRESHOLD` (default: 3), read commit history (`git log --oneline "${BASE_BRANCH}..HEAD"`), try a fundamentally different approach, and note the change in structured output.
 
 ### 5. Read affected code
 
-For each file referenced by review findings:
-
-1. Read the full file (not just the reviewed lines) to understand context.
-2. Read any related test files.
-3. Read imports, types, and call sites affected by the planned changes.
+Read full files (not just reviewed lines), related test files, and affected imports/types/call sites.
 
 ### 6. Implement fixes
 
-For each finding, in the order they appear in the file (top-down):
-
-1. Make the code change that addresses the feedback.
-2. Follow existing patterns. If the repo uses a specific error handling idiom,
-   match it.
-3. Do not introduce new dependencies unless the review explicitly asks for it.
-4. Write or update tests if the fix changes behavior.
-
-**Scope guardrail:** Your changes must be strictly limited to addressing
-review feedback. Do not:
-- Refactor code the reviewer did not mention
-- Add features the reviewer did not request
-- Fix bugs the reviewer did not flag
-- Improve documentation unless the reviewer asked
+For each finding (top-down in file): make the change, follow existing patterns, avoid new dependencies unless requested, update tests if needed. **Scope guardrail:** Only address review feedback—no unmentioned refactors, features, bug fixes, or doc improvements.
 
 ### 7. Verify
 
@@ -310,35 +184,14 @@ test -f .pre-commit-config.yaml && pre-commit run --files <all-changed-files>
 
 ```bash
 echo "::notice::STEP 7c: Tests and linters"
+make test && make lint
 ```
 
-Run the test suite covering the code you changed:
-
-```bash
-make test        # or: go test ./..., npm test, pytest, etc.
-make lint        # or: golangci-lint run, eslint, ruff, etc.
-```
-
-If tests fail due to your code:
-1. Read the failure output carefully.
-2. Fix the issue.
-3. Re-run secret scan (7a) and then tests (7c).
-4. Do NOT re-run pre-commit during retries.
-
-The retry limit is read from `MAX_RETRIES` (default: 1).
+If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit. Retry limit: `MAX_RETRIES` (default: 1).
 
 **7d. Self-review**
 
-```bash
-git diff
-```
-
-Read every line. Check for:
-- Changes that don't trace to a review comment
-  <!-- skillsaw-disable-next-line content-placeholder-text -->
-- Debug prints, commented-out code, TODO comments
-- Secret material
-- Protected-path files
+Run `git diff`. Check for: unrelated changes, debug prints/TODOs, secrets, protected paths.
 
 ### 8. Commit
 
@@ -348,11 +201,7 @@ echo "::notice::STEP 8: Commit"
 
 **8a. Stage files**
 
-```bash
-git add path/to/file1 path/to/file2
-```
-
-Only include files you deliberately modified.
+`git add` only files you modified.
 
 **8b. Scan staged content**
 
@@ -361,39 +210,24 @@ git diff --cached --stat
 scan-secrets --staged
 ```
 
-**NEVER use `git commit -s` or add `Signed-off-by` trailers.** DCO is a
-human attestation of personhood and legal authority to contribute — agents
-are not people. The DCO app already waives the check for bot authors, so
-the trailer is unnecessary. Including it causes gitlint
-`body-max-line-length` failures because the bot noreply email makes the
-trailer ~90 characters.
+**NEVER use `git commit -s` or `Signed-off-by`.** DCO is for humans; bot commits are exempt.
 
 **8c. Commit**
 
-The commit message must:
-- Follow the repo's commit convention (discovered in step 3).
-- Reference the PR number and summarize what was fixed.
-- Note any disagreements with review feedback.
+Follow repo conventions. Reference PR number. Note disagreements.
 
 ```bash
 git commit -m "fix: address review feedback on PR #${PR_NUMBER}
 
-<summary of changes per review comment>
+<summary>
 
-Addresses review feedback on #${PR_NUMBER}"
-```
-
-Validate with gitlint if available:
-
-```bash
+Addresses #${PR_NUMBER}"
 which gitlint &>/dev/null && gitlint --commit HEAD
 ```
 
 ### 9. Produce structured output
 
-**This step is MANDATORY.** The post-script cannot function without it.
-
-Write a JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
+**MANDATORY.** Write `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 
 ```json
 {
@@ -401,84 +235,25 @@ Write a JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
   "trigger_source": "bot",
   "iteration": 1,
   "actions": [
-    {
-      "type": "fix",
-      "finding": "missing nil check in HandleRequest",
-      "path": "pkg/handler.go",
-      "description": "Added nil check for request parameter as requested"
-    },
-    {
-      "type": "disagree",
-      "finding": "refactor HandleRequest to use strategy pattern",
-      "path": "pkg/handler.go",
-      "reason": "The suggested refactor is out of scope for this PR and would change the public API"
-    }
+    {"type": "fix", "finding": "...", "path": "...", "description": "..."},
+    {"type": "disagree", "finding": "...", "path": "...", "reason": "..."}
   ],
-  "decision_points": [
-    {
-      "description": "Chose to use error wrapping instead of a new error type",
-      "alternatives": ["Custom error type", "Sentinel error"],
-      "rationale": "Matches existing error handling pattern in this package"
-    }
-  ],
-  "summary": "Addressed 2 of 3 review findings. Disagreed with 1 (out-of-scope refactor).",
+  "decision_points": [{"description": "...", "alternatives": [...], "rationale": "..."}],
+  "summary": "Addressed X of Y findings...",
   "strategy_change": null,
   "tests_passed": true,
-  "files_changed": ["pkg/handler.go", "pkg/handler_test.go"]
+  "files_changed": ["..."]
 }
 ```
 
-**Schema compliance — read carefully.** The schema uses
-`additionalProperties: false` at both the top level and inside each action
-object. Any extra fields you invent will cause validation to fail. Only use
-the fields shown in this section.
+**Schema:** `additionalProperties: false`. Use only shown fields. `trigger_source` is `"bot"` or `"human"` (normalized, not raw username). Action types: `fix` (required: `type`, `finding`, `description`) or `disagree` (required: `type`, `finding`, `reason`). Top-level required: `pr_number`, `trigger_source`, `actions`, `summary`, `tests_passed`, `files_changed`. Actions array must have ≥1 item.
 
-**`trigger_source` field:** Use the **normalized trigger type** you derived
-in step 1 — `"bot"` or `"human"` — not the raw `TRIGGER_SOURCE` environment
-variable value (the forge username). The schema enforces an enum of
-`["bot", "human"]`; any other value fails validation.
-
-**Action types:**
-
-- `fix` — You fixed the code per the reviewer's feedback. **Required fields
-  for fix actions:** `type`, `finding`, `description`. The post-script
-  includes this in the summary comment.
-- `disagree` — You determined the feedback is incorrect or out of scope.
-  **Required fields for disagree actions:** `type`, `finding`, `reason`.
-  The post-script includes your reason in the summary. The reviewer can
-  insist in the next review cycle.
-
-**Required top-level fields:** `pr_number`, `trigger_source`, `actions`,
-`summary`, `tests_passed`, `files_changed`. The `actions` array must
-contain at least one item.
-
-Write the file using `Bash`:
-
-```bash
-cat > "${FULLSEND_OUTPUT_DIR}/agent-result.json" << 'FIXEOF'
-{ ... your JSON ... }
-FIXEOF
-```
-
-Validate the output against the schema:
-
-```bash
-fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
-```
-
-If validation fails, read the error output, fix the JSON file, and
-re-run the check. If it still fails after 3 attempts, write the best
-JSON you have and exit.
+Validate: `fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"`. If fails after 3 attempts, write best JSON and exit.
 
 ## Partial work
 
-If you hit a token limit before addressing all findings: commit what
-you have and produce structured output documenting which findings were
-addressed and which remain. The post-script will communicate this to the
-reviewer, and the next fix iteration will pick up the remaining items.
+If token limit reached: commit partial work, document addressed/remaining findings in structured output.
 
 ## Constraints
 
-The agent definition (`agents/fix.md`) is the authoritative list of
-prohibitions. This skill does not restate them. If a step in this skill
-appears to conflict with the agent definition, the agent definition wins.
+`agents/fix.md` is authoritative for prohibitions. On conflict, agent definition wins.
