@@ -5,7 +5,7 @@ description: Inspect an issue, assess information sufficiency, and produce a str
 # binary allowlist (policies/github/triage.yaml) excludes **/curl,
 # preventing it from making network requests even though it is granted here.
 model: opus
-tools: Bash(gh,curl,jq)
+tools: Bash(gh,curl,jq),Skill
 skills:
   - issue-labels
 ---
