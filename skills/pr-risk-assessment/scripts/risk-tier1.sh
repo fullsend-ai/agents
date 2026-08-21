@@ -97,7 +97,7 @@ find_dependency_files() {
     local base="${file##*/}"
     case "${base}" in
       go.mod|go.sum|package.json|package-lock.json|yarn.lock|\
-      requirements.txt|requirements*.txt|Pipfile|Pipfile.lock|\
+      requirements*.txt|Pipfile|Pipfile.lock|\
       Gemfile|Gemfile.lock|pom.xml|build.gradle|Cargo.toml|Cargo.lock)
         deps+=("${file}") ;;
     esac
