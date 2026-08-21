@@ -10,6 +10,7 @@ Reference documentation for the default agents shipped by fullsend.
 | [Review](review.md) | Reviews pull requests for correctness, security, and intent alignment |
 | [Fix](fix.md) | Addresses review feedback on open PRs |
 | [Retro](retro.md) | Analyzes completed workflows and proposes system improvements |
+| [Scribe](scribe.md) | Maps meeting notes to issue backlog updates and new issues |
 
 ### Guides
 
