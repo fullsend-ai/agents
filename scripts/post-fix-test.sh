@@ -348,7 +348,7 @@ run_postfix_integration_test() {
   git -C "${repo_dir}" commit --allow-empty -m "init" -q
 
   local exit_code=0
-  # shellcheck disable=SC2030
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${MOCK_BIN}:${PATH}"
@@ -357,6 +357,7 @@ run_postfix_integration_test() {
     export PR_NUMBER="99"
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
   ) > "${INTEGRATION_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -481,6 +482,53 @@ run_numeric_validation_test "pr-number-decimal" "1.5" "false"
 run_numeric_validation_test "pr-number-shell-injection" "1;echo pwned" "false"
 
 # ---------------------------------------------------------------------------
+# REPO_FULL_NAME format validation (matches pre-fix.src.sh regex)
+# ---------------------------------------------------------------------------
+
+run_repo_name_validation_test() {
+  local test_name="$1"
+  local input="$2"
+  local should_pass="$3"
+
+  local valid=true
+  if [[ ! "${input}" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$ ]]; then
+    valid=false
+  elif [[ "${input}" =~ (^|/)\.\.?(/|$) ]]; then
+    valid=false
+  fi
+  if [ "${valid}" = "true" ]; then
+    if [ "${should_pass}" = "true" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been rejected"
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    if [ "${should_pass}" = "false" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been accepted"
+      FAILURES=$((FAILURES + 1))
+    fi
+  fi
+}
+
+run_repo_name_validation_test "repo-name-github-style" "owner/repo" "true"
+run_repo_name_validation_test "repo-name-gitlab-nested" "group/subgroup/project" "true"
+run_repo_name_validation_test "repo-name-gitlab-deep-nested" "a/b/c/d" "true"
+run_repo_name_validation_test "repo-name-dots-dashes" "my.org/my-repo" "true"
+run_repo_name_validation_test "repo-name-no-slash" "noslash" "false"
+run_repo_name_validation_test "repo-name-empty" "" "false"
+run_repo_name_validation_test "repo-name-trailing-slash" "owner/" "false"
+run_repo_name_validation_test "repo-name-leading-slash" "/repo" "false"
+run_repo_name_validation_test "repo-name-special-chars" "owner/repo;echo" "false"
+run_repo_name_validation_test "repo-name-dotdot-segment" "owner/.." "false"
+run_repo_name_validation_test "repo-name-dot-segment" "owner/." "false"
+run_repo_name_validation_test "repo-name-leading-dotdot" "../repo" "false"
+run_repo_name_validation_test "repo-name-middle-dotdot" "group/../evil" "false"
+run_repo_name_validation_test "repo-name-middle-dot" "group/./project" "false"
+
+# ---------------------------------------------------------------------------
 # Security integration tests — verify that security controls fail closed.
 # These run the REAL post-fix.sh against a minimal repo with mock binaries.
 # ---------------------------------------------------------------------------
@@ -512,7 +560,7 @@ run_sec_postfix_test() {
   git -C "${repo_dir}" commit --allow-empty -m "test change" -q
 
   local exit_code=0
-  # shellcheck disable=SC2031
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${SEC_MOCK_BIN}:${PATH}"
@@ -521,6 +569,7 @@ run_sec_postfix_test() {
     export PR_NUMBER="${pr_number}"
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
     bash "${POST_SCRIPT}"
   ) > "${SEC_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -554,6 +603,419 @@ chmod +x "${SEC_MOCK_BIN}/gh"
 run_sec_postfix_test "security-api-failure-fails-closed" "Could not resolve"
 
 rm -rf "${SEC_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# GitLab forge tests — verify that the fix agent post-script works with
+# FULLSEND_FORGE=gitlab (curl-based operations, no gh calls).
+# ---------------------------------------------------------------------------
+
+GL_TMPDIR="$(mktemp -d)"
+GL_MOCK_BIN="${GL_TMPDIR}/bin"
+mkdir -p "${GL_MOCK_BIN}"
+
+cat > "${GL_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/sleep"
+
+# Mock curl — tracks calls and returns MR head ref for merge request queries
+cat > "${GL_MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+MOCK_DIR="${GL_MOCK_DIR:-/tmp}"
+echo "$@" >> "${MOCK_DIR}/curl-calls.log"
+# Respond to merge_requests/:iid GET with source_branch
+if echo "$@" | grep -q "merge_requests/"; then
+  if echo "$@" | grep -q "notes"; then
+    # POST note — just succeed
+    exit 0
+  fi
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99}'
+  exit 0
+fi
+# Respond to labels POST — succeed silently
+if echo "$@" | grep -q "/labels"; then
+  exit 0
+fi
+exit 0
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/curl"
+
+# Ensure gh is NOT available on PATH for GitLab tests
+cat > "${GL_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "ERROR: gh should not be called in GitLab mode" >&2
+exit 1
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/gh"
+
+run_gitlab_postfix_test() {
+  local test_name="$1"
+  local expect_failure="${2:-false}"
+  local check_no_gh="${3:-false}"
+
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  mkdir -p "${repo_dir}" "${mock_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export REPO_ENCODED="test-group%2Ftest-project"
+    export GITLAB_HOST="gitlab.com"
+    export PR_NUMBER="99"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+      cat "${GL_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+  else
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "FAIL: ${test_name} — exit code ${exit_code}"
+      cat "${GL_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+  fi
+
+  # Verify no gh calls were made in GitLab mode
+  if [[ "${check_no_gh}" == "true" ]]; then
+    if grep -q "gh should not be called" "${GL_TMPDIR}/stdout-${test_name}.log" 2>/dev/null; then
+      echo "FAIL: ${test_name} — gh was called in GitLab mode"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}-no-gh-calls"
+  fi
+}
+
+# GitLab: happy-path — successful push flow
+run_gitlab_postfix_test "gitlab-happy-path" "false" "true"
+
+# GitLab: missing PR_URL → fail closed (unbound variable)
+run_gitlab_postfix_pr_url_test() {
+  local test_name="$1"
+  local expect_failure="${2:-true}"
+
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  mkdir -p "${repo_dir}" "${mock_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export REPO_ENCODED="test-group%2Ftest-project"
+    export GITLAB_HOST="gitlab.com"
+    export PR_NUMBER="99"
+    # PR_URL intentionally NOT set
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+      cat "${GL_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+  else
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "FAIL: ${test_name} — exit code ${exit_code}"
+      cat "${GL_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+  fi
+}
+
+run_gitlab_postfix_pr_url_test "gitlab-missing-pr-url-fails-closed" "true"
+
+# GitLab: GITLAB_HOST mismatch with PR_URL host → fail closed
+run_gitlab_postfix_host_mismatch_test() {
+  local test_name="$1"
+
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  mkdir -p "${repo_dir}" "${mock_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export REPO_ENCODED="test-group%2Ftest-project"
+    export GITLAB_HOST="evil.example.com"
+    export PR_NUMBER="99"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "does not match PR URL host" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected GITLAB_HOST mismatch error"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+run_gitlab_postfix_host_mismatch_test "gitlab-host-mismatch-fails-closed"
+
+# GitLab: API failure on MR head ref → fail closed
+cat > "${GL_MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+MOCK_DIR="${GL_MOCK_DIR:-/tmp}"
+echo "$@" >> "${MOCK_DIR}/curl-calls.log"
+# Fail on merge_requests queries (simulates API failure)
+if echo "$@" | grep -q "merge_requests/" && ! echo "$@" | grep -q "notes"; then
+  exit 1
+fi
+# POST note — succeed (for failure reporting)
+if echo "$@" | grep -q "notes"; then
+  exit 0
+fi
+exit 0
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/curl"
+
+run_gitlab_postfix_test "gitlab-api-failure-fails-closed" "true" "true"
+
+# GitLab: PR_URL with host not in ALLOWED_GITLAB_HOSTS → fail closed
+# Validates forge_validate_pr_url rejects hosts outside the allowlist.
+run_gitlab_postfix_invalid_host_test() {
+  local test_name="$1"
+
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  mkdir -p "${repo_dir}" "${mock_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="evil-org/evil-project"
+    export PR_NUMBER="1"
+    export PR_URL="https://evil.com/evil-org/evil-project/-/merge_requests/1"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "not in the allowed host list" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected allowed host list error"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+# Restore the working curl mock before running this test
+cat > "${GL_MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+MOCK_DIR="${GL_MOCK_DIR:-/tmp}"
+echo "$@" >> "${MOCK_DIR}/curl-calls.log"
+if echo "$@" | grep -q "merge_requests/"; then
+  if echo "$@" | grep -q "notes"; then
+    exit 0
+  fi
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99}'
+  exit 0
+fi
+if echo "$@" | grep -q "/labels"; then
+  exit 0
+fi
+exit 0
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/curl"
+
+run_gitlab_postfix_invalid_host_test "gitlab-invalid-host-rejected"
+
+rm -rf "${GL_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Pre-fix validation tests — verify pre-fix.src.sh rejects mismatched
+# REPO_FULL_NAME / PR_URL and PR_NUMBER / PR_URL combinations.
+# ---------------------------------------------------------------------------
+
+PRE_SCRIPT="$(resolve_agent_script pre-fix "${SCRIPT_DIR}")"
+PRE_TMPDIR="$(mktemp -d)"
+
+run_prefix_validation_test() {
+  local test_name="$1"
+  local expected_marker="$2"
+  local repo_full_name="$3"
+  local pr_number="$4"
+  local pr_url="$5"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export FULLSEND_FORGE="gitlab"
+    export REPO_FULL_NAME="${repo_full_name}"
+    export PR_NUMBER="${pr_number}"
+    export PR_URL="${pr_url}"
+    export TRIGGER_SOURCE="test-user"
+    export FIX_ITERATION="1"
+    bash "${PRE_SCRIPT}"
+  ) > "${PRE_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${PRE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${expected_marker}" ]] \
+     && ! grep -q "${expected_marker}" "${PRE_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — exited ${exit_code} but missing: ${expected_marker}"
+    cat "${PRE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+# REPO_FULL_NAME does not match the repo in PR_URL
+run_prefix_validation_test "prefix-repo-mismatch" \
+  "does not match PR URL repo" \
+  "foo/bar" "99" \
+  "https://gitlab.com/baz/qux/-/merge_requests/99"
+
+# PR_NUMBER does not match the MR IID in PR_URL
+run_prefix_validation_test "prefix-pr-number-mismatch" \
+  "does not match PR URL number" \
+  "test-group/test-project" "42" \
+  "https://gitlab.com/test-group/test-project/-/merge_requests/99"
+
+# GitHub pre-fix: nested REPO_FULL_NAME must be rejected
+run_prefix_github_validation_test() {
+  local test_name="$1"
+  local expected_marker="$2"
+  local repo_full_name="$3"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export FULLSEND_FORGE="github"
+    export REPO_FULL_NAME="${repo_full_name}"
+    export PR_NUMBER="42"
+    export TRIGGER_SOURCE="test-user"
+    export FIX_ITERATION="1"
+    bash "${PRE_SCRIPT}"
+  ) > "${PRE_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${PRE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${expected_marker}" ]] \
+     && ! grep -q "${expected_marker}" "${PRE_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — exited ${exit_code} but missing: ${expected_marker}"
+    cat "${PRE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+# GitHub rejects nested paths (3+ segments)
+run_prefix_github_validation_test "prefix-github-nested-repo" \
+  "must be owner/repo format" \
+  "group/subgroup/project"
+
+# GitHub rejects path traversal
+run_prefix_github_validation_test "prefix-github-dotdot" \
+  "must not contain" \
+  "owner/.."
+
+rm -rf "${PRE_TMPDIR}"
 
 # --- Summary ---
 

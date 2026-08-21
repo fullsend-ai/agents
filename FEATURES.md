@@ -92,7 +92,7 @@ Ask yourself:
       that logic lives.
 - [ ] **Both:** Some features may require changes in both.
 - [ ] **Generated scripts:** `scripts/pre-code.sh`, `scripts/post-code.sh`,
-      `scripts/post-fix.sh`, `scripts/pre-prioritize.sh`, `scripts/post-prioritize.sh`,
+      `scripts/pre-fix.sh`, `scripts/post-fix.sh`, `scripts/pre-prioritize.sh`, `scripts/post-prioritize.sh`,
       `scripts/pre-retro.sh`, `scripts/post-retro.sh`,
       `scripts/pre-review.sh`, `scripts/post-review.sh`,
       `scripts/pre-triage.sh`, and `scripts/post-triage.sh` are generated

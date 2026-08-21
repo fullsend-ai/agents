@@ -22,7 +22,7 @@ verification and committing — do not skip these steps.
 
 Commands you will need during this procedure:
 
-- `gh pr view`, `gh pr diff` — reading PR state and diff
+- Forge-specific CLI commands for reading PR/MR state and diff (see forge skill)
 - `git add <file>`, `git diff`, `git commit` — staging and committing
 - `make test`, `go test ./...`, `npm test`, `pytest` — running tests
 - `pre-commit run --files <files>` — linting and secret scanning
@@ -96,23 +96,22 @@ echo "FIX_ITERATION=${FIX_ITERATION:-1}"
 ```
 
 - `PR_NUMBER` — which PR to fix (required)
-- `TRIGGER_SOURCE` — GitHub username that triggered the fix (e.g.,
-  `"orgname-review[bot]"` or `"alice"`). **This is a username, not the
-  value you write to `agent-result.json`.** Derive the normalized trigger
-  type now — you will need it in step 9:
-  - If `TRIGGER_SOURCE` ends in `[bot]` → trigger type is `"bot"`
+- `TRIGGER_SOURCE` — forge username that triggered the fix (e.g.,
+  `"orgname-review[bot]"` on GitHub, `"project_123_bot"` on GitLab,
+  or `"alice"`). **This is a username, not the value you write to
+  `agent-result.json`.** Derive the normalized trigger type now — you
+  will need it in step 9:
+  - On GitHub (`FULLSEND_FORGE=github`): if `TRIGGER_SOURCE` ends in `[bot]` → trigger type is `"bot"`
+  - On GitLab (`FULLSEND_FORGE=gitlab`): if `TRIGGER_SOURCE` ends in `_bot` → trigger type is `"bot"`
   - Otherwise → trigger type is `"human"`
 - `HUMAN_INSTRUCTION` — the human's instruction text (only when
-  `TRIGGER_SOURCE` doesn't end in `[bot]`)
+  trigger type is `"human"`)
 - `FIX_ITERATION` — which iteration of the review→fix loop this is
 
 If `PR_NUMBER` is not set, stop.
 
-Fetch the PR metadata:
-
-```bash
-gh pr view "${PR_NUMBER}" --json number,title,body,headRefName,baseRefName,state,files,labels
-```
+Fetch the PR metadata using the forge-specific commands from your forge skill
+(e.g., `gh pr view` on GitHub, `curl` on GitLab).
 
 If the PR is closed or merged, stop.
 
@@ -122,18 +121,17 @@ If the PR is closed or merged, stop.
 echo "::notice::STEP 2: Gather review feedback"
 ```
 
-First, fetch the current PR diff so you know exactly what code is on the branch:
+First, fetch the current PR diff so you know exactly what code is on the branch.
+Use the forge-specific commands from your forge skill (e.g., `gh pr diff` on
+GitHub, `curl` to fetch MR changes on GitLab).
 
-```bash
-gh pr diff "${PR_NUMBER}"
-```
-
-**If TRIGGER_SOURCE ends in `[bot]` (bot-triggered):**
+**If trigger type is `"bot"` (bot-triggered):**
 
 **Step 2a — Read the pre-fetched review body:**
 
-The review agent posts all of its findings as a single `gh pr review --body`
-comment. The workflow pre-fetches this review body before the sandbox starts
+The review agent posts all of its findings as a single review comment
+(via `gh pr review` on GitHub, or a merge request note on GitLab).
+The workflow pre-fetches this review body before the sandbox starts
 and places it at a known path. Read it:
 
 ```bash
@@ -145,9 +143,8 @@ fi
 cat "${REVIEW_BODY_FILE}"
 ```
 
-The file contains the complete review. This is your primary input. You do
-NOT need to call `gh api` to fetch it — the workflow already did that on the
-runner (where the API token has appropriate scope).
+The file contains the complete review. This is your primary input. You do NOT need to call the forge API to fetch it — the workflow already
+did that on the runner (where the API token has appropriate scope).
 
 **Step 2b — Understand the review before acting:**
 
@@ -179,7 +176,7 @@ summaries from previous iterations and have already been addressed.
 Inline comments are not part of the review agent's output. If humans need to
 direct the fix agent, they use the `/fs-fix` command.
 
-**If TRIGGER_SOURCE doesn't end in `[bot]` (human-triggered):**
+**If trigger type is `"human"` (human-triggered):**
 
 The human instruction is in `HUMAN_INSTRUCTION`. This is your primary directive.
 The PR diff you already fetched provides context. The human instruction
@@ -428,7 +425,7 @@ the fields shown in this section.
 
 **`trigger_source` field:** Use the **normalized trigger type** you derived
 in step 1 — `"bot"` or `"human"` — not the raw `TRIGGER_SOURCE` environment
-variable value (the GitHub username). The schema enforces an enum of
+variable value (the forge username). The schema enforces an enum of
 `["bot", "human"]`; any other value fails validation.
 
 **Action types:**

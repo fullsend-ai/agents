@@ -2,7 +2,7 @@
 # GENERATED from post-fix.src.sh — DO NOT EDIT. Run: make script-build
 # Post-script: push the fix agent's commit and process structured output.
 #
-# Runs on the GitHub Actions runner AFTER the sandbox is destroyed.
+# Runs on the GitHub Actions / GitLab CI runner AFTER the sandbox is destroyed.
 # This script has write access to the target repo — it is the most
 # security-sensitive component in the fix pipeline.
 #
@@ -33,11 +33,12 @@
 #
 # Required environment variables:
 #   PUSH_TOKEN        — token with contents:write + issues:write + pull-requests:write
-#                       on target repo (GitHub App installation token or PAT)
+#                       on target repo (GitHub App installation token, PAT,
+#                       or GitLab personal/project access token)
 #   REPO_FULL_NAME    — owner/repo
 #   PR_NUMBER         — PR number
 #   REPO_DIR          — path to extracted repo (default: current directory)
-#   TRIGGER_SOURCE    — GitHub username that triggered the fix (usernames ending in [bot] are bot triggers)
+#   TRIGGER_SOURCE    — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count
@@ -52,6 +53,323 @@
 set -euo pipefail
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC2034
+SCRIPT_DIR="${SCRIPT_DIR_POST}"
+: "${FULLSEND_FORGE:?FULLSEND_FORGE is required — set to 'github' or 'gitlab'}"
+# shellcheck source=lib/fix-ops.lib.sh
+# BEGIN bundled: lib/fix-ops.lib.sh
+# shellcheck shell=bash
+# fix-ops.lib.sh — Forge-dispatch wrapper for fix agent operations.
+#
+# Sources the correct forge-specific ops based on FULLSEND_FORGE.
+# Bundled inline by bundle-sh.sh at build time.
+
+[[ -n "${FIX_OPS_SH_LOADED:-}" ]] && return 0
+FIX_OPS_SH_LOADED=1
+
+case "${FULLSEND_FORGE:-}" in
+  github)
+# BEGIN bundled: lib/github-fix-ops.lib.sh
+# shellcheck shell=bash
+# github-fix-ops.lib.sh — GitHub forge operations for fix agent scripts.
+#
+# Bundled into pre-fix.sh and post-fix.sh via fix-ops.lib.sh.
+# All functions use the gh CLI and the GitHub REST API.
+#
+# Expected globals (set by caller):
+#   REPO_FULL_NAME — owner/repo (e.g., "org/repo")
+#   PR_NUMBER      — pull request number
+#
+# Expected env vars:
+#   GH_TOKEN       — GitHub token with appropriate scopes
+
+[[ -n "${GITHUB_FIX_OPS_SH_LOADED:-}" ]] && return 0
+GITHUB_FIX_OPS_SH_LOADED=1
+
+if ! declare -F gha_echo >/dev/null 2>&1; then
+  gha_echo() {
+    local lvl="$1"; shift
+    local msg="${*//::/ }"
+    msg="${msg//%0A/}"; msg="${msg//%0a/}"
+    msg="${msg//%0D/}"; msg="${msg//%0d/}"
+    printf '::%s::%s\n' "${lvl}" "${msg}"
+  }
+fi
+
+# --- PR/MR operations ---
+
+forge_validate_pr_url() {
+  local url="${1:-${PR_URL:-}}"
+  if [[ ! "${url}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[1-9][0-9]*$ ]]; then
+    echo "ERROR: PR_URL does not match expected GitHub pattern: ${url}" >&2
+    return 1
+  fi
+}
+
+forge_parse_pr_url() {
+  local url="${1:-${PR_URL:-}}"
+  REPO_FULL_NAME=$(echo "${url}" | sed 's|https://github.com/||; s|/pull/.*||')
+  # shellcheck disable=SC2034
+  PR_NUMBER=$(basename "${url}")
+}
+
+forge_get_pr_head_ref() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null
+}
+
+# --- Push operations ---
+
+forge_set_push_remote() {
+  local token="$1"
+  git remote set-url origin \
+    "https://x-access-token:${token}@github.com/${REPO_FULL_NAME}.git"
+}
+
+forge_setup_push_token() {
+  local token="$1"
+  export GH_TOKEN="${token}"
+}
+
+forge_mask_token() {
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    local token="${1:-${GH_TOKEN:-}}"
+    echo "::add-mask::${token}"
+  fi
+}
+
+# --- Label operations ---
+
+forge_create_label() {
+  local name="$1"
+  local description="$2"
+  local color="$3"
+  gh label create "${name}" --repo "${REPO_FULL_NAME}" \
+    --description "${description}" --color "${color}" \
+    --force 2>/dev/null || true
+}
+
+forge_add_pr_label() {
+  local pr_number="$1"
+  local label="$2"
+  gh pr edit "${pr_number}" --repo "${REPO_FULL_NAME}" \
+    --add-label "${label}" 2>/dev/null || true
+}
+
+# --- Comment operations ---
+
+forge_post_pr_comment() {
+  local pr_number="$1"
+  local body="$2"
+  gh pr comment "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" \
+    --body "${body}" 2>/dev/null
+}
+
+# --- Workspace operations ---
+
+forge_get_workflow_run_url() {
+  local run_repo="${GITHUB_REPOSITORY:-${REPO_FULL_NAME}}"
+  printf '%s/%s/actions/runs/%s' \
+    "${GITHUB_SERVER_URL:-https://github.com}" \
+    "${run_repo}" \
+    "${GITHUB_RUN_ID:-unknown}"
+}
+
+forge_get_workspace_dir() {
+  echo "${GITHUB_WORKSPACE:-}"
+}
+
+forge_append_path() {
+  local dir="$1"
+  echo "${dir}" >> "${GITHUB_PATH:-/dev/null}"
+}
+# END bundled: lib/github-fix-ops.lib.sh
+    ;;
+  gitlab)
+# BEGIN bundled: lib/gitlab-fix-ops.lib.sh
+# shellcheck shell=bash
+# gitlab-fix-ops.lib.sh — GitLab forge operations for fix agent scripts.
+#
+# Bundled into pre-fix.sh and post-fix.sh via fix-ops.lib.sh.
+# All functions use curl against the GitLab REST API.
+#
+# Expected globals (set by caller or forge_parse_pr_url):
+#   REPO_FULL_NAME — plain project path (e.g., "group/project")
+#   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
+#   PR_NUMBER      — merge request IID
+#   GITLAB_HOST    — API host (e.g., "gitlab.com")
+#
+# Expected env vars:
+#   PR_URL         — HTML URL of the merge request
+#   GITLAB_TOKEN   — GitLab personal/project access token
+#
+# Token scopes: GITLAB_TOKEN requires minimum scopes:
+#   - api (read/write merge requests, labels, notes)
+
+[[ -n "${GITLAB_FIX_OPS_SH_LOADED:-}" ]] && return 0
+GITLAB_FIX_OPS_SH_LOADED=1
+
+if ! declare -F gha_echo >/dev/null 2>&1; then
+  gha_echo() {
+    local lvl="$1"; shift
+    local msg="${*//::/ }"
+    msg="${msg//%0A/}"; msg="${msg//%0a/}"
+    msg="${msg//%0D/}"; msg="${msg//%0d/}"
+    printf '::%s::%s\n' "${lvl}" "${msg}"
+  }
+fi
+
+_gitlab_api() {
+  local method="$1"
+  shift
+  local endpoint="$1"
+  shift
+  curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request "${method}" \
+    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "$@"
+}
+
+# --- PR/MR operations ---
+
+forge_validate_pr_url() {
+  local url="${1:-${PR_URL:-}}"
+  if [[ ! "${url}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+){2,}/-/merge_requests/[1-9][0-9]*$ ]]; then
+    echo "ERROR: PR_URL does not match expected GitLab MR pattern: ${url}" >&2
+    return 1
+  fi
+  local host
+  host=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  # Allowed GitLab hosts. To support a self-hosted instance, add it here,
+  # in process-fix-result.py (ALLOWED_GITLAB_HOSTS), AND in the network
+  # policy (policies/gitlab/fix.yaml).
+  case "${host}" in
+    gitlab.com|gitlab.cee.redhat.com) ;;
+    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list (see gitlab-fix-ops.lib.sh and policies/gitlab/fix.yaml)" >&2; return 1 ;;
+  esac
+}
+
+forge_parse_pr_url() {
+  local url="${1:-${PR_URL:-}}"
+  GITLAB_HOST=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  REPO_FULL_NAME=$(echo "${url}" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
+  REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
+  # shellcheck disable=SC2034
+  PR_NUMBER=$(basename "${url}")
+}
+
+forge_get_pr_head_ref() {
+  local pr_number="$1"
+  (
+    # shellcheck disable=SC2030
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  ) | jq -r '.source_branch // empty'
+}
+
+# --- Push operations ---
+
+forge_set_push_remote() {
+  local token="$1"
+  [[ -n "${GITLAB_HOST:-}" ]] || { echo "ERROR: GITLAB_HOST is not set" >&2; return 1; }
+  git remote set-url origin \
+    "https://oauth2:${token}@${GITLAB_HOST}/${REPO_FULL_NAME}.git"
+}
+
+forge_setup_push_token() {
+  local token="$1"
+  # shellcheck disable=SC2031
+  export GITLAB_TOKEN="${token}"
+}
+
+forge_mask_token() {
+  # ::add-mask:: is GHA-specific; skip on GitLab CI to avoid printing tokens
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    local token="${1:-${GITLAB_TOKEN:-}}"
+    echo "::add-mask::${token}"
+  fi
+}
+
+# --- Label operations ---
+
+forge_create_label() {
+  local name="$1"
+  local description="$2"
+  local color="$3"
+  local clean_color="${color#\#}"
+  _gitlab_api POST "/projects/${REPO_ENCODED}/labels" \
+    --data-urlencode "name=${name}" \
+    --data-urlencode "description=${description}" \
+    --data-urlencode "color=#${clean_color}" > /dev/null 2>/dev/null || true
+}
+
+forge_add_pr_label() {
+  local pr_number="$1"
+  local label="$2"
+  _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" \
+    --data-urlencode "add_labels=${label}" > /dev/null 2>/dev/null || true
+}
+
+# --- Comment operations ---
+
+forge_post_pr_comment() {
+  local mr_iid="$1"
+  local body="$2"
+  _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/notes" \
+    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+}
+
+# --- Workspace operations ---
+
+forge_get_workflow_run_url() {
+  if [[ -n "${GITHUB_RUN_ID:-}" ]]; then
+    local run_repo="${GITHUB_REPOSITORY:-${REPO_FULL_NAME}}"
+    printf '%s/%s/actions/runs/%s' \
+      "${GITHUB_SERVER_URL:-https://github.com}" "${run_repo}" "${GITHUB_RUN_ID}"
+    return 0
+  fi
+  local server_url="${CI_SERVER_URL:-https://gitlab.com}"
+  local project_path="${CI_PROJECT_PATH:-${REPO_FULL_NAME}}"
+  local pipeline_id="${CI_PIPELINE_ID:-unknown}"
+  local job_id="${CI_JOB_ID:-}"
+  if [[ -n "${job_id}" ]]; then
+    printf '%s/%s/-/jobs/%s' "${server_url}" "${project_path}" "${job_id}"
+  else
+    printf '%s/%s/-/pipelines/%s' "${server_url}" "${project_path}" "${pipeline_id}"
+  fi
+}
+
+forge_get_workspace_dir() {
+  echo "${CI_PROJECT_DIR:-${GITHUB_WORKSPACE:-}}"
+}
+
+forge_append_path() {
+  local dir="$1"
+  if [[ -n "${GITHUB_PATH:-}" ]]; then
+    echo "${dir}" >> "${GITHUB_PATH}"
+  fi
+  # On GitLab CI, PATH is modified directly (already done by caller)
+}
+# END bundled: lib/gitlab-fix-ops.lib.sh
+    ;;
+  *)
+    echo "ERROR: invalid FULLSEND_FORGE: '${FULLSEND_FORGE:-}' — pass --forge <github|gitlab> or set FULLSEND_FORGE" >&2
+    exit 1
+    ;;
+esac
+
+is_bot_user() {
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    [[ "${1:-}" =~ _bot$ ]]
+  else
+    [[ "${1:-}" =~ \[bot\]$ ]]
+  fi
+}
+# END bundled: lib/fix-ops.lib.sh
 # shellcheck source=lib/post-failure-report.lib.sh
 # BEGIN bundled: lib/post-failure-report.lib.sh
 # post-failure-report.lib.sh — Categorized, sanitized failure comments for post-scripts.
@@ -582,12 +900,6 @@ classify_branch_vs_pr_head() {
 }
 # END bundled: lib/branch-guard.lib.sh
 
-# ---------------------------------------------------------------------------
-# Helper: Bot user detection
-# ---------------------------------------------------------------------------
-is_bot_user() {
-  [[ "${1:-}" =~ \[bot\]$ ]]
-}
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -604,6 +916,16 @@ trap 'report_post_failure_to_pr' ERR
 [[ "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
   post_fail_to_pr setup-error "PR_NUMBER must be numeric, got '${PR_NUMBER}'"
 
+if [ "${FULLSEND_FORGE:-}" = "github" ]; then
+  [[ "${REPO_FULL_NAME}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]] || \
+    post_fail_to_pr setup-error "REPO_FULL_NAME must be owner/repo format, got '${REPO_FULL_NAME}'"
+else
+  [[ "${REPO_FULL_NAME}" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$ ]] || \
+    post_fail_to_pr setup-error "REPO_FULL_NAME must be owner/repo (or group/subgroup/project) format, got '${REPO_FULL_NAME}'"
+fi
+[[ ! "${REPO_FULL_NAME}" =~ (^|/)\.\.?(/|$) ]] || \
+  post_fail_to_pr setup-error "REPO_FULL_NAME must not contain '.' or '..' path segments, got '${REPO_FULL_NAME}'"
+
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
     gha_echo error "Extracted repo not found at ${REPO_DIR}" >&2
@@ -614,7 +936,43 @@ fi
 
 TARGET_BRANCH="${TARGET_BRANCH:-main}"
 
-echo "::add-mask::${PUSH_TOKEN}"
+forge_mask_token "${PUSH_TOKEN}"
+if [ -n "${GITLAB_TOKEN:-}" ]; then
+  forge_mask_token "${GITLAB_TOKEN}"
+fi
+
+# GitLab needs REPO_ENCODED and GITLAB_HOST for API calls.
+# Always derive GITLAB_HOST from the validated PR_URL. If GITLAB_HOST is
+# already set (e.g. by the harness), verify it matches the URL to prevent
+# token exfiltration to a mismatched host.
+if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+  if [[ -z "${PR_URL:-}" ]]; then
+    gha_echo error "PR_URL is required for GitLab forge"
+    exit 1
+  fi
+  if ! forge_validate_pr_url "${PR_URL}"; then
+    gha_echo error "PR_URL format invalid for GitLab: '${PR_URL}'"
+    exit 1
+  fi
+  local_url_host="$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+  if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${local_url_host}" ]]; then
+    gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match PR URL host '${local_url_host}'"
+    exit 1
+  fi
+  GITLAB_HOST="${local_url_host}"
+  _url_repo="$(echo "${PR_URL}" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')"
+  _url_pr="$(basename "${PR_URL}")"
+  if [[ -n "${_url_repo}" && "${_url_repo}" != "${REPO_FULL_NAME}" ]]; then
+    gha_echo error "REPO_FULL_NAME does not match PR URL repo ('${REPO_FULL_NAME}' vs '${_url_repo}')"
+    exit 1
+  fi
+  if [[ -n "${_url_pr}" && "${_url_pr}" != "${PR_NUMBER}" ]]; then
+    gha_echo error "PR_NUMBER does not match PR URL number ('${PR_NUMBER}' vs '${_url_pr}')"
+    exit 1
+  fi
+  REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
+  export GITLAB_HOST REPO_ENCODED
+fi
 
 # ---------------------------------------------------------------------------
 # 0. Check for agent commits
@@ -641,8 +999,8 @@ if [ "${NO_PUSH}" = "false" ]; then
   EXPECTED_BRANCH=""
   HEAD_REF_RC=1
   for _attempt in 1 2 3; do
-    if EXPECTED_BRANCH="$(GH_TOKEN="${PUSH_TOKEN}" gh pr view "${PR_NUMBER}" \
-      --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null)"; then
+    # shellcheck disable=SC2153
+    if EXPECTED_BRANCH="$(forge_get_pr_head_ref "${PR_NUMBER}")"; then
       HEAD_REF_RC=0
       break
     fi
@@ -741,12 +1099,13 @@ INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
 # during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
 # always misses. In current fullsend reusable-workflow layouts, the
 # "Prepare workspace" step typically materializes scripts/ at
-# ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
+# ${WORKSPACE_DIR}/scripts/ (per-org) or ${WORKSPACE_DIR}/.fullsend/scripts/
 # (per-repo) — see fullsend-ai/.fullsend reusable workflows. Try those paths
 # when the BASH_SOURCE-relative lookup misses.
+WORKSPACE_DIR="$(forge_get_workspace_dir)"
 if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
-    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+  if [ -n "${WORKSPACE_DIR:-}" ]; then
+    for _ws_candidate in "${WORKSPACE_DIR}/scripts" "${WORKSPACE_DIR}/.fullsend/scripts"; do
       if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
          && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
         RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
@@ -874,8 +1233,7 @@ fi
 # 4. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
 if [ "${NO_PUSH}" = "false" ]; then
-  git remote set-url origin \
-    "https://x-access-token:${PUSH_TOKEN}@github.com/${REPO_FULL_NAME}.git"
+  forge_set_push_remote "${PUSH_TOKEN}"
 
   # Plain push first. Falls back to --force-with-lease when the push
   # is rejected (non-fast-forward), which happens after a rebase — the
@@ -908,17 +1266,16 @@ fi
 # ---------------------------------------------------------------------------
 # 5. Process structured output (agent-result.json)
 # ---------------------------------------------------------------------------
-export GH_TOKEN="${PUSH_TOKEN}"
+forge_setup_push_token "${PUSH_TOKEN}"
 
 # Locate process-fix-result.py relative to this script, with workspace fallback
 # (see the "Auto-install pre-commit tool dependencies" comment above — this
 # companion script was never migrated into this repo either).
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROCESS_SCRIPT="${SCRIPT_DIR}/process-fix-result.py"
+PROCESS_SCRIPT="${SCRIPT_DIR_POST}/process-fix-result.py"
 
 if [ ! -f "${PROCESS_SCRIPT}" ]; then
-  if [ -n "${GITHUB_WORKSPACE:-}" ]; then
-    for _ws_candidate in "${GITHUB_WORKSPACE}/scripts" "${GITHUB_WORKSPACE}/.fullsend/scripts"; do
+  if [ -n "${WORKSPACE_DIR:-}" ]; then
+    for _ws_candidate in "${WORKSPACE_DIR}/scripts" "${WORKSPACE_DIR}/.fullsend/scripts"; do
       if [ -f "${_ws_candidate}/process-fix-result.py" ]; then
         PROCESS_SCRIPT="${_ws_candidate}/process-fix-result.py"
         break
@@ -996,11 +1353,9 @@ WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
   gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
-  gh label create "needs-human" --repo "${REPO_FULL_NAME}" \
-    --description "Agent loop needs human intervention" --color "D93F0B" \
-    2>/dev/null || true
-  gh pr edit "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" \
-    --add-label "needs-human" 2>/dev/null || true
+  forge_create_label "needs-human" "Agent loop needs human intervention" "D93F0B"
+  # shellcheck disable=SC2153
+  forge_add_pr_label "${PR_NUMBER}" "needs-human"
 fi
 
 # ---------------------------------------------------------------------------

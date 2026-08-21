@@ -57,7 +57,9 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 ### Variables
 
-None.
+| Variable | Default | Effect |
+|----------|---------|--------|
+| `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
 
 ## How the agent works
 
@@ -75,7 +77,7 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 | Input | Source | How it gets there |
 |-------|--------|-------------------|
 | Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
-| PR diff | `gh pr diff` inside the sandbox | Agent calls this to understand what code changed |
+| PR diff | Forge-specific skill (GitHub: `gh pr diff`, GitLab: MR changes API) | Agent calls this to understand what code changed |
 | Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
 
@@ -84,7 +86,7 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 | Input | Source | How it gets there |
 |-------|--------|-------------------|
 | Human instruction | Free text after `/fs-fix` in the comment | Extracted by the workflow, passed as `HUMAN_INSTRUCTION` env var (up to 10,000 bytes) |
-| PR diff | `gh pr diff` inside the sandbox | Same as bot-triggered |
+| PR diff | Forge-specific skill | Same as bot-triggered |
 | Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
 | Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
@@ -115,7 +117,7 @@ than you might expect:
 - **Other PR comments.** General discussion comments on the PR are not part of
   the agent's input. Only the review body and the `/fs-fix` instruction are
   read.
-- **CI logs and check status.** The fix agent does not read GitHub Actions logs,
+- **CI logs and check status.** The fix agent does not read CI logs,
   check run output, or merge readiness indicators. It addresses review
   feedback, not CI failures. (The [code agent](code.md) handles CI failures
   during implementation.)
@@ -129,15 +131,15 @@ depends on where the URL points:
 
 | URL type | Works? | Why |
 |----------|--------|-----|
-| Same-repo issue or PR (`#123` or full GitHub URL) | Yes | Resolved via the GitHub API |
+| Same-repo issue or PR/MR (`#123` or full URL) | Yes | Resolved via the forge API (GitHub or GitLab) |
 | Same-repo file or commit | Yes | Same mechanism |
-| Cross-repo GitHub URL | No | Access is scoped to the target repo only |
+| Cross-repo URL | No | Access is scoped to the target repo only |
 | GitHub Gist | No | Not accessible from the agent environment |
 | External URL (docs, pastebins, etc.) | No | External HTTP access is blocked |
 
 GitHub may auto-shorten same-repo URLs in rendered comments (e.g.,
-`https://github.com/org/repo/issues/2` becomes `#2`), but the full URL is
-preserved either way.
+`https://github.com/org/repo/issues/2` becomes `#2`). GitLab does not
+auto-shorten URLs but the full URL is preserved either way.
 
 **If you need the agent to act on external context**, paste the relevant
 content directly into the `/fs-fix` comment rather than linking to it. The
@@ -154,6 +156,29 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   `needs-human` label.
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
+
+## Multi-forge support
+
+The fix agent supports both GitHub and GitLab. The harness `forge` block
+selects the platform at runtime via `FULLSEND_FORGE`. On GitHub, the agent
+uses `gh` for API access; on GitLab, it uses `curl` against the REST API.
+Scripts dispatch forge-specific operations through `fix-ops.lib.sh`, and
+forge-specific skills provide the appropriate CLI recipes.
+
+### GitLab-specific variables
+
+| Variable | Description |
+|----------|-------------|
+| `PR_URL` | Full HTTPS URL of the merge request. Used to derive `GITLAB_HOST` and validate `REPO_FULL_NAME`. |
+| `GITLAB_TOKEN` | Personal or project access token with `api` scope. |
+
+### GitLab host allowlist
+
+`gitlab-fix-ops.lib.sh` validates `GITLAB_HOST` against an allowlist
+(`gitlab.com`, `gitlab.cee.redhat.com`). To support a self-hosted instance,
+add the host to `forge_validate_pr_url` in `gitlab-fix-ops.lib.sh`,
+`ALLOWED_GITLAB_HOSTS` in `process-fix-result.py`, and
+`policies/gitlab/fix.yaml`.
 
 ## Custom network policy
 
