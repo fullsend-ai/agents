@@ -495,8 +495,10 @@ fi
 # Controlled by REVIEW_GIT_FETCH_DEPTH: "0" = full unshallow, unset = no-op.
 # ---------------------------------------------------------------------------
 if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
-  _TARGET_DIR="${TARGET_REPO_DIR:-target-repo}"
-  if [[ -d "${_TARGET_DIR}" ]] && git -C "${_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
+  _TARGET_DIR="${REPO_DIR:-${GITHUB_WORKSPACE:-.}/target-repo}"
+  if [[ ! -d "${_TARGET_DIR}" ]]; then
+    echo "::warning::Clone-deepening skipped — target directory '${_TARGET_DIR}' not found"
+  elif git -C "${_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
     echo "Deepening shallow clone for git history analysis..."
     if [[ "${FULLSEND_FORGE}" == "github" && -n "${GH_TOKEN:-}" && -n "${REPO_FULL_NAME:-}" ]]; then
       git -C "${_TARGET_DIR}" fetch --unshallow \
