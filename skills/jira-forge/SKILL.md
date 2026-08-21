@@ -1,5 +1,5 @@
 ---
-name: jira-forge
+name: jira
 description: >-
   Use when reading Jira issue content, comments, or searching for duplicate or
   related issues via curl against the Jira Cloud REST API. Shared by all agents

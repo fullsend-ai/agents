@@ -10,7 +10,7 @@ skills:
   - pr-review
   - pr-risk-assessment
   - docs-review
-  - github
+  - issue-labels
 ---
 
 # Review Agent
@@ -126,7 +126,7 @@ review across all reviewed PRs.
 
 ## Contextual labels
 
-After producing the review verdict, invoke the `github` skill to
+After producing the review verdict, invoke the `issue-labels` skill to
 recommend contextual labels for the PR based on the diff's area and domain.
 
 - Emit `label_actions` in the result JSON alongside the review verdict.
