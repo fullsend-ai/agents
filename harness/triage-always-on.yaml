@@ -1,0 +1,113 @@
+---
+agent: agents/triage.md
+doc: docs/triage.md
+model: opus
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:eaf365ad038d762954d8fd5f41618cd6766a8a6a6f76d944aaf160819666734d
+policy: policies/base.yaml
+openshell:
+  profiles:
+    - profiles/fullsend-vertex-ai.yaml
+providers:
+  - providers/vertex-ai.yaml
+
+role: triage
+slug: fullsend-ai-triage
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+
+pre_script: scripts/pre-triage.sh
+post_script: scripts/post-triage.sh
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/triage-result.schema.json
+  max_iterations: 2
+
+timeout_minutes: 10
+
+env:
+  runner:
+    TRIAGE_AUTO_CODE: "on"
+    TRIAGE_AUTO_CODE_CATEGORIES: "bug,documentation,performance"
+
+forge:
+  github:
+    providers:
+      - providers/github-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-ro.yaml
+    pre_script: scripts/pre-triage.sh
+    post_script: scripts/post-triage.sh
+    skills:
+      - skills/github-forge
+      - skills/issue-labels/github
+      - skills/smoke-always-on
+    host_files:
+      - src: env/github/triage.env
+        dest: /sandbox/workspace/.env.d/triage.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${GITHUB_ISSUE_URL}
+        GH_TOKEN: ${GH_TOKEN}
+        FULLSEND_FORGE: github
+      sandbox:
+        ISSUE_URL: "${GITHUB_ISSUE_URL}"
+        GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
+  gitlab:
+    policy: policies/gitlab/triage.yaml
+    pre_script: scripts/pre-triage.sh
+    post_script: scripts/post-triage.sh
+    skills:
+      - skills/gitlab-forge
+      - skills/issue-labels/gitlab
+    host_files:
+      - src: env/gitlab/triage.env
+        dest: /sandbox/workspace/.env.d/triage.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${GITLAB_ISSUE_URL}
+        GITLAB_TOKEN: ${GITLAB_TOKEN}
+        FULLSEND_FORGE: gitlab
+      sandbox:
+        ISSUE_URL: "${GITLAB_ISSUE_URL}"
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab
+  jira:
+    policy: policies/jira/triage.yaml
+    pre_script: scripts/pre-triage.sh
+    post_script: scripts/post-triage.sh
+    skills:
+      - skills/jira-forge
+      - skills/issue-labels/jira
+    host_files:
+      - src: env/jira/triage.env
+        dest: /sandbox/workspace/.env.d/triage.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${JIRA_ISSUE_URL}
+        JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+        JIRA_TOKEN: ${JIRA_TOKEN}
+        JIRA_BASE_URL: ${JIRA_BASE_URL}
+        JIRA_DUPLICATE_TRANSITION: ${JIRA_DUPLICATE_TRANSITION}
+        JIRA_NOT_PLANNED_TRANSITION: ${JIRA_NOT_PLANNED_TRANSITION}
+        JIRA_SPLIT_TRANSITION: ${JIRA_SPLIT_TRANSITION}
+        FULLSEND_FORGE: jira
+      sandbox:
+        ISSUE_URL: "${JIRA_ISSUE_URL}"
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_TOKEN: "${JIRA_TOKEN}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        FULLSEND_FORGE: jira
