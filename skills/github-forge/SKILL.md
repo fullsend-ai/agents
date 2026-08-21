@@ -1,5 +1,5 @@
 ---
-name: github-forge
+name: github
 description: >-
   Use when interacting with GitHub repositories, issues, or pull requests via
   the gh CLI. Shared by all agents running on the GitHub forge.

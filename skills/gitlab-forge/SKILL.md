@@ -1,5 +1,5 @@
 ---
-name: gitlab-forge
+name: gitlab
 description: >-
   Use when interacting with GitLab projects, issues, or merge requests via curl
   against the GitLab REST API. Shared by all agents running on the GitLab forge.

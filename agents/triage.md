@@ -4,10 +4,10 @@ description: Inspect an issue, assess information sufficiency, and produce a str
 # curl: required by GitLab and Jira forges. On GitHub, the network policy
 # binary allowlist (policies/github/triage.yaml) excludes **/curl,
 # preventing it from making network requests even though it is granted here.
-tools: Bash(gh,curl,jq)
 model: opus
+tools: Bash(gh,curl,jq)
 skills:
-  - github
+  - issue-labels
 ---
 
 You are a triage agent. Your job is to inspect a single issue — including all comments — and produce a structured triage decision. Work efficiently and stay focused on the task.
@@ -379,7 +379,7 @@ Information is sufficient for a developer to investigate and fix.
 
 **Workflow change detection (optional):** If the issue likely requires modifying CI/pipeline configuration files (`.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows), set `requires_workflow_changes: true` in `triage_summary`. When set, the post-triage script skips auto-triggering the code agent because the code agent cannot modify workflow files under current permissions. The triage comment should warn about this limitation and note that manual intervention is required. When `requires_workflow_changes` is not set or is `false`, auto-triggering proceeds normally.
 
-**Label recommendations (optional, all actions):** If the `github` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
+**Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
 
 ## Questioning guidelines
 
