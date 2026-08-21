@@ -1,0 +1,31 @@
+# skillsaw configuration
+# https://github.com/stbenjam/skillsaw
+
+version: "0.14.1"
+
+rules:
+  # Skill name must be lowercase with hyphens and match directory name
+  # EXCEPTION (baselined): The following skills violate this rule intentionally:
+  # - skills/issue-labels/{github,gitlab,jira}/ all share name "issue-labels"
+  # - skills/{github,gitlab,jira}-forge/ use names "github", "gitlab", "jira"
+  # These exceptions are captured in .skillsaw-baseline.json
+  agentskill-name:
+    enabled: auto
+    severity: error
+
+  # Update stale skill name references after a rename
+  agentskill-rename-refs:
+    enabled: auto
+    severity: warning
+
+  # Warn when instruction or config files exceed recommended token limits
+  context-budget:
+    enabled: auto
+    severity: warning
+
+  # Detect critical instructions in the middle of files where LLM attention is lowest
+  content-critical-position:
+    enabled: true
+    severity: info
+
+strict: true
