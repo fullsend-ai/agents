@@ -28,7 +28,7 @@
       "$ref": "#/$defs/label_actions"
     },
     "risk_assessment": {
-      "description": "Score and level must be consistent: 1=low, 2=moderate, 3=elevated, 4=high, 5=critical. Post-script validates both independently.",
+      "description": "Score and level must be consistent: 1=low, 2=moderate, 3=elevated, 4=high, 5=critical.",
       "type": "object",
       "required": ["score", "level", "rationale"],
       "properties": {
@@ -51,7 +51,14 @@
         },
         "rationale": { "type": "string", "minLength": 1 }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        { "if": { "properties": { "score": { "const": 1 } } }, "then": { "properties": { "level": { "const": "low" } } } },
+        { "if": { "properties": { "score": { "const": 2 } } }, "then": { "properties": { "level": { "const": "moderate" } } } },
+        { "if": { "properties": { "score": { "const": 3 } } }, "then": { "properties": { "level": { "const": "elevated" } } } },
+        { "if": { "properties": { "score": { "const": 4 } } }, "then": { "properties": { "level": { "const": "high" } } } },
+        { "if": { "properties": { "score": { "const": 5 } } }, "then": { "properties": { "level": { "const": "critical" } } } }
+      ]
     }
   },
   "allOf": [
