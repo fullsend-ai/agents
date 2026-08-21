@@ -165,6 +165,38 @@ run_test "jira-base-url-multiple-trailing-slashes-ok" \
   '"remove":"needs-info"'
 unset JIRA_BASE_URL
 
+# --- Jira credential guard tests (#876) ---
+# Verify that source-time :? guards on JIRA_USER_EMAIL and JIRA_TOKEN reject
+# unset and empty values before any API call is made.
+
+unset JIRA_TOKEN
+run_test "jira-missing-token-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "JIRA_TOKEN must be set" \
+  "true" "true"
+export JIRA_TOKEN="fake-jira-token"
+
+export JIRA_TOKEN=""
+run_test "jira-empty-token-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "JIRA_TOKEN must be set" \
+  "true" "true"
+export JIRA_TOKEN="fake-jira-token"
+
+unset JIRA_USER_EMAIL
+run_test "jira-missing-email-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "JIRA_USER_EMAIL must be set" \
+  "true" "true"
+export JIRA_USER_EMAIL="triage@example.com"
+
+export JIRA_USER_EMAIL=""
+run_test "jira-empty-email-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "JIRA_USER_EMAIL must be set" \
+  "true" "true"
+export JIRA_USER_EMAIL="triage@example.com"
+
 # --- Summary ---
 
 echo ""
