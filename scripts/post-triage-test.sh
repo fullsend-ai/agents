@@ -2097,6 +2097,38 @@ exit 0
 CURLMOCK
 chmod +x "${MOCK_BIN}/curl"
 
+# --- Jira credential guard tests (#876) ---
+# Verify that source-time :? guards reject unset/empty JIRA_TOKEN and
+# JIRA_USER_EMAIL before any API call is made.
+
+unset JIRA_TOKEN
+run_jira_test "jira-missing-token-fails" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+export JIRA_TOKEN="fake-jira-token"
+
+export JIRA_TOKEN=""
+run_jira_test "jira-empty-token-fails" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+export JIRA_TOKEN="fake-jira-token"
+
+unset JIRA_USER_EMAIL
+run_jira_test "jira-missing-email-fails" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+export JIRA_USER_EMAIL="triage@example.com"
+
+export JIRA_USER_EMAIL=""
+run_jira_test "jira-empty-email-fails" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+export JIRA_USER_EMAIL="triage@example.com"
+
 # Restore GitHub tracker for any subsequent tests.
 export FULLSEND_TRACKER="github"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
