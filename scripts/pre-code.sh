@@ -149,14 +149,37 @@ forge_post_pr_comment() {
 # --- PR/MR lifecycle ---
 
 forge_list_prs_for_issue() {
-  local search_term="$1"
+  local issue_number="$1"
   local bot_login="${2:-fullsend-ai[bot]}"
   local coder_bot_login="${3:-fullsend-ai-coder[bot]}"
-  gh pr list --repo "${REPO_FULL_NAME}" --state open \
-    --search "${search_term} in:body,title" \
-    --json number,url,author \
-    --jq "[.[] | select(.author.login != \"${bot_login}\" and .author.login != \"${coder_bot_login}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
-    2>/dev/null || true
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  # Use closedByPullRequestsReferences to find only PRs with closing keywords
+  # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
+  # from text-search matching (e.g., #1 matching #12 in a PR title).
+  gh api graphql \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          closedByPullRequestsReferences(first: 50) {
+            nodes {
+              number
+              url
+              author { login }
+              state
+            }
+          }
+        }
+      }
+    }' --arg bot "${bot_login}" --arg coder "${coder_bot_login}" --jq '
+    .data.repository.issue.closedByPullRequestsReferences.nodes
+    | [.[] | select(.state == "OPEN")
+           | select(.author.login != $bot
+               and .author.login != $coder)]
+    | .[] | "\(.number)\t\(.author.login)\t\(.url)"
+  ' 2>/dev/null || true
 }
 
 forge_list_prs_for_branch() {
@@ -480,13 +503,13 @@ forge_post_pr_comment() {
 # --- MR lifecycle ---
 
 forge_list_prs_for_issue() {
-  local search_term="$1"
+  local issue_number="$1"
   local bot_login="${2:-}"
   local coder_bot_login="${3:-}"
   # GitLab API: search MRs referencing the issue. Best-effort — GitLab does not
-  # have a direct "MRs linked to issue" search like GitHub's "in:body,title".
-  # Search open MRs and filter by body/title containing #<IID> with word
-  # boundaries to avoid false positives (e.g., #42 must not match #142 or #420).
+  # have a direct "MRs linked to issue" endpoint. Fetch open MRs and filter for
+  # closing keywords (Close, Fix, Resolve variants) targeting #<IID>. Plain
+  # mentions without closing keywords are excluded to avoid false positives.
   local all_mrs="[]"
   local page=1 max_pages=10
   while [[ "${page}" -le "${max_pages}" ]]; do
@@ -504,15 +527,16 @@ forge_list_prs_for_issue() {
     all_mrs=$(echo "${all_mrs}" "${batch}" | jq -s 'add') || break
     page=$((page + 1))
   done
-  # Filter for MRs mentioning #<IID> (anchored — bare or qualified ref),
-  # exclude agent branches and known bot authors.
-  echo "${all_mrs}" | jq -r --arg term "${search_term}" \
+  # Filter for MRs with closing keywords (Closes, Fixes, Resolves, etc.)
+  # targeting #<IID>. Plain mentions without closing keywords are excluded
+  # to avoid false positives (e.g., "Related: #42" should not block).
+  echo "${all_mrs}" | jq -r --arg issue_number "${issue_number}" \
     --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
     [.[] | select(
-      ((.title // "") | test("(^|\\W)([a-zA-Z0-9._/-]+)?#" + $term + "($|\\W)")) or
-      ((.description // "") | test("(^|\\W)([a-zA-Z0-9._/-]+)?#" + $term + "($|\\W)"))
+      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
+      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
     ) | select(
-      ((.source_branch // "") | test("^agent/" + $term + "-") | not)
+      ((.source_branch // "") | test("^agent/" + $issue_number + "-") | not)
     ) | select(
       (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
       (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and

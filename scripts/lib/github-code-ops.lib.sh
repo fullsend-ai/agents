@@ -85,14 +85,37 @@ forge_post_pr_comment() {
 # --- PR/MR lifecycle ---
 
 forge_list_prs_for_issue() {
-  local search_term="$1"
+  local issue_number="$1"
   local bot_login="${2:-fullsend-ai[bot]}"
   local coder_bot_login="${3:-fullsend-ai-coder[bot]}"
-  gh pr list --repo "${REPO_FULL_NAME}" --state open \
-    --search "${search_term} in:body,title" \
-    --json number,url,author \
-    --jq "[.[] | select(.author.login != \"${bot_login}\" and .author.login != \"${coder_bot_login}\")] | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"" \
-    2>/dev/null || true
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  # Use closedByPullRequestsReferences to find only PRs with closing keywords
+  # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
+  # from text-search matching (e.g., #1 matching #12 in a PR title).
+  gh api graphql \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          closedByPullRequestsReferences(first: 50) {
+            nodes {
+              number
+              url
+              author { login }
+              state
+            }
+          }
+        }
+      }
+    }' --arg bot "${bot_login}" --arg coder "${coder_bot_login}" --jq '
+    .data.repository.issue.closedByPullRequestsReferences.nodes
+    | [.[] | select(.state == "OPEN")
+           | select(.author.login != $bot
+               and .author.login != $coder)]
+    | .[] | "\(.number)\t\(.author.login)\t\(.url)"
+  ' 2>/dev/null || true
 }
 
 forge_list_prs_for_branch() {

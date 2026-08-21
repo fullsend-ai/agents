@@ -24,11 +24,11 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # build_mock creates a mock gh binary that returns preconfigured responses.
 # Arguments:
-#   $1 — JSON array to return for "gh pr list" calls. When the caller
+#   $1 — JSON string to return for "gh api graphql" calls. When the caller
 #        passes --jq, the mock pipes this JSON through jq so the real
 #        filter expression is exercised.  Pass an empty string for no PRs.
 build_mock() {
-  local pr_list_output="$1"
+  local graphql_output="$1"
   local mock_bin="${TMPDIR}/bin"
   local gh_log="${TMPDIR}/gh-calls.log"
 
@@ -36,8 +36,8 @@ build_mock() {
   mkdir -p "${mock_bin}"
   : > "${gh_log}"
 
-  # Write the pr list output to a file so the mock can read it.
-  printf '%s' "${pr_list_output}" > "${TMPDIR}/pr-list-output.txt"
+  # Write the GraphQL output to a file so the mock can read it.
+  printf '%s' "${graphql_output}" > "${TMPDIR}/graphql-output.txt"
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -47,19 +47,24 @@ PR_OUTPUT="OUTPUT_PLACEHOLDER"
 echo "gh $*" >> "${CALL_LOG}"
 
 # Route by subcommand
-if [[ "$1" == "pr" && "$2" == "list" ]]; then
-  # Parse --jq flag from arguments, just like the real gh CLI.
+if [[ "$1" == "api" && "$2" == "graphql" ]]; then
+  # Parse --jq and --arg flags from arguments, just like the real gh CLI.
   JQ_EXPR=""
+  JQ_ARGS=()
   shift 2
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "--jq" ]]; then
       JQ_EXPR="$2"
-      break
+      shift 2
+    elif [[ "$1" == "--arg" ]]; then
+      JQ_ARGS+=(--arg "$2" "$3")
+      shift 3
+    else
+      shift
     fi
-    shift
   done
   if [[ -n "${JQ_EXPR}" ]] && [[ -s "${PR_OUTPUT}" ]]; then
-    jq -r "${JQ_EXPR}" "${PR_OUTPUT}"
+    jq -r "${JQ_ARGS[@]}" "${JQ_EXPR}" "${PR_OUTPUT}"
   else
     cat "${PR_OUTPUT}"
   fi
@@ -77,7 +82,7 @@ MOCKEOF
   # Patch placeholders with actual paths (avoid sed on source files,
   # but this is a generated mock — not repo source code).
   local escaped_log="${gh_log//\//\\/}"
-  local escaped_out="${TMPDIR//\//\\/}\/pr-list-output.txt"
+  local escaped_out="${TMPDIR//\//\\/}\/graphql-output.txt"
   perl -pi -e "s/LOGFILE_PLACEHOLDER/${escaped_log}/g" "${mock_bin}/gh"
   perl -pi -e "s/OUTPUT_PLACEHOLDER/${escaped_out}/g" "${mock_bin}/gh"
 
@@ -88,13 +93,13 @@ MOCKEOF
 
 run_test() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local graphql_output="$2"
   local expected_pattern="$3"
   local expect_exit="$4"         # 0 = success, 1 = failure
   local extra_env="${5:-}"       # additional env vars (KEY=VAL KEY2=VAL2)
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${graphql_output}")"
   local gh_log="${TMPDIR}/gh-calls.log"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${gh_output}"
@@ -157,13 +162,13 @@ run_test() {
 # Check stdout contains a specific string.
 run_test_stdout() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local graphql_output="$2"
   local expected_stdout="$3"
   local expect_exit="$4"
   local extra_env="${5:-}"
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${graphql_output}")"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${gh_output}"
 
@@ -219,14 +224,14 @@ run_test_stdout() {
 # Check stdout contains one string and does NOT contain another.
 run_test_stdout_excludes() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local graphql_output="$2"
   local expected_stdout="$3"
   local excluded_stdout="$4"
   local expect_exit="$5"
   local extra_env="${6:-}"
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${graphql_output}")"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${gh_output}"
 
@@ -289,28 +294,47 @@ run_test_stdout_excludes() {
 
 # --- Test cases ---
 
-# JSON helpers — build unfiltered PR JSON that the mock returns to the
+# JSON helpers — build GraphQL response JSON that the mock returns to the
 # script.  The mock pipes this through jq using the real --jq expression
 # from pre-code.sh, so the filter is exercised end-to-end.
+# The response format matches GitHub's closedByPullRequestsReferences query.
+
+_gql_wrap() {
+  # Wrap a JSON array of PR nodes into a closedByPullRequestsReferences response.
+  local nodes="$1"
+  printf '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":%s}}}}}' "${nodes}"
+}
+
+# Empty response (no closing PRs).
+EMPTY_GQL_JSON="$(_gql_wrap '[]')"
 
 # Single human PR.
-HUMAN_PR_JSON='[{"number":99,"author":{"login":"human-dev"},"url":"https://github.com/test-org/test-repo/pull/99"}]'
+HUMAN_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]')"
 
 # Single fullsend-ai[bot] PR.
-BOT_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"}]'
+BOT_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"}]')"
 
 # Single fullsend-ai-coder[bot] PR.
-CODER_BOT_PR_JSON='[{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]'
+CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"}]')"
 
 # Both bot PRs plus a human PR.
-MIXED_PR_JSON='[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"},{"number":99,"author":{"login":"human-dev"},"url":"https://github.com/test-org/test-repo/pull/99"}]'
+MIXED_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"},{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]')"
 
 # Multiple human PRs.
-MULTI_HUMAN_PR_JSON='[{"number":50,"author":{"login":"dev-a"},"url":"https://github.com/test-org/test-repo/pull/50"},{"number":51,"author":{"login":"dev-b"},"url":"https://github.com/test-org/test-repo/pull/51"}]'
+MULTI_HUMAN_PR_JSON="$(_gql_wrap '[{"number":50,"url":"https://github.com/test-org/test-repo/pull/50","author":{"login":"dev-a"},"state":"OPEN"},{"number":51,"url":"https://github.com/test-org/test-repo/pull/51","author":{"login":"dev-b"},"state":"OPEN"}]')"
+
+# Both bots only (no human PRs).
+BOTH_BOTS_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"}]')"
+
+# Human PR in MERGED state (should be filtered out by .state == "OPEN").
+MERGED_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"MERGED"}]')"
+
+# Human PR in CLOSED state (should be filtered out by .state == "OPEN").
+CLOSED_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"CLOSED"}]')"
 
 # No existing PRs → agent proceeds (exit 0, no label/comment).
 run_test_stdout "no-existing-prs-proceeds" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "No existing human PRs found" \
   0
 
@@ -352,7 +376,7 @@ run_test_stdout "force-override-comment-body" \
 
 # No GH_TOKEN → skips check entirely, exits 0.
 run_test_stdout "no-gh-token-skips-check" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "No github token set" \
   0 \
   "GH_TOKEN="
@@ -371,7 +395,7 @@ run_test_stdout "coder-bot-pr-plus-human-pr-blocks" \
 
 # Both bots only → jq filter removes all → script proceeds.
 run_test_stdout "both-bots-do-not-block" \
-  '[{"number":10,"author":{"login":"fullsend-ai[bot]"},"url":"https://github.com/test-org/test-repo/pull/10"},{"number":11,"author":{"login":"fullsend-ai-coder[bot]"},"url":"https://github.com/test-org/test-repo/pull/11"}]' \
+  "${BOTH_BOTS_JSON}" \
   "No existing human PRs found" \
   0
 
@@ -393,11 +417,10 @@ run_test "pr-label-created" \
   0
 
 # --- Regression tests: --force bypasses PR search (issue #1697) ---
-TAB=$'\t'
 
 # COMMENT_BODY with --force must exit before PR search is reached.
 run_test_stdout_excludes "force-comment-body-no-pr-search" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "Force override" \
   "Checking for existing open PRs" \
   0 \
@@ -405,7 +428,7 @@ run_test_stdout_excludes "force-comment-body-no-pr-search" \
 
 # CODE_FORCE=true must exit before PR search is reached.
 run_test_stdout_excludes "force-code-force-no-pr-search" \
-  "99${TAB}human-dev${TAB}https://github.com/test-org/test-repo/pull/99" \
+  "${HUMAN_PR_JSON}" \
   "Force override" \
   "Checking for existing open PRs" \
   0 \
@@ -413,14 +436,14 @@ run_test_stdout_excludes "force-code-force-no-pr-search" \
 
 # Force check logs COMMENT_BODY value for debuggability.
 run_test_stdout "force-check-logs-comment-body" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "Evaluating force override:" \
   0 \
   "COMMENT_BODY=/fs-code --force"
 
 # Without --force, PR search IS reached (no false bypass).
 run_test_stdout "no-force-reaches-pr-search" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "Checking for existing open PRs" \
   0 \
   "COMMENT_BODY=/fs-code"
@@ -460,13 +483,13 @@ run_test_stdout "force-third-token-does-not-bypass" \
 # protocol file's exact content ("" = must stay empty).
 run_test_prescript_output() {
   local test_name="$1"
-  local pr_list_output="$2"
+  local graphql_output="$2"
   local expected_content="$3"
   local expect_exit="$4"
   local extra_env="${5:-}"
 
   local mock_bin
-  mock_bin="$(build_mock "${pr_list_output}")"
+  mock_bin="$(build_mock "${graphql_output}")"
   local proto_out="${TMPDIR}/prescript-output.txt"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${proto_out}"
@@ -531,7 +554,7 @@ run_test_prescript_output "protocol-skip-on-existing-pr" \
 
 # No existing PRs → file stays empty (absent skipped = proceed).
 run_test_prescript_output "protocol-empty-on-no-prs" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "" \
   0
 
@@ -544,7 +567,7 @@ run_test_prescript_output "protocol-empty-on-force" \
 
 # No GH_TOKEN → check skipped, run proceeds → file stays empty.
 run_test_prescript_output "protocol-empty-on-no-token" \
-  "" \
+  "${EMPTY_GQL_JSON}" \
   "" \
   0 \
   "GH_TOKEN="
@@ -561,6 +584,70 @@ run_test_prescript_output "protocol-empty-on-bot-prs" \
 # All earlier tests in this file also run with the variable unset; this
 # one documents the skip path explicitly.
 run_test_stdout "protocol-unset-env-old-cli-fails-open" \
+  "${HUMAN_PR_JSON}" \
+  "Skipping code agent" \
+  0
+
+# --- Regression tests: false-positive PR matching (issue #847) ---
+# The old text-search approach (gh pr list --search "N in:body,title") caused
+# false positives.  The new GraphQL closedByPullRequestsReferences query
+# returns only PRs with closing keywords (Fixes, Closes, etc.), eliminating
+# these scenarios at the API level.  The mock returns an empty response
+# because the API would not match these PRs.
+
+# Issue #1 must NOT be blocked by a PR titled "docs(#12): add fullsend-
+# managed file exemption" that has no closing reference to issue #1.
+# Old text search matched because "1" appears as a substring of "#12".
+run_test_stdout "fp-issue847-title-substring-no-closing-ref" \
+  "${EMPTY_GQL_JSON}" \
+  "No existing human PRs found" \
+  0 \
+  "ISSUE_NUMBER=1
+GITHUB_ISSUE_URL=https://github.com/test-org/test-repo/issues/1
+ISSUE_URL=https://github.com/test-org/test-repo/issues/1"
+
+# Issue #42 must NOT be blocked by a PR whose body contains "Related: #42"
+# without a closing keyword.  The old text search matched on the bare "#42"
+# mention; closedByPullRequestsReferences ignores non-closing references.
+run_test_stdout "fp-issue847-related-without-closing-keyword" \
+  "${EMPTY_GQL_JSON}" \
+  "No existing human PRs found" \
+  0
+
+# Issue #1 must NOT be blocked by a PR whose body contains "#10" — a
+# different issue number that merely shares a digit prefix.  The old text
+# search for "1" matched "#10" as a substring.
+run_test_stdout "fp-issue847-different-issue-substring" \
+  "${EMPTY_GQL_JSON}" \
+  "No existing human PRs found" \
+  0 \
+  "ISSUE_NUMBER=1
+GITHUB_ISSUE_URL=https://github.com/test-org/test-repo/issues/1
+ISSUE_URL=https://github.com/test-org/test-repo/issues/1"
+
+# --- Closed/merged PR filtering ---
+# closedByPullRequestsReferences may return PRs in any state (OPEN, MERGED,
+# CLOSED).  The jq filter selects only .state == "OPEN"; non-open PRs must
+# not block.
+
+# MERGED human PR → filtered out → script proceeds.
+run_test_stdout "merged-pr-does-not-block" \
+  "${MERGED_PR_JSON}" \
+  "No existing human PRs found" \
+  0
+
+# CLOSED human PR → filtered out → script proceeds.
+run_test_stdout "closed-pr-does-not-block" \
+  "${CLOSED_PR_JSON}" \
+  "No existing human PRs found" \
+  0
+
+# --- Positive closing-keyword match (happy-path) ---
+# A PR returned by closedByPullRequestsReferences with state OPEN and a
+# human author must still block.  This confirms the happy path works end-
+# to-end with the new GraphQL response format (e.g. a PR whose body
+# contains "Fixes #42" or "Closes #42").
+run_test_stdout "closing-ref-open-pr-still-blocks" \
   "${HUMAN_PR_JSON}" \
   "Skipping code agent" \
   0

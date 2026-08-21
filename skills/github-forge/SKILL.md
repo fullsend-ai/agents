@@ -29,8 +29,20 @@ gh issue list --repo OWNER/REPO --state open --search "keyword" --json number,ti
 # List open PRs
 gh pr list --repo OWNER/REPO --state open --json number,title,body,isDraft --limit 50
 
-# Search PRs by keyword or issue number
-gh pr list --repo OWNER/REPO --state open --search "ISSUE_NUMBER in:body,title" --json number,url,title,body,isDraft,author --limit 30
+# Search PRs by keyword
+gh pr list --repo OWNER/REPO --state open --search "keyword" --json number,url,title,body,isDraft,author --limit 30
+
+# Find PRs linked to an issue via closing keywords (Fixes, Closes, etc.)
+gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query='
+  query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        closedByPullRequestsReferences(first: 50) {
+          nodes { number url author { login } state }
+        }
+      }
+    }
+  }' --jq '.data.repository.issue.closedByPullRequestsReferences.nodes'
 
 # View a specific PR
 gh pr view NUMBER --repo OWNER/REPO --json state,title,body,comments,labels,mergedAt
