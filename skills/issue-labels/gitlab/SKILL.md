@@ -1,5 +1,5 @@
 ---
-name: gitlab
+name: issue-labels
 description: >-
   Use when labeling an issue or merge request based on its content and the
   project's label conventions, or when delegated to by the review or
