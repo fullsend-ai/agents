@@ -36,7 +36,7 @@ build_mock() {
   mkdir -p "${mock_bin}"
   : > "${gh_log}"
 
-  # Write the pr list output to a file so the mock can read it.
+  # Write the GraphQL output to a file so the mock can read it.
   printf '%s' "${graphql_output}" > "${TMPDIR}/graphql-output.txt"
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
@@ -48,18 +48,23 @@ echo "gh $*" >> "${CALL_LOG}"
 
 # Route by subcommand
 if [[ "$1" == "api" && "$2" == "graphql" ]]; then
-  # Parse --jq flag from arguments, just like the real gh CLI.
+  # Parse --jq and --arg flags from arguments, just like the real gh CLI.
   JQ_EXPR=""
+  JQ_ARGS=()
   shift 2
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "--jq" ]]; then
       JQ_EXPR="$2"
-      break
+      shift 2
+    elif [[ "$1" == "--arg" ]]; then
+      JQ_ARGS+=(--arg "$2" "$3")
+      shift 3
+    else
+      shift
     fi
-    shift
   done
   if [[ -n "${JQ_EXPR}" ]] && [[ -s "${PR_OUTPUT}" ]]; then
-    jq -r "${JQ_EXPR}" "${PR_OUTPUT}"
+    jq -r "${JQ_ARGS[@]}" "${JQ_EXPR}" "${PR_OUTPUT}"
   else
     cat "${PR_OUTPUT}"
   fi

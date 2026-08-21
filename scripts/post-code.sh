@@ -916,13 +916,13 @@ forge_list_prs_for_issue() {
           }
         }
       }
-    }' --jq "
+    }' --arg bot "${bot_login}" --arg coder "${coder_bot_login}" --jq '
     .data.repository.issue.closedByPullRequestsReferences.nodes
-    | [.[] | select(.state == \"OPEN\")
-           | select(.author.login != \"${bot_login}\"
-               and .author.login != \"${coder_bot_login}\")]
-    | .[] | \"\(.number)\t\(.author.login)\t\(.url)\"
-  " 2>/dev/null || true
+    | [.[] | select(.state == "OPEN")
+           | select(.author.login != $bot
+               and .author.login != $coder)]
+    | .[] | "\(.number)\t\(.author.login)\t\(.url)"
+  ' 2>/dev/null || true
 }
 
 forge_list_prs_for_branch() {
