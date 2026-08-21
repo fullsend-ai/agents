@@ -97,6 +97,16 @@ run_test "ci-dockerfile" \
   "$(has_ci_files "Dockerfile")" "true"
 run_test "ci-makefile" \
   "$(has_ci_files "Makefile")" "true"
+run_test "ci-github-codeowners-not-ci" \
+  "$(has_ci_files ".github/CODEOWNERS")" "false"
+run_test "ci-github-issue-template-not-ci" \
+  "$(has_ci_files ".github/ISSUE_TEMPLATE/bug.md")" "false"
+run_test "ci-github-actions" \
+  "$(has_ci_files ".github/actions/setup/action.yml")" "true"
+run_test "ci-gitlab-ci" \
+  "$(has_ci_files ".gitlab-ci.yml")" "true"
+run_test "ci-jenkinsfile" \
+  "$(has_ci_files "Jenkinsfile")" "true"
 
 # ---------------------------------------------------------------------------
 # Dependency file detection

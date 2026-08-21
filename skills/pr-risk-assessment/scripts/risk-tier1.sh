@@ -85,7 +85,7 @@ count_security_sensitive() {
 has_ci_files() {
   for file in "$@"; do
     case "${file}" in
-      .github/*|Makefile|Dockerfile|Containerfile) echo "true"; return ;;
+      .github/workflows/*|.github/actions/*|.gitlab-ci.yml|Jenkinsfile|azure-pipelines.yml|Makefile|Dockerfile|Containerfile) echo "true"; return ;;
     esac
   done
   echo "false"
