@@ -6,7 +6,7 @@ skills:
 # curl: required by GitLab forge. On GitHub, the network policy binary
 # allowlist (policies/github/prioritize.yaml) excludes **/curl, preventing
 # it from making network requests even though it is granted here.
-tools: Bash(gh,curl,jq)
+tools: Bash(gh,curl,jq),Skill
 model: opus
 ---
 
