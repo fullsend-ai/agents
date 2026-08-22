@@ -676,6 +676,7 @@ run_gitlab_postfix_test() {
     export REPO_FULL_NAME="test-group/test-project"
     export REPO_ENCODED="test-group%2Ftest-project"
     export GITLAB_HOST="gitlab.com"
+    export CI_SERVER_HOST="gitlab.com"
     export PR_NUMBER="99"
     export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
     export TRIGGER_SOURCE="test-user"
@@ -744,6 +745,7 @@ run_gitlab_postfix_pr_url_test() {
     export REPO_FULL_NAME="test-group/test-project"
     export REPO_ENCODED="test-group%2Ftest-project"
     export GITLAB_HOST="gitlab.com"
+    export CI_SERVER_HOST="gitlab.com"
     export PR_NUMBER="99"
     # PR_URL intentionally NOT set
     export TRIGGER_SOURCE="test-user"
@@ -800,6 +802,7 @@ run_gitlab_postfix_host_mismatch_test() {
     export REPO_FULL_NAME="test-group/test-project"
     export REPO_ENCODED="test-group%2Ftest-project"
     export GITLAB_HOST="evil.example.com"
+    export CI_SERVER_HOST="gitlab.com"
     export PR_NUMBER="99"
     export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
     export TRIGGER_SOURCE="test-user"
@@ -845,7 +848,7 @@ chmod +x "${GL_MOCK_BIN}/curl"
 
 run_gitlab_postfix_test "gitlab-api-failure-fails-closed" "true" "true"
 
-# GitLab: PR_URL with host not in ALLOWED_GITLAB_HOSTS → fail closed
+# GitLab: PR_URL with host not in dynamic trust sources → fail closed
 # Validates forge_validate_pr_url rejects hosts outside the allowlist.
 run_gitlab_postfix_invalid_host_test() {
   local test_name="$1"
@@ -872,6 +875,7 @@ run_gitlab_postfix_invalid_host_test() {
     export REPO_FULL_NAME="evil-org/evil-project"
     export PR_NUMBER="1"
     export PR_URL="https://evil.com/evil-org/evil-project/-/merge_requests/1"
+    export CI_SERVER_HOST="gitlab.com"
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
     export FULLSEND_FORGE="gitlab"
@@ -885,8 +889,8 @@ run_gitlab_postfix_invalid_host_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if ! grep -q "not in the allowed host list" "${GL_TMPDIR}/stdout-${test_name}.log"; then
-    echo "FAIL: ${test_name} — expected allowed host list error"
+  if ! grep -q "does not match CI_SERVER_HOST" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected CI_SERVER_HOST mismatch error"
     cat "${GL_TMPDIR}/stdout-${test_name}.log"
     FAILURES=$((FAILURES + 1))
     return
@@ -936,6 +940,7 @@ run_prefix_validation_test() {
   # shellcheck disable=SC2030,SC2031
   (
     export FULLSEND_FORGE="gitlab"
+    export CI_SERVER_HOST="gitlab.com"
     export REPO_FULL_NAME="${repo_full_name}"
     export PR_NUMBER="${pr_number}"
     export PR_URL="${pr_url}"

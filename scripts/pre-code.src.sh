@@ -75,7 +75,7 @@ if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
   # shellcheck disable=SC2034
   REPO_ENCODED="$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)"
   if [[ -n "${ISSUE_URL:-}" ]]; then
-    _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+    _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
     if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
       echo "::error::GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
       exit 1

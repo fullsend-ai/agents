@@ -39,9 +39,8 @@ network_policies:
       - path: "**/claude"
       - path: "**/node"
 
-  # Allowed GitLab hosts. To support a self-hosted instance, add it here,
-  # in gitlab-fix-ops.lib.sh (ALLOWED_GITLAB_HOSTS case), AND in
-  # process-fix-result.py (ALLOWED_GITLAB_HOSTS).
+  # To support a self-hosted instance, add it here. CI_SERVER_HOST is set
+  # automatically by the GitLab CI runner for shell/Python validation.
   gitlab_api:
     name: gitlab-api
     endpoints:

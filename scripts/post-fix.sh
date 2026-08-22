@@ -211,6 +211,44 @@ forge_append_path() {
 [[ -n "${GITLAB_FIX_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_FIX_OPS_SH_LOADED=1
 
+# shellcheck source=gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
+# shellcheck shell=bash
+# gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
+#
+# Validates a hostname against CI_SERVER_HOST, a GitLab CI predefined
+# variable set automatically by the runner.
+#
+# Fails closed: rejects when CI_SERVER_HOST is not set.
+#
+# Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
+
+[[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
+GITLAB_HOST_VALIDATION_SH_LOADED=1
+
+if ! declare -F _gha_sanitize >/dev/null 2>&1; then
+  _gha_sanitize() {
+    printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'
+  }
+fi
+
+_validate_gitlab_host() {
+  local host="$1"
+  if [[ -z "${CI_SERVER_HOST:-}" ]]; then
+    echo "ERROR: CI_SERVER_HOST is not set (set by GitLab CI runner)" >&2
+    return 1
+  fi
+  if [[ ! "${CI_SERVER_HOST}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: CI_SERVER_HOST contains invalid characters" >&2
+    return 1
+  fi
+  if [[ "${host,,}" != "${CI_SERVER_HOST,,}" ]]; then
+    echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' does not match CI_SERVER_HOST" >&2
+    return 1
+  fi
+}
+# END bundled: lib/gitlab-host-validation.lib.sh
+
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() {
     local lvl="$1"; shift
@@ -226,6 +264,11 @@ _gitlab_api() {
   shift
   local endpoint="$1"
   shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call forge_parse_pr_url first" >&2
+    return 1
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -239,23 +282,17 @@ _gitlab_api() {
 forge_validate_pr_url() {
   local url="${1:-${PR_URL:-}}"
   if [[ ! "${url}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+){2,}/-/merge_requests/[1-9][0-9]*$ ]]; then
-    echo "ERROR: PR_URL does not match expected GitLab MR pattern: ${url}" >&2
+    echo "ERROR: PR_URL does not match expected GitLab MR pattern: $(_gha_sanitize "${url}")" >&2
     return 1
   fi
   local host
-  host=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
-  # Allowed GitLab hosts. To support a self-hosted instance, add it here,
-  # in process-fix-result.py (ALLOWED_GITLAB_HOSTS), AND in the network
-  # policy (policies/gitlab/fix.yaml).
-  case "${host}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list (see gitlab-fix-ops.lib.sh and policies/gitlab/fix.yaml)" >&2; return 1 ;;
-  esac
+  host=$(echo "${url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  _validate_gitlab_host "${host}" || return 1
 }
 
 forge_parse_pr_url() {
   local url="${1:-${PR_URL:-}}"
-  GITLAB_HOST=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  GITLAB_HOST=$(echo "${url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
   REPO_FULL_NAME=$(echo "${url}" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
   # shellcheck disable=SC2034
@@ -275,7 +312,8 @@ forge_get_pr_head_ref() {
 
 forge_set_push_remote() {
   local token="$1"
-  [[ -n "${GITLAB_HOST:-}" ]] || { echo "ERROR: GITLAB_HOST is not set" >&2; return 1; }
+  [[ -n "${GITLAB_HOST:-}" ]] || { echo "ERROR: GITLAB_HOST is not set — call forge_parse_pr_url first" >&2; return 1; }
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   git remote set-url origin \
     "https://oauth2:${token}@${GITLAB_HOST}/${REPO_FULL_NAME}.git"
 }
@@ -954,7 +992,7 @@ if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
     gha_echo error "PR_URL format invalid for GitLab: '${PR_URL}'"
     exit 1
   fi
-  local_url_host="$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+  local_url_host="$(echo "${PR_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${local_url_host}" ]]; then
     gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match PR URL host '${local_url_host}'"
     exit 1

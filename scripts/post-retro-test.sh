@@ -954,6 +954,7 @@ export FULLSEND_FORGE="gitlab"
 export ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
 # shellcheck disable=SC2031 # GITLAB_TOKEN exported for subshell test runs
 export GITLAB_TOKEN="fake-gitlab-token"
+export CI_SERVER_HOST="gitlab.com"
 unset GH_TOKEN
 
 # GitLab workspace config — same allowlist structure.
@@ -1281,7 +1282,7 @@ ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
 ORIGINATING_URL="https://evil.com/test-group/test-project/-/issues/10"
 run_gl_test "gl-rejects-disallowed-host" \
   "${GL_FIXTURE_ONE_PROPOSAL}" \
-  "not in the allowed host list" \
+  "does not match CI_SERVER_HOST" \
   "true"
 # shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
@@ -1306,11 +1307,13 @@ ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
 # GitLab: gitlab.cee.redhat.com host accepted.
 # shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://gitlab.cee.redhat.com/team/project/-/issues/5"
+CI_SERVER_HOST="gitlab.cee.redhat.com"
 run_gl_test_no_gh_call "gl-redhat-host-accepted" \
   "${GL_FIXTURE_NO_PROPOSALS}" \
   "Post-retro complete."
 # shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
+CI_SERVER_HOST="gitlab.com"
 
 # GitLab: forge_get_comment_max_len returns 1000000 (not 65000).
 # Use an oversized summary > 65000 chars (GitHub limit) but < 1000000 (GitLab limit).

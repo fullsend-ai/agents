@@ -1295,6 +1295,7 @@ export FULLSEND_TRACKER="github"
 export FULLSEND_TRACKER="gitlab"
 export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
 export GITLAB_TOKEN="fake-gitlab-token"
+export CI_SERVER_HOST="gitlab.com"
 unset GH_TOKEN
 
 # GitLab mock curl: record calls and return appropriate responses.
@@ -1651,7 +1652,7 @@ export JIRA_TOKEN="fake-jira-token"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
-unset GH_TOKEN
+unset GH_TOKEN CI_SERVER_HOST
 
 # Jira mock curl: record calls and return appropriate responses.
 JIRA_CURL_LOG="${TMPDIR}/jira-curl-calls.log"
@@ -2133,7 +2134,7 @@ export JIRA_USER_EMAIL="triage@example.com"
 export FULLSEND_TRACKER="github"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
-unset GITLAB_TOKEN
+unset GITLAB_TOKEN CI_SERVER_HOST
 unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
 
 # --- Summary ---

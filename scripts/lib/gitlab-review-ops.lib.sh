@@ -23,11 +23,19 @@
 [[ -n "${GITLAB_REVIEW_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_REVIEW_OPS_SH_LOADED=1
 
+# shellcheck source=gitlab-host-validation.lib.sh
+source "${BASH_SOURCE[0]%/*}/gitlab-host-validation.lib.sh"
+
 _gitlab_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call forge_parse_pr_url first" >&2
+    return 1
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${REVIEW_TOKEN}" \
@@ -44,17 +52,14 @@ forge_validate_pr_url() {
     return 1
   fi
   local host
-  host=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
-  case "${host}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list" >&2; return 1 ;;
-  esac
+  host=$(echo "${PR_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  _validate_gitlab_host "${host}" || return 1
 }
 
 forge_parse_pr_url() {
   # Extract host, project path, and MR IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/merge_requests/42
-  GITLAB_HOST=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  GITLAB_HOST=$(echo "${PR_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
   REPO=$(echo "${PR_URL}" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
   PR_NUMBER=$(basename "${PR_URL}")

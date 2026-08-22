@@ -96,13 +96,13 @@ If you use `base:` composition to override `harness/prioritize.yaml`:
   (`env/github/prioritize.env` / `env/gitlab/prioritize.env`) under
   `forge.<platform>` rather than at the top level.
 
-### GitLab host allowlist
+### GitLab host validation
 
-The GitLab forge operations validate `GITLAB_HOST` against a built-in
-allowlist (`gitlab.com`, `gitlab.cee.redhat.com`). To support a
-self-hosted GitLab instance, add the hostname to the `case` statements
-in `scripts/lib/gitlab-prioritize-ops.lib.sh` and the corresponding
-network policy endpoints in `policies/gitlab/prioritize.yaml`.
+The GitLab forge operations validate `GITLAB_HOST` against
+`CI_SERVER_HOST`, a GitLab CI predefined variable set automatically by
+the runner. Validation fails closed when `CI_SERVER_HOST` is not set.
+The network policy in `policies/gitlab/prioritize.yaml` must also be
+updated to allow connections to the host.
 
 ## Custom network policy
 

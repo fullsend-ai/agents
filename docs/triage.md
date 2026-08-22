@@ -168,6 +168,12 @@ surfaced in the summary comment so they can be filed manually.
 The source repo (where the triaged issue lives) is always implicitly
 allowed.
 
+### GitLab host validation
+
+`gitlab-triage-ops.lib.sh` validates `GITLAB_HOST` against `CI_SERVER_HOST`,
+a GitLab CI predefined variable set automatically by the runner. Validation
+fails closed when `CI_SERVER_HOST` is not set.
+
 ## Multi-forge support
 
 The triage agent supports GitHub, GitLab, and Jira (Cloud only). The forge is
