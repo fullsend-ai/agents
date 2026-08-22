@@ -22,7 +22,23 @@ Write only the code required to satisfy the issue. Do not add:
 If the minimal change is 30 lines, do not write 200. If a direct approach
 works, do not introduce a pattern or framework.
 
-## 3. Surgical changes
+## 3. Skill documentation altitude
+
+SKILL.md files teach agents *how to approach tasks*, not how to implement
+specific integrations. Keep skill documentation at the **directive altitude**:
+describe what to detect, what patterns to match, and what to report. Do not
+prescribe specific CLI commands, API queries, pagination strategies, or
+data-gathering implementation details.
+
+When a skill section references external data, name the **data source and
+the fields needed** — not the exact commands to retrieve them. Delegate
+implementation mechanics to subagent prompts or existing skill
+infrastructure.
+
+This keeps skill documentation stable across platform changes and bounds
+the surface area reviewers must verify.
+
+## 4. Surgical changes
 
 Modify only what the issue authorizes. Do not refactor adjacent code,
 fix unrelated style issues, or improve comments on lines you did not
@@ -33,7 +49,7 @@ Every changed line in your diff must trace directly to the issue scope.
 If your changes make existing code unused, remove the dead code. Do not
 remove pre-existing dead code the issue does not mention.
 
-## 4. Commit message format
+## 5. Commit message format
 
 Use [Conventional Commits](https://www.conventionalcommits.org/). The commit
 subject must start with a type prefix (`feat`, `fix`, `refactor`, `docs`,
@@ -46,7 +62,7 @@ subject must start with a type prefix (`feat`, `fix`, `refactor`, `docs`,
 Check `CONTRIBUTING.md` or `CLAUDE.md` for repo-specific allowed types. When
 reviewing PRs, flag commits or PR titles that do not follow this format.
 
-## 5. Goal-driven execution
+## 6. Goal-driven execution
 
 Convert the issue into verifiable success criteria before writing code.
 Determine:
@@ -58,7 +74,7 @@ Determine:
 Use these criteria as checkpoints. If a checkpoint fails, fix the root
 cause — do not weaken the check.
 
-## 6. Versioning and releases
+## 7. Versioning and releases
 
 This repository is versioned in lockstep with
 [fullsend](https://github.com/fullsend-ai/fullsend). Version tags are
@@ -83,7 +99,7 @@ stable (non-prerelease) version. Downstream consumers can reference
 `@v0` to track the latest release. Pre-release tags (`-rc.N`,
 `-alpha.N`, `-beta.N`) do not move `v0`.
 
-## 7. Skill resolution
+## 8. Skill resolution
 
 Skills listed in harness `skills:` arrays are resolved at runtime from
 multiple sources in priority order: repo-level (`.agents/skills/`) and
@@ -133,7 +149,7 @@ These fields are defined by the skill spec. A field's first appearance
 in a skill file in this repo is not a novel pattern and should not be
 flagged as a code-organization concern.
 
-## 8. Harness env var literals are not "hardcoded" mistakes
+## 9. Harness env var literals are not "hardcoded" mistakes
 
 A literal value in a harness `env.runner`/`env.sandbox` block (e.g.
 `REVIEW_FINDING_SEVERITY_THRESHOLD: "low"` in `harness/review.yaml`)
