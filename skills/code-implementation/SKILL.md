@@ -584,11 +584,14 @@ The first run may be slow (installs hook environments). This is normal.
 
      ```bash
      # Example: ruff hooks from astral-sh/ruff-pre-commit, rev v0.6.9
-     command -v ruff &>/dev/null || pip install "ruff==0.6.9" || \
-       echo "::warning::ruff install failed — hooks not run"
-     ruff check <your-changed-files>   # plus the hook's args
-     ruff format <your-changed-files>  # writes — stage what it fixes
-     git add <your-changed-files>
+     command -v ruff &>/dev/null || pip install "ruff==0.6.9"
+     if command -v ruff &>/dev/null; then
+       ruff check <your-changed-files>   # plus the hook's args
+       ruff format <your-changed-files>  # writes — stage what it fixes
+       git add <your-changed-files>
+     else
+       echo "::warning::ruff unavailable — ruff hooks not run"  # case 4
+     fi
      ```
 
   4. **Remote hooks with no obvious equivalent:** Log that the hook
@@ -706,8 +709,8 @@ must disclose that.
    refactor unrelated code or disable the lint rule.
 3. Re-run secret scan (9a), then tests and linters (9c). This consumes
    one retry iteration. **Do NOT re-run pre-commit (9b) during
-   retries** — you already used your 2 pre-commit runs. The post-script
-   handles pre-commit authoritatively on the runner.
+   retries** — you already used your 2 pre-commit runs, and RULE 2
+   requires you to disclose any hook failure in the commit message.
 4. Repeat until both tests and linters pass or the retry limit is
    reached.
 
