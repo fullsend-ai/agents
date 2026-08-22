@@ -1,0 +1,65 @@
+# This case tests the effort-estimation gate. The bug spans multiple
+# components (session, auth middleware, views, rate limiter) and requires
+# new test infrastructure. The agent should score effort >= 4 and set
+# block_auto_promotion.blocked = true, resulting in "triaged" instead
+# of "ready-to-code".
+state: open
+
+labels:
+  required:
+    - triaged
+    - bug
+  forbidden:
+    - ready-to-code
+
+triage_summary:
+  category: bug
+  block_auto_promotion:
+    blocked: true
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue reports a memory leak in the session store and a security
+  flaw where logout does not invalidate tokens. The fix touches at least
+  four files across three packages (auth, middleware, api) and requires
+  new test fixtures for session lifecycle.
+
+  The effort-estimation skill should score this high because:
+  - Scope: four files across two packages (session.py, views.py,
+    auth middleware, rate_limit.py) — 4.
+  - Testing: no existing session lifecycle tests; needs new test
+    infrastructure for time-dependent behavior (mocking time.time) — 4.
+  - Domain knowledge: requires understanding subsystem design across
+    the session store, auth middleware, and rate limiter — 3.
+  - Risk: changing session management is a breaking change affecting
+    every authenticated endpoint and downstream consumers; incorrect
+    eviction could log out active users or leave stale tokens valid — 5.
+
+  Overall effort should be >= 4 (average 4.0), triggering
+  block_auto_promotion. Risk=5 also independently triggers blocking
+  per the "any single dimension scores 5" rule.
+
+  A good triage should:
+
+  1. Verify the claims against the code: confirm SESSIONS only evicts
+     on lookup, confirm logout_handler is a no-op, confirm RATE_LIMITS
+     has the same accumulation pattern.
+  2. Identify this as a bug (category: bug), not security. The session
+     TTL is implemented but the eviction is broken, and logout is
+     documented but not functional. Do not split; the three symptoms
+     (session leak, no-op logout, rate-limiter accumulation) share the
+     same root cause (missing eviction/invalidation) and should be
+     fixed together as a single defect.
+  3. Set block_auto_promotion.blocked = true with a reason citing the
+     multi-component scope and testing requirements.
+  4. The post-script should apply "triaged" + "bug" (not "ready-to-code").
+
+  Scoring guide:
+  A score of 1 means the agent misidentified the action or category.
+  A score of 3 means correct action and category but did not flag the
+  effort level or missed the rate_limit.py parallel issue.
+  A score of 5 means correct triage, verified all claims against code,
+  identified the cross-cutting nature, and blocked auto-promotion with
+  a clear reason.

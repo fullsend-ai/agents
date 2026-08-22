@@ -40,14 +40,14 @@ These labels are managed by the triage agent based on its assessment of the issu
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
-| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: when `requires_workflow_changes` is set in the triage result, `triaged` is applied instead because the code agent cannot modify workflow files. |
-| `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
+| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance) with auto-promotion not blocked. Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). |
+| `triaged` | The issue requires human review before coding: feature work, other categories, or bug/docs/performance issues where `block_auto_promotion` is set (high effort, workflow changes, etc.). |
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |
-| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
-| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
+| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` or `triaged` to categorize the issue. |
+| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` or `triaged` to categorize the issue. |
 | `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
 | `pr-open` | An open PR or merge request already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR/MR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR/MR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR/MR is closed without merging: nothing re-triages on PR/MR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
@@ -144,6 +144,28 @@ This gives the triage agent the subtlety it needs to distinguish between
 `kind/bug` and `kind/flaky-test`, or to know that `area/operator` applies to
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
+
+### Skill: `effort-estimation`
+
+The triage agent includes an `effort-estimation` skill that scores
+implementation effort and decides whether the issue should be held for human
+review before auto-promoting to the code agent. The skill populates the
+`block_auto_promotion` field in `triage_summary`:
+
+- `blocked: true` + `reason`: the post-script applies `triaged` instead of
+  `ready-to-code` and appends the reason to the triage comment.
+- `blocked: false` + `reason`: auto-promotion proceeds normally.
+
+By default, the skill scores effort on a 1 to 5 scale across four dimensions
+(scope, testing, domain knowledge, risk). Issues scoring >= 4 are blocked.
+
+The same `block_auto_promotion` field is used for workflow-change detection:
+if the fix requires modifying GitHub Actions workflow files, the agent sets
+`blocked: true` with a reason explaining that the code agent cannot modify
+workflow files.
+
+See [Fullsend's Customizing with Skills docs](https://fullsend.sh/docs/guides/user/customizing-with-skills.html)
+to know where to add the skill files.
 
 ### Variables
 
