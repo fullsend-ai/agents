@@ -90,8 +90,13 @@ fi
 When `TIMEOUT_SECONDS` is set, use these thresholds (expressed as
 fractions of the budget so they scale to any timeout value):
 
-- **Before 9b (pre-commit):** If less than 40% of the budget remaining,
-  skip pre-commit entirely. The post-script runs it authoritatively.
+- **Before 9b (pre-commit):** If less than 10% of the budget remaining,
+  skip pre-commit entirely. Note: the post-script's authoritative
+  pre-commit check runs **after the sandbox is destroyed** — failures
+  caught there are terminal (`pre-commit-blocked`) and require human
+  re-dispatch. Running hooks in-sandbox, even via direct execution
+  when `pre-commit` itself cannot fetch repos (see step 9b STEP C),
+  is almost always cheaper than a terminal post-script failure.
 - **Before a retry in 9c:** If less than 20% of the budget remaining,
   do NOT retry. Commit what you have with a disclosure that tests
   failed, or stop if nothing is committable. A disclosed partial commit
@@ -453,10 +458,13 @@ echo "::notice::STEP 9b: Pre-commit hooks"
 
 Pre-commit is a **best-effort optimization**, not a hard gate. The
 post-script (`post-code.sh`) runs an authoritative pre-commit check on
-the CI runner before pushing — that is the real security gate.
-Running pre-commit here catches formatting and lint issues early so the
-post-script doesn't reject your commit, but burning excessive time on
-in-sandbox retries is worse than committing with a disclosed failure.
+the CI runner before pushing. However, the post-script runs **after the
+sandbox is destroyed** — any failure it catches is terminal
+(`pre-commit-blocked`), ending the run with no PR and requiring human
+re-dispatch. "The post-script runs it authoritatively" is therefore
+**not** a valid reason to skip verification. Running hooks in-sandbox
+catches the same failures while the agent can still fix them, avoiding
+an expensive terminal failure.
 
 ```bash
 test -f .pre-commit-config.yaml && echo "pre-commit config found"
@@ -527,22 +535,63 @@ The first run may be slow (installs hook environments). This is normal.
   ```
 
 - **Any other failure** (exit 3, network error, infrastructure error) —
-  log the error and move on to step 9c.
+  **do not skip verification.** When `pre-commit` fails because it
+  cannot fetch remote hook repositories (common in sandboxes with
+  restricted network access), fall back to running the configured
+  hooks directly:
+
+  1. Parse `.pre-commit-config.yaml` to identify each hook's `repo`
+     type and `entry` command.
+  2. **`repo: local` hooks:** Run the `entry` command directly. Local
+     hooks need no network beyond what the entry itself uses (e.g.,
+     `uvx`, `uv`, `pip` access to PyPI is typically allowed by the
+     sandbox network policy). Example:
+
+     ```bash
+     # .pre-commit-config.yaml entry: uvx ty check --ignore unresolved-import
+     uvx ty check --ignore unresolved-import <your-changed-files>
+     ```
+
+  3. **Remote hooks with obvious PyPI equivalents:** Install and run
+     the underlying tool directly. Common mappings:
+     - `astral-sh/ruff-pre-commit` → `ruff check` + `ruff format`
+     - `psf/black` → `black --check`
+     - `pycqa/isort` → `isort --check`
+     - `pycqa/flake8` → `flake8`
+
+     Install via `pip`/`uvx` if not already on PATH — PyPI access is
+     allowed. Pass the hook's `args` from the YAML config.
+
+     ```bash
+     # Example: ruff hooks from astral-sh/ruff-pre-commit
+     command -v ruff &>/dev/null || pip install ruff 2>/dev/null
+     ruff check <your-changed-files>
+     ruff format --check <your-changed-files>
+     ```
+
+  4. **Remote hooks with no obvious equivalent:** Log that the hook
+     could not be run and why. Disclose this in the commit message.
+  5. **React to direct-execution results the same way as pre-commit
+     results:** if a hook reports errors, fix them. This counts as
+     your pre-commit retry (STEP D still applies — max 2 total runs
+     including the initial `pre-commit run` attempt).
 
 **STEP D — After the retry, STOP regardless of the result.**
 
-If the second pre-commit run passes, great. If it fails again, **you are
-done with pre-commit for the entire session**. Log the exact hook name,
-file, and error in your commit message and move on to 9c. Do NOT attempt
-a third run. Do NOT try a different fix. The post-script runs an
-authoritative pre-commit check on the runner before pushing.
+If the second run passes (whether `pre-commit run` or direct execution
+of hooks), great. If it fails again, **you are done with pre-commit for
+the entire session**. Log the exact hook name, file, and error in your
+commit message and move on to 9c. Do NOT attempt a third run. Do NOT try
+a different fix. The post-script runs an authoritative pre-commit check
+on the runner before pushing.
 
 **RULES:**
 
-1. **Maximum 2 pre-commit runs total across the entire session.** One
-   initial run, one retry. No more — not even if step 9c sends you back
-   to fix your code. Once you have used your 2 runs, pre-commit is done.
-   Do not re-run it during retries.
+1. **Maximum 2 pre-commit/hook-execution runs total across the entire
+   session.** One initial run (or direct-execution fallback), one retry.
+   No more — not even if step 9c sends you back to fix your code. Once
+   you have used your 2 runs, pre-commit is done. Do not re-run it
+   during retries.
 2. **Always disclose.** If pre-commit did not pass, say so in the commit
    message with the exact error. Never claim hooks passed when they did
    not.
