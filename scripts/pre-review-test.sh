@@ -409,6 +409,7 @@ run_gitlab_test_stdout() {
     PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42"
     FULLSEND_FORGE="gitlab"
     REVIEW_TOKEN="fake-gitlab-token"
+    CI_SERVER_HOST="gitlab.com"
   )
 
   if [[ -n "${extra_env}" ]]; then

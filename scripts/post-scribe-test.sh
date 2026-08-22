@@ -310,6 +310,7 @@ run_validated_dir_test "validated-dir-neither-filename" "none" "true"
 export FULLSEND_FORGE="gitlab"
 export GITLAB_TOKEN="fake-gitlab-token"
 export SCRIBE_REPO="mock-group/mock-project"
+export CI_SERVER_HOST="gitlab.com"
 
 run_test_stdout "gitlab/dry-run-comment" \
   '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
@@ -364,6 +365,7 @@ export SCRIBE_DRY_RUN="true"
 export FULLSEND_FORGE="github"
 export SCRIBE_REPO="mock-org/mock-repo"
 unset GITLAB_TOKEN
+unset CI_SERVER_HOST
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

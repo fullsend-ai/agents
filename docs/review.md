@@ -97,6 +97,12 @@ Override either variable by extending the harness file via a `base` reference an
 When severity filtering removes all findings from a negative review verdict, the
 verdict is downgraded to a comment (applying the `requires-manual-review` label).
 
+### GitLab host validation
+
+`gitlab-review-ops.lib.sh` validates `GITLAB_HOST` against `CI_SERVER_HOST`,
+a GitLab CI predefined variable set automatically by the runner. Validation
+fails closed when `CI_SERVER_HOST` is not set.
+
 ## How the agent works
 
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.

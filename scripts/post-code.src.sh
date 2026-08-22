@@ -220,7 +220,7 @@ if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
   # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
   # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
   # to the mismatched host.
-  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
     gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
     exit 1

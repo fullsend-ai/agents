@@ -118,7 +118,7 @@ if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
     gha_echo error "PR_URL format invalid for GitLab: '${PR_URL}'"
     exit 1
   fi
-  local_url_host="$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+  local_url_host="$(echo "${PR_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${local_url_host}" ]]; then
     gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match PR URL host '${local_url_host}'"
     exit 1

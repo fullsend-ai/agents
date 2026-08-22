@@ -75,5 +75,4 @@ forge:
     env:
       runner:
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
-        GITLAB_HOST: "${GITLAB_HOST}"
         FULLSEND_FORGE: gitlab

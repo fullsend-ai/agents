@@ -2001,9 +2001,11 @@ run_auto_detect_test "auto-detect-squash-only" \
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the GitLab issue URL validation regex from
-# gitlab-code-ops.lib.sh forge_validate_issue_url.
+# Test helper — wraps the shared _validate_gitlab_host to exercise the same
+# code path as gitlab-code-ops.lib.sh forge_validate_issue_url.
 # ---------------------------------------------------------------------------
+source "${SCRIPT_DIR}/lib/gitlab-host-validation.lib.sh"
+
 validate_gitlab_issue_url() {
   local url="$1"
   if [[ ! "${url}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
@@ -2011,11 +2013,18 @@ validate_gitlab_issue_url() {
     return 0
   fi
   local host
-  host=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
-  case "${host}" in
-    gitlab.com|gitlab.cee.redhat.com) echo "valid" ;;
-    *) echo "invalid:host:${host}" ;;
-  esac
+  host=$(echo "${url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  local err
+  if err=$(_validate_gitlab_host "${host}" 2>&1); then
+    echo "valid"
+  else
+    case "${err}" in
+      *"CI_SERVER_HOST is not set"*) echo "invalid:no-trust-source" ;;
+      *"CI_SERVER_HOST contains invalid"*) echo "invalid:ci-server-host-chars" ;;
+      *"does not match CI_SERVER_HOST"*) echo "invalid:host:${host}" ;;
+      *) echo "invalid:unknown" ;;
+    esac
+  fi
 }
 
 run_gitlab_url_test() {
@@ -2040,12 +2049,15 @@ run_gitlab_url_test() {
 
 # --- GitLab URL validation test cases ---
 
+CI_SERVER_HOST="gitlab.com" \
 run_gitlab_url_test "gitlab-url-valid-gitlab-com" \
   "https://gitlab.com/group/project/-/issues/42" "valid"
 
+CI_SERVER_HOST="gitlab.cee.redhat.com" \
 run_gitlab_url_test "gitlab-url-valid-redhat" \
   "https://gitlab.cee.redhat.com/gallen/integration-service/-/issues/1" "valid"
 
+CI_SERVER_HOST="gitlab.com" \
 run_gitlab_url_test "gitlab-url-valid-nested-group" \
   "https://gitlab.com/org/sub-group/project/-/issues/99" "valid"
 
@@ -2055,6 +2067,7 @@ run_gitlab_url_test "gitlab-url-invalid-no-dash-segment" \
 run_gitlab_url_test "gitlab-url-invalid-github-url" \
   "https://github.com/owner/repo/issues/42" "invalid:pattern"
 
+CI_SERVER_HOST="gitlab.com" \
 run_gitlab_url_test "gitlab-url-invalid-unknown-host" \
   "https://git.example.com/group/project/-/issues/42" "invalid:host"
 
@@ -2067,6 +2080,14 @@ run_gitlab_url_test "gitlab-url-invalid-non-numeric-issue" \
 run_gitlab_url_test "gitlab-url-invalid-mr-not-issue" \
   "https://gitlab.com/group/project/-/merge_requests/42" "invalid:pattern"
 
+CI_SERVER_HOST="" \
+run_gitlab_url_test "gitlab-url-no-trust-source" \
+  "https://gitlab.com/group/project/-/issues/42" "invalid:no-trust-source"
+
+CI_SERVER_HOST="evil host" \
+run_gitlab_url_test "gitlab-url-ci-server-host-invalid-chars" \
+  "https://gitlab.com/group/project/-/issues/42" "invalid:ci-server-host-chars"
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the GitLab issue URL parsing from
 # gitlab-code-ops.lib.sh forge_parse_issue_url.
@@ -2074,7 +2095,7 @@ run_gitlab_url_test "gitlab-url-invalid-mr-not-issue" \
 parse_gitlab_issue_url() {
   local url="$1"
   local host repo_full issue_number repo_encoded
-  host=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  host=$(echo "${url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
   repo_full=$(echo "${url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   issue_number=$(basename "${url}")
   repo_encoded=$(printf '%s' "${repo_full}" | jq -sRr @uri)
@@ -2422,6 +2443,7 @@ _gl_ns_rc=0
   export FULLSEND_FORGE="gitlab"
   export GITLAB_TOKEN="${PUSH_TOKEN}"
   export GITLAB_HOST="gitlab.com"
+  export CI_SERVER_HOST="gitlab.com"
   bash "${POST_SCRIPT}"
 ) > "${GL_INT_TMPDIR}/stdout-gl-namespace.log" 2>&1 || _gl_ns_rc=$?
 

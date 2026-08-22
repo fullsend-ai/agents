@@ -728,6 +728,7 @@ run_validated_dir_test "validated-dir-neither-filename" \
 export FULLSEND_FORGE="gitlab"
 export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
 export GITLAB_TOKEN="fake-gitlab-token"
+export CI_SERVER_HOST="gitlab.com"
 unset GH_TOKEN
 unset GITLAB_HOST
 unset ORG
@@ -1005,7 +1006,7 @@ export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
 export ORG="test-org"
 export PROJECT_NUMBER="1"
-unset GITLAB_TOKEN
+unset GITLAB_TOKEN CI_SERVER_HOST
 
 # Smoke test: GitHub forge still works after GitLab section (catches state leakage).
 run_test "github-after-gitlab-smoke" "" 8

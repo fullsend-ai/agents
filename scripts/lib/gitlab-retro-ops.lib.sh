@@ -18,11 +18,19 @@
 [[ -n "${GITLAB_RETRO_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_RETRO_OPS_SH_LOADED=1
 
+# shellcheck source=gitlab-host-validation.lib.sh
+source "${BASH_SOURCE[0]%/*}/gitlab-host-validation.lib.sh"
+
 _gitlab_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call forge_parse_originating_url first" >&2
+    return 1
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -34,18 +42,13 @@ _gitlab_api() {
 # --- URL handling ---
 
 forge_validate_originating_url() {
-  # Accept both issue and MR URLs: /-/issues/N or /-/merge_requests/N
   if [[ ! "${ORIGINATING_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+){2,}/-/(issues|merge_requests)/[0-9]+$ ]]; then
     echo "ERROR: ORIGINATING_URL does not match expected GitLab pattern: $(_gha_sanitize "${ORIGINATING_URL}")" >&2
     return 1
   fi
   local host
-  host=$(echo "${ORIGINATING_URL}" | sed -E 's#^https://([^/]+)/.*#\1#')
-  # Keep in sync with policies/gitlab/retro.yaml gitlab_api endpoints.
-  case "${host}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list" >&2; return 1 ;;
-  esac
+  host=$(echo "${ORIGINATING_URL}" | sed -E 's#^https://([^/:]+)/.*#\1#')
+  _validate_gitlab_host "${host}" || return 1
 }
 
 forge_parse_originating_url() {
@@ -53,7 +56,7 @@ forge_parse_originating_url() {
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
   # e.g., https://gitlab.com/group/project/-/merge_requests/10
   # shellcheck disable=SC2034 # GITLAB_HOST consumed by _gitlab_api and callers
-  GITLAB_HOST=$(echo "${ORIGINATING_URL}" | sed -E 's#^https://([^/]+)/.*#\1#')
+  GITLAB_HOST=$(echo "${ORIGINATING_URL}" | sed -E 's#^https://([^/:]+)/.*#\1#')
   # shellcheck disable=SC2034 # ORIGINATING_REPO consumed by callers and is_target_allowed
   ORIGINATING_REPO=$(echo "${ORIGINATING_URL}" | sed -E 's#^https://[^/]+/(.+)/-/(issues|merge_requests)/[0-9]+$#\1#')
   # shellcheck disable=SC2034 # ORIGINATING_NUMBER consumed by callers after function returns

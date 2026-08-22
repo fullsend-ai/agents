@@ -91,7 +91,6 @@ Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 | `GH_TOKEN` | yes (GitHub) | GitHub token with issues read/write |
 | `CONTENTS_TOKEN` | no (GitHub) | Optional separate token for repo content reads; falls back to `GH_TOKEN` |
 | `GITLAB_TOKEN` | yes (GitLab) | GitLab personal/project access token |
-| `GITLAB_HOST` | no (GitLab) | GitLab API host (default: `gitlab.com`) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | yes | GCP service account key for Drive read |
 | `SCRIBE_DRIVE_CREDENTIALS` | no | Override path to a Drive-scoped SA key (defaults to `GOOGLE_APPLICATION_CREDENTIALS`) |
 | `SCRIBE_SLACK_WEBHOOK_URL` | no | Optional Slack notification after run |
@@ -103,6 +102,12 @@ Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 | `all` | Post comments on existing issues and create new issues |
 | `comments_only` | Skip new issue creation |
 | `new_issues_only` | Skip comments on existing issues |
+
+### GitLab host validation
+
+`gitlab-scribe-ops.lib.sh` uses `CI_SERVER_HOST`, a GitLab CI predefined
+variable set automatically by the runner, as the API host. Validation fails
+closed when `CI_SERVER_HOST` is not set.
 
 ## How the agent works
 

@@ -15,6 +15,7 @@ Exit codes:
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -122,10 +123,14 @@ def _post_comment_github(repo, pr_number, full):
     )
 
 
-# Allowed GitLab hosts. To support a self-hosted instance, add it here,
-# in gitlab-fix-ops.lib.sh (ALLOWED_GITLAB_HOSTS case), AND in the network
-# policy (policies/gitlab/fix.yaml).
-ALLOWED_GITLAB_HOSTS = {"gitlab.com", "gitlab.cee.redhat.com"}
+def _get_allowed_gitlab_hosts():
+    """Build the allowed host set from CI_SERVER_HOST."""
+    ci_host = os.environ.get("CI_SERVER_HOST", "")
+    if not ci_host:
+        return set()
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", ci_host):
+        raise ValueError("CI_SERVER_HOST contains invalid characters")
+    return {ci_host.lower()}
 
 
 def _post_comment_gitlab(repo, pr_number, full):
@@ -141,10 +146,14 @@ def _post_comment_gitlab(repo, pr_number, full):
             gitlab_host = parsed.hostname or ""
         if not gitlab_host:
             raise ValueError("GITLAB_HOST is not set and cannot be derived from PR_URL")
-    if gitlab_host not in ALLOWED_GITLAB_HOSTS:
+    allowed_hosts = _get_allowed_gitlab_hosts()
+    if not allowed_hosts:
         raise ValueError(
-            f"GITLAB_HOST '{gitlab_host}' is not in the allowed host list: "
-            f"{', '.join(sorted(ALLOWED_GITLAB_HOSTS))}"
+            "No trusted GitLab host configured (CI_SERVER_HOST is not set)"
+        )
+    if gitlab_host.lower() not in allowed_hosts:
+        raise ValueError(
+            f"GITLAB_HOST '{gitlab_host}' is not in the allowed host list"
         )
     if not gitlab_token:
         raise ValueError("GITLAB_TOKEN is not set")

@@ -8,27 +8,26 @@
 # Expected env vars:
 #   SCRIBE_REPO    — GitLab project path (group/project)
 #   GITLAB_TOKEN   — GitLab personal/project access token
-#   GITLAB_HOST    — API host (default: gitlab.com)
+#   CI_SERVER_HOST — GitLab CI predefined variable (set by runner)
 
 [[ -n "${GITLAB_SCRIBE_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_SCRIBE_OPS_SH_LOADED=1
 
-GITLAB_HOST="${GITLAB_HOST:-gitlab.com}"
+# shellcheck source=gitlab-host-validation.lib.sh
+source "${BASH_SOURCE[0]%/*}/gitlab-host-validation.lib.sh"
 
 _gitlab_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
-  case "${GITLAB_HOST}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GITLAB_HOST '$(_gha_sanitize "${GITLAB_HOST}")' is not in the allowed host list" >&2; return 1 ;;
-  esac
+  # Scribe has no input URL to cross-reference — validates CI_SERVER_HOST format only.
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "https://${CI_SERVER_HOST}/api/v4${endpoint}" \
     "$@"
 }
 
@@ -199,10 +198,16 @@ forge_create_issue() {
 # Return the base URL for linking to issues.
 forge_issue_url_base() {
   local repo="$1"
-  echo "https://${GITLAB_HOST}/${repo}/-/issues"
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  echo "https://${CI_SERVER_HOST}/${repo}/-/issues"
 }
 
 # Return the CI run/job URL for notifications.
 forge_run_url() {
-  echo "${CI_JOB_URL:-https://${GITLAB_HOST}/${1}}"
+  if [[ -n "${CI_JOB_URL:-}" ]]; then
+    echo "${CI_JOB_URL}"
+  else
+    _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+    echo "https://${CI_SERVER_HOST}/${1}"
+  fi
 }

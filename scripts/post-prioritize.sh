@@ -523,6 +523,44 @@ forge_post_sticky_comment() {
 [[ -n "${GITLAB_PRIORITIZE_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_PRIORITIZE_OPS_SH_LOADED=1
 
+# shellcheck source=gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
+# shellcheck shell=bash
+# gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
+#
+# Validates a hostname against CI_SERVER_HOST, a GitLab CI predefined
+# variable set automatically by the runner.
+#
+# Fails closed: rejects when CI_SERVER_HOST is not set.
+#
+# Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
+
+[[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
+GITLAB_HOST_VALIDATION_SH_LOADED=1
+
+if ! declare -F _gha_sanitize >/dev/null 2>&1; then
+  _gha_sanitize() {
+    printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'
+  }
+fi
+
+_validate_gitlab_host() {
+  local host="$1"
+  if [[ -z "${CI_SERVER_HOST:-}" ]]; then
+    echo "ERROR: CI_SERVER_HOST is not set (set by GitLab CI runner)" >&2
+    return 1
+  fi
+  if [[ ! "${CI_SERVER_HOST}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: CI_SERVER_HOST contains invalid characters" >&2
+    return 1
+  fi
+  if [[ "${host,,}" != "${CI_SERVER_HOST,,}" ]]; then
+    echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' does not match CI_SERVER_HOST" >&2
+    return 1
+  fi
+}
+# END bundled: lib/gitlab-host-validation.lib.sh
+
 _gitlab_api() {
   local method="$1"
   shift
@@ -532,10 +570,7 @@ _gitlab_api() {
     echo "ERROR: GITLAB_HOST is not set — call forge_parse_issue_url first" >&2
     return 1
   fi
-  case "${GITLAB_HOST}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GITLAB_HOST '$(_gha_sanitize "${GITLAB_HOST}")' is not in the allowed host list" >&2; return 1 ;;
-  esac
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -565,17 +600,14 @@ forge_validate_issue_url() {
     return 1
   fi
   local host
-  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
-  case "${host}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' is not in the allowed host list" >&2; return 1 ;;
-  esac
+  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  _validate_gitlab_host "${host}" || return 1
 }
 
 forge_parse_issue_url() {
   # Extract host, project path, and issue IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
-  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
   REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")

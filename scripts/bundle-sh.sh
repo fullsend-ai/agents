@@ -141,7 +141,8 @@ bundle_expand_source() {
     -e 's/^[[:space:]]*'\''//; s/'\''[[:space:]]*$//' \
     -e 's/^\$\{SCRIPT_DIR[^}]*\}\///' \
     -e 's/^\$\{SCRIPT_DIR_POST[^}]*\}\///' \
-    -e 's/^\$\{SCRIPT_DIR[^}]*\}//')"
+    -e 's/^\$\{SCRIPT_DIR[^}]*\}//' \
+    -e 's/^\$\{BASH_SOURCE\[0\]%\/\*\}\///')"
 
   if [[ -z "${ref}" ]]; then
     echo "bundle-sh: unsupported source expression: ${raw_expr}" >&2

@@ -534,6 +534,7 @@ class TestGitLabPostComment(unittest.TestCase):
             "FULLSEND_FORGE": "gitlab",
             "GITLAB_HOST": "gitlab.com",
             "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
         },
     )
     @patch("subprocess.run")
@@ -567,10 +568,11 @@ class TestGitLabPostComment(unittest.TestCase):
             "FULLSEND_FORGE": "gitlab",
             "GITLAB_HOST": "evil.example.com",
             "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
         },
     )
     def test_rejected_host_raises(self):
-        """A host not in ALLOWED_GITLAB_HOSTS raises ValueError."""
+        """A host not in the dynamic trust sources raises ValueError."""
         with self.assertRaises(ValueError) as ctx:
             _post_comment_gitlab("org/repo", "42", "body")
         self.assertIn("evil.example.com", str(ctx.exception))
@@ -582,6 +584,7 @@ class TestGitLabPostComment(unittest.TestCase):
             **_SCHEMA_ENV,
             "FULLSEND_FORGE": "gitlab",
             "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
         },
         clear=False,
     )
@@ -599,6 +602,7 @@ class TestGitLabPostComment(unittest.TestCase):
             **_SCHEMA_ENV,
             "FULLSEND_FORGE": "gitlab",
             "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
             "PR_URL": "https://gitlab.com/group/project/-/merge_requests/42",
         },
         clear=False,
@@ -620,6 +624,7 @@ class TestGitLabPostComment(unittest.TestCase):
             **_SCHEMA_ENV,
             "FULLSEND_FORGE": "gitlab",
             "GITLAB_HOST": "gitlab.com",
+            "CI_SERVER_HOST": "gitlab.com",
         },
         clear=False,
     )
@@ -637,14 +642,31 @@ class TestGitLabPostComment(unittest.TestCase):
             "FULLSEND_FORGE": "gitlab",
             "GITLAB_HOST": "gitlab.com",
             "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
         },
     )
     @patch("subprocess.run")
     def test_allowed_host_accepted(self, mock_run):
-        """A host in ALLOWED_GITLAB_HOSTS is accepted."""
+        """A host in the dynamic trust sources is accepted."""
         mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
         _post_comment_gitlab("org/repo", "42", "body")
         mock_run.assert_called_once()
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "gitlab.com",
+            "GITLAB_TOKEN": "fake-token",
+        },
+    )
+    def test_no_trust_source_fails_closed(self):
+        """Fails closed when CI_SERVER_HOST is not set."""
+        os.environ.pop("CI_SERVER_HOST", None)
+        with self.assertRaises(ValueError) as ctx:
+            _post_comment_gitlab("org/repo", "42", "body")
+        self.assertIn("No trusted GitLab host configured", str(ctx.exception))
 
 
 if __name__ == "__main__":
