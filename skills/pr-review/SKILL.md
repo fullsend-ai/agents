@@ -731,9 +731,16 @@ of findings in the standard format:
   "line": "<line number, optional>",
   "description": "<explanation>",
   "remediation": "<fix, required for critical/high>",
-  "actionable": true|false
+  "actionable": true|false,
+  "verified_variables": ["<verified-input>"],
+  "unchecked_variables": ["<unchecked-input>"]
 }
 ```
+
+Both `verified_variables` and `unchecked_variables` are **required** on
+every finding. Security sub-agents populate them with the names of
+variables they verified or could not verify; non-security sub-agents
+set both to `[]`.
 
 If a sub-agent fails to return findings (timeout, error, empty
 response), record a finding noting the gap. The severity depends on
@@ -754,7 +761,9 @@ the sub-agent's tier:
   "category": "sub-agent-failure",
   "file": "N/A",
   "description": "The <dimension> sub-agent did not return findings: <reason>",
-  "actionable": false
+  "actionable": false,
+  "verified_variables": [],
+  "unchecked_variables": []
 }
 ```
 
@@ -806,6 +815,9 @@ When merging
 - Combine descriptions if they add complementary detail
 - Keep the more specific remediation
 - Preserve `actionable: true` if either finding had it
+- Union both findings' `verified_variables` arrays (deduplicate)
+- Union both findings' `unchecked_variables` arrays (deduplicate);
+  remove any entry that appears in the merged `verified_variables`
 
 #### 6c. Preserve distinct-category findings
 
@@ -908,7 +920,9 @@ isolation.
      "category": "sub-agent-failure",
      "file": "N/A",
      "description": "The challenger sub-agent did not return findings: <reason>. Using pre-challenger finding set.",
-     "actionable": false
+     "actionable": false,
+     "verified_variables": [],
+     "unchecked_variables": []
    }
    ```
 
@@ -1132,6 +1146,8 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 
 - **[<category>]** `<file>:<line>` — <description>
   Remediation: <remediation>
+  Verified: <comma-separated verified_variables, omit line if empty>
+  Unchecked: <comma-separated unchecked_variables, omit line if empty>
 
 #### High
 
