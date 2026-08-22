@@ -14,10 +14,6 @@
 name: Notify Agent Sync
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - '.fullsend/**'
   workflow_dispatch: {}
 
 permissions: {}
