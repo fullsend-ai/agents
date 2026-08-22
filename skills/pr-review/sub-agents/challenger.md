@@ -43,6 +43,14 @@ For each finding:
    higher severity and the more specific remediation.
 4. **Challenge weak reasoning.** If a finding's description is vague,
    speculative, or not supported by the diff, mark it for removal.
+5. **Challenge verification claims.** If the aggregated output contains
+   claims of verification beyond the scope of static diff analysis
+   (e.g., "all references verified", "delivery chain confirmed",
+   "zero X remain"), challenge whether the agent actually performed
+   exhaustive checks to support that claim. The review agent can read
+   diffs and source files — it cannot verify runtime behavior,
+   credential flows, or reference integrity across the full codebase.
+   Remove unsubstantiated verification text.
 
 ## Output format
 
