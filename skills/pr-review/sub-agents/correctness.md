@@ -38,6 +38,18 @@ or inter-component contract in the diff:
   unavailable, does the caller handle it or silently proceed as if it
   succeeded?
 
+**Remediation consistency:** Before suggesting a remediation, verify it
+is not contradicted by your own finding analysis. Specifically:
+
+- If your severity rationale states that a prior state is "already
+  broken" or "no longer functional," do not suggest reverting to or
+  falling back to that broken state as remediation.
+- If the PR description or linked issue explains that a companion
+  change in another repo provides the missing piece, and you have
+  acknowledged this context, frame the remediation around merge
+  coordination (e.g., "ensure companion PR lands") rather than
+  suggesting a fallback to the broken prior approach.
+
 **Consumer completeness:** If the diff adds new values to an enum,
 dispatch table, JSON schema enum, or case/switch structure, identify all
 code paths that consume or branch on that type (including scripts,
