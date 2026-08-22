@@ -281,16 +281,26 @@ scan-secrets <files-you-modified>
 
 If secrets are detected: hard stop. Remove them, re-scan.
 
-**7b. Pre-commit hooks — best-effort optimization**
+**7b. Pre-commit hooks — run them, do not skip them**
 
 ```bash
 echo "::notice::STEP 7b: Pre-commit hooks"
 ```
 
-Same rules as the code agent:
-- Maximum 2 pre-commit runs total across the entire session.
+Same rules as the code agent (see step 9b of the code-implementation
+skill for the full text):
+- Maximum 2 pre-commit/hook-execution runs total across the entire
+  session. A `pre-commit run` that failed on infrastructure before
+  executing any hook does not count.
 - Pre-format your code before running pre-commit.
-- If the second run still fails, log the error and move on.
+- If `pre-commit` itself cannot run — typically because it cannot
+  fetch remote hook repositories — do not skip verification. Fall
+  back to running the configured hooks directly, honoring each hook's
+  `entry`, `args`, `rev`, `stages`, `additional_dependencies`, and
+  file filters.
+- If the second run still fails, log the exact hook, file, and error
+  in the commit message and move on. Never claim hooks passed when
+  they did not.
 
 ```bash
 test -f .pre-commit-config.yaml && pre-commit run --files <all-changed-files>

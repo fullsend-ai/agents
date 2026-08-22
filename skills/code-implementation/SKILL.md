@@ -582,12 +582,16 @@ The first run may be slow (installs hook environments). This is normal.
      - `pycqa/flake8` → `flake8` (reports)
 
      Install via `pip`/`uvx` if not already on PATH — PyPI access is
-     allowed. Pin the install to the hook's `rev` from the YAML
-     (`rev: v0.6.9` → `pip install ruff==0.6.9`): a newer release can
-     format or lint differently from the version the post-script runs,
-     which turns an in-sandbox pass into a runner failure. Do not
-     discard the installer's stderr — if the tool cannot be installed,
-     that is case 4 below, not a pass.
+     allowed. Pin the install to the hook's `rev` from the YAML: a
+     newer release can format or lint differently from the version the
+     post-script runs, which turns an in-sandbox pass into a runner
+     failure. `rev` is a git tag, not a PyPI version — strip a leading
+     `v` (`rev: v0.6.9` → `pip install ruff==0.6.9`) and otherwise use
+     it verbatim. If the tag does not map cleanly onto a PyPI version
+     (date-based or project-specific tags), do not guess a pin and do
+     not silently fall back to the latest release: that is case 4
+     below. Likewise do not discard the installer's stderr — a tool
+     that cannot be installed is case 4, not a pass.
 
      ```bash
      # Example: ruff hooks from astral-sh/ruff-pre-commit, rev v0.6.9
