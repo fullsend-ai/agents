@@ -90,7 +90,7 @@ fi
 When `TIMEOUT_SECONDS` is set, use these thresholds (expressed as
 fractions of the budget so they scale to any timeout value):
 
-- **Before 9b (pre-commit):** If less than 40% of the budget remaining,
+- **Before 9b (pre-commit):** If less than 10% of the budget remaining,
   skip pre-commit entirely. The post-script runs it authoritatively.
 - **Before a retry in 9c:** If less than 20% of the budget remaining,
   do NOT retry. Commit what you have with a disclosure that tests
