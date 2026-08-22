@@ -315,6 +315,10 @@ is_control_label() {
       return 0
     fi
   done
+  # Pipeline-managed label prefixes
+  if [[ "${label}" == risk/* ]]; then
+    return 0
+  fi
   return 1
 }
 
@@ -348,6 +352,13 @@ run_control_label_test "rejected-is-control" "rejected" "true"
 run_control_label_test "ready-for-review-is-control" "ready-for-review" "true"
 run_control_label_test "fullsend-no-fix-is-control" "fullsend-no-fix" "true"
 run_control_label_test "fullsend-fix-is-control" "fullsend-fix" "true"
+
+# Pipeline-managed risk labels should be control labels
+run_control_label_test "risk-low-is-control" "risk/low" "true"
+run_control_label_test "risk-moderate-is-control" "risk/moderate" "true"
+run_control_label_test "risk-elevated-is-control" "risk/elevated" "true"
+run_control_label_test "risk-high-is-control" "risk/high" "true"
+run_control_label_test "risk-critical-is-control" "risk/critical" "true"
 
 # Non-control labels should NOT be recognized
 run_control_label_test "area-api-not-control" "area/api" "false"
@@ -402,6 +413,18 @@ fi
 # gh api repos/.../labels --paginate (list repo labels)
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser"
+  exit 0
+fi
+
+# gh pr edit ... --remove-label risk/* → log and succeed
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "edit" ]] && [[ "\$*" == *"--remove-label"* ]] && [[ "\$*" == *"risk/"* ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  exit 0
+fi
+
+# gh label create risk/* → log and succeed
+if [[ "\$1" == "label" ]] && [[ "\$2" == "create" ]] && [[ "\$3" == risk/* ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
   exit 0
 fi
 
@@ -1616,6 +1639,79 @@ run_protected_paths_default_drift_test() {
   echo "PASS: ${test_name}"
 }
 run_protected_paths_default_drift_test
+
+# ---------------------------------------------------------------------------
+# Risk assessment label + comment tests
+# ---------------------------------------------------------------------------
+
+# Result with risk_assessment → risk label applied
+RISK_HIGH_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Auth middleware refactor.","tier1_signals":[{"dimension":"blast_radius","value":"large"}]}}'
+
+run_label_test "risk-label-high-applied" \
+  "${RISK_HIGH_RESULT}" \
+  "gh label create risk/high"
+
+# Result with risk_assessment → sticky comment posted
+run_label_test "risk-comment-posted" \
+  "${RISK_HIGH_RESULT}" \
+  "fullsend post-comment"
+
+# Stdout should mention risk label
+run_label_test_stdout "risk-label-log-message" \
+  "${RISK_HIGH_RESULT}" \
+  "Applying risk/high label"
+
+# Result WITHOUT risk_assessment → stale risk labels removed
+APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+
+run_label_test "risk-absent-stale-removal" \
+  "${APPROVE_NO_RISK}" \
+  "--remove-label risk/low"
+
+run_label_test_no_pattern "risk-absent-no-create" \
+  "${APPROVE_NO_RISK}" \
+  "gh label create risk/"
+
+# Result with risk_assessment level=low → risk/low label
+RISK_LOW_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo fix."}}'
+
+run_label_test "risk-label-low-applied" \
+  "${RISK_LOW_RESULT}" \
+  "gh label create risk/low"
+
+# Risk labels work with request-changes too
+RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+
+run_label_test "risk-label-with-request-changes" \
+  "${RISK_RC_RESULT}" \
+  "gh label create risk/elevated"
+
+# Invalid risk level → warning, no risk label applied
+RISK_INVALID_LEVEL='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":3,"level":"bogus","rationale":"Bad level."}}'
+
+run_label_test_stdout "risk-invalid-level-warning" \
+  "${RISK_INVALID_LEVEL}" \
+  "Invalid risk level"
+
+run_label_test_no_pattern "risk-invalid-level-no-label" \
+  "${RISK_INVALID_LEVEL}" \
+  "gh label create risk/"
+
+# Invalid risk score → warning but label still applied (level is valid)
+RISK_INVALID_SCORE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":99,"level":"high","rationale":"Bad score."}}'
+
+run_label_test_stdout "risk-invalid-score-warning" \
+  "${RISK_INVALID_SCORE}" \
+  "Invalid risk score"
+
+run_label_test "risk-invalid-score-label-still-applied" \
+  "${RISK_INVALID_SCORE}" \
+  "gh label create risk/high"
+
+# Stale risk label removal — high result should remove other risk labels
+run_label_test "risk-stale-label-removal" \
+  "${RISK_HIGH_RESULT}" \
+  "--remove-label risk/low"
 
 # --- Summary ---
 

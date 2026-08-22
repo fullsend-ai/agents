@@ -1,0 +1,22 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - risk/low
+    - ready-for-merge
+
+max_turns: 80
+max_cost_usd: 8.00
+
+review_expectations: |
+  Multi-file auth refactor touching RBAC, CODEOWNERS, and security-
+  sensitive paths. Risk assessment should produce a moderate or higher
+  score (2+) due to security-sensitive path signals. The risk/low
+  label is forbidden to guard against misclassification.
+
+  The PR touches CODEOWNERS (a protected path). If the agent
+  approves, post-review.sh downgrades the approval to comment,
+  avoiding the 422 self-review error. The ready-for-merge label is
+  forbidden because the protected-path downgrade always yields
+  requires-manual-review.
