@@ -456,17 +456,17 @@ the scan passes.
 echo "::notice::STEP 9b: Pre-commit hooks"
 ```
 
-Pre-commit is bounded, not optional: STEP D caps you at two runs and
-lets you move on after that, but nothing here authorizes skipping it
-outright. The post-script (`post-code.sh`) runs an authoritative
-pre-commit check on the CI runner before pushing. However, the
-post-script runs **after the sandbox is destroyed** — any failure it
-catches is terminal (`pre-commit-blocked`), ending the run with no PR
-and requiring human re-dispatch. "The post-script runs it
-authoritatively" is therefore **not** a valid reason to skip
-verification. Running hooks in-sandbox
-catches the same failures while the agent can still fix them, avoiding
-an expensive terminal failure.
+Pre-commit is bounded, not optional. Exactly two things let you stop
+short: the time-budget threshold above (under 10% of the budget
+remaining), and STEP D's two-run cap. Nothing else authorizes skipping
+it. The post-script (`post-code.sh`) runs an authoritative pre-commit
+check on the CI runner before pushing. However, the post-script runs
+**after the sandbox is destroyed** — any failure it catches is
+terminal (`pre-commit-blocked`), ending the run with no PR and
+requiring human re-dispatch. "The post-script runs it authoritatively"
+is therefore **not** a valid reason to skip verification. Running
+hooks in-sandbox catches the same failures while the agent can still
+fix them, avoiding an expensive terminal failure.
 
 ```bash
 test -f .pre-commit-config.yaml && echo "pre-commit config found"
