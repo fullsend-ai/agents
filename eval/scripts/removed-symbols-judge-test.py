@@ -19,8 +19,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 EVAL_YAML = os.path.join(REPO_ROOT, "eval", "code", "eval.yaml")
 
 SYMBOLS = {
-    "VerboseLogging": ["config/config.go", "config/fields.go", "config/config_test.go"],
-    "verbose_logging": ["config/config.go", "config/fields.go", "config/config_test.go"],
+    "VerboseLogging": {"config/config.go": 1, "config/fields.go": 1, "config/config_test.go": 1},
+    "verbose_logging": {"config/config.go": 1, "config/fields.go": 1, "config/config_test.go": 1},
 }
 
 
@@ -40,10 +40,11 @@ def load_judge(path):
             if line.strip() == "check: |":
                 collecting = True
             continue
-        if line.strip() and indent is None:
-            indent = len(line) - len(line.lstrip())
-        if line.strip() and (len(line) - len(line.lstrip())) < indent:
-            break
+        if line.strip():
+            if indent is None:
+                indent = len(line) - len(line.lstrip())
+            if (len(line) - len(line.lstrip())) < indent:
+                break
         body.append(line)
 
     if not body:
@@ -56,12 +57,15 @@ def load_judge(path):
 
 
 def hunk(path, *lines):
+    # Real @@ counts: the judge trusts them to know when a hunk ends.
+    old = sum(1 for l in lines if l[:1] in (" ", "-"))
+    new = sum(1 for l in lines if l[:1] in (" ", "+"))
     return "\n".join([
         f"diff --git a/{path} b/{path}",
         "index 1111111..2222222 100644",
         f"--- a/{path}",
         f"+++ b/{path}",
-        "@@ -1,6 +1,4 @@",
+        f"@@ -1,{old} +1,{new} @@",
         *lines,
     ])
 
@@ -188,6 +192,53 @@ CASES = [
          COMPLETE,
          hunk("config/testdata/full.yaml", " verbose_logging: true"),
      ])), False),
+    # A known source extension is never documentation, wherever it lives,
+    # and "docs" has to be a real directory segment, not a substring.
+    ("source file under a docs directory is still scanned",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("pkg/docs/gen.go", "+\tcfg.VerboseLogging = true"),
+     ])), False),
+    ("yaml under docs is still scanned",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("docs/examples/config.yaml", "+verbose_logging: true"),
+     ])), False),
+    ("docs substring in a path is not a docs directory",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("cmd/gendocs/main.cfg", "+VerboseLogging=true"),
+     ])), False),
+    # Hunk counts are honoured: content beginning with "--"/"++" is content.
+    ("deleted SQL comment line counts as a deletion",
+     outputs_for("\n".join([
+         DELETE_CONFIG, DELETE_FIELDS, DELETE_TEST,
+         hunk("db/migrate.sql", "--- VerboseLogging column", " CREATE TABLE t;"),
+     ]), symbols={**SYMBOLS, "VerboseLogging": {**SYMBOLS["VerboseLogging"],
+                                                 "db/migrate.sql": 1}}), True),
+    ("added line starting with ++ cannot rebind the file mid-hunk",
+     outputs_for("\n".join([
+         DELETE_FIELDS, DELETE_TEST,
+         hunk("config/config.go",
+              '-\tVerboseLogging bool `yaml:"verbose_logging"`',
+              "-verbose_logging: x",
+              "+++ b/NOTES.md",
+              "+\tcfg.VerboseLogging = true"),
+     ])), False),
+    # One deletion line per file is not enough when the file has more sites:
+    # the second occurrence sits outside every hunk and is otherwise unseen.
+    ("fewer deletion lines than declared sites",
+     outputs_for(COMPLETE, symbols={**SYMBOLS, "VerboseLogging": {
+         **SYMBOLS["VerboseLogging"], "config/config.go": 2}}), False),
+    ("extra deletion lines beyond the declared count are fine",
+     outputs_for("\n".join([
+         hunk("config/config.go",
+              "-\t// VerboseLogging enables detailed debug output.",
+              '-\tVerboseLogging bool `yaml:"verbose_logging"`',
+              "-\t\tVerboseLogging: false,"),
+         DELETE_FIELDS, DELETE_TEST,
+     ]), symbols={**SYMBOLS, "VerboseLogging": {
+         **SYMBOLS["VerboseLogging"], "config/config.go": 2}}), True),
     # Whole-file deletion: git emits "+++ /dev/null", so the lines must be
     # attributed to the "--- a/" path or the declared file looks untouched.
     ("whole-file deletion satisfies the declared file",
@@ -209,6 +260,16 @@ CASES = [
     # reinstate the gap this judge closes.
     ("legacy list schema is rejected rather than ignored",
      outputs_for(DELETE_CONFIG, symbols=["VerboseLogging"]), False),
+    # Per-symbol values are validated too: a null, empty or list value would
+    # otherwise iterate nothing and silently drop the per-file requirement,
+    # and a scalar would crash the judge.
+    ("null file map is rejected", outputs_for(COMPLETE, symbols={"VerboseLogging": None}), False),
+    ("empty file map is rejected", outputs_for(COMPLETE, symbols={"VerboseLogging": {}}), False),
+    ("file list without counts is rejected",
+     outputs_for(COMPLETE, symbols={"VerboseLogging": ["config/config.go"]}), False),
+    ("scalar file map is rejected", outputs_for(COMPLETE, symbols={"VerboseLogging": 5}), False),
+    ("zero deletion count is rejected",
+     outputs_for(COMPLETE, symbols={"VerboseLogging": {"config/config.go": 0}}), False),
     ("diff fetch failure is surfaced",
      outputs_for(COMPLETE, pr_state={"number": 7, "state": "OPEN", "diff_fetch_failed": True}),
      False),

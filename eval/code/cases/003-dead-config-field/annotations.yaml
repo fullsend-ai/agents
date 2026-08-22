@@ -8,25 +8,27 @@ expected_files:
 labels:
   forbidden: []
 
-# Consumed by eval.yaml's removed_symbols judge: each symbol must have a
-# deletion line in EVERY file listed under it, and must not survive in any
-# added or context line of the diff. Both the Go identifier and its YAML key
-# must vanish from all three sites.
+# Consumed by eval.yaml's removed_symbols judge: for each symbol, each file
+# maps to the minimum number of deletion lines that must name the symbol,
+# and the symbol must not survive in any added or context line of the diff.
+# Both the Go identifier and its YAML key must vanish from all three sites.
 #
-# Per-file rather than a bare symbol list on purpose: a global "deleted at
-# least once" count is already satisfied by config.go alone, so a fix that
-# drops the struct field but leaves the raw `verbose_logging: true` literal
-# in TestLoad would still pass — and that literal breaks Load(), since
-# SetField rejects unknown keys. Naming the sites makes each one required.
+# Counts rather than a bare file list on purpose: one deletion line per
+# file is satisfied by the struct field alone, while the `VerboseLogging:
+# false,` in Defaults() sits 11 lines away — outside git's 3-line context,
+# so it is neither deleted nor visible as a survivor, and the tree no
+# longer compiles. The counts are the lines that name the symbol today
+# (`grep -n` in eval/code/repos/taskrunner/config/), excluding the doc
+# comment above the field, which a fix may legitimately leave or drop.
 removed_symbols:
   VerboseLogging:
-    - config/config.go
-    - config/fields.go
-    - config/config_test.go
+    config/config.go: 2       # struct field, Defaults()
+    config/fields.go: 1       # c.VerboseLogging = v
+    config/config_test.go: 6  # TestDefaults, TestLoad, TestLoadPartial (2 each)
   verbose_logging:
-    - config/config.go
-    - config/fields.go
-    - config/config_test.go
+    config/config.go: 1       # yaml tag on the struct field
+    config/fields.go: 1       # case "verbose_logging"
+    config/config_test.go: 1  # raw literal in TestLoad
 
 # Code agent budgets (sandbox work + retries). Unmeasured ceiling: this case
 # has no CI run of its own yet — re-derive from its first run. Values mirror

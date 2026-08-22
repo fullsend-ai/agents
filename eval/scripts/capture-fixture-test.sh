@@ -54,7 +54,7 @@ CASE_SOURCE_DIR="$no_symbols" assert_gate skip "case declares no removed_symbols
 
 with_symbols="${TMP_ROOT}/with-symbols"
 mkdir -p "$with_symbols"
-printf 'state: open\nremoved_symbols:\n  VerboseLogging:\n    - config/config.go\n' \
+printf 'state: open\nremoved_symbols:\n  VerboseLogging:\n    config/config.go: 2\n' \
   > "${with_symbols}/annotations.yaml"
 CASE_SOURCE_DIR="$with_symbols" assert_gate capture "case declares removed_symbols"
 
