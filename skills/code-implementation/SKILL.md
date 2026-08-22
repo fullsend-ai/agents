@@ -102,7 +102,66 @@ fractions of the budget so they scale to any timeout value):
 
 ## Process
 
-Follow these steps in order. Do not skip steps.
+Follow these steps in order. Do not skip steps — with one exception,
+the retry path immediately below, which is entered only when the runner
+hands you a validation failure from a previous iteration.
+
+### Retry-prompt handling
+
+**This is the one case where you do not start at step 1.**
+
+You are on a retry iteration if your prompt contains this exact
+sentence after the default instructions:
+
+> The previous iteration's output failed validation. Here is the
+> validation error:
+
+The runner emits that line verbatim when the harness sets
+`feedback_mode: append` and the previous iteration failed validation.
+Match on it rather than guessing from the shape of the text — if it is
+absent, you are on a first iteration and the normal process applies.
+
+A retry runs in the **same sandbox** as the previous iteration. The
+repository is exactly as you left it: your branch is still checked out
+and your previous commits are still on it. There is nothing to clone,
+check out, or restore, and no feedback file to read — the failure text
+in your prompt is the whole of what you are given.
+
+On a retry iteration:
+
+1. **Read the failure text** in your prompt. It describes the specific
+   validation error from the previous iteration (e.g., a schema
+   violation in the structured output file).
+2. **Confirm where you are** before changing anything:
+
+   ```bash
+   git status --short --branch
+   git log --oneline -3
+   ```
+
+   You should be on your feature branch with your own commits at HEAD.
+   If you are not — detached HEAD, or sitting on the target branch —
+   do not guess a branch name: follow step 4, which handles existing
+   branches properly (it scopes the search to this issue's number and
+   explains why local refs must be used rather than `origin/` ones).
+3. **Fix only the reported failure.** Parse the diagnostics, identify
+   the root cause, and make the minimal fix. Do not restart the
+   implementation from scratch — re-implementing on top of the earlier
+   attempt produces duplicate or conflicting changes. Step 4's scope
+   guardrail applies here too: do not "improve" working code while you
+   are in there.
+4. **Skip to step 9** (implement and verify). Run secret scan, tests,
+   and pre-commit on the changed files. Then commit (step 10) and
+   validate output (step 11).
+
+If the failure text references the structured output file
+(`agent-result.json`), fix the JSON content. If it references a
+code issue, fix the code. The feedback is redacted and truncated to
+10 KiB — it contains enough to diagnose the problem but may not
+include full file contents.
+
+If you cannot determine what failed from the feedback text, fall
+through to the full process starting at step 1.
 
 ### 1. Identify the issue
 

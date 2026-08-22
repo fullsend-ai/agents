@@ -35,6 +35,7 @@ validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/fix-result.schema.json
   max_iterations: 2
+  feedback_mode: append
 
 host_files:
   - src: env/gcp-vertex.env
