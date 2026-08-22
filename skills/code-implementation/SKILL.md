@@ -543,13 +543,20 @@ The first run may be slow (installs hook environments). This is normal.
   hooks directly:
 
   1. Parse `.pre-commit-config.yaml` to identify each hook's `repo`
-     type, `entry` command, `args`, `rev`, and file filters. Honour
-     them when you invoke the tool yourself: append the hook's `args`
-     after `entry`, pass only the changed files matching the hook's
-     `files` / `types` / `exclude` patterns, and pass no filenames at
-     all when the hook sets `pass_filenames: false`. A hook invoked
-     with the wrong arguments or the wrong file set does not tell you
-     what the post-script will see.
+     type, `entry` command, `args`, `rev`, `stages`,
+     `additional_dependencies`, and file filters. Honor them when you
+     invoke the tool yourself: append the hook's `args` after `entry`,
+     pass only the changed files matching the hook's `files` /
+     `types` / `exclude` patterns, and pass no filenames at all when
+     the hook sets `pass_filenames: false`. Skip any hook whose
+     `stages` excludes the pre-commit stage — the post-script will not
+     run it either, so running it here invents a failure. Install a
+     hook's `additional_dependencies` alongside the tool; without
+     them a plugin-driven hook (a flake8 or mypy with plugins, say)
+     reports different results than the post-script will. A hook
+     invoked with the wrong arguments, the wrong file set, or the
+     wrong dependencies does not tell you what the post-script will
+     see.
   2. **`repo: local` hooks:** Run the `entry` command directly. Local
      hooks need no network beyond what the entry itself uses (e.g.,
      `uvx`, `uv`, `pip` access to PyPI is typically allowed by the
