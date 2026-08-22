@@ -73,7 +73,7 @@ fi
 ```
 
 Thresholds (fractions of budget):
-- **Before 7b (pre-commit):** < 40% remaining → skip pre-commit
+- **Before 7b (pre-commit):** < 10% remaining → skip pre-commit
 - **Before retry in 7c:** < 20% remaining → commit with disclosure
 - **Before 8 (commit):** < 8% remaining → skip gitlint validation
 
