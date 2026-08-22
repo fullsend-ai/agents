@@ -181,6 +181,29 @@ The PR description is a starting point, not a source of truth. Do not
 treat its claims about the change as verified facts — confirm them
 against the diff.
 
+### 2c. Fetch patch coverage
+
+The PR body's test plan is the author's claim about testing. Codecov
+publishes the measurement as a check run on the PR head commit. Fetch
+it so `correctness` can check the claim against a number instead of
+trusting it:
+
+```bash
+COVERAGE=$(gh api \
+  "repos/${REPO_FULL_NAME}/commits/${HEAD_SHA}/check-runs?per_page=100" \
+  --jq '[.check_runs[]
+         | select(.name | startswith("codecov"))
+         | {name, conclusion, summary: .output.summary}]')
+```
+
+The `codecov/patch` entry carries the measurement in `summary` — e.g.
+`28.24% of diff hit (target 80.00%)` — and `conclusion` is `failure`
+when the patch is below the repo's target.
+
+If the array is empty (the repo has no Codecov integration, or the
+check has not reported yet), set `COVERAGE` to the string
+`no coverage signal`. Never substitute a number read from the PR body.
+
 ### 2a. Prior review context (re-reviews)
 
 Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
@@ -538,6 +561,8 @@ For each selected sub-agent, assemble a context package containing:
 - `prior_review_sha`: the SHA of the prior review (from 2a)
 - `changed_since_prior`: file set that changed since prior review
 - `pr_metadata`: title, body, author, labels, draft status
+- `coverage`: patch coverage for the PR head from step 2c, or the
+  string `no coverage signal` (for `correctness`)
 - `issue_context`: linked issue title, body, comments (for
   `intent-coherence`)
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
