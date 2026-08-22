@@ -95,6 +95,7 @@ Ask yourself:
       `scripts/pre-fix.sh`, `scripts/post-fix.sh`, `scripts/pre-prioritize.sh`, `scripts/post-prioritize.sh`,
       `scripts/pre-retro.sh`, `scripts/post-retro.sh`,
       `scripts/pre-review.sh`, `scripts/post-review.sh`,
+      `scripts/pre-scribe.sh`, `scripts/post-scribe.sh`,
       `scripts/pre-triage.sh`, and `scripts/post-triage.sh` are generated
       from the corresponding `scripts/<name>.src.sh` — edit the `.src.sh`
       file and run

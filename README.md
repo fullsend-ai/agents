@@ -12,6 +12,7 @@ First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) p
 | **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` |
 | **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` |
 | **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` |
+| **Scribe** | Maps meeting notes to issue backlog updates and new issues | Schedule |
 
 See [`docs/`](docs/) for detailed documentation on each agent.
 

@@ -1,16 +1,15 @@
 # Scribe Agent
 
 Reads meeting notes that Gemini saves to Google Drive after a
-Google Meet call, maps discussion topics to the GitHub issue
-backlog, and adds comments to relevant issues or creates new
-issues.
+Google Meet call, maps discussion topics to the issue backlog,
+and adds comments to relevant issues or creates new ones.
 
 ## Setup
 
 If you want to give autonomous agents access to your meeting notes, you
 immediately face a trust problem: how do you prevent the agent from reading
 notes it shouldn't have access to and then happily exposing that information
-in public GitHub issues?
+in public issues?
 
 The answer is a **dedicated GCP service account**. You create it in Google
 Cloud, and by default it has access to *zero* Drive files. You then
@@ -33,8 +32,8 @@ single event. To keep the blast radius small, use a distinctive search query
 and avoid adding the service account to unrelated Shared Drives.
 
 Scribe wakes up on a schedule, uses the service account credentials to
-search Drive for matching notes, and processes them: it files new GitHub
-issues on your repo or comments on existing ones, noting that the team
+search Drive for matching notes, and processes them: it files new issues
+on your repo or comments on existing ones, noting that the team
 discussed the topic in their meeting. This is an important bridge between
 the team's life of human interaction and the fullsend agentic system — the
 filed and commented-on issues serve as fodder for the triage agent, coding
@@ -47,7 +46,7 @@ agent, and others.
 - Topics are matched to existing issues by title and body
   content, not just keywords.
 - Public-safety and PII gates prevent confidential meeting
-  content from reaching GitHub.
+  content from reaching the issue tracker.
 - Idempotency checks avoid duplicate comments when the same
   notes URL was already posted.
 
@@ -82,13 +81,17 @@ Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `SCRIBE_REPO` | yes | Target GitHub repository (`owner/name`) |
+| `SCRIBE_REPO` | yes | Target repository (`owner/name` on GitHub, `group/project` on GitLab) |
 | `SCRIBE_SEARCH_QUERY` | yes | Drive search term for meeting note doc names |
 | `SCRIBE_LOOKBACK_HOURS` | no | How far back to search Drive (default: 3) |
 | `SCRIBE_DRY_RUN` | yes | `true` to preview; `false` for live writes |
 | `SCRIBE_MIN_CONFIDENCE` | no | Minimum confidence threshold (default: 0.6) |
 | `SCRIBE_MODE` | no | `all`, `comments_only`, or `new_issues_only` |
-| `GH_TOKEN` | yes | GitHub token with issues read/write |
+| `FULLSEND_FORGE` | yes | `github` or `gitlab` |
+| `GH_TOKEN` | yes (GitHub) | GitHub token with issues read/write |
+| `CONTENTS_TOKEN` | no (GitHub) | Optional separate token for repo content reads; falls back to `GH_TOKEN` |
+| `GITLAB_TOKEN` | yes (GitLab) | GitLab personal/project access token |
+| `GITLAB_HOST` | no (GitLab) | GitLab API host (default: `gitlab.com`) |
 | `GOOGLE_APPLICATION_CREDENTIALS` | yes | GCP service account key for Drive read |
 | `SCRIBE_DRIVE_CREDENTIALS` | no | Override path to a Drive-scoped SA key (defaults to `GOOGLE_APPLICATION_CREDENTIALS`) |
 | `SCRIBE_SLACK_WEBHOOK_URL` | no | Optional Slack notification after run |
@@ -105,9 +108,9 @@ Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 
 A **pre-script** on the host fetches open issues, recently closed issues, open PRs, and a docs index for context, then queries Google Drive for recent meeting notes. Notes are structurally scrubbed (transcript sections removed), PII patterns redacted, and packaged into the sandbox workspace.
 
-The **sandboxed agent** reads the cleaned notes and repo context, extracts actionable topics, and writes validated JSON mapping topics to existing issues or new issue proposals. The agent cannot reach GitHub or Drive directly — it only produces structured output.
+The **sandboxed agent** reads the cleaned notes and repo context, extracts actionable topics, and writes validated JSON mapping topics to existing issues or new issue proposals. The agent cannot reach the forge or Drive directly — it only produces structured output.
 
-The **post-script** deduplicates topics, applies confidence and public-safety gates, checks for sensitive content, and writes approved comments and issues via `gh`. Dry-run mode previews all actions without mutating GitHub.
+The **post-script** deduplicates topics, applies confidence and public-safety gates, checks for sensitive content, and writes approved comments and issues via forge-specific API calls (`gh` on GitHub, `curl` on GitLab). Dry-run mode previews all actions without mutating the repository.
 
 ### Security model
 
