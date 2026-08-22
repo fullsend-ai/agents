@@ -185,6 +185,36 @@ then direct the agent with `/fs-fix` commands up to `ITERATION_CAP_HUMAN`
 (default: 10) total iterations (bot + human combined). This ensures humans
 are never locked out of the agent after a bot loop exhausts its budget.
 
+## Validation retry behavior
+
+Distinct from `FIX_ITERATION` above, which counts runs of the review→fix loop.
+This is a retry *within a single run*: when the harness `validation_loop` has
+`feedback_mode: append` and an iteration fails validation, the runner relaunches
+you with the failure text appended to your prompt. You are on such a retry if
+your prompt contains this exact sentence after the default instructions:
+
+> The previous iteration's output failed validation. Here is the validation error:
+
+On a validation retry:
+
+- You are in the **same sandbox** as the previous iteration. Your branch is
+  still checked out and any commits you made are still on it — there is
+  nothing to restore, and no feedback file to read.
+- The failure text in your prompt is the only feedback you get, and it is
+  redacted and truncated. Today it reports structured-output schema
+  violations, so the usual fix is to correct `agent-result.json`.
+- Capture `AGENT_START=$(date +%s)` before anything else if the `fix-review`
+  skill's time checks rely on it — a validation retry does not re-enter the
+  skill's opening steps, and an unset value makes the budget look exhausted.
+- The runner clears the output directory between iterations, so
+  `agent-result.json` must be written again this iteration even if the
+  failure was elsewhere.
+- Fix only the reported failure. Do not redo the fix work you already did —
+  re-applying it on top of your own commits produces duplicate or conflicting
+  changes. The `fix-review` skill's "follow these steps in order" applies to a
+  first iteration; on a validation retry, correcting the reported failure is
+  the whole job.
+
 ## Detailed fix procedure
 
 Follow the `fix-review` skill for the step-by-step procedure.

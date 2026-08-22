@@ -102,7 +102,94 @@ fractions of the budget so they scale to any timeout value):
 
 ## Process
 
-Follow these steps in order. Do not skip steps.
+Follow these steps in order. Do not skip steps — with one exception,
+the retry path immediately below, which is entered only when the runner
+hands you a validation failure from a previous iteration.
+
+### Retry-prompt handling
+
+**This is the one case where you do not start at step 1.**
+
+You are on a retry iteration if your prompt contains this exact
+sentence after the default instructions:
+
+> The previous iteration's output failed validation. Here is the validation error:
+
+The runner emits that line verbatim when the harness sets
+`feedback_mode: append` and the previous iteration failed validation.
+Match on it rather than guessing from the shape of the text — if it is
+absent, you are on a first iteration and the normal process applies.
+
+A retry runs in the **same sandbox** as the previous iteration. The
+repository is exactly as you left it: your branch is still checked out
+and your previous commits are still on it. There is nothing to clone,
+check out, or restore, and no feedback file to read — the failure text
+in your prompt is the whole of what you are given.
+
+On a retry iteration, do these in order. They are lettered so they are
+not confused with the numbered process steps below:
+
+**R1. Start your clock.** Step 1 normally captures `AGENT_START`, and you
+   are skipping it — without this the time checks at 9b, 9c and 10
+   compute against an unset variable, conclude the budget is exhausted,
+   and skip pre-commit and gitlint on the very iteration that most needs
+   to pass them.
+
+   ```bash
+   AGENT_START=$(date +%s)
+   ```
+
+**R2. Read the failure text** in your prompt. It describes the specific
+   validation error from the previous iteration (e.g., a schema
+   violation in the structured output file).
+
+**R3. Confirm where you are** before changing anything:
+
+   ```bash
+   git status --short --branch
+   git log --oneline -3
+   ```
+
+   You should be on your feature branch with your own commits at HEAD.
+   If you are not — detached HEAD, or sitting on the target branch —
+   do not guess a branch name: follow step 4, which handles existing
+   branches properly (it scopes the search to this issue's number and
+   explains why local refs must be used rather than `origin/` ones).
+   Step 4 needs the issue number, which step 1 would normally have
+   established; on a retry take it from the `ISSUE_NUMBER` environment
+   variable the harness sets, rather than re-running step 1.
+
+**R4. Fix only the reported failure.** Parse the diagnostics, identify
+   the root cause, and make the minimal fix. Do not restart the
+   implementation from scratch — re-implementing on top of the earlier
+   attempt produces duplicate or conflicting changes. Step 4's scope
+   guardrail applies here too: do not "improve" working code while you
+   are in there.
+
+**R5. Rewrite the structured output.** The runner clears
+   `$FULLSEND_OUTPUT_DIR` between iterations, so the `agent-result.json`
+   the previous iteration wrote is gone. It must be written again this
+   iteration whatever else you do — a retry that fixes the reported
+   problem but leaves no output file fails validation again for a
+   different reason.
+
+**R6. Skip to step 9** (implement and verify). Run secret scan, tests,
+   and pre-commit on the changed files. Then commit (step 10) and
+   validate output (step 11). If the failure was purely in
+   `agent-result.json` and no source file needed changing, there is
+   nothing to commit — step 10 has nothing to do, and that is a correct
+   outcome, not a reason to manufacture a code change.
+
+If the failure text references the structured output file
+(`agent-result.json`), fix the JSON content. If it references a
+code issue, fix the code. The feedback is redacted and truncated to
+10 KiB — it contains enough to diagnose the problem but may not
+include full file contents.
+
+If you cannot determine what failed from the feedback text, restart at
+step 1 — but note that step 4 will find your existing branch, and its
+guidance to treat existing work as your own and skip to verification
+still applies. Do not re-implement work that is already committed.
 
 ### 1. Identify the issue
 
@@ -257,10 +344,11 @@ using the forge-appropriate command from your forge skill (e.g.,
 `curl` on GitLab).
 
 - **Open PR/MR exists for this branch:** The work is already done and under
-  review. Validate structured output (step 3 already wrote it), then
-  **stop.** Do not add more commits on top of a working implementation —
-  that causes scope creep and timeouts. Your exit state (no new commit)
-  tells the post-script there is nothing new to push.
+  review. Validate structured output — step 3 already wrote it, but on a
+  validation retry the output directory was cleared, so write it again
+  before validating — then **stop.** Do not add more commits on top of a
+  working implementation — that causes scope creep and timeouts. Your exit
+  state (no new commit) tells the post-script there is nothing new to push.
 
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"

@@ -397,11 +397,21 @@ jobs:
   # ---------------------------------------------------------------------------
   functional-tests-complete:
     needs: [gate, detect, functional-tests]
+    # Always runs. A pull_request_target `labeled` event for a label other
+    # than ok-to-test is handled inside check-rollup-result.sh, which mirrors
+    # the previous verdict on this commit rather than asserting a new one.
+    # Guarding this job with the gate's own `if:` was tried and rejected: a
+    # skipped job still publishes a check run that supersedes the previous
+    # one, and `skipped` satisfies a required check — so it would turn a
+    # genuinely failing run green the moment anyone labelled the PR. See #954.
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions:
       contents: read
+      # Read-only: the roll-up mirrors the previous check run of its own name
+      # on this commit when a label event carries no verdict.
+      checks: read
     steps:
       # Base branch only -- a PR must not be able to rewrite this script
       # to force-pass its own roll-up check.
@@ -414,8 +424,12 @@ jobs:
       - name: Check results
         env:
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GATE_RESULT: ${{ needs.gate.result }}
           DETECT_RESULT: ${{ needs.detect.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
           CROSS_REPO: ${{ github.repository != 'fullsend-ai/agents' }}
+          GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/check-rollup-result.sh

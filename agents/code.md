@@ -113,6 +113,30 @@ Your exit state is the handoff contract:
   report the failure. Structured output should still be written when possible
   so the post-script knows which branch was targeted.
 
+## Validation retry behavior
+
+When the harness `validation_loop` has `feedback_mode: append`, the runner
+replaces the constant prompt with the default prompt plus the previous
+iteration's validation failure text. You are on a retry iteration if your
+prompt contains this exact sentence after the default instructions:
+
+> The previous iteration's output failed validation. Here is the validation error:
+
+On a retry:
+
+- You are in the **same sandbox** as the previous iteration. Your branch is
+  still checked out and your previous commits are still on it — there is
+  nothing to restore, and no feedback file to read.
+- The validation failure text in your prompt describes what went wrong. It
+  is the only feedback you get, and it is redacted and truncated.
+- Fix only the reported failure. Do not restart the implementation.
+- Follow the `code-implementation` skill's retry-prompt handling for the
+  detailed procedure.
+
+Re-implementing from scratch on top of your previous attempt produces
+duplicate or conflicting changes — the exact failure mode this feature
+prevents.
+
 ## Detailed implementation procedure
 
 Follow the `code-implementation` skill for the step-by-step procedure.
