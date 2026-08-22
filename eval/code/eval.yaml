@@ -2,10 +2,15 @@ name: code-eval
 description: >
   Functional test of the fullsend code agent pipeline (pre → sandbox → post).
   Validates that the post-script opens a PR touching the expected files for
-  a small issue — an end-to-end pipeline guard, not a correctness check.
-  No judge inspects the PR's diff content or runs the fixture's tests
-  against it (see annotations.yaml: "Primary signal is pr_created"), so a PR
-  that opens but contains a cosmetic or outright wrong fix still passes.
+  a small issue — an end-to-end pipeline guard, not a full correctness
+  check. Cases may declare removed_symbols in annotations.yaml, mapping each
+  symbol to the files it must disappear from and the number of deletion
+  lines required per file; the removed_symbols judge then checks those
+  counts in the captured PR diff and fails if the symbol survives anywhere
+  in it. Beyond that, no judge runs the fixture's tests against the PR, so a
+  fix that compiles but misbehaves can still pass — and cases with no
+  removed_symbols get file-touch only
+  (see annotations.yaml: "Primary signal is pr_created").
   Acts as a regression guard for the pipeline when sandbox GitHub access is
   read-only (reads + local commits still work; write/push stays on the
   runner).
@@ -22,10 +27,17 @@ execution:
   # (.github/workflows/functional-tests.yml) alongside before_each (120s),
   # after_each (90s), and the job's own setup overhead (checkout, python/uv,
   # harness install, fullsend download, OpenShell + podman install — podman
-  # alone routinely takes ~190s). 1800 matches eval/fix/eval.yaml rather
-  # than deriving from harness/code.yaml, since no headroom choice derived
-  # from the real budget fits regardless.
-  timeout: 1800
+  # alone routinely takes ~190s).
+  #
+  # Sized for the JOB, not one case: this value is applied per case, and
+  # parallelism: 1 runs the suite's cases back to back inside one matrix
+  # leg capped at timeout-minutes: 45 (2700s). With two cases the worst
+  # case is 2 x (120 + 900 + 90) = 2220s, leaving 480s for job setup —
+  # the previous 1800 gave 2 x 2010 = 4020s, so a hang in the first case
+  # would have had the second killed by the job timeout with no artifacts
+  # at all. Re-derive if a third case lands here: 3 x 1110 = 3330s no
+  # longer fits, and the cases would need their own matrix legs.
+  timeout: 900
   parallelism: 1
   # Advisory only — the opaque-CLI-runner contract does not enforce this for
   # our runner type; a runaway run still spends what it spends and only
@@ -62,23 +74,29 @@ execution:
     # pre_script/post_script, none of which timeout_minutes bounds. None of
     # that fits inside this CI job's 45-minute cap with any safety margin,
     # so this eval does not attempt to reproduce the full production
-    # timeout envelope; matches eval/fix/eval.yaml's value instead (see
-    # execution.timeout above).
+    # timeout envelope; the window is derived from the job budget instead
+    # (see execution.timeout above).
     #
-    # This fixture is a 2-line arithmetic bug and completes in well under a
-    # minute in practice, so this number essentially never fires. If a
-    # genuine hang did occur: a single-iteration hang gets caught here and
-    # fullsend still writes a partial metrics.json before returning (see
-    # writeMetricsJSON in run.go's error path), giving an inconclusive but
-    # readable "metrics.json not found"-adjacent judge failure; a
-    # multi-iteration hang, or CI overhead pushing total time past 45min,
-    # gets a hard GitHub Actions job timeout with no artifacts at all. This
-    # ladder is a best-effort local-run affordance, not a guaranteed
-    # graceful-degradation path in CI. Separately, pr_created can also fail
+    # Two cases share this window, run back to back (parallelism: 1) inside
+    # one 45-minute matrix leg: 001-fix-add (a 2-line arithmetic bug that
+    # completes in well under a minute) and 003-dead-config-field (a
+    # cross-file dead-config removal with a larger 60-turn / $4.00 budget).
+    # 800s here, 100s under execution.timeout (900) so this inner `timeout`
+    # fires first and fullsend still writes a partial metrics.json before
+    # returning (see writeMetricsJSON in run.go's error path), giving an
+    # inconclusive but readable "metrics.json not found"-adjacent judge
+    # failure rather than a harness SIGKILL. The 900s outer value is what
+    # makes the job budget add up — see execution.timeout above — so that
+    # a hang in either case still leaves the other its full window and its
+    # artifacts; at the old 1700/1800 a first-case hang left the second
+    # case to the GitHub Actions job timeout, which produces no artifacts.
+    # Neither fixture is expected to approach 800s (001 observed 12 and 35
+    # turns in well under a minute); 003 has no observed CI runtime yet, so
+    # re-derive from its first run. Separately, pr_created can also fail
     # when the agent finishes in-budget but never emits a schema-valid
     # code-result.json — validation_loop then skips post_script (ADR 0022),
     # so no PR is created despite a clean timeout path.
-    EVAL_TIMEOUT: "1700"
+    EVAL_TIMEOUT: "800"
 
 hooks:
   before_each:
@@ -177,6 +195,192 @@ judges:
           return False, f"Expected files missing from PRs: {missing} (changed: {sorted(changed)})"
       return True, f"All expected files present: {expected}"
 
+  - name: removed_symbols
+    description: >
+      Content-level check for removal cases. annotations.removed_symbols maps
+      each symbol to the files it must disappear from and, per file, the
+      number of deletion lines that must name it in the captured PR diff
+      (output/pr-<num>.diff, written by capture-fixture.sh) — one per
+      original site, since every removed or edited line shows up as a
+      deletion line. A count rather than a bare file list because one
+      deletion line per file is satisfied by the struct field alone while a
+      second site 11 lines away sits outside every hunk, neither deleted nor
+      visible as a survivor. Entries are validated up front (a null, empty,
+      list or scalar value fails the case rather than silently dropping the
+      requirement). The judge also fails if the symbol survives in any added
+      or context line. Passes trivially when a case declares no
+      removed_symbols. Matching is word-boundary aware, so a renamed
+      identifier that merely contains the symbol is not a survivor. The
+      survivor scan covers every non-documentation file in the diff (not
+      only the declared ones, so a new use added in runner.go still fails);
+      documentation files (*.md, *.rst, *.txt, *.adoc, and files under a
+      docs/ directory whose extension is not a known source type) are exempt
+      wholesale so a README or changelog note may mention the symbol, while
+      pkg/docs/gen.go is still source. Inside source files only line
+      comments are exempt, keyed by extension (// for .go, # for
+      .py/.sh/.yaml/...). Unknown extensions get no comment exemption, and a
+      Go block-comment continuation (" * text") is not recognised either — a
+      bare "*" prefix is a pointer deref — so both fail closed. Hunk ranges
+      from the @@ header are honoured, so content whose own text begins with
+      "--" or "++" (a deleted SQL comment, an added "++ " line) is never
+      mistaken for a file header. Whole-file deletions (+++ /dev/null) are
+      attributed to the deleted path, so deleting a now-empty file satisfies
+      its requirement. Diff-scoped: a symbol surviving in a file the PR never
+      touched is invisible here (naming the file makes its absence a failure
+      instead), and no judge runs the fixture's tests. Reads
+      state["pull_requests"], which only capture-fixture.sh's issue-fixture
+      branch writes — reusing this judge in a pull_request-type suite needs
+      that branch to emit an equivalent diff artifact first.
+    check: |
+      import json
+      import re
+      symbols = outputs.get("annotations", {}).get("removed_symbols") or {}
+      if not symbols:
+          return True, "No removed_symbols declared"
+      if not isinstance(symbols, dict):
+          return False, (
+              "removed_symbols must map each symbol to {file: deletion_count}, "
+              f"got {type(symbols).__name__}"
+          )
+      # Validate every entry before reading the diff: a null/empty/list
+      # value would otherwise iterate nothing and silently degrade to a
+      # survivor-only check, which is the gap the per-file schema closes.
+      for sym, sites in symbols.items():
+          if not isinstance(sites, dict) or not sites or not all(
+              isinstance(f, str) and f and isinstance(n, int)
+              and not isinstance(n, bool) and n >= 1
+              for f, n in sites.items()
+          ):
+              return False, (
+                  f"{sym}: removed_symbols entry must map each file to the number "
+                  "of deletion lines required (>= 1), "
+                  f"got {type(sites).__name__}"
+              )
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
+      prs = [p for p in (state.get("pull_requests") or [])
+             if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
+      if not prs:
+          return False, "No open/merged PR to inspect"
+      failed = [p.get("number") for p in prs if p.get("diff_fetch_failed")]
+      if failed:
+          return False, f"Could not fetch diff for PR(s): {failed}"
+      # Bucket diff lines by the file they belong to. Inside a hunk every
+      # line is content until the "@@ -a,b +c,d @@" counts are spent, so a
+      # content line whose text starts with "--"/"++" (which serialises as
+      # "--- "/"+++ ") cannot be taken for a header. Outside a hunk only
+      # headers and metadata appear (diff/index, rename from|to, old|new
+      # mode, similarity index, Binary files ...), none of which counts as
+      # content. A file is identified by its "+++ b/" path, or by its
+      # "--- a/" path when the "+++" side is /dev/null (whole-file deletion:
+      # every line is a deletion line and must count toward that path).
+      # "diff --git" resets the identity so a header-less block (mode-only
+      # change) cannot inherit the previous file's.
+      HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+      per_file = {}
+      current = old_path = None
+      old_left = new_left = 0
+      for pr in prs:
+          chunk = outputs["files"].get(f"output/pr-{pr.get('number')}.diff")
+          if chunk is None:
+              return False, f"output/pr-{pr.get('number')}.diff not captured"
+          for line in chunk.splitlines():
+              if old_left > 0 or new_left > 0:
+                  if line.startswith("\\"):  # "\ No newline at end of file"
+                      continue
+                  tag = line[:1] or " "
+                  if tag == " ":
+                      old_left -= 1
+                      new_left -= 1
+                  elif tag == "-":
+                      old_left -= 1
+                  elif tag == "+":
+                      new_left -= 1
+                  else:  # malformed hunk: stop trusting its counts
+                      old_left = new_left = 0
+                      continue
+                  per_file.setdefault(current, []).append(line)
+                  continue
+              if line.startswith("diff --git "):
+                  current = old_path = None
+                  continue
+              if line.startswith("--- "):
+                  path = line[4:].strip().split("\t")[0]
+                  old_path = None if path == "/dev/null" else re.sub(r"^a/", "", path)
+                  continue
+              if line.startswith("+++ "):
+                  path = line[4:].strip().split("\t")[0]
+                  current = old_path if path == "/dev/null" else re.sub(r"^b/", "", path)
+                  continue
+              m = HUNK.match(line)
+              if m:
+                  old_left = int(m.group(1) or 1)
+                  new_left = int(m.group(2) or 1)
+
+      def mentions(sym, line):
+          # Word-boundary: VerboseLoggingEnabled must not match VerboseLogging.
+          return re.search(r"\b" + re.escape(sym) + r"\b", line) is not None
+
+      def ext_of(path):
+          name = (path or "").rsplit("/", 1)[-1]
+          return "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+      # Line-comment prefixes by extension. A bare "*" is deliberately NOT a
+      # marker: in Go it is a pointer deref (`*VerboseLogging = true`), so a
+      # block-comment continuation line is indistinguishable by prefix and
+      # fails closed. Unknown extensions get no exemption at all.
+      COMMENT_PREFIXES = {
+          ".go": ("//",), ".js": ("//",), ".ts": ("//",), ".java": ("//",),
+          ".c": ("//",), ".h": ("//",), ".rs": ("//",),
+          ".py": ("#",), ".sh": ("#",), ".bash": ("#",), ".yaml": ("#",),
+          ".yml": ("#",), ".toml": ("#",), ".mk": ("#",), ".rb": ("#",),
+      }
+      def is_comment(path, line):
+          prefixes = COMMENT_PREFIXES.get(ext_of(path), ())
+          return bool(prefixes) and line[1:].strip().startswith(prefixes)
+
+      # Documentation is exempt from the survivor scan wholesale: prose and
+      # markdown list markers (-, >, |, ...) have no reliable comment prefix,
+      # and a note explaining the removal is a feature, not a survivor. A
+      # known source extension is never documentation, wherever it lives
+      # (pkg/docs/gen.go is Go); "docs" must be a real directory segment.
+      DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+      def is_doc(path):
+          p = (path or "").lower()
+          if ext_of(p) in COMMENT_PREFIXES:
+              return False
+          return p.endswith(DOC_SUFFIXES) or "docs" in p.split("/")[:-1]
+
+      problems = []
+      for sym, sites in sorted(symbols.items()):
+          survivors = []
+          for path, lines in per_file.items():
+              if is_doc(path):
+                  continue
+              for line in lines:
+                  if line.startswith("-") or not mentions(sym, line):
+                      continue
+                  if is_comment(path, line):
+                      continue
+                  survivors.append(path or "<unknown file>")
+                  break
+          if survivors:
+              problems.append(f"{sym}: survives in {sorted(set(survivors))}")
+              continue
+          short = []
+          for path, need in sorted(sites.items()):
+              got = sum(1 for l in per_file.get(path, [])
+                        if l.startswith("-") and mentions(sym, l))
+              if got < need:
+                  short.append(f"{path} ({got}/{need} deletion lines)")
+          if short:
+              problems.append(f"{sym}: too few deletion lines in {short}")
+      if problems:
+          return False, "Symbols not fully removed: " + "; ".join(problems)
+      return True, f"All declared symbols removed cleanly from their declared files: {sorted(symbols)}"
+
   # forbidden_labels / max_turns / max_cost below are shared verbatim with
   # eval/fix/eval.yaml and eval/review/eval.yaml — update all three if changing.
   - name: forbidden_labels
@@ -236,6 +440,8 @@ thresholds:
   pr_created:
     min_pass_rate: 1.0
   expected_files:
+    min_pass_rate: 1.0
+  removed_symbols:
     min_pass_rate: 1.0
   forbidden_labels:
     min_pass_rate: 1.0

@@ -13,6 +13,10 @@
 #
 # Required env (set by harness):
 #   CASE_WORKSPACE  — path to the case workspace
+#
+# Optional env (set by harness):
+#   CASE_SOURCE_DIR — original case directory; read to decide whether the case
+#                     needs a PR diff captured. Missing means "capture it".
 set -euo pipefail
 
 CASE_WORKSPACE="${CASE_WORKSPACE:?CASE_WORKSPACE is required}"
@@ -58,6 +62,45 @@ fetch_pr_files() {
     return 0
   fi
   return 1
+}
+
+# Best-effort gh pr diff, written to output/pr-<num>.diff so content-level
+# judges (removed_symbols in eval/code/eval.yaml) can inspect what the PR
+# actually changed, not just which files it touched. On persistent failure
+# returns non-zero so callers can record diff_fetch_failed instead of a
+# missing file being indistinguishable from "capture never ran".
+fetch_pr_diff() {
+  local num="$1"
+  local diff attempt
+  if diff=$(retry_cmd gh pr diff "$num" --repo "$EPHEMERAL_REPO"); then
+    printf '%s\n' "$diff" > "${OUTPUT_DIR}/pr-${num}.diff"
+    return 0
+  fi
+  # retry_cmd's ~3s of backoff lands immediately after PR creation, exactly
+  # when the API may still be replicating. Poll a little longer before giving
+  # up: removed_symbols runs at min_pass_rate 1.0, so a transient miss here
+  # fails an otherwise-correct fix. Mirrors resolve_head_sha's readiness poll;
+  # worst case ~10s more, well inside the 60s after_each timeout.
+  echo "WARNING: gh pr diff not ready for PR #${num}; polling..." >&2
+  for attempt in 1 2 3 4; do
+    sleep $((attempt))
+    if diff=$(gh pr diff "$num" --repo "$EPHEMERAL_REPO" 2>/dev/null); then
+      printf '%s\n' "$diff" > "${OUTPUT_DIR}/pr-${num}.diff"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Only cases declaring removed_symbols consume output/pr-<num>.diff, so the
+# extra `gh pr diff` call and its failure surface are skipped for the rest
+# (001-fix-add declares none). Defaults to capturing when the annotations
+# cannot be read — a judge must never fail for want of an artifact this
+# script decided on its own to skip.
+case_wants_pr_diff() {
+  local annotations="${CASE_SOURCE_DIR:-}/annotations.yaml"
+  [[ -n "${CASE_SOURCE_DIR:-}" && -f "$annotations" ]] || return 0
+  grep -qE '^[[:space:]]*removed_symbols[[:space:]]*:' "$annotations"
 }
 
 # Resolve branch tip SHA via git refs API, polling if still at baseline.
@@ -157,14 +200,21 @@ case "${FIXTURE_TYPE}" in
     while IFS= read -r pr; do
       [[ -z "$pr" ]] && continue
       num=$(printf '%s' "$pr" | jq -r '.number')
+      diff_failed=false
+      if case_wants_pr_diff; then
+        if ! fetch_pr_diff "$num"; then
+          echo "WARNING: gh pr diff failed for PR #${num}; marking diff_fetch_failed" >&2
+          diff_failed=true
+        fi
+      fi
       if files=$(fetch_pr_files "$num"); then
-        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" \
-          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false}
+        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" --argjson diff_failed "$diff_failed" \
+          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false, diff_fetch_failed: $diff_failed}
            | del(.headRefName, .baseRefName)')")
       else
         echo "WARNING: gh pr view failed for PR #${num}; marking files_fetch_failed" >&2
-        pr_lines+=("$(printf '%s' "$pr" | jq -c \
-          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true}
+        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson diff_failed "$diff_failed" \
+          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true, diff_fetch_failed: $diff_failed}
            | del(.headRefName, .baseRefName)')")
       fi
     done < <(printf '%s' "$prs_json" | jq -c '.[]')
