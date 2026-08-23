@@ -37,6 +37,7 @@ network_policies:
         access: read-write
     binaries:
       - path: "**/claude"
+      - path: "**/pi"
       - path: "**/node"
 
   # To support a self-hosted instance, add it here. CI_SERVER_HOST is set

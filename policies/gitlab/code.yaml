@@ -37,6 +37,7 @@ network_policies:
         access: read-write
     binaries:
       - path: "**/claude"
+      - path: "**/pi"
       - path: "**/node"
 
   gitlab_api:
