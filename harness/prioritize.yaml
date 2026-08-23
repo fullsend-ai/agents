@@ -2,7 +2,7 @@
 agent: agents/prioritize.md
 doc: docs/prioritize.md
 model: opus
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:eaf365ad038d762954d8fd5f41618cd6766a8a6a6f76d944aaf160819666734d
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:9af3fba87d193bc58ae9da6c916fcc9689176eeee9247b563bc14d8acb3cc734
 policy: policies/base.yaml
 openshell:
   profiles:

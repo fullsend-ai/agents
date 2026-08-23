@@ -13,7 +13,7 @@
 agent: agents/fix.md
 doc: docs/fix.md
 model: opus
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:de3ecbd7719a1927c983142ada96475f3314d2505d0f258bcf19c31411856eb6
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:9743bc7b6e451e0bcea25ae4a67e0c040c296f1fee04c08988ae80c53fafcfe6
 policy: policies/base.yaml
 openshell:
   profiles:

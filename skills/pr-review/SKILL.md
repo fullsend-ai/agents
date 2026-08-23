@@ -409,6 +409,7 @@ incident.
    ```markdown
    ## Active governance paths
    - .claude/
+   - .pi/
    - .github/
    - scripts/
    ...
@@ -493,7 +494,7 @@ incident.
    **Empty-classification guard:** If `security_critical_files` is
    empty after the path-pattern override but any changed files
    match the path patterns from the classification criteria (e.g.,
-   `**/auth/**`, `**/mint/**`, `**/token/**`, `.claude/**`,
+   `**/auth/**`, `**/mint/**`, `**/token/**`, `.claude/**`, `.pi/**`,
    `.github/**`, `agents/**`, `scripts/**`), treat this as a
    triage failure and apply the fallback. An empty classification
    when path-pattern matches exist indicates the classifier missed

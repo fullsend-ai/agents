@@ -91,6 +91,7 @@ merge conflicts, linter suggestions, or other incidental context:
 
 - `.claude/` — agent settings and configuration
 - `.cursor/` — editor agent configuration
+- `.pi/` — pi agent settings and configuration
 - `.gitattributes`
 - `.github/` — CI and GitHub configuration
 - `.gitlab-ci.yml` — GitLab CI configuration
