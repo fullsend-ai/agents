@@ -228,17 +228,23 @@ fullsend run triage \
 |----------|-------------|
 | `FULLSEND_RUNTIME` | Runtime to use (`claude` or `pi`) |
 | `FULLSEND_MODEL` | Model alias, ID, or `provider/id` (e.g. `google-vertex/gemini-2.5-flash`) |
-| `FULLSEND_EFFORT` | Effort level for the run |
+| `FULLSEND_EFFORT` | Effort level for the run (`low`, `medium`, `high`, `xhigh`, `max`) |
 | `FULLSEND_FALLBACK_MODELS` | Comma-separated fallback model list |
-| `FULLSEND_PI_MODEL` | Pi-only alias for `FULLSEND_MODEL` (kept for backward compatibility) |
-| `FULLSEND_PI_PROVIDER` | Prefixes bare model IDs on pi (e.g. `google-vertex`) |
+| `FULLSEND_PI_MODEL` | Pi-only alias for `FULLSEND_MODEL`, kept for backward compatibility: honoured only when the run is on pi, and only when neither `--model` nor `FULLSEND_MODEL` is set |
+| `FULLSEND_PI_PROVIDER` | Pi-only: the provider prefix applied to a *bare* model id (default `anthropic-vertex`); a `provider/id` value passes through unchanged |
 
 In CI, the same variable names work as repository variables. Use plain
 names for fleet-wide defaults or role-prefixed names for per-agent
 overrides (e.g. `TRIAGE_FULLSEND_MODEL`).
 
-To select Gemini on Vertex AI, use the model name directly:
+To select Gemini on Vertex AI, run under pi (Claude Code cannot run
+non-Anthropic models) and use the model name directly — the same Vertex
+credentials exported above (`GOOGLE_APPLICATION_CREDENTIALS`,
+`GOOGLE_CLOUD_PROJECT`, `CLOUD_ML_REGION`) are used; fullsend exports
+`GOOGLE_CLOUD_LOCATION` from the region for pi's built-in `google-vertex`
+provider:
 
 ```bash
+export FULLSEND_RUNTIME=pi
 export FULLSEND_MODEL="google-vertex/gemini-2.5-flash"
 ```

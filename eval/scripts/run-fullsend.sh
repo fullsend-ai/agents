@@ -248,7 +248,7 @@ timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
   --env-file "$ENV_FILE" \
   --output-dir "$OUTPUT_DIR" \
   --fullsend-binary "$FULLSEND_BIN" \
-  "${override_args[@]}" \
+  "${override_args[@]+"${override_args[@]}"}" \
   || rc=$?
 
 if [[ $rc -ne 0 ]]; then
