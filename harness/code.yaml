@@ -54,6 +54,7 @@ validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/code-result.schema.json
   max_iterations: 2
+  feedback_mode: append
 
 # Environment variables for runner pre/post scripts and sandbox sessions.
 env:
