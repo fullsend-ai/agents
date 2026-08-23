@@ -70,6 +70,9 @@ calls during both execution and scoring.
 |----------|-------------|
 | `FULLSEND_DIR` | Path to the fullsend scaffold directory. Defaults to the repo root. |
 | `EVAL_TIMEOUT` | Runner timeout in seconds. Defaults to `1800` (30 min). |
+| `EVAL_RUNTIME` | Run every case under this runtime (`claude` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
+| `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |
+| `EVAL_EFFORT` | Effort override via `fullsend run --effort`. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account key file for Vertex AI. |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project ID for Anthropic Vertex. |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID. |

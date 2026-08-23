@@ -185,6 +185,10 @@ To run triage evals:
 
 ```bash
 EVAL_ORG=my-org ./eval/run-functional.sh triage
+
+# Same cases under pi, or on another model — one variable each
+EVAL_ORG=my-org EVAL_RUNTIME=pi ./eval/run-functional.sh triage
+EVAL_ORG=my-org EVAL_MODEL=google-vertex/gemini-2.5-flash EVAL_RUNTIME=pi ./eval/run-functional.sh triage
 ```
 
 Eval tests are expensive (they consume model tokens and create real
