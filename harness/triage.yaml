@@ -2,6 +2,10 @@
 agent: agents/triage.md
 doc: docs/triage.md
 model: opus
+# Reasoning effort (low|medium|high|xhigh|max). Set explicitly so a runtime
+# default change cannot silently move it: Claude Code runs at high on Vertex
+# and the pi runtime maps effort onto --thinking (high when unset).
+effort: high
 image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:9af3fba87d193bc58ae9da6c916fcc9689176eeee9247b563bc14d8acb3cc734
 policy: policies/base.yaml
 openshell:

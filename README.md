@@ -14,6 +14,8 @@ First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) p
 | **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` | claude, pi (single-context) |
 | **Scribe** | Maps meeting notes to issue backlog updates and new issues | Schedule | claude, pi |
 
+Claude Code (`claude`) is the stable default every repo gets; `pi` is in its enablement (experimental) phase and is selected per repo with `runtime: pi` — see fullsend's [Runtimes](https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md). Every harness sets `effort: high` explicitly.
+
 See [`docs/`](docs/) for detailed documentation on each agent.
 
 ## Repository structure

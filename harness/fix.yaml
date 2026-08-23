@@ -13,6 +13,10 @@
 agent: agents/fix.md
 doc: docs/fix.md
 model: opus
+# Reasoning effort (low|medium|high|xhigh|max). Set explicitly so a runtime
+# default change cannot silently move it: Claude Code runs at high on Vertex
+# and the pi runtime maps effort onto --thinking (high when unset).
+effort: high
 image: ghcr.io/fullsend-ai/fullsend-code@sha256:9743bc7b6e451e0bcea25ae4a67e0c040c296f1fee04c08988ae80c53fafcfe6
 policy: policies/base.yaml
 openshell:
