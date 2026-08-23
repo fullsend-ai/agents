@@ -185,6 +185,14 @@ the host.
 If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
 
+## Runtime support
+
+The fix agent supports both `runtime: claude` (default) and
+`runtime: pi`. The same harness, skills, and schemas are used
+regardless of runtime — no per-agent configuration is required.
+Claude Code remains the fleet default; pi is opt-in via
+`defaults.runtime: pi` or per-repo `runtime: pi` in `config.yaml`.
+
 ## Source
 
 [`harness/fix.yaml`](../harness/fix.yaml)

@@ -99,6 +99,15 @@ When triggered via `/fs-retro`, the human's comment is passed to the agent as hi
 If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
 
+## Runtime support
+
+The retro agent is **not supported on pi**. The retrospective
+analysis dispatches sub-agents via the Claude Code Task/Agent tool,
+which pi does not provide. Until pi has a fullsend-owned sub-agent
+extension (tracked on
+[fullsend#6464](https://github.com/fullsend-ai/fullsend/issues/6464)),
+this agent requires `runtime: claude` (the fleet default).
+
 ## Source
 
 [`harness/retro.yaml`](../harness/retro.yaml)
