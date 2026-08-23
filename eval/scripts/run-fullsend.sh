@@ -12,6 +12,8 @@
 #
 # Required env (injected by harness from hook outputs + execution.env):
 #   FULLSEND_DIR    — path to the fullsend scaffold directory
+#   EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT — optional per-run overrides,
+#                     passed as fullsend run --runtime/--model/--effort
 #   GH_TOKEN        — GitHub token
 #   FIXTURE_URL     — URL of the fixture (issue or PR)
 #   FIXTURE_TYPE    — "issue" or "pull_request"
@@ -231,6 +233,14 @@ EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 mkdir -p "$OUTPUT_DIR"
 printf '%s\n' "$PRE_AGENT_HEAD" > "${OUTPUT_DIR}/pre-agent-head.txt"
 
+# Per-run overrides (EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT from
+# run-functional.sh) become explicit fullsend run flags so the choice shows
+# up in the run plan, metrics.json (requested_*) and the logs.
+override_args=()
+[[ -n "${EVAL_RUNTIME:-}" ]] && override_args+=(--runtime "$EVAL_RUNTIME")
+[[ -n "${EVAL_MODEL:-}" ]] && override_args+=(--model "$EVAL_MODEL")
+[[ -n "${EVAL_EFFORT:-}" ]] && override_args+=(--effort "$EVAL_EFFORT")
+
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
   --fullsend-dir "${FULLSEND_DIR}" \
@@ -238,6 +248,7 @@ timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
   --env-file "$ENV_FILE" \
   --output-dir "$OUTPUT_DIR" \
   --fullsend-binary "$FULLSEND_BIN" \
+  "${override_args[@]+"${override_args[@]}"}" \
   || rc=$?
 
 if [[ $rc -ne 0 ]]; then

@@ -196,6 +196,12 @@ setup:
 If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
 
+## Runtime support
+
+Supported runtimes: **claude** (stable default), **pi** (experimental). No single-context fallback — full multi-step implementation runs on both runtimes.
+
+Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
+
 ## Source
 
 [`harness/code.yaml`](../harness/code.yaml)

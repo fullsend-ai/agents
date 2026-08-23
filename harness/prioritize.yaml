@@ -2,6 +2,13 @@
 agent: agents/prioritize.md
 doc: docs/prioritize.md
 model: opus
+# Reasoning effort (low|medium|high|xhigh|max), pinned to what the fleet
+# already ran at implicitly: Claude Code's default effort is high on every
+# effort-capable model except Opus 4.7 (xhigh) — code.claude.com/docs/en/
+# model-config — and the fullsend pi runtime passes --thinking high when
+# effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
+# when the model: above moves to a generation with a different default.
+effort: high
 image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:9af3fba87d193bc58ae9da6c916fcc9689176eeee9247b563bc14d8acb3cc734
 policy: policies/base.yaml
 openshell:
