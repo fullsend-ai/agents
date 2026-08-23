@@ -64,9 +64,9 @@
       "fingerprint": "8aba1d160bb4c413",
       "rule_id": "context-budget",
       "file_path": "skills/code-implementation/SKILL.md",
-      "message": "Estimated 11,649 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 12,180 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 11649,
+      "value": 12180,
       "baseline_mode": "ceiling"
     },
     {
