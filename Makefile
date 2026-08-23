@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help script-build check-bundle script-test test
 
-BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/pre-fix.src.sh scripts/post-fix.src.sh scripts/pre-prioritize.src.sh scripts/post-prioritize.src.sh scripts/pre-retro.src.sh scripts/post-retro.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-scribe.src.sh scripts/post-scribe.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh
+BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/pre-fix.src.sh scripts/post-fix.src.sh scripts/pre-prioritize.src.sh scripts/post-prioritize.src.sh scripts/pre-retro.src.sh scripts/post-retro.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-scribe.src.sh scripts/post-scribe.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh scripts/validate-code-output.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
 LIB_DEPS := $(wildcard scripts/lib/*.lib.sh)
 
@@ -59,6 +59,7 @@ script-test:
 	$(call run-timed,bash scripts/pre-scribe-test.sh)
 	$(call run-timed,bash scripts/post-scribe-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
+	$(call run-timed,bash scripts/validate-code-output-test.sh)
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash hack/lint-agent-docs-test.sh)
 	$(call run-timed,bash eval/lint-measurements-test.sh)

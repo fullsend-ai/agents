@@ -61,6 +61,8 @@ source "${SCRIPT_DIR_POST}/lib/fix-ops.lib.sh"
 source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 # shellcheck source=lib/gitleaks-install.lib.sh
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
+# shellcheck source=lib/precommit-gate.lib.sh
+source "${SCRIPT_DIR_POST}/lib/precommit-gate.lib.sh"
 # shellcheck source=lib/branch-guard.lib.sh
 source "${SCRIPT_DIR_POST}/lib/branch-guard.lib.sh"
 
@@ -255,141 +257,32 @@ fi
 # ---------------------------------------------------------------------------
 # 2. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
-INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
-
-# Fallback: these companion scripts were never migrated into this repo
-# during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
-# always misses. In current fullsend reusable-workflow layouts, the
-# "Prepare workspace" step typically materializes scripts/ at
-# ${WORKSPACE_DIR}/scripts/ (per-org) or ${WORKSPACE_DIR}/.fullsend/scripts/
-# (per-repo) — see fullsend-ai/.fullsend reusable workflows. Try those paths
-# when the BASH_SOURCE-relative lookup misses.
-WORKSPACE_DIR="$(forge_get_workspace_dir)"
-if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  if [ -n "${WORKSPACE_DIR:-}" ]; then
-    for _ws_candidate in "${WORKSPACE_DIR}/scripts" "${WORKSPACE_DIR}/.fullsend/scripts"; do
-      if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
-         && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
-        RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
-        INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
-        break
-      fi
-    done
-  fi
-fi
-
-# Warn instead of silently skipping when the repo needs the auto-install but
-# the companions are missing everywhere — a silent skip here surfaces later
-# as a confusing "Executable X not found" pre-commit failure.
-if [ -f .pre-commit-config.yaml ] \
-   && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
-  gha_echo warning "Pre-commit tool auto-install skipped: companion scripts not found"
-  gha_echo warning "Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
-  gha_echo warning "Pre-commit hooks requiring system tools (e.g. lychee) may fail"
-fi
-
-if [ -f .pre-commit-config.yaml ] \
-   && [ -f "${RESOLVE_SCRIPT}" ] \
-   && [ -f "${INSTALL_SCRIPT}" ]; then
-  MANIFEST="$(mktemp)"
-  LOCAL_REG="$(mktemp)"
-  RESOLVE_ARGS=(".")
-  if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
-    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
-  fi
-  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
-    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
-      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
-    fi
-  else
-    gha_echo warning "Pre-commit tool resolution failed — continuing without auto-install"
-  fi
-  rm -f "${MANIFEST}" "${LOCAL_REG}"
-fi
+precommit_install_deps "${TARGET_BRANCH}"
 export PATH="${HOME}/.local/bin:${PATH}"
 
 # ---------------------------------------------------------------------------
 # 3. Authoritative pre-commit check (only if pushing)
 # ---------------------------------------------------------------------------
-if [ "${NO_PUSH}" = "false" ] && [ -f .pre-commit-config.yaml ]; then
+if [ "${NO_PUSH}" = "false" ]; then
   echo "Running authoritative pre-commit on agent's changed files..."
 
-  if ! command -v pre-commit >/dev/null 2>&1; then
-    pip install "pre-commit==4.5.1" 2>/dev/null \
-      || pip3 install "pre-commit==4.5.1" 2>/dev/null \
-      || pipx install "pre-commit==4.5.1" 2>/dev/null \
-      || gha_echo warning "Failed to install pre-commit"
+  changed_array=()
+  while IFS= read -r _changed_line; do
+    changed_array+=("${_changed_line}")
+  done <<< "${BRANCH_CHANGED_FILES}"
+
+  SCAN_RANGE="${DIFF_BASE}..HEAD"
+
+  precommit_run_gate changed_array "${SCAN_RANGE}" "${TARGET_BRANCH}" "${MERGE_BASE}"
+
+  if [ "${PRECOMMIT_GATE_SECRET_FAIL}" = "true" ]; then
+    post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
   fi
-
-  if command -v pre-commit >/dev/null 2>&1; then
-    # SYNC: parallel retry block in post-code.sh section 5 — keep structure
-    #       in sync (variable names differ: BRANCH_CHANGED_FILES here vs
-    #       CHANGED_FILES there; SCAN_RANGE scopes differ by design).
-    changed_array=()
-    while IFS= read -r _changed_line; do
-      changed_array+=("${_changed_line}")
-    done <<< "${BRANCH_CHANGED_FILES}"
-    PRECOMMIT_OUTPUT=""
-    if PRECOMMIT_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
-      print_sanitized_gha_log "${PRECOMMIT_OUTPUT}"
-      echo "Pre-commit passed — all hooks clean"
-    else
-      print_sanitized_gha_log "${PRECOMMIT_OUTPUT}"
-      # Single retry only — do not convert to a loop without adding a cap.
-      # Scope detection/staging to changed_array so hooks can't inject files
-      # outside the pre-commit scope into the commit.
-      if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
-        gha_echo warning "Pre-commit hooks auto-fixed files — re-staging and retrying"
-        echo "Auto-fixed files:"
-        git diff --name-only -- "${changed_array[@]}" | sed 's/^/  /'
-        git diff --name-only -z -- "${changed_array[@]}" | xargs -0 -r git add --
-        git commit --amend --no-edit
-
-        echo "Re-running secret scan on amended commit..."
-        GITLEAKS_OUTPUT=""
-        if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-          print_sanitized_gha_log "${GITLEAKS_OUTPUT}" stderr
-          post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
-        fi
-        if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-          post_fail_to_pr signed-off-by \
-            "Amended commit contains a Signed-off-by trailer after pre-commit auto-fix."
-        fi
-
-        if [ -n "${MERGE_BASE}" ]; then
-          BRANCH_CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
-        else
-          BRANCH_CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
-            || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
-        fi
-        if [ -z "${BRANCH_CHANGED_FILES}" ]; then
-          post_fail_to_pr pre-commit-blocked \
-            "Pre-commit hooks removed all changes; commit is now empty."
-        fi
-        changed_array=()
-        while IFS= read -r _changed_line; do
-          changed_array+=("${_changed_line}")
-        done <<< "${BRANCH_CHANGED_FILES}"
-        PRECOMMIT_RETRY_OUTPUT=""
-        if PRECOMMIT_RETRY_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
-          print_sanitized_gha_log "${PRECOMMIT_RETRY_OUTPUT}"
-          if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
-            post_fail_to_pr pre-commit-blocked \
-              "Retry pre-commit left additional unstaged changes; committed content would diverge from what pre-commit validated."
-          fi
-          echo "Pre-commit passed after auto-fix re-stage"
-        else
-          print_sanitized_gha_log "${PRECOMMIT_RETRY_OUTPUT}"
-          post_fail_to_pr pre-commit-blocked "${PRECOMMIT_RETRY_OUTPUT}"
-        fi
-      else
-        post_fail_to_pr pre-commit-blocked "${PRECOMMIT_OUTPUT}"
-      fi
-    fi
-  else
-    gha_echo warning "pre-commit not available — skipping authoritative check"
+  if [ "${PRECOMMIT_GATE_SIGNOFF_FAIL}" = "true" ]; then
+    post_fail_to_pr signed-off-by "${PRECOMMIT_GATE_DETAIL}"
+  fi
+  if [ "${PRECOMMIT_GATE_RESULT}" = "fail" ]; then
+    post_fail_to_pr "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
   fi
 fi
 
