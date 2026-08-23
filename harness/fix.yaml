@@ -32,7 +32,7 @@ pre_script: scripts/pre-fix.sh
 post_script: scripts/post-fix.sh
 
 validation_loop:
-  script: scripts/validate-output-schema.sh
+  script: scripts/validate-code-output.sh
   schema: schemas/fix-result.schema.json
   max_iterations: 2
   feedback_mode: append
