@@ -109,6 +109,10 @@ updated to allow connections to the host.
 If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
 
+## Runtime support
+
+Supported runtimes: **claude** (stable default), **pi** (experimental). No single-context fallback — full RICE scoring runs on both runtimes.
+
 ## Source
 
 [`harness/prioritize.yaml`](../harness/prioritize.yaml)

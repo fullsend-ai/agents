@@ -119,6 +119,10 @@ If a prior review exists (e.g., re-review after fixes), it is injected into the 
 If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
 
+## Runtime support
+
+Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, review runs in single-context mode — the parallel sub-agent orchestration is replaced by a single-pass review.
+
 ## Source
 
 [`harness/review.yaml`](../harness/review.yaml)

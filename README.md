@@ -4,15 +4,15 @@ First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) p
 
 ## Agents
 
-| Agent | Description | Trigger |
-|-------|-------------|---------|
-| **Triage** | Assesses issue sufficiency, searches for duplicates, applies control labels | New issues, `/fs-triage` |
-| **Code** | Implements fixes and features following repo conventions | `ready-to-code` label, `/fs-code` |
-| **Review** | Dispatches parallel sub-agents across six review dimensions | PR events, `/fs-review` |
-| **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` |
-| **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` |
-| **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` |
-| **Scribe** | Maps meeting notes to issue backlog updates and new issues | Schedule |
+| Agent | Description | Trigger | Runtimes |
+|-------|-------------|---------|----------|
+| **Triage** | Assesses issue sufficiency, searches for duplicates, applies control labels | New issues, `/fs-triage` | claude, pi |
+| **Code** | Implements fixes and features following repo conventions | `ready-to-code` label, `/fs-code` | claude, pi |
+| **Review** | Dispatches parallel sub-agents across six review dimensions | PR events, `/fs-review` | claude, pi (single-context) |
+| **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` | claude, pi |
+| **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` | claude, pi |
+| **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` | claude, pi (single-context) |
+| **Scribe** | Maps meeting notes to issue backlog updates and new issues | Schedule | claude, pi |
 
 See [`docs/`](docs/) for detailed documentation on each agent.
 

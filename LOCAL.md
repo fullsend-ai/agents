@@ -190,3 +190,51 @@ EVAL_ORG=my-org ./eval/run-functional.sh triage
 Eval tests are expensive (they consume model tokens and create real
 GitHub repos). Use them when you need to verify end-to-end behavior
 for a significant change, not for every iteration.
+
+## Runtime and model overrides
+
+When running agents locally with `--fullsend-dir .`, the CLI reads the
+root `config.yaml`. To switch from the default Claude Code runtime to
+pi, add a `runtime` key:
+
+```yaml
+# config.yaml
+runtime: pi
+```
+
+### Per-run overrides
+
+Flags and environment variables override `config.yaml` values. Precedence
+(highest to lowest): **flag > env > config/harness > default**.
+
+**Flags:**
+
+```bash
+fullsend run triage \
+  --fullsend-dir . \
+  --target-repo /tmp/target-repo \
+  --runtime pi \
+  --model google-vertex/gemini-2.5-flash \
+  --effort high
+```
+
+**Environment variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `FULLSEND_RUNTIME` | Runtime to use (`claude` or `pi`) |
+| `FULLSEND_MODEL` | Model alias, ID, or `provider/id` (e.g. `google-vertex/gemini-2.5-flash`) |
+| `FULLSEND_EFFORT` | Effort level for the run |
+| `FULLSEND_FALLBACK_MODELS` | Comma-separated fallback model list |
+| `FULLSEND_PI_MODEL` | Pi-only alias for `FULLSEND_MODEL` (kept for backward compatibility) |
+| `FULLSEND_PI_PROVIDER` | Prefixes bare model IDs on pi (e.g. `google-vertex`) |
+
+In CI, the same variable names work as repository variables. Use plain
+names for fleet-wide defaults or role-prefixed names for per-agent
+overrides (e.g. `TRIAGE_FULLSEND_MODEL`).
+
+To select Gemini on Vertex AI, use the model name directly:
+
+```bash
+export FULLSEND_MODEL="google-vertex/gemini-2.5-flash"
+```

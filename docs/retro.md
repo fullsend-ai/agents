@@ -99,6 +99,10 @@ When triggered via `/fs-retro`, the human's comment is passed to the agent as hi
 If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
 
+## Runtime support
+
+Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, retro runs in single-context mode — the multi-agent workflow reconstruction is replaced by a single-pass analysis.
+
 ## Source
 
 [`harness/retro.yaml`](../harness/retro.yaml)
