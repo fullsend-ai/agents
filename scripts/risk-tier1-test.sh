@@ -293,9 +293,11 @@ for arg in "$@"; do
     URL="${arg}"
   fi
 done
+PAGE=$(echo "${URL}" | sed -n 's/.*[&?]page=\([0-9]*\).*/\1/p')
 case "${URL}" in
   */merge_requests/42/diffs*)
-    cat <<'JSON'
+    if [[ "${PAGE}" == "1" || -z "${PAGE}" ]]; then
+      cat <<'JSON'
 [
   {"new_path":"src/main.go","diff":"@@ -1,5 +1,10 @@\n context\n+added1\n+added2\n+added3\n+added4\n+added5\n+added6\n+added7\n+added8\n+added9\n+added10\n-removed1\n-removed2\n-removed3\n-removed4\n-removed5\n context"},
   {"new_path":".github/workflows/ci.yaml","diff":"@@ -1,1 +1,3 @@\n context\n+added1\n+added2\n+added3\n-removed1\n context"},
@@ -304,6 +306,9 @@ case "${URL}" in
   {"new_path":"internal/auth/handler_test.go","diff":"@@ -0,0 +1,15 @@\n+t1\n+t2\n+t3\n+t4\n+t5\n+t6\n+t7\n+t8\n+t9\n+t10\n+t11\n+t12\n+t13\n+t14\n+t15\n context"}
 ]
 JSON
+    else
+      echo '[]'
+    fi
     ;;
   */merge_requests/42)
     echo '{"author":{"username":"octocat"},"first_contribution":false}'
@@ -384,6 +389,69 @@ AUTHOR_IS_FIRST_TIME=UNKNOWN"
 }
 
 e2e_gitlab_fallback_test
+
+# ---------------------------------------------------------------------------
+# End-to-end (GitLab): GITLAB_TOKEN fallback when REVIEW_TOKEN is unset
+# ---------------------------------------------------------------------------
+
+e2e_gitlab_token_fallback_test() {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  trap 'rm -rf "${tmpdir}"' RETURN
+
+  cat > "${tmpdir}/curl" <<'STUB'
+#!/usr/bin/env bash
+URL=""
+for arg in "$@"; do
+  if [[ "${arg}" == https://* ]]; then
+    URL="${arg}"
+  fi
+done
+PAGE=$(echo "${URL}" | sed -n 's/.*[&?]page=\([0-9]*\).*/\1/p')
+case "${URL}" in
+  */merge_requests/42/diffs*)
+    if [[ "${PAGE}" == "1" || -z "${PAGE}" ]]; then
+      echo '[{"new_path":"src/main.go","diff":"@@ -1,1 +1,2 @@\n+added\n context"}]'
+    else
+      echo '[]'
+    fi
+    ;;
+  */merge_requests/42)
+    echo '{"author":{"username":"octocat"},"first_contribution":false}'
+    ;;
+  *)
+    echo "curl stub: unhandled URL: ${URL}" >&2; exit 1
+    ;;
+esac
+STUB
+  chmod +x "${tmpdir}/curl"
+
+  local actual expected
+  actual=$(
+    PATH="${tmpdir}:${PATH}" \
+    FULLSEND_FORGE=gitlab \
+    GITLAB_TOKEN=fallback-token \
+    PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42" \
+    PR_NUMBER=42 \
+    REPO_FULL_NAME="test-group/test-project" \
+    main 2>/dev/null
+  )
+
+  expected="FILES_CHANGED=1
+LINES_CHANGED=1
+BLAST_RADIUS=small
+PROTECTED_PATH_COUNT=0
+SECURITY_SENSITIVE_COUNT=0
+CI_WORKFLOW_CHANGED=false
+DEPENDENCY_FILES_CHANGED=none
+TEST_FILE_RATIO=0.00
+AUTHOR_IS_BOT=false
+AUTHOR_IS_FIRST_TIME=false"
+
+  run_test "e2e-gitlab-token-fallback" "${actual}" "${expected}"
+}
+
+e2e_gitlab_token_fallback_test
 
 # ---------------------------------------------------------------------------
 # PROTECTED_PATHS drift: hardcoded fallback must match harness/review.yaml

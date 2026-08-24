@@ -18,10 +18,12 @@
 # -e omitted: individual signal failures fall back to UNKNOWN (see fallback blocks below).
 set -uo pipefail
 
+_gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'; }
+
 # --- Protected paths (from REVIEW_PROTECTED_PATHS env var, or hardcoded fallback) ---
 if [[ "${REVIEW_PROTECTED_PATHS+set}" != "set" ]]; then
   PROTECTED_PATHS=(
-    ".claude/" ".cursor/" ".gitattributes" ".github/"
+    ".claude/" ".cursor/" ".pi/" ".gitattributes" ".github/"
     ".pre-commit-config.yaml" "AGENTS.md" "agents/" "api-servers/"
     "CLAUDE.md" "CODEOWNERS" "Containerfile" "Dockerfile"
     "harness/" "images/" "plugins/" "policies/" "profiles/" "providers/" "scripts/" "skills/"
@@ -100,7 +102,7 @@ find_dependency_files() {
     local base="${file##*/}"
     case "${base}" in
       go.mod|go.sum|package.json|package-lock.json|yarn.lock|\
-      requirements.txt|requirements*.txt|Pipfile|Pipfile.lock|\
+      requirements*.txt|Pipfile|Pipfile.lock|\
       Gemfile|Gemfile.lock|pom.xml|build.gradle|Cargo.toml|Cargo.lock)
         deps+=("${file}") ;;
     esac
@@ -116,7 +118,8 @@ compute_test_ratio() {
   local test_count=0 total=0
   for file in "$@"; do
     total=$((total + 1))
-    case "${file}" in
+    local base="${file##*/}"
+    case "${base}" in
       *_test.go|*_test.py|*-test.sh|*-test.py|test_*|*_spec.*|*.test.*)
         test_count=$((test_count + 1)) ;;
     esac
@@ -154,9 +157,14 @@ _gitlab_api_call() {
     gitlab.com|gitlab.cee.redhat.com) ;;
     *) echo "ERROR: GitLab host '${host}' is not in the allowed host list" >&2; return 1 ;;
   esac
+  local token="${REVIEW_TOKEN:-${GITLAB_TOKEN:-}}"
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: REVIEW_TOKEN or GITLAB_TOKEN required for GitLab API calls" >&2
+    return 1
+  fi
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
-    --header "PRIVATE-TOKEN: ${REVIEW_TOKEN}" \
+    --header "PRIVATE-TOKEN: ${token}" \
     "https://${host}/api/v4${endpoint}" "$@"
 }
 
@@ -167,19 +175,33 @@ _fetch_pr_files_json() {
         | jq -s 'add'
       ;;
     gitlab)
-      local repo_encoded
+      local repo_encoded page max_pages all_diffs page_result got_data
       repo_encoded=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
       # /diffs is the paginated replacement for /changes (deprecated since 15.7).
       # GitLab returns raw unified diffs, not pre-computed counts like GitHub,
       # so we parse +/- lines (excluding +++ and --- headers) to match the shape.
-      _gitlab_api_call "/projects/${repo_encoded}/merge_requests/${PR_NUMBER}/diffs?per_page=100" 2>/dev/null \
-        | jq '[.[] | {
+      page=1 max_pages=10 all_diffs="[]" got_data=false
+      while [[ "${page}" -le "${max_pages}" ]]; do
+        page_result=$(_gitlab_api_call "/projects/${repo_encoded}/merge_requests/${PR_NUMBER}/diffs?per_page=100&page=${page}" 2>/dev/null) || break
+        if [[ -z "${page_result}" ]] \
+            || ! echo "${page_result}" | jq -e 'type == "array"' >/dev/null 2>&1 \
+            || [[ "$(echo "${page_result}" | jq 'length')" -eq 0 ]]; then
+          break
+        fi
+        got_data=true
+        all_diffs=$(printf '%s\n%s' "${all_diffs}" "${page_result}" | jq -s 'add')
+        page=$((page + 1))
+      done
+      if [[ "${got_data}" != "true" ]]; then
+        return 1
+      fi
+      echo "${all_diffs}" | jq '[.[] | {
             filename: .new_path,
             additions: ([.diff | split("\n")[] | select(startswith("+") and (startswith("+++") | not))] | length),
             deletions: ([.diff | split("\n")[] | select(startswith("-") and (startswith("---") | not))] | length)
           }]'
       ;;
-    *) echo "::warning::Unsupported forge: ${FULLSEND_FORGE}" >&2 ;;
+    *) echo "::warning::Unsupported forge: $(_gha_sanitize "${FULLSEND_FORGE}")" >&2 ;;
   esac
 }
 
@@ -198,7 +220,7 @@ _fetch_pr_meta() {
             assoc: (if .first_contribution == true then "FIRST_TIME_CONTRIBUTOR" else "CONTRIBUTOR" end)
           }'
       ;;
-    *) echo "::warning::Unsupported forge: ${FULLSEND_FORGE}" >&2 ;;
+    *) echo "::warning::Unsupported forge: $(_gha_sanitize "${FULLSEND_FORGE}")" >&2 ;;
   esac
 }
 
@@ -214,7 +236,7 @@ main() {
   local PR_FILES_JSON
   PR_FILES_JSON=$(_fetch_pr_files_json) || PR_FILES_JSON=""
 
-  if [ -z "${PR_FILES_JSON}" ]; then
+  if [ -z "${PR_FILES_JSON}" ] || ! echo "${PR_FILES_JSON}" | jq -e 'type == "array"' >/dev/null 2>&1; then
     echo "FILES_CHANGED=UNKNOWN"
     echo "LINES_CHANGED=UNKNOWN"
     echo "BLAST_RADIUS=UNKNOWN"

@@ -118,5 +118,6 @@ forge:
       sandbox:
         PR_NUMBER: "${MR_NUMBER}"
         PR_URL: "${GITLAB_MR_URL}"
+        REVIEW_TOKEN: "${GITLAB_TOKEN}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab

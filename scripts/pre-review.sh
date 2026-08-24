@@ -497,7 +497,7 @@ fi
 if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
   _TARGET_DIR="${REPO_DIR:-${GITHUB_WORKSPACE:-.}/target-repo}"
   if [[ ! -d "${_TARGET_DIR}" ]]; then
-    echo "::warning::Clone-deepening skipped — target directory '${_TARGET_DIR}' not found"
+    echo "::warning::Clone-deepening skipped — target directory '$(_gha_sanitize "${_TARGET_DIR}")' not found"
   elif git -C "${_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
     echo "Deepening shallow clone for git history analysis..."
     if [[ "${FULLSEND_FORGE}" == "github" && -n "${GH_TOKEN:-}" && -n "${REPO_FULL_NAME:-}" ]]; then
@@ -515,6 +515,15 @@ if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
       _gl_host="${GITLAB_HOST:-}"
       if [[ -z "${_gl_host}" && -n "${PR_URL:-}" ]]; then
         _gl_host=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+      fi
+      if [[ -n "${_gl_token}" && -n "${_gl_host}" ]]; then
+        case "${_gl_host}" in
+          gitlab.com|gitlab.cee.redhat.com) ;;
+          *)
+            echo "::warning::Clone-deepening skipped — GitLab host '$(_gha_sanitize "${_gl_host}")' is not in the allowed host list"
+            _gl_token=""
+            ;;
+        esac
       fi
       if [[ -n "${_gl_token}" && -n "${_gl_host}" ]]; then
         git -C "${_TARGET_DIR}" fetch --unshallow \

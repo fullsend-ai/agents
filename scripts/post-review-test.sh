@@ -1725,6 +1725,18 @@ run_label_test "risk-stale-label-removal" \
   "${RISK_HIGH_RESULT}" \
   "--remove-label risk/low"
 
+# ---------------------------------------------------------------------------
+# GitLab forge: risk label + tracker-aware comment
+# ---------------------------------------------------------------------------
+
+run_gitlab_label_test "risk-gitlab-comment-tracker" \
+  "${RISK_HIGH_RESULT}" \
+  "fullsend issues post-comment --tracker gitlab"
+
+run_gitlab_label_test "risk-gitlab-post-review-forge" \
+  "${RISK_HIGH_RESULT}" \
+  "fullsend post-review --forge gitlab"
+
 # --- Summary ---
 
 echo ""

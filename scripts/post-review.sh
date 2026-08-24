@@ -213,11 +213,54 @@ forge_list_repo_labels() {
 [[ -n "${GITLAB_REVIEW_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_REVIEW_OPS_SH_LOADED=1
 
+# shellcheck source=gitlab-host-validation.lib.sh
+# BEGIN bundled: lib/gitlab-host-validation.lib.sh
+# shellcheck shell=bash
+# gitlab-host-validation.lib.sh — Shared host validation for GitLab ops.
+#
+# Validates a hostname against CI_SERVER_HOST, a GitLab CI predefined
+# variable set automatically by the runner.
+#
+# Fails closed: rejects when CI_SERVER_HOST is not set.
+#
+# Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
+
+[[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
+GITLAB_HOST_VALIDATION_SH_LOADED=1
+
+if ! declare -F _gha_sanitize >/dev/null 2>&1; then
+  _gha_sanitize() {
+    printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'
+  }
+fi
+
+_validate_gitlab_host() {
+  local host="$1"
+  if [[ -z "${CI_SERVER_HOST:-}" ]]; then
+    echo "ERROR: CI_SERVER_HOST is not set (set by GitLab CI runner)" >&2
+    return 1
+  fi
+  if [[ ! "${CI_SERVER_HOST}" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+    echo "ERROR: CI_SERVER_HOST contains invalid characters" >&2
+    return 1
+  fi
+  if [[ "${host,,}" != "${CI_SERVER_HOST,,}" ]]; then
+    echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' does not match CI_SERVER_HOST" >&2
+    return 1
+  fi
+}
+# END bundled: lib/gitlab-host-validation.lib.sh
+
 _gitlab_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call forge_parse_pr_url first" >&2
+    return 1
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${REVIEW_TOKEN}" \
@@ -234,17 +277,14 @@ forge_validate_pr_url() {
     return 1
   fi
   local host
-  host=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
-  case "${host}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list" >&2; return 1 ;;
-  esac
+  host=$(echo "${PR_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  _validate_gitlab_host "${host}" || return 1
 }
 
 forge_parse_pr_url() {
   # Extract host, project path, and MR IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/merge_requests/42
-  GITLAB_HOST=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  GITLAB_HOST=$(echo "${PR_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
   REPO=$(echo "${PR_URL}" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
   PR_NUMBER=$(basename "${PR_URL}")
@@ -670,6 +710,14 @@ is_control_label() {
   return 1
 }
 
+remove_stale_risk_labels() {
+  local keep="${1:-}"
+  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
+    [[ -n "${keep}" && "risk/${keep}" == "${stale_risk}" ]] && continue
+    forge_remove_label_edit "${stale_risk}"
+  done
+}
+
 VALIDATED_LABEL_ADDS=()
 VALIDATED_LABEL_REMOVES=()
 LABEL_REASON=""
@@ -755,6 +803,79 @@ if [ "${ACTION}" = "request-changes" ]; then
     '.body = (.body + $footer)' \
     "${RESULT_FILE}" > "${FOOTER_RESULT}"
   RESULT_FILE="${FOOTER_RESULT}"
+fi
+
+# ---------------------------------------------------------------------------
+# Risk assessment: apply risk/* label and post breakdown comment.
+# Risk level is informational only — it does not gate the review outcome.
+# Applied BEFORE forge_post_review so labels land even when the review
+# submission fails (e.g. 422 self-review in eval environments).
+# Label logic is mirrored in post-review-test.sh — update both.
+# ---------------------------------------------------------------------------
+HAS_RISK=$(jq 'has("risk_assessment")' "${RESULT_FILE}")
+if [[ "${HAS_RISK}" == "true" ]]; then
+  RISK_LEVEL=$(jq -r '.risk_assessment.level' "${RESULT_FILE}")
+  RISK_SCORE=$(jq -r '.risk_assessment.score' "${RESULT_FILE}")
+
+  # Validate score is an integer 1-5.  Do NOT interpolate the raw value
+  # into the workflow command — it failed validation and may contain
+  # control sequences.
+  if [[ ! "${RISK_SCORE}" =~ ^[1-5]$ ]]; then
+    echo "::warning::Invalid risk score, defaulting to level-only"
+    RISK_SCORE="?"
+  fi
+
+  # Sanitize level value (same pattern as lines 108-116)
+  RISK_LEVEL="${RISK_LEVEL//$'\n'/}"
+  RISK_LEVEL="${RISK_LEVEL//$'\r'/}"
+  RISK_LEVEL="${RISK_LEVEL//%/}"
+  RISK_LEVEL="${RISK_LEVEL//:/}"
+
+  case "${RISK_LEVEL}" in
+    low|moderate|elevated|high|critical) ;;
+    *)
+      echo "::warning::Invalid risk level '${RISK_LEVEL}', skipping risk label"
+      RISK_LEVEL=""
+      ;;
+  esac
+
+  if [[ -n "${RISK_LEVEL}" ]]; then
+    remove_stale_risk_labels "${RISK_LEVEL}"
+
+    # Label color by level
+    case "${RISK_LEVEL}" in
+      low)      RISK_COLOR="0E8A16" ;;
+      moderate) RISK_COLOR="FBCA04" ;;
+      elevated) RISK_COLOR="E4A221" ;;
+      high)     RISK_COLOR="D93F0B" ;;
+      critical) RISK_COLOR="B60205" ;;
+    esac
+
+    echo "Applying risk/${RISK_LEVEL} label"
+    forge_create_label "risk/${RISK_LEVEL}" "PR risk: ${RISK_LEVEL}" "${RISK_COLOR}"
+    forge_add_label_edit "risk/${RISK_LEVEL}"
+
+    # Post sticky risk comment
+    RISK_RATIONALE=$(jq -r '(.risk_assessment.rationale // "No rationale provided.")[0:2000]' "${RESULT_FILE}" \
+      | sed 's/<[^>]*>//g; s/!\[[^]]*\]([^)]*)//g; s/\[\([^]]*\)\]([^)]*)/\1/g; s/|/\\|/g')
+
+    RISK_COMMENT=$(jq -n \
+      --arg score "${RISK_SCORE}" \
+      --arg level "${RISK_LEVEL}" \
+      --arg rationale "${RISK_RATIONALE}" \
+      -r '"<!-- fullsend:risk-assessment -->\n**Risk Assessment: \($level) (\($score)/5)**\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>"')
+
+    printf '%s' "${RISK_COMMENT}" | fullsend post-comment \
+      --repo "${REPO}" \
+      --number "${PR_NUMBER}" \
+      --marker "<!-- fullsend:risk-assessment -->" \
+      --token "${REVIEW_TOKEN}" \
+      --result - >/dev/null 2>&1 || echo "::warning::Failed to post risk comment"
+  else
+    remove_stale_risk_labels
+  fi
+else
+  remove_stale_risk_labels
 fi
 
 # ---------------------------------------------------------------------------

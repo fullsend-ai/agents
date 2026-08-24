@@ -498,9 +498,9 @@ clone_deepen_gitlab_test() {
 
   # Create a fake shallow git repo
   git -C "${tmpdir}" init -q
-  git -C "${tmpdir}" commit --allow-empty -m "init" -q
+  git -C "${tmpdir}" -c user.name="test" -c user.email="test@test" commit --allow-empty -m "init" -q
   # Simulate shallow by creating .git/shallow
-  echo "$(git -C "${tmpdir}" rev-parse HEAD)" > "${tmpdir}/.git/shallow"
+  git -C "${tmpdir}" rev-parse HEAD > "${tmpdir}/.git/shallow"
 
   local mock_bin
   mock_bin="$(build_gitlab_mock "opened" "some-user")"
@@ -536,6 +536,7 @@ GITSTUB
     REVIEW_TOKEN="fake-gitlab-token" \
     REVIEW_GIT_FETCH_DEPTH="0" \
     REPO_DIR="${tmpdir}" \
+    CI_SERVER_HOST="gitlab.com" \
     bash "${SCRIPT_DIR}/pre-review.sh" \
     > "${tmpdir}/stdout.log" 2>&1 || exit_code=$?
 
