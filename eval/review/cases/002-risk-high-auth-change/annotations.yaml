@@ -5,6 +5,7 @@ labels:
   forbidden:
     - risk/low
     - ready-for-merge
+  risk_label_required: true
 
 max_turns: 80
 max_cost_usd: 8.00

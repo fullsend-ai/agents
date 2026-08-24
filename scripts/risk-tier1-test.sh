@@ -133,6 +133,8 @@ run_test "ratio-all-tests" \
   "$(compute_test_ratio "main_test.go" "util_test.go")" "1.00"
 run_test "ratio-one-third" \
   "$(compute_test_ratio "a.go" "b.go" "a_test.go")" "0.33"
+run_test "ratio-nested-test-prefix" \
+  "$(compute_test_ratio "tests/test_foo.py" "src/foo.py")" "0.50"
 
 # ---------------------------------------------------------------------------
 # Author bot detection
