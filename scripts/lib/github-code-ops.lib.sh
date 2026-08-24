@@ -60,7 +60,10 @@ forge_add_label() {
 forge_remove_label() {
   local label="$1"
   local number="${2:-${ISSUE_NUMBER}}"
-  gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels/${label}" \
+  # URL-encode the label for the path segment (spaces, slashes, etc.)
+  local encoded_label
+  encoded_label="$(printf '%s' "${label}" | jq -sRr @uri)"
+  gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels/${encoded_label}" \
     -X DELETE --silent 2>/dev/null || true
 }
 

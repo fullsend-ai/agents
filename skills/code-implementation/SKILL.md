@@ -1081,8 +1081,9 @@ echo "::notice::STEP 11: Validate structured output"
 cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body`, `closes_issue`, and `needs_input`:
+The file must be valid JSON with `target_branch` (required unless
+`needs_input` is set) and optionally `pr_body`, `closes_issue`, and
+`needs_input`:
 
 ```json
 {
