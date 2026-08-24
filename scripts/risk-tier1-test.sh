@@ -233,7 +233,7 @@ case "$*" in
     PAGE2='[{"filename":"src/util.go","additions":3,"deletions":1}]'
     echo "${PAGE1}"
     echo "${PAGE2}"
-    return
+    exit 0
     ;;
   *pulls/99*)
     JSON='{"user":{"login":"testbot[bot]"},"author_association":"CONTRIBUTOR"}'
