@@ -710,6 +710,14 @@ is_control_label() {
   return 1
 }
 
+remove_stale_risk_labels() {
+  local keep="${1:-}"
+  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
+    [[ -n "${keep}" && "risk/${keep}" == "${stale_risk}" ]] && continue
+    forge_remove_label_edit "${stale_risk}"
+  done
+}
+
 VALIDATED_LABEL_ADDS=()
 VALIDATED_LABEL_REMOVES=()
 LABEL_REASON=""
@@ -832,11 +840,7 @@ if [[ "${HAS_RISK}" == "true" ]]; then
   esac
 
   if [[ -n "${RISK_LEVEL}" ]]; then
-    # Remove prior risk/* labels
-    for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
-      [ "risk/${RISK_LEVEL}" = "${stale_risk}" ] && continue
-      forge_remove_label_edit "${stale_risk}"
-    done
+    remove_stale_risk_labels "${RISK_LEVEL}"
 
     # Label color by level
     case "${RISK_LEVEL}" in
@@ -868,16 +872,10 @@ if [[ "${HAS_RISK}" == "true" ]]; then
       --token "${REVIEW_TOKEN}" \
       --result - >/dev/null 2>&1 || echo "::warning::Failed to post risk comment"
   else
-    # Invalid level — remove stale risk labels (same as absent-assessment path)
-    for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
-      forge_remove_label_edit "${stale_risk}"
-    done
+    remove_stale_risk_labels
   fi
 else
-  # Risk assessment absent (disabled or failed) — remove stale risk labels.
-  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
-    forge_remove_label_edit "${stale_risk}"
-  done
+  remove_stale_risk_labels
 fi
 
 # ---------------------------------------------------------------------------

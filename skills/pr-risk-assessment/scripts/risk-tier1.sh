@@ -148,7 +148,7 @@ main() {
   PR_FILES_JSON=$(gh api --paginate "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100" 2>/dev/null \
     | jq -s 'add') || PR_FILES_JSON=""
 
-  if [ -z "${PR_FILES_JSON}" ]; then
+  if [ -z "${PR_FILES_JSON}" ] || ! echo "${PR_FILES_JSON}" | jq -e 'type == "array"' >/dev/null 2>&1; then
     echo "FILES_CHANGED=UNKNOWN"
     echo "LINES_CHANGED=UNKNOWN"
     echo "BLAST_RADIUS=UNKNOWN"
