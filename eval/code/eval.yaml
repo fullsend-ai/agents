@@ -160,8 +160,10 @@ judges:
       openish = [p for p in prs if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
       expect_pr = outputs.get("annotations", {}).get("expect_pr", True)
       if expect_pr:
-          if not openish:
+          if not prs:
               return False, "No pull requests found — code agent/post-script did not create a PR"
+          if not openish:
+              return False, f"PRs present but none open/merged: {[p.get('url') for p in prs]}"
           return True, f"PR created: {[p.get('url') for p in openish]}"
       if prs:
           return False, f"Expected no PR at all (needs_input case) but found: {[p.get('url') for p in prs]}"

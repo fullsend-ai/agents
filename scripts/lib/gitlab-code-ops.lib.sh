@@ -133,6 +133,13 @@ forge_add_label() {
   fi
 }
 
+forge_remove_label() {
+  local label="$1"
+  local number="${2:-${ISSUE_NUMBER}}"
+  _gitlab_code_api PUT "/projects/${REPO_ENCODED}/issues/${number}" \
+    --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
+}
+
 forge_create_label() {
   local name="$1"
   local description="$2"

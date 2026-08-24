@@ -57,6 +57,13 @@ forge_add_label() {
   fi
 }
 
+forge_remove_label() {
+  local label="$1"
+  local number="${2:-${ISSUE_NUMBER}}"
+  gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels/${label}" \
+    -X DELETE --silent 2>/dev/null || true
+}
+
 forge_create_label() {
   local name="$1"
   local description="$2"

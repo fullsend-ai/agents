@@ -10,7 +10,8 @@ expect_pr: false
 labels:
   required:
     - fs-code-needs-input
-  forbidden: []
+  forbidden:
+    - ready-to-code
 
 # Code agent budgets. The agent should recognize the contradiction quickly
 # (read issue + repo, conclude no conservative interpretation exists) rather

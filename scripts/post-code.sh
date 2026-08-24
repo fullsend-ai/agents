@@ -36,9 +36,9 @@
 #                       branch is allowed. (default: auto-detected)
 #   CODE_NEEDS_INPUT_LABEL
 #                     — label applied when the agent sets needs_input instead
-#                       of committing. Forwarded from the runner environment
-#                       via env.runner in harness/code.yaml. The script
-#                       defaults when unset. (default: fs-code-needs-input)
+#                       of committing. Hardcoded to fs-code-needs-input in
+#                       harness/code.yaml; override by editing that file (or
+#                       via base: composition). (default: fs-code-needs-input)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
 #   CODE_AUTO_MERGE    — "true" to enable auto-merge on the PR/MR after
@@ -1138,6 +1138,13 @@ forge_add_label() {
   fi
 }
 
+forge_remove_label() {
+  local label="$1"
+  local number="${2:-${ISSUE_NUMBER}}"
+  gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels/${label}" \
+    -X DELETE --silent 2>/dev/null || true
+}
+
 forge_create_label() {
   local name="$1"
   local description="$2"
@@ -1532,6 +1539,13 @@ forge_add_label() {
     _gitlab_code_api PUT "/projects/${REPO_ENCODED}/issues/${number}" \
       --data-urlencode "add_labels=${label}" > /dev/null 2>/dev/null || true
   fi
+}
+
+forge_remove_label() {
+  local label="$1"
+  local number="${2:-${ISSUE_NUMBER}}"
+  _gitlab_code_api PUT "/projects/${REPO_ENCODED}/issues/${number}" \
+    --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
 }
 
 forge_create_label() {
@@ -2150,6 +2164,7 @@ fi
 # ---------------------------------------------------------------------------
 post_needs_input_comment() {
   local needs_input="$1"
+  local agent_target="${2:-}"  # optional: agent's target_branch from RESULT_FILE
   local safe_issue_number
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
 
@@ -2160,20 +2175,16 @@ post_needs_input_comment() {
   # before using it in API calls and interpolating into the comment body.
   # The env var is controlled by the repository owner (acceptable trust
   # boundary), but a typo or adversarial override could inject unexpected
-  # characters into gh API calls or the posted Markdown comment.
+  # characters into forge API calls or the posted Markdown comment.
   local _label_re='^[a-zA-Z0-9._:/ -]+$'
   if [[ ! "${label}" =~ ${_label_re} ]]; then
     gha_echo warning "CODE_NEEDS_INPUT_LABEL contains unexpected characters ('${label}'); falling back to default"
     label="fs-code-needs-input"
   fi
-  gh label create "${label}" --repo "${REPO_FULL_NAME}" \
-    --description "Code agent needs human input to proceed" --color "D93F0B" \
-    --force 2>/dev/null || gha_echo warning "Failed to create/update label '${label}' on ${REPO_FULL_NAME}"
-  gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
-    -f "labels[]=${label}" --silent 2>/dev/null || \
+  forge_create_label "${label}" "Code agent needs human input to proceed" "D93F0B"
+  forge_add_label "${label}" || \
     gha_echo warning "Failed to apply label '${label}' to issue #${safe_issue_number}"
-  gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels/ready-to-code" \
-    -X DELETE --silent 2>/dev/null || \
+  forge_remove_label "ready-to-code" || \
     gha_echo warning "Failed to remove 'ready-to-code' label from issue #${safe_issue_number}"
 
   # Guard against a contract violation: needs_input means "stop before
@@ -2194,34 +2205,46 @@ post_needs_input_comment() {
       display_branch="(branch name omitted — contains unexpected characters, see workflow log)"
       gha_echo warning "needs_input set on a branch with unexpected characters in its name; omitting the raw name from the issue comment"
     fi
-    local existing_pr_url
-    existing_pr_url="$(gh pr list --repo "${REPO_FULL_NAME}" --head "${current_branch}" \
-      --json url --jq '.[0].url // empty' 2>/dev/null || true)"
-    if [ -n "${existing_pr_url}" ]; then
+    # Use forge_list_prs_for_branch — includes the headRepositoryOwner
+    # filter (GitHub) / source_project_id filter (GitLab) to avoid
+    # matching a same-named branch from an unrelated fork.
+    local existing_pr_num existing_pr_url
+    existing_pr_num="$(forge_list_prs_for_branch "${current_branch}" 2>/dev/null || true)"
+    if [ -n "${existing_pr_num}" ]; then
+      existing_pr_url="$(forge_get_pr_url "${existing_pr_num}" 2>/dev/null || true)"
       # Sanitize existing_pr_url before interpolating into the comment body.
       # The value comes from the GitHub/GitLab API (constrained to https://
       # URLs), so exploitation is practically impossible — but defense-in-depth
       # against injection matches the treatment applied to current_branch above.
-      existing_pr_url="$(_sanitize_workflow_value "${existing_pr_url}")"
-      if [[ ! "${existing_pr_url}" =~ ^https://[a-zA-Z0-9._:/-]+$ ]]; then
-        gha_echo warning "needs_input: existing PR URL contains unexpected characters; omitting from issue comment"
-        existing_pr_url="(PR URL omitted — unexpected format, see workflow log)"
+      if [ -n "${existing_pr_url}" ]; then
+        existing_pr_url="$(_sanitize_workflow_value "${existing_pr_url}")"
+        if [[ ! "${existing_pr_url}" =~ ^https://[a-zA-Z0-9._:/-]+$ ]]; then
+          gha_echo warning "needs_input: existing PR URL contains unexpected characters; omitting from issue comment"
+          existing_pr_url="(PR URL omitted — unexpected format, see workflow log)"
+        fi
+      else
+        existing_pr_url="PR #${existing_pr_num}"
       fi
       caveat="⚠️ An open PR already exists for branch \`${display_branch}\`: ${existing_pr_url}. The agent set \`needs_input\` on this run — check whether that PR is still current."
       gha_echo warning "needs_input set but an open PR already exists for branch '${current_branch}': ${existing_pr_url}"
     else
-      local default_branch commits_ahead
-      if ! default_branch="$(gh api "repos/${REPO_FULL_NAME}" --jq '.default_branch' 2>/dev/null)"; then
-        default_branch="main"
-        gha_echo warning "Failed to determine default branch for ${REPO_FULL_NAME}; assuming 'main' — the discarded-commits check may be inaccurate"
+      # Use the agent's target branch (from RESULT_FILE) as the comparison
+      # base when available, not the repo default. The agent may have
+      # branched from a non-default branch (e.g. "develop"), and comparing
+      # against the wrong base inflates commits_ahead.
+      local comparison_branch commits_ahead
+      if [ -n "${agent_target}" ]; then
+        comparison_branch="${agent_target}"
+      else
+        comparison_branch="$(forge_get_default_branch 2>/dev/null || echo main)"
       fi
-      # Check for commits ahead of origin/default regardless of whether
-      # current_branch equals default_branch — the agent might leave
-      # local-only commits on the default branch too, and
-      # origin/${default_branch}..HEAD is still meaningful in that case.
+      # Check for commits ahead of origin/comparison regardless of whether
+      # current_branch equals comparison_branch — the agent might leave
+      # local-only commits on the same branch too, and
+      # origin/${comparison_branch}..HEAD is still meaningful in that case.
       commits_ahead=""
-      if ! commits_ahead="$(git rev-list --count "origin/${default_branch}..HEAD" 2>/dev/null)"; then
-        gha_echo warning "Failed to count commits ahead of origin/${default_branch} — discarded-commits check skipped"
+      if ! commits_ahead="$(git rev-list --count "origin/${comparison_branch}..HEAD" 2>/dev/null)"; then
+        gha_echo warning "Failed to count commits ahead of origin/${comparison_branch} — discarded-commits check skipped"
       fi
       if [ -n "${commits_ahead}" ] && [ "${commits_ahead}" -gt 0 ]; then
         caveat="⚠️ The agent made ${commits_ahead} local commit(s) on branch \`${display_branch}\` before setting \`needs_input\` — these were not pushed and will be discarded."
@@ -2230,8 +2253,13 @@ post_needs_input_comment() {
       # Also check for uncommitted-but-unstaged changes — if the agent
       # modified files without committing, those changes are silently
       # lost. Surface them so the human knows work was discarded.
+      # Use --untracked-files=no to exclude untracked files (build
+      # artifacts, .venv/, node_modules/, etc.) — these are not agent
+      # work product and should not trigger the conflict label. The
+      # contract violation is "the agent produced tracked changes that
+      # contradict needs_input," not "make setup left artifacts."
       local dirty_files
-      dirty_files="$(git status --porcelain 2>/dev/null || true)"
+      dirty_files="$(git status --porcelain --untracked-files=no 2>/dev/null || true)"
       if [ -n "${dirty_files}" ]; then
         local dirty_count
         dirty_count="$(echo "${dirty_files}" | wc -l | tr -d ' ')"
@@ -2297,11 +2325,8 @@ ${caveat}
     # distinguish "clean needs_input" from "agent violated the needs_input
     # contract" without reading comment prose.
     local conflict_label="${label}-conflict"
-    gh label create "${conflict_label}" --repo "${REPO_FULL_NAME}" \
-      --description "Code agent set needs_input but left local commits or an open PR" --color "E4E669" \
-      --force 2>/dev/null || true
-    gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels" \
-      -f "labels[]=${conflict_label}" --silent 2>/dev/null || \
+    forge_create_label "${conflict_label}" "Code agent set needs_input but left local commits or an open PR" "E4E669"
+    forge_add_label "${conflict_label}" || \
       gha_echo warning "Failed to apply conflict label '${conflict_label}' to issue #${safe_issue_number}"
   fi
 
@@ -2315,9 +2340,7 @@ ${sanitized_input}
 ${caveat_block}
 Once this is resolved, remove the \`${label}\` label and re-trigger with \`/fs-code\`."
 
-  if ! gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null; then
+  if ! forge_post_issue_comment "${body}"; then
     gha_echo warning "Failed to post needs-input comment to issue #${safe_issue_number}"
   fi
 }
@@ -2372,7 +2395,7 @@ fi
 
 if [ -n "${NEEDS_INPUT}" ]; then
   gha_echo notice "Agent needs input — posting comment and stopping (no PR)"
-  post_needs_input_comment "${NEEDS_INPUT}"
+  post_needs_input_comment "${NEEDS_INPUT}" "${AGENT_TARGET}"
   exit 0
 fi
 

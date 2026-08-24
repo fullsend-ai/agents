@@ -35,22 +35,36 @@ mkdir -p "${WORKDIR}"
 REPO_FULL_NAME="owner/repo"
 ISSUE_NUMBER="42"
 
-# Mock gh: record every invocation to a log file. Most needs_input calls
-# don't read gh's stdout, but the contract-violation guards (existing PR /
-# default branch lookups) do, so this mock emulates those two responses via
-# case-matching on the call — unlike post-triage-test.sh's mock, which
-# emulates --body-file stdin capture and label-listing instead.
+# Mock gh: record every invocation to a log file. The function now routes
+# through forge helpers (forge_list_prs_for_branch, forge_get_pr_url,
+# forge_post_issue_comment, etc.), which call gh with different patterns
+# than the pre-forge direct calls. The mock handles both styles for
+# backward compatibility with any remaining direct calls in the script.
+#
+# MOCK_EXISTING_PR_NUM: returned by forge_list_prs_for_branch
+# MOCK_EXISTING_PR_URL: returned by forge_get_pr_url
 GH_LOG="${TMPDIR}/gh-calls.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
+# Log the command line
 echo "gh \$*" >> "${GH_LOG}"
+# forge_post_issue_comment pipes the body via --body-file - (stdin);
+# capture it into the log so assert_comment_body_pattern can check it.
+if [[ "\$*" == *"--body-file -"* ]]; then
+  cat >> "${GH_LOG}"
+fi
 case "\$*" in
   *"repos/${REPO_FULL_NAME} --jq .default_branch"*)
     echo "main"
     ;;
-  *"pr list --repo ${REPO_FULL_NAME} --head"*"--json url"*)
+  *"pr list --repo ${REPO_FULL_NAME} --head"*"--json number,headRepositoryOwner"*)
+    # forge_list_prs_for_branch — return PR number
+    echo "\${MOCK_EXISTING_PR_NUM:-}"
+    ;;
+  *"pr view"*"--json url --jq"*)
+    # forge_get_pr_url — return PR URL
     echo "\${MOCK_EXISTING_PR_URL:-}"
     ;;
 esac
@@ -152,13 +166,15 @@ assert_log_pattern() {
 # i.e. the actual posted comment body — rather than the whole gh call log
 # (which also legitimately contains raw values like the branch name from
 # earlier "gh pr list --head" lookup calls).
+# forge_post_issue_comment pipes the body via --body-file -, so the mock
+# captures stdin into the log on lines following the gh call.
 assert_comment_body_pattern() {
   local test_name="$1"
   local pattern="$2"
   local expect_present="$3"  # "yes" or "no"
-  # The mocked gh call is logged as-is, including embedded newlines from a
-  # multi-line --body value, so pull every line from the "gh issue comment"
-  # call up to (not including) the next top-level "gh " invocation.
+  # Pull every line from the "gh issue comment" call up to (not including)
+  # the next top-level "gh " invocation. With --body-file -, the body is
+  # on subsequent lines captured from stdin by the mock.
   local comment_line
   comment_line="$(awk '/^gh issue comment/{p=1} p && /^gh / && !/^gh issue comment/{exit} p' "${GH_LOG}")"
 
@@ -211,7 +227,7 @@ assert_log_pattern "needs-input-removes-ready-to-code" \
   "gh api repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/labels/ready-to-code -X DELETE --silent" "yes"
 
 assert_log_pattern "needs-input-posts-comment" \
-  "gh issue comment ${ISSUE_NUMBER} --repo ${REPO_FULL_NAME} --body" "yes"
+  "gh issue comment ${ISSUE_NUMBER} --repo ${REPO_FULL_NAME} --body-file -" "yes"
 
 assert_log_pattern "needs-input-posts-comment-includes-text" \
   "${NEEDS_INPUT_TEXT}" "yes"
@@ -314,7 +330,8 @@ assert_exit_code "needs-input-with-commits-still-exits-zero" 0
 
 # Same git state, but gh pr list reports an already-open PR for the branch —
 # the "existing PR" caveat should win over the "discarded commits" one.
-MOCK_EXISTING_PR_URL="https://github.com/${REPO_FULL_NAME}/pull/7" \
+# forge_list_prs_for_branch returns a number; forge_get_pr_url returns URL.
+MOCK_EXISTING_PR_NUM=7 MOCK_EXISTING_PR_URL="https://github.com/${REPO_FULL_NAME}/pull/7" \
   run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
 
 assert_log_pattern "needs-input-warns-on-existing-pr" \
@@ -326,10 +343,10 @@ assert_log_pattern "needs-input-conflict-label-applied-on-existing-pr" \
 assert_log_pattern "needs-input-existing-pr-caveat-omits-discarded-commits" \
   "were not pushed and will be discarded" "no"
 
-# PR URLs from gh pr list should be validated before interpolation into the
-# comment body (defense-in-depth against injection via forged API responses).
+# PR URLs from forge_get_pr_url should be validated before interpolation into
+# the comment body (defense-in-depth against injection via forged API responses).
 # A URL containing unexpected characters must be replaced with a placeholder.
-MOCK_EXISTING_PR_URL='https://github.com/owner/repo/pull/7?x=`whoami`' \
+MOCK_EXISTING_PR_NUM=7 MOCK_EXISTING_PR_URL='https://github.com/owner/repo/pull/7?x=`whoami`' \
   run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
 
 assert_comment_body_pattern "needs-input-bad-pr-url-omitted-from-comment" \
@@ -339,7 +356,7 @@ assert_comment_body_pattern "needs-input-bad-pr-url-placeholder-used" \
   "PR URL omitted" "yes"
 
 # A valid PR URL must pass through normally.
-MOCK_EXISTING_PR_URL="https://github.com/${REPO_FULL_NAME}/pull/7" \
+MOCK_EXISTING_PR_NUM=7 MOCK_EXISTING_PR_URL="https://github.com/${REPO_FULL_NAME}/pull/7" \
   run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
 
 assert_comment_body_pattern "needs-input-valid-pr-url-included" \
@@ -363,7 +380,7 @@ setup_git_workdir_with_backtick_branch() {
 }
 
 setup_git_workdir_with_backtick_branch
-MOCK_EXISTING_PR_URL="" run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+MOCK_EXISTING_PR_NUM="" MOCK_EXISTING_PR_URL="" run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
 
 assert_comment_body_pattern "needs-input-backtick-branch-omitted-from-comment" \
   "${BACKTICK_BRANCH}" "no"
@@ -398,17 +415,22 @@ assert_log_pattern "needs-input-conflict-label-on-default-branch-commits" \
 
 # --- Uncommitted files check ---
 # The agent may modify files without committing. The guard should surface
-# uncommitted working-tree changes via a git status --porcelain check.
+# uncommitted tracked changes via git status --porcelain --untracked-files=no.
+# Untracked files (build artifacts from make setup, etc.) are excluded —
+# they do not represent agent work product contradicting needs_input.
 setup_git_workdir_with_dirty_files() {
   rm -rf "${GIT_WORKDIR}"
   git init -q -b main "${GIT_WORKDIR}"
   git -C "${GIT_WORKDIR}" config user.email "test@example.com"
   git -C "${GIT_WORKDIR}" config user.name "Test"
-  git -C "${GIT_WORKDIR}" commit --allow-empty -m "init" -q
+  # Create a tracked file in the initial commit
+  echo "original content" > "${GIT_WORKDIR}/tracked-file.txt"
+  git -C "${GIT_WORKDIR}" add tracked-file.txt
+  git -C "${GIT_WORKDIR}" commit -m "init" -q
   git -C "${GIT_WORKDIR}" update-ref refs/remotes/origin/main HEAD
   git -C "${GIT_WORKDIR}" checkout -q -b feature/dirty-needs-input
-  # Create an uncommitted file
-  echo "uncommitted agent work" > "${GIT_WORKDIR}/agent-changes.txt"
+  # Modify the tracked file without committing — this is genuine agent work
+  echo "uncommitted agent work" > "${GIT_WORKDIR}/tracked-file.txt"
 }
 
 setup_git_workdir_with_dirty_files
@@ -419,6 +441,26 @@ assert_log_pattern "needs-input-warns-on-uncommitted-files" \
 
 assert_log_pattern "needs-input-conflict-label-on-uncommitted-files" \
   "labels[]=fs-code-needs-input-conflict" "yes"
+
+# Untracked files (e.g. build artifacts from make setup) must NOT trigger
+# the conflict label — they are not agent work product.
+setup_git_workdir_with_untracked_only() {
+  rm -rf "${GIT_WORKDIR}"
+  git init -q -b main "${GIT_WORKDIR}"
+  git -C "${GIT_WORKDIR}" config user.email "test@example.com"
+  git -C "${GIT_WORKDIR}" config user.name "Test"
+  git -C "${GIT_WORKDIR}" commit --allow-empty -m "init" -q
+  git -C "${GIT_WORKDIR}" update-ref refs/remotes/origin/main HEAD
+  git -C "${GIT_WORKDIR}" checkout -q -b feature/untracked-needs-input
+  # Create an untracked file — simulates build artifacts from make setup
+  echo "build artifact" > "${GIT_WORKDIR}/node_modules_placeholder.txt"
+}
+
+setup_git_workdir_with_untracked_only
+run_post_code_in_git_workdir "${FIXTURE_NEEDS_INPUT}"
+
+assert_log_pattern "needs-input-untracked-files-no-conflict-label" \
+  "fs-code-needs-input-conflict" "no"
 
 # --- Label validation ---
 # CODE_NEEDS_INPUT_LABEL with unexpected characters must fall back to default.

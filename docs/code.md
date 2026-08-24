@@ -36,6 +36,7 @@ on issues (not PRs).
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
 | `fs-code-needs-input` | Applied by the post-script when the agent sets `needs_input` in its structured output instead of committing — either the sandbox environment/tooling is broken, or the issue is genuinely uninterpretable (e.g. contradictory requirements). Removes `ready-to-code`. No PR is opened; the agent posts a comment explaining what it needs. Remove the label and re-trigger with `/fs-code` once resolved. |
+| `<CODE_NEEDS_INPUT_LABEL>-conflict` | Applied alongside `fs-code-needs-input` (or the configured label) when the agent set `needs_input` but also left local commits, uncommitted files, or an already-open PR — i.e. the agent violated the `needs_input` contract. The label name derives from `CODE_NEEDS_INPUT_LABEL` with `-conflict` appended (default: `fs-code-needs-input-conflict`). Machine-queryable signal for dashboards to distinguish a clean pushback from a contract violation. |
 
 ## Configuration
 
@@ -50,7 +51,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
-| `CODE_NEEDS_INPUT_LABEL` | Label applied when the agent sets `needs_input` instead of committing. Forwarded from the runner environment via `env.runner` in `harness/code.yaml`. The script defaults to `fs-code-needs-input` when unset. | `fs-code-needs-input` | Any valid GitHub label name |
+| `CODE_NEEDS_INPUT_LABEL` | Label applied when the agent sets `needs_input` instead of committing. Hardcoded to `fs-code-needs-input` in `harness/code.yaml`; override by editing that file (or via `base:` composition). The script's `${CODE_NEEDS_INPUT_LABEL:-fs-code-needs-input}` fallback is unreachable in production since the harness always sets the value. Also determines the conflict label name (`<value>-conflict`). | `fs-code-needs-input` | Any valid GitHub/GitLab label name (safe charset: `[a-zA-Z0-9._:/ -]+`) |
 
 ## How the agent works
 
