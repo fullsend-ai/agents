@@ -59,11 +59,7 @@ count_protected_paths() {
   local count=0
   for file in "$@"; do
     for pattern in "${PROTECTED_PATHS[@]}"; do
-      if [[ "${pattern}" == */ ]]; then
-        [[ "${file}" == "${pattern}"* ]] && { count=$((count + 1)); break; }
-      else
-        [[ "${file}" == "${pattern}" ]] && { count=$((count + 1)); break; }
-      fi
+      [[ "${file}" == "${pattern}"* ]] && { count=$((count + 1)); break; }
     done
   done
   echo "${count}"
@@ -115,7 +111,7 @@ compute_test_ratio() {
     total=$((total + 1))
     local base="${file##*/}"
     case "${base}" in
-      *_test.go|*_test.py|*-test.sh|*-test.py|test_*|*_spec.*|*.test.*)
+      *_test.go|*_test.py|*-test.sh|*-test.py|test_*|*_spec.*|*.spec.*|*.test.*)
         test_count=$((test_count + 1)) ;;
     esac
   done

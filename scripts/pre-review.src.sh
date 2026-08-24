@@ -82,8 +82,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # Deepen shallow clone for git history analysis (risk assessment Tier 2).
-# Controlled by REVIEW_GIT_FETCH_DEPTH: "0" = full unshallow, unset = no-op.
+# When REVIEW_GIT_FETCH_DEPTH is unset, default to "0" (full unshallow) if
+# risk assessment is enabled — the Tier 2 sub-agent needs full git history.
+# Explicit values always take precedence.
 # ---------------------------------------------------------------------------
+if [[ -z "${REVIEW_GIT_FETCH_DEPTH+set}" && "${REVIEW_RISK_ASSESSMENT_ENABLED:-false}" == "true" ]]; then
+  REVIEW_GIT_FETCH_DEPTH="0"
+fi
 if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
   _TARGET_DIR="${REPO_DIR:-${GITHUB_WORKSPACE:-.}/target-repo}"
   if [[ ! -d "${_TARGET_DIR}" ]]; then

@@ -23,9 +23,18 @@ The composite risk score is a weighted average of three tiers:
 - **Tier 2 (Git History):** 30% — churn analysis, author diversity, fix/revert patterns
 - **Tier 3 (Linked Issue):** 20% — issue scope, labels, acceptance criteria
 
-**Redistribution rule:** When no linked issue context is available,
-redistribute tier weights to 62% (Tier 1) and 38% (Tier 2). Tier 3
-contributes 0.
+**Weight redistribution:** When a tier is unavailable, redistribute
+its weight proportionally to the remaining tiers:
+
+| Available tiers | Tier 1 | Tier 2 | Tier 3 |
+|-----------------|--------|--------|--------|
+| All three | 50% | 30% | 20% |
+| Tier 1 + Tier 2 (no issue) | 62% | 38% | — |
+| Tier 1 + Tier 3 (shallow repo) | 71% | — | 29% |
+| Tier 2 + Tier 3 (API failure) | — | 60% | 40% |
+| Tier 1 only | 100% | — | — |
+| Tier 2 only | — | 100% | — |
+| Tier 1 + Tier 2 + Tier 3 absent | Use Tier 1 = 3 (unknown baseline) | — | — |
 
 Each tier produces a sub-score on a 1-5 scale. The composite score is
 the weighted sum, rounded to the nearest integer.
@@ -66,8 +75,7 @@ composite dimension.
 
 **Tier 1 degenerate case:** If all dimensions are UNKNOWN (e.g., the
 initial API call failed), treat Tier 1 as unavailable and redistribute
-its weight to Tiers 2 and 3 (or just Tier 2 if Tier 3 is also absent),
-mirroring the pattern used for Tier 2 and Tier 3 degradation.
+per the weight table above.
 
 ## Tier 2: Git History Signals
 
@@ -93,8 +101,7 @@ sub-scores for the Tier 2 composite.
 **Shallow repository detection:** Before running git log commands, check
 `git rev-parse --is-shallow-repository`. If the repo is shallow, Tier 2
 signals are unreliable — treat the entire tier as unavailable and
-redistribute its weight to Tiers 1 and 3 (or just Tier 1 if Tier 3 is
-also absent). The pre-review script deepens the clone when
+redistribute per the weight table above. The pre-review script deepens the clone when
 `REVIEW_GIT_FETCH_DEPTH=0` is set, but the sub-agent must handle the
 case where deepening failed or was not configured.
 
@@ -126,7 +133,8 @@ average for the Tier 3 composite.
 
 **Graceful degradation:** If issue context is unavailable or partial,
 score only the available dimensions and average them. If no dimensions
-can be scored, omit Tier 3 entirely and redistribute weights.
+can be scored, omit Tier 3 entirely and redistribute per the weight
+table above.
 
 ## Anchoring Examples
 

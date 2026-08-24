@@ -63,8 +63,8 @@ run_test "protected-multiple" \
   "$(count_protected_paths "scripts/deploy.sh" "CLAUDE.md" "src/main.go")" "2"
 run_test "protected-exact-match" \
   "$(count_protected_paths "CODEOWNERS")" "1"
-run_test "protected-no-false-prefix" \
-  "$(count_protected_paths "CODEOWNERS.old")" "0"
+run_test "protected-prefix-match" \
+  "$(count_protected_paths "CODEOWNERS.old")" "1"
 run_test "protected-nested" \
   "$(count_protected_paths "skills/pr-review/SKILL.md")" "1"
 
@@ -135,6 +135,8 @@ run_test "ratio-one-third" \
   "$(compute_test_ratio "a.go" "b.go" "a_test.go")" "0.33"
 run_test "ratio-nested-test-prefix" \
   "$(compute_test_ratio "tests/test_foo.py" "src/foo.py")" "0.50"
+run_test "ratio-dot-spec" \
+  "$(compute_test_ratio "src/component.spec.ts" "src/component.ts")" "0.50"
 
 # ---------------------------------------------------------------------------
 # Author bot detection
@@ -236,7 +238,7 @@ case "$*" in
     exit 0
     ;;
   *pulls/99*)
-    JSON='{"user":{"login":"testbot[bot]"},"author_association":"CONTRIBUTOR"}'
+    JSON='{"user":{"login":"testbot[bot]"},"author_association":"FIRST_TIME_CONTRIBUTOR"}'
     ;;
   *)
     echo "gh stub: unhandled: $*" >&2; exit 1
@@ -267,7 +269,7 @@ CI_WORKFLOW_CHANGED=false
 DEPENDENCY_FILES_CHANGED=none
 TEST_FILE_RATIO=0.00
 AUTHOR_IS_BOT=true
-AUTHOR_IS_FIRST_TIME=false"
+AUTHOR_IS_FIRST_TIME=true"
 
   run_test "e2e-multi-page-pagination" "${actual}" "${expected}"
 }
