@@ -18,7 +18,7 @@ set -uo pipefail
 # --- Protected paths (from REVIEW_PROTECTED_PATHS env var, or hardcoded fallback) ---
 if [[ "${REVIEW_PROTECTED_PATHS+set}" != "set" ]]; then
   PROTECTED_PATHS=(
-    ".claude/" ".cursor/" ".gitattributes" ".github/"
+    ".claude/" ".cursor/" ".pi/" ".gitattributes" ".github/"
     ".pre-commit-config.yaml" "AGENTS.md" "agents/" "api-servers/"
     "CLAUDE.md" "CODEOWNERS" "Containerfile" "Dockerfile"
     "harness/" "images/" "plugins/" "policies/" "profiles/" "providers/" "scripts/" "skills/"
@@ -113,7 +113,8 @@ compute_test_ratio() {
   local test_count=0 total=0
   for file in "$@"; do
     total=$((total + 1))
-    case "${file}" in
+    local base="${file##*/}"
+    case "${base}" in
       *_test.go|*_test.py|*-test.sh|*-test.py|test_*|*_spec.*|*.test.*)
         test_count=$((test_count + 1)) ;;
     esac

@@ -522,8 +522,8 @@ if [[ "${HAS_RISK}" == "true" ]]; then
     forge_add_label_edit "risk/${RISK_LEVEL}"
 
     # Post sticky risk comment
-    RISK_RATIONALE=$(jq -r '.risk_assessment.rationale // "No rationale provided."' "${RESULT_FILE}" \
-      | sed 's/<[^>]*>//g; s/!\[[^]]*\]([^)]*)//g; s/\[\([^]]*\)\]([^)]*)/\1/g; s/|/\\|/g' | head -c 2000)
+    RISK_RATIONALE=$(jq -r '(.risk_assessment.rationale // "No rationale provided.")[0:2000]' "${RESULT_FILE}" \
+      | sed 's/<[^>]*>//g; s/!\[[^]]*\]([^)]*)//g; s/\[\([^]]*\)\]([^)]*)/\1/g; s/|/\\|/g')
 
     RISK_COMMENT=$(jq -n \
       --arg score "${RISK_SCORE}" \
@@ -537,6 +537,11 @@ if [[ "${HAS_RISK}" == "true" ]]; then
       --marker "<!-- fullsend:risk-assessment -->" \
       --token "${REVIEW_TOKEN}" \
       --result - >/dev/null 2>&1 || echo "::warning::Failed to post risk comment"
+  else
+    # Invalid level — remove stale risk labels (same as absent-assessment path)
+    for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
+      forge_remove_label_edit "${stale_risk}"
+    done
   fi
 else
   # Risk assessment absent (disabled or failed) — remove stale risk labels.
