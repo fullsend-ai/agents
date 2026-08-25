@@ -59,6 +59,10 @@ The sub-agent should:
 Do not dump raw issue data into the parent context. Only use the sub-agent's
 summary to inform your recommendations.
 
+## Bot-authored issues
+
+Do not recommend good first issue on bot-authored issues.
+
 ## Step 3: Recommend labels
 
 Based on the content, the available labels, and the observed conventions:

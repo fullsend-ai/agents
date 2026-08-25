@@ -64,7 +64,25 @@ The sub-agent should:
 Do not dump raw issue data into the parent context. Only use the sub-agent's
 summary to inform your recommendations.
 
+## Step 3b: Skip newcomer labels on bot-authored issues
+
+Before recommending labels, check who opened the issue:
+
+`
+gh issue view NUMBER --repo OWNER/REPO --json author
+`
+
+If the author is a bot (.author.is_bot is true, login ends with [bot], or
+the account is clearly automation such as dependabot, 
+enovate,
+github-actions, or a *-bot service account), **do not** recommend
+good first issue, good-first-issue, irst-timers-only, or equivalent
+newcomer labels. Bot-filed issues are not onboarding work for humans.
+
+Still allow other contextual labels (area, priority, component) for bots.
+
 ## Step 4: Recommend labels
+
 
 Based on the content, the available labels, and the observed conventions:
 
