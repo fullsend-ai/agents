@@ -202,7 +202,9 @@ judges:
       number of deletion lines that must name it in the captured PR diff
       (output/pr-<num>.diff, written by capture-fixture.sh) — one per
       original site, since every removed or edited line shows up as a
-      deletion line. A count rather than a bare file list because one
+      deletion line. Deleted comment lines do not count toward it, mirroring
+      the survivor scan's comment exemption, so a dropped doc comment cannot
+      stand in for a real site. A count rather than a bare file list because one
       deletion line per file is satisfied by the struct field alone while a
       second site 11 lines away sits outside every hunk, neither deleted nor
       visible as a survivor. Entries are validated up front (a null, empty,
@@ -371,8 +373,13 @@ judges:
               continue
           short = []
           for path, need in sorted(sites.items()):
+              # Comment lines are excluded from the count exactly as the
+              # survivor scan exempts them: a deleted doc comment must not
+              # stand in for a real site (comment + struct field would
+              # otherwise satisfy config.go: 2 with Defaults() untouched).
               got = sum(1 for l in per_file.get(path, [])
-                        if l.startswith("-") and mentions(sym, l))
+                        if l.startswith("-") and mentions(sym, l)
+                        and not is_comment(path, l))
               if got < need:
                   short.append(f"{path} ({got}/{need} deletion lines)")
           if short:

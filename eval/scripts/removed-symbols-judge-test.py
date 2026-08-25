@@ -230,12 +230,25 @@ CASES = [
     ("fewer deletion lines than declared sites",
      outputs_for(COMPLETE, symbols={**SYMBOLS, "VerboseLogging": {
          **SYMBOLS["VerboseLogging"], "config/config.go": 2}}), False),
-    ("extra deletion lines beyond the declared count are fine",
+    # A deleted comment must not stand in for a real site: doc comment +
+    # struct field is 2 deletion lines, but Defaults() (outside every hunk)
+    # still holds the symbol and the tree does not compile.
+    ("deleted doc comment does not count toward the declared sites",
      outputs_for("\n".join([
          hunk("config/config.go",
               "-\t// VerboseLogging enables detailed debug output.",
               '-\tVerboseLogging bool `yaml:"verbose_logging"`',
-              "-\t\tVerboseLogging: false,"),
+              " \tName string"),
+         DELETE_FIELDS, DELETE_TEST,
+     ]), symbols={**SYMBOLS, "VerboseLogging": {
+         **SYMBOLS["VerboseLogging"], "config/config.go": 2}}), False),
+    ("extra non-comment deletion lines beyond the declared count are fine",
+     outputs_for("\n".join([
+         hunk("config/config.go",
+              "-\t// VerboseLogging enables detailed debug output.",
+              '-\tVerboseLogging bool `yaml:"verbose_logging"`',
+              "-\t\tVerboseLogging: false,",
+              "-\t_ = defaultVerboseLogging(VerboseLogging)"),
          DELETE_FIELDS, DELETE_TEST,
      ]), symbols={**SYMBOLS, "VerboseLogging": {
          **SYMBOLS["VerboseLogging"], "config/config.go": 2}}), True),
