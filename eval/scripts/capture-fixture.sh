@@ -127,6 +127,32 @@ files_changed_since() {
   return 1
 }
 
+# Inline/file-level PR review comments — one per review finding. `gh pr view
+# --json comments` only returns the issue-comment timeline (the review agent's
+# sticky write-up), never the positioned review comments, so the findings
+# themselves are invisible without this call.
+#
+# --paginate is load-bearing: the REST default is 30 per page, and a noisy
+# review posting 40 findings would be silently truncated to 30 — hiding exactly
+# the over-flagging that the review findings judges exist to measure. With
+# --paginate, --jq runs per page, so `jq -s 'add // []'` concatenates the
+# per-page arrays back into one ([] when there are no comments at all).
+#
+# `line` is null for file-level comments (postreview.go falls back to a
+# file-level comment with a "_Line N_ ·" body prefix when GitHub 422s a
+# positioned one); original_line covers outdated positions.
+fetch_review_comments() {
+  local num="$1"
+  local raw
+  if raw=$(retry_cmd gh api --paginate \
+    "repos/${EPHEMERAL_REPO}/pulls/${num}/comments" \
+    --jq '[.[] | {path: .path, line: (.line // .original_line), body: .body}]'); then
+    printf '%s' "$raw" | jq -s 'add // []'
+    return 0
+  fi
+  return 1
+}
+
 case "${FIXTURE_TYPE}" in
   issue)
     if ! issue_json=$(retry_cmd gh issue view "$FIXTURE_NUMBER" --repo "$EPHEMERAL_REPO" \
@@ -222,6 +248,8 @@ case "${FIXTURE_TYPE}" in
           review_decision: null,
           comments: [],
           reviews: [],
+          review_comments: null,
+          review_comments_fetch_failed: true,
           head_sha: null,
           head_ref: null,
           head_sha_poll_exhausted: null,
@@ -261,6 +289,15 @@ case "${FIXTURE_TYPE}" in
       files_since_failed="true"
     fi
 
+    # null (not []) on failure: an empty list would read as "the agent posted
+    # no findings" and silently pass the forbidden_findings judge.
+    review_comments_failed="false"
+    if ! review_comments=$(fetch_review_comments "$FIXTURE_NUMBER"); then
+      echo "WARNING: gh api pulls/${FIXTURE_NUMBER}/comments failed; marking review_comments_fetch_failed" >&2
+      review_comments='null'
+      review_comments_failed="true"
+    fi
+
     jq -n \
       --arg fixture_type "pull_request" \
       --arg fixture_url "$FIXTURE_URL" \
@@ -269,6 +306,8 @@ case "${FIXTURE_TYPE}" in
       --arg pre_agent_head "$pre_agent_head" \
       --argjson files_since_pre_agent_head "$files_since" \
       --arg files_since_pre_agent_head_failed "$files_since_failed" \
+      --argjson review_comments "$review_comments" \
+      --arg review_comments_failed "$review_comments_failed" \
       --arg head_sha_poll_exhausted "$head_sha_poll_exhausted" \
       '{
         fixture_type: $fixture_type,
@@ -283,6 +322,8 @@ case "${FIXTURE_TYPE}" in
         review_decision: $pr.reviewDecision,
         comments: [($pr.comments // [])[] | {author: .author.login, body: .body, created_at: .createdAt}],
         reviews: [($pr.reviews // [])[] | {author: .author.login, state: .state, body: .body}],
+        review_comments: $review_comments,
+        review_comments_fetch_failed: ($review_comments_failed == "true"),
         head_sha: (if $head_sha == "" then $pr.headRefOid else $head_sha end),
         head_ref: $pr.headRefName,
         head_sha_poll_exhausted: ($head_sha_poll_exhausted == "true"),
