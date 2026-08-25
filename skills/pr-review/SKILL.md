@@ -147,6 +147,11 @@ skill commands:
   deletions) — paginate if the forge API requires it
 - Compute `FILE_COUNT` and `LINE_COUNT` from the response
 
+`FILE_COUNT` and `LINE_COUNT` are computed once, here, from this
+unfiltered file-stats response, and used as-is for the routing decision
+below. Nothing in this step recomputes them from post-filter output —
+triage must see the true size of the change, not its post-filter size.
+
 From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 
 1. FILE_COUNT<50, LINE_COUNT<3000: small PR — fetch the full unified diff
@@ -158,6 +163,10 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
    - Write the forge's per-file patches, generated files dropped, into
      `/sandbox/workspace/pr-diff.txt` (forge skill "Per-file diffs");
      the checkout is the base branch, so `git diff` there is wrong
+
+Both buckets write the same file, and both then filter it in place —
+see step 2c. One deterministic definition of "generated" for both
+paths, instead of a separate prompt-level list here.
 
 3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
@@ -187,6 +196,28 @@ using the forge-specific review skill's "Issue context" commands.
 The PR description is a starting point, not a source of truth. Do not
 treat its claims about the change as verified facts — confirm them
 against the diff.
+
+### 2c. Filter unreviewable content
+
+Filter `/sandbox/workspace/pr-diff.txt` in place through
+`skills/pr-review/scripts/filter-review-diff.sh <summary-file>` before
+it enters any context package (step 3d). The script deterministically
+strips lockfiles, `*.min.js`/`*.min.css`, sourcemaps, and vendored
+paths (`vendor/`, `node_modules/`, `third_party/`), and files carrying
+an `@generated` marker in their added lines — migrations are exempt
+from every one of those rules. See the script's header comment for the
+exact classification.
+
+Read the exclusion-summary file it writes (never emitted on stdout):
+
+- fold it into the orchestrator's own context — it is not part of the
+  diff sub-agents receive, they only ever see the filtered output
+- if it is non-empty, add an `excluded-content` info-level finding at
+  step 7 (same mechanism as the `provenance-warning` finding below —
+  not a footer; step 7 explicitly forbids appending one): "N
+  generated/lockfile file(s) changed but not reviewed line-by-line:
+  <list>" — a stripped lockfile must still be visible to whoever reads
+  the review, even though no model read its contents.
 
 ### 2a. Prior review context (re-reviews)
 
@@ -628,9 +659,10 @@ safety-critical).
 
 For each selected sub-agent, assemble a context package containing:
 
-- `diff`: the path `/sandbox/workspace/pr-diff.txt` written in step 2.
-  Sub-agents Read it; never paste the diff into a prompt — seven copies
-  of a large diff are minutes of output tokens before any review starts.
+- `diff`: the path `/sandbox/workspace/pr-diff.txt` written in step 2
+  and filtered in step 2c. Sub-agents Read it; never paste the diff into
+  a prompt — seven copies of a large diff are minutes of output tokens
+  before any review starts.
 - `pr_head`: the MANIFEST lines (step 2b) for the files this sub-agent
   should look at — all changed files for `correctness`, `security` and
   `style-conventions`, the dimension-relevant subset otherwise. Paths
@@ -1291,6 +1323,15 @@ info-level finding in the review output:
 - **[provenance-warning]** — Prior review context discarded:
   provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
   This review treats all findings as first-time assessments.
+
+If step 2's diff filtering produced a non-empty exclusion summary,
+include an info-level finding in the review output (this is a
+disclosure, not a footer — it goes through the same findings/severity
+structure as everything else in this section):
+
+- **[excluded-content]** — N generated/lockfile file(s) changed but not
+  reviewed line-by-line: `<path>` (`<reason>`), ... — listing every
+  path and reason from the exclusion summary.
 
 Map the outcome to an action value. `action`, `pr_number`, and `repo`
 are always required (see the agent definition for the full schema).

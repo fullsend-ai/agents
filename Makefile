@@ -88,5 +88,6 @@ script-test:
 	$(call run-timed,python3 scripts/process-fix-result-test.py)
 	$(call run-timed,bash eval/scripts/scrub-eval-results-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
+	$(call run-timed,bash scripts/filter-review-diff-test.sh)
 
 test: script-test
