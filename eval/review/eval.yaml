@@ -180,6 +180,7 @@ judges:
       return True, f"Risk label present: {risk_labels}"
 
   - name: required_findings
+    if: "annotations.get('required_findings')"
     description: >
       Finding-level check for review precision. The outcome label and the
       review decision say whether the agent approved; neither can say
@@ -334,6 +335,7 @@ judges:
       return True, f"All {len(entries)} required findings present"
 
   - name: forbidden_findings
+    if: "annotations.get('forbidden_findings')"
     description: >
       The false-positive half of required_findings — same parsing, same
       word-boundary matching, same up-front validation and fail-closed
@@ -487,12 +489,20 @@ thresholds:
     min_pass_rate: 1.0
   forbidden_labels:
     min_pass_rate: 1.0
-  # Recall (required_findings) is graded more leniently than precision
-  # (forbidden_findings): missing one seeded bug in one case is a known
-  # ceiling of today's agent, while promoting FP bait to a real
-  # vulnerability is the failure this suite exists to catch. Both are
-  # trivially satisfied by cases that declare no findings ground truth,
-  # so the rates are over the cases that do.
+  # Both findings judges carry an `if:` so they are skipped — not counted
+  # as passes — for cases that declare no findings ground truth. Without
+  # it the rate is averaged over all five cases, and a case that declares
+  # nothing passes trivially: required_findings at 0.70 could not fail
+  # even if the only case with seeded bugs missed all of them.
+  #
+  # Today the gate resolves to "the one recall case must pass" (004) and
+  # "all three precision cases must pass" (005/006/007) — with three cases
+  # the only rates available are 0, 0.33, 0.66 and 1.0, so 0.9 does not buy
+  # the one-failure slack the number suggests. That strictness is deliberate
+  # on the precision side: promoting FP bait to a real vulnerability is the
+  # failure this suite exists to catch. Revisit both numbers when the case
+  # count grows, and expect to loosen recall first — missing one seeded bug
+  # is a known ceiling of today's agent.
   required_findings:
     min_pass_rate: 0.70
   forbidden_findings:
