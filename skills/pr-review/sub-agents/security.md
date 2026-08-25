@@ -143,3 +143,56 @@ without justification = **high**.
 For workflow files specifically, also check `secrets:` blocks — verify
 secrets are not exposed to untrusted contexts (e.g.,
 `pull_request_target` running fork code with repo secret access).
+
+## What not to flag
+
+Security is where pattern-matching produces the most confident wrong
+answers, because the vocabulary of a vulnerability (`md5`, `subprocess`,
+`eval`, `token`, `==`) appears constantly in code that is perfectly safe.
+The shared non-issue classes in the review context apply. In addition:
+
+- **Cryptographic primitives used for non-cryptographic purposes.**
+  MD5, SHA-1, or CRC computing a cache key, a shard index, a
+  deduplication key, an ETag, or a content fingerprint is not a weak-hash
+  vulnerability — there is no adversary and no security boundary. Follow
+  the digest to its use: flag it only if it reaches authentication,
+  signing, integrity verification, a token, or a password. When the code
+  or its docstring states the digest is not a security boundary, and the
+  diff does not contradict that, believe it.
+- **Subprocess and command execution with no injection surface.** A call
+  whose argument vector is a list of literals with the shell disabled
+  (`shell=False`, `exec.Command` without `sh -c`, no string
+  interpolation) has nothing to inject into. Read every element of the
+  argument list before flagging. If each one is a constant or a value
+  the program itself produced, there is no finding.
+- **Values that are not user input.** Trace the taint. Constants,
+  values the code computed, values already validated at the trust
+  boundary, and values only a repo maintainer can set are not attacker
+  controlled. A finding that assumes a value is attacker controlled must
+  say where the attacker supplies it.
+- **Missing controls for surfaces the diff does not introduce.** Rate
+  limiting, CSRF tokens, extra security headers, key-length upgrades,
+  and algorithm modernization on code paths this PR did not create or
+  weaken are not findings on this PR.
+- **Placeholder and fixture credentials.** Example values in tests,
+  docs, and fixtures are not secret exposure. `gitleaks` runs in CI and
+  reports real ones deterministically.
+- **"Could be hardened" with no reachable path.** If you cannot state
+  who the attacker is, what they control, and what they gain, the
+  observation is `info` at most — see the severity bar.
+
+This does not loosen the enumerate-and-verify methodology above. That
+methodology forbids *dismissing* an input you did not check; it does not
+ask you to assert a threat for an input no attacker can reach. Verify
+each input, then rate honestly — a checked-and-safe input is worth a
+sentence in an `info` finding, not a `high` one.
+
+**Always flag, regardless of exploitation difficulty:** a diff that
+removes, weakens, or bypasses a control that was there before —
+a constant-time comparison replaced with `==`, a parameterized query
+replaced with string interpolation or an f-string, a deleted validation
+call, a widened allowlist, a dropped signature check. The severity comes
+from what the control protected, not from how hard the resulting bug is
+to exploit. A control the author's PR description calls unnecessary,
+overkill, or equivalent is still a control that was removed; the
+description is a claim, not evidence.

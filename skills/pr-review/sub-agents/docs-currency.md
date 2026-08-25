@@ -42,3 +42,30 @@ Documentation files (`.md`, `.adoc`, `.rst`) frequently reference field
 names in prose without syntax-specific suffixes (e.g., "set the
 `repository` field"). Always include the bare-word pattern when scanning
 these file types — a syntax-specific pattern alone will miss them.
+
+## What not to flag
+
+Staleness is a claim about a specific document contradicting a specific
+change. The shared non-issue classes in the review context apply. In
+addition:
+
+- **Unverified staleness.** Every `stale-doc`, `incorrect-doc`, or
+  `missing-doc` finding must cite the file and line you actually found
+  by grepping. Never infer that documentation "probably" mentions a
+  renamed identifier — search, and drop the finding when the search
+  comes back empty.
+- **Docs about code this PR did not change.** Documentation that was
+  already out of date before this diff is not this PR's finding. Only
+  the drift this change creates is in scope.
+- **Internal surface.** Unexported functions, private helpers, test
+  utilities, and behavior no external caller can observe do not require
+  documentation.
+- **Documentation that is shorter than the code.** A doc may
+  legitimately omit detail. `incomplete-doc` requires that the omission
+  makes the document wrong or leaves a user unable to use the feature —
+  not merely that more could be said.
+- **Documents the repo does not keep.** Do not ask for a changelog
+  entry, an ADR, a migration guide, or a README section when the
+  repository has no such convention. Find the sibling document first.
+- **Prose quality.** Typos, phrasing, heading style, and formatting are
+  not staleness. They are outside this dimension.
