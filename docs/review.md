@@ -54,6 +54,19 @@ applied — the `pull_request_review` event triggers the [fix agent](fix.md) dir
 Stale outcome labels from prior review runs are removed before the new one is
 applied.
 
+When risk assessment is enabled (`REVIEW_RISK_ASSESSMENT_ENABLED`), the
+post-script applies a `risk/*` label reflecting the composite risk score:
+
+| Label | Score | Meaning |
+|-------|-------|---------|
+| `risk/low` | 1 | Minimal risk — small, well-scoped change |
+| `risk/moderate` | 2 | Some complexity or breadth |
+| `risk/elevated` | 3 | Touches sensitive areas or has notable blast radius |
+| `risk/high` | 4 | Security-sensitive, large, or cross-cutting change |
+| `risk/critical` | 5 | Highest risk — auth, RBAC, or critical infrastructure |
+
+Risk labels are informational — they do not gate the review outcome.
+
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `priority/high`) but these are informational — they do not control agent
 behavior.
@@ -91,8 +104,10 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`). | `low` | `info`, `low`, `medium`, `high`, `critical` |
 | `REVIEW_SKIP_AUTHORS` | Comma-separated list of forge usernames to skip review for. When a PR/MR is opened by a user in this list, the review dispatch exits early without running the agent. Set in `env.runner` in your harness YAML (consumed by the pre-script on the runner). | _(empty — all PRs/MRs are reviewed)_ | Comma-separated logins, e.g. `app/renovate,app/dependabot` |
 | `REVIEW_PROTECTED_PATHS` | Comma-separated list of path prefixes the review agent treats as protected. PRs that modify files under these paths cannot be approved by the agent — only a human can grant approval. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`); an unset value is a misconfiguration (fail-closed). Set to an empty string to deliberately disable protected-path enforcement entirely. When set to a value that parses to no valid paths (e.g. stray or consecutive commas), the script aborts (fail-closed) as a likely misconfiguration. | See [`harness/review.yaml`](../harness/review.yaml) | Comma-separated path prefixes (e.g. `.github/,deploy/,manifests/`) |
+| `REVIEW_RISK_ASSESSMENT_ENABLED` | Enables the risk assessment pre-pass (GitHub only). When `true`, the orchestrator dispatches a risk-assessment sub-agent before the main review dimensions. The sub-agent computes a composite 1–5 risk score from metadata signals, git history, and linked issue context. The post-script applies a `risk/*` label and posts a sticky risk comment. Set in `forge.github.env` in the harness — not in the top-level `env:` block, since the risk assessment scripts depend on the GitHub API and produce fabricated scores on other forges. | `true` (GitHub) | `"true"`, `"false"` |
+| `REVIEW_GIT_FETCH_DEPTH` | Controls clone deepening for git history analysis (risk assessment Tier 2). When set to `"0"`, the pre-script unshallows the target repo clone so the risk-assessment sub-agent can access full commit history. When unset and `REVIEW_RISK_ASSESSMENT_ENABLED` is `true`, defaults to `"0"` automatically — the Tier 2 sub-agent requires full git history. Set explicitly to any other value (e.g., `"1"`) to disable deepening even with risk assessment enabled. Set in `env.runner` in harness YAML (consumed by the pre-script on the runner). | _(auto: `"0"` when risk assessment enabled, no deepening otherwise)_ | `"0"` to fully unshallow |
 
-Override either variable by extending the harness file via a `base` reference and setting `env.runner` / `env.sandbox` in your custom harness YAML. `base` composition merges `env.runner`/`env.sandbox` per-key — child values override, everything else inherits from the base (ADR 0045, ADR 0055). Per ADR 0080 and ADR 0081, this harness-level override is the correct path; the CI workflow `env:` block is reserved for infrastructure plumbing, not agent behavior knobs like these.
+Override any variable by extending the harness file via a `base` reference and setting `env.runner` / `env.sandbox` in your custom harness YAML. `base` composition merges `env.runner`/`env.sandbox` per-key — child values override, everything else inherits from the base (ADR 0045, ADR 0055). Per ADR 0080 and ADR 0081, this harness-level override is the correct path; the CI workflow `env:` block is reserved for infrastructure plumbing, not agent behavior knobs like these.
 
 When severity filtering removes all findings from a negative review verdict, the
 verdict is downgraded to a comment (applying the `requires-manual-review` label).
@@ -108,7 +123,7 @@ fails closed when `CI_SERVER_HOST` is not set.
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata.
-2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator triages the change, then dispatches specialized sub-agents in parallel — each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
+2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator first runs pre-pass sub-agents: security triage (for large PRs) and risk assessment (when enabled). It then dispatches specialized dimension sub-agents in parallel — each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** posts the review on the PR.
 

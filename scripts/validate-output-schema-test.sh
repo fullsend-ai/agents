@@ -502,6 +502,70 @@ run_test_custom_filename "review-approve-no-protected-path-valid" \
   "${REVIEW_SCHEMA}" \
   "true"
 
+# --- review-result.schema.json risk_assessment score↔level allOf ---
+
+RISK_BASE='{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Risk assessed."'
+
+run_test_custom_filename "risk-score-1-level-low-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":1,\"level\":\"low\",\"rationale\":\"Small change.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-2-level-moderate-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":2,\"level\":\"moderate\",\"rationale\":\"Some complexity.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-3-level-elevated-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":3,\"level\":\"elevated\",\"rationale\":\"Sensitive area.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-4-level-high-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":4,\"level\":\"high\",\"rationale\":\"Security-sensitive.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-5-level-critical-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":5,\"level\":\"critical\",\"rationale\":\"Auth change.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-level-mismatch-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":1,\"level\":\"critical\",\"rationale\":\"Mismatched.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "risk-score-2-level-high-mismatch-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":2,\"level\":\"high\",\"rationale\":\"Wrong level.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "risk-missing-rationale-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":3,\"level\":\"elevated\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "risk-score-out-of-range-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":6,\"level\":\"critical\",\"rationale\":\"Too high.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "risk-additional-property-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":1,\"level\":\"low\",\"rationale\":\"Small.\",\"extra\":true}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
 # --- Summary ---
 
 echo ""

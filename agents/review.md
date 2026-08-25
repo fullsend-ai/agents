@@ -8,6 +8,7 @@ model: opus
 skills:
   - code-review
   - pr-review
+  - pr-risk-assessment
   - docs-review
   - issue-labels
 ---
@@ -248,6 +249,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `findings`  | array   | conditional     | Array of finding objects (min 1 item when present)|
 | `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit` |
 | `label_actions` | object | no | Contextual label recommendations (see `issue-labels` skill) |
+| `risk_assessment` | object | no | Risk assessment from the pre-pass sub-agent (see `pr-risk-assessment` skill) |
 
 **Required fields per action:**
 

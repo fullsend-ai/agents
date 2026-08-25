@@ -25,6 +25,7 @@ skills:
   - skills/pr-review
   - skills/code-review
   - skills/docs-review
+  - skills/pr-risk-assessment
 
 host_files:
   - src: env/gcp-vertex.env
@@ -90,11 +91,13 @@ forge:
         PR_URL: "${GITHUB_PR_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
+        REVIEW_RISK_ASSESSMENT_ENABLED: "true"
       sandbox:
         PR_NUMBER: "${PR_NUMBER}"
         PR_URL: "${GITHUB_PR_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
+        REVIEW_RISK_ASSESSMENT_ENABLED: "true"
   gitlab:
     policy: policies/gitlab/review.yaml
     skills:

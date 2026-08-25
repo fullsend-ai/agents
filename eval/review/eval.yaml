@@ -147,6 +147,23 @@ judges:
           return False, f"Forbidden labels present: {present} (actual: {actual})"
       return True, f"No forbidden labels found (checked: {forbidden})"
 
+  - name: risk_label_present
+    description: When risk_label_required is set, at least one risk/* label must be present
+    check: |
+      import json
+      required = outputs.get("annotations", {}).get("labels", {}).get("risk_label_required", False)
+      if not required:
+          return True, "risk_label_required not set — skipping"
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found"
+      state = json.loads(raw)
+      actual = [l.lower() for l in state.get("labels", [])]
+      risk_labels = [l for l in actual if l.startswith("risk/")]
+      if not risk_labels:
+          return False, f"No risk/* label found (actual: {actual})"
+      return True, f"Risk label present: {risk_labels}"
+
   - name: max_turns
     description: Agent must complete within the declared turn budget
     check: |
@@ -190,6 +207,8 @@ thresholds:
   review_quality:
     min_mean: 3.0
   required_labels:
+    min_pass_rate: 1.0
+  risk_label_present:
     min_pass_rate: 1.0
   forbidden_labels:
     min_pass_rate: 1.0

@@ -1,0 +1,27 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - risk/elevated
+    - risk/high
+    - risk/critical
+    - ready-for-merge
+  risk_label_required: true
+
+max_turns: 60
+max_cost_usd: 5.00
+
+review_expectations: |
+  Two-file change: a README typo fix and a basic CODEOWNERS file.
+  Risk assessment should produce a low (1) or moderate (2) score.
+  The .github/CODEOWNERS file is a protected path, which raises the
+  PROTECTED_PATH_COUNT signal — this legitimately nudges the score
+  toward moderate. Either risk/low or risk/moderate is acceptable;
+  elevated or higher would be a misclassification.
+
+  The PR touches .github/CODEOWNERS (a protected path), so
+  post-review.sh downgrades an approve to comment — same mechanism
+  as case 003. This avoids the 422 self-review error that blocks
+  label application. The ready-for-merge label is forbidden because
+  the protected-path downgrade always yields requires-manual-review.
