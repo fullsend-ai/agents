@@ -1,0 +1,46 @@
+# Expected fixture state after the review agent runs.
+#
+# Docs-only clarification of behaviour the code already has. The agent
+# should approve quickly with nothing above info severity.
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - rejected
+
+required_findings: []
+
+# An empty category forbids ANY finding on this file at or above the floor
+# (see eval.yaml's forbidden_findings judge) — which is how a case asserts
+# "invent nothing here" without having to enumerate what might be invented.
+# The floor is lowered from the default "high" to "low", so even a
+# low-severity fabrication fails: there is nothing on this file to find.
+forbidden_findings:
+  - file: docs/api.md
+    category: ""
+    min_severity: low
+    description: |
+      Any finding on this file at low severity or above is a false
+      positive — the change only clarifies existing, accurate behaviour.
+      An info-severity note is still allowed.
+
+max_turns: 50
+max_cost_usd: 6.00
+
+review_expectations: |
+  This is a trivial, docs-only PR that only makes docs/api.md more precise
+  (it documents the existing 404 behaviour and the existing rounding
+  behaviour — it does not change or contradict any code). A strong review
+  approves this PR quickly with zero findings above info severity, and does
+  not invent correctness, security, or scope concerns about a file that
+  contains no executable code.
+
+  Note that the two clarifications are both *true* of the base repo as it
+  stands, so "the docs now disagree with the code" is not an available
+  genuine finding.
+
+  A review that approves with no fabricated findings is high quality. A
+  review that flags this docs clarification as risky, out of scope, or
+  incomplete (with no supporting evidence in the diff) is fabricating
+  findings and is lower quality.

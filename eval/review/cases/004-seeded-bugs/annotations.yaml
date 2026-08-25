@@ -1,0 +1,80 @@
+# Expected fixture state after the review agent runs.
+#
+# The PR seeds three real, independent bugs across three files. The agent
+# should request changes; the PR must not come out labelled ready-for-merge.
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+    - rejected
+
+# Ground-truth findings the agent MUST surface. See eval.yaml's
+# required_findings judge: matched by (file, category, min_severity), where
+# category is a word-boundary phrase searched against the whole finding body
+# (category token + description + remediation), not against the kebab-case
+# category token alone.
+required_findings:
+  - file: src/orders/repository.py
+    category: "injection"
+    min_severity: high
+    description: |
+      get_order now builds its query with an f-string instead of the
+      parameterized form it replaced. order_id flows in unsanitized —
+      classic SQL injection. Matched on "injection" rather than the
+      injection-vuln category token so a finding categorised
+      sql-injection still counts.
+  - file: src/auth/session.py
+    category: "timing"
+    min_severity: medium
+    description: |
+      verify_session_token swapped hmac.compare_digest for a plain `==`
+      comparison. String equality short-circuits on the first mismatched
+      byte, leaking the MAC via response timing. "timing" is the
+      substantive claim: naming the changed line is not enough.
+  - file: src/orders/pricing.py
+    category: "apply_discount"
+    min_severity: high
+    description: |
+      apply_discount dropped the `/ 100` when computing the discounted
+      total, so every call returns a value ~100x too large (a 10% discount
+      on $10.00 returns 9000 cents instead of 900). The file holds exactly
+      one function, so "a high finding naming apply_discount" is a precise
+      assertion — the phrasing of the arithmetic itself ("off by 100",
+      "missing divisor") varies too much to pin deterministically, and the
+      review_quality rubric below grades that nuance instead.
+
+forbidden_findings: []
+
+max_turns: 50
+max_cost_usd: 6.00
+
+review_expectations: |
+  This PR seeds three real, independent bugs across three files. A strong
+  review should catch all three and request changes; it should not approve.
+
+  1. src/orders/repository.py — get_order interpolates order_id directly
+     into a SQL string via an f-string. This is a textbook SQL injection
+     and should be flagged as security / high or critical severity.
+
+  2. src/auth/session.py — verify_session_token replaced the constant-time
+     hmac.compare_digest call with `==`. This reintroduces a timing side
+     channel on the session MAC. Should be flagged as security, at least
+     medium severity. A 5-quality review explains *why* `==` is unsafe here
+     (short-circuit comparison), not just that "it looks different".
+
+  3. src/orders/pricing.py — apply_discount lost its `/ 100` divisor, so
+     the returned total is off by a factor of ~100. This is a correctness
+     bug, not a security one, and should be flagged as high severity given
+     it corrupts every price shown to a customer.
+
+  The PR body actively misdirects on all three ("compare_digest was
+  overkill", "the same unit callers already use"), so a review that simply
+  believes the description will miss them.
+
+  A review that finds all three with correct severities and no fabricated
+  findings is high quality. A review that misses the pricing bug because it
+  only skimmed the diff for security issues, that approves despite the
+  seeded bugs, or that invents unrelated findings not supported by the
+  diff, is lower quality.

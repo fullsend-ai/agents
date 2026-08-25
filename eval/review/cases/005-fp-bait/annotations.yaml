@@ -1,0 +1,61 @@
+# Expected fixture state after the review agent runs.
+#
+# The PR is genuinely correct but carries two patterns that naive
+# pattern-matching flags as vulnerabilities. The agent should approve.
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - rejected
+
+# This PR is clean — no true findings required.
+required_findings: []
+
+# FP-bait patterns that look wrong at a glance but are correct in context.
+# min_severity defaults to "high" (see eval.yaml's forbidden_findings judge):
+# the agent MAY note either pattern at low/info — saying it looked and
+# dismissed the pattern is good reviewing — but promoting it to a real
+# vulnerability is the false positive this case measures.
+forbidden_findings:
+  - file: src/orders/receipts.py
+    category: "hash"
+    description: |
+      MD5 used in receipt_cache_key. Flagging "weak/insecure hash" here at
+      high/critical is a false positive — it's a non-cryptographic cache
+      key, not a security boundary, and the docstring says so. Word-boundary
+      matching keeps this from tripping on unrelated words that merely
+      contain "hash" as a substring.
+  - file: src/orders/receipts.py
+    category: "command"
+    description: |
+      subprocess.run in render_receipt_pdf. Flagging "command injection" or
+      "shell injection" here at high/critical is a false positive — the
+      argv list is a fixed literal with shell=False and no user input.
+
+max_turns: 50
+max_cost_usd: 6.00
+
+review_expectations: |
+  This is a small, correct PR that intentionally contains two patterns
+  naive pattern-matching would flag as security issues, but which are safe
+  in context:
+
+  1. hashlib.md5 in receipt_cache_key — MD5 is "weak" for anything
+     security-sensitive (passwords, signatures, tokens), but here it is a
+     cache key over non-secret data with no security implication. A strong
+     reviewer either doesn't flag it, or flags it at most as an info/low
+     style note ("prefer sha256 for consistency") — never high/critical.
+
+  2. subprocess.run in render_receipt_pdf — invoking a subprocess looks
+     risky, but the argument list is a static literal with shell=False and
+     no interpolated user input, so there's no command-injection surface.
+     Flagging this as a real vulnerability is a false positive.
+
+  Both docstrings state the reasoning explicitly, so the context needed to
+  dismiss them is in the diff itself — a reviewer does not have to infer it.
+
+  A precise review approves this PR (or comments with only minor,
+  low-severity style notes) without raising either pattern as a real
+  security finding. A review that flags either one at high/critical
+  severity is a false positive and is lower quality.
