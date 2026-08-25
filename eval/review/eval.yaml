@@ -439,6 +439,18 @@ judges:
 
       if violations:
           return False, f"Forbidden findings present: {violations}"
+      # Comments exist but none parsed as findings: the agent's findings did
+      # not reach the inline comments this judge reads. postreview.go folds
+      # findings into the review body on a 422 and drops any finding with no
+      # file or line, so precision is unverifiable here — and an
+      # unverifiable case must not read as a clean pass, which is how a
+      # promoted bait would slip through.
+      if comments and not posted:
+          return False, (
+              f"{len(comments)} review comment(s) present but none parsed as findings "
+              "— cannot verify precision (findings may have been folded into the "
+              "review body, or posted without a file/line)"
+          )
       return True, f"None of the {len(entries)} forbidden findings were raised"
 
   - name: max_turns
