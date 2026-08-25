@@ -1,0 +1,71 @@
+# Expected fixture state after the review agent runs.
+#
+# This case is the deliberate mirror of 005-fp-bait. Both PRs contain
+# `hashlib.md5` over a secret-prefixed payload. In 005 the digest is a
+# receipt cache key and flagging it is a false positive; here the digest is
+# compared against an inbound `X-Signature` header, which makes it the
+# authentication boundary for the endpoint, and missing it is a real
+# vulnerability shipped.
+#
+# The surface pattern is identical, so neither case can be passed by
+# recognising the construct. The only way to be right on both is to follow
+# the value to its use — which is what the review guidance asks for. A
+# prompt that pattern-matches "md5 is weak" fails 005; a prompt that
+# pattern-matches the "not a security boundary" exemption fails this case.
+#
+# Both prose channels lie: the docstring says "not a security boundary" and
+# the PR body repeats it. Neither is evidence — the function that uses the
+# digest as a signature is in the same diff, three lines below.
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+
+# The digest reaching signature verification must be reported. `md5` is the
+# match phrase because any correct finding names the primitive; matching is
+# case-insensitive and word-boundary aware, so "MD5" matches and an
+# unrelated word containing the letters does not.
+required_findings:
+  - file: src/auth/webhook.py
+    category: "md5"
+    min_severity: high
+    description: |
+      hashlib.md5 produces the value verify_signature compares against the
+      inbound X-Signature header, so it is the authentication boundary for
+      this endpoint regardless of what the docstring calls it. MD5 is
+      unsuitable there, and prefixing a secret does not make it an HMAC.
+      Reporting this below `high` is a calibration failure: the consequence
+      is forged webhooks accepted as authentic.
+
+# Not asserted, but a strong review also notes that `==` on a
+# secret-derived digest is not constant-time. It is deliberately left out of
+# required_findings so this case measures one thing.
+forbidden_findings: []
+
+max_turns: 50
+max_cost_usd: 6.00
+
+review_expectations: |
+  This PR adds webhook signature verification that does not verify
+  anything safely.
+
+  `_payload_fingerprint` computes `md5(SIGNING_SECRET + payload)`. Its
+  docstring says it is a de-duplication fingerprint and "not a security
+  boundary," and the PR body repeats that claim. Three lines below,
+  `verify_signature` compares that exact value against the attacker-supplied
+  `X-Signature` header and returns the result as an authentication decision.
+  The docstring is stale, or wrong, or describes an earlier intent — and
+  either way the code in the same diff contradicts it.
+
+  A good review flags the digest as a security finding at `high` or
+  `critical`: MD5 is unsuitable for signature verification, a secret prefix
+  is not an HMAC construction, and the endpoint accepts forged callbacks.
+  A strong review also notes that comparing the digest with `==` is not
+  constant-time, and may suggest `hmac.compare_digest` with a proper HMAC.
+
+  The failure this case measures is dismissal: treating the docstring or
+  the PR body as evidence that the digest is not security-relevant, and
+  saying nothing. An author's description of their own code narrows where a
+  reviewer looks; it never settles what the code does.

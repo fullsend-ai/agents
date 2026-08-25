@@ -495,14 +495,18 @@ thresholds:
   # nothing passes trivially: required_findings at 0.70 could not fail
   # even if the only case with seeded bugs missed all of them.
   #
-  # Today the gate resolves to "the one recall case must pass" (004) and
-  # "all three precision cases must pass" (005/006/007) — with three cases
-  # the only rates available are 0, 0.33, 0.66 and 1.0, so 0.9 does not buy
-  # the one-failure slack the number suggests. That strictness is deliberate
-  # on the precision side: promoting FP bait to a real vulnerability is the
-  # failure this suite exists to catch. Revisit both numbers when the case
-  # count grows, and expect to loosen recall first — missing one seeded bug
-  # is a known ceiling of today's agent.
+  # With today's case counts both gates resolve to "every case must pass":
+  # two recall cases (004, 008) make 0, 0.5 and 1.0 the only reachable
+  # rates, and three precision cases (005, 006, 007) make it 0, 0.33, 0.66
+  # and 1.0. Neither threshold buys the slack its number suggests.
+  #
+  # That is deliberate for now. 008 is the anti-bait case — it exists to
+  # catch a prompt change that over-suppresses — so allowing it to fail
+  # while the suite stays green would make it decorative, which is the
+  # exact defect these thresholds were fixed for. Revisit when the case
+  # count grows; loosen recall before precision, since missing one seeded
+  # bug is a known ceiling of today's agent while promoting bait to a real
+  # vulnerability is the failure this suite exists to catch.
   required_findings:
     min_pass_rate: 0.70
   forbidden_findings:
