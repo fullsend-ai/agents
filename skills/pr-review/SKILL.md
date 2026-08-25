@@ -348,7 +348,7 @@ complex PR that triggers all conditions legitimately needs all 6.
    `style-conventions` dispatches with a `trivial` scope constraint (≤5
    tool calls) regardless of change size. Both assignments override the
    classification-based constraint from step 3e.
-4. **Challenger** — always dispatch (unchanged).
+4. **Challenger** — always dispatch when findings exist (step 6d).
 
 This reuses the existing scope constraint mechanism from step 3e — no
 new infrastructure needed. When `PRIOR_REVIEW_PROVENANCE` is not
@@ -935,6 +935,27 @@ After steps 6a–6c produce a merged finding set, dispatch the
 fresh context. The challenger has not seen the orchestrator's synthesis
 — it receives only the raw findings and the diff, preserving context
 isolation.
+
+**Skip when there is nothing to adjudicate.** If the merged finding set
+from steps 6a–6c is empty, skip the challenger dispatch entirely and
+proceed straight to the verdict with the empty set — the empty-findings
+approval path (step 7) is unchanged; this skip does not add anything to
+it. This applies regardless of *why* the set is empty: a dimension
+dispatch failure already surfaces via existing error handling (the
+`sub-agent-failure` info finding below), and the challenger's job is to
+adjudicate findings it is given, not manufacture them from nothing.
+(This does forfeit the challenger's secondary, not-owned allowance —
+see `sub-agents/challenger.md`'s "Do not own" section — to flag a
+genuine issue it happens to notice while checking an empty set against
+the diff. Accepted: exercising that allowance would mean re-reading the
+whole diff on every clean PR, which is exactly the cost this skip
+exists to avoid.) Note `challenger: skipped (no findings to adjudicate)`
+in your own reasoning for auditability — there is no field for it in
+`agent-result.json` (`schemas/review-result.schema.json` is
+`additionalProperties: false`), and it does not belong in the posted
+review body.
+
+Otherwise, dispatch the challenger:
 
 1. Compose the spawn prompt from:
 
