@@ -219,6 +219,17 @@ CASES = [
            {"file": "src/orders/receipts.py", "category": "command"}], []), True),
     ("forbidden: passes trivially when none declared", "forbidden_findings",
      forb([], [finding("src/orders/receipts.py", "critical", "weak-hash")]), True),
+
+    # Unverifiable is not clean: postreview.go folds findings into the review
+    # body on a 422 and drops findings with no file/line, so comments can
+    # exist while no finding is visible here. Passing would let a promoted
+    # bait through — the exact failure this judge exists to catch.
+    ("forbidden: comments present but unparseable fails closed", "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}],
+          [{"path": "src/orders/receipts.py", "line": 12,
+            "body": "Looks good to me, shipping."}]), False),
+    ("forbidden: no comments at all still passes", "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], []), True),
     ("forbidden: MD5 bait flagged critical is a violation", "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}],
           [finding("src/orders/receipts.py", "critical", "weak-hash",

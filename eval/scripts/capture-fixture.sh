@@ -147,7 +147,15 @@ fetch_review_comments() {
   if raw=$(retry_cmd gh api --paginate \
     "repos/${EPHEMERAL_REPO}/pulls/${num}/comments" \
     --jq '[.[] | {path: .path, line: (.line // .original_line), body: .body}]'); then
-    printf '%s' "$raw" | jq -s 'add // []'
+    # Report jq's own failure. Without this the function returns success
+    # with empty output, the caller passes "" to --argjson, and jq aborts
+    # the script under `set -e` before fixture-state.json is written at
+    # all — losing every judge for the case, not just this field.
+    local merged
+    if ! merged=$(printf '%s' "$raw" | jq -s 'add // []'); then
+      return 1
+    fi
+    printf '%s' "$merged"
     return 0
   fi
   return 1
