@@ -110,3 +110,37 @@ issue" or "unauthorized change" do not apply. Focus instead on:
 
 Do not raise `missing-authorization` or `unauthorized-change` findings
 on a verified, clean revert PR.
+
+## What not to flag
+
+This dimension has no compiler and no test suite to check it against, so
+its findings are the easiest to generate and the hardest to falsify. The
+shared non-issue classes in the review context apply. In addition:
+
+- **Work the primary change requires.** Tests, docs, generated files,
+  import updates, call-site fixes, and fixture changes that the main
+  change forces are not `scope-creep`. Scope creep is capability the
+  issue did not authorize, not the cost of landing what it did.
+- **Architectural opinions the project has not taken.** Every
+  `design-direction`, `architectural-conflict`, `misplaced-abstraction`,
+  `over-engineering`, or `under-engineering` finding must cite the
+  source of the expectation it measures against — a line in CLAUDE.md,
+  AGENTS.md, an ADR, or an established pattern you can point to in at
+  least two existing files. Without that anchor you are describing your
+  own preference, and it is not a finding at any severity.
+- **Layering and structure you would have chosen differently.** "This
+  belongs in a different package", "this should be an interface", "this
+  duplicates something conceptually" — only when the repo's own
+  organization makes the alternative the established one.
+- **Missing authorization that is present.** Check the PR body, the
+  linked issue, the branch name, and the commit trailers before raising
+  `missing-authorization`. An issue referenced by URL, by `Fixes #N`, or
+  by title counts.
+- **Authorization concerns already answered.** If a prior review raised
+  scope or authorization and the author supplied the justification,
+  the concern is resolved. Do not restate it, and do not re-raise it in
+  a weaker form.
+- **Tier mismatch on the label alone.** A PR labeled "bug fix" that
+  fixes a bug in a way that adds a small amount of code is still a bug
+  fix. Reserve `tier-mismatch` for changes that deliver new capability
+  under a maintenance label.

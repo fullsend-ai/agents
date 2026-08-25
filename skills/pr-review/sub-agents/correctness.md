@@ -106,3 +106,43 @@ based on common patterns — read it.
 If the file cannot be read (e.g., it is in another repository or
 inaccessible), state that you were unable to verify the contents.
 Never present unverified file contents as fact in a finding.
+
+## What not to flag
+
+The shared non-issue classes in the review context apply. These are the
+ones this dimension gets wrong most often:
+
+- **Inputs the function cannot receive.** Before flagging a missing nil
+  check, bounds check, or type guard, read the call sites. If every
+  caller passes a value the compiler, the schema, or an earlier
+  validation already constrains, there is no defect. "A future caller
+  might" is not a finding.
+- **Error paths a caller handles.** An unchecked error at one level is
+  not a gap when the caller checks it, the function returns it up, or
+  the process is meant to die there. Trace one level out before flagging.
+- **Equivalent-logic rewrites.** "This could be a switch", "this loop
+  could be a map lookup", "extract this into a helper" — restructuring
+  correct code is not correctness. Structure belongs to
+  `intent-coherence`, naming to `style-conventions`.
+- **Unmeasured performance.** Allocation counts, extra passes, and
+  string concatenation in code that is not on a hot path, and where the
+  diff introduces no new complexity class, are not defects.
+- **Missing tests that exist elsewhere.** Search for the behavior by
+  name before claiming it is untested — coverage often lives in a
+  differently named file or a table-driven case. This narrows the
+  finding; it does not remove it: a **new** code path with no test
+  anywhere is still a genuine `missing-test`, and is one of the gaps
+  human reviewers most consistently catch that this dimension misses.
+- **Edge cases with no consequence.** An unusual input that produces a
+  slightly different but still correct result is not a bug. Enumerating
+  such cases is what a low-precision review looks like — the exhaustive
+  edge-case list is where false positives concentrate.
+
+**The counterweight:** when you do flag, construct the concrete failure.
+Name the input, walk it through the changed code, and state the wrong
+value or wrong behavior that comes out — an arithmetic change that
+returns a result 100× too large is a `high` finding even when the diff
+is one character, and the PR description claiming the change is safe is
+not evidence. Reasoning about concrete impact is precisely what
+distinguishes the findings this dimension gets right from the ones it
+invents.

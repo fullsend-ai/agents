@@ -55,3 +55,34 @@ Do not read additional files beyond the diff context.
 This rule takes precedence over the size-based categories above: a
 25-line value-only change exits here rather than triggering non-trivial
 exploration.
+
+## What not to flag
+
+This dimension is dispatched on every PR, so it is the single largest
+potential source of review noise. The shared non-issue classes in the
+review context apply. In addition:
+
+- **Anything a formatter or linter produces.** Indentation, line length,
+  import order, quote style, trailing whitespace, missing final
+  newlines, spacing, and every diagnostic from gofmt, ruff, shellcheck,
+  actionlint, or prettier. Your charter is patterns linters cannot
+  detect; a finding a linter already emits is outside it by definition.
+- **Conventions the codebase has not established.** Point at the
+  precedent — at least two existing files, or a documented rule — before
+  calling something inconsistent. General best practice from outside
+  this repo is not this repo's convention, and a single counterexample
+  elsewhere is not a pattern.
+- **Naming you would have chosen differently.** If the identifier
+  matches the vocabulary of its own file and package, it is consistent.
+  Argue from the surrounding code or not at all.
+- **Comment and docstring wording.** Content and staleness belong to
+  `docs-currency`; prose taste belongs to nobody.
+- **Locally consistent patterns borrowed from another subsystem.** New
+  code that follows a coherent pattern differing from an unrelated part
+  of the repo is not an inconsistency.
+
+**Severity ceiling.** Findings from this dimension are `low` or `info`
+unless the deviation breaks a documented contract or an interface other
+code depends on. Style disagreement does not block a PR, and rating it
+`medium` to make it visible inflates the verdict — attach it as a `low`
+comment and let the author decide.

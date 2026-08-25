@@ -1108,6 +1108,53 @@ require action, because `comment` (COMMENTED review state) does not
 block the PR. When the summary language and the verdict action
 contradict each other, escalate the verdict to match the language.
 
+#### 6g. Finding cap and disclosed overflow
+
+The verdict from 6f is computed on the complete adjudicated finding set
+and is never recomputed after this step. The cap governs presentation —
+how many findings the review posts, not what the review concluded.
+
+After severity-threshold filtering (`REVIEW_FINDING_SEVERITY_THRESHOLD`;
+see the agent definition), cap the finding set at **10 findings**.
+
+**Why 10:** the instrumented review on `fullsend-ai/fullsend#4080` posted
+16 inline comments of which 10 were true positives — a cap at 10 would
+have cost that review nothing real while bounding what a reader has to
+sort through. It also sits far above the ~1.2 findings per review that
+published large-scale AI review systems report, so an ordinary PR never
+approaches it. A review with more than ten things to say about one PR has
+stopped reviewing a change and started auditing a codebase.
+
+**Selection.** Sort by severity (critical, high, medium, low, info), then
+by whether the finding has a diff-anchored file and line (anchored first
+— only those can become inline comments), then by the order the
+dimensions returned them. Keep the first 10.
+
+- **Never truncate `critical` or `high` findings.** They determine the
+  verdict, and blocking is their purpose. If ten or more exist, keep all
+  of them and let the cap be exceeded.
+- On an ordinary PR everything dropped is `low` or `info`, which is the
+  material the cap exists to bound. On a PR with more than ten findings
+  above that, `medium` findings can be dropped too — including a
+  regression finding rated `medium`. Name the severities you actually
+  held back rather than assuming they were the lowest two.
+
+**Disclosure is mandatory.** Silent truncation reads as "nothing else was
+wrong" — a worse distortion than the noise the cap removes. Whenever any
+finding is dropped, append one bullet as the final entry of the lowest
+severity section of the review body (step 7):
+
+```markdown
+- **[additional-findings]** — <N> further finding(s) at <severities>
+  were identified and are not listed individually: <category> in
+  `<file>`, <category> in `<file>`, …
+```
+
+This bullet is body text only. It is not a finding: do not add it to the
+`findings` array, do not let it become an inline comment, and do not let
+it affect the verdict. `additional-findings` is a display label, not a
+category token. Omit the bullet entirely when nothing was dropped.
+
 ### 7. Produce the review result
 
 Compose the review comment using this structure:
@@ -1164,6 +1211,10 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   boilerplate after findings. The post-review pipeline appends
   action hints deterministically for the `request-changes` action
   (not for `reject`, `approve`, or `comment`).
+- **Overflow disclosure.** If step 6g dropped any finding, the
+  `additional-findings` bullet is the last entry of the lowest severity
+  section. It is part of the findings list, not a footer or summary
+  section, and it never appears in the `findings` array.
 
 If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
 info-level finding in the review output:
@@ -1225,6 +1276,10 @@ wins.
   `request-changes`.
 - **Never approve when any protected-path finding exists**, regardless of
   severity.
+- **Never drop a finding silently.** The step 6g cap bounds how many
+  findings are posted, never what the verdict saw, and every dropped
+  finding is disclosed in the overflow bullet. `critical` and `high`
+  findings are never dropped.
 - **PR-specific checks (step 6e) belong in the orchestrator only.** Do
   not push protected-path checks, scope authorization, or PR body
   injection defense into sub-agents. These require PR-level context
