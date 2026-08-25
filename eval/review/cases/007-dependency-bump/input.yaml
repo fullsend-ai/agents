@@ -1,0 +1,20 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "fix(deps): update dependency requests to v2.32.3"
+  body: |
+    This PR contains the following updates:
+
+    | Package | Change |
+    |---|---|
+    | requests | `2.31.0` -> `2.32.3` |
+
+    Configured by a dependency update bot. Patch-level release, no known
+    breaking changes in the changelog between these versions.
+  base: main
+  head_branch: "renovate/requests-2.x"
+  files:
+    - path: requirements.txt
+      content: |
+        requests==2.32.3
+        flask==3.0.3
