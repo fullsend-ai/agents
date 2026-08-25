@@ -59,14 +59,12 @@ env:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
-    REVIEW_RISK_ASSESSMENT_ENABLED: "true"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
     PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
-    REVIEW_RISK_ASSESSMENT_ENABLED: "true"
 
 timeout_minutes: 20
 
@@ -93,11 +91,13 @@ forge:
         PR_URL: "${GITHUB_PR_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
+        REVIEW_RISK_ASSESSMENT_ENABLED: "true"
       sandbox:
         PR_NUMBER: "${PR_NUMBER}"
         PR_URL: "${GITHUB_PR_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
+        REVIEW_RISK_ASSESSMENT_ENABLED: "true"
   gitlab:
     policy: policies/gitlab/review.yaml
     skills:
