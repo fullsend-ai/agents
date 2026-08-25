@@ -8,6 +8,7 @@ model: opus
 skills:
   - code-review
   - pr-review
+  - pr-risk-assessment
   - docs-review
   - issue-labels
 ---
