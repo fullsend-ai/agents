@@ -44,6 +44,10 @@ on:
         required: false
       EVAL_GH_TOKEN:
         required: false
+    outputs:
+      agents_sha:
+        description: 'Resolved commit SHA of the agents checkout (for cross-repo tagging)'
+        value: ${{ jobs.detect.outputs.agents_sha }}
 
 concurrency:
   group: >-
@@ -103,6 +107,7 @@ jobs:
       contents: read
     outputs:
       agents: ${{ steps.agents.outputs.agents }}
+      agents_sha: ${{ steps.checkout.outputs.commit }}
     steps:
       - name: Get changed files
         id: changes
@@ -160,11 +165,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        id: checkout
         with:
           repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
           ref: >-
             ${{ github.repository != 'fullsend-ai/agents'
-                && github.workflow_sha
+                && 'main'
                 || (github.event_name == 'pull_request_target'
                     && github.event.pull_request.head.sha
                     || github.sha) }}
@@ -218,7 +224,7 @@ jobs:
           repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
           ref: >-
             ${{ github.repository != 'fullsend-ai/agents'
-                && github.workflow_sha
+                && (needs.detect.outputs.agents_sha || 'main')
                 || (github.event_name == 'pull_request_target'
                     && github.event.pull_request.head.sha
                     || github.sha) }}
@@ -417,7 +423,11 @@ jobs:
       # to force-pass its own roll-up check.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.sha }}
+          repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
+          ref: >-
+            ${{ github.repository != 'fullsend-ai/agents'
+                && (needs.detect.outputs.agents_sha || 'main')
+                || github.sha }}
           persist-credentials: false
           sparse-checkout: .github/scripts
 
