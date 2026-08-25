@@ -75,7 +75,7 @@ If you're testing a new env var, export it here too. You can also use
 The issue URL above points at an issue in a separate repo (e.g.
 `your-org/test-repo`) — clone it to its own local path so `--target-repo`
 has real content to work against. The harness maps `GITHUB_ISSUE_URL`,
-`GITLAB_ISSUE_URL`, or `JIRA_ISSUE_URL` to a generic `ISSUE_URL` via the
+`GITLAB_ISSUE_URL`, or `TRIGGER_ENTITY_URL` to a generic `ISSUE_URL` via the
 per-forge env file (`env/github/*.env`, `env/gitlab/*.env`, or
 `env/jira/triage.env`):
 
@@ -130,7 +130,7 @@ Jira-specific env vars — `forge.jira` resolves natively with the current
 runner, no override workaround needed:
 
 ```bash
-export JIRA_ISSUE_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
+export TRIGGER_ENTITY_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
