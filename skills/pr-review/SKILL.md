@@ -120,15 +120,44 @@ skill commands:
   deletions) — paginate if the forge API requires it
 - Compute `FILE_COUNT` and `LINE_COUNT` from the response
 
+`FILE_COUNT` and `LINE_COUNT` are computed once, here, from this
+unfiltered file-stats response, and used as-is for the routing decision
+below. Nothing in this step recomputes them from post-filter output —
+triage must see the true size of the change, not its post-filter size.
+
 From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 
-1. FILE_COUNT<50, LINE_COUNT<3000: small PR — fetch the full unified diff
+1. FILE_COUNT<50, LINE_COUNT<3000: small PR — fetch the full unified
+   diff, then pipe it through
+   `skills/pr-review/scripts/filter-review-diff.sh <summary-file>`
+   before it enters any context package (step 3d). The script
+   deterministically strips lockfiles, `*.min.js`/`*.min.css`,
+   sourcemaps, and vendored paths (`vendor/`, `node_modules/`,
+   `third_party/`), and files carrying an `@generated` marker in their
+   added lines — migrations are exempt from every one of those rules.
+   See the script's header comment for the exact classification. Read
+   the exclusion-summary file it writes (never emitted on stdout):
+   - fold it into the orchestrator's own context — it is not part of
+     the diff sub-agents receive, they only ever see the filtered output
+   - if it is non-empty, add an `excluded-content` info-level finding at
+     step 7 (same mechanism as the `provenance-warning` finding below —
+     not a footer; SKILL.md step 7 explicitly forbids appending one):
+     "N generated/lockfile file(s) changed but not reviewed
+     line-by-line: <list>" — a stripped lockfile must still be visible
+     to whoever reads the review, even though no model read its
+     contents.
 2. FILE_COUNT~=50-200, LINE_COUNT~=3000-10000: large PR — switch to per-file
    mode
 
    - Extract file paths from PR_STATS
-   - Filter out generated files (lockfiles, vendor/, protobuf, etc.)
    - Produce per-file diffs via `git diff <merge-base>..HEAD -- <file>`
+   - Filter out generated files: pipe each per-file diff through the
+     same `skills/pr-review/scripts/filter-review-diff.sh` the small-PR
+     path uses above — one deterministic definition of "generated" for
+     both paths, instead of a separate prompt-level list here. A file
+     whose filtered output is empty is dropped from the concatenation;
+     collect its exclusion-summary line the same way the small-PR path
+     does.
    - Concatenate per-file diffs into a single blob per sub-agent (see
      step 3d for the format)
 
@@ -617,12 +646,16 @@ safety-critical).
 For each selected sub-agent, assemble a context package containing:
 
 - `diff`: For small PRs (< 50 files, < 3000 lines), the full unified PR
-  diff (fetched via the forge-specific review skill). For large PRs (step 2 criteria), a concatenation
-  of per-file diffs, each produced by
-  `git diff <merge-base>..HEAD -- <file>`. Each per-file diff is preceded
-  by a `### File: <relative-path>` header so sub-agents can identify file
-  boundaries. Generated files (lockfiles, vendor/, protobuf output) are
-  excluded from the concatenation.
+  diff (fetched via the forge-specific review skill), filtered through
+  `filter-review-diff.sh` (step 2). For large PRs (step 2 criteria), a
+  concatenation of per-file diffs, each produced by
+  `git diff <merge-base>..HEAD -- <file>` and filtered the same way.
+  Each per-file diff is preceded by a `### File: <relative-path>` header
+  so sub-agents can identify file boundaries. Both paths share the same
+  script and the same definition of "generated" — lockfiles, minified/
+  sourcemap output, and vendored paths are excluded from the
+  concatenation, migrations are exempt — see step 2 for the exclusion-
+  summary handling.
 - `source_files`: full contents of changed files at the PR head revision,
   fetched by the orchestrator in step 2b. Each file is preceded by a
   `#### <relative-path>` header and wrapped in a fenced code block with
@@ -1283,6 +1316,15 @@ info-level finding in the review output:
 - **[provenance-warning]** — Prior review context discarded:
   provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
   This review treats all findings as first-time assessments.
+
+If step 2's diff filtering produced a non-empty exclusion summary,
+include an info-level finding in the review output (this is a
+disclosure, not a footer — it goes through the same findings/severity
+structure as everything else in this section):
+
+- **[excluded-content]** — N generated/lockfile file(s) changed but not
+  reviewed line-by-line: `<path>` (`<reason>`), ... — listing every
+  path and reason from the exclusion summary.
 
 Map the outcome to an action value. `action`, `pr_number`, and `repo`
 are always required (see the agent definition for the full schema).
