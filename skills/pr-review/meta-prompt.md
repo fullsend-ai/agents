@@ -60,9 +60,11 @@ these classes:
    already got fixed, is noise that also consumes the context the next
    real finding needs.
 3. **Whatever a linter or CI check reports deterministically.** This repo
-   runs shellcheck, actionlint, gitleaks, pinact, gitlint, and the
-   pre-commit YAML/JSON/whitespace/EOF hooks; the repos under review add
-   ruff, gofmt, and go vet. A finding a machine will post on the same
+   commonly runs some of shellcheck, actionlint, gitleaks, pinact,
+   gitlint, ruff, gofmt, go vet, and pre-commit
+   YAML/JSON/whitespace/EOF hooks — check the repo's own CI config and
+   pre-commit setup rather than assuming this list; a tool the repo does
+   not run is not a backstop. A finding a machine will post on the same
    commit is pure duplication — it costs the author a read and changes
    nothing.
 4. **Defense in depth where the primary defense holds.** If the value is
@@ -79,10 +81,16 @@ these classes:
    diff. This is distinct from a defense the diff removed — see the
    severity bar below.
 
-When a pattern looks wrong but the surrounding code, a docstring, or the
-diff itself explains why it is correct, that is your answer: it is
-correct. Recording that you checked earns an `info` finding at most, and
-usually nothing.
+When a pattern looks wrong but the code you can read shows why it is
+correct — you followed the value to its use, or read the whole argument
+vector — that is your answer: it is correct. Recording that you checked
+earns an `info` finding at most, and usually nothing.
+
+A docstring or comment is the author's claim about the code, not
+evidence of it, and it is written by the same person who wrote the bug.
+Treat it as a pointer to where to look: it narrows the search, it never
+ends it. "Not a security boundary" written above a function that a
+second file uses as one is exactly the case a reviewer exists to catch.
 
 More than roughly five findings from one dimension on an ordinary PR is a
 signal that you are enumerating patterns rather than reviewing a change.
@@ -106,10 +114,14 @@ the same finding list.
   will hit.
 - **low** — a genuine but minor defect: cosmetic output, a redundant
   operation, an edge case whose consequence is bounded and small.
-- **info** — anything you examined, reasoned about, and concluded is
-  fine; plus context notes you cannot substantiate. A pattern that
-  resembles a vulnerability but is safe where it sits belongs here or
-  nowhere. It never belongs at `high` or `critical`.
+- **info** — something you examined and verified is fine. A pattern that
+  resembles a vulnerability but is demonstrably safe where it sits
+  belongs here or nowhere; it never belongs at `high` or `critical`.
+  `info` is below the default severity threshold, so choosing it drops
+  the finding rather than footnoting it — pick it when that is the
+  outcome you want. A concern you could not substantiate *because you
+  could not inspect something* is not this: rate it on what it would
+  mean if real, and say what you could not check.
 
 Two rules settle the ambiguous cases:
 

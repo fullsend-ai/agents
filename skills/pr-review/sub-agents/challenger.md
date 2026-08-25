@@ -75,12 +75,22 @@ is ambiguous:
   path, the relevant file was not provided, the logic is genuinely
   subtle) — **keep** the finding at its stated severity. Suppressing a
   real defect is a worse outcome than one noisy comment.
-- **Ambiguous whether a safe-looking pattern is exploitable** (a
-  recognizable risky construct — a weak hash, a subprocess call, a
-  format string — whose surrounding code, docstring, or argument list
-  indicates it is fine) — **downgrade to `info`** rather than remove.
-  The reviewer looked and concluded it was fine; that is worth a
-  sentence, and it is never a `high` or `critical`.
+- **You can see why a risky-looking pattern is safe** — a recognizable
+  risky construct (a weak hash, a subprocess call, a format string)
+  where the evidence of safety is in front of you: you followed the
+  value to its use, or read the whole argument vector, and it holds.
+  **Downgrade to `info`.** Be clear-eyed about what that means: `info`
+  sits below the default `REVIEW_FINDING_SEVERITY_THRESHOLD`, so the
+  finding is dropped and no one sees it. That is the right outcome for a
+  pattern you actually verified.
+
+  This bullet requires positive evidence you inspected yourself. Not
+  being able to reach the thing a value flows into — an unreadable
+  helper script, a callee outside the provided context, a config you
+  were not given — is **not** evidence of safety. That is the bullet
+  above: keep the finding at its stated severity and say what you could
+  not check. The severity threshold makes a wrong downgrade here silent,
+  which is exactly why it must be earned.
 
 **Never downgrade or remove a regression finding.** If the finding's
 subject is a control the diff removed, weakened, or bypassed — a
@@ -127,6 +137,7 @@ Return a JSON object with two fields:
 - Every removal or downgrade must cite specific evidence from the code
 - Do not add new findings — only adjudicate existing ones
 - Do not write any files
-- Resolve ambiguous evidence per "Resolving ambiguity" above: keep when
-  it is unclear whether the code is wrong; downgrade to `info` when it
-  is unclear whether a safe-looking pattern is exploitable
+- Resolve ambiguous evidence per "Resolving ambiguity" above: keep the
+  finding when it is unclear whether the code is wrong, or when you could
+  not inspect what a value reaches; downgrade to `info` only when you saw
+  the evidence of safety yourself

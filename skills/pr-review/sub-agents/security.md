@@ -156,9 +156,9 @@ The shared non-issue classes in the review context apply. In addition:
   deduplication key, an ETag, or a content fingerprint is not a weak-hash
   vulnerability — there is no adversary and no security boundary. Follow
   the digest to its use: flag it only if it reaches authentication,
-  signing, integrity verification, a token, or a password. When the code
-  or its docstring states the digest is not a security boundary, and the
-  diff does not contradict that, believe it.
+  signing, integrity verification, a token, or a password. A docstring calling it
+  non-security is a pointer, not proof — follow the digest anyway; a
+  claim in a comment cannot tell you how another file uses the value.
 - **Subprocess and command execution with no injection surface.** A call
   whose argument vector is a list of literals with the shell disabled
   (`shell=False`, `exec.Command` without `sh -c`, no string
@@ -175,17 +175,25 @@ The shared non-issue classes in the review context apply. In addition:
   and algorithm modernization on code paths this PR did not create or
   weaken are not findings on this PR.
 - **Placeholder and fixture credentials.** Example values in tests,
-  docs, and fixtures are not secret exposure. `gitleaks` runs in CI and
-  reports real ones deterministically.
+  docs, and fixtures are not secret exposure — when they are recognizably
+  placeholders (`REDACTED`, `example`, `xxx`, obviously-fake values). A
+  credential that looks real is a finding regardless of the directory it
+  sits in: this reviewer is installed across repos and cannot assume the
+  one under review runs a secret scanner, and scanners miss non-standard
+  token formats, base64 blobs, and split literals in any case.
 - **"Could be hardened" with no reachable path.** If you cannot state
   who the attacker is, what they control, and what they gain, the
-  observation is `info` at most — see the severity bar.
+  observation is `info` at most — see the severity bar. If you cannot
+  answer those questions because the reachable code was not available to
+  you, that is not the same as answering them safely: keep the finding
+  and name what you could not reach.
 
 This does not loosen the enumerate-and-verify methodology above. That
 methodology forbids *dismissing* an input you did not check; it does not
 ask you to assert a threat for an input no attacker can reach. Verify
 each input, then rate honestly — a checked-and-safe input is worth a
-sentence in an `info` finding, not a `high` one.
+sentence in an `info` finding, not a `high` one — noting that `info`
+sits below the default threshold, so it is dropped rather than shown.
 
 **Always flag, regardless of exploitation difficulty:** a diff that
 removes, weakens, or bypasses a control that was there before —

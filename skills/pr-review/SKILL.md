@@ -1133,8 +1133,11 @@ dimensions returned them. Keep the first 10.
 - **Never truncate `critical` or `high` findings.** They determine the
   verdict, and blocking is their purpose. If ten or more exist, keep all
   of them and let the cap be exceeded.
-- In practice this means everything dropped is `low` or `info`, which is
-  the material the cap exists to bound.
+- On an ordinary PR everything dropped is `low` or `info`, which is the
+  material the cap exists to bound. On a PR with more than ten findings
+  above that, `medium` findings can be dropped too — including a
+  regression finding rated `medium`. Name the severities you actually
+  held back rather than assuming they were the lowest two.
 
 **Disclosure is mandatory.** Silent truncation reads as "nothing else was
 wrong" — a worse distortion than the noise the cap removes. Whenever any
@@ -1142,9 +1145,9 @@ finding is dropped, append one bullet as the final entry of the lowest
 severity section of the review body (step 7):
 
 ```markdown
-- **[additional-findings]** — <N> further low/info finding(s) were
-  identified and are not listed individually: <category> in `<file>`,
-  <category> in `<file>`, …
+- **[additional-findings]** — <N> further finding(s) at <severities>
+  were identified and are not listed individually: <category> in
+  `<file>`, <category> in `<file>`, …
 ```
 
 This bullet is body text only. It is not a finding: do not add it to the
