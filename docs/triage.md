@@ -190,7 +190,7 @@ GitHub/GitLab auth vars:
 
 | Variable | Description |
 |----------|-------------|
-| `JIRA_ISSUE_URL` | The `https://<site>.atlassian.net/browse/<KEY>-<n>` URL of the issue to triage. |
+| `TRIGGER_ENTITY_URL` | The `https://<site>.atlassian.net/browse/<KEY>-<n>` URL of the issue to triage. |
 | `JIRA_USER_EMAIL` | Email address of the Jira Cloud account used for Basic auth. |
 | `JIRA_TOKEN` | API token for that account. |
 | `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). |
@@ -225,7 +225,7 @@ If you use `base:` composition to override `harness/triage.yaml`:
 - **`ISSUE_URL` replaces `GITHUB_ISSUE_URL` inside scripts**: The sandbox and
   runner env var consumed by pre/post scripts is now `ISSUE_URL`
   (forge-neutral). `GITHUB_ISSUE_URL` (and its `GITLAB_ISSUE_URL` /
-  `JIRA_ISSUE_URL` equivalents) remain the workflow-level inputs per forge;
+  `TRIGGER_ENTITY_URL` equivalents) remain the workflow-level inputs per forge;
   the harness maps them to `ISSUE_URL` via `env.runner` / `env.sandbox`.
   Custom pre/post scripts that reference `GITHUB_ISSUE_URL` directly should
   switch to `ISSUE_URL`.
