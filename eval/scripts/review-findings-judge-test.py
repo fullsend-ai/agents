@@ -70,6 +70,28 @@ def file_level_finding(path, severity, category, description="", line=12):
     return c
 
 
+def fallback_review(comments, original_body="## Review"):
+    """A review body as buildFallbackReviewBody() writes it on a 422.
+
+    postreview.go retries without inline comments and embeds each finding
+    as a bullet under a fixed note. Mirrored here verbatim so the judges
+    are tested against the shape they will actually meet.
+    """
+    body = original_body
+    if comments:
+        if body:
+            body += "\n\n---\n\n"
+        body += ("**Note:** The following inline comments could not be posted "
+                 "on the diff (GitHub returned 422) and are included here "
+                 "instead:\n\n")
+        for c in comments:
+            if c.get("line"):
+                body += f"- **`{c['path']}:{c['line']}`**: {c['body']}\n"
+            else:
+                body += f"- **`{c['path']}`** (file-level): {c['body']}\n"
+    return {"author": "review-bot", "state": "COMMENTED", "body": body}
+
+
 def outputs_for(entries, comments, key, state_extra=None, state=None):
     if state is None:
         state = {"review_comments": comments, "review_comments_fetch_failed": False}
@@ -100,6 +122,11 @@ REQUIRED_THREE = [
     {"file": "src/auth/session.py", "category": "timing", "min_severity": "medium"},
     {"file": "src/orders/pricing.py", "category": "apply_discount", "min_severity": "high"},
 ]
+
+
+def state_with(comments, reviews):
+    return {"review_comments": comments, "review_comments_fetch_failed": False,
+            "reviews": reviews}
 
 
 def req(entries, comments, **kw):
@@ -212,6 +239,31 @@ CASES = [
      # min_sevirity would otherwise be ignored and the floor drop to info.
      req([{"file": "src/orders/pricing.py", "category": "", "min_sevirity": "high"}],
          ALL_THREE), False),
+
+    # --- 422 fallback: findings arrive in the review body -------------------
+    # GitHub rejects the positioned comments, post-review retries without
+    # them and embeds the findings in the body. The findings are real; only
+    # the delivery changed. Reading inline comments alone reports a miss the
+    # agent never made, and hides a promoted bait from the precision judge.
+    ("required: 422 fallback findings are read from the review body", "required_findings",
+     req(REQUIRED_THREE, [], state=state_with([], [fallback_review(ALL_THREE)])), True),
+    ("required: a genuine miss still fails when no fallback exists", "required_findings",
+     req(REQUIRED_THREE, [], state=state_with([], [
+         {"author": "review-bot", "state": "APPROVED", "body": "LGTM"}])), False),
+    ("required: file-level fallback bullet parses", "required_findings",
+     req([{"file": "src/orders/pricing.py", "category": "apply_discount", "min_severity": "high"}],
+         [], state=state_with([], [fallback_review([
+             {"path": "src/orders/pricing.py", "line": None,
+              "body": PRICING["body"]}])])), True),
+    ("forbidden: a bait promoted behind a 422 is caught, not missed", "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [fallback_review([finding(
+              "src/orders/receipts.py", "critical", "weak-hash",
+              "md5 hash used for the cache key is insecure.")])])), False),
+    ("forbidden: an ordinary review body is not mined for findings", "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [{"author": "review-bot", "state": "APPROVED",
+                                 "body": "- **`src/orders/receipts.py:12`**: looks fine"}])), True),
 
     # --- forbidden_findings: matching --------------------------------------
     ("forbidden: clean review raises nothing", "forbidden_findings",
