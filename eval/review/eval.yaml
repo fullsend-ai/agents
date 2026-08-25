@@ -289,7 +289,44 @@ judges:
           p = (p or "").strip()
           return p[2:] if p.startswith("./") else p
 
-      posted = []
+      # 422 fallback. When GitHub rejects the positioned comments,
+      # post-review retries without them and embeds each finding in the
+      # review body under a fixed note (buildFallbackReviewBody in
+      # postreview.go). The findings are real; only the delivery changed.
+      # Reading inline comments alone makes the recall judge report a miss
+      # the agent never made, and leaves the precision judge unable to see
+      # a promoted bait at all — which is the 422 blocker the review eval
+      # was parked on, not a defect in the review.
+      FALLBACK_NOTE = "could not be posted on the diff (GitHub returned 422)"
+      # Bullet shape: "- **`path:line`**: <body>" or
+      #               "- **`path`** (file-level): <body>".
+      FALLBACK_BULLET_RE = re.compile(r"^- \*\*`([^`\n]+)`\*\*(?: \(file-level\))?: ", re.M)
+      saw_fallback = False
+      fallback_findings = []
+      for r in (state.get("reviews") or []):
+          if not isinstance(r, dict):
+              continue
+          rbody = r.get("body") or ""
+          if FALLBACK_NOTE not in rbody:
+              continue
+          saw_fallback = True
+          section = rbody.split(FALLBACK_NOTE, 1)[1]
+          marks = list(FALLBACK_BULLET_RE.finditer(section))
+          for i, mk in enumerate(marks):
+              end = marks[i + 1].start() if i + 1 < len(marks) else len(section)
+              chunk = section[mk.end():end]
+              fm = FINDING_RE.search(chunk)
+              if not fm:
+                  continue
+              # Strip only a trailing ":<line>", never a colon inside a path.
+              fallback_findings.append({
+                  "file": norm_path(re.sub(r":\d+$", "", mk.group(1))),
+                  "severity": fm.group(1).strip().lower(),
+                  "category": fm.group(2).strip(),
+                  "text": chunk,
+              })
+
+      posted = list(fallback_findings)
       for c in comments:
           if not isinstance(c, dict):
               continue
@@ -402,7 +439,44 @@ judges:
           p = (p or "").strip()
           return p[2:] if p.startswith("./") else p
 
-      posted = []
+      # 422 fallback. When GitHub rejects the positioned comments,
+      # post-review retries without them and embeds each finding in the
+      # review body under a fixed note (buildFallbackReviewBody in
+      # postreview.go). The findings are real; only the delivery changed.
+      # Reading inline comments alone makes the recall judge report a miss
+      # the agent never made, and leaves the precision judge unable to see
+      # a promoted bait at all — which is the 422 blocker the review eval
+      # was parked on, not a defect in the review.
+      FALLBACK_NOTE = "could not be posted on the diff (GitHub returned 422)"
+      # Bullet shape: "- **`path:line`**: <body>" or
+      #               "- **`path`** (file-level): <body>".
+      FALLBACK_BULLET_RE = re.compile(r"^- \*\*`([^`\n]+)`\*\*(?: \(file-level\))?: ", re.M)
+      saw_fallback = False
+      fallback_findings = []
+      for r in (state.get("reviews") or []):
+          if not isinstance(r, dict):
+              continue
+          rbody = r.get("body") or ""
+          if FALLBACK_NOTE not in rbody:
+              continue
+          saw_fallback = True
+          section = rbody.split(FALLBACK_NOTE, 1)[1]
+          marks = list(FALLBACK_BULLET_RE.finditer(section))
+          for i, mk in enumerate(marks):
+              end = marks[i + 1].start() if i + 1 < len(marks) else len(section)
+              chunk = section[mk.end():end]
+              fm = FINDING_RE.search(chunk)
+              if not fm:
+                  continue
+              # Strip only a trailing ":<line>", never a colon inside a path.
+              fallback_findings.append({
+                  "file": norm_path(re.sub(r":\d+$", "", mk.group(1))),
+                  "severity": fm.group(1).strip().lower(),
+                  "category": fm.group(2).strip(),
+                  "text": chunk,
+              })
+
+      posted = list(fallback_findings)
       for c in comments:
           if not isinstance(c, dict):
               continue
@@ -445,7 +519,7 @@ judges:
       # file or line, so precision is unverifiable here — and an
       # unverifiable case must not read as a clean pass, which is how a
       # promoted bait would slip through.
-      if comments and not posted:
+      if (comments or saw_fallback) and not posted:
           return False, (
               f"{len(comments)} review comment(s) present but none parsed as findings "
               "— cannot verify precision (findings may have been folded into the "
