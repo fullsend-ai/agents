@@ -25,6 +25,7 @@ skills:
   - skills/pr-review
   - skills/code-review
   - skills/docs-review
+  - skills/pr-risk-assessment
 
 host_files:
   - src: env/gcp-vertex.env
@@ -58,12 +59,14 @@ env:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    REVIEW_GIT_FETCH_DEPTH: "0"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
     PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
+    REVIEW_RISK_ASSESSMENT_ENABLED: "true"
 
 timeout_minutes: 20
 
@@ -115,5 +118,6 @@ forge:
       sandbox:
         PR_NUMBER: "${MR_NUMBER}"
         PR_URL: "${GITLAB_MR_URL}"
+        REVIEW_TOKEN: "${GITLAB_TOKEN}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab

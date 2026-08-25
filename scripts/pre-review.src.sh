@@ -80,4 +80,53 @@ if [[ -n "${REVIEW_SKIP_AUTHORS:-}" ]]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Deepen shallow clone for git history analysis (risk assessment Tier 2).
+# Controlled by REVIEW_GIT_FETCH_DEPTH: "0" = full unshallow, unset = no-op.
+# ---------------------------------------------------------------------------
+if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
+  _TARGET_DIR="${REPO_DIR:-${GITHUB_WORKSPACE:-.}/target-repo}"
+  if [[ ! -d "${_TARGET_DIR}" ]]; then
+    echo "::warning::Clone-deepening skipped — target directory '$(_gha_sanitize "${_TARGET_DIR}")' not found"
+  elif git -C "${_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
+    echo "Deepening shallow clone for git history analysis..."
+    if [[ "${FULLSEND_FORGE}" == "github" && -n "${GH_TOKEN:-}" && -n "${REPO_FULL_NAME:-}" ]]; then
+      git -C "${_TARGET_DIR}" fetch --unshallow \
+        "https://x-access-token:${GH_TOKEN}@github.com/${REPO_FULL_NAME}.git" 2>/dev/null \
+        && echo "Clone deepened successfully" \
+        || echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
+    elif [[ "${FULLSEND_FORGE}" == "gitlab" && -n "${REPO_FULL_NAME:-}" ]]; then
+      _gl_token="${REVIEW_TOKEN:-${CI_JOB_TOKEN:-}}"
+      if [[ -n "${REVIEW_TOKEN:-}" ]]; then
+        _gl_user="oauth2"
+      else
+        _gl_user="gitlab-ci-token"
+      fi
+      _gl_host="${GITLAB_HOST:-}"
+      if [[ -z "${_gl_host}" && -n "${PR_URL:-}" ]]; then
+        _gl_host=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+      fi
+      if [[ -n "${_gl_token}" && -n "${_gl_host}" ]]; then
+        case "${_gl_host}" in
+          gitlab.com|gitlab.cee.redhat.com) ;;
+          *)
+            echo "::warning::Clone-deepening skipped — GitLab host '$(_gha_sanitize "${_gl_host}")' is not in the allowed host list"
+            _gl_token=""
+            ;;
+        esac
+      fi
+      if [[ -n "${_gl_token}" && -n "${_gl_host}" ]]; then
+        git -C "${_TARGET_DIR}" fetch --unshallow \
+          "https://${_gl_user}:${_gl_token}@${_gl_host}/${REPO_FULL_NAME}.git" 2>/dev/null \
+          && echo "Clone deepened successfully" \
+          || echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
+      else
+        echo "::warning::Cannot deepen clone — missing GitLab credentials (REVIEW_TOKEN or CI_JOB_TOKEN) or host"
+      fi
+    else
+      echo "::warning::Cannot deepen clone — missing credentials or unsupported forge"
+    fi
+  fi
+fi
+
 echo "PR #${PR_NUMBER} is open — proceeding with review agent"
