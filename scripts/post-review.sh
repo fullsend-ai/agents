@@ -794,6 +794,57 @@ if [ "${ACTION}" = "request-changes" ]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Append the cost/timing footer.
+#
+# The runner writes metrics.json into the run directory, which is this
+# script's cwd (run.go sets postCmd.Dir = runDir, and the post-script runs
+# from a defer that fires after the metrics are written). Without this, the
+# per-review cost is collected but visible only to whoever downloads the
+# workflow artifact — so nobody sees what a review actually costs.
+#
+# Every field is optional: an older runner writes metrics.json without
+# duration_seconds or over_budget, and jq's alternative operator degrades to
+# the fields that do exist rather than emitting "null". A missing or
+# unparseable metrics.json skips the footer entirely — cost reporting must
+# never be the reason a review fails to post.
+# ---------------------------------------------------------------------------
+
+METRICS_FILE="metrics.json"
+if [ -f "${METRICS_FILE}" ] && jq -e . "${METRICS_FILE}" >/dev/null 2>&1; then
+  COST_FOOTER=$(jq -r '
+    def dur:
+      if . == null or . <= 0 then empty
+      else (. | floor) as $s
+        | if $s >= 60 then "\($s / 60 | floor)m \($s % 60)s" else "\($s)s" end
+      end;
+    def cost:
+      if . == null or . <= 0 then empty
+      else "$\(. * 10000 | round / 10000)" end;
+    [ (.total_cost_usd | cost),
+      (.duration_seconds | dur),
+      (.model | if . == null or . == "" then empty else . end),
+      (if .over_budget == true then "halted at cost cap, review may be incomplete" else empty end)
+    ] | join(" · ")
+  ' "${METRICS_FILE}" 2>/dev/null) || COST_FOOTER=""
+
+  if [ -n "${COST_FOOTER}" ]; then
+    COST_RESULT=$(mktemp)
+    CLEANUP_FILES+=("${COST_RESULT}")
+    # Only append to a body that exists. A failure result carries `reason`
+    # and no `body` (schemas/review-result.schema.json), and jq's
+    # `null + string` would make the footer the entire body — replacing
+    # "This PR was NOT reviewed" with a price tag. Leave those untouched.
+    if ! jq --arg footer $'\n\n---\n<sub>fullsend review · '"${COST_FOOTER}"'</sub>' \
+      'if (.body // "") == "" then . else .body = (.body + $footer) end' \
+      "${RESULT_FILE}" > "${COST_RESULT}"; then
+      echo "::warning::Could not append the cost footer — posting the review unchanged"
+    else
+      RESULT_FILE="${COST_RESULT}"
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Post the review. Exit code 10 = stale-head: the PR HEAD moved after the
 # agent reviewed it. When this happens, post a /fs-review comment to
 # re-dispatch a fresh review for the current HEAD.
