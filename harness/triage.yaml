@@ -97,7 +97,7 @@ forge:
         expand: true
     env:
       runner:
-        ISSUE_URL: ${JIRA_ISSUE_URL}
+        ISSUE_URL: ${TRIGGER_ENTITY_URL}
         JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
         JIRA_TOKEN: ${JIRA_TOKEN}
         JIRA_BASE_URL: ${JIRA_BASE_URL}
@@ -106,7 +106,7 @@ forge:
         JIRA_SPLIT_TRANSITION: ${JIRA_SPLIT_TRANSITION}
         FULLSEND_FORGE: jira
       sandbox:
-        ISSUE_URL: "${JIRA_ISSUE_URL}"
+        ISSUE_URL: "${TRIGGER_ENTITY_URL}"
         JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
         JIRA_TOKEN: "${JIRA_TOKEN}"
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
