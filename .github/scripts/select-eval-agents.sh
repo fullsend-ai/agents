@@ -41,7 +41,8 @@ extract_refs() {
       (.plugins[]?),
       (.providers[]?),
       (.openshell?.profiles[]?),
-      (.forge[]? | (.pre_script, .post_script, .policy, (.skills[]?), (.host_files[]?.src), (.providers[]?), (.openshell?.profiles[]?)))
+      (.forge[]? | (.pre_script, .post_script, .policy, (.skills[]?), (.host_files[]?.src), (.providers[]?), (.openshell?.profiles[]?))),
+      (.overlays[]? | (.pre_script, .post_script, .policy, (.skills[]?), (.host_files[]?.src), (.providers[]?), (.openshell?.profiles[]?)))
     ] | .[] | select(. != null)
   ' "$harness_file" | { grep -v '\$' || true; } | sort -u
 }
