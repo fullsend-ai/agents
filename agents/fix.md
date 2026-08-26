@@ -183,8 +183,19 @@ Bot-triggered runs (from the review agent) are capped at `ITERATION_CAP`
 (default: 5). When the iteration count approaches this cap, the `needs-human`
 label is added and the autonomous loop stops on the next attempt. A human can
 then direct the agent with `/fs-fix` commands up to `ITERATION_CAP_HUMAN`
-(default: 10) total iterations (bot + human combined). This ensures humans
-are never locked out of the agent after a bot loop exhausts its budget.
+(default: 10) total iterations (bot + human combined). Because the human cap is
+separate from and larger than the bot cap by default, a bot loop exhausting its
+budget does not by itself lock a human out (a maintainer can still lower the
+human cap explicitly with the label below).
+
+A maintainer can tighten the loop for a single PR with a
+`fullsend-fix-budget/N` label (N a positive integer). If present, the smallest
+valid label lowers whichever cap applies (bot or human) to N. The label can
+only *tighten* the cap, never raise it: a value at or above the global cap has
+no effect, and malformed values (non-integer, zero, negative, or absurdly
+large) are ignored so a bad label cannot silently block or widen the loop.
+pre-fix enforces the tightened cap and post-fix reports against the same
+effective cap (summary and the `needs-human` warning).
 
 ## Validation retry behavior
 

@@ -49,6 +49,7 @@ Remove the label or use `/fs-fix` to re-engage.
 |-------|---------|
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
+| `fullsend-fix-budget/N` | Tightens the review→fix loop for this PR to `N` iterations (`N` a positive integer). Applied by a maintainer. Can only lower the applicable cap (bot or human), never raise it; malformed values are ignored. |
 
 ## Configuration
 

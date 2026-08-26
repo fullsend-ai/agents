@@ -68,6 +68,14 @@ env:
     TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
     HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
     FIX_ITERATION: "${FIX_ITERATION}"
+    # NOTE: a `fullsend-fix-budget/N` PR label can tighten the fix cap, and
+    # pre-fix/post-fix already consume PR_LABELS to enforce it. It is omitted
+    # here on purpose: the reusable-fix workflow does not yet forward the PR
+    # labels, and referencing an unset host var fails harness env validation
+    # (fail-closed) on every run. To activate, re-add
+    #   PR_LABELS: "${PR_LABELS}"
+    # together with the reusable-fix.yml change that sets PR_LABELS (labels are
+    # available upstream as a comma-joined string).
     REVIEW_BODY_FILE: "${REVIEW_BODY_FILE}"
     PRE_AGENT_HEAD: "${PRE_AGENT_HEAD}"
     PUSH_TOKEN: "${PUSH_TOKEN}"

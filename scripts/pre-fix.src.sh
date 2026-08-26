@@ -17,12 +17,16 @@
 #   ITERATION_CAP      — max bot-triggered iterations (default: 5)
 #   ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
 #   HUMAN_INSTRUCTION  — instruction text (only for human-triggered runs)
+#   PR_LABELS          — newline-separated PR labels; a `fullsend-fix-budget/N`
+#                        label may tighten (never raise) the iteration cap
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${FULLSEND_FORGE:?FULLSEND_FORGE is required — set to 'github' or 'gitlab'}"
 # shellcheck source=lib/fix-ops.lib.sh
 source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+# shellcheck source=lib/fix-budget.lib.sh
+source "${SCRIPT_DIR}/lib/fix-budget.lib.sh"
 
 errors=0
 
@@ -101,10 +105,23 @@ ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
 HUMAN_CAP="${ITERATION_CAP_HUMAN:-10}"
 
+# A per-PR `fullsend-fix-budget/N` label may tighten either cap (never raise it).
+# Apply it to both caps before selecting one, so the human cap referenced in the
+# bot-escalation message below reflects the same effective budget.
+FIX_BUDGET="$(parse_fix_budget "${PR_LABELS:-}")"
+if [[ -n "${FIX_BUDGET}" ]]; then
+  [[ "${FIX_BUDGET}" -lt "${BOT_CAP}" ]] && BOT_CAP="${FIX_BUDGET}"
+  [[ "${FIX_BUDGET}" -lt "${HUMAN_CAP}" ]] && HUMAN_CAP="${FIX_BUDGET}"
+fi
+
 if is_bot_user "${TRIGGER_SOURCE}"; then
   CAP="${BOT_CAP}"
 else
   CAP="${HUMAN_CAP}"
+fi
+
+if [[ -n "${FIX_BUDGET}" && "${FIX_BUDGET}" -eq "${CAP}" ]]; then
+  gha_echo notice "PR label ${FIX_BUDGET_LABEL_PREFIX}${FIX_BUDGET} caps the fix loop at ${CAP} iteration(s)."
 fi
 
 if [[ "${ITERATION}" -gt "${CAP}" ]]; then

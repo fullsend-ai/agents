@@ -18,6 +18,8 @@
 #   ITERATION_CAP      — max bot-triggered iterations (default: 5)
 #   ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
 #   HUMAN_INSTRUCTION  — instruction text (only for human-triggered runs)
+#   PR_LABELS          — newline-separated PR labels; a `fullsend-fix-budget/N`
+#                        label may tighten (never raise) the iteration cap
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -374,6 +376,60 @@ is_bot_user() {
   fi
 }
 # END bundled: lib/fix-ops.lib.sh
+# shellcheck source=lib/fix-budget.lib.sh
+# BEGIN bundled: lib/fix-budget.lib.sh
+# shellcheck shell=bash
+# fix-budget.lib.sh — parse a per-PR fix-loop budget from PR labels.
+#
+# A label of the form `fullsend-fix-budget/N` (N a positive integer) lets a
+# maintainer cap the review->fix loop for a single PR below the global
+# iteration cap. The label can only TIGHTEN the cap, never raise it:
+# enforcement lives in pre-fix, which applies min(label_budget, cap).
+#
+# Bundled into pre-fix.sh via bundle-sh.sh.
+#
+# Expected env vars (optional):
+#   PR_LABELS — PR label names separated by commas and/or newlines. Absent/empty
+#               is fine: parse_fix_budget then returns nothing and the cap is
+#               unchanged. (The upstream dispatcher comma-joins labels; a
+#               newline-joined value is also accepted.)
+
+[[ -n "${FIX_BUDGET_SH_LOADED:-}" ]] && return 0
+FIX_BUDGET_SH_LOADED=1
+
+FIX_BUDGET_LABEL_PREFIX="fullsend-fix-budget/"
+
+# parse_fix_budget [labels]
+# Reads label names (arg 1, or PR_LABELS env when omitted) separated by commas
+# and/or newlines. Echoes the smallest valid budget found, or nothing when no
+# valid label is present. A malformed value (non-integer, zero, negative) is
+# ignored, not fatal — a bad label must not silently drop the existing cap.
+parse_fix_budget() {
+  local labels="${1-${PR_LABELS:-}}"
+  local best="" label n
+  # Accept comma-joined labels (the upstream dispatcher format) as well as
+  # newline-joined: normalize commas to newlines before splitting.
+  labels="${labels//,/$'\n'}"
+  while IFS= read -r label; do
+    # Trim surrounding whitespace so " fullsend-fix-budget/3 " still matches.
+    label="${label#"${label%%[![:space:]]*}"}"
+    label="${label%"${label##*[![:space:]]}"}"
+    [[ "${label}" == "${FIX_BUDGET_LABEL_PREFIX}"* ]] || continue
+    n="${label#"${FIX_BUDGET_LABEL_PREFIX}"}"
+    # Bound the digit count. An arbitrarily long value would overflow Bash's
+    # signed 64-bit arithmetic in the `-lt` comparison (e.g. 2^64 evaluates as
+    # 0), which would look "tighter" than any cap and block every fix run.
+    # A budget above 99999 is meaningless next to caps of 5/10, so treat an
+    # over-long value as malformed and ignore it.
+    [[ "${n}" =~ ^[1-9][0-9]{0,4}$ ]] || continue
+    if [[ -z "${best}" || "${n}" -lt "${best}" ]]; then
+      best="${n}"
+    fi
+  done <<< "${labels}"
+  [[ -n "${best}" ]] && printf '%s\n' "${best}"
+  return 0
+}
+# END bundled: lib/fix-budget.lib.sh
 
 errors=0
 
@@ -452,10 +508,23 @@ ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
 HUMAN_CAP="${ITERATION_CAP_HUMAN:-10}"
 
+# A per-PR `fullsend-fix-budget/N` label may tighten either cap (never raise it).
+# Apply it to both caps before selecting one, so the human cap referenced in the
+# bot-escalation message below reflects the same effective budget.
+FIX_BUDGET="$(parse_fix_budget "${PR_LABELS:-}")"
+if [[ -n "${FIX_BUDGET}" ]]; then
+  [[ "${FIX_BUDGET}" -lt "${BOT_CAP}" ]] && BOT_CAP="${FIX_BUDGET}"
+  [[ "${FIX_BUDGET}" -lt "${HUMAN_CAP}" ]] && HUMAN_CAP="${FIX_BUDGET}"
+fi
+
 if is_bot_user "${TRIGGER_SOURCE}"; then
   CAP="${BOT_CAP}"
 else
   CAP="${HUMAN_CAP}"
+fi
+
+if [[ -n "${FIX_BUDGET}" && "${FIX_BUDGET}" -eq "${CAP}" ]]; then
+  gha_echo notice "PR label ${FIX_BUDGET_LABEL_PREFIX}${FIX_BUDGET} caps the fix loop at ${CAP} iteration(s)."
 fi
 
 if [[ "${ITERATION}" -gt "${CAP}" ]]; then

@@ -319,6 +319,11 @@ is_control_label() {
   if [[ "${label}" == risk/* ]]; then
     return 0
   fi
+  # Maintainer-set fix-loop budget (fullsend-fix-budget/N); pipeline-managed so
+  # the review agent preserves it rather than treating it as a contextual label.
+  if [[ "${label}" == fullsend-fix-budget/* ]]; then
+    return 0
+  fi
   return 1
 }
 
@@ -360,8 +365,13 @@ run_control_label_test "risk-elevated-is-control" "risk/elevated" "true"
 run_control_label_test "risk-high-is-control" "risk/high" "true"
 run_control_label_test "risk-critical-is-control" "risk/critical" "true"
 
+# Maintainer-set fix-budget labels should be control labels
+run_control_label_test "fix-budget-3-is-control" "fullsend-fix-budget/3" "true"
+run_control_label_test "fix-budget-99999-is-control" "fullsend-fix-budget/99999" "true"
+
 # Non-control labels should NOT be recognized
 run_control_label_test "area-api-not-control" "area/api" "false"
+run_control_label_test "fix-budget-prefix-only-not-control" "fullsend-fix-budget" "false"
 run_control_label_test "priority-high-not-control" "priority/high" "false"
 run_control_label_test "bug-not-control" "bug" "false"
 run_control_label_test "empty-not-control" "" "false"

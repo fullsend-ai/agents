@@ -55,6 +55,7 @@ script-test:
 	$(call run-timed,bash scripts/pre-review-test.sh)
 	$(call run-timed,bash scripts/post-review-test.sh)
 	$(call run-timed,bash scripts/risk-tier1-test.sh)
+	$(call run-timed,bash scripts/pre-fix-test.sh)
 	$(call run-timed,bash scripts/post-fix-test.sh)
 	$(call run-timed,bash scripts/post-retro-test.sh)
 	$(call run-timed,bash scripts/pre-scribe-test.sh)

@@ -297,6 +297,11 @@ is_control_label() {
   if [[ "${label}" == risk/* ]]; then
     return 0
   fi
+  # Maintainer-set fix-loop budget (fullsend-fix-budget/N); pipeline-managed so
+  # the review agent preserves it rather than treating it as a contextual label.
+  if [[ "${label}" == fullsend-fix-budget/* ]]; then
+    return 0
+  fi
   return 1
 }
 
