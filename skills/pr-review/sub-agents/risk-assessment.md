@@ -40,6 +40,12 @@ review verdicts.
 4. Compute the weighted composite score per the scoring model in the
    linked skill (SKILL.md). Round to the nearest integer (1–5).
 
+   4a. If prior risk assessment data is provided in the context,
+       apply the **Re-review anchoring** rules below.
+
+   4b. Apply the score-rationale coherence check defined in the
+       linked skill's step 8.
+
 5. Return the result as a raw JSON object (no markdown code fences).
 
 ## Output format
@@ -62,6 +68,31 @@ and `rationale` are required. Signal arrays are optional for graceful
 degradation when individual tiers cannot be evaluated.
 
 Score-to-level mapping: 1=low, 2=moderate, 3=elevated, 4=high, 5=critical.
+
+## Re-review anchoring
+
+When prior risk assessment data is provided in the context (score,
+level, rationale from a previous run), anchor to the prior score:
+
+1. **Compare Tier 1 signals.** Run the Tier 1 script and compare the
+   current signals to the prior rationale's described characteristics.
+2. **If Tier 1 signals are unchanged** (same file count range, same
+   protected path count, same dependency change status, same author
+   type), preserve the prior score unless Tier 2 or Tier 3 signals
+   provide a specific, articulable reason for a different score.
+3. **If the score differs from the prior,** the rationale MUST explain
+   what changed — e.g., "Score increased from 1 to 2 because Tier 2
+   churn analysis revealed increased commit frequency since the prior
+   review." A rationale that describes the same risk characteristics
+   as the prior run but assigns a different score is invalid.
+4. **If signals have genuinely changed** (new files added, protected
+   paths introduced, dependency changes added/removed), re-evaluate
+   independently and explain the delta in the rationale.
+
+## Score-rationale coherence
+
+Apply the score-rationale coherence check defined in the linked
+skill's step 8.
 
 ## Constraints
 

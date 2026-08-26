@@ -528,7 +528,39 @@ be absent from the result JSON.
 1. Read `sub-agents/risk-assessment.md` for the sub-agent definition.
 2. Read the linked skill from the skill-loading table (Part 3):
    `../pr-risk-assessment/SKILL.md`.
-3. Compose a spawn prompt containing:
+3. **Fetch prior risk assessment (re-reviews only).** If this is a
+   re-review (step 2a found a non-empty `prior-review.txt` and
+   `PRIOR_REVIEW_PROVENANCE` is `app-verified`), fetch the prior risk
+   assessment from the PR's sticky comment using the forge API:
+
+   ```bash
+   # GitHub:
+   PRIOR_RISK_COMMENT=$(gh api --paginate \
+     "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
+     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->"))] | last // empty')
+   ```
+
+   If found, extract the prior score, level, and rationale from the
+   comment body. The comment format is:
+
+   ```
+   <!-- fullsend:risk-assessment -->
+   **Risk Assessment: <level> (<score>/5)**
+
+   <details>
+   <summary>Details</summary>
+
+   <rationale>
+
+   </details>
+   ```
+
+   Parse these into `prior_risk_score`, `prior_risk_level`, and
+   `prior_risk_rationale`. If no prior risk comment exists (first
+   review or comment was deleted), skip — the sub-agent will operate
+   without anchoring.
+
+4. Compose a spawn prompt containing:
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
    risk-assessment sub-agent file (everything after the frontmatter)
@@ -539,7 +571,8 @@ be absent from the result JSON.
 
    **Part 3 — Context:** the PR's changed file list with per-file
    diff stats (additions, deletions), PR metadata (title, body,
-   author, labels), and linked issue context (if any). Format as:
+   author, labels), linked issue context (if any), and prior risk
+   assessment (if available from step 3). Format as:
 
    ```markdown
    ## Context
@@ -554,19 +587,22 @@ be absent from the result JSON.
 
    ### Issue context
    <linked issue content or "no linked issue">
+
+   ### Prior risk assessment
+   <prior score, level, and rationale — or "none (first review)">
    ```
 
-4. Spawn via Agent tool with:
+5. Spawn via Agent tool with:
    - `model`: `sonnet` (from the sub-agent frontmatter)
    - `prompt`: composed from parts 1–3
    - Run **synchronously** (not in the background) — the result is
      stored for inclusion in the final review result
 
-5. Parse the risk assessment output. The sub-agent returns a JSON
+6. Parse the risk assessment output. The sub-agent returns a JSON
    object with `score`, `level`, `rationale`, and optional signal
    arrays.
 
-6. Store the `risk_assessment` object for inclusion in
+7. Store the `risk_assessment` object for inclusion in
    `agent-result.json` (step 7).
 
 **Failure fallback:** If the risk-assessment sub-agent fails
