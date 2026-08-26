@@ -232,6 +232,27 @@ response directly.
    One sentence summarizing the key factors (file count, churn, labels,
    protected paths, rollback safety, etc.) that drove the score.
 
-8. **Return JSON:**
+8. **Verify score-rationale coherence:**
+   Re-read the rationale and cross-check it against the score using the
+   anchoring examples table above. Specifically:
+   - Identify the risk characteristics described in the rationale
+     (e.g., "docs-only," "no protected paths," "bot author").
+   - Map those characteristics to expected sub-scores per the Tier 1/2/3
+     scoring guidance tables.
+   - If the rationale describes characteristics that the scoring
+     guidance maps to a materially different score (off by ≥2), either
+     adjust the score to match what the signals actually produce, or
+     revise the rationale to explain the specific signal that elevates
+     or lowers the score beyond what the described characteristics
+     alone would suggest.
+   - Example violation: rationale says "Documentation-only PR by a bot
+     with no protected paths, no security-sensitive files, no dependency
+     changes" but score is 2. The Tier 1 scoring guidance maps all
+     those characteristics to sub-scores of 1, producing a composite
+     near 1. The score must be 1, or the rationale must cite a
+     specific Tier 2/3 signal (e.g., "high churn in the last 30 days")
+     that justifies the elevation.
+
+9. **Return JSON:**
    Construct the JSON object per the schema above. Return it as raw
    JSON (no markdown fences).

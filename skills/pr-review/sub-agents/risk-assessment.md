@@ -63,6 +63,45 @@ degradation when individual tiers cannot be evaluated.
 
 Score-to-level mapping: 1=low, 2=moderate, 3=elevated, 4=high, 5=critical.
 
+## Re-review anchoring
+
+When prior risk assessment data is provided in the context (score,
+level, rationale from a previous run), anchor to the prior score:
+
+1. **Compare Tier 1 signals.** Run the Tier 1 script and compare the
+   current signals to the prior rationale's described characteristics.
+2. **If Tier 1 signals are unchanged** (same file count range, same
+   protected path count, same dependency change status, same author
+   type), preserve the prior score unless Tier 2 or Tier 3 signals
+   provide a specific, articulable reason for a different score.
+3. **If the score differs from the prior,** the rationale MUST explain
+   what changed — e.g., "Score increased from 1 to 2 because Tier 2
+   churn analysis revealed increased commit frequency since the prior
+   review." A rationale that describes the same risk characteristics
+   as the prior run but assigns a different score is invalid.
+4. **If signals have genuinely changed** (new files added, protected
+   paths introduced, dependency changes added/removed), re-evaluate
+   independently and explain the delta in the rationale.
+
+## Score-rationale coherence
+
+Before returning the final JSON, verify coherence:
+
+1. Re-read your rationale and identify the risk characteristics it
+   describes (e.g., "docs-only," "no protected paths," "no dependency
+   changes," "bot author").
+2. Map those characteristics to expected sub-scores using the scoring
+   guidance in the linked skill.
+3. If the described characteristics map to a different score than the
+   one you computed, reconcile: either adjust the score to match the
+   rationale, or revise the rationale to explain why the score differs
+   from what the characteristics alone would suggest.
+
+A rationale that describes low-risk characteristics (docs-only, no
+protected paths, no dependencies, bot author) must not accompany a
+score above 1 unless a specific Tier 2 or Tier 3 signal justifies
+the elevation and is mentioned in the rationale.
+
 ## Constraints
 
 - Do not write any files
