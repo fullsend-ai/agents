@@ -1,0 +1,25 @@
+---
+# Read-write variant of fullsend-gitlab-ro.yaml for agents that need
+# write access to GitLab API (e.g., triage). Keep endpoints in sync
+# with the read-only profile; only the access level differs.
+id: fullsend-gitlab-rw
+display_name: Fullsend GitLab (read-write)
+description: Read-write GitLab API access for fullsend agents
+category: source_control
+endpoints:
+  - host: gitlab.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+    allow_encoded_slash: true
+  # Red Hat internal GitLab — supported deployment target for enrolled repos
+  - host: gitlab.cee.redhat.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+    allow_encoded_slash: true
+binaries:
+  - "**/curl"
+  - "**/node"

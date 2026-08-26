@@ -81,9 +81,8 @@ need a custom image.
 ### Image requirements
 
 A custom image must work within the constraints enforced by the sandbox
-policy ([`policies/base.yaml`](../policies/base.yaml)), network
-profiles ([`profiles/`](../profiles/)), and forge-specific policy
-([`policies/gitlab/code.yaml`](../policies/gitlab/code.yaml) for GitLab):
+policy ([`policies/base.yaml`](../policies/base.yaml)) and network
+profiles ([`profiles/`](../profiles/)):
 
 | Requirement | Detail |
 |-------------|--------|
@@ -180,16 +179,18 @@ setup:
 - **`ISSUE_URL`** replaces `GITHUB_ISSUE_URL` in scripts. The
   per-forge env file (`env/github/code.env` or `env/gitlab/code.env`)
   maps the platform-specific variable to `ISSUE_URL`.
-- **Policy** is per-forge: `policies/base.yaml` (GitHub) or
-  `policies/gitlab/code.yaml` (GitLab). Custom harnesses using `base:`
-  composition should override at the forge level if needed.
+- **Policy** is `policies/base.yaml` for all forges. Network access is
+  provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
+  harnesses using `base:` composition should override at the forge level
+  if needed.
 - **GitLab uses `curl`** instead of `gh` for API access. The GitLab
-  sandbox policy allows `curl` for `gitlab_api` endpoints only.
+  profile (`fullsend-gitlab-code`) allows `curl` for GitLab API
+  endpoints only.
 - **GitLab host validation** — `forge_validate_issue_url` validates
   the host against `CI_SERVER_HOST`, a GitLab CI predefined variable
   set automatically by the runner. Validation fails closed when
-  `CI_SERVER_HOST` is not set. The network policy in
-  `policies/gitlab/code.yaml` must also be updated.
+  `CI_SERVER_HOST` is not set. The GitLab profile in
+  `profiles/fullsend-gitlab-code.yaml` must also be updated.
 
 ## Custom network policy
 

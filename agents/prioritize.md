@@ -3,8 +3,8 @@ name: prioritize
 description: Score an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produce structured scores with reasoning.
 skills:
   - customer-research  # extension point: provided by target repos, not built into this repo
-# curl: required by GitLab forge. On GitHub, the network policy binary
-# allowlist (policies/github/prioritize.yaml) excludes **/curl, preventing
+# curl: required by GitLab forge. On GitHub, the profile binary
+# allowlist (profiles/fullsend-github-ro.yaml) excludes **/curl, preventing
 # it from making network requests even though it is granted here.
 tools: Bash(gh,curl,jq), Skill
 model: opus

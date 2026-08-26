@@ -1,0 +1,14 @@
+---
+id: fullsend-jira-ro
+display_name: Fullsend Jira (read-only)
+description: Read-only Jira Cloud API access for fullsend agents
+category: project_management
+endpoints:
+  # Jira Cloud only (v1) — see design.md Decision 7.
+  - host: "*.atlassian.net"
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+binaries:
+  - "**/curl"

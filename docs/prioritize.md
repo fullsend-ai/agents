@@ -101,7 +101,7 @@ If you use `base:` composition to override `harness/prioritize.yaml`:
 The GitLab forge operations validate `GITLAB_HOST` against
 `CI_SERVER_HOST`, a GitLab CI predefined variable set automatically by
 the runner. Validation fails closed when `CI_SERVER_HOST` is not set.
-The network policy in `policies/gitlab/prioritize.yaml` must also be
+The GitLab profile in `profiles/fullsend-gitlab-ro.yaml` must also be
 updated to allow connections to the host.
 
 ## Custom network policy

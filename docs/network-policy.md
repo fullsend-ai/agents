@@ -99,7 +99,8 @@ defaults. If multiple agents need the same custom hosts, create a
 separate override for each one. For example, the
 [code](code.md) and [fix](fix.md) agents both use
 [`policies/base.yaml`](../policies/base.yaml)
-(both agents also have GitLab equivalents under `policies/gitlab/`).
+(GitLab network access is provided by forge-level profiles such as
+`fullsend-gitlab-code` and `fullsend-gitlab-ro`).
 
 ## Troubleshooting
 
