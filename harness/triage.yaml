@@ -69,7 +69,11 @@ overlays:
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   - when: 'runtime.forge == "gitlab"'
-    policy: policies/gitlab/triage.yaml
+    providers:
+      - providers/gitlab-rw.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-rw.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab
@@ -87,7 +91,11 @@ overlays:
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
   - when: 'runtime.forge == "jira"'
-    policy: policies/jira/triage.yaml
+    providers:
+      - providers/jira-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-jira-ro.yaml
     skills:
       - skills/jira-forge
       - skills/issue-labels/jira
