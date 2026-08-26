@@ -1242,6 +1242,18 @@ run_body_test "label-actions-plus-action-hints-has-labels-section" \
 run_body_test "label-actions-plus-action-hints-has-next-steps" \
   "${LABEL_PLUS_HINTS_JSON}" "**Next steps:**"
 
+# confidence present → body gets a "**Confidence:** <value>" annotation
+CONFIDENCE_JSON='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Some notes","confidence":"high"}'
+
+run_body_test "confidence-present-appends-annotation" \
+  "${CONFIDENCE_JSON}" "**Confidence:** high"
+
+# confidence absent → no annotation appended
+NO_CONFIDENCE_JSON='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Some notes"}'
+
+run_body_count_test "confidence-absent-no-annotation" \
+  "${NO_CONFIDENCE_JSON}" "**Confidence:**" "0"
+
 # ---------------------------------------------------------------------------
 # REVIEW_PROTECTED_PATHS override tests
 # Verify that setting REVIEW_PROTECTED_PATHS overrides the default list.

@@ -792,6 +792,21 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# Append confidence annotation to body (skips failure, which has no body)
+# ---------------------------------------------------------------------------
+
+CONFIDENCE=$(jq -r '.confidence // empty' "${RESULT_FILE}")
+if [ -n "${CONFIDENCE}" ] && [ "${ACTION}" != "failure" ]; then
+  CONFIDENCE_NOTICE=$'\n\n---\n'"**Confidence:** ${CONFIDENCE}"
+  CONFIDENCE_RESULT=$(mktemp)
+  CLEANUP_FILES+=("${CONFIDENCE_RESULT}")
+  jq --arg notice "${CONFIDENCE_NOTICE}" \
+    '.body = (.body + $notice)' \
+    "${RESULT_FILE}" > "${CONFIDENCE_RESULT}"
+  RESULT_FILE="${CONFIDENCE_RESULT}"
+fi
+
+# ---------------------------------------------------------------------------
 # Append action-hints footer (request-changes only)
 # ---------------------------------------------------------------------------
 
