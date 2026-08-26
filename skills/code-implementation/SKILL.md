@@ -1070,7 +1070,8 @@ cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body` and `closes_issue`:
+optionally `pr_body`, `closes_issue`, `needs_input`, and
+`needs_input_reason`:
 
 ```json
 {
@@ -1080,8 +1081,9 @@ optionally `pr_body` and `closes_issue`:
 ```
 
 **Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch`, `pr_body`, and `closes_issue` are allowed. Any
-other fields will cause validation to fail.
+Only `target_branch`, `pr_body`, `closes_issue`, `needs_input`, and
+`needs_input_reason` are allowed. Any other fields will cause validation
+to fail.
 
 Validate the output against the schema:
 

@@ -32,5 +32,16 @@
       "maxLength": 2000,
       "description": "Human-readable explanation of why the agent needs input. Required when needs_input is true. Describes the specific blocker (broken tooling, uninterpretable issue, missing scan-secrets, etc.)."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "needs_input": { "const": true } },
+        "required": ["needs_input"]
+      },
+      "then": {
+        "required": ["needs_input_reason"]
+      }
+    }
+  ]
 }
