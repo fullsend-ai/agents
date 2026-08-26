@@ -535,8 +535,8 @@ be absent from the result JSON.
 
    ```bash
    # GitHub:
-   PRIOR_RISK_COMMENT=$(gh api \
-     "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments?per_page=100" \
+   PRIOR_RISK_COMMENT=$(gh api --paginate \
+     "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
      --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->"))] | last // empty')
    ```
 
@@ -546,7 +546,13 @@ be absent from the result JSON.
    ```
    <!-- fullsend:risk-assessment -->
    **Risk Assessment: <level> (<score>/5)**
-   <details><summary>Details</summary><rationale></details>
+
+   <details>
+   <summary>Details</summary>
+
+   <rationale>
+
+   </details>
    ```
 
    Parse these into `prior_risk_score`, `prior_risk_level`, and
@@ -588,7 +594,7 @@ be absent from the result JSON.
 
 5. Spawn via Agent tool with:
    - `model`: `sonnet` (from the sub-agent frontmatter)
-   - `prompt`: composed from parts 1–4
+   - `prompt`: composed from parts 1–3
    - Run **synchronously** (not in the background) — the result is
      stored for inclusion in the final review result
 
