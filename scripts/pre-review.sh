@@ -492,9 +492,15 @@ fi
 
 # ---------------------------------------------------------------------------
 # Deepen shallow clone for git history analysis (risk assessment Tier 2).
-# When REVIEW_GIT_FETCH_DEPTH is unset, default to "0" (full unshallow) if
-# risk assessment is enabled — the Tier 2 sub-agent needs full git history.
+# When REVIEW_GIT_FETCH_DEPTH is unset, default to "0" if risk assessment is
+# enabled — the Tier 2 sub-agent needs commit history, not just the tip.
 # Explicit values always take precedence.
+#
+# The deepen is blobless (--filter=blob:none): Tier 2 reads commit and tree
+# metadata only, so fetching historical file contents would be pure cost.
+# The filter is only honoured for a configured remote — with a bare URL git
+# accepts the flag and silently fetches everything — hence "origin", which
+# actions/checkout configures as the target repo's HTTPS URL.
 # ---------------------------------------------------------------------------
 if [[ -z "${REVIEW_GIT_FETCH_DEPTH+set}" && "${REVIEW_RISK_ASSESSMENT_ENABLED:-false}" == "true" ]]; then
   REVIEW_GIT_FETCH_DEPTH="0"
@@ -505,14 +511,35 @@ if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
     echo "::warning::Clone-deepening skipped — target directory '${_TARGET_DIR}' not found"
   elif git -C "${_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
     echo "Deepening shallow clone for git history analysis..."
-    if [[ "${FULLSEND_FORGE}" == "github" && -n "${GH_TOKEN:-}" && -n "${REPO_FULL_NAME:-}" ]]; then
-      timeout 120 git -C "${_TARGET_DIR}" \
-        -c "http.extraheader=Authorization: basic $(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)" \
-        fetch --unshallow --filter=blob:none origin 2>/dev/null \
-        && echo "Clone deepened successfully" \
-        || echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
-    else
+    if [[ "${FULLSEND_FORGE}" != "github" || -z "${GH_TOKEN:-}" || -z "${REPO_FULL_NAME:-}" ]]; then
       echo "::warning::Cannot deepen clone — missing credentials or unsupported forge"
+    elif ! command -v timeout >/dev/null 2>&1; then
+      # Local runs on macOS need coreutils for GNU timeout; without a bound
+      # this fetch is exactly the unbounded cost #1032 was filed about.
+      echo "::warning::Cannot deepen clone — 'timeout' not found (install coreutils); Tier 2 risk signals may be degraded"
+    elif timeout --kill-after=5 120 git -C "${_TARGET_DIR}" \
+        -c "http.extraheader=Authorization: basic $(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)" \
+        fetch --unshallow --filter=blob:none origin 2>/dev/null; then
+      # A blobless clone records origin as a promisor remote, so git tries to
+      # lazily fetch any blob it needs. Inside the review sandbox that fetch
+      # can never succeed — the egress policy allows the GitHub REST API, not
+      # the git wire protocol — so it blocks until the run's timeout. Rename
+      # detection is the one thing in the Tier 2 command set that reads blob
+      # content (git show/diff-tree on a commit containing a rename), so turn
+      # it off repo-locally. Every Tier 2 command is then blob-free, and the
+      # coupling signal is unaffected: a rename reported as delete+add still
+      # names both paths.
+      # Guarded: under `set -e` a failed config write would abort the whole
+      # pre-script, turning a degraded risk signal into a failed review.
+      if git -C "${_TARGET_DIR}" config diff.renames false; then
+        echo "Clone deepened successfully (blobless; rename detection disabled)"
+      else
+        echo "::warning::Deepened clone but could not disable rename detection — Tier 2 history commands may block on unavailable blobs"
+      fi
+    else
+      # A killed or failed fetch leaves the clone shallow, which the Tier 2
+      # sub-agent detects on its own and treats as an unavailable tier.
+      echo "::warning::Failed to deepen clone — Tier 2 risk signals may be degraded"
     fi
   fi
 fi

@@ -89,7 +89,7 @@ the file-level results into dimension scores.
 | **Multi-author contention** | `git log --since="90 days ago" --format="%ae" -- <file> \| sort -u \| wc -l` | Average distinct authors per file. 1 = 1, 2 = 2, 3-4 = 3, 5-7 = 4, >7 = 5 |
 | **Recent regression history** | `git log --since="90 days ago" --oneline --grep="fix\|revert" --regexp-ignore-case -- <file>` | Count fix/revert commits per file. Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
 | **Code age/stability** | `git log -1 --format="%ci" -- <file>` | Days since last commit. Average across files. <7d = 1, 7-30d = 2, 31-90d = 3, 91-180d = 4, >180d = 5 |
-| **Change coupling** | `git log --since="90 days ago" --format="%H" -- <file> \| xargs -I{} git show --name-only --format="" {} \| sort \| uniq -c \| sort -rn` | For each changed file, identify other files frequently modified together. Count files with coupling ≥3 co-commits missing from PR. Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
+| **Change coupling** | `git log --since="90 days ago" --format="%H" -- <file> \| xargs -I{} git diff-tree -r --no-commit-id --name-only --no-renames {} \| sort \| uniq -c \| sort -rn` | For each changed file, identify other files frequently modified together. Count files with coupling ≥3 co-commits missing from PR. Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
 | **Revert frequency** | `git log --all --oneline --grep="revert.*<file>" --regexp-ignore-case` | Count reverts on touched files (search commit messages for "revert" + file path). Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
 | **Commit message sentiment** | `git log --since="90 days ago" --oneline -- <file> \| grep -iE "workaround\|hack\|temporary\|todo\|fixme"` | Count commits with workaround/hack/temporary sentiment per file. Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
 
@@ -97,6 +97,17 @@ the file-level results into dimension scores.
 average across all changed files. Round the average to the nearest
 integer for the dimension sub-score. Then average the seven dimension
 sub-scores for the Tier 2 composite.
+
+**Blobless clone — do not read file contents:** The pre-review script deepens
+the clone with `--filter=blob:none`, so historical file *contents* are absent
+and the sandbox cannot fetch them (its egress policy allows the GitHub REST
+API, not the git wire protocol). Every command in the table above reads only
+commit and tree metadata, which is present. Do not add `git show -p`,
+`git diff`, `git log -p`, or `git blame` against history — those block on a
+lazy fetch that can never complete, consuming the whole review budget. The
+script also sets `diff.renames=false` in the clone for the same reason; use
+`--no-renames` explicitly in any diff-shaped command you add, as the coupling
+command above does.
 
 **Shallow repository detection:** Before running git log commands, check
 `git rev-parse --is-shallow-repository`. If the repo is shallow, Tier 2

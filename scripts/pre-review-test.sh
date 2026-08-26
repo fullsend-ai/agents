@@ -487,6 +487,199 @@ run_gitlab_test_stdout "gitlab-no-token-proceeds" \
   0 \
   "REVIEW_TOKEN="
 
+# --- Clone-deepening tests (risk assessment Tier 2) ---
+#
+# These build a real local repo pair (working clone + bare "remote") so the
+# actual `git fetch --unshallow --filter=blob:none origin` in pre-review.sh
+# runs offline. Stubbing git was rejected deliberately: what these tests need
+# to assert is the state of the resulting clone (still shallow? blobless?
+# rename detection off?), which a stub cannot produce.
+
+# build_deepen_repo creates ${TMPDIR}/deepen/target-repo as a depth-1 clone of
+# a local bare repo whose history contains a rename, and echoes its path.
+build_deepen_repo() {
+  local root="${TMPDIR}/deepen"
+  rm -rf "${root}"
+  mkdir -p "${root}"
+  (
+    set -e
+    git init -q -b main "${root}/src"
+    cd "${root}/src"
+    git config user.email "test@example.com"
+    git config user.name "Test User"
+    local i
+    for i in 1 2 3; do
+      printf 'line%s\n%s\n' "${i}" "$(seq 1 40 | tr '\n' ' ')" > "file${i}.txt"
+      git add -A
+      git commit -qm "commit ${i}"
+    done
+    # A rename *plus* a content edit is what makes a blobless clone lazily
+    # fetch blobs: exact renames are detected from the blob hash alone, so
+    # only inexact (similarity) detection has to read content. Renaming
+    # without editing would make this fixture pass no matter what.
+    git mv file1.txt renamed1.txt
+    printf 'CHANGED HEADER\n%s\nextra tail line\n' "$(seq 1 34 | tr '\n' ' ')" > renamed1.txt
+    git add -A
+    git commit -qm "rename and modify file1"
+    cd "${root}"
+    git clone -q --bare src bare.git
+    # Partial clone is served only when the remote opts in.
+    git -C bare.git config uploadpack.allowFilter true
+    git clone -q --depth=1 "file://${root}/bare.git" target-repo
+  ) >/dev/null 2>&1
+  echo "${root}/target-repo"
+}
+
+# run_deepen_test runs pre-review.sh with REPO_DIR pointed at a fixture clone.
+# Arguments:
+#   $1 — test name
+#   $2 — expected stdout substring
+#   $3 — REPO_DIR value
+#   $4+ — extra KEY=VALUE environment entries
+run_deepen_test() {
+  local test_name="$1"
+  local expected_stdout="$2"
+  local repo_dir="$3"
+  shift 3
+
+  local mock_bin
+  mock_bin="$(build_mock "OPEN" "human-author")"
+
+  local exit_code=0
+  env \
+    PATH="${mock_bin}:${PATH}" \
+    PR_NUMBER="42" \
+    REPO_FULL_NAME="test-org/test-repo" \
+    PR_URL="https://github.com/test-org/test-repo/pull/42" \
+    FULLSEND_FORGE="github" \
+    REVIEW_TOKEN="fake..." \
+    GH_TOKEN="fake..." \
+    REPO_DIR="${repo_dir}" \
+    REVIEW_RISK_ASSESSMENT_ENABLED="true" \
+    "$@" \
+    bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected exit 0, got ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+
+  echo "PASS: ${test_name}"
+  return 0
+}
+
+# check_repo_state asserts a git config/state value on the fixture clone.
+check_repo_state() {
+  local test_name="$1"
+  local actual="$2"
+  local expected="$3"
+
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "FAIL: ${test_name} — expected '${expected}', got '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Happy path: shallow clone is deepened, blobless, with renames disabled.
+DEEPEN_REPO="$(build_deepen_repo)"
+if run_deepen_test "deepen-shallow-clone" \
+  "Clone deepened successfully" \
+  "${DEEPEN_REPO}"; then
+
+  check_repo_state "deepen-clears-shallow" \
+    "$(git -C "${DEEPEN_REPO}" rev-parse --is-shallow-repository)" "false"
+
+  check_repo_state "deepen-full-history" \
+    "$(git -C "${DEEPEN_REPO}" rev-list --count HEAD)" "4"
+
+  check_repo_state "deepen-applies-blob-filter" \
+    "$(git -C "${DEEPEN_REPO}" config --get remote.origin.partialclonefilter)" "blob:none"
+
+  # The point of the whole exercise: Tier 2's change-coupling command must
+  # run offline on a commit containing a rename. Break the promisor remote
+  # first so any lazy blob fetch fails loudly instead of silently working.
+  git -C "${DEEPEN_REPO}" remote set-url origin "file:///nonexistent/gone.git"
+
+  check_repo_state "deepen-disables-rename-detection" \
+    "$(git -C "${DEEPEN_REPO}" config --get diff.renames)" "false"
+
+  RENAME_COMMIT="$(git -C "${DEEPEN_REPO}" log --format=%H -1)"
+
+  # Negative control: with rename detection on, the same commit *does* need a
+  # blob it cannot get. This is what the diff.renames=false line in
+  # pre-review.sh prevents — if that line is dropped, the assertions below
+  # stop being vacuous and start failing.
+  RENAME_ERRS="$(git -C "${DEEPEN_REPO}" -c diff.renames=true show --name-only \
+    --format= "${RENAME_COMMIT}" 2>&1 | grep -ciE 'fatal|could not' || true)"
+  check_repo_state "deepen-rename-detection-would-need-network" \
+    "$([[ "${RENAME_ERRS}" -gt 0 ]] && echo "needs-network" || echo "offline")" \
+    "needs-network"
+
+  COUPLING_OUT="$(git -C "${DEEPEN_REPO}" diff-tree -r --no-commit-id --name-only \
+    --no-renames "${RENAME_COMMIT}" 2>&1)"
+  check_repo_state "deepen-coupling-command-needs-no-blobs" \
+    "$(printf '%s' "${COUPLING_OUT}" | grep -ciE 'fatal|could not fetch')" "0"
+  check_repo_state "deepen-coupling-command-names-both-paths" \
+    "$(printf '%s\n' "${COUPLING_OUT}" | sort | tr '\n' ' ')" "file1.txt renamed1.txt "
+fi
+
+# Explicit REVIEW_GIT_FETCH_DEPTH wins over the risk-assessment auto-default.
+DEEPEN_REPO_2="$(build_deepen_repo)"
+if run_deepen_test "no-deepen-when-depth-explicitly-set" \
+  "proceeding with review agent" \
+  "${DEEPEN_REPO_2}" \
+  REVIEW_GIT_FETCH_DEPTH="1"; then
+
+  check_repo_state "explicit-depth-leaves-clone-shallow" \
+    "$(git -C "${DEEPEN_REPO_2}" rev-parse --is-shallow-repository)" "true"
+fi
+
+# Risk assessment disabled — no deepening, no warning.
+DEEPEN_REPO_3="$(build_deepen_repo)"
+if run_deepen_test "no-deepen-when-risk-assessment-disabled" \
+  "proceeding with review agent" \
+  "${DEEPEN_REPO_3}" \
+  REVIEW_RISK_ASSESSMENT_ENABLED="false"; then
+
+  check_repo_state "disabled-risk-leaves-clone-shallow" \
+    "$(git -C "${DEEPEN_REPO_3}" rev-parse --is-shallow-repository)" "true"
+fi
+
+# Unreachable remote — the script warns and still exits 0, leaving the clone
+# shallow so the Tier 2 sub-agent detects the degraded state itself.
+DEEPEN_REPO_4="$(build_deepen_repo)"
+git -C "${DEEPEN_REPO_4}" remote set-url origin "file:///nonexistent/gone.git"
+if run_deepen_test "deepen-failure-warns-and-continues" \
+  "::warning::Failed to deepen clone" \
+  "${DEEPEN_REPO_4}"; then
+
+  check_repo_state "failed-deepen-leaves-clone-shallow" \
+    "$(git -C "${DEEPEN_REPO_4}" rev-parse --is-shallow-repository)" "true"
+fi
+
+# Missing target directory is reported, not silently skipped.
+run_deepen_test "deepen-missing-target-dir-warns" \
+  "::warning::Clone-deepening skipped" \
+  "${TMPDIR}/deepen/does-not-exist"
+
+# Non-GitHub forge does not attempt a gh-token fetch.
+DEEPEN_REPO_5="$(build_deepen_repo)"
+run_deepen_test "deepen-skipped-without-token" \
+  "::warning::Cannot deepen clone" \
+  "${DEEPEN_REPO_5}" \
+  GH_TOKEN=""
+
 # --- Summary ---
 
 echo ""
