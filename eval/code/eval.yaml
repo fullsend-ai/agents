@@ -7,9 +7,10 @@ description: >
   symbol to the files it must disappear from and the number of deletion
   lines required per file; the removed_symbols judge then checks those
   counts in the captured PR diff and fails if the symbol survives anywhere
-  in it. Beyond that, no judge runs the fixture's tests against the PR, so a
-  fix that compiles but misbehaves can still pass — and cases with no
-  removed_symbols get file-touch only
+  in it, while the fixture_checks judge builds and tests the checked-out PR
+  head so a change that satisfies the diff but does not compile (a site
+  commented out in place) still fails. Cases with no removed_symbols get
+  file-touch only — no diff inspection, no build/test gate
   (see annotations.yaml: "Primary signal is pr_created").
   Acts as a regression guard for the pipeline when sandbox GitHub access is
   read-only (reads + local commits still work; write/push stays on the
@@ -32,12 +33,17 @@ execution:
   # Sized for the JOB, not one case: this value is applied per case, and
   # parallelism: 1 runs the suite's cases back to back inside one matrix
   # leg capped at timeout-minutes: 45 (2700s). With two cases the worst
-  # case is 2 x (120 + 900 + 90) = 2220s, leaving 480s for job setup —
-  # the previous 1800 gave 2 x 2010 = 4020s, so a hang in the first case
-  # would have had the second killed by the job timeout with no artifacts
-  # at all. Re-derive if a third case lands here: 3 x 1110 = 3330s no
-  # longer fits, and the cases would need their own matrix legs.
-  timeout: 900
+  # case is 2 x (120 + 800 + 90 + 30) = 2080s, leaving 620s for job setup
+  # — a deliberate margin, not an exact fit: podman alone routinely takes
+  # ~190s of it and the rest (checkout, python/uv, harness install,
+  # fullsend download) varies, so the allowance must absorb a bad day
+  # without handing the whole leg to the GitHub Actions hard timeout,
+  # which produces no artifacts for either case. The previous 1800 gave
+  # 2 x 2010 = 4020s, so a hang in the first case would have had the
+  # second killed that way. Re-derive if a third case lands here:
+  # 3 x 1040 = 3120s no longer fits, and the cases would need their own
+  # matrix legs.
+  timeout: 800
   parallelism: 1
   # Advisory only — the opaque-CLI-runner contract does not enforce this for
   # our runner type; a runaway run still spends what it spends and only
@@ -81,22 +87,23 @@ execution:
     # one 45-minute matrix leg: 001-fix-add (a 2-line arithmetic bug that
     # completes in well under a minute) and 003-dead-config-field (a
     # cross-file dead-config removal with a larger 60-turn / $4.00 budget).
-    # 800s here, 100s under execution.timeout (900) so this inner `timeout`
+    # 700s here, 100s under execution.timeout (800) so this inner `timeout`
     # fires first and fullsend still writes a partial metrics.json before
     # returning (see writeMetricsJSON in run.go's error path), giving an
     # inconclusive but readable "metrics.json not found"-adjacent judge
-    # failure rather than a harness SIGKILL. The 900s outer value is what
-    # makes the job budget add up — see execution.timeout above — so that
-    # a hang in either case still leaves the other its full window and its
-    # artifacts; at the old 1700/1800 a first-case hang left the second
-    # case to the GitHub Actions job timeout, which produces no artifacts.
-    # Neither fixture is expected to approach 800s (001 observed 12 and 35
-    # turns in well under a minute); 003 has no observed CI runtime yet, so
-    # re-derive from its first run. Separately, pr_created can also fail
-    # when the agent finishes in-budget but never emits a schema-valid
-    # code-result.json — validation_loop then skips post_script (ADR 0022),
-    # so no PR is created despite a clean timeout path.
-    EVAL_TIMEOUT: "800"
+    # failure rather than a harness SIGKILL. The 800s outer value is what
+    # makes the job budget add up with real setup margin — see
+    # execution.timeout above — so a hang in either case still leaves the
+    # other its full window and its artifacts; at the old 1700/1800 a
+    # first-case hang left the second case to the GitHub Actions job
+    # timeout, which produces no artifacts. Neither fixture is expected to
+    # approach 700s (001 observed 12 and 35 turns in well under a minute);
+    # 003 has no observed CI runtime yet, so re-derive from its first run.
+    # Separately, pr_created can also fail when the agent finishes
+    # in-budget but never emits a schema-valid code-result.json —
+    # validation_loop then skips post_script (ADR 0022), so no PR is
+    # created despite a clean timeout path.
+    EVAL_TIMEOUT: "700"
 
 hooks:
   before_each:
@@ -106,7 +113,11 @@ hooks:
 
   after_each:
     - command: "capture-fixture.sh"
-      timeout: 60
+      # 90 rather than the sibling suites' 60: removed_symbols cases also
+      # shallow-clone the PR head and run go build + go test on it (see
+      # run_pr_checks) on top of the diff-fetch readiness poll. Counted in
+      # execution.timeout's job-budget arithmetic above.
+      timeout: 90
       description: "Capture issue + PR state for judges"
     - command: "teardown-fixture.sh"
       timeout: 30
@@ -229,7 +240,10 @@ judges:
       attributed to the deleted path, so deleting a now-empty file satisfies
       its requirement. Diff-scoped: a symbol surviving in a file the PR never
       touched is invisible here (naming the file makes its absence a failure
-      instead), and no judge runs the fixture's tests. Reads
+      instead), and a site commented out in place is invisible too — one
+      real deletion line plus an exempt comment addition — which is why the
+      fixture_checks judge below builds and tests the actual PR head for
+      these cases. Reads
       state["pull_requests"], which only capture-fixture.sh's issue-fixture
       branch writes — reusing this judge in a pull_request-type suite needs
       that branch to emit an equivalent diff artifact first.
@@ -388,6 +402,55 @@ judges:
           return False, "Symbols not fully removed: " + "; ".join(problems)
       return True, f"All declared symbols removed cleanly from their declared files: {sorted(symbols)}"
 
+  - name: fixture_checks
+    description: >
+      Build/test gate for removed_symbols cases, closing the hole diff
+      inspection cannot see: a usage site commented out in place produces
+      one real deletion line (satisfying the count) plus a comment addition
+      (exempt as a survivor), yet the tree no longer compiles.
+      capture-fixture.sh clones each PR head and runs `go build ./...` and
+      `go test ./...`, recording exit codes under pull_requests[].checks;
+      this judge requires both to be 0. Passes trivially when the case
+      declares no removed_symbols. A recorded skip (no go.mod in the
+      checkout, or no go toolchain on the runner) passes with the reason in
+      the message — recorded, not silent. Missing checks or a clone failure
+      fail the case: evidence must exist, the same stance as
+      diff_fetch_failed, since this runs at min_pass_rate 1.0.
+    check: |
+      import json
+      symbols = outputs.get("annotations", {}).get("removed_symbols") or {}
+      if not symbols:
+          return True, "No removed_symbols declared"
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
+      prs = [p for p in (state.get("pull_requests") or [])
+             if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
+      if not prs:
+          return False, "No open/merged PR to inspect"
+      skips = []
+      problems = []
+      for p in prs:
+          num = p.get("number")
+          checks = p.get("checks")
+          if not isinstance(checks, dict):
+              problems.append(f"PR #{num}: no build/test checks captured")
+          elif checks.get("clone_failed"):
+              problems.append(f"PR #{num}: could not clone head for build/test")
+          elif "skipped" in checks:
+              skips.append(f"PR #{num}: checks skipped ({checks['skipped']})")
+          elif checks.get("build_exit") != 0 or checks.get("test_exit") != 0:
+              problems.append(
+                  f"PR #{num}: go build exit {checks.get('build_exit')}, "
+                  f"go test exit {checks.get('test_exit')}"
+              )
+      if problems:
+          return False, "; ".join(problems + skips)
+      if skips:
+          return True, "; ".join(skips)
+      return True, "go build and go test pass on every PR head"
+
   # forbidden_labels / max_turns / max_cost below are shared verbatim with
   # eval/fix/eval.yaml and eval/review/eval.yaml — update all three if changing.
   - name: forbidden_labels
@@ -449,6 +512,8 @@ thresholds:
   expected_files:
     min_pass_rate: 1.0
   removed_symbols:
+    min_pass_rate: 1.0
+  fixture_checks:
     min_pass_rate: 1.0
   forbidden_labels:
     min_pass_rate: 1.0
