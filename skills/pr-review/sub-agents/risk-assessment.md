@@ -40,13 +40,13 @@ review verdicts.
 4. Compute the weighted composite score per the scoring model in the
    linked skill (SKILL.md). Round to the nearest integer (1–5).
 
-5. If prior risk assessment data is provided in the context, apply
-   the **Re-review anchoring** rules below before finalizing the score.
+   4a. If prior risk assessment data is provided in the context,
+       apply the **Re-review anchoring** rules below.
 
-6. Verify **Score-rationale coherence** (see section below) before
-   returning the final result.
+   4b. Apply the score-rationale coherence check defined in the
+       linked skill's step 8.
 
-7. Return the result as a raw JSON object (no markdown code fences).
+5. Return the result as a raw JSON object (no markdown code fences).
 
 ## Output format
 
@@ -91,22 +91,8 @@ level, rationale from a previous run), anchor to the prior score:
 
 ## Score-rationale coherence
 
-Before returning the final JSON, verify coherence:
-
-1. Re-read your rationale and identify the risk characteristics it
-   describes (e.g., "docs-only," "no protected paths," "no dependency
-   changes," "bot author").
-2. Map those characteristics to expected sub-scores using the scoring
-   guidance in the linked skill.
-3. If the described characteristics map to a different score than the
-   one you computed, reconcile: either adjust the score to match the
-   rationale, or revise the rationale to explain why the score differs
-   from what the characteristics alone would suggest.
-
-A rationale that describes low-risk characteristics (docs-only, no
-protected paths, no dependencies, bot author) must not accompany a
-score above 1 unless a specific Tier 2 or Tier 3 signal justifies
-the elevation and is mentioned in the rationale.
+Apply the score-rationale coherence check defined in the linked
+skill's step 8.
 
 ## Constraints
 
