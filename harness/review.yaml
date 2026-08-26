@@ -70,6 +70,7 @@ timeout_minutes: 20
 
 forge:
   github:
+    policy: policies/base.yaml
     providers:
       - providers/github-ro.yaml
     openshell:
@@ -98,6 +99,7 @@ forge:
         FULLSEND_FORGE: github
         REVIEW_RISK_ASSESSMENT_ENABLED: "true"
   gitlab:
+    policy: policies/base.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab

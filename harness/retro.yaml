@@ -80,6 +80,7 @@ forge:
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   gitlab:
+    policy: policies/base.yaml
     skills:
       - skills/gitlab-forge
       - skills/retro-analysis/gitlab

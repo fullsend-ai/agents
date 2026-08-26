@@ -42,6 +42,7 @@ timeout_minutes: 10
 
 forge:
   github:
+    policy: policies/base.yaml
     providers:
       - providers/github-ro.yaml
     openshell:
@@ -65,6 +66,7 @@ forge:
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   gitlab:
+    policy: policies/base.yaml
     skills:
       - skills/gitlab-forge
     host_files:
