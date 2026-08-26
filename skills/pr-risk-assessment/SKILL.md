@@ -240,7 +240,7 @@ response directly.
    - Map those characteristics to expected sub-scores per the Tier 1/2/3
      scoring guidance tables.
    - If the rationale describes characteristics that the scoring
-     guidance maps to a materially different score (off by ≥2), either
+     guidance maps to a different score than the one assigned, either
      adjust the score to match what the signals actually produce, or
      revise the rationale to explain the specific signal that elevates
      or lowers the score beyond what the described characteristics

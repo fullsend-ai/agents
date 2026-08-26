@@ -40,7 +40,13 @@ review verdicts.
 4. Compute the weighted composite score per the scoring model in the
    linked skill (SKILL.md). Round to the nearest integer (1–5).
 
-5. Return the result as a raw JSON object (no markdown code fences).
+5. If prior risk assessment data is provided in the context, apply
+   the **Re-review anchoring** rules below before finalizing the score.
+
+6. Verify **Score-rationale coherence** (see section below) before
+   returning the final result.
+
+7. Return the result as a raw JSON object (no markdown code fences).
 
 ## Output format
 
