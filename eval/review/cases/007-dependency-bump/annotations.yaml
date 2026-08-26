@@ -29,7 +29,7 @@ max_cost_usd: 6.00
 
 review_expectations: |
   This is a routine, bot-style dependency bump (patch version only,
-  requests 2.31.0 -> 2.32.3, no breaking changes). A strong review
+  requests 2.32.2 -> 2.32.3, no breaking changes). A strong review
   recognizes this as low-risk and approves or comments without inventing
   findings — it should not fabricate a vulnerability, a breaking-change
   claim, or a "verify this manually" blocker that isn't grounded in the

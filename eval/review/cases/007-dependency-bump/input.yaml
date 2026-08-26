@@ -7,7 +7,7 @@ fixture:
 
     | Package | Change |
     |---|---|
-    | requests | `2.31.0` -> `2.32.3` |
+    | requests | `2.32.2` -> `2.32.3` |
 
     Configured by a dependency update bot. Patch-level release, no known
     breaking changes in the changelog between these versions.
