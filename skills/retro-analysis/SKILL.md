@@ -119,6 +119,93 @@ If you are unsure whether a failure is a genuine flake or a real bug,
 say so explicitly in your proposal and recommend investigation before
 applying either fix category.
 
+## Flapping detection
+
+Check whether the workflow exhibits fix-break oscillation: the agent
+repeatedly applies and reverses the same change, or the review-fix loop
+never converges. Flapping wastes agent cycles and often signals a deeper
+problem (conflicting instructions or an approach the agent cannot settle
+on).
+
+Flapping is distinct from test flakiness (above): flakiness is the *same
+commit* passing and failing with no diff between runs; flapping is driven
+by the agent's *own changes* across successive code/fix runs.
+
+### Applicability
+
+Flapping detection applies to PR-based workflows with code/fix cycles.
+Resolve the target PR before gathering data:
+
+- If the retro originates from a PR, use it directly: `PR_NUMBER` is its
+  number and `PR_REPO` is its `owner/repo` (`$REPO_FULL_NAME`).
+- If the retro originates from an issue, resolve the linked PR using your
+  forge-specific skill's issue-to-PR linkage recipe. If no linked PR
+  exists, skip flapping detection for this retro. Otherwise set
+  `PR_NUMBER` and `PR_REPO` from the linked PR — `PR_REPO` may differ
+  from `$REPO_FULL_NAME` when the issue and PR live in different repos.
+
+Use the resolved `PR_NUMBER` and `PR_REPO` (not `$REPO_FULL_NAME`) for
+all data gathering below.
+
+### Data gathering
+
+Dispatch a subagent to identify the code/fix/review workflow runs for
+`PR_NUMBER` and collect what pattern detection needs:
+
+- **Flapping data collector:** "Find all code, fix, and review workflow
+  runs related to PR #`PR_NUMBER` in `$DISPATCH_REPO`. Each run's log
+  carries an `event_payload` JSON line with `pull_request.head.sha` and
+  `pull_request.number`; parse it to correlate runs to PR commits and
+  confirm the run belongs to this PR. For each matched run, fetch the
+  commit's changed files and the named CI check results from `PR_REPO`.
+  Also fetch the PR's review comments/findings across all pages so
+  finding content can be compared across review cycles."
+
+### Patterns to detect
+
+Order runs by commit and count only **file-changing** (code/fix) runs as
+steps; review runs typically touch no files and serve only to correlate
+finding text.
+
+1. **File oscillation:** across three or more consecutive file-changing
+   runs, the same lines in a file are changed, reverted, then changed
+   again — a repeated A→B→A pattern (run N adds a line, run N+1 removes
+   it, run N+2 adds it back). A single add-then-remove is the normal
+   review-fix cycle, not oscillation.
+2. **Check-status flipping:** the same named CI check (e.g. `unit-tests`)
+   flips pass→fail→pass across three or more runs whose commits touch
+   overlapping changed files. CI results are reported at check/job level,
+   not per test, so compare at the named-check level. A check that flips
+   with no overlap in the agent's changed files is likely test flakiness
+   (above), not agent-caused flapping.
+3. **Cycle count:** repeated review-fix cycles on the same PR without
+   convergence — the review keeps raising the same or alternating
+   findings (a fix for one issue reintroduces a previously resolved one).
+   As a starting heuristic, treat more than two cycles as a signal, but
+   this is a provisional default: the flapping budget should be
+   configurable per repo and per agent role. See
+   [`flapping-convergence.md`](https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/flapping-convergence.md),
+   which lists the right default as an open question. A single rework
+   cycle that the review then approves is normal iteration.
+
+### When flapping is detected
+
+Include a proposal with these specifics:
+
+- **target_repo:** where the fix should land (see Localization guidance below)
+- **title:** start with "Flapping detected:" followed by what oscillated
+- **what_happened:** list each cycle with run IDs, which files changed, and how the changes reversed
+- **what_could_go_better:** identify what might be driving the loop (conflicting review criteria, ambiguous instructions, an unconverging approach)
+- **proposed_change:** suggest a concrete intervention (clarify the conflicting instruction, add a convergence guard)
+- **validation_criteria:** a measurable outcome tied to the pattern, e.g. "The next 2 fix cycles touching `<file>` should not re-introduce the change reverted in run N+1."
+
+### When NOT to flag
+
+- A single rework cycle (review requested changes, fix addressed them, review approved) is normal.
+- Different files changing across runs is normal iteration, not oscillation.
+- A CI check flipping with no overlap in the agent's changed files is flakiness, not flapping.
+- Only flag when the same change is applied and reversed repeatedly, or the review-fix loop clearly fails to converge.
+
 ## Before proposing: check for existing issues
 
 **This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
