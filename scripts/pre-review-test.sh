@@ -603,12 +603,25 @@ if run_deepen_test "deepen-shallow-clone" \
   check_repo_state "deepen-full-history" \
     "$(git -C "${DEEPEN_REPO}" rev-list --count HEAD)" "4"
 
+  # The filter's config keys are deliberately removed afterwards (see below),
+  # so assert the *effect*: a historical blob is genuinely absent.
+  PRE_RENAME="$(git -C "${DEEPEN_REPO}" log --format=%H -1 --skip=1)"
   check_repo_state "deepen-applies-blob-filter" \
-    "$(git -C "${DEEPEN_REPO}" config --get remote.origin.partialclonefilter)" "blob:none"
+    "$(git -C "${DEEPEN_REPO}" cat-file -e "${PRE_RENAME}:file1.txt" 2>/dev/null \
+      && echo "blob-present" || echo "blob-absent")" "blob-absent"
+
+  # Containment: neither key may survive, or the sandbox will try a lazy
+  # fetch it cannot complete. partialclonefilter alone re-registers origin
+  # as a promisor remote, so both are checked.
+  check_repo_state "deepen-unsets-promisor" \
+    "$(git -C "${DEEPEN_REPO}" config --get remote.origin.promisor || echo "unset")" "unset"
+  check_repo_state "deepen-unsets-partialclonefilter" \
+    "$(git -C "${DEEPEN_REPO}" config --get remote.origin.partialclonefilter || echo "unset")" "unset"
 
   # The point of the whole exercise: Tier 2's change-coupling command must
-  # run offline on a commit containing a rename. Break the promisor remote
-  # first so any lazy blob fetch fails loudly instead of silently working.
+  # run offline on a commit containing a rename. Point origin at nothing too,
+  # so a regression that restored the promisor config still could not quietly
+  # succeed by reaching the "remote".
   git -C "${DEEPEN_REPO}" remote set-url origin "file:///nonexistent/gone.git"
 
   check_repo_state "deepen-disables-rename-detection" \
@@ -617,12 +630,12 @@ if run_deepen_test "deepen-shallow-clone" \
   RENAME_COMMIT="$(git -C "${DEEPEN_REPO}" log --format=%H -1)"
 
   # Negative control: with rename detection on, the same commit *does* need a
-  # blob it cannot get. This is what the diff.renames=false line in
+  # blob that is not present. This is what the diff.renames=false line in
   # pre-review.sh prevents — if that line is dropped, the assertions below
   # stop being vacuous and start failing.
   RENAME_ERRS="$(git -C "${DEEPEN_REPO}" -c diff.renames=true show --name-only \
     --format= "${RENAME_COMMIT}" 2>&1 | grep -ciE 'fatal|could not' || true)"
-  check_repo_state "deepen-rename-detection-would-need-network" \
+  check_repo_state "deepen-rename-detection-fails-without-blobs" \
     "$([[ "${RENAME_ERRS}" -gt 0 ]] && echo "needs-network" || echo "offline")" \
     "needs-network"
 

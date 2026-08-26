@@ -89,7 +89,7 @@ the file-level results into dimension scores.
 | **Multi-author contention** | `git log --since="90 days ago" --format="%ae" -- <file> \| sort -u \| wc -l` | Average distinct authors per file. 1 = 1, 2 = 2, 3-4 = 3, 5-7 = 4, >7 = 5 |
 | **Recent regression history** | `git log --since="90 days ago" --oneline --grep="fix\|revert" --regexp-ignore-case -- <file>` | Count fix/revert commits per file. Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
 | **Code age/stability** | `git log -1 --format="%ci" -- <file>` | Days since last commit. Average across files. <7d = 1, 7-30d = 2, 31-90d = 3, 91-180d = 4, >180d = 5 |
-| **Change coupling** | `git log --since="90 days ago" --format="%H" -- <file> \| xargs -I{} git diff-tree -r --no-commit-id --name-only --no-renames {} \| sort \| uniq -c \| sort -rn` | For each changed file, identify other files frequently modified together. Count files with coupling ≥3 co-commits missing from PR. Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
+| **Change coupling** | `git log --since="90 days ago" --format="%H" -- <file> \| xargs -I{} sh -c 'git diff-tree -r --no-commit-id --name-only --no-renames -m --root {} \| sort -u' \| sort \| uniq -c \| sort -rn` | For each changed file, identify other files frequently modified together. Count files with coupling ≥3 co-commits missing from PR. Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
 | **Revert frequency** | `git log --all --oneline --grep="revert.*<file>" --regexp-ignore-case` | Count reverts on touched files (search commit messages for "revert" + file path). Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
 | **Commit message sentiment** | `git log --since="90 days ago" --oneline -- <file> \| grep -iE "workaround\|hack\|temporary\|todo\|fixme"` | Count commits with workaround/hack/temporary sentiment per file. Average across files. 0 = 1, 1 = 2, 2-3 = 3, 4-6 = 4, >6 = 5 |
 
@@ -105,9 +105,19 @@ API, not the git wire protocol). Every command in the table above reads only
 commit and tree metadata, which is present. Do not add `git show -p`,
 `git diff`, `git log -p`, or `git blame` against history — those block on a
 lazy fetch that can never complete, consuming the whole review budget. The
-script also sets `diff.renames=false` in the clone for the same reason; use
-`--no-renames` explicitly in any diff-shaped command you add, as the coupling
-command above does.
+script also sets `diff.renames=false` in the clone and drops the promisor
+remote registration, so a command that does need a historical blob fails
+immediately with `unable to read object` instead of hanging. That error means
+"contents are not available here", not "the repository is broken" — do not
+retry or report it as a finding. Use `--no-renames` explicitly in any
+diff-shaped command you add, as the coupling command above does.
+
+Note the flags: `-m` includes merge commits (a plain `git show`/`diff-tree`
+prints nothing for a merge, silently dropping every merge from the tally) and
+`--root` includes the initial commit; both list paths once per parent, hence
+the inner `sort -u`. `--no-renames` reports a rename as delete+add, naming
+both paths — which is what a coupling count wants, and what rename detection
+would otherwise collapse to the destination alone.
 
 **Shallow repository detection:** Before running git log commands, check
 `git rev-parse --is-shallow-repository`. If the repo is shallow, Tier 2
