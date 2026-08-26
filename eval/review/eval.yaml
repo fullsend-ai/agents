@@ -88,8 +88,12 @@ outputs:
       review_comments is the PR's inline/file-level review comments — one
       per review finding, each {path, line, body}, captured by
       capture-fixture.sh from GET /repos/{repo}/pulls/{n}/comments. The
-      `comments` array holds the agent's sticky top-level write-up; only
-      review_comments holds the individual findings.
+      `comments` array holds the agent's sticky top-level write-up;
+      review_comments holds the individually positioned findings. Findings
+      with no file or line never reach review_comments — postreview.go
+      keeps them in the sticky body only — which is why the precision
+      judge also scans `comments` and `reviews` before trusting an empty
+      review_comments as a clean review.
 
 # ---------------------------------------------------------------------------
 # Judges
@@ -180,7 +184,12 @@ judges:
       return True, f"Risk label present: {risk_labels}"
 
   - name: required_findings
-    if: "annotations.get('required_findings')"
+    # Skip only when the case declares no ground truth: the key is absent
+    # or an explicitly empty list. A truthiness check here would also skip
+    # malformed-but-falsy values ({}, "", 0) that the check body exists to
+    # fail loudly on — and a skipped judge leaves the pass-rate denominator
+    # instead of failing.
+    if: "annotations.get('required_findings') not in (None, [])"
     description: >
       Finding-level check for review precision. The outcome label and the
       review decision say whether the agent approved; neither can say
@@ -246,7 +255,10 @@ judges:
       ALLOWED_KEYS = {"file", "category", "min_severity", "description"}
 
       entries = outputs.get("annotations", {}).get("required_findings")
-      if not entries:
+      # Trivial pass only for "no ground truth declared" (absent or []).
+      # Any other falsy value ({}, "", 0) is malformed and falls through to
+      # the type check — `if not entries` would silently bless it.
+      if entries is None or entries == []:
           return True, "No required_findings declared"
       if not isinstance(entries, list):
           return False, (
@@ -372,7 +384,9 @@ judges:
       return True, f"All {len(entries)} required findings present"
 
   - name: forbidden_findings
-    if: "annotations.get('forbidden_findings')"
+    # Same gate as required_findings: skip only for absent or [], never for
+    # malformed-but-falsy values, which must reach the check body and fail.
+    if: "annotations.get('forbidden_findings') not in (None, [])"
     description: >
       The false-positive half of required_findings — same parsing, same
       word-boundary matching, same up-front validation and fail-closed
@@ -388,7 +402,12 @@ judges:
       which is how a docs-only or version-bump case asserts "invent
       nothing here". A severity string outside the known vocabulary is
       treated as a violation (fail closed) — the opposite direction from
-      required_findings, and conservative in both.
+      required_findings, and conservative in both. A review with zero
+      positioned findings passes only when no finding headers appear in
+      the sticky/issue comments or review bodies either: postreview.go
+      keeps fileless/lineless findings in the sticky comment body only,
+      and findings visible there but nowhere this judge can grade them
+      make precision unverifiable, which must not read as a clean pass.
     check: |
       import json
       import re
@@ -399,7 +418,9 @@ judges:
       ALLOWED_KEYS = {"file", "category", "min_severity", "description"}
 
       entries = outputs.get("annotations", {}).get("forbidden_findings")
-      if not entries:
+      # Same rule as required_findings: absent or [] passes trivially, any
+      # other falsy value is malformed and must fail the type check below.
+      if entries is None or entries == []:
           return True, "No forbidden_findings declared"
       if not isinstance(entries, list):
           return False, (
@@ -513,18 +534,43 @@ judges:
 
       if violations:
           return False, f"Forbidden findings present: {violations}"
-      # Comments exist but none parsed as findings: the agent's findings did
-      # not reach the inline comments this judge reads. postreview.go folds
-      # findings into the review body on a 422 and drops any finding with no
-      # file or line, so precision is unverifiable here — and an
-      # unverifiable case must not read as a clean pass, which is how a
-      # promoted bait would slip through.
-      if (comments or saw_fallback) and not posted:
-          return False, (
-              f"{len(comments)} review comment(s) present but none parsed as findings "
-              "— cannot verify precision (findings may have been folded into the "
-              "review body, or posted without a file/line)"
-          )
+      if not posted:
+          # Comments exist but none parsed as findings: the agent's findings
+          # did not reach the inline comments this judge reads.
+          # postreview.go folds findings into the review body on a 422 and
+          # drops any finding with no file or line, so precision is
+          # unverifiable here — and an unverifiable case must not read as a
+          # clean pass, which is how a promoted bait would slip through.
+          if comments or saw_fallback:
+              return False, (
+                  f"{len(comments)} review comment(s) present but none parsed as findings "
+                  "— cannot verify precision (findings may have been folded into the "
+                  "review body, or posted without a file/line)"
+              )
+          # Zero inline comments is still not proof of a clean review:
+          # findingsToReviewComments omits findings with no file or line
+          # from the inline comments entirely — "they remain in the sticky
+          # comment body" (postreview.go) — so a review whose findings ALL
+          # lacked a position posts nothing inline and leaves no 422
+          # marker. Scan the sticky/issue comments and review bodies for
+          # finding headers; any there mean the agent emitted findings this
+          # judge cannot attribute to a file, so precision is unverifiable
+          # and must fail closed rather than read as verified clean.
+          stray = sorted({
+              src
+              for src, items in (
+                  ("issue comments", state.get("comments") or []),
+                  ("review bodies", state.get("reviews") or []),
+              )
+              for it in items
+              if isinstance(it, dict) and FINDING_RE.search(it.get("body") or "")
+          })
+          if stray:
+              return False, (
+                  f"No inline findings, but finding header(s) present in {stray} "
+                  "— the findings were dropped from the inline comments (no "
+                  "file/line) and cannot be checked against forbidden_findings"
+              )
       return True, f"None of the {len(entries)} forbidden findings were raised"
 
   - name: max_turns

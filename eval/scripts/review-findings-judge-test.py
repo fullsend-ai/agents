@@ -124,9 +124,12 @@ REQUIRED_THREE = [
 ]
 
 
-def state_with(comments, reviews):
-    return {"review_comments": comments, "review_comments_fetch_failed": False,
-            "reviews": reviews}
+def state_with(comments, reviews, issue_comments=None):
+    state = {"review_comments": comments, "review_comments_fetch_failed": False,
+             "reviews": reviews}
+    if issue_comments is not None:
+        state["comments"] = issue_comments
+    return state
 
 
 def req(entries, comments, **kw):
@@ -220,6 +223,12 @@ CASES = [
     # --- required_findings: annotation validation --------------------------
     ("required: a dict instead of a list fails loudly", "required_findings",
      req({"file": "a.py"}, ALL_THREE), False),
+    # {} and "" are falsy, so a truthiness guard (`if not entries`) would
+    # bless them as "none declared" instead of reaching the type check.
+    ("required: an empty mapping fails loudly, not silently", "required_findings",
+     req({}, ALL_THREE), False),
+    ("required: an empty string fails loudly, not silently", "required_findings",
+     req("", ALL_THREE), False),
     ("required: a string entry fails loudly", "required_findings",
      req(["src/orders/pricing.py"], ALL_THREE), False),
     ("required: a null file fails loudly", "required_findings",
@@ -282,6 +291,37 @@ CASES = [
             "body": "Looks good to me, shipping."}]), False),
     ("forbidden: no comments at all still passes", "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], []), True),
+
+    # postreview.go omits findings with no file or line from the inline
+    # comments — they remain in the sticky comment body only. Zero inline
+    # comments with finding headers visible elsewhere is a dropped-findings
+    # review, not a clean one, and must fail closed.
+    ("forbidden: findings only in the sticky comment fail closed", "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [], issue_comments=[
+              {"author": "review-bot",
+               "body": "## Review\n\n**[critical]** weak-hash\n\nMD5 used for "
+                       "the cache key is insecure."}])), False),
+    ("forbidden: findings only in a non-422 review body fail closed", "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [
+              {"author": "review-bot", "state": "COMMENTED",
+               "body": "**[high]** injection-vuln\n\nPossible injection."}])), False),
+    ("forbidden: a chatty sticky without finding headers still passes",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [], issue_comments=[
+              {"author": "review-bot",
+               "body": "Review complete — no findings. Nice, clean change."}])), True),
+    ("forbidden: sticky duplicates of positioned findings do not trip the guard",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with(
+              [finding("src/orders/pricing.py", "high", "logic-error", "lost divisor")],
+              [], issue_comments=[
+                  {"author": "review-bot",
+                   "body": "## Review\n\n**[high]** logic-error\n\nlost divisor"}])),
+     True),
     ("forbidden: MD5 bait flagged critical is a violation", "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}],
           [finding("src/orders/receipts.py", "critical", "weak-hash",
@@ -344,6 +384,8 @@ CASES = [
     # --- forbidden_findings: annotation validation -------------------------
     ("forbidden: a dict instead of a list fails loudly", "forbidden_findings",
      forb({"file": "a.py"}, []), False),
+    ("forbidden: an empty mapping fails loudly, not silently", "forbidden_findings",
+     forb({}, []), False),
     ("forbidden: a null category fails loudly (does not become 'any')",
      "forbidden_findings",
      forb([{"file": "a.py", "category": None}], []), False),
