@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 # removed-symbols-judge-test.py — Behaviour tests for eval/code/eval.yaml's
-# removed_symbols judge.
+# removed_symbols and fixture_checks judges, plus a drift check that keeps
+# 003-dead-config-field's declared deletion counts equal to the fixture's
+# real occurrence counts.
 #
-# The judge is Python embedded in YAML, so it has no import site of its own.
-# This test extracts the shipped check body straight from eval.yaml and runs it
-# against synthetic diffs, which keeps the test from drifting from the code and
-# needs no YAML parser (CI installs neither pyyaml nor ruamel).
+# The judges are Python embedded in YAML, so they have no import site of
+# their own. This test extracts the shipped check bodies straight from
+# eval.yaml and runs them against synthetic inputs, which keeps the test
+# from drifting from the code and needs no YAML parser (CI installs neither
+# pyyaml nor ruamel).
 #
 # Usage:
 #   python3 eval/scripts/removed-symbols-judge-test.py
 
 import json
 import os
+import re
 import sys
 import textwrap
 
@@ -24,15 +28,15 @@ SYMBOLS = {
 }
 
 
-def load_judge(path):
-    """Return the removed_symbols check body as a callable taking `outputs`."""
+def load_judge(path, name="removed_symbols"):
+    """Return the named judge's check body as a callable taking `outputs`."""
     with open(path, encoding="utf-8") as handle:
         lines = handle.read().splitlines()
 
     try:
-        start = lines.index("  - name: removed_symbols")
+        start = lines.index(f"  - name: {name}")
     except ValueError:
-        sys.exit(f"FAIL: no removed_symbols judge found in {path}")
+        sys.exit(f"FAIL: no {name} judge found in {path}")
 
     body, collecting, indent = [], False, None
     for line in lines[start:]:
@@ -48,7 +52,7 @@ def load_judge(path):
         body.append(line)
 
     if not body:
-        sys.exit(f"FAIL: removed_symbols judge in {path} has no check body")
+        sys.exit(f"FAIL: {name} judge in {path} has no check body")
 
     source = "def _check(outputs):\n" + textwrap.indent(textwrap.dedent("\n".join(body)), "    ")
     namespace = {}
@@ -291,22 +295,110 @@ CASES = [
 ]
 
 
-def main():
-    check = load_judge(EVAL_YAML)
+def pr_with_checks(checks):
+    return {"number": 7, "state": "OPEN", "diff_fetch_failed": False, "checks": checks}
+
+
+# fixture_checks closes the hole removed_symbols cannot see: a site commented
+# out in place is one real deletion line plus an exempt comment addition, so
+# only building/testing the actual PR head catches it. The diff content is
+# irrelevant to this judge; only annotations and pull_requests[].checks are.
+FIXTURE_CHECKS_CASES = [
+    ("build and tests pass",
+     outputs_for(COMPLETE, pr_state=pr_with_checks({"build_exit": 0, "test_exit": 0})), True),
+    ("build failure fails the case",
+     outputs_for(COMPLETE, pr_state=pr_with_checks({"build_exit": 1, "test_exit": 0})), False),
+    ("test failure fails the case",
+     outputs_for(COMPLETE, pr_state=pr_with_checks({"build_exit": 0, "test_exit": 2})), False),
+    ("recorded skip passes with the reason surfaced",
+     outputs_for(COMPLETE, pr_state=pr_with_checks({"skipped": "no go.mod"})), True),
+    ("missing checks fail the case",
+     outputs_for(COMPLETE, pr_state={"number": 7, "state": "OPEN"}), False),
+    ("clone failure fails the case",
+     outputs_for(COMPLETE, pr_state=pr_with_checks({"clone_failed": True})), False),
+    ("no removed_symbols declared passes trivially",
+     outputs_for(COMPLETE, symbols={},
+                 pr_state=pr_with_checks({"build_exit": 1, "test_exit": 1})), True),
+]
+
+
+def check_annotation_drift():
+    """003's declared deletion counts must equal the fixture's real counts.
+
+    The judge requires exactly the non-comment lines naming each symbol
+    today, so an edit to the taskrunner fixture that adds or removes a site
+    without updating annotations.yaml would make the case impossible or too
+    permissive. Recounts with the same rules the annotation documents:
+    word-boundary match, `//` line comments excluded (all declared files are
+    Go). Fails per mismatching (symbol, file) pair.
+    """
+    ann_path = os.path.join(REPO_ROOT, "eval", "code", "cases",
+                            "003-dead-config-field", "annotations.yaml")
+    fixture_root = os.path.join(REPO_ROOT, "eval", "code", "repos", "taskrunner")
+    declared, sym, in_block = {}, None, False
+    with open(ann_path, encoding="utf-8") as handle:
+        for line in handle:
+            if line.startswith("removed_symbols:"):
+                in_block = True
+                continue
+            if not in_block:
+                continue
+            stripped = line.split("#")[0].rstrip()
+            if not stripped:
+                continue
+            if not stripped.startswith(" "):
+                break
+            head = re.match(r"^  (\S+):$", stripped)
+            site = re.match(r"^    (\S+): *(\d+)$", stripped)
+            if head:
+                sym = head.group(1)
+                declared[sym] = {}
+            elif site and sym:
+                declared[sym][site.group(1)] = int(site.group(2))
+
     failures = 0
-    for name, outputs, expect_pass in CASES:
-        passed, message = check(outputs)
-        ok = passed is expect_pass
-        if not ok:
-            failures += 1
-            print(f"FAIL: {name} — expected {'pass' if expect_pass else 'fail'}, "
-                  f"got {'pass' if passed else 'fail'}: {message}")
-        else:
-            print(f"ok: {name}")
-    if failures:
-        print(f"FAIL: {failures}/{len(CASES)} removed_symbols judge behaviours wrong")
+    if not declared:
+        print(f"FAIL: no removed_symbols parsed from {ann_path}")
         return 1
-    print(f"All removed_symbols judge tests passed ({len(CASES)} cases)")
+    for sym, files in sorted(declared.items()):
+        for rel, need in sorted(files.items()):
+            got = 0
+            with open(os.path.join(fixture_root, rel), encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip().startswith("//"):
+                        continue
+                    if re.search(r"\b" + re.escape(sym) + r"\b", line):
+                        got += 1
+            if got != need:
+                failures += 1
+                print(f"FAIL: annotation drift — {sym} in {rel}: "
+                      f"annotations.yaml declares {need}, fixture has {got}")
+            else:
+                print(f"ok: annotation count matches fixture — {sym} in {rel} ({need})")
+    return failures
+
+
+def main():
+    failures = 0
+    total = 0
+    for judge_name, cases in (("removed_symbols", CASES),
+                              ("fixture_checks", FIXTURE_CHECKS_CASES)):
+        check = load_judge(EVAL_YAML, judge_name)
+        for name, outputs, expect_pass in cases:
+            total += 1
+            passed, message = check(outputs)
+            if passed is not expect_pass:
+                failures += 1
+                print(f"FAIL: [{judge_name}] {name} — expected "
+                      f"{'pass' if expect_pass else 'fail'}, "
+                      f"got {'pass' if passed else 'fail'}: {message}")
+            else:
+                print(f"ok: [{judge_name}] {name}")
+    failures += check_annotation_drift()
+    if failures:
+        print(f"FAIL: {failures} judge behaviours/drift checks wrong")
+        return 1
+    print(f"All judge tests passed ({total} cases + annotation drift check)")
     return 0
 
 

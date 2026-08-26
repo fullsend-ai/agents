@@ -103,6 +103,55 @@ case_wants_pr_diff() {
   grep -qE '^[[:space:]]*removed_symbols[[:space:]]*:' "$annotations"
 }
 
+# Build/test gate for removed_symbols cases. The judge is diff-scoped, so a
+# usage site commented out in place (one real deletion line plus an exempt
+# comment addition) satisfies the diff inspection while the tree no longer
+# compiles — only building and testing the actual PR head catches that.
+# Pure half: given a checkout, emit {"build_exit":N,"test_exit":N}, or a
+# recorded {"skipped":reason} when there is nothing to build (no go.mod) or
+# nothing to build WITH (no go toolchain) — recorded rather than silent so
+# the fixture_checks judge message shows why nothing was graded.
+run_go_checks() {
+  local dir="$1" build_exit=0 test_exit=0
+  if [[ ! -f "${dir}/go.mod" ]]; then
+    printf '{"skipped":"no go.mod"}'
+    return 0
+  fi
+  if ! command -v go >/dev/null 2>&1; then
+    printf '{"skipped":"go not installed"}'
+    return 0
+  fi
+  (cd "$dir" && go build ./...) >/dev/null 2>&1 || build_exit=$?
+  (cd "$dir" && go test ./...) >/dev/null 2>&1 || test_exit=$?
+  printf '{"build_exit":%d,"test_exit":%d}' "$build_exit" "$test_exit"
+}
+
+# Clone half: shallow-clone the PR head branch and run run_go_checks on it.
+# Clone attempts get a fresh target dir each round (a half-written dir from
+# a failed attempt would make every retry fail with "already exists").
+# A persistent clone failure is recorded as {"clone_failed":true} and the
+# fixture_checks judge fails on it — same evidence-must-exist stance as
+# diff_fetch_failed, since this too runs at min_pass_rate 1.0.
+run_pr_checks() {
+  local repo="$1" head_ref="$2" tmp attempt out
+  if [[ -z "$head_ref" ]]; then
+    printf '{"clone_failed":true}'
+    return 0
+  fi
+  tmp=$(mktemp -d)
+  out='{"clone_failed":true}'
+  for attempt in 1 2 3; do
+    rm -rf "${tmp}/co"
+    if gh repo clone "$repo" "${tmp}/co" -- --depth 1 --branch "$head_ref" >/dev/null 2>&1; then
+      out=$(run_go_checks "${tmp}/co")
+      break
+    fi
+    sleep "$attempt"
+  done
+  rm -rf "$tmp"
+  printf '%s' "$out"
+}
+
 # Resolve branch tip SHA via git refs API, polling if still at baseline.
 # Poll up to 6 times with linear backoff (~21s total, within 60s after_each timeout).
 # Prefer refs API over PR headRefOid — the latter can lag briefly after post-fix push.
@@ -201,20 +250,22 @@ case "${FIXTURE_TYPE}" in
       [[ -z "$pr" ]] && continue
       num=$(printf '%s' "$pr" | jq -r '.number')
       diff_failed=false
+      checks_json='null'
       if case_wants_pr_diff; then
         if ! fetch_pr_diff "$num"; then
           echo "WARNING: gh pr diff failed for PR #${num}; marking diff_fetch_failed" >&2
           diff_failed=true
         fi
+        checks_json=$(run_pr_checks "$EPHEMERAL_REPO" "$(printf '%s' "$pr" | jq -r '.headRefName // empty')")
       fi
       if files=$(fetch_pr_files "$num"); then
-        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" --argjson diff_failed "$diff_failed" \
-          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false, diff_fetch_failed: $diff_failed}
+        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" --argjson diff_failed "$diff_failed" --argjson checks "$checks_json" \
+          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false, diff_fetch_failed: $diff_failed, checks: $checks}
            | del(.headRefName, .baseRefName)')")
       else
         echo "WARNING: gh pr view failed for PR #${num}; marking files_fetch_failed" >&2
-        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson diff_failed "$diff_failed" \
-          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true, diff_fetch_failed: $diff_failed}
+        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson diff_failed "$diff_failed" --argjson checks "$checks_json" \
+          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true, diff_fetch_failed: $diff_failed, checks: $checks}
            | del(.headRefName, .baseRefName)')")
       fi
     done < <(printf '%s' "$prs_json" | jq -c '.[]')
