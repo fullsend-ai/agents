@@ -208,17 +208,25 @@ Determine which issue to implement:
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue using the forge-appropriate command from your forge
-skill (e.g., `gh issue view` on GitHub, `curl` on GitLab):
+Fetch the issue content. When `FULLSEND_SOURCE_TRACKER` is `jira`, the
+pre-script has already fetched the Jira issue and placed it at
+`/sandbox/workspace/.issue-context.json`. Read that file instead of
+calling forge APIs:
 
 ```bash
-# GitHub:
-gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
-# GitLab: use curl per the gitlab forge skill
+if [ "${FULLSEND_SOURCE_TRACKER:-}" = "jira" ] \
+   && [ -f /sandbox/workspace/.issue-context.json ]; then
+  cat /sandbox/workspace/.issue-context.json
+else
+  # GitHub:
+  gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
+  # GitLab: use curl per the gitlab forge skill
+fi
 ```
 
 Record the **issue number**. You will reference it in the branch name and
-commit messages.
+commit messages. For Jira-sourced issues, use the `ISSUE_NUMBER`
+environment variable (set by the harness).
 
 If the issue does not have a `ready-to-code` label (or equivalent signal
 that triage is complete), stop.

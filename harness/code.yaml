@@ -84,8 +84,27 @@ env:
 
 timeout_minutes: 35
 
-forge:
-  github:
+overlays:
+  # Jira-source overlay — fetches the work item from Jira and prepares
+  # issue context for the sandbox.  Ordered before forge overlays so its
+  # pre_script overrides the default forge issue pre-script.  Post-script
+  # selection stays with the target forge (GitHub/GitLab).
+  - when: 'event.source.system == "jira"'
+    pre_script: scripts/pre-code-jira.sh
+    host_files:
+      - src: /tmp/jira-issue-context.json
+        dest: /sandbox/workspace/.issue-context.json
+        optional: true
+    env:
+      runner:
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_TOKEN: "${JIRA_TOKEN}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        FULLSEND_SOURCE_TRACKER: jira
+      sandbox:
+        FULLSEND_SOURCE_TRACKER: jira
+  - when: 'runtime.forge == "github"'
     providers:
       - providers/github-code.yaml
     openshell:
@@ -107,7 +126,7 @@ forge:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
-  gitlab:
+  - when: 'runtime.forge == "gitlab"'
     providers:
       - providers/gitlab-code.yaml
     openshell:
