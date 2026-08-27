@@ -1328,6 +1328,24 @@ fi
 # captures every commit the agent made (including validation_loop retries).
 # Falls back to HEAD~1 if PRE_AGENT_HEAD is unset (shouldn't happen in CI).
 DIFF_BASE="${PRE_AGENT_HEAD:-$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)}"
+
+# After a rebase, PRE_AGENT_HEAD is no longer an ancestor of HEAD — the rebase
+# rewrote history so the old SHA is not in the current branch. Using it as
+# DIFF_BASE causes SCAN_RANGE to include upstream commits (false positives for
+# Signed-off-by and gitleaks). Detect this and fall back to merge-base, which
+# isolates only the branch's own commits — the same approach used for
+# BRANCH_CHANGED_FILES below and for SCAN_RANGE in post-code.src.sh.
+if ! git merge-base --is-ancestor "${DIFF_BASE}" HEAD 2>/dev/null; then
+  _rebase_mb="$(git merge-base HEAD "origin/${TARGET_BRANCH}" 2>/dev/null)" || _rebase_mb=""
+  if [ -n "${_rebase_mb}" ]; then
+    echo "PRE_AGENT_HEAD is not an ancestor of HEAD (rebase detected) — using merge-base for DIFF_BASE"
+    DIFF_BASE="${_rebase_mb}"
+  else
+    post_fail_to_pr setup-error \
+      "PRE_AGENT_HEAD is not an ancestor of HEAD and merge-base failed — cannot determine safe DIFF_BASE"
+  fi
+fi
+
 CHANGED_FILES="$(git diff --name-only "${DIFF_BASE}..HEAD" 2>/dev/null || true)"
 
 if [ -z "${CHANGED_FILES}" ] && [ "${NO_PUSH}" = "false" ]; then
