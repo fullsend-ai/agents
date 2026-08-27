@@ -115,7 +115,7 @@
         "remediation": { "type": "string" },
         "actionable": {
           "type": "boolean",
-          "description": "True when this non-blocking finding should be tracked as a follow-up issue if the review approves."
+          "description": "When true with a non-empty remediation, routes the verdict to request-changes so the fix agent can address the finding automatically."
         }
       },
       "additionalProperties": false

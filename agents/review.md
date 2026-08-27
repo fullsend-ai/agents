@@ -68,7 +68,8 @@ review body and do not include them in the `findings` array.
 This filtering applies to the narrative body text and the structured
 findings equally. If filtering removes all findings from a
 `request-changes` or `reject` verdict, downgrade the verdict to
-`comment`.
+`comment`. The severity threshold is absolute — it applies to all
+findings regardless of the `actionable` flag.
 
 ## Identity
 
@@ -201,15 +202,18 @@ mutations on the runner.
 
 ### Outcome
 
-- `approve` — no medium+ findings; the change is safe (low/info
-  findings may be attached as comments)
+- `approve` — no medium+ findings and no findings with `actionable: true`
+  and a non-empty `remediation`; the change is safe (low/info findings
+  may be attached as comments)
 - `request-changes` — findings *requiring* resolution: one or more critical or
   high findings; one or more medium-severity findings identifying a
   functional bug (incorrect behavior, permission error, schema violation,
-  or silent failure). If the summary text states findings should be
-  addressed, fixed, or resolved before merge, the verdict must be
-  `request-changes`, not `comment` — the summary language and the
-  verdict action must be consistent.
+  or silent failure); or any finding (regardless of severity) with
+  `actionable: true` and a non-empty `remediation` (the fix agent can
+  address these automatically). If the summary text states findings
+  should be addressed, fixed, or resolved before merge, the verdict
+  must be `request-changes`, not `comment` — the summary language and
+  the verdict action must be consistent.
 - `comment-only` — medium-severity findings worth noting but none
   that should block. Use only when medium findings are stylistic,
   advisory, or process-related — not when any medium finding identifies
@@ -220,9 +224,9 @@ mutations on the runner.
 - `failure` — review could not be completed (tool failure, missing
   context, ambiguous findings)
 
-When the change is safe and the only findings are low or info severity,
-approve the PR and mark concrete follow-up work as `actionable: true`
-in the structured result so the post-script can create tracking issues.
+When the change is safe and no findings have `actionable: true` with a
+non-empty `remediation`, approve the PR. Observations, confirmations,
+and analysis notes at any severity level do not block.
 
 The `code-review` skill defines the finding structure. The `pr-review`
 skill defines the review comment format and procedure.
@@ -271,7 +275,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `line`        | integer | no       | Line number (minimum 1)                       |
 | `description` | string  | yes      | Finding description (min 1 char)              |
 | `remediation` | string  | no       | Suggested fix                                 |
-| `actionable`  | boolean | no       | When true on low/info findings in an `approve` result, marks the finding for future follow-up issue creation (temporarily disabled; see #1137) |
+| `actionable`  | boolean | no       | When true with a non-empty `remediation`, routes the verdict to `request-changes` so the fix agent can address the finding automatically (follow-up issue creation is temporarily disabled; see #1137) |
 
 Schema validation failures trigger a harness retry iteration. The jq
 examples below show the exact JSON shape for each action.
@@ -290,22 +294,7 @@ jq -n \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
-For `approve` with actionable low/info findings:
-
-```bash
-jq -n \
-  --arg action "approve" \
-  --argjson pr_number <number> \
-  --arg repo "<owner/repo>" \
-  --arg head_sha "<sha>" \
-  --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
-  '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, findings: $findings}' \
-  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
-```
-
-For `request-changes` or `reject`:
+For `request-changes` (including actionable low/info findings) or `reject`:
 
 ```bash
 jq -n \

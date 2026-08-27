@@ -1193,13 +1193,16 @@ challenger-adjudicated finding set and evaluate:
 - One or more **medium** findings identifying a functional bug
   (incorrect behavior, permission error, schema violation, or silent
   failure) → `request-changes`
+- Any finding (regardless of severity) with `actionable: true` and a
+  non-empty `remediation` → `request-changes` (these have concrete
+  remediations the fix agent can address automatically)
 - One or more **medium** findings that are all
   stylistic/advisory/process-related (no functional bugs) →
   `comment-only` (attach findings as comments so the author sees them,
   but do not block the PR)
-- **Low** or **info** findings only (no medium+) → `approve` (attach
-  findings as comments; preserve concrete follow-up work with
-  `actionable: true` so the post-script can create follow-up issues)
+- **Low** or **info** findings only, none with `actionable: true` and
+  a non-empty `remediation` → `approve` (observations, confirmations,
+  and analysis notes at any severity level)
 - No findings → `approve`
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought → `reject`.
@@ -1287,8 +1290,8 @@ The table below lists the **additional** required fields per action:
 
 | Outcome         | Action            | Required fields                                                                               |
 |-----------------|-------------------|-----------------------------------------------------------------------------------------------|
-| approve         | `approve`         | `body`, `head_sha`; set `body` to "Looks good to me" (preceded by the hidden SHA comment) when there are no findings; include `findings[]` when low/info findings are actionable follow-up work |
-| request-changes | `request-changes` | `body`, `head_sha`, `findings[]`                                                              |
+| approve         | `approve`         | `body`, `head_sha`; set `body` to "Looks good to me" (preceded by the hidden SHA comment) when there are no findings |
+| request-changes | `request-changes` | `body`, `head_sha`, `findings[]` (also used for actionable findings with non-empty `remediation`) |
 | comment-only    | `comment`         | `body`, `head_sha`                                                                            |
 | failure         | `failure`         | `reason` (body optional)                                                                      |
 | reject          | `reject`          | `body`, `head_sha`, `findings[]`                                                              |
