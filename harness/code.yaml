@@ -104,6 +104,7 @@ overlays:
         FULLSEND_SOURCE_TRACKER: jira
       sandbox:
         FULLSEND_SOURCE_TRACKER: jira
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
   - when: 'runtime.forge == "github"'
     providers:
       - providers/github-code.yaml

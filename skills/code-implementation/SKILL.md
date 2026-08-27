@@ -226,7 +226,7 @@ fi
 
 Record the **issue number**. You will reference it in the branch name and
 commit messages. For Jira-sourced issues, use the `ISSUE_NUMBER`
-environment variable (set by the harness).
+environment variable (set in the Jira overlay's sandbox env block).
 
 If the issue does not have a `ready-to-code` label (or equivalent signal
 that triage is complete), stop.

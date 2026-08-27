@@ -184,13 +184,70 @@ run_test "fullsend-cli-failure" \
   "" \
   "1"
 
-# Empty issue context is rejected.
-run_test "empty-issue-context-rejected" \
-  "" \
-  1 \
-  "Failed to fetch Jira issue" \
-  "" \
-  "1"
+# fullsend CLI writes empty output — empty-file guard catches it.
+# Uses a custom mock that succeeds (exit 0) but writes nothing.
+run_test_empty_context() {
+  local test_name="$1"
+  local mock_bin="${TMPDIR}/bin"
+
+  rm -rf "${mock_bin}"
+  mkdir -p "${mock_bin}"
+
+  # Mock fullsend that succeeds but produces no output.
+  cat > "${mock_bin}/fullsend" <<'EMPTYEOF'
+#!/usr/bin/env bash
+if [[ "$1" == "issues" && "$2" == "get" ]]; then
+  # Write nothing — simulates an empty API response.
+  exit 0
+fi
+exit 1
+EMPTYEOF
+  chmod +x "${mock_bin}/fullsend"
+
+  # Reuse standard gh/git/python3 mocks.
+  cat > "${mock_bin}/gh" <<'GHEOF'
+#!/usr/bin/env bash
+exit 0
+GHEOF
+  chmod +x "${mock_bin}/gh"
+  cat > "${mock_bin}/git" <<'GITEOF'
+#!/usr/bin/env bash
+exit 1
+GITEOF
+  chmod +x "${mock_bin}/git"
+  cat > "${mock_bin}/python3" <<'PYEOF'
+#!/usr/bin/env bash
+exit 1
+PYEOF
+  chmod +x "${mock_bin}/python3"
+
+  local env_cmd=(env)
+  while IFS= read -r kv; do
+    [[ -n "${kv}" ]] && env_cmd+=("${kv}")
+  done <<< "$(base_env "${mock_bin}")"
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 1 ]]; then
+    echo "FAIL: ${test_name} — expected exit 1, got ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Jira issue context is empty" "${TMPDIR}/stdout.log" 2>/dev/null; then
+    echo "FAIL: ${test_name} — expected 'Jira issue context is empty' in output"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_test_empty_context "empty-issue-context-rejected"
 
 # Invalid JSON issue context is rejected.
 run_test "invalid-json-rejected" \

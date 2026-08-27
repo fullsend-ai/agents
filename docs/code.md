@@ -46,7 +46,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script validates the agent's chosen target branch against this variable before pushing. Set via `env.runner` in `harness/code.yaml` (never injected into the sandbox). | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
-| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
+| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
+| `FULLSEND_SOURCE_TRACKER` | Source tracker for the work item. When set to `"jira"`, the code agent reads issue context from `/sandbox/workspace/.issue-context.json` (prepared by the Jira pre-script) instead of calling forge APIs. Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
 
@@ -169,16 +170,22 @@ The precedence is as follows:
 
 ## Multi-forge support
 
-The code agent supports both GitHub and GitLab. The harness
-`forge.<platform>` sections configure platform-specific policies,
-skills, and env vars. Key differences from single-forge
-setup:
+The code agent supports both GitHub and GitLab, and can also consume
+work items from Jira. The harness uses `overlays:` with CEL `when:`
+expressions to configure platform-specific policies, skills, and env
+vars. Key differences from single-forge setup:
 
-- **`FULLSEND_FORGE`** is required. Set automatically by the harness
-  `forge.<platform>.env` section (`"github"` or `"gitlab"`).
+- **`FULLSEND_FORGE`** is required. Set automatically by the matching
+  forge overlay's `env` section (`"github"` or `"gitlab"`).
 - **`ISSUE_URL`** replaces `GITHUB_ISSUE_URL` in scripts. The
   per-forge env file (`env/github/code.env` or `env/gitlab/code.env`)
   maps the platform-specific variable to `ISSUE_URL`.
+- **Jira-source overlay** — when the work item originates from Jira
+  (`event.source.system == "jira"`), a dedicated overlay fetches the
+  issue via `fullsend issues get --tracker jira` on the runner and
+  copies the context into the sandbox. Jira credentials stay on the
+  runner. The Jira overlay composes with the target-forge overlay
+  (GitHub or GitLab) via merge-all-matching.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
   harnesses using `base:` composition should override at the forge level

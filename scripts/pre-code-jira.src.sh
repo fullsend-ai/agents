@@ -12,9 +12,12 @@
 #   ISSUE_URL          — Jira browse URL (https://<host>.atlassian.net/browse/PROJ-123)
 #   JIRA_USER_EMAIL    — Jira account email for Basic auth
 #   JIRA_TOKEN         — Jira Cloud API token
-#   JIRA_BASE_URL      — Jira instance base URL
 #   REPO_FULL_NAME     — target repo (owner/repo), used for pre-commit tool install
 #   FULLSEND_FORGE     — "github" or "gitlab" (the target forge, NOT the source)
+#
+# Optional environment variables:
+#   JIRA_BASE_URL      — Jira instance base URL; derived from ISSUE_URL when unset,
+#                         cross-checked when set
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -58,7 +61,7 @@ ISSUE_KEY="$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')"
 PROJECT_KEY="${ISSUE_KEY%-*}"
 ISSUE_NUM="${ISSUE_KEY##*-}"
 
-echo "::notice::Jira source: ${ISSUE_URL} (project=${PROJECT_KEY}, key=${ISSUE_KEY})"
+echo "::notice::🔗 Jira source: ${ISSUE_URL} (project=${PROJECT_KEY}, key=${ISSUE_KEY})"
 
 # ---------------------------------------------------------------------------
 # Fetch issue context via fullsend CLI
@@ -94,6 +97,21 @@ if ! jq empty "${ISSUE_CONTEXT_PATH}" 2>/dev/null; then
 fi
 
 echo "Jira issue context written to ${ISSUE_CONTEXT_PATH}"
+
+# ---------------------------------------------------------------------------
+# Existing-PR check — intentionally omitted for Jira-sourced flows
+# ---------------------------------------------------------------------------
+# The forge pre-script (pre-code.src.sh) checks for existing human PRs
+# linked to the issue via forge_list_prs_for_issue and skips the agent
+# run to avoid stepping on human work.  That check searches for closing
+# keywords (Fixes #N, Closes #N) on the TARGET forge.  Jira-sourced
+# issues do not map 1:1 to a forge issue number — PRs referencing Jira
+# work use the issue key (PROJ-42) not a forge issue reference (#N) —
+# so forge_list_prs_for_issue would produce false negatives.  A Jira-
+# aware existing-PR check requires cross-system linking (e.g., Jira
+# development panel integration) which is out of scope for the initial
+# Jira overlay.  The /fs-code --force override is still available via
+# the forge pre-script for forge-native flows.
 
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies
