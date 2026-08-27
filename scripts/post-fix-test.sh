@@ -555,7 +555,17 @@ case "$1 $2" in
     echo 'agent/99-test-fix'
     exit 0
     ;;
-  "pr comment"|"issue comment"|"api "*) exit 0 ;;
+  "pr comment"|"issue comment")
+    # Echo --body value so test assertions can grep for failure details.
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --body) echo "$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  "api "*) exit 0 ;;
   *) exit 0 ;;
 esac
 MOCKEOF

@@ -195,12 +195,13 @@ DIFF_BASE="${PRE_AGENT_HEAD:-$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)}"
 # isolates only the branch's own commits — the same approach used for
 # BRANCH_CHANGED_FILES below and for SCAN_RANGE in post-code.src.sh.
 if ! git merge-base --is-ancestor "${DIFF_BASE}" HEAD 2>/dev/null; then
-  _rebase_mb="$(git merge-base HEAD "origin/${TARGET_BRANCH:-main}" 2>/dev/null)" || _rebase_mb=""
+  _rebase_mb="$(git merge-base HEAD "origin/${TARGET_BRANCH}" 2>/dev/null)" || _rebase_mb=""
   if [ -n "${_rebase_mb}" ]; then
     echo "PRE_AGENT_HEAD is not an ancestor of HEAD (rebase detected) — using merge-base for DIFF_BASE"
     DIFF_BASE="${_rebase_mb}"
   else
-    gha_echo warning "PRE_AGENT_HEAD is not an ancestor and merge-base failed — DIFF_BASE may include upstream commits"
+    post_fail_to_pr setup-error \
+      "PRE_AGENT_HEAD is not an ancestor of HEAD and merge-base failed — cannot determine safe DIFF_BASE"
   fi
 fi
 
