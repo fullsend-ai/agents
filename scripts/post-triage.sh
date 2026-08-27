@@ -20,6 +20,8 @@
 
 set -euo pipefail
 
+set -x # debugging
+
 : "${ISSUE_URL:?ISSUE_URL must be set}"
 FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
 : "${FULLSEND_TRACKER:?FULLSEND_TRACKER must be set}"
