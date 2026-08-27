@@ -224,10 +224,12 @@ Skip this step entirely when any of these hold:
 - This is a first review (no prior review context from step 2a).
 - `PRIOR_REVIEW_PROVENANCE` is not `app-verified` — an unverified prior
   review has no trustworthy finding history to check dismissals against.
-- The forge-specific review skill has no "Review thread dismissals"
-  section. Dismissal signals are forge-specific and not every forge
-  exposes them yet; a forge without the section simply keeps today's
-  behavior.
+- The forge-specific review skill supplies no dismissal fetch commands.
+  Dismissal signals are forge-specific and not every forge exposes them
+  yet. A forge whose "Review thread dismissals" section declares the
+  feature unimplemented, or which has no such section at all, counts as
+  supplying none — in both cases keep today's behavior and attempt no
+  fetch.
 
 Otherwise fetch the PR's review threads using the forge-specific review
 skill's "Review thread dismissals" commands. That section returns, per
@@ -242,8 +244,12 @@ the forge's other APIs use for the same account. Prefer `${FULLSEND_SLUG}`
 over a literal login: the runner exports it into the sandbox from the
 harness identity and `env.sandbox` cannot shadow it
 ([fullsend#6045](https://github.com/fullsend-ai/fullsend/issues/6045)). It
-is emitted only when the harness declares a `slug`, so fall back to the
-configured review-app login when it is unset.
+is emitted only when the harness declares a `slug` — `harness/review.yaml`
+declares `fullsend-ai-review`, so in this repo it is always set. If it is
+unset there is no reliable way to tell this agent's own threads from
+another bot's, so **skip this step** rather than guessing at a login.
+Never match a hardcoded literal instead: it is wrong for any repo whose
+harness sets a different slug.
 
 **Trust boundary — a dismissal counts only from someone other than the PR
 author who holds authority over the repo.** Resolve trust per login and
@@ -1254,6 +1260,14 @@ line can drift across rounds even when the underlying code is untouched.
 Only findings carrying both a `file` and a `category` are eligible;
 findings without either (e.g. PR-metadata findings) never match.
 
+File and category alone do not identify a finding: one file can hold
+several findings of the same category, and dismissing one must not
+silence its siblings. A match additionally requires the finding to be
+**about the dismissed code** — the entry's recorded snippet covers the
+finding's own location, or the finding describes the same defect in the
+same construct. Where that cannot be established, treat the finding as
+unmatched and emit it normally.
+
 - If a matching entry exists, check whether its recorded dismissed code
   still appears in the current version of the file (from the file contents
   or diff already fetched in steps 2/3). This is a content check, not a
@@ -1304,11 +1318,17 @@ Evaluate it against the diff and the source at the PR head.
 Never argue the same finding across two re-reviews. If the matched prior
 finding's text already contains "Author's justification considered:", that
 one exchange has already happened: emit the finding unchanged and add
-nothing further, whatever the new reply says. Below critical, also
-downgrade it to `info` with `actionable: false` so a standing
-disagreement stops blocking the PR. At critical it keeps its severity —
-otherwise arguing at a finding twice, without ever refuting it, would be
-enough to silence it.
+nothing further, whatever the new reply says.
+
+The stop ends the *argument*, not the finding. **Critical and high
+findings keep their severity**, however often they are disputed —
+otherwise arguing at a defect twice, without ever refuting it, would be
+enough to stop it blocking, a worse failure than the ping-pong this rule
+exists to prevent. Only **medium and below** additionally downgrade to
+`info` with `actionable: false`, where a standing disagreement is not
+worth blocking on. A reply that genuinely *refutes* the finding is still
+honored at any severity — refutation is judged on the code, and is never
+used up.
 
 Without that stop the agent re-litigates the same finding every round,
 which is the complaint in #106 wearing a different hat.

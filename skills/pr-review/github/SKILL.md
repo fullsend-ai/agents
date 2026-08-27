@@ -79,7 +79,7 @@ query($owner:String!,$name:String!,$pr:Int!){
    nodes{
     isResolved
     resolvedBy{ login }
-    comments(first:50){ nodes{
+    comments(first:50){ pageInfo{ hasNextPage } nodes{
      author{ __typename login }
      authorAssociation
      body createdAt path diffHunk
@@ -98,6 +98,10 @@ Reading the response:
   boundary.
 - Within a thread, `comments.nodes[0]` is the root comment and every later
   node is a reply — hence `first: 50` there, which must not become `last`.
+  When a thread's own `comments.pageInfo.hasNextPage` is true its newest
+  replies were not read, and "most recent qualifying reply wins" cannot be
+  evaluated. Treat that thread as **undetermined** and dismiss nothing from
+  it, rather than acting on a truncated view that may predate a reversal.
 - `reviewThreads` returns **oldest-first**, so the query uses `last: 100`
   to keep the most recent threads, which are the ones a re-review needs.
   `pageInfo.hasPreviousPage` true means older threads were not read;

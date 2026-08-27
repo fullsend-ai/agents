@@ -80,9 +80,10 @@ CHANGED_FILES=$(echo "$COMPARE" | jq -r '.diffs[].new_path')
 
 ## Review thread dismissals
 
-Not implemented for GitLab. Step 2a-1 checks for this section and skips
-when a forge does not provide it, so re-reviews on GitLab keep today's
-behavior rather than failing.
+**Not implemented for GitLab — this section supplies no commands.** Step
+2a-1 skips when the forge supplies no dismissal fetch, so re-reviews on
+GitLab keep today's behavior. This section exists to record why, and what
+a follow-up would need; it is not a fetch to attempt.
 
 The signals do exist here and parity is a reasonable follow-up: MR
 discussions expose `resolved` and `resolved_by` per note
