@@ -607,8 +607,12 @@ Signed-off-by: Human User <human@example.com>" -q
   git -C "${repo_dir}" checkout -q agent/99-test-fix
   git -C "${repo_dir}" rebase -q main
 
-  # Add the "agent" commit (no Signed-off-by)
-  git -C "${repo_dir}" commit --allow-empty -m "fix: agent change" -q
+  # Add the "agent" commit with a real file change (no Signed-off-by).
+  # The commit must touch a file so CHANGED_FILES is non-empty and NO_PUSH
+  # stays false — otherwise the Signed-off-by check is skipped entirely.
+  echo "agent fix" > "${repo_dir}/agent-fix.txt"
+  git -C "${repo_dir}" add agent-fix.txt
+  git -C "${repo_dir}" commit -m "fix: agent change" -q
 
   # Set up a fake origin so merge-base works
   git -C "${repo_dir}" remote add origin "${repo_dir}" 2>/dev/null || true
@@ -634,7 +638,9 @@ Signed-off-by: Human User <human@example.com>" -q
   # With the fix, the script must NOT reject with a Signed-off-by false
   # positive. The upstream commit has a legitimate Signed-off-by trailer
   # that would be in SCAN_RANGE if DIFF_BASE were not recalculated.
-  if grep -q "Signed-off-by trailer" "${stdout_log}"; then
+  # Match the specific rejection message — not progress lines like
+  # "Checking for Signed-off-by trailers" or "no trailers".
+  if grep -q "Agent commit contains a Signed-off-by trailer" "${stdout_log}"; then
     echo "FAIL: ${test_name} — false positive Signed-off-by rejection after rebase"
     cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
@@ -645,10 +651,13 @@ Signed-off-by: Human User <human@example.com>" -q
   if grep -q "Signed-off-by scan passed" "${stdout_log}"; then
     echo "PASS: ${test_name}"
   else
-    # The script may have exited before the Signed-off-by check for an
-    # unrelated reason (mock limitations). As long as there was no
-    # false positive, the DIFF_BASE fix is working.
-    echo "PASS: ${test_name} (no Signed-off-by false positive)"
+    # The Signed-off-by check must actually execute — a pass without
+    # the scan running means NO_PUSH is true (CHANGED_FILES was empty),
+    # which would mask the bug this test exists to catch.
+    echo "FAIL: ${test_name} — Signed-off-by check did not execute (NO_PUSH=true?)"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
   fi
 }
 

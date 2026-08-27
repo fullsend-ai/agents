@@ -200,7 +200,7 @@ if ! git merge-base --is-ancestor "${DIFF_BASE}" HEAD 2>/dev/null; then
     echo "PRE_AGENT_HEAD is not an ancestor of HEAD (rebase detected) — using merge-base for DIFF_BASE"
     DIFF_BASE="${_rebase_mb}"
   else
-    echo "::warning::PRE_AGENT_HEAD is not an ancestor and merge-base failed — DIFF_BASE may include upstream commits"
+    gha_echo warning "PRE_AGENT_HEAD is not an ancestor and merge-base failed — DIFF_BASE may include upstream commits"
   fi
 fi
 
