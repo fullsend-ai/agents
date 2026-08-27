@@ -166,6 +166,7 @@ install -m 0600 /dev/null "$ENV_FILE"
       # as fallback to the repo default branch (not "allow all"; use * for any).
       emit_env "CODE_ALLOWED_TARGET_BRANCHES" ""
       emit_env "GITHUB_WORKSPACE" "${EVAL_GH_WORKSPACE}"
+      emit_env "REPO_DIR" "${TARGET_DIR}"
       emit_env "GIT_BOT_EMAIL" "fullsend-eval[bot]@users.noreply.github.com"
       ;;
   esac
