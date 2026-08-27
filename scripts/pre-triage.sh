@@ -20,6 +20,9 @@ set -euo pipefail
 FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
 : "${FULLSEND_TRACKER:?FULLSEND_TRACKER must be set}"
 
+echo "!!! full env is:"
+env
+
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/triage-ops.lib.sh
