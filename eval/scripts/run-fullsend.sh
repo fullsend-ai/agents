@@ -31,7 +31,7 @@ FIXTURE_TYPE="${FIXTURE_TYPE:?FIXTURE_TYPE is required (set by before_each hook)
 # The hook already created it and pushed content.
 #
 # Layout mirrors GHA for code/fix: harness expands
-# REPO_DIR=${GITHUB_WORKSPACE}/target-repo for post-scripts.
+# TARGET_REPO_DIR=${GITHUB_WORKSPACE}/target-repo for post-scripts.
 EPHEMERAL_REPO="${EPHEMERAL_REPO:?EPHEMERAL_REPO is required}"
 FIXTURE_NUMBER="${FIXTURE_NUMBER:?FIXTURE_NUMBER is required (set by before_each hook)}"
 
@@ -157,8 +157,8 @@ install -m 0600 /dev/null "$ENV_FILE"
 
   # Code/fix harness env.runner refs — mint normally sets these; eval skips mint.
   # Only override GITHUB_WORKSPACE for agents whose post-scripts expand
-  # REPO_DIR=${GITHUB_WORKSPACE}/target-repo (triage reads config.yaml from
-  # the real Actions workspace and must not be redirected to the temp clone).
+  # TARGET_REPO_DIR=${GITHUB_WORKSPACE}/target-repo (triage reads config.yaml
+  # from the real Actions workspace and must not be redirected to the temp clone).
   case "$AGENT" in
     code|fix)
       emit_env "PUSH_TOKEN_SOURCE" "eval"
@@ -166,7 +166,7 @@ install -m 0600 /dev/null "$ENV_FILE"
       # as fallback to the repo default branch (not "allow all"; use * for any).
       emit_env "CODE_ALLOWED_TARGET_BRANCHES" ""
       emit_env "GITHUB_WORKSPACE" "${EVAL_GH_WORKSPACE}"
-      emit_env "REPO_DIR" "${TARGET_DIR}"
+      emit_env "TARGET_REPO_DIR" "${TARGET_DIR}"
       emit_env "GIT_BOT_EMAIL" "fullsend-eval[bot]@users.noreply.github.com"
       ;;
   esac
