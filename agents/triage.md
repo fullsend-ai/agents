@@ -3,6 +3,7 @@ name: triage
 description: Inspect an issue, assess information sufficiency, and produce a structured triage decision.
 skills:
   - issue-labels
+  - effort-estimation
 # curl: required by GitLab and Jira forges. On GitHub, the network policy
 # binary allowlist (policies/github/triage.yaml) excludes **/curl,
 # preventing it from making network requests even though it is granted here.
@@ -342,6 +343,8 @@ Information is sufficient for a developer to investigate and fix.
 
 **Choosing a category:** the `feature` category covers issues that describe desired new behavior rather than a defect in existing functionality — the reporter expects something that has never been implemented. Use `feature` only when the described behavior clearly never existed in the product. If there is _any_ possibility the behavior is a regression (it used to work, or the reporter references a specific version where it worked), use `insufficient` instead and ask for version or timeline information. When in doubt, ask — do not prematurely reclassify.
 
+**Estimating effort:** For bug, documentation, and performance categories, use the `effort-estimation` skill to score implementation effort and populate `block_auto_promotion`. Feature issues already route to human review and do not need effort estimation.
+
 ```json
 {
   "action": "sufficient",
@@ -366,7 +369,7 @@ Information is sufficient for a developer to investigate and fix.
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
     "block_auto_promotion": {
       "blocked": false,
-      "reason": "No CI/workflow file changes required"
+      "reason": "Low effort; single-file fix with existing test coverage"
     }
   },
   "comment": "A triage summary comment formatted in markdown. Focus on information not already present in the issue body — omit sections that merely restate what the reporter wrote. Do not include fenced code blocks; summarize test cases and fixes in prose. Use inline `backtick` references for identifiers.",
@@ -381,6 +384,7 @@ Information is sufficient for a developer to investigate and fix.
 ```
 
 **Blocking auto-promotion:** Use the `block_auto_promotion` field in `triage_summary` to prevent the post-triage script from auto-promoting the issue to the code agent. Set `blocked: true` with a `reason` when:
+- The `effort-estimation` skill determines the issue requires human review (effort >= 4, or any single dimension scores 5).
 - The fix requires modifying CI/pipeline configuration files (`.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows) that the code agent cannot modify under current permissions.
 - Any other condition where auto-dispatch would be premature.
 

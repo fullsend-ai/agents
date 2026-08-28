@@ -1340,12 +1340,12 @@ ${FAILED_CREATES}"
     # own the "bug,documentation,performance" default. An absent or unset
     # TRIAGE_AUTO_CODE_CATEGORIES means no categories auto-promote.
     #
-    # Auto-promotion gate (#325): the triage agent can block auto-promotion
-    # via block_auto_promotion.blocked (e.g., workflow file changes). When
-    # blocked, bug/docs/performance categories receive triaged instead of
-    # ready-to-code, and the reason is appended to the comment. The
-    # deprecated requires_workflow_changes boolean is still honored when
-    # block_auto_promotion is absent.
+    # Auto-promotion gate (#2207, #325): the triage agent can block
+    # auto-promotion via block_auto_promotion.blocked (e.g., high effort,
+    # workflow file changes). When blocked, bug/docs/performance categories
+    # receive triaged instead of ready-to-code, and the reason is appended
+    # to the comment. The deprecated requires_workflow_changes boolean is
+    # still honored when block_auto_promotion is absent.
     BLOCKED=$(jq -r '.triage_summary.block_auto_promotion.blocked // empty' "${RESULT_FILE}")
     BLOCK_REASON=$(jq -r '.triage_summary.block_auto_promotion.reason // empty' "${RESULT_FILE}")
     if [[ -z "${BLOCKED}" ]]; then

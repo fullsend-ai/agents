@@ -2227,6 +2227,16 @@ run_test_no_pattern "blocked-reason-triple-colon-sanitized" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Inject","severity":"high","category":"bug","problem":"Bug","root_cause_hypothesis":"Root","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix","proposed_test_case":"test","block_auto_promotion":{"blocked":true,"reason":"reason\n:::error:::injected"}},"comment":"## Triage Summary\n\nBug."}' \
   "::error:"
 
+# High-effort bug (blocked=true) gets triaged, not ready-to-code.
+run_test "effort-high-bug-gets-triaged" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Refactor auth middleware","severity":"high","category":"bug","problem":"Auth edge cases","root_cause_hypothesis":"Architectural issue","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Refactor auth","proposed_test_case":"test_auth","block_auto_promotion":{"blocked":true,"reason":"Estimated effort 4.3/5 (multi-component fix with new test fixtures needed)"}},"comment":"## Triage Summary\n\nSubstantial refactor."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=triaged --silent"
+
+# Low-effort bug (blocked=false) gets ready-to-code.
+run_test "effort-low-bug-gets-ready-to-code" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix typo","severity":"low","category":"bug","problem":"Typo in error","root_cause_hypothesis":"Copy-paste error","reproduction_steps":["step 1"],"environment":"Linux","impact":"Minor","recommended_fix":"Fix typo","proposed_test_case":"test_msg","block_auto_promotion":{"blocked":false,"reason":"Low effort (1/5); single-line fix"}},"comment":"## Triage Summary\n\nTrivial."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
+
 # --- Summary ---
 
 echo ""

@@ -1,0 +1,51 @@
+# This case tests the "any single dimension scores 5" rule. The change is
+# one function in one file (low scope/testing/domain) but is a breaking
+# API change for every caller of login_handler (Risk=5), so auto-promotion
+# must be blocked even though the average is well below 4.
+state: open
+
+labels:
+  required:
+    - triaged
+    - bug
+  forbidden:
+    - ready-to-code
+
+triage_summary:
+  category: bug
+  block_auto_promotion:
+    blocked: true
+
+max_turns: 30
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This issue asks to change `login_handler` in `src/auth/views.py` so
+  success returns HTTP 204 with an empty body instead of
+  `{"status": "ok"}`. That is a one-line change in a single function.
+
+  The effort-estimation skill should score a mixed profile:
+  - Scope: one function in one file (views.py) — 1.
+  - Testing: no test suite in this repo; at most a small handler test — 1-2.
+  - Domain knowledge: obvious from the function body — 1.
+  - Risk: every existing client that parses `response["status"]` breaks;
+    this is a breaking change affecting downstream consumers — 5.
+
+  Average is ~2.0, below the >=4 threshold. Risk=5 independently
+  triggers blocking per the "any single dimension scores 5" rule.
+
+  A good triage should:
+
+  1. Verify `login_handler` currently returns `{"status": "ok"}`.
+  2. Identify this as a bug (aligning the handler with the empty-body
+     success contract), not a feature and not a split.
+  3. Set block_auto_promotion.blocked = true citing Risk=5 / breaking
+     change, not the average.
+  4. The post-script should apply "triaged" + "bug" (not "ready-to-code").
+
+  Scoring guide:
+  A score of 1 means the agent misidentified the action or category.
+  A score of 3 means correct action and category but auto-promoted
+  because the average is low.
+  A score of 5 means correct triage, verified the return value against
+  the code, and blocked auto-promotion because of the breaking-change risk.

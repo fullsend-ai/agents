@@ -41,7 +41,7 @@ These labels are managed by the triage agent based on its assessment of the issu
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
 | `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance) with auto-promotion not blocked. Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). |
-| `triaged` | The issue requires human review before coding: feature work, other categories, or bug/docs/performance issues where `block_auto_promotion` is set (workflow changes, etc.). |
+| `triaged` | The issue requires human review before coding: feature work, other categories, or bug/docs/performance issues where `block_auto_promotion` is set (high effort, workflow changes, etc.). |
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
@@ -145,21 +145,27 @@ This gives the triage agent the subtlety it needs to distinguish between
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
 
-### Blocking auto-promotion
+### Skill: `effort-estimation`
 
-The triage result may include `block_auto_promotion` in `triage_summary`:
+The triage agent includes an `effort-estimation` skill that scores
+implementation effort and decides whether the issue should be held for human
+review before auto-promoting to the code agent. The skill populates the
+`block_auto_promotion` field in `triage_summary`:
 
 - `blocked: true` + `reason`: the post-script applies `triaged` instead of
   `ready-to-code` and appends the reason to the triage comment.
 - `blocked: false` + `reason`: auto-promotion proceeds normally.
-- omitted: same as `blocked: false`. The deprecated
-  `requires_workflow_changes: true` boolean still blocks auto-promotion
-  for one release if `block_auto_promotion` is absent.
 
-Use this field when the fix requires modifying GitHub Actions or other CI
-workflow files that the code agent cannot change under current permissions.
-Later gates (for example effort scoring) can set the same field with their
-own reason.
+By default, the skill scores effort on a 1 to 5 scale across four dimensions
+(scope, testing, domain knowledge, risk). Issues scoring >= 4 are blocked.
+
+The same `block_auto_promotion` field is used for workflow-change detection:
+if the fix requires modifying GitHub Actions workflow files, the agent sets
+`blocked: true` with a reason explaining that the code agent cannot modify
+workflow files.
+
+See [Fullsend's Customizing with Skills docs](https://fullsend.sh/docs/guides/user/customizing-with-skills.html)
+to know where to add the skill files.
 
 ### Variables
 
