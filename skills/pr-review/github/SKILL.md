@@ -74,6 +74,8 @@ DISMISSALS=$(gh api graphql \
 query($owner:String!,$name:String!,$pr:Int!){
  repository(owner:$owner,name:$name){ pullRequest(number:$pr){
   author{ login }
+  comments(last:100){ nodes{ author{ login } authorAssociation } }
+  reviews(last:100){ nodes{ author{ login } authorAssociation } }
   reviewThreads(last:100){
    pageInfo{ hasPreviousPage }
    nodes{
@@ -96,6 +98,11 @@ Reading the response:
 
 - `pullRequest.author.login` is the PR author, excluded from the trust
   boundary.
+- `comments` and `reviews` exist for the trust lookup only: they carry
+  the `authorAssociation` of everyone who wrote a PR-level comment or a
+  review body, so resolvers and reactors can be tiered without an extra
+  request. `last: 100` keeps the newest of each; the lookup is
+  best-effort over what these return.
 - Within a thread, `comments.nodes[0]` is the root comment and every later
   node is a reply — hence `first: 50` there, which must not become `last`.
   When a thread's own `comments.pageInfo.hasNextPage` is true its newest
