@@ -208,13 +208,13 @@ Determine which issue to implement:
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue content. When `FULLSEND_SOURCE_TRACKER` is `jira`, the
+Fetch the issue content. When `FULLSEND_TRACKER` is `jira`, the
 pre-script has already fetched the Jira issue and placed it at
 `/sandbox/workspace/.issue-context.json`. Read that file instead of
 calling forge APIs:
 
 ```bash
-if [ "${FULLSEND_SOURCE_TRACKER:-}" = "jira" ] \
+if [ "${FULLSEND_TRACKER:-}" = "jira" ] \
    && [ -f /sandbox/workspace/.issue-context.json ]; then
   cat /sandbox/workspace/.issue-context.json
 else

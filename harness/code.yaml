@@ -101,9 +101,9 @@ overlays:
         JIRA_TOKEN: "${JIRA_TOKEN}"
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
-        FULLSEND_SOURCE_TRACKER: jira
+        FULLSEND_TRACKER: jira
       sandbox:
-        FULLSEND_SOURCE_TRACKER: jira
+        FULLSEND_TRACKER: jira
         ISSUE_NUMBER: "${ISSUE_NUMBER}"
   - when: 'runtime.forge == "github"'
     providers:
