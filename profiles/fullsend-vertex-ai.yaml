@@ -9,6 +9,17 @@ endpoints:
     protocol: rest
     access: read-write
     enforcement: enforce
+    # OpenShell 0.0.110+ resets any inspected request body that contains the
+    # literal placeholder prefix (NVIDIA/OpenShell#2904; analysis and
+    # reproduction in fullsend-ai/fullsend#6716); model request bodies never
+    # legitimately carry a placeholder, so skip the REST body marker guard.
+    # TLS is still terminated, the bearer header is still injected and the
+    # method/path rules still apply (verified on OpenShell 0.0.115). The same
+    # flag also relaxes the WebSocket-upgrade guard and extension-mode choice
+    # on a provider-credentialed endpoint — dormant for this traffic.
+    # Security-sensitive opt-in: approved with fullsend-ai/fullsend#6695
+    # (ADR 0092), which made the identical change to the scaffold copies.
+    allow_uninspected_credentials: true
 binaries:
   - "**/claude"
   - "**/pi"
