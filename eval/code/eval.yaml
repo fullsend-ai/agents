@@ -26,14 +26,14 @@ execution:
   # budget (up to ~4200s across validation_loop's 2 iterations) cannot fit
   # inside this CI job's 45-minute cap
   # (.github/workflows/functional-tests.yml) alongside before_each (120s),
-  # after_each (90s), and the job's own setup overhead (checkout, python/uv,
+  # after_each (180s), and the job's own setup overhead (checkout, python/uv,
   # harness install, fullsend download, OpenShell + podman install — podman
   # alone routinely takes ~190s).
   #
   # Sized for the JOB, not one case: this value is applied per case, and
   # parallelism: 1 runs the suite's cases back to back inside one matrix
   # leg capped at timeout-minutes: 45 (2700s). With two cases the worst
-  # case is 2 x (120 + 800 + 90 + 30) = 2080s, leaving 620s for job setup
+  # case is 2 x (120 + 800 + 180 + 30) = 2260s, leaving 440s for job setup
   # — a deliberate margin, not an exact fit: podman alone routinely takes
   # ~190s of it and the rest (checkout, python/uv, harness install,
   # fullsend download) varies, so the allowance must absorb a bad day
@@ -41,7 +41,7 @@ execution:
   # which produces no artifacts for either case. The previous 1800 gave
   # 2 x 2010 = 4020s, so a hang in the first case would have had the
   # second killed that way. Re-derive if a third case lands here:
-  # 3 x 1040 = 3120s no longer fits, and the cases would need their own
+  # 3 x 1130 = 3390s no longer fits, and the cases would need their own
   # matrix legs.
   timeout: 800
   parallelism: 1
@@ -113,11 +113,16 @@ hooks:
 
   after_each:
     - command: "capture-fixture.sh"
-      # 90 rather than the sibling suites' 60: removed_symbols cases also
-      # shallow-clone the PR head and run go build + go test on it (see
-      # run_pr_checks) on top of the diff-fetch readiness poll. Counted in
+      # 180 rather than the sibling suites' 60: removed_symbols cases also
+      # shallow-clone the PR head (up to 6 attempts, ~15s backoff) and run
+      # go build + go test on it, each under its own `timeout 45` (see
+      # run_go_checks), on top of the diff-fetch readiness poll (~16s) and
+      # the retried gh reads (~12s): ~135s worst case, with slack for the
+      # clone/build themselves. The script writes fixture-state.json
+      # before this expensive stage, so even an overrun here costs the
+      # fixture_checks verdict, not every judge's input. Counted in
       # execution.timeout's job-budget arithmetic above.
-      timeout: 90
+      timeout: 180
       description: "Capture issue + PR state for judges"
     - command: "teardown-fixture.sh"
       timeout: 30

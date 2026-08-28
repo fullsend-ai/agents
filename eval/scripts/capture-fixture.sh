@@ -72,7 +72,12 @@ fetch_pr_files() {
 fetch_pr_diff() {
   local num="$1"
   local diff attempt
-  if diff=$(retry_cmd gh pr diff "$num" --repo "$EPHEMERAL_REPO"); then
+  # Non-empty is part of success: retry_cmd passes on exit status alone,
+  # and an exit-0 empty body during post-creation replication would
+  # short-circuit the readiness poll below — recording a blank diff as
+  # healthy and letting removed_symbols blame the agent for a capture
+  # gap. A PR here always changes files, so an empty diff is never valid.
+  if diff=$(retry_cmd gh pr diff "$num" --repo "$EPHEMERAL_REPO") && [[ -n "$diff" ]]; then
     printf '%s\n' "$diff" > "${OUTPUT_DIR}/pr-${num}.diff"
     return 0
   fi
@@ -84,7 +89,7 @@ fetch_pr_diff() {
   echo "WARNING: gh pr diff not ready for PR #${num}; polling..." >&2
   for attempt in 1 2 3 4; do
     sleep $((attempt))
-    if diff=$(gh pr diff "$num" --repo "$EPHEMERAL_REPO" 2>/dev/null); then
+    if diff=$(gh pr diff "$num" --repo "$EPHEMERAL_REPO" 2>/dev/null) && [[ -n "$diff" ]]; then
       printf '%s\n' "$diff" > "${OUTPUT_DIR}/pr-${num}.diff"
       return 0
     fi
@@ -121,8 +126,35 @@ run_go_checks() {
     printf '{"skipped":"go not installed"}'
     return 0
   fi
-  (cd "$dir" && go build ./...) >/dev/null 2>&1 || build_exit=$?
-  (cd "$dir" && go test ./...) >/dev/null 2>&1 || test_exit=$?
+  # The checkout is agent-authored code, and `go test` compiles and RUNS
+  # it. This is the one place that output executes outside the podman
+  # sandbox, on a runner whose environment carries live credentials
+  # (EVAL_GH_TOKEN, GOOGLE_APPLICATION_CREDENTIALS, OIDC id-token) under
+  # pull_request_target. The scrubbed environment below is load-bearing —
+  # do not simplify it away: env -i drops every runner secret from the
+  # child, GOPROXY=off keeps the build off the network, -mod=readonly
+  # stops an agent-edited go.mod from fetching, GOTOOLCHAIN=local pins
+  # the toolchain, CGO_ENABLED=0 removes the C toolchain from the attack
+  # surface, and HOME/GOPATH/GOCACHE keep all writes inside the scratch
+  # dir. Each invocation gets its own timeout so an agent-written test
+  # that blocks records exit 124 instead of overrunning the hook budget
+  # (see after_each in eval/code/eval.yaml for the 180s derivation);
+  # `timeout` is coreutils — present on CI, absent on stock macOS, where
+  # the gate runs unbounded rather than not at all.
+  local godir scratch
+  godir="$(dirname "$(command -v go)")"
+  scratch="$(mktemp -d)"
+  mkdir -p "${scratch}/home"
+  local scrub=(env -i "PATH=${godir}:/usr/bin:/bin" "HOME=${scratch}/home"
+    GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-mod=readonly CGO_ENABLED=0
+    "GOCACHE=${scratch}/gocache" "GOPATH=${scratch}/gopath")
+  # `runner` is never an empty array: expanding one under `set -u` is an
+  # unbound-variable error on bash 3.2 (macOS's /bin/bash).
+  local runner=(go)
+  command -v timeout >/dev/null 2>&1 && runner=(timeout 45 go)
+  (cd "$dir" && "${scrub[@]}" "${runner[@]}" build ./...) >/dev/null 2>&1 || build_exit=$?
+  (cd "$dir" && "${scrub[@]}" "${runner[@]}" test ./...) >/dev/null 2>&1 || test_exit=$?
+  rm -rf "$scratch"
   printf '{"build_exit":%d,"test_exit":%d}' "$build_exit" "$test_exit"
 }
 
@@ -140,13 +172,21 @@ run_pr_checks() {
   fi
   tmp=$(mktemp -d)
   out='{"clone_failed":true}'
-  for attempt in 1 2 3; do
+  # 6 attempts with linear backoff (~15s), matching resolve_head_sha's
+  # patience: cloning a branch pushed seconds earlier races the same
+  # replication window its ref read does, and deserves the same budget.
+  # The WARNING makes a slow-but-successful clone distinguishable from a
+  # genuinely broken one in the run artifacts.
+  for attempt in 1 2 3 4 5 6; do
     rm -rf "${tmp}/co"
     if gh repo clone "$repo" "${tmp}/co" -- --depth 1 --branch "$head_ref" >/dev/null 2>&1; then
       out=$(run_go_checks "${tmp}/co")
       break
     fi
-    sleep "$attempt"
+    if [[ $attempt -eq 1 ]]; then
+      echo "WARNING: clone of ${repo}@${head_ref} not ready; retrying..." >&2
+    fi
+    [[ $attempt -lt 6 ]] && sleep "$attempt"
   done
   rm -rf "$tmp"
   printf '%s' "$out"
@@ -245,27 +285,26 @@ case "${FIXTURE_TYPE}" in
       prs_json='[]'
     fi
 
+    # Pass 1 — cheap reads only, then write fixture-state.json BEFORE the
+    # expensive diff/clone/build stage below. The hook runs under
+    # after_each's timeout, and everything stacked in front of the state
+    # write is evidence lost if the process group is killed: with this
+    # ordering an overrun in the gate degrades to a fixture_checks
+    # failure ("no build/test checks captured"), instead of erasing the
+    # input of every judge at once. checks:null / diff_fetch_failed:false
+    # are the pre-gate placeholders the judges already fail closed on.
     pr_lines=()
     while IFS= read -r pr; do
       [[ -z "$pr" ]] && continue
       num=$(printf '%s' "$pr" | jq -r '.number')
-      diff_failed=false
-      checks_json='null'
-      if case_wants_pr_diff; then
-        if ! fetch_pr_diff "$num"; then
-          echo "WARNING: gh pr diff failed for PR #${num}; marking diff_fetch_failed" >&2
-          diff_failed=true
-        fi
-        checks_json=$(run_pr_checks "$EPHEMERAL_REPO" "$(printf '%s' "$pr" | jq -r '.headRefName // empty')")
-      fi
       if files=$(fetch_pr_files "$num"); then
-        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" --argjson diff_failed "$diff_failed" --argjson checks "$checks_json" \
-          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false, diff_fetch_failed: $diff_failed, checks: $checks}
+        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson files "$files" \
+          '. + {head: .headRefName, base: .baseRefName, files: $files, files_fetch_failed: false, diff_fetch_failed: false, checks: null}
            | del(.headRefName, .baseRefName)')")
       else
         echo "WARNING: gh pr view failed for PR #${num}; marking files_fetch_failed" >&2
-        pr_lines+=("$(printf '%s' "$pr" | jq -c --argjson diff_failed "$diff_failed" --argjson checks "$checks_json" \
-          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true, diff_fetch_failed: $diff_failed, checks: $checks}
+        pr_lines+=("$(printf '%s' "$pr" | jq -c \
+          '. + {head: .headRefName, base: .baseRefName, files: null, files_fetch_failed: true, diff_fetch_failed: false, checks: null}
            | del(.headRefName, .baseRefName)')")
       fi
     done < <(printf '%s' "$prs_json" | jq -c '.[]')
@@ -292,6 +331,28 @@ case "${FIXTURE_TYPE}" in
         comments: $comments,
         pull_requests: $pull_requests
       }' > "$STATE_FILE"
+
+    # Pass 2 — the expensive stage: diff fetch (readiness poll), head
+    # clone, and the sandboxed build/test gate. Results are merged into
+    # the state written above; the tmp+mv keeps a kill mid-write from
+    # corrupting what pass 1 already secured.
+    if case_wants_pr_diff; then
+      while IFS= read -r pr; do
+        [[ -z "$pr" ]] && continue
+        num=$(printf '%s' "$pr" | jq -r '.number')
+        diff_failed=false
+        if ! fetch_pr_diff "$num"; then
+          echo "WARNING: gh pr diff failed for PR #${num}; marking diff_fetch_failed" >&2
+          diff_failed=true
+        fi
+        checks_json=$(run_pr_checks "$EPHEMERAL_REPO" "$(printf '%s' "$pr" | jq -r '.headRefName // empty')")
+        jq --argjson num "$num" --argjson diff_failed "$diff_failed" --argjson checks "$checks_json" \
+          '.pull_requests |= map(if .number == $num
+             then .diff_fetch_failed = $diff_failed | .checks = $checks
+             else . end)' \
+          "$STATE_FILE" > "${STATE_FILE}.tmp" && mv "${STATE_FILE}.tmp" "$STATE_FILE"
+      done < <(printf '%s' "$prs_json" | jq -c '.[]')
+    fi
     ;;
 
   pull_request)
