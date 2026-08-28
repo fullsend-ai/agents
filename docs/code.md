@@ -33,7 +33,7 @@ on issues (not PRs).
 
 | Label | Meaning |
 |-------|---------|
-| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance) when auto-promotion is not blocked, or manually by a human for feature work or workflow changes after review. |
+| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) post-script for low-risk categories (bug, documentation, performance) when auto-promotion is not blocked, or manually by a human for feature work, high-effort issues, or workflow changes after review. |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
 
 ## Configuration

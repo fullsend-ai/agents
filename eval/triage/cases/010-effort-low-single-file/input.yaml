@@ -1,0 +1,34 @@
+forge: github
+fixture:
+  type: issue
+  title: "Registration rejects valid two-letter usernames like 'Jo'"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    Trying to register with the username `Jo` returns a 400 error:
+    "username must start with a letter, be 3-30 characters, and contain
+    only letters, digits, hyphens, and underscores."
+
+    The username `Jo` is two characters long and the validator requires
+    a minimum of 3. But two-character usernames should be allowed — many
+    real names are two letters (Jo, Li, Bo, Al, Ed).
+
+    **Steps to reproduce:**
+    1. POST `/register` with `{"email": "jo@example.com", "password":
+       "securepass1", "username": "Jo"}`
+    2. Response: 400 with the validation error above.
+
+    **Expected behavior:**
+    Two-character usernames should be accepted. The minimum should be 2,
+    not 3.
+
+    **Root cause:**
+    In `src/auth/validators.py`, the `USERNAME_PATTERN` regex uses
+    `{2,29}` for the trailing characters after the first letter. Combined
+    with the mandatory first letter, this enforces a 3-character minimum.
+    Changing `{2,29}` to `{1,29}` would fix it.
+
+    **Environment:**
+    - Python 3.12
+    - Testing locally with curl

@@ -212,6 +212,17 @@
           "additionalProperties": false
         }
       },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "category": { "enum": ["bug", "documentation", "performance"] } },
+            "required": ["category"]
+          },
+          "then": {
+            "required": ["block_auto_promotion"]
+          }
+        }
+      ],
       "additionalProperties": false
     },
     "label_actions": {
