@@ -147,6 +147,34 @@ should still point at a local checkout of the codebase the Jira issue
 concerns, since triage reads repository context (docs, existing issues,
 PRs) regardless of which forge hosts the issue itself.
 
+## Testing code agent with Jira
+
+The code agent supports Jira Cloud as a work-item source via the
+`event.source.system == "jira"` overlay in `harness/code.yaml`. Unlike
+triage (which uses `FULLSEND_FORGE=jira`), the code agent keeps
+`FULLSEND_FORGE` set to the target forge (`github` or `gitlab`) and uses
+a separate `FULLSEND_TRACKER=jira` signal. The Jira overlay composes
+with the target-forge overlay via merge-all-matching.
+
+```bash
+# Jira-source env vars (runner-only — never enter sandbox)
+export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
+export JIRA_USER_EMAIL="you@example.com"
+export JIRA_TOKEN="your-jira-api-token"
+export JIRA_BASE_URL="https://your-site.atlassian.net"
+
+# Target forge — the code agent still pushes/creates PRs on this forge
+export FULLSEND_FORGE="github"
+export GH_TOKEN="$(gh auth token)"
+```
+
+Run `fullsend run code` the same way as step 3 above. `--target-repo`
+should point at a local checkout of the repo where the PR will be
+created. The Jira pre-script fetches the issue via the `fullsend` CLI
+and writes the context to `/tmp/jira-issue-context.json`, which
+`host_files` copies into the sandbox as
+`/sandbox/workspace/.issue-context.json`.
+
 ## Testing a new configuration option
 
 When testing a new env var, verify both cases:

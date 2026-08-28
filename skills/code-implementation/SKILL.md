@@ -217,6 +217,11 @@ calling forge APIs:
 if [ "${FULLSEND_TRACKER:-}" = "jira" ] \
    && [ -f /sandbox/workspace/.issue-context.json ]; then
   cat /sandbox/workspace/.issue-context.json
+elif [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  echo "::warning::FULLSEND_TRACKER=jira but .issue-context.json is missing — falling back to forge API"
+  # GitHub:
+  gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
+  # GitLab: use curl per the gitlab forge skill
 else
   # GitHub:
   gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees

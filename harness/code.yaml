@@ -85,26 +85,6 @@ env:
 timeout_minutes: 35
 
 overlays:
-  # Jira-source overlay — fetches the work item from Jira and prepares
-  # issue context for the sandbox.  Ordered before forge overlays so its
-  # pre_script overrides the default forge issue pre-script.  Post-script
-  # selection stays with the target forge (GitHub/GitLab).
-  - when: 'event.source.system == "jira"'
-    pre_script: scripts/pre-code-jira.sh
-    host_files:
-      - src: /tmp/jira-issue-context.json
-        dest: /sandbox/workspace/.issue-context.json
-        optional: true
-    env:
-      runner:
-        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
-        JIRA_TOKEN: "${JIRA_TOKEN}"
-        JIRA_BASE_URL: "${JIRA_BASE_URL}"
-        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
-        FULLSEND_TRACKER: jira
-      sandbox:
-        FULLSEND_TRACKER: jira
-        ISSUE_NUMBER: "${ISSUE_NUMBER}"
   - when: 'runtime.forge == "github"'
     providers:
       - providers/github-code.yaml
@@ -149,3 +129,25 @@ overlays:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
+  # Jira-source overlay — fetches the work item from Jira and prepares
+  # issue context for the sandbox.  Ordered AFTER forge overlays so its
+  # env vars (especially ISSUE_URL) win under last-writer-wins merge
+  # semantics when both the Jira overlay and a forge overlay match.
+  # pre_script overrides the top-level default.  Post-script selection
+  # stays with the target forge (GitHub/GitLab).
+  - when: 'event.source.system == "jira"'
+    pre_script: scripts/pre-code-jira.sh
+    host_files:
+      - src: /tmp/jira-issue-context.json
+        dest: /sandbox/workspace/.issue-context.json
+        optional: true
+    env:
+      runner:
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_TOKEN: "${JIRA_TOKEN}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        FULLSEND_TRACKER: jira
+      sandbox:
+        FULLSEND_TRACKER: jira
+        ISSUE_NUMBER: "${ISSUE_NUMBER}"
