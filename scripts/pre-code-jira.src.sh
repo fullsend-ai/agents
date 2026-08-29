@@ -29,18 +29,19 @@ source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 : "${JIRA_ISSUE_CONTEXT_FILE:?JIRA_ISSUE_CONTEXT_FILE must be set}"
 : "${JIRA_USER_EMAIL:?JIRA_USER_EMAIL must be set}"
 : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+: "${REPO_FULL_NAME:?REPO_FULL_NAME must be set}"
 
 # Sanitize a value for safe use in GHA workflow commands (::error::, etc.).
-# Strips newlines/carriage returns and escapes :: to prevent injection.
-_sanitize_gha() {
-  printf '%s' "$1" | tr -d '\n\r' | sed 's/%/%25/g; s/::/%3A%3A/g'
+# Strips ANSI escapes, newlines/carriage returns, and escapes :: to prevent injection.
+_gha_sanitize() {
+  printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'
 }
 
 # ---------------------------------------------------------------------------
 # Validate Jira issue URL
 # ---------------------------------------------------------------------------
 if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
-  echo "::error::ISSUE_URL does not match expected Jira pattern: $(_sanitize_gha "${ISSUE_URL}")"
+  echo "::error::ISSUE_URL does not match expected Jira pattern: $(_gha_sanitize "${ISSUE_URL}")"
   exit 1
 fi
 
@@ -59,7 +60,7 @@ while [[ -n "${JIRA_BASE_URL:-}" && "${JIRA_BASE_URL}" == */ ]]; do
   JIRA_BASE_URL="${JIRA_BASE_URL%/}"
 done
 if [[ -n "${JIRA_BASE_URL:-}" ]] && [[ "${JIRA_BASE_URL}" != "${PARSED_BASE_URL}" ]]; then
-  echo "::error::JIRA_BASE_URL ('$(_sanitize_gha "${JIRA_BASE_URL}")') does not match ISSUE_URL host ('${PARSED_BASE_URL}')"
+  echo "::error::JIRA_BASE_URL ('$(_gha_sanitize "${JIRA_BASE_URL}")') does not match ISSUE_URL host ('${PARSED_BASE_URL}')"
   exit 1
 fi
 JIRA_BASE_URL="${PARSED_BASE_URL}"
@@ -69,7 +70,7 @@ ISSUE_KEY="$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')"
 PROJECT_KEY="${ISSUE_KEY%-*}"
 ISSUE_NUM="${ISSUE_KEY##*-}"
 
-echo "::notice::🔗 Jira source: ${ISSUE_URL} (project=${PROJECT_KEY}, key=${ISSUE_KEY})"
+echo "::notice::🔗 Jira source: $(_gha_sanitize "${ISSUE_URL}") (project=$(_gha_sanitize "${PROJECT_KEY}"), key=$(_gha_sanitize "${ISSUE_KEY}"))"
 
 # ---------------------------------------------------------------------------
 # Fetch issue context via fullsend CLI

@@ -2505,7 +2505,7 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
     PR_BODY_TEXT="$(forge_get_pr_details "${OPEN_PR}" "body" | jq -r '.body // .description // empty' 2>/dev/null || true)"
     PR_CLOSES_THIS_ISSUE=false
     if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
-      if grep -qF -- "${WORK_ITEM_URL}" <<<"${PR_BODY_TEXT}"; then
+      if printf '%s\n' "${PR_BODY_TEXT}" | grep -qwF -- "${WORK_ITEM_URL}"; then
         PR_CLOSES_THIS_ISSUE=true
       fi
     elif pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
@@ -2694,11 +2694,9 @@ esac
 if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
   ISSUE_REFERENCE="Related to ${WORK_ITEM_URL}"
 elif [ "${CLOSES_ISSUE}" = "false" ]; then
-  ISSUE_REF_KEYWORD="Related to"
-  ISSUE_REFERENCE="${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}"
+  ISSUE_REFERENCE="Related to #${ISSUE_NUMBER}"
 else
-  ISSUE_REF_KEYWORD="Closes"
-  ISSUE_REFERENCE="${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}"
+  ISSUE_REFERENCE="Closes #${ISSUE_NUMBER}"
 fi
 
 PR_BODY="${DESCRIPTION}
