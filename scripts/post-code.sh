@@ -25,7 +25,7 @@
 #                       GitLab: api scope (project or personal access token)
 #   REPO_FULL_NAME    — owner/repo or group/project path
 #   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab); not required
-#                       when FULLSEND_TRACKER=jira
+#                       when the source tracker differs from FULLSEND_FORGE
 #   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
@@ -352,11 +352,11 @@ report_post_failure_to_issue() {
   fi
   POST_FAILURE_REPORTED=true
 
-  # A Jira-sourced run may target a repository with no corresponding forge
-  # issue. The workflow status notification remains the source-of-truth; do
-  # not guess a target issue number and risk commenting on unrelated work.
-  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
-    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-Jira work item}; see workflow logs"
+  # An external tracker may have no corresponding target-forge issue. The
+  # workflow status notification remains the source-of-truth; do not guess a
+  # target issue number and risk commenting on unrelated work.
+  if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
+    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
     return 0
   fi
 
@@ -2102,14 +2102,19 @@ RUN_DIR="$(pwd)"
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
 ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+WORK_ITEM_URL="${FULLSEND_WORK_ITEM_URL:-${ISSUE_URL:-}}"
+EXTERNAL_WORK_ITEM=false
 
-if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
-  : "${ISSUE_URL:?ISSUE_URL is required for Jira-sourced runs}"
-  if [[ ! "${ISSUE_URL}" =~ /browse/([A-Z][A-Z0-9]*-[0-9]+)$ ]]; then
-    gha_echo error "ISSUE_URL does not contain a valid Jira work-item key"
+if [ -n "${FULLSEND_TRACKER:-}" ] \
+   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_FORGE}" ]; then
+  EXTERNAL_WORK_ITEM=true
+  : "${WORK_ITEM_URL:?FULLSEND_WORK_ITEM_URL is required for external-tracker runs}"
+  WORK_ITEM_KEY="${FULLSEND_WORK_ITEM_KEY:-${WORK_ITEM_URL%/}}"
+  WORK_ITEM_KEY="${WORK_ITEM_KEY##*/}"
+  if [[ ! "${WORK_ITEM_KEY}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    gha_echo error "FULLSEND_WORK_ITEM_URL does not contain a valid work-item key"
     exit 1
   fi
-  WORK_ITEM_KEY="${BASH_REMATCH[1]}"
 else
   : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
   [[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
@@ -2241,7 +2246,7 @@ fi
 post_noop_comment() {
   local reason="$1"
 
-  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
     gha_echo notice "No PR created for ${WORK_ITEM_KEY}: ${reason}"
     return 0
   fi
@@ -2499,8 +2504,8 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
     # anyway as defense-in-depth against cross-issue commit injection.
     PR_BODY_TEXT="$(forge_get_pr_details "${OPEN_PR}" "body" | jq -r '.body // .description // empty' 2>/dev/null || true)"
     PR_CLOSES_THIS_ISSUE=false
-    if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
-      if grep -qF -- "${ISSUE_URL}" <<<"${PR_BODY_TEXT}"; then
+    if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+      if grep -qF -- "${WORK_ITEM_URL}" <<<"${PR_BODY_TEXT}"; then
         PR_CLOSES_THIS_ISSUE=true
       fi
     elif pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
@@ -2552,7 +2557,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   forge_write_output "pr_url" "${EXISTING_PR_URL}"
 
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
-  if [ "${FULLSEND_TRACKER:-}" != "jira" ]; then
+  if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
     maybe_assign_pr "${EXISTING_PR_NUM}"
   fi
   exit 0
@@ -2655,7 +2660,7 @@ if echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+\('; then
   PR_TITLE="${COMMIT_SUBJECT}"
 elif echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+: '; then
   # Conventional commit without scope — inject issue reference
-  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
     PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(${WORK_ITEM_KEY}): /")"
   else
     PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
@@ -2670,7 +2675,7 @@ if [ -z "${COMMIT_BODY}" ]; then
 fi
 
 if [ -z "${COMMIT_BODY}" ]; then
-  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
     DESCRIPTION="Automated implementation for ${WORK_ITEM_KEY}."
   else
     DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
@@ -2686,8 +2691,8 @@ case "${PR_BODY_SCAN_STATUS}" in
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
 esac
 
-if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
-  ISSUE_REFERENCE="Related to ${ISSUE_URL}"
+if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+  ISSUE_REFERENCE="Related to ${WORK_ITEM_URL}"
 elif [ "${CLOSES_ISSUE}" = "false" ]; then
   ISSUE_REF_KEYWORD="Related to"
   ISSUE_REFERENCE="${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}"
@@ -2738,6 +2743,6 @@ forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 # ---------------------------------------------------------------------------
 enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
-if [ "${FULLSEND_TRACKER:-}" != "jira" ]; then
+if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
   maybe_assign_pr "${PR_NUMBER_FROM_URL}"
 fi

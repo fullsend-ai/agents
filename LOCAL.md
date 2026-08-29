@@ -156,9 +156,10 @@ triage (which uses `FULLSEND_FORGE=jira`), the code agent keeps
 a separate `FULLSEND_TRACKER=jira` signal. The Jira overlay composes
 with the target-forge overlay via merge-all-matching.
 
-Jira-source runs do not require `ISSUE_NUMBER`. The code agent derives the
-work-item key from `FULLSEND_WORK_ITEM_URL`, uses it in the branch and PR, and
-does not treat the Jira numeric suffix as a GitHub or GitLab issue number.
+When the source tracker differs from the target forge, the code agent does not
+require `ISSUE_NUMBER`. It derives the work-item key from
+`FULLSEND_WORK_ITEM_URL`, uses it in the branch and PR, and does not treat the
+external key as a GitHub or GitLab issue number.
 
 ```bash
 # Jira-source env vars (runner-only — never enter sandbox)

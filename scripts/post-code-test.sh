@@ -64,12 +64,12 @@ fi
 rewrite_title() {
   local commit_subject="$1"
   local issue_number="$2"
-  local tracker="${3:-github}"
+  local identity_mode="${3:-forge-native}"
 
   if echo "${commit_subject}" | grep -qE '^[a-z]+\('; then
     echo "${commit_subject}"
   elif echo "${commit_subject}" | grep -qE '^[a-z]+: '; then
-    if [ "${tracker}" = "jira" ]; then
+    if [ "${identity_mode}" = "external" ]; then
       echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(${issue_number}): /"
     else
       echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
@@ -171,12 +171,12 @@ run_test "ci-type" \
   "10" \
   "ci(#10): update workflow permissions"
 
-actual_jira_title="$(rewrite_title "fix: handle cross-forge work" "FSENDAI-4804" jira)"
-if [ "${actual_jira_title}" != "fix(FSENDAI-4804): handle cross-forge work" ]; then
-  echo "FAIL: jira-title-uses-work-item-key"
+actual_external_title="$(rewrite_title "fix: handle cross-forge work" "FSENDAI-4804" external)"
+if [ "${actual_external_title}" != "fix(FSENDAI-4804): handle cross-forge work" ]; then
+  echo "FAIL: external-tracker-title-uses-work-item-key"
   FAILURES=$((FAILURES + 1))
 else
-  echo "PASS: jira-title-uses-work-item-key"
+  echo "PASS: external-tracker-title-uses-work-item-key"
 fi
 
 # ---------------------------------------------------------------------------
@@ -191,7 +191,7 @@ build_pr_body() {
   local pr_body_from_result="${5:-}"  # optional: agent-provided pr_body
   local pr_body_scan_status="${6:-skipped}"  # passed|blocked|error|skipped
   local closes_issue="${7:-true}"  # optional: "true" or "false"
-  local tracker="${8:-github}"
+  local identity_mode="${8:-forge-native}"
   local issue_url="${9:-}"
 
   local description=""
@@ -219,7 +219,7 @@ build_pr_body() {
   # Fall back if pr_body was absent or stripped to empty
   if [ -z "${description}" ]; then
     if [ -z "${commit_body}" ]; then
-      if [ "${tracker}" = "jira" ]; then
+      if [ "${identity_mode}" = "external" ]; then
         description="Automated implementation for ${issue_number}."
       else
         description="Automated implementation for issue #${issue_number}."
@@ -230,7 +230,7 @@ build_pr_body() {
   fi
 
   local issue_reference
-  if [ "${tracker}" = "jira" ]; then
+  if [ "${identity_mode}" = "external" ]; then
     issue_reference="Related to ${issue_url}"
   elif [ "${closes_issue}" = "false" ]; then
     issue_reference="Related to #${issue_number}"
@@ -319,13 +319,13 @@ run_body_test "empty-body-fallback" \
   "99" "agent/99-add-feature" \
   "Automated implementation for issue #99." "yes"
 
-jira_body="$(build_pr_body "" "FSENDAI-4804" "agent/FSENDAI-4804-fix" "abc123..def456" "" skipped true jira "https://redhat.atlassian.net/browse/FSENDAI-4804")"
-if ! grep -qF "Related to https://redhat.atlassian.net/browse/FSENDAI-4804" <<<"${jira_body}" \
-   || grep -qF "Closes #" <<<"${jira_body}"; then
-  echo "FAIL: jira-body-links-work-item-without-forge-close"
+external_body="$(build_pr_body "" "FSENDAI-4804" "agent/FSENDAI-4804-fix" "abc123..def456" "" skipped true external "https://redhat.atlassian.net/browse/FSENDAI-4804")"
+if ! grep -qF "Related to https://redhat.atlassian.net/browse/FSENDAI-4804" <<<"${external_body}" \
+   || grep -qF "Closes #" <<<"${external_body}"; then
+  echo "FAIL: external-tracker-body-links-work-item-without-forge-close"
   FAILURES=$((FAILURES + 1))
 else
-  echo "PASS: jira-body-links-work-item-without-forge-close"
+  echo "PASS: external-tracker-body-links-work-item-without-forge-close"
 fi
 
 # Empty commit body should still not have Changed files

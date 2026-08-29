@@ -161,9 +161,9 @@ not confused with the numbered process steps below:
    branches properly (it scopes the search to this issue's number and
    explains why local refs must be used rather than `origin/` ones).
    Step 4 needs the work-item identifier that step 1 would normally have
-   established. On a retry, use `ISSUE_NUMBER` for forge-native work or the
-   Jira key from `ISSUE_URL` for Jira-sourced work rather than re-running
-   step 1.
+   established. On a retry, use `ISSUE_NUMBER` when the source tracker is the
+   target forge, or derive the key from `FULLSEND_WORK_ITEM_URL` when it is an
+   external tracker, rather than re-running step 1.
 
 **R4. Fix only the reported failure.** Parse the diagnostics, identify
    the root cause, and make the minimal fix. Do not restart the
@@ -205,8 +205,9 @@ echo "::notice::STEP 1: Identify issue"
 
 Determine which issue to implement:
 
-- For forge-native work, use `ISSUE_NUMBER` when it is set. For Jira-sourced
-  work, derive the key from `ISSUE_URL`; do not invent a numeric forge issue.
+- When the source tracker is the target forge, use `ISSUE_NUMBER` when it is
+  set. For an external tracker, derive the key from `FULLSEND_WORK_ITEM_URL`;
+  do not invent a numeric target-forge issue.
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
@@ -231,9 +232,10 @@ else
 fi
 ```
 
-Record the **issue number**. You will reference it in the branch name and
-commit messages. For Jira-sourced issues, use the `ISSUE_NUMBER`
-environment variable (set in the Jira overlay's sandbox env block).
+Record the **work-item identifier**. You will reference it in the branch name
+and commit messages. When the source tracker differs from the target forge,
+derive it from `FULLSEND_WORK_ITEM_URL`; do not assume a target-forge issue
+number exists.
 
 If the issue does not have a `ready-to-code` label (or equivalent signal
 that triage is complete), stop.

@@ -707,11 +707,11 @@ report_post_failure_to_issue() {
   fi
   POST_FAILURE_REPORTED=true
 
-  # A Jira-sourced run may target a repository with no corresponding forge
-  # issue. The workflow status notification remains the source-of-truth; do
-  # not guess a target issue number and risk commenting on unrelated work.
-  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
-    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-Jira work item}; see workflow logs"
+  # An external tracker may have no corresponding target-forge issue. The
+  # workflow status notification remains the source-of-truth; do not guess a
+  # target issue number and risk commenting on unrelated work.
+  if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
+    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
     return 0
   fi
 
