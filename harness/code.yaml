@@ -138,11 +138,12 @@ overlays:
   - when: 'event.source.system == "jira"'
     pre_script: scripts/pre-code-jira.sh
     host_files:
-      - src: /tmp/jira-issue-context.json
+      - src: ${JIRA_ISSUE_CONTEXT_FILE}
         dest: /sandbox/workspace/.issue-context.json
         optional: true
     env:
       runner:
+        JIRA_ISSUE_CONTEXT_FILE: /tmp/jira-issue-context.json
         JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
         JIRA_TOKEN: "${JIRA_TOKEN}"
         JIRA_BASE_URL: "${JIRA_BASE_URL}"

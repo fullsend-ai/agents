@@ -72,6 +72,7 @@ base_env() {
   local mock_bin="$1"
   echo "PATH=${mock_bin}:${PATH}"
   echo "ISSUE_URL=https://acme.atlassian.net/browse/PROJ-42"
+  echo "JIRA_ISSUE_CONTEXT_FILE=${TMPDIR}/jira-issue-context.json"
   echo "JIRA_USER_EMAIL=bot@acme.com"
   echo "JIRA_TOKEN=fake-jira-token"
   echo "JIRA_BASE_URL=https://acme.atlassian.net"
@@ -292,7 +293,7 @@ run_test_context_file() {
     return
   fi
 
-  local context_file="/tmp/jira-issue-context.json"
+  local context_file="${TMPDIR}/jira-issue-context.json"
   if [[ ! -f "${context_file}" ]]; then
     echo "FAIL: ${test_name} — context file not created at ${context_file}"
     FAILURES=$((FAILURES + 1))

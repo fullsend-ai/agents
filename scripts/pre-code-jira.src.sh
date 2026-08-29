@@ -3,13 +3,14 @@
 #
 # Fetches the Jira issue through `fullsend issues get --tracker jira`,
 # validates the response against the normalized event, and writes the
-# issue context to a fixed path that host_files copies into the sandbox.
+# issue context to the path that host_files copies into the sandbox.
 # Jira credentials stay on the runner — they never enter the sandbox.
 #
 # Runs on the CI runner BEFORE sandbox creation.
 #
 # Required environment variables:
 #   ISSUE_URL          — Jira browse URL (https://<host>.atlassian.net/browse/PROJ-123)
+#   JIRA_ISSUE_CONTEXT_FILE — runner path for the fetched issue context
 #   JIRA_USER_EMAIL    — Jira account email for Basic auth
 #   JIRA_TOKEN         — Jira Cloud API token
 #   REPO_FULL_NAME     — target repo (owner/repo), used for pre-commit tool install
@@ -25,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
+: "${JIRA_ISSUE_CONTEXT_FILE:?JIRA_ISSUE_CONTEXT_FILE must be set}"
 : "${JIRA_USER_EMAIL:?JIRA_USER_EMAIL must be set}"
 : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
 
@@ -72,7 +74,7 @@ echo "::notice::🔗 Jira source: ${ISSUE_URL} (project=${PROJECT_KEY}, key=${IS
 # ---------------------------------------------------------------------------
 # Fetch issue context via fullsend CLI
 # ---------------------------------------------------------------------------
-ISSUE_CONTEXT_PATH="/tmp/jira-issue-context.json"
+ISSUE_CONTEXT_PATH="${JIRA_ISSUE_CONTEXT_FILE}"
 
 if ! command -v fullsend >/dev/null 2>&1; then
   echo "::error::fullsend CLI not found — cannot fetch Jira issue"
