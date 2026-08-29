@@ -188,7 +188,7 @@ vars. Key differences from single-forge setup:
   runner. The Jira overlay composes with the target-forge overlay
   (GitHub or GitLab) via merge-all-matching.
 - **External work-item identity** — when the source tracker differs from the
-  target forge, the code agent derives the key from `FULLSEND_WORK_ITEM_URL`.
+  target forge, the code agent derives the key from `ISSUE_URL`.
   Branch names and PR text use that key and link the source URL; they do not
   invent a numeric target-forge issue reference. Target-forge issue comments
   and assignee lookup are skipped when no such issue exists.
