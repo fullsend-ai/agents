@@ -46,7 +46,7 @@ env:
     TRIAGE_AUTO_CODE_CATEGORIES: "bug,documentation,performance"
 
 overlays:
-  - when: 'runtime.forge == "github"'
+  - when: 'has(event.source) && event.source.system == "github"'
     providers:
       - providers/github-ro.yaml
     openshell:
@@ -68,7 +68,7 @@ overlays:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
-  - when: 'runtime.forge == "gitlab"'
+  - when: 'has(event.source) && event.source.system == "gitlab"'
     providers:
       - providers/gitlab-rw.yaml
     openshell:
@@ -90,7 +90,7 @@ overlays:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
-  - when: 'runtime.forge == "jira"'
+  - when: 'has(event.source) && event.source.system == "jira"'
     providers:
       - providers/jira-ro.yaml
     openshell:
