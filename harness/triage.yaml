@@ -91,6 +91,7 @@ overlays:
     skills:
       - skills/jira-forge
       - skills/issue-labels/jira
+      - skills/jira-components
     host_files:
       - src: env/jira/triage.env
         dest: /sandbox/workspace/.env.d/triage.env

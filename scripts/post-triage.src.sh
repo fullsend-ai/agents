@@ -651,6 +651,60 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
   fi
 fi
 
+# --- Process component_actions (Jira only) ---
+
+HAS_COMPONENT_ACTIONS=$(jq 'has("component_actions")' "${RESULT_FILE}")
+if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
+  if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+    COMPONENT_REASON=$(jq -r '.component_actions.reason' "${RESULT_FILE}")
+    COMPONENT_COUNT=$(jq '.component_actions.actions | length' "${RESULT_FILE}")
+
+    echo "Processing ${COMPONENT_COUNT} component action(s)..."
+
+    # Get current components on the issue.
+    CURRENT_COMPONENTS=$(tracker_get_components) || CURRENT_COMPONENTS="[]"
+
+    # Build the new component list by applying add/remove actions.
+    NEW_COMPONENTS="${CURRENT_COMPONENTS}"
+    COMPONENTS_APPLIED=0
+    for i in $(seq 0 $((COMPONENT_COUNT - 1))); do
+      CA_ACTION=$(jq -r ".component_actions.actions[${i}].action" "${RESULT_FILE}")
+      CA_COMPONENT=$(jq -r ".component_actions.actions[${i}].component" "${RESULT_FILE}")
+
+      case "${CA_ACTION}" in
+        add)
+          echo "Adding component '$(_gha_sanitize "${CA_COMPONENT}")'..."
+          NEW_COMPONENTS=$(echo "${NEW_COMPONENTS}" | jq --arg c "${CA_COMPONENT}" \
+            'if any(. == $c) then . else . + [$c] end')
+          COMPONENTS_APPLIED=$((COMPONENTS_APPLIED + 1))
+          ;;
+        remove)
+          echo "Removing component '$(_gha_sanitize "${CA_COMPONENT}")'..."
+          NEW_COMPONENTS=$(echo "${NEW_COMPONENTS}" | jq --arg c "${CA_COMPONENT}" \
+            '[.[] | select(. != $c)]')
+          COMPONENTS_APPLIED=$((COMPONENTS_APPLIED + 1))
+          ;;
+        *)
+          echo "::warning::Unknown component action '$(_gha_sanitize "${CA_ACTION}")' for component '$(_gha_sanitize "${CA_COMPONENT}")'"
+          ;;
+      esac
+    done
+
+    # Apply the updated component list to the issue.
+    if [[ "${COMPONENTS_APPLIED}" -gt 0 ]]; then
+      COMPONENTS_PAYLOAD=$(echo "${NEW_COMPONENTS}" | jq '[.[] | {name: .}]')
+      tracker_set_components "${COMPONENTS_PAYLOAD}"
+
+      COMMENT="${COMMENT}
+
+---
+**Components:** ${COMPONENT_REASON}"
+    fi
+  else
+    echo "Ignoring component_actions — not supported on ${FULLSEND_TRACKER} tracker"
+  fi
+fi
+
 # --- Apply deferred label (must be last label mutation) ---
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then

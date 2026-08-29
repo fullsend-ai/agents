@@ -131,6 +131,9 @@
     },
     "label_actions": {
       "$ref": "#/$defs/label_actions"
+    },
+    "component_actions": {
+      "$ref": "#/$defs/component_actions"
     }
   },
   "allOf": [
@@ -220,6 +223,32 @@
             "properties": {
               "action": { "type": "string", "enum": ["add", "remove"] },
               "label": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9._/: +-]+$" }
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "component_actions": {
+      "type": "object",
+      "required": ["reason", "actions"],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Single sentence explaining why these components are being assigned or removed"
+        },
+        "actions": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": {
+            "type": "object",
+            "required": ["action", "component"],
+            "properties": {
+              "action": { "type": "string", "enum": ["add", "remove"] },
+              "component": { "type": "string", "minLength": 1 }
             },
             "additionalProperties": false
           }
