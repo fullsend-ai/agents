@@ -24,7 +24,8 @@
 #                       GitHub: contents:write + issues:write + pull-requests:write
 #                       GitLab: api scope (project or personal access token)
 #   REPO_FULL_NAME    — owner/repo or group/project path
-#   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab)
+#   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab); not required
+#                       when FULLSEND_TRACKER=jira
 #   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
@@ -350,6 +351,14 @@ report_post_failure_to_issue() {
     return 0
   fi
   POST_FAILURE_REPORTED=true
+
+  # A Jira-sourced run may target a repository with no corresponding forge
+  # issue. The workflow status notification remains the source-of-truth; do
+  # not guess a target issue number and risk commenting on unrelated work.
+  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-Jira work item}; see workflow logs"
+    return 0
+  fi
 
   _post_failure_ensure_token
 
@@ -2092,11 +2101,22 @@ RUN_DIR="$(pwd)"
 
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
-: "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
-trap 'report_post_failure_to_issue' ERR
+ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 
-[[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
-  post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
+if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  : "${ISSUE_URL:?ISSUE_URL is required for Jira-sourced runs}"
+  if [[ ! "${ISSUE_URL}" =~ /browse/([A-Z][A-Z0-9]*-[0-9]+)$ ]]; then
+    gha_echo error "ISSUE_URL does not contain a valid Jira work-item key"
+    exit 1
+  fi
+  WORK_ITEM_KEY="${BASH_REMATCH[1]}"
+else
+  : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
+  [[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
+    post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
+  WORK_ITEM_KEY="${ISSUE_NUMBER}"
+fi
+trap 'report_post_failure_to_issue' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -2220,6 +2240,12 @@ fi
 # ---------------------------------------------------------------------------
 post_noop_comment() {
   local reason="$1"
+
+  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+    gha_echo notice "No PR created for ${WORK_ITEM_KEY}: ${reason}"
+    return 0
+  fi
+
   local safe_issue_number
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
 
@@ -2276,14 +2302,13 @@ if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ];
 fi
 
 # ---------------------------------------------------------------------------
-# 1b. Enforce agent/<ISSUE_NUMBER>-* branch namespace
+# 1b. Enforce agent/<WORK_ITEM_KEY>-* branch namespace
 #
 # The agent chooses its own branch name inside the sandbox. Rename it
-# deterministically using the trusted ISSUE_NUMBER (sourced from the
-# CI event, not from agent output) so agent-authored pushes are
+# deterministically using the trusted work-item identifier so agent-authored pushes are
 # confined to this issue's namespace.
 # ---------------------------------------------------------------------------
-SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${ISSUE_NUMBER}")"
+SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${WORK_ITEM_KEY}")"
 if [ "${BRANCH}" != "${SAFE_BRANCH}" ]; then
   gha_echo warning "Renaming agent branch '${BRANCH}' to '${SAFE_BRANCH}'"
   git branch -M "${SAFE_BRANCH}"
@@ -2462,26 +2487,30 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
       "Could not query open PRs for branch '${BRANCH}' — refusing to push."
   fi
   if [ -z "${OPEN_PR}" ]; then
-    if [[ "${BRANCH}" != agent/${ISSUE_NUMBER}-* ]]; then
+    if [[ "${BRANCH}" != agent/${WORK_ITEM_KEY}-* ]]; then
       post_fail_to_issue branch-namespace-violation \
-        "Branch '${BRANCH}' is outside agent/${ISSUE_NUMBER}-* namespace — refusing to delete."
+        "Branch '${BRANCH}' is outside agent/${WORK_ITEM_KEY}-* namespace — refusing to delete."
     fi
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
     forge_delete_remote_branch "${BRANCH}"
   else
     # Verify the open PR belongs to this issue. With deterministic branch
-    # naming (agent/<ISSUE_NUMBER>-*) this should always hold, but check
+    # naming (agent/<WORK_ITEM_KEY>-*) this should always hold, but check
     # anyway as defense-in-depth against cross-issue commit injection.
     PR_BODY_TEXT="$(forge_get_pr_details "${OPEN_PR}" "body" | jq -r '.body // .description // empty' 2>/dev/null || true)"
     PR_CLOSES_THIS_ISSUE=false
-    if pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
+    if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+      if grep -qF -- "${ISSUE_URL}" <<<"${PR_BODY_TEXT}"; then
+        PR_CLOSES_THIS_ISSUE=true
+      fi
+    elif pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
       PR_CLOSES_THIS_ISSUE=true
     fi
     if [ "${PR_CLOSES_THIS_ISSUE}" = "false" ]; then
       post_fail_to_issue branch-collision \
-        "Remote branch '${BRANCH}' backs open PR #${OPEN_PR}, which does not reference issue #${ISSUE_NUMBER}. Refusing to push to avoid cross-issue commit injection."
+        "Remote branch '${BRANCH}' backs open PR #${OPEN_PR}, which does not reference work item ${WORK_ITEM_KEY}. Refusing to push to avoid cross-work-item commit injection."
     fi
-    echo "Open PR #${OPEN_PR} uses ${BRANCH} and references issue #${ISSUE_NUMBER} — keeping remote branch"
+    echo "Open PR #${OPEN_PR} uses ${BRANCH} and references ${WORK_ITEM_KEY} — keeping remote branch"
   fi
 fi
 
@@ -2523,7 +2552,9 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   forge_write_output "pr_url" "${EXISTING_PR_URL}"
 
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
-  maybe_assign_pr "${EXISTING_PR_NUM}"
+  if [ "${FULLSEND_TRACKER:-}" != "jira" ]; then
+    maybe_assign_pr "${EXISTING_PR_NUM}"
+  fi
   exit 0
 fi
 
@@ -2624,7 +2655,11 @@ if echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+\('; then
   PR_TITLE="${COMMIT_SUBJECT}"
 elif echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+: '; then
   # Conventional commit without scope — inject issue reference
-  PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
+  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+    PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(${WORK_ITEM_KEY}): /")"
+  else
+    PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
+  fi
 else
   # Non-conventional title — leave as-is
   PR_TITLE="${COMMIT_SUBJECT}"
@@ -2635,7 +2670,11 @@ if [ -z "${COMMIT_BODY}" ]; then
 fi
 
 if [ -z "${COMMIT_BODY}" ]; then
-  DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
+  if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+    DESCRIPTION="Automated implementation for ${WORK_ITEM_KEY}."
+  else
+    DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
+  fi
 else
   DESCRIPTION="${COMMIT_BODY}"
 fi
@@ -2647,17 +2686,21 @@ case "${PR_BODY_SCAN_STATUS}" in
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
 esac
 
-if [ "${CLOSES_ISSUE}" = "false" ]; then
+if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  ISSUE_REFERENCE="Related to ${ISSUE_URL}"
+elif [ "${CLOSES_ISSUE}" = "false" ]; then
   ISSUE_REF_KEYWORD="Related to"
+  ISSUE_REFERENCE="${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}"
 else
   ISSUE_REF_KEYWORD="Closes"
+  ISSUE_REFERENCE="${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}"
 fi
 
 PR_BODY="${DESCRIPTION}
 
 ---
 
-${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}
+${ISSUE_REFERENCE}
 
 ### Post-script verification
 
@@ -2695,4 +2738,6 @@ forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 # ---------------------------------------------------------------------------
 enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
-maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+if [ "${FULLSEND_TRACKER:-}" != "jira" ]; then
+  maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+fi

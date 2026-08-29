@@ -48,6 +48,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script validates the agent's chosen target branch against this variable before pushing. Set via `env.runner` in `harness/code.yaml` (never injected into the sandbox). | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
 | `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads issue context from `/sandbox/workspace/.issue-context.json` (prepared by the Jira pre-script) instead of calling forge APIs. Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
+| `ISSUE_NUMBER` | Numeric source issue identifier used by forge-native GitHub and GitLab runs. It is optional for Jira-source runs because a Jira key is not a target-forge issue number. | (set by forge-native workflows) | Positive integer |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
 
@@ -186,6 +187,11 @@ vars. Key differences from single-forge setup:
   copies the context into the sandbox. Jira credentials stay on the
   runner. The Jira overlay composes with the target-forge overlay
   (GitHub or GitLab) via merge-all-matching.
+- **Jira work-item identity** — the code agent derives the Jira key from
+  `FULLSEND_WORK_ITEM_URL`. Branch names and PR text use that key and link
+  the Jira URL; they do not invent a numeric target-forge issue reference.
+  Target-forge issue comments and assignee lookup are skipped when no such
+  issue exists.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
   harnesses using `base:` composition should override at the forge level

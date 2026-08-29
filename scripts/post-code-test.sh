@@ -64,11 +64,16 @@ fi
 rewrite_title() {
   local commit_subject="$1"
   local issue_number="$2"
+  local tracker="${3:-github}"
 
   if echo "${commit_subject}" | grep -qE '^[a-z]+\('; then
     echo "${commit_subject}"
   elif echo "${commit_subject}" | grep -qE '^[a-z]+: '; then
-    echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
+    if [ "${tracker}" = "jira" ]; then
+      echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(${issue_number}): /"
+    else
+      echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
+    fi
   else
     echo "${commit_subject}"
   fi
@@ -166,6 +171,14 @@ run_test "ci-type" \
   "10" \
   "ci(#10): update workflow permissions"
 
+actual_jira_title="$(rewrite_title "fix: handle cross-forge work" "FSENDAI-4804" jira)"
+if [ "${actual_jira_title}" != "fix(FSENDAI-4804): handle cross-forge work" ]; then
+  echo "FAIL: jira-title-uses-work-item-key"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-title-uses-work-item-key"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the PR body assembly logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -178,6 +191,8 @@ build_pr_body() {
   local pr_body_from_result="${5:-}"  # optional: agent-provided pr_body
   local pr_body_scan_status="${6:-skipped}"  # passed|blocked|error|skipped
   local closes_issue="${7:-true}"  # optional: "true" or "false"
+  local tracker="${8:-github}"
+  local issue_url="${9:-}"
 
   local description=""
   if [ -n "${pr_body_from_result}" ]; then
@@ -204,17 +219,23 @@ build_pr_body() {
   # Fall back if pr_body was absent or stripped to empty
   if [ -z "${description}" ]; then
     if [ -z "${commit_body}" ]; then
-      description="Automated implementation for issue #${issue_number}."
+      if [ "${tracker}" = "jira" ]; then
+        description="Automated implementation for ${issue_number}."
+      else
+        description="Automated implementation for issue #${issue_number}."
+      fi
     else
       description="${commit_body}"
     fi
   fi
 
-  local issue_ref_keyword
-  if [ "${closes_issue}" = "false" ]; then
-    issue_ref_keyword="Related to"
+  local issue_reference
+  if [ "${tracker}" = "jira" ]; then
+    issue_reference="Related to ${issue_url}"
+  elif [ "${closes_issue}" = "false" ]; then
+    issue_reference="Related to #${issue_number}"
   else
-    issue_ref_keyword="Closes"
+    issue_reference="Closes #${issue_number}"
   fi
 
   local pr_body_scan_line
@@ -229,7 +250,7 @@ build_pr_body() {
 
 ---
 
-${issue_ref_keyword} #${issue_number}
+${issue_reference}
 
 ### Post-script verification
 
@@ -297,6 +318,15 @@ run_body_test "empty-body-fallback" \
   "" \
   "99" "agent/99-add-feature" \
   "Automated implementation for issue #99." "yes"
+
+jira_body="$(build_pr_body "" "FSENDAI-4804" "agent/FSENDAI-4804-fix" "abc123..def456" "" skipped true jira "https://redhat.atlassian.net/browse/FSENDAI-4804")"
+if ! grep -qF "Related to https://redhat.atlassian.net/browse/FSENDAI-4804" <<<"${jira_body}" \
+   || grep -qF "Closes #" <<<"${jira_body}"; then
+  echo "FAIL: jira-body-links-work-item-without-forge-close"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-body-links-work-item-without-forge-close"
+fi
 
 # Empty commit body should still not have Changed files
 run_body_test "empty-body-no-changed-files" \

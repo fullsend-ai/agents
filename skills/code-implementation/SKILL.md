@@ -160,9 +160,10 @@ not confused with the numbered process steps below:
    do not guess a branch name: follow step 4, which handles existing
    branches properly (it scopes the search to this issue's number and
    explains why local refs must be used rather than `origin/` ones).
-   Step 4 needs the issue number, which step 1 would normally have
-   established; on a retry take it from the `ISSUE_NUMBER` environment
-   variable the harness sets, rather than re-running step 1.
+   Step 4 needs the work-item identifier that step 1 would normally have
+   established. On a retry, use `ISSUE_NUMBER` for forge-native work or the
+   Jira key from `ISSUE_URL` for Jira-sourced work rather than re-running
+   step 1.
 
 **R4. Fix only the reported failure.** Parse the diagnostics, identify
    the root cause, and make the minimal fix. Do not restart the
@@ -204,7 +205,8 @@ echo "::notice::STEP 1: Identify issue"
 
 Determine which issue to implement:
 
-- If the `ISSUE_NUMBER` environment variable is set, use it.
+- For forge-native work, use `ISSUE_NUMBER` when it is set. For Jira-sourced
+  work, derive the key from `ISSUE_URL`; do not invent a numeric forge issue.
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
