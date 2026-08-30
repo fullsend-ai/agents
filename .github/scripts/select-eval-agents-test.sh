@@ -48,7 +48,7 @@ host_files:
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
 overlays:
-  - when: 'has(event.source) && event.source.system == "github"'
+  - when: 'event.source.system == "github"'
     providers:
       - providers/github-ro.yaml
     openshell:
@@ -60,7 +60,7 @@ overlays:
     host_files:
       - src: env/github/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
-  - when: 'has(event.source) && event.source.system == "gitlab"'
+  - when: 'event.source.system == "gitlab"'
     providers:
       - providers/gitlab-rw.yaml
     openshell:
