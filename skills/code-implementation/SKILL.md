@@ -105,6 +105,50 @@ fractions of the budget so they scale to any timeout value):
   gitlint validation and commit immediately. A commit that fails gitlint
   CI is better than no commit at all.
 
+## Harness execution lifecycle
+
+When modifying harness configuration files (e.g., `harness/code.yaml`),
+understand the order in which the harness processes them:
+
+1. **Config load + validation** — harness YAML is parsed and validated.
+   `host_files` entries are checked for existence at this stage.
+2. **Pre-scripts execute** — runner-side scripts (`pre_script`) run on
+   the CI runner. These can create files, fetch external data, and set
+   up context.
+3. **Sandbox setup** — the sandbox container is created and `host_files`
+   are copied into it.
+4. **Agent execution** — the agent runs inside the sandbox.
+
+### `host_files` timing constraint
+
+Because `host_files` entries are validated at config load time (step 1),
+any file that does not yet exist will cause the harness loader to reject
+the entire agent — before pre-scripts even run. Files created by
+pre-scripts must be marked `optional: true` so the loader does not
+reject the config when the file is absent at load time.
+
+Additionally, use dynamic path variables like `${RUNNER_TEMP}` instead
+of hardcoded paths like `/tmp`. Hardcoded paths are not portable across
+CI runners and may collide with other jobs.
+
+**Correct pattern** for pre-script-generated context files:
+
+```yaml
+host_files:
+  - src: ${RUNNER_TEMP}/context.json
+    dest: /sandbox/workspace/.context.json
+    optional: true
+```
+
+**Incorrect pattern** — will cause loader rejection:
+
+```yaml
+# BAD: file does not exist at config load time, no optional flag
+host_files:
+  - src: /tmp/context.json
+    dest: /sandbox/workspace/.context.json
+```
+
 ## Process
 
 Follow these steps in order. Do not skip steps — with one exception,

@@ -54,11 +54,12 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 ## How the agent works
 
-The code agent follows a three-phase pipeline: pre-script, sandbox execution, post-script.
+The code agent follows a four-phase pipeline: config load, pre-script, sandbox execution, post-script.
 
-1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
-2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
-3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
+1. **Config load** validates harness YAML and checks `host_files` entries for existence. This runs before pre-scripts — files created by pre-scripts must use `optional: true` and dynamic paths (`${RUNNER_TEMP}`) to avoid loader rejection. See the [code-implementation skill](../skills/code-implementation/SKILL.md#harness-execution-lifecycle) for details.
+2. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
+3. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
+4. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 
 This separation ensures the agent never has direct write access to the repository.
 
