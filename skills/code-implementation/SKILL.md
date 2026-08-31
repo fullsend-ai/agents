@@ -160,9 +160,10 @@ not confused with the numbered process steps below:
    do not guess a branch name: follow step 4, which handles existing
    branches properly (it scopes the search to this issue's number and
    explains why local refs must be used rather than `origin/` ones).
-   Step 4 needs the issue number, which step 1 would normally have
-   established; on a retry take it from the `ISSUE_NUMBER` environment
-   variable the harness sets, rather than re-running step 1.
+   Step 4 needs the work-item identifier that step 1 would normally have
+   established. On a retry, use `ISSUE_NUMBER` when the source tracker is the
+   target forge, or derive the key from `ISSUE_URL` when it is an
+   external tracker, rather than re-running step 1.
 
 **R4. Fix only the reported failure.** Parse the diagnostics, identify
    the root cause, and make the minimal fix. Do not restart the
@@ -204,21 +205,35 @@ echo "::notice::STEP 1: Identify issue"
 
 Determine which issue to implement:
 
-- If the `ISSUE_NUMBER` environment variable is set, use it.
+- When the source tracker is the target forge, use `ISSUE_NUMBER` when it is
+  set. For an external tracker, derive the key from `ISSUE_URL`;
+  do not invent a numeric target-forge issue.
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue using the forge-appropriate command from your forge
-skill (e.g., `gh issue view` on GitHub, `curl` on GitLab):
+Fetch the issue content. When `FULLSEND_TRACKER` is `jira`, the
+pre-script has already fetched the Jira issue and placed it at
+`/sandbox/workspace/.issue-context.json`. Read that file instead of
+calling forge APIs:
 
 ```bash
-# GitHub:
-gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
-# GitLab: use curl per the gitlab forge skill
+if [ "${FULLSEND_TRACKER:-}" = "jira" ] \
+   && [ -f /sandbox/workspace/.issue-context.json ]; then
+  cat /sandbox/workspace/.issue-context.json
+elif [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  echo "ERROR: FULLSEND_TRACKER=jira but /sandbox/workspace/.issue-context.json is missing" >&2
+  exit 1
+else
+  # GitHub:
+  gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
+  # GitLab: use curl per the gitlab forge skill
+fi
 ```
 
-Record the **issue number**. You will reference it in the branch name and
-commit messages.
+Record the **work-item identifier**. You will reference it in the branch name
+and commit messages. When the source tracker differs from the target forge,
+derive it from `ISSUE_URL`; do not assume a target-forge issue
+number exists.
 
 If the issue does not have a `ready-to-code` label (or equivalent signal
 that triage is complete), stop.

@@ -176,9 +176,9 @@ forge-specific skills provide the appropriate CLI recipes.
 
 `gitlab-fix-ops.lib.sh` validates `GITLAB_HOST` against `CI_SERVER_HOST`,
 a GitLab CI predefined variable set automatically by the runner. Validation
-fails closed when `CI_SERVER_HOST` is not set. The network policy in
-`policies/gitlab/fix.yaml` must also be updated to allow connections to
-the host.
+fails closed when `CI_SERVER_HOST` is not set. The GitLab profile in
+`profiles/fullsend-gitlab-code.yaml` must also be updated to allow
+connections to the host.
 
 ## Custom network policy
 

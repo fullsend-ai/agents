@@ -165,7 +165,9 @@ agent prompt:
 If the new option requires the agent to reach a new external service
 from the sandbox:
 
-- [ ] Update `policies/<forge>/<agent>.yaml` to allow the new host/port
+- [ ] Add the new host/port to the appropriate profile under `profiles/`
+      (e.g., `fullsend-gitlab-ro.yaml`, `fullsend-gitlab-code.yaml`) or
+      create a new provider/profile pair under `providers/` and `profiles/`
 - [ ] This is rare — most configuration changes don't need network
       changes
 
