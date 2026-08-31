@@ -2,7 +2,7 @@
 id: fullsend-jira-ro
 display_name: Fullsend Jira (read-only)
 description: Read-only Jira Cloud API access for fullsend agents
-category: project_management
+category: data
 endpoints:
   # Jira Cloud only (v1) — see design.md Decision 7.
   - host: "*.atlassian.net"
