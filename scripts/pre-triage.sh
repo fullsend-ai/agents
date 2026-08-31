@@ -760,7 +760,7 @@ tracker_get_components() {
     echo "ERROR: failed to get components for issue ${ISSUE_NUMBER}" >&2
     return 1
   }
-  echo "${response}" | jq -r '[.fields.components[].name]'
+  echo "${response}" | jq -r '[(.fields.components // [])[].name]'
 }
 
 # --- Comments ---
