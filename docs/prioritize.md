@@ -91,9 +91,9 @@ If you use `base:` composition to override `harness/prioritize.yaml`:
 - **`ORG` and `PROJECT_NUMBER` are now optional**: These were previously
   hard-required; they are now soft-optional. When unset, the project
   board update is skipped and scores are posted as a comment only.
-- **`policy`, `skills`, and `host_files` live in forge sections**: This
-  harness defines policy, skills, and the forge-specific env file
-  (`env/github/prioritize.env` / `env/gitlab/prioritize.env`) under
+- **`providers`, `openshell`, `skills`, and `host_files` live in forge sections**: This
+  harness defines providers, openshell profiles, skills, and the forge-specific
+  env file (`env/github/prioritize.env` / `env/gitlab/prioritize.env`) under
   `forge.<platform>` rather than at the top level.
 
 ### GitLab host validation
