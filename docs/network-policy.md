@@ -14,17 +14,17 @@ The policy controls two things:
 
 A request is allowed only when both the destination host and the calling
 binary match an entry in the policy. Even if a host is in the allowlist,
-only the listed binaries can reach it. `curl` is excluded from GitHub-forge policies to prevent raw HTTP
-access with injected credentials. The GitLab and Jira forge policies
+only the listed binaries can reach it. `curl` is excluded from GitHub-forge profiles to prevent raw HTTP
+access with injected credentials. The GitLab and Jira forge profiles
 allow `curl` because their API access requires it (the `gh` CLI is not
 available for GitLab or Jira).
 
-Each agent has its own default policy under
-[`policies/`](../policies/). The defaults cover Vertex AI, the forge
-API (GitHub or GitLab), package registries, and gitleaks releases;
-other agents have smaller subsets (for example, the scribe agent only
-needs Vertex AI). See the individual policy files for the full list of
-allowed hosts and binaries.
+All agents share the base policy
+[`policies/base.yaml`](../policies/base.yaml). Forge-specific network
+access (GitHub, GitLab, Jira endpoints) is provided by profiles under
+[`profiles/`](../profiles/) and wired in via forge-level or overlay
+sections in each harness file. See the individual profile files for the
+full list of allowed hosts and binaries.
 
 ## Before you start
 
@@ -94,9 +94,9 @@ succeeds.
 
 ### 4. Repeat for other agents
 
-Each agent has its own policy file with similar but not identical
-defaults. If multiple agents need the same custom hosts, create a
-separate override for each one. For example, the
+All agents share `policies/base.yaml` with forge-specific network
+access provided by profiles. If multiple agents need the same custom
+hosts, create a separate override for each one. For example, the
 [code](code.md) and [fix](fix.md) agents both use
 [`policies/base.yaml`](../policies/base.yaml)
 (GitLab network access is provided by forge-level profiles such as
@@ -125,5 +125,7 @@ To identify which host to add:
 
 - [Code agent](code.md) -- custom harness and sandbox image setup
 - [Fix agent](fix.md) -- fix agent overview
-- [`policies/`](../policies/) -- default network policies for all
-  agents
+- [`policies/base.yaml`](../policies/base.yaml) -- shared base policy
+  for all agents
+- [`profiles/`](../profiles/) -- network profiles for forge-specific
+  access

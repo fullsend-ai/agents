@@ -1,7 +1,7 @@
 ---
 id: fullsend-vertex-ai
-display_name: Fullsend Vertex AI
-description: Google Cloud APIs for Vertex AI inference
+display_name: Fullsend Inference
+description: Anthropic and Google Cloud APIs for model inference
 category: inference
 endpoints:
   - host: "api.anthropic.com"
