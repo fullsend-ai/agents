@@ -302,30 +302,11 @@ run_downgrade_test "approve-all-filtered-removes-findings" \
 # ---------------------------------------------------------------------------
 # Control-label guard tests
 # ---------------------------------------------------------------------------
-
-REVIEW_CONTROL_LABELS=(
-  "ready-for-merge" "requires-manual-review" "rejected"
-  "ready-for-review" "fullsend-no-fix" "fullsend-fix"
-)
-
-is_control_label() {
-  local label="$1"
-  for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
-    if [[ "${cl}" == "${label}" ]]; then
-      return 0
-    fi
-  done
-  # Pipeline-managed label prefixes
-  if [[ "${label}" == risk/* ]]; then
-    return 0
-  fi
-  # Maintainer-set fix-loop budget (fullsend-fix-budget/N); pipeline-managed so
-  # the review agent preserves it rather than treating it as a contextual label.
-  if [[ "${label}" == fullsend-fix-budget/* ]]; then
-    return 0
-  fi
-  return 1
-}
+# Source the production is_control_label from its lib, so these tests fail if
+# the production branch is removed or drifts — not a copy that always passes.
+_LABELS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+# shellcheck source=lib/review-labels.lib.sh
+source "${_LABELS_LIB_DIR}/review-labels.lib.sh"
 
 run_control_label_test() {
   local test_name="$1"

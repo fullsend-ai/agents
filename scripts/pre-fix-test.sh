@@ -113,28 +113,41 @@ BOT="fixbot[bot]"
 
 # A lower label tightens the bot cap and the run is allowed within it.
 run_prefix "${BOT}" 2 ITERATION_CAP 5 $'bug\nfullsend-fix-budget/2'
-check_run "label tightens bot cap 5 -> 2" 0 "caps the fix loop at 2 iteration(s)"
+check_run "label tightens bot cap 5 -> 2" 0 "caps the autonomous fix loop at 2 iteration(s)"
 check_run "tightened cap shows in summary" 0 "FIX_ITERATION=2 of 2"
 
 # A higher label cannot raise the cap: no tightening notice, cap stays 5.
 run_prefix "${BOT}" 5 ITERATION_CAP 5 $'fullsend-fix-budget/9'
 check_run "higher label does not raise bot cap" 0 "FIX_ITERATION=5 of 5"
-if grep -qF "caps the fix loop at" <<< "${OUT}"; then
+if grep -qF "caps the autonomous fix loop" <<< "${OUT}"; then
   echo "FAIL: higher label wrongly emitted a tighten notice"
   FAILURES=$((FAILURES + 1))
 else
   echo "ok: higher label emits no tighten notice"
 fi
 
+# A label equal to the default bot cap does not tighten it: no notice.
+run_prefix "${BOT}" 1 ITERATION_CAP 5 $'fullsend-fix-budget/5'
+if grep -qF "caps the autonomous fix loop" <<< "${OUT}"; then
+  echo "FAIL: label equal to default bot cap wrongly emitted a tighten notice"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "ok: label equal to default bot cap emits no notice"
+fi
+
 # An iteration above the tightened bot cap escalates (exit 1). The escalation
-# message must reference the tightened human cap, not the default 10.
+# names the label to remove and still points to the UNtightened human /fs-fix
+# budget (the label never locks a human out).
 run_prefix "${BOT}" 3 ITERATION_CAP 5 $'fullsend-fix-budget/2'
 check_run "iteration above tightened bot cap escalates" 1 "exceeds bot cap of 2"
-check_run "bot escalation reports tightened human cap" 1 "up to 2 total iterations"
+check_run "bot escalation names the budget label" 1 "set by the fullsend-fix-budget/2 PR label"
+check_run "bot escalation keeps full human /fs-fix budget" 1 "up to 10 total iterations"
 
-# The label tightens the human cap too, and escalates above it.
+# The label never tightens the human cap: a human /fs-fix run above the bot
+# budget but within the human cap is allowed, and still shows the tighten notice.
 run_prefix "alice" 3 ITERATION_CAP_HUMAN 10 $'fullsend-fix-budget/2'
-check_run "iteration above tightened human cap escalates" 1 "exceeds human cap of 2"
+check_run "human run is not blocked by the bot budget label" 0 "FIX_ITERATION=3 of 10"
+check_run "notice fires on human run too" 0 "caps the autonomous fix loop at 2 iteration(s)"
 
 if [[ "${FAILURES}" -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

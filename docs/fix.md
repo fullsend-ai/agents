@@ -49,7 +49,7 @@ Remove the label or use `/fs-fix` to re-engage.
 |-------|---------|
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
-| `fullsend-fix-budget/N` | Tightens the review→fix loop for this PR to `N` iterations (`N` a positive integer). Applied by a maintainer. Can only lower the applicable cap (bot or human), never raise it; malformed values are ignored. |
+| `fullsend-fix-budget/N` | **Reserved — not yet active** (requires `PR_LABELS` wiring in the review→fix workflow; see [Iteration limits](#iteration-limits)). Once active: tightens the *autonomous* review→fix loop for this PR to `N` iterations (`N` a positive integer), so the bot escalates to a human sooner. Applied by a maintainer. Lowers the bot cap only (never the human `/fs-fix` cap) and can only tighten it, never raise it; malformed values are ignored. |
 
 ## Configuration
 
@@ -157,6 +157,14 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
   `needs-human` label.
 - Each `/fs-fix` comment cancels any in-flight fix run for the same PR and
   starts a new one.
+- **Per-PR override (reserved, not yet active):** a `fullsend-fix-budget/N`
+  label is intended to lower the *automatic* cap for a single PR (bot only; the
+  manual `/fs-fix` cap is never tightened, so a human is never locked out). The
+  parser and enforcement ship in pre-fix/post-fix, but the review→fix workflow
+  does not yet forward PR labels to the fix agent (`PR_LABELS` is unset in the
+  delivery path), so the label currently has no effect. Wiring it requires the
+  workflow to pass the PR's labels through `PR_LABELS`; until then the caps
+  behave exactly as above.
 
 ## Multi-forge support
 

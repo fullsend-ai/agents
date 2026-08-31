@@ -68,8 +68,9 @@ env:
     TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
     HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
     FIX_ITERATION: "${FIX_ITERATION}"
-    # NOTE: a `fullsend-fix-budget/N` PR label can tighten the fix cap, and
-    # pre-fix/post-fix already consume PR_LABELS to enforce it. It is omitted
+    # NOTE: a `fullsend-fix-budget/N` PR label can tighten the autonomous (bot)
+    # fix cap, and pre-fix/post-fix already consume PR_LABELS to enforce it
+    # (the human /fs-fix cap is never tightened). It is omitted
     # here on purpose: the reusable-fix workflow does not yet forward the PR
     # labels, and referencing an unset host var fails harness env validation
     # (fail-closed) on every run. To activate, re-add

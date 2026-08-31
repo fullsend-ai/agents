@@ -1599,11 +1599,11 @@ fi
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
 
-# A per-PR `fullsend-fix-budget/N` label may tighten the cap (never raise it).
-# pre-fix enforces the tightened cap; mirror it here so the needs-human warning
-# and the iteration summary reflect the cap that is actually enforced. Without
-# this, a budget of 2 under a global cap of 5 would report "2 of 5" and never
-# add needs-human, even though pre-fix rejects the next cycle.
+# A per-PR `fullsend-fix-budget/N` label may tighten the BOT cap only (never
+# raise it, never touch the human cap) — matching pre-fix. Mirror it here so the
+# needs-human warning and the iteration summary reflect the cap pre-fix actually
+# enforces. Without this, a budget of 2 under a global cap of 5 would report
+# "2 of 5" and never add needs-human, even though pre-fix rejects the next cycle.
 FIX_BUDGET="$(parse_fix_budget "${PR_LABELS:-}")"
 if [[ -n "${FIX_BUDGET}" && "${FIX_BUDGET}" -lt "${BOT_CAP}" ]]; then
   BOT_CAP="${FIX_BUDGET}"
@@ -1632,9 +1632,8 @@ echo "  Trigger: ${TRIGGER_SOURCE}"
 if is_bot_user "${TRIGGER_SOURCE}"; then
   echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap)"
 else
+  # The fix-budget label never tightens the human cap, so the human escape hatch
+  # always reports its full ITERATION_CAP_HUMAN budget.
   HUMAN_CAP="${ITERATION_CAP_HUMAN:-10}"
-  if [[ -n "${FIX_BUDGET}" && "${FIX_BUDGET}" -lt "${HUMAN_CAP}" ]]; then
-    HUMAN_CAP="${FIX_BUDGET}"
-  fi
   echo "  Iteration: ${ITERATION} of ${HUMAN_CAP} (human cap, total across bot+human)"
 fi
