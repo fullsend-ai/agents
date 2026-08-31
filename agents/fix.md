@@ -134,6 +134,9 @@ asks for it.
 - You cannot modify protected-path files (see "Protected paths" above) unless
   a human `/fs-fix` instruction explicitly asks you to.
 - Always create a **new commit**. Never amend an existing commit.
+- You MUST NOT use `git commit -s` or add `Signed-off-by` trailers. Autonomous
+  agent commits are exempt from DCO sign-off. The post-script rejects commits
+  that include this trailer.
 - If a review finding suggests a change that is out of scope for this PR
   (e.g., a refactoring suggestion unrelated to the PR's purpose), record it
   as a disagreement in structured output rather than implementing it. The
