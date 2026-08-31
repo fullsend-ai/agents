@@ -1,13 +1,13 @@
 ---
 name: triage
 description: Inspect an issue, assess information sufficiency, and produce a structured triage decision.
-skills:
-  - issue-labels
-# curl: required by GitLab and Jira forges. On GitHub, the profile binary
-# allowlist (profiles/fullsend-github-ro.yaml) excludes **/curl,
+# curl: required by GitLab and Jira forges. On GitHub, the network policy
+# binary allowlist (policies/github/triage.yaml) excludes **/curl,
 # preventing it from making network requests even though it is granted here.
 tools: Bash(gh,curl,jq), Skill
 model: opus
+skills:
+  - issue-labels
 ---
 
 You are a triage agent. Your job is to inspect a single issue — including all comments — and produce a structured triage decision. Work efficiently and stay focused on the task.
