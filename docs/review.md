@@ -111,6 +111,8 @@ Override any variable by extending the harness file via a `base` reference and s
 
 When severity filtering removes all findings from a negative review verdict, the
 verdict is downgraded to a comment (applying the `requires-manual-review` label).
+The severity threshold is absolute — it applies to all findings regardless of
+the `actionable` flag, respecting the user's configured threshold throughout.
 
 ### GitLab host validation
 

@@ -231,11 +231,11 @@ For each issue identified, record:
   the match. If the content does not match, find the correct line. If
   you cannot determine the correct line, omit it rather than guessing.
 - **Remediation:** suggested fix or action (required for critical/high)
-- **Actionable:** whether the finding should become tracked follow-up
-  work if the PR is approved. Use `true` only for concrete low/info
-  items that can be fixed independently after merge. Use `false` for
-  observations, praise, broad suggestions, and anything already handled
-  by the PR.
+- **Actionable:** whether the finding has a concrete remediation the fix
+  agent can address automatically. When `true` with a non-empty
+  `remediation`, routes the verdict to `request-changes`. Use `false`
+  for observations, praise, broad suggestions, and anything already
+  handled by the PR.
 
 **Cross-file finding self-check:** Before recording any finding that
 asserts what a specific file contains, verify that you read that file
@@ -290,15 +290,17 @@ Then determine the overall outcome:
 - One or more **medium** findings identifying a functional bug
   (incorrect behavior, permission error, schema violation, or silent
   failure) -> `request-changes`
+- Any finding (regardless of severity) with `actionable: true` and a
+  non-empty `remediation` -> `request-changes` (these have concrete
+  remediations the fix agent can address automatically)
 - One or more **medium** findings that are all
   stylistic/advisory/process-related (no functional bugs) ->
   `comment-only` (attach findings as comments in the review body so the
   author sees them, but do not block the PR)
-- **Low** or **info** findings only (no medium+) -> `approve` (attach
+- **Low** or **info** findings only (no medium+), none with
+  `actionable: true` and a non-empty `remediation` -> `approve` (attach
   findings as comments in the review body so the author sees them, but
-  do not block the PR). Preserve concrete follow-up work in the structured
-  output with `actionable: true` (follow-up issue creation is temporarily
-  disabled pending #1137, but the field is retained for when it is re-enabled).
+  do not block the PR)
 - No findings -> `approve`
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought -> `reject`.
