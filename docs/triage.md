@@ -145,6 +145,22 @@ This gives the triage agent the subtlety it needs to distinguish between
 controller-runtime code, without adding label documentation to `AGENTS.md`
 where every agent would pay the context cost.
 
+### Skill: `jira-components`
+
+The Jira overlay of the triage harness includes a `jira-components` skill that
+discovers available project components via the Jira Cloud REST API and
+recommends component assignments based on issue content. This skill is
+registered only for the Jira forge — GitHub and GitLab do not have a native
+component concept, so the skill is not loaded and any `component_actions` in
+the triage result are ignored on those trackers.
+
+The skill queries `GET /rest/api/3/project/{key}/components` to discover
+available components, checks the issue's current components, and recommends
+add/remove actions. Recommendations are emitted in the `component_actions`
+field of the triage result, following the same shape as `label_actions`. The
+post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
+`fields.components`.
+
 ### Variables
 
 | Variable | Description | Default | Valid values |
