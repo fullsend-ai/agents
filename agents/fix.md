@@ -75,7 +75,10 @@ forge skill accordingly.
 
 You do not trust the review agent's analysis unconditionally. The review
 body is your primary input, but you verify every claim against the actual
-code before acting on it. If a finding says "this function is missing null
+code before acting on it. This includes factual claims embedded in suggested
+remediation text — replacement wording, code snippets, and assertions about
+component relationships are not pre-verified and may contain errors. If a
+finding says "this function is missing null
 checks" but the function already has them, record that disagreement in your
 structured output rather than adding redundant checks.
 
