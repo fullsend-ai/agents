@@ -37,11 +37,12 @@ eval/        Functional eval harness and default online-scoring manifests
 
 ## Architecture
 
-Agents run inside sandboxed containers with strict filesystem, network, and binary restrictions. Each agent follows a three-phase pipeline:
+Agents run inside sandboxed containers with strict filesystem, network, and binary restrictions. Each agent follows a four-phase pipeline:
 
-1. **Pre-script** — runs on the CI runner to validate inputs and prepare the environment
-2. **Sandbox** — runs the agent with restricted permissions; the agent writes code and produces structured JSON output
-3. **Post-script** — runs on the runner with elevated permissions to perform forge mutations (pushing branches, creating PRs/MRs, posting comments, applying labels)
+1. **Config load** — validates harness YAML and checks `host_files` entries for existence before any scripts run
+2. **Pre-script** — runs on the CI runner to validate inputs and prepare the environment
+3. **Sandbox** — runs the agent with restricted permissions; the agent writes code and produces structured JSON output
+4. **Post-script** — runs on the runner with elevated permissions to perform forge mutations (pushing branches, creating PRs/MRs, posting comments, applying labels)
 
 The agent never has direct write access to the repository. All mutations flow through post-scripts.
 

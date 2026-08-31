@@ -121,11 +121,16 @@ understand the order in which the harness processes them:
 
 ### `host_files` timing constraint
 
-Because `host_files` entries are validated at config load time (step 1),
-any file that does not yet exist will cause the harness loader to reject
+Top-level `host_files` entries are validated at config load time (step 1).
+Any file that does not yet exist will cause the harness loader to reject
 the entire agent — before pre-scripts even run. Files created by
 pre-scripts must be marked `optional: true` so the loader does not
 reject the config when the file is absent at load time.
+
+Conditional overlay `host_files` entries (those under a `when` guard)
+are resolved after overlay evaluation. These entries may have different
+validation timing — see the Jira-source overlay in `harness/code.yaml`
+for an example of an overlay `host_files` entry without `optional: true`.
 
 Additionally, use dynamic path variables like `${RUNNER_TEMP}` instead
 of hardcoded paths like `/tmp`. Hardcoded paths are not portable across

@@ -1,7 +1,8 @@
 ---
 # harness/code.yaml — code agent with pre/post script pipeline.
 #
-# Flow: pre_script → sandbox (agent) → post_script
+# Runtime flow: pre_script → sandbox (agent) → post_script
+# (Config load + validation occurs before this flow — see docs/code.md.)
 #   pre_script  : validates inputs on the runner BEFORE sandbox creation
 #   agent       : reads the issue, implements, tests, scans, commits locally
 #   post_script : secret scan, pre-commit, push branch, create PR/MR, assign human
