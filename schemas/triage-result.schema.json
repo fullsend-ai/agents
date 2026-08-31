@@ -248,7 +248,7 @@
             "required": ["action", "component"],
             "properties": {
               "action": { "type": "string", "enum": ["add", "remove"] },
-              "component": { "type": "string", "minLength": 1 }
+              "component": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9 _./:+()&,'-]+$" }
             },
             "additionalProperties": false
           }

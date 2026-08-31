@@ -373,6 +373,12 @@ Information is sufficient for a developer to investigate and fix.
       { "action": "add", "label": "area/api" },
       { "action": "add", "label": "priority/high" }
     ]
+  },
+  "component_actions": {
+    "reason": "Backend component applies to this API bug.",
+    "actions": [
+      { "action": "add", "component": "backend" }
+    ]
   }
 }
 ```
@@ -380,6 +386,8 @@ Information is sufficient for a developer to investigate and fix.
 **Workflow change detection (optional):** If the issue likely requires modifying CI/pipeline configuration files (`.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows), set `requires_workflow_changes: true` in `triage_summary`. When set, the post-triage script skips auto-triggering the code agent because the code agent cannot modify workflow files under current permissions. The triage comment should warn about this limitation and note that manual intervention is required. When `requires_workflow_changes` is not set or is `false`, auto-triggering proceeds normally.
 
 **Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
+
+**Component recommendations (optional, Jira only):** If the `jira-components` skill recommends component assignments, include them in the `component_actions` field. This field is optional and only processed on the Jira tracker — GitHub and GitLab ignore it. If no components clearly apply, omit it entirely.
 
 ## Questioning guidelines
 
@@ -404,6 +412,7 @@ Information is sufficient for a developer to investigate and fix.
   JSON you have and exit.
 - Do NOT post comments, apply labels, or modify the issue in any way. Your only output is the JSON file. A post-script handles all mutations.
 - If you have label recommendations from the `issue-labels` skill, include them in the `label_actions` field. If no labels clearly apply, omit `label_actions` entirely.
+- If you have component recommendations from the `jira-components` skill, include them in the `component_actions` field. If no components clearly apply, omit `component_actions` entirely.
 
 ## Comment content rules
 
@@ -415,3 +424,4 @@ Information is sufficient for a developer to investigate and fix.
 - Do not present unverified assumptions with certainty. Convey uncertainty when appropriate.
 - Write in second person ("you") addressing the reporter. Do not use first person ("I") — the comment is from the triage system, not an individual.
 - If you include `label_actions`, the pipeline appends your label reason to the comment automatically — do not include label justifications in the `comment` field yourself.
+- If you include `component_actions`, the pipeline appends your component reason to the comment automatically — do not include component justifications in the `comment` field yourself.

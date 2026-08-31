@@ -671,6 +671,14 @@ if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
       CA_ACTION=$(jq -r ".component_actions.actions[${i}].action" "${RESULT_FILE}")
       CA_COMPONENT=$(jq -r ".component_actions.actions[${i}].component" "${RESULT_FILE}")
 
+      # Validate component name to prevent injection from untrusted agent output.
+      # More permissive than label regex — Jira component names may contain
+      # parentheses, ampersands, commas, and apostrophes.
+      if [[ ! "${CA_COMPONENT}" =~ ^[a-zA-Z0-9\ _./:+\(\)\&,\'\-]+$ ]]; then
+        echo "::warning::Refused component '$(_gha_sanitize "${CA_COMPONENT}")' -- contains invalid characters"
+        continue
+      fi
+
       case "${CA_ACTION}" in
         add)
           echo "Adding component '$(_gha_sanitize "${CA_COMPONENT}")'..."

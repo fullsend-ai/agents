@@ -2118,7 +2118,7 @@ run_jira_test "jira-component-actions-add" \
 # Jira component_actions: remove action removes the component.
 run_jira_test "jira-component-actions-remove" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Removing stale component.","actions":[{"action":"remove","component":"existing-component"}]}}' \
-  'fields'
+  '"components":[]'
 
 # Jira component_actions: reason is appended to comment.
 run_jira_test "jira-component-actions-reason-appended" \
