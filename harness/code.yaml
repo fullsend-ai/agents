@@ -108,7 +108,11 @@ forge:
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   gitlab:
-    policy: policies/gitlab/code.yaml
+    providers:
+      - providers/gitlab-code.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-code.yaml
     skills:
       - skills/gitlab-forge
     host_files:

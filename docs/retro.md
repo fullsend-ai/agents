@@ -73,15 +73,16 @@ setup:
 
 - **`FULLSEND_FORGE`** is required. Set automatically by the harness
   `forge.<platform>.env` section (`"github"` or `"gitlab"`).
-- **Policy** is per-forge: `policies/base.yaml` (GitHub) or
-  `policies/gitlab/retro.yaml` (GitLab).
+- **Policy** is `policies/base.yaml` for all forges. Network access is
+  provided by profiles (`fullsend-gitlab-ro` for GitLab).
 - **GitLab uses `curl`** instead of `gh` for API access. The GitLab
-  sandbox policy allows `curl` for `gitlab_api` endpoints only.
+  profile (`fullsend-gitlab-ro`) allows `curl` for GitLab API
+  endpoints only.
 - **GitLab host validation** — `forge_validate_originating_url`
   validates the host against `CI_SERVER_HOST`, a GitLab CI predefined
   variable set automatically by the runner. Validation fails closed
-  when `CI_SERVER_HOST` is not set. The network policy in
-  `policies/gitlab/retro.yaml` must also be updated.
+  when `CI_SERVER_HOST` is not set. The GitLab profile in
+  `profiles/fullsend-gitlab-ro.yaml` must also be updated.
 
 ## How the agent works
 

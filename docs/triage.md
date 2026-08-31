@@ -235,19 +235,20 @@ If you use `base:` composition to override `harness/triage.yaml`:
   `FULLSEND_FORGE`). It is set automatically by the forge sections in the
   harness; if your override removes the forge sections, set it explicitly in
   `env.runner` and `env.sandbox`.
-- **`policy`, `skills`, and `host_files` live in forge sections**: This
-  harness defines policy, skills, and the forge-specific env file
-  (`env/github/triage.env` / `env/gitlab/triage.env` /
-  `env/jira/triage.env`) under `forge.<platform>` rather than at the top
-  level. `pre_script` and `post_script` are set at the top level only;
-  forge sections inherit them via `ResolveForge`.
+- **`providers`, `openshell`, `skills`, and `host_files` live in overlay
+  sections**: This harness defines providers, openshell profiles, skills,
+  and the forge-specific env file (`env/github/triage.env` /
+  `env/gitlab/triage.env` / `env/jira/triage.env`) under
+  `overlays` entries rather than at the top level. `pre_script` and
+  `post_script` are set at the top level only; overlay sections inherit
+  them via `ResolveForge`.
   Top-level keys are still supported by `ResolveForge` — a
   downstream harness using `base:` composition can set top-level `policy:`,
   `skills:`, or `host_files:` and they will work: policy (scalar) is
-  overridden by the forge-level value, skills (list) are concatenated with
-  forge-level skills and deduped by basename, host_files (list) are
+  overridden by the overlay-level value, skills (list) are concatenated with
+  overlay-level skills and deduped by basename, host_files (list) are
   concatenated with last-writer-wins dedup by `dest`. `providers` and
-  `openshell` follow the same merge rules and are also forge-overridable
+  `openshell` follow the same merge rules and are also overlay-overridable
   (fullsend-ai/fullsend#5970).
 - **Schema accepts all forge URL/identifier shapes unconditionally**: The
   result schema validates PR/issue URLs, `duplicate_of`, and repo identifiers

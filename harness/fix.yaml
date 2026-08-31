@@ -116,7 +116,11 @@ forge:
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   gitlab:
-    policy: policies/gitlab/fix.yaml
+    providers:
+      - providers/gitlab-code.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-code.yaml
     skills:
       - skills/gitlab-forge
       - skills/fix-review/gitlab

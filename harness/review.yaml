@@ -75,7 +75,6 @@ forge:
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
-    policy: policies/github/review.yaml
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -99,7 +98,11 @@ forge:
         FULLSEND_FORGE: github
         REVIEW_RISK_ASSESSMENT_ENABLED: "true"
   gitlab:
-    policy: policies/gitlab/review.yaml
+    providers:
+      - providers/gitlab-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-ro.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab

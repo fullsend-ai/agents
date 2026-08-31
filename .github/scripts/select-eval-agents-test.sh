@@ -61,7 +61,11 @@ overlays:
       - src: env/github/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
   - when: 'runtime.forge == "gitlab"'
-    policy: policies/gitlab/triage.yaml
+    providers:
+      - providers/gitlab-rw.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-rw.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab
@@ -99,7 +103,6 @@ forge:
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
-    policy: policies/github/review.yaml
     pre_script: scripts/pre-review.sh
     post_script: scripts/post-review.sh
     skills:
@@ -110,7 +113,11 @@ forge:
       - src: env/github/review.env
         dest: /sandbox/workspace/.env.d/review.env
   gitlab:
-    policy: policies/gitlab/review.yaml
+    providers:
+      - providers/gitlab-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-ro.yaml
     pre_script: scripts/pre-review.sh
     post_script: scripts/post-review.sh
     skills:
@@ -338,11 +345,11 @@ cleanup_fixture "$FIXTURE"
 
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "policies/gitlab/triage.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+RESULT=$(echo "providers/gitlab-rw.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 if [[ "$RESULT" == "triage" ]]; then
-  pass "forge policy change selects agent"
+  pass "forge provider change selects agent"
 else
-  fail "forge policy change selects agent (got: '$RESULT')"
+  fail "forge provider change selects agent (got: '$RESULT')"
 fi
 cleanup_fixture "$FIXTURE"
 

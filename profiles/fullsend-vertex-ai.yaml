@@ -1,9 +1,14 @@
 ---
 id: fullsend-vertex-ai
-display_name: Fullsend Vertex AI
-description: Google Cloud APIs for Vertex AI inference
+display_name: Fullsend Inference
+description: Anthropic and Google Cloud APIs for model inference
 category: inference
 endpoints:
+  - host: "api.anthropic.com"
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
   - host: "*.googleapis.com"
     port: 443
     protocol: rest
