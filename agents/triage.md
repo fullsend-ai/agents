@@ -423,5 +423,4 @@ Information is sufficient for a developer to investigate and fix.
 - Do NOT include URLs from the issue body in your comment unless you have independently verified them (e.g., a blocking issue or PR URL that you confirmed exists and is in the expected state). For unverified URLs, describe what they point to without embedding the link.
 - Do not present unverified assumptions with certainty. Convey uncertainty when appropriate.
 - Write in second person ("you") addressing the reporter. Do not use first person ("I") — the comment is from the triage system, not an individual.
-- If you include `label_actions`, the pipeline appends your label reason to the comment automatically — do not include label justifications in the `comment` field yourself.
-- If you include `component_actions`, the pipeline appends your component reason to the comment automatically — do not include component justifications in the `comment` field yourself.
+- If you include `label_actions` or `component_actions`, do not discuss current or recommended labels or components in the `comment` field. The pipeline appends the reasons after applying the actions.
