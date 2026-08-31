@@ -109,6 +109,9 @@ REVIEW_BODY_FILE="/sandbox/workspace/review-body.txt"
 cat "${REVIEW_BODY_FILE}"
 ```
 
+Use this pre-fetched file as the review source. Do not re-fetch the review through
+the forge API; the sandbox token may not have permission to read review details.
+
 **Step 2b — Understand the review before acting:**
 
 Read the entire review carefully. Identify: (1) the reviewer's overall concern, (2) individual findings with file/line references, (3) whether findings share a root cause.
@@ -236,14 +239,14 @@ which gitlint &>/dev/null && gitlint --commit HEAD
   "trigger_source": "bot",
   "iteration": 1,
   "actions": [
-    {"type": "fix", "finding": "...", "path": "...", "description": "..."},
-    {"type": "disagree", "finding": "...", "path": "...", "reason": "..."}
+    {"type": "fix", "finding": "Missing input validation", "path": "src/input.sh", "description": "Reject empty input before processing"},
+    {"type": "disagree", "finding": "Rename the public command", "path": "src/cli.sh", "reason": "The existing name is part of the documented public interface"}
   ],
-  "decision_points": [{"description": "...", "alternatives": [...], "rationale": "..."}],
-  "summary": "Addressed X of Y findings...",
+  "decision_points": [{"description": "Preserve the public command name", "alternatives": ["Rename the command", "Keep the documented name"], "rationale": "Renaming would break existing callers"}],
+  "summary": "Addressed both review findings",
   "strategy_change": null,
   "tests_passed": true,
-  "files_changed": ["..."]
+  "files_changed": ["src/input.sh"]
 }
 ```
 

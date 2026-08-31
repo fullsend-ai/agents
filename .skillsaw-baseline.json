@@ -1,7 +1,7 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-08-21T19:48:21.539395+00:00",
+  "generated_at": "2026-08-31T00:54:48.875560+00:00",
   "violations": [
     {
       "fingerprint": "34efa8521ae07039",
@@ -52,30 +52,63 @@
       "severity": "error"
     },
     {
+      "fingerprint": "334afedb9d511d86",
+      "rule_id": "content-description-routing",
+      "file_path": "skills/pr-risk-assessment/SKILL.md",
+      "line": 3,
+      "message": "Description does not say when to use this skill; include trigger phrasing such as 'Use when ...'",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "c0a7ffe42338cd6f",
+      "rule_id": "content-weak-language",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 161,
+      "message": "Weak language (vagueness): 'properly' \u2014 Remove 'properly' \u2014 describe what correct behavior looks like",
+      "severity": "warning"
+    },
+    {
+      "fingerprint": "808393ad080aa81c",
+      "rule_id": "content-weak-language",
+      "file_path": "skills/code-implementation/SKILL.md",
+      "line": 195,
+      "message": "Weak language (non-actionable): 'note that' \u2014 Restructure \u2014 state the constraint directly",
+      "severity": "warning"
+    },
+    {
       "fingerprint": "8aba1d160bb4c413",
       "rule_id": "context-budget",
       "file_path": "skills/code-implementation/SKILL.md",
-      "message": "Estimated 9,204 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 11,477 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 9204,
+      "value": 11477,
       "baseline_mode": "ceiling"
     },
     {
       "fingerprint": "43a3bb24cb22288e",
       "rule_id": "context-budget",
       "file_path": "skills/code-review/SKILL.md",
-      "message": "Estimated 3,833 tokens exceeds skill warn limit of 3,000",
+      "message": "Estimated 3,846 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3833,
+      "value": 3846,
       "baseline_mode": "ceiling"
     },
     {
       "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
       "file_path": "skills/pr-review/SKILL.md",
-      "message": "Estimated 14,648 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 15,709 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 14648,
+      "value": 15709,
+      "baseline_mode": "ceiling"
+    },
+    {
+      "fingerprint": "3841c25d67e33e68",
+      "rule_id": "context-budget",
+      "file_path": "skills/pr-risk-assessment/SKILL.md",
+      "message": "Estimated 3,775 tokens exceeds skill warn limit of 3,000",
+      "severity": "warning",
+      "value": 3775,
       "baseline_mode": "ceiling"
     }
   ]

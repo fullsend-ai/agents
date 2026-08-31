@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help script-build check-bundle script-test test lint lint-fix
+.PHONY: help script-build check-bundle script-test test lint lint-fix lint-baseline
 
 BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/pre-fix.src.sh scripts/post-fix.src.sh scripts/pre-prioritize.src.sh scripts/post-prioritize.src.sh scripts/pre-retro.src.sh scripts/post-retro.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-scribe.src.sh scripts/post-scribe.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh scripts/validate-code-output.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
@@ -17,12 +17,16 @@ help:
 	@echo "  test          - Alias for script-test"
 	@echo "  lint          - Lint skills/agents/instructions with skillsaw"
 	@echo "  lint-fix      - Apply skillsaw's automatic lint fixes"
+	@echo "  lint-baseline - Regenerate the skillsaw baseline"
 
 lint:
 	uvx skillsaw@$(SKILLSAW_VERSION) --strict
 
 lint-fix:
 	uvx skillsaw@$(SKILLSAW_VERSION) fix
+
+lint-baseline:
+	uvx skillsaw@$(SKILLSAW_VERSION) baseline
 
 define run-timed
 	@start=$$(date +%s); \
