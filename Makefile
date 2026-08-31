@@ -1,7 +1,7 @@
 .DEFAULT_GOAL := help
 .PHONY: help script-build check-bundle script-test test lint lint-fix lint-baseline
 
-BUNDLE_SRCS := scripts/pre-code.src.sh scripts/post-code.src.sh scripts/pre-fix.src.sh scripts/post-fix.src.sh scripts/pre-prioritize.src.sh scripts/post-prioritize.src.sh scripts/pre-retro.src.sh scripts/post-retro.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-scribe.src.sh scripts/post-scribe.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh scripts/validate-code-output.src.sh
+BUNDLE_SRCS := scripts/pre-code.src.sh scripts/pre-code-jira.src.sh scripts/post-code.src.sh scripts/pre-fix.src.sh scripts/post-fix.src.sh scripts/pre-prioritize.src.sh scripts/post-prioritize.src.sh scripts/pre-retro.src.sh scripts/post-retro.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-scribe.src.sh scripts/post-scribe.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh scripts/validate-code-output.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
 LIB_DEPS := $(wildcard scripts/lib/*.lib.sh)
 
@@ -66,6 +66,7 @@ script-test:
 	$(call run-timed,bash scripts/pre-prioritize-test.sh)
 	$(call run-timed,bash scripts/post-prioritize-test.sh)
 	$(call run-timed,bash scripts/pre-code-test.sh)
+	$(call run-timed,bash scripts/pre-code-jira-test.sh)
 	$(call run-timed,bash scripts/post-code-test.sh)
 	$(call run-timed,bash scripts/pre-review-test.sh)
 	$(call run-timed,bash scripts/post-review-test.sh)
