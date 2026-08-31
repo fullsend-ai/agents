@@ -208,7 +208,7 @@ GitHub/GitLab auth vars:
 |----------|-------------|
 | `FULLSEND_WORK_ITEM_URL` | The `https://<site>.atlassian.net/browse/<KEY>-<n>` URL of the issue to triage. |
 | `JIRA_USER_EMAIL` | Email address of the Jira Cloud account used for Basic auth. |
-| `JIRA_TOKEN` | API token for that account. |
+| `JIRA_TOKEN` | API token for that account. Available to the runner for post-script mutations; the sandbox receives the `jira-ro` provider's opaque placeholder instead of the real token. |
 | `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). |
 
 Closing an issue (`duplicate`, `not-planned`, `split` actions) performs a
@@ -276,6 +276,14 @@ If you use `base:` composition to override `harness/triage.yaml`:
   `prerequisites.existing[].url`) are interpolated verbatim and are
   schema-constrained only. The prompt includes examples of the relevant URL
   shape to guide the agent toward the correct format.
+- **Jira credentials use provider-backed delivery**: The `jira-ro`
+  provider and `fullsend-jira-ro` OpenShell profile handle Jira API
+  token injection at the network layer. The sandbox receives the
+  provider's opaque placeholder for `JIRA_TOKEN`, not the real secret.
+  `JIRA_USER_EMAIL` and `JIRA_BASE_URL` remain in `env.sandbox` as
+  non-secret configuration. Runner-side post-scripts retain the real
+  `JIRA_TOKEN` via `env.runner` for trusted mutations (label writes,
+  transitions, comment posting).
 - **GitLab and Jira functional eval coverage is deferred**: The eval cases
   under `eval/triage/cases/` currently cover GitHub only. GitLab and Jira
   behavior is covered by unit-level bash tests in

@@ -2,18 +2,15 @@
 # GENERATED from pre-code-jira.src.sh — DO NOT EDIT. Run: make script-build
 # Pre-script for Jira-sourced code agent runs.
 #
-# Fetches the Jira issue through `fullsend issues get --tracker jira`,
-# validates the response against the normalized event, and writes the
-# issue context to the path that host_files copies into the sandbox.
-# Jira credentials stay on the runner — they never enter the sandbox.
+# Validates the Jira issue URL and auto-installs pre-commit tool
+# dependencies.  The sandbox reads Jira work items directly through
+# provider-backed API access — no runner-side credential use or
+# .issue-context.json prefetching.
 #
 # Runs on the CI runner BEFORE sandbox creation.
 #
 # Required environment variables:
 #   ISSUE_URL          — Jira browse URL (https://<host>.atlassian.net/browse/PROJ-123)
-#   JIRA_ISSUE_CONTEXT_FILE — runner path for the fetched issue context
-#   JIRA_USER_EMAIL    — Jira account email for Basic auth
-#   JIRA_TOKEN         — Jira Cloud API token
 #   REPO_FULL_NAME     — target repo (owner/repo), used for pre-commit tool install
 #   FULLSEND_FORGE     — "github" or "gitlab" (the target forge, NOT the source)
 #
@@ -53,9 +50,6 @@ prescript_output() {
 # END bundled: lib/prescript-output.lib.sh
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
-: "${JIRA_ISSUE_CONTEXT_FILE:?JIRA_ISSUE_CONTEXT_FILE must be set}"
-: "${JIRA_USER_EMAIL:?JIRA_USER_EMAIL must be set}"
-: "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME must be set}"
 
 # Sanitize a value for safe use in GHA workflow commands (::error::, etc.).
@@ -95,44 +89,8 @@ JIRA_BASE_URL="${PARSED_BASE_URL}"
 # Parse issue key and project from the URL.
 ISSUE_KEY="$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')"
 PROJECT_KEY="${ISSUE_KEY%-*}"
-ISSUE_NUM="${ISSUE_KEY##*-}"
 
 echo "::notice::🔗 Jira source: $(_gha_sanitize "${ISSUE_URL}") (project=$(_gha_sanitize "${PROJECT_KEY}"), key=$(_gha_sanitize "${ISSUE_KEY}"))"
-
-# ---------------------------------------------------------------------------
-# Fetch issue context via fullsend CLI
-# ---------------------------------------------------------------------------
-ISSUE_CONTEXT_PATH="${JIRA_ISSUE_CONTEXT_FILE}"
-
-if ! command -v fullsend >/dev/null 2>&1; then
-  echo "::error::fullsend CLI not found — cannot fetch Jira issue"
-  exit 1
-fi
-
-echo "Fetching Jira issue ${ISSUE_KEY}..."
-if ! fullsend issues get --tracker jira \
-  --project "${PROJECT_KEY}" --number "${ISSUE_NUM}" \
-  --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" \
-  --token "${JIRA_TOKEN}" > "${ISSUE_CONTEXT_PATH}"; then
-  echo "::error::Failed to fetch Jira issue ${ISSUE_KEY}"
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# Validate the fetched context
-# ---------------------------------------------------------------------------
-if [[ ! -s "${ISSUE_CONTEXT_PATH}" ]]; then
-  echo "::error::Jira issue context is empty"
-  exit 1
-fi
-
-# Sanity-check: the response must be valid JSON.
-if ! jq empty "${ISSUE_CONTEXT_PATH}" 2>/dev/null; then
-  echo "::error::Jira issue context is not valid JSON"
-  exit 1
-fi
-
-echo "Jira issue context written to ${ISSUE_CONTEXT_PATH}"
 
 # ---------------------------------------------------------------------------
 # Existing-PR check — intentionally omitted for Jira-sourced flows

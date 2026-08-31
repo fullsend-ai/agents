@@ -129,22 +129,22 @@ overlays:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
-  # Jira-source overlay — fetches the work item from Jira and prepares
-  # issue context for the sandbox.  Ordered AFTER forge overlays so its
-  # env vars (especially ISSUE_URL) win under last-writer-wins merge
-  # semantics when both the Jira overlay and a forge overlay match.
+  # Jira-source overlay — provides provider-backed Jira API access so
+  # the sandbox can read work items directly through the credential
+  # boundary.  Ordered AFTER forge overlays so its env vars (especially
+  # ISSUE_URL) win under last-writer-wins merge semantics when both the
+  # Jira overlay and a forge overlay match.
   # pre_script overrides the top-level default.  Post-script selection
   # stays with the target forge (GitHub/GitLab).
   - when: 'event.source.system == "jira"'
+    providers:
+      - providers/jira-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-jira-ro.yaml
     pre_script: scripts/pre-code-jira.sh
-    host_files:
-      - src: ${RUNNER_TEMP}/jira-issue-context.json
-        dest: /sandbox/workspace/.issue-context.json
     env:
       runner:
-        JIRA_ISSUE_CONTEXT_FILE: "${RUNNER_TEMP}/jira-issue-context.json"
-        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
-        JIRA_TOKEN: "${JIRA_TOKEN}"
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
         # A Jira source work item has a key, not a target-forge issue number.
@@ -156,3 +156,5 @@ overlays:
         FULLSEND_TRACKER: jira
         ISSUE_NUMBER: ""
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
