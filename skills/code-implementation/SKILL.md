@@ -157,9 +157,9 @@ not confused with the numbered process steps below:
 
    You should be on your feature branch with your own commits at HEAD.
    If you are not — detached HEAD, or sitting on the target branch —
-   do not guess a branch name: follow step 4, which handles existing
-   branches properly (it scopes the search to this issue's number and
-   explains why local refs must be used rather than `origin/` ones).
+   do not guess a branch name: follow step 4, which scopes the
+   branch search to this issue's number and explains why local refs
+   must be used rather than `origin/` ones.
    Step 4 needs the work-item identifier that step 1 would normally have
    established. On a retry, use `ISSUE_NUMBER` when the source tracker is the
    target forge, or derive the key from `ISSUE_URL` when it is an
@@ -193,9 +193,9 @@ code issue, fix the code. The feedback is redacted and truncated to
 include full file contents.
 
 If you cannot determine what failed from the feedback text, restart at
-step 1 — but note that step 4 will find your existing branch, and its
-guidance to treat existing work as your own and skip to verification
-still applies. Do not re-implement work that is already committed.
+step 1 — step 4 will find your existing branch, and its guidance to
+treat existing work as your own and skip to verification still applies.
+Do not re-implement work that is already committed.
 
 ### 1. Identify the issue
 
