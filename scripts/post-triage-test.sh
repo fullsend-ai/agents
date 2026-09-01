@@ -653,14 +653,13 @@ run_test "ready-to-code-applied-without-label-actions" \
 # a code agent for the now-closed issue.
 closed_issue_dir="${TMPDIR}/run-closed-issue-skips-ready-to-code"
 mkdir -p "${closed_issue_dir}/iteration-1/output"
-echo '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
+printf '%s\n' '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
   > "${closed_issue_dir}/iteration-1/output/agent-result.json"
 : > "${GH_LOG}"
 closed_issue_exit=0
 (
   cd "${closed_issue_dir}"
-  export MOCK_ISSUE_STATE=closed
-  bash "${POST_SCRIPT}"
+  MOCK_ISSUE_STATE=closed bash "${POST_SCRIPT}"
 ) > "${TMPDIR}/stdout.log" 2>&1 || closed_issue_exit=$?
 
 if [[ ${closed_issue_exit} -ne 0 ]]; then
@@ -990,14 +989,13 @@ AUTO_CODE_BUG_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_s
 # the rest of post-triage processing to complete.
 api_error_dir="${TMPDIR}/run-issue-state-api-error-skips-ready-to-code"
 mkdir -p "${api_error_dir}/iteration-1/output"
-echo '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
+printf '%s\n' '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
   > "${api_error_dir}/iteration-1/output/agent-result.json"
 : > "${GH_LOG}"
 api_error_exit=0
 (
   cd "${api_error_dir}"
-  export MOCK_ISSUE_STATE=api-error
-  bash "${POST_SCRIPT}"
+  MOCK_ISSUE_STATE=api-error bash "${POST_SCRIPT}"
 ) > "${TMPDIR}/stdout.log" 2>&1 || api_error_exit=$?
 
 if [[ ${api_error_exit} -ne 0 ]]; then
