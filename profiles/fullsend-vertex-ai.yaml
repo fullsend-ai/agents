@@ -27,5 +27,6 @@ endpoints:
     allow_uninspected_credentials: true
 binaries:
   - "**/claude"
+  - "**/claude.exe"
   - "**/pi"
   - "**/node"
