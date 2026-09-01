@@ -1184,6 +1184,31 @@ run_test "split-defaults-to-source-repo" \
   '{"action":"split","reasoning":"no repo field","sub_issues":[{"title":"First","body":"a"},{"title":"Second","body":"b"}],"comment":"Split."}' \
   "gh issue create --repo test-org/test-repo --title First --body a"
 
+# --- Split triage dispatch tests (#1123) ---
+
+# Verify triage dispatch is issued for each created sub-issue via
+# the ready-for-triage label on the created issue URL.
+run_test "split-dispatches-triage-for-sub-issues" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/mock-org/mock-repo/issues/999/labels -f labels[]=ready-for-triage --silent"
+
+# Verify that forge_ensure_label is called for ready-for-triage before dispatch.
+run_test "split-ensures-ready-for-triage-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh label create ready-for-triage --repo test-org/test-repo"
+
+# Verify triage dispatch is ordered after issue creation (dispatch must follow
+# the gh issue create call for each sub-issue).
+run_test_label_order "split-dispatch-after-creation" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Fix crash on save" \
+  "gh api repos/mock-org/mock-repo/issues/999/labels -f labels[]=ready-for-triage --silent"
+
+# Verify dispatch stdout message appears.
+run_test_stdout "split-dispatch-triage-logged" \
+  "${SPLIT_FIXTURE}" \
+  "Dispatching triage for sub-issue:"
+
 # --- Split functional test: end-to-end flow (#756) ---
 # Runs the split action once and verifies the complete flow in a single test:
 # sub-issue creation, comment with appended links, label cleanup, and issue closure.
@@ -1259,6 +1284,19 @@ else
   CLOSE_LINE=$(grep -nF "gh issue close" "${GH_LOG}" | head -1 | cut -d: -f1)
   if [[ -n "${COMMENT_LINE}" ]] && [[ -n "${CLOSE_LINE}" ]] && [[ "${COMMENT_LINE}" -ge "${CLOSE_LINE}" ]]; then
     echo "FAIL: ${FUNC_TEST_NAME} — comment should be posted before issue is closed"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 8. Triage dispatch: ready-for-triage label is added to created sub-issues (#1123).
+  if ! grep -qF "gh api repos/mock-org/mock-repo/issues/999/labels -f labels[]=ready-for-triage --silent" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — triage dispatch (ready-for-triage label) not applied to sub-issue"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 9. Triage dispatch happens AFTER sub-issue creation but BEFORE comment posting.
+  DISPATCH_LINE=$(grep -nF "labels[]=ready-for-triage" "${GH_LOG}" | head -1 | cut -d: -f1)
+  if [[ -n "${CREATE_LINE}" ]] && [[ -n "${DISPATCH_LINE}" ]] && [[ "${CREATE_LINE}" -ge "${DISPATCH_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — triage dispatch should happen after sub-issue creation"
     FUNC_FAILURES=$((FUNC_FAILURES + 1))
   fi
 fi
@@ -1629,6 +1667,15 @@ run_gitlab_test_stdout "gitlab-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"disallowed-org/other-repo","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
   "not in create_issues.allow_targets"
 
+# GitLab split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
+run_gitlab_test "gitlab-split-dispatches-triage" \
+  '{"action":"split","reasoning":"bundles two concerns","sub_issues":[{"title":"Fix A","body":"a"},{"title":"Fix B","body":"b"}],"comment":"Splitting."}' \
+  "add_labels=ready-for-triage"
+
+run_gitlab_test_stdout "gitlab-split-dispatch-logged" \
+  '{"action":"split","reasoning":"bundles two concerns","sub_issues":[{"title":"Fix A","body":"a"},{"title":"Fix B","body":"b"}],"comment":"Splitting."}' \
+  "Dispatching triage for sub-issue:"
+
 touch "${MOCK_CURL_CLOSE_FAIL}"
 run_gitlab_test "gitlab-close-issue-api-error-fails" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
@@ -1836,6 +1883,15 @@ run_jira_test "jira-not-planned-transitions" \
 run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   '{"transition":{"id":"51"}}'
+
+# Jira split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
+run_jira_test "jira-split-dispatches-triage" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  '"add":"ready-for-triage"'
+
+run_jira_test_stdout "jira-split-dispatch-logged" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "Dispatching triage for sub-issue:"
 
 # Jira split with multi-paragraph body produces ADF with separate paragraph nodes.
 # Verifies that newlines in sub-issue bodies are converted to hardBreak / separate

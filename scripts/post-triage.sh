@@ -176,6 +176,18 @@ tracker_create_issue() {
   rm -f "${err_file}"
   echo "${url}"
 }
+
+tracker_dispatch_triage() {
+  local issue_url="$1"
+  local target_repo target_number
+  target_repo=$(echo "${issue_url}" | sed 's|https://github.com/||; s|/issues/.*||')
+  target_number=$(basename "${issue_url}")
+  local endpoint="repos/${target_repo}/issues/${target_number}/labels"
+  if ! gh api "${endpoint}" -f "labels[]=ready-for-triage" --silent 2>/dev/null; then
+    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    return 1
+  fi
+}
 # END bundled: lib/github-triage-ops.lib.sh
     ;;
   gitlab)
@@ -506,6 +518,24 @@ tracker_create_issue() {
     return 1
   }
   echo "${response}" | jq -r '.web_url'
+}
+
+tracker_dispatch_triage() {
+  local issue_url="$1"
+  local target_host target_repo target_number encoded_target
+  target_host=$(echo "${issue_url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  target_repo=$(echo "${issue_url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+  target_number=$(basename "${issue_url}")
+  encoded_target=$(printf '%s' "${target_repo}" | jq -sRr @uri)
+  if ! curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request PUT \
+    --data-urlencode "add_labels=ready-for-triage" \
+    "https://${target_host}/api/v4/projects/${encoded_target}/issues/${target_number}" > /dev/null 2>/dev/null; then
+    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    return 1
+  fi
 }
 # END bundled: lib/gitlab-triage-ops.lib.sh
     ;;
@@ -904,6 +934,17 @@ tracker_create_issue() {
     return 1
   fi
   echo "${JIRA_BASE_URL}/browse/${key}"
+}
+
+tracker_dispatch_triage() {
+  local issue_url="$1"
+  local target_key
+  target_key=$(echo "${issue_url}" | sed -E 's|.*/browse/||')
+  if ! _jira_api PUT "/issue/${target_key}" \
+    --data "$(jq -cn '{update:{labels:[{add:"ready-for-triage"}]}}')" > /dev/null 2>/dev/null; then
+    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    return 1
+  fi
 }
 # END bundled: lib/jira-triage-ops.lib.sh
     ;;
@@ -1447,8 +1488,16 @@ ${FAILED_CREATES}"
       exit 1
     fi
 
+    # Ensure the ready-for-triage label exists so dispatch works for
+    # each sub-issue. forge_ensure_label is a no-op for non-mandatory
+    # labels and for Jira (which has no label registry).
+    if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
+      forge_ensure_label "ready-for-triage"
+    fi
+
     CREATED_URLS=""
     FAILED_CREATES=""
+    FAILED_DISPATCHES=""
     for i in $(seq 0 $((SUB_ISSUE_COUNT - 1))); do
       SUB_TITLE=$(jq -r ".sub_issues[${i}].title" "${RESULT_FILE}")
       SUB_BODY=$(jq -r ".sub_issues[${i}].body" "${RESULT_FILE}")
@@ -1485,6 +1534,15 @@ ${SUB_BODY}
       echo "Created: ${CREATED_URL}"
       CREATED_URLS="${CREATED_URLS}
 - ${CREATED_URL}"
+
+      # Dispatch triage for the newly created sub-issue by applying
+      # the ready-for-triage label. A dispatch failure must not prevent
+      # other sub-issues from being created or dispatched (#1123).
+      echo "Dispatching triage for sub-issue: ${CREATED_URL}"
+      if ! tracker_dispatch_triage "${CREATED_URL}"; then
+        FAILED_DISPATCHES="${FAILED_DISPATCHES}
+- ${CREATED_URL}"
+      fi
     done
 
     if [[ -z "${CREATED_URLS}" ]] && [[ -n "${FAILED_CREATES}" ]]; then
@@ -1503,6 +1561,13 @@ ${SUB_BODY}
 
 **Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
 ${FAILED_CREATES}"
+    fi
+
+    if [[ -n "${FAILED_DISPATCHES}" ]]; then
+      COMMENT="${COMMENT}
+
+**Triage dispatch failed** (run \`/fs-triage\` manually on these issues):
+${FAILED_DISPATCHES}"
     fi
 
     tracker_remove_label "blocked"

@@ -393,3 +393,14 @@ tracker_create_issue() {
   fi
   echo "${JIRA_BASE_URL}/browse/${key}"
 }
+
+tracker_dispatch_triage() {
+  local issue_url="$1"
+  local target_key
+  target_key=$(echo "${issue_url}" | sed -E 's|.*/browse/||')
+  if ! _jira_api PUT "/issue/${target_key}" \
+    --data "$(jq -cn '{update:{labels:[{add:"ready-for-triage"}]}}')" > /dev/null 2>/dev/null; then
+    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    return 1
+  fi
+}

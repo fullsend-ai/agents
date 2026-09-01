@@ -172,6 +172,18 @@ tracker_create_issue() {
   rm -f "${err_file}"
   echo "${url}"
 }
+
+tracker_dispatch_triage() {
+  local issue_url="$1"
+  local target_repo target_number
+  target_repo=$(echo "${issue_url}" | sed 's|https://github.com/||; s|/issues/.*||')
+  target_number=$(basename "${issue_url}")
+  local endpoint="repos/${target_repo}/issues/${target_number}/labels"
+  if ! gh api "${endpoint}" -f "labels[]=ready-for-triage" --silent 2>/dev/null; then
+    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    return 1
+  fi
+}
 # END bundled: lib/github-triage-ops.lib.sh
     ;;
   gitlab)
@@ -502,6 +514,24 @@ tracker_create_issue() {
     return 1
   }
   echo "${response}" | jq -r '.web_url'
+}
+
+tracker_dispatch_triage() {
+  local issue_url="$1"
+  local target_host target_repo target_number encoded_target
+  target_host=$(echo "${issue_url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  target_repo=$(echo "${issue_url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+  target_number=$(basename "${issue_url}")
+  encoded_target=$(printf '%s' "${target_repo}" | jq -sRr @uri)
+  if ! curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request PUT \
+    --data-urlencode "add_labels=ready-for-triage" \
+    "https://${target_host}/api/v4/projects/${encoded_target}/issues/${target_number}" > /dev/null 2>/dev/null; then
+    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    return 1
+  fi
 }
 # END bundled: lib/gitlab-triage-ops.lib.sh
     ;;
@@ -900,6 +930,17 @@ tracker_create_issue() {
     return 1
   fi
   echo "${JIRA_BASE_URL}/browse/${key}"
+}
+
+tracker_dispatch_triage() {
+  local issue_url="$1"
+  local target_key
+  target_key=$(echo "${issue_url}" | sed -E 's|.*/browse/||')
+  if ! _jira_api PUT "/issue/${target_key}" \
+    --data "$(jq -cn '{update:{labels:[{add:"ready-for-triage"}]}}')" > /dev/null 2>/dev/null; then
+    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    return 1
+  fi
 }
 # END bundled: lib/jira-triage-ops.lib.sh
     ;;

@@ -291,3 +291,21 @@ tracker_create_issue() {
   }
   echo "${response}" | jq -r '.web_url'
 }
+
+tracker_dispatch_triage() {
+  local issue_url="$1"
+  local target_host target_repo target_number encoded_target
+  target_host=$(echo "${issue_url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  target_repo=$(echo "${issue_url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
+  target_number=$(basename "${issue_url}")
+  encoded_target=$(printf '%s' "${target_repo}" | jq -sRr @uri)
+  if ! curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --request PUT \
+    --data-urlencode "add_labels=ready-for-triage" \
+    "https://${target_host}/api/v4/projects/${encoded_target}/issues/${target_number}" > /dev/null 2>/dev/null; then
+    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    return 1
+  fi
+}
