@@ -57,6 +57,8 @@ base_env() {
   local mock_bin="$1"
   echo "PATH=${mock_bin}:${PATH}"
   echo "ISSUE_URL=https://acme.atlassian.net/browse/PROJ-42"
+  echo "JIRA_USER_EMAIL=bot@acme.com"
+  echo "JIRA_TOKEN=fake-jira-token"
   echo "JIRA_BASE_URL=https://acme.atlassian.net"
   echo "REPO_FULL_NAME=test-org/test-repo"
   echo "FULLSEND_FORGE=github"
@@ -151,12 +153,14 @@ run_test "base-url-trailing-slash-normalizes" \
 # Script succeeds without JIRA_USER_EMAIL (no longer required by pre-script).
 run_test "no-jira-email-still-succeeds" \
   0 \
-  "Jira source:"
+  "Jira source:" \
+  "JIRA_USER_EMAIL="
 
 # Script succeeds without JIRA_TOKEN (no longer required by pre-script).
 run_test "no-jira-token-still-succeeds" \
   0 \
-  "Jira source:"
+  "Jira source:" \
+  "JIRA_TOKEN="
 
 # --- Summary ---
 
