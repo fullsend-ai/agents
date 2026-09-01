@@ -138,8 +138,10 @@ tracker_dispatch_triage() {
   target_repo=$(echo "${issue_url}" | sed 's|https://github.com/||; s|/issues/.*||')
   target_number=$(basename "${issue_url}")
   local endpoint="repos/${target_repo}/issues/${target_number}/labels"
-  if ! gh api "${endpoint}" -f "labels[]=ready-for-triage" --silent 2>/dev/null; then
-    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+  local err_output
+  if ! err_output=$(gh api "${endpoint}" -f "labels[]=ready-for-triage" --silent 2>&1); then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${issue_url}")" >&2
+    [[ -n "${err_output}" ]] && echo "ERROR: ${err_output}" >&2
     return 1
   fi
 }

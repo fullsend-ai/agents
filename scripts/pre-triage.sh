@@ -180,8 +180,10 @@ tracker_dispatch_triage() {
   target_repo=$(echo "${issue_url}" | sed 's|https://github.com/||; s|/issues/.*||')
   target_number=$(basename "${issue_url}")
   local endpoint="repos/${target_repo}/issues/${target_number}/labels"
-  if ! gh api "${endpoint}" -f "labels[]=ready-for-triage" --silent 2>/dev/null; then
-    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+  local err_output
+  if ! err_output=$(gh api "${endpoint}" -f "labels[]=ready-for-triage" --silent 2>&1); then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${issue_url}")" >&2
+    [[ -n "${err_output}" ]] && echo "ERROR: ${err_output}" >&2
     return 1
   fi
 }
@@ -522,6 +524,7 @@ tracker_dispatch_triage() {
   local issue_url="$1"
   local target_host target_repo target_number encoded_target
   target_host=$(echo "${issue_url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  _validate_gitlab_host "${target_host}" || return 1
   target_repo=$(echo "${issue_url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   target_number=$(basename "${issue_url}")
   encoded_target=$(printf '%s' "${target_repo}" | jq -sRr @uri)
@@ -531,7 +534,7 @@ tracker_dispatch_triage() {
     --request PUT \
     --data-urlencode "add_labels=ready-for-triage" \
     "https://${target_host}/api/v4/projects/${encoded_target}/issues/${target_number}" > /dev/null 2>/dev/null; then
-    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${issue_url}")" >&2
     return 1
   fi
 }
@@ -941,7 +944,7 @@ tracker_dispatch_triage() {
   target_key=$(echo "${issue_url}" | sed -E 's|.*/browse/||')
   if ! _jira_api PUT "/issue/${target_key}" \
     --data "$(jq -cn '{update:{labels:[{add:"ready-for-triage"}]}}')" > /dev/null 2>/dev/null; then
-    echo "::warning::Failed to add ready-for-triage label to ${issue_url}" >&2
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${issue_url}")" >&2
     return 1
   fi
 }

@@ -99,6 +99,9 @@ export PATH="${MOCK_BIN}:${PATH}"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
 export FULLSEND_TRACKER="github"
+# Prevent REPO_FULL_NAME from leaking in from the sandbox environment;
+# forge_ensure_label prefers it over REPO, which breaks test expectations.
+unset REPO_FULL_NAME
 # Harness defaults — post-triage.sh expects these from the harness env.
 export TRIAGE_AUTO_CODE="on"
 export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
