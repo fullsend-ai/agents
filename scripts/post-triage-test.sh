@@ -988,10 +988,41 @@ AUTO_CODE_BUG_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_s
 
 # State lookup failures must fail closed for the routing label while allowing
 # the rest of post-triage processing to complete.
-run_test_no_pattern_with_env "issue-state-api-error-skips-ready-to-code" \
-  "${AUTO_CODE_BUG_FIXTURE}" \
-  "labels[]=ready-to-code" \
-  "MOCK_ISSUE_STATE=api-error"
+api_error_dir="${TMPDIR}/run-issue-state-api-error-skips-ready-to-code"
+mkdir -p "${api_error_dir}/iteration-1/output"
+echo '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
+  > "${api_error_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+api_error_exit=0
+(
+  cd "${api_error_dir}"
+  export MOCK_ISSUE_STATE=api-error
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout.log" 2>&1 || api_error_exit=$?
+
+if [[ ${api_error_exit} -ne 0 ]]; then
+  echo "FAIL: issue-state-api-error-skips-ready-to-code — exit code ${api_error_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- "labels[]=ready-to-code" "${GH_LOG}"; then
+  echo "FAIL: issue-state-api-error-skips-ready-to-code — ready-to-code was applied"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "labels[]=area/api" "${GH_LOG}"; then
+  echo "FAIL: issue-state-api-error-skips-ready-to-code — informational label was not applied"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "fullsend post-comment" "${GH_LOG}"; then
+  echo "FAIL: issue-state-api-error-skips-ready-to-code — triage comment was not posted"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "::warning::Unable to verify issue #42 state; skipping ready-to-code label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: issue-state-api-error-skips-ready-to-code — warning was not logged"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: issue-state-api-error-skips-ready-to-code"
+fi
 
 # Shared fixture: sufficient documentation.
 AUTO_CODE_DOCS_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nDocs issue."}'
