@@ -93,6 +93,11 @@ tracker_create_label() {
     --force 2>/dev/null || true
 }
 
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
+}
+
 # --- Comments ---
 
 tracker_post_comment() {

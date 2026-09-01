@@ -139,6 +139,11 @@ tracker_create_label() {
     --force 2>/dev/null || true
 }
 
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
+}
+
 # --- Comments ---
 
 tracker_post_comment() {
@@ -399,6 +404,11 @@ tracker_create_label() {
     --data-urlencode "name=${name}" \
     --data-urlencode "description=${description}" \
     --data-urlencode "color=#${color}" > /dev/null 2>/dev/null || true
+}
+
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
 }
 
 # --- Bot identity (for sticky-comment author filtering) ---
@@ -742,6 +752,11 @@ tracker_create_label() {
   :
 }
 
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
+}
+
 # --- Components ---
 
 # Set components on a Jira issue. Accepts a JSON array of component objects
@@ -918,8 +933,8 @@ esac
 # labels.lib.sh — Mandatory label management for fullsend agent scripts.
 #
 # Provides forge_ensure_label() which creates mandatory dispatch labels
-# without --force, preserving admin customizations. Non-mandatory labels
-# are silently skipped (no-op).
+# by delegating to forge_create_label(). Non-mandatory labels are silently
+# skipped (no-op).
 
 # shellcheck shell=bash
 
@@ -958,25 +973,10 @@ forge_ensure_label() {
     fi
   fi
 
-  local create_args=("${name}" --repo "${REPO_FULL_NAME:-${REPO}}")
-  [[ -n "${description}" ]] && create_args+=(--description "${description}")
-  [[ -n "${color}" ]] && create_args+=(--color "${color}")
-
-  local err
-  if ! err=$(gh label create "${create_args[@]}" 2>&1); then
-    case "${err}" in
-      *already\ exists*) ;;
-      *)
-        err="${err//$'\n'/ }"
-        err="${err//::/:}"
-        err="${err//%0A/}"
-        err="${err//%0a/}"
-        err="${err//%0D/}"
-        err="${err//%0d/}"
-        echo "Warning: gh label create ${name}: ${err}" >&2
-        ;;
-    esac
-  fi
+  # forge_create_label uses upsert semantics (--force on GitHub, 409-ignore
+  # on GitLab).  This intentionally overwrites any admin-customized
+  # description/color — mandatory labels are agent-managed.
+  forge_create_label "${name}" "${description}" "${color}"
 }
 # END bundled: lib/labels.lib.sh
 

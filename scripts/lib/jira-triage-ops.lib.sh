@@ -230,6 +230,11 @@ tracker_create_label() {
   :
 }
 
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
+}
+
 # --- Components ---
 
 # Set components on a Jira issue. Accepts a JSON array of component objects
