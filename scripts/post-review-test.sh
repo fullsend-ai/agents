@@ -309,7 +309,7 @@ run_downgrade_test "approve-all-filtered-removes-findings" \
 # request-changes with actionable low findings filtered → downgraded
 # (severity threshold is respected even for actionable findings)
 ACTIONABLE_LOW='{"action":"request-changes","findings":[
-  {"severity":"low","category":"naming-convention","file":"a.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true}
+  {"severity":"low","category":"naming-convention","file":"a.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true,"verified_variables":[],"unchecked_variables":[]}
 ]}'
 run_downgrade_test "request-changes-actionable-filtered-downgraded" \
   "$ACTIONABLE_LOW" "medium" "comment" "false"
@@ -317,23 +317,23 @@ run_downgrade_test "request-changes-actionable-filtered-downgraded" \
 # request-changes with mixed actionable/non-actionable info findings
 # filtered → downgraded (severity threshold applies to all findings)
 MIXED_ACTIONABLE='{"action":"request-changes","findings":[
-  {"severity":"info","category":"style","file":"a.go","description":"security: no SSRF bypass","actionable":false},
-  {"severity":"low","category":"naming-convention","file":"b.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true}
+  {"severity":"info","category":"style","file":"a.go","description":"security: no SSRF bypass","actionable":false,"verified_variables":[],"unchecked_variables":[]},
+  {"severity":"low","category":"naming-convention","file":"b.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true,"verified_variables":[],"unchecked_variables":[]}
 ]}'
 run_downgrade_test "request-changes-mixed-actionable-filtered-downgraded" \
   "$MIXED_ACTIONABLE" "medium" "comment" "false"
 
 # request-changes with all non-actionable low findings filtered → downgraded
 NON_ACTIONABLE_LOW='{"action":"request-changes","findings":[
-  {"severity":"low","category":"style","file":"a.go","description":"observation","actionable":false},
-  {"severity":"info","category":"style","file":"b.go","description":"note","actionable":false}
+  {"severity":"low","category":"style","file":"a.go","description":"observation","actionable":false,"verified_variables":[],"unchecked_variables":[]},
+  {"severity":"info","category":"style","file":"b.go","description":"note","actionable":false,"verified_variables":[],"unchecked_variables":[]}
 ]}'
 run_downgrade_test "request-changes-non-actionable-downgraded" \
   "$NON_ACTIONABLE_LOW" "medium" "comment" "false"
 
 # reject with actionable findings filtered → downgraded
 ACTIONABLE_REJECT='{"action":"reject","findings":[
-  {"severity":"info","category":"style","file":"a.go","description":"rename","remediation":"fix it","actionable":true}
+  {"severity":"info","category":"style","file":"a.go","description":"rename","remediation":"fix it","actionable":true,"verified_variables":[],"unchecked_variables":[]}
 ]}'
 run_downgrade_test "reject-actionable-filtered-downgraded" \
   "$ACTIONABLE_REJECT" "low" "comment" "false"
@@ -957,13 +957,13 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
 
 # Actionable low findings below threshold → downgraded (threshold is absolute)
 run_label_test_with_env_stdout "severity-filter-actionable-still-downgrades" \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"naming-convention","file":"a.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true}]}' \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"naming-convention","file":"a.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true,"verified_variables":[],"unchecked_variables":[]}]}' \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
 # Non-actionable low findings below threshold → downgraded
 run_label_test_with_env_stdout "severity-filter-non-actionable-downgrades" \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor","actionable":false}]}' \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor","actionable":false,"verified_variables":[],"unchecked_variables":[]}]}' \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
@@ -1743,7 +1743,7 @@ run_label_test "risk-label-low-applied" \
   "gh label create risk/low"
 
 # Risk labels work with request-changes too
-RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref","verified_variables":[],"unchecked_variables":[]}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
 
 run_label_test "risk-label-with-request-changes" \
   "${RISK_RC_RESULT}" \

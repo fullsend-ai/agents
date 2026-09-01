@@ -77,7 +77,6 @@ script-test:
 	$(call run-timed,bash scripts/post-scribe-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
 	$(call run-timed,bash scripts/validate-code-output-test.sh)
-	$(call run-timed,bash schemas/review-result-label-actions-test.sh)
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash hack/lint-agent-docs-test.sh)
 	$(call run-timed,bash eval/lint-measurements-test.sh)

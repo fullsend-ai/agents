@@ -300,7 +300,7 @@ jq -n \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
-For `request-changes` (including actionable low/info findings) or `reject`:
+For `approve` with actionable low/info findings:
 
 ```bash
 jq -n \
