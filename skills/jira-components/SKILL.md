@@ -1,9 +1,9 @@
 ---
 name: jira-components
 description: >-
-  Discover Jira project components and recommend component assignments for
-  the issue being triaged. Jira-only skill using curl against the Jira Cloud
-  REST API. Produces component_actions in the agent result JSON.
+  Use when discovering Jira project components and recommending component
+  assignments for the issue being triaged. Jira-only skill using curl against
+  the Jira Cloud REST API. Produces component_actions in the agent result JSON.
 ---
 
 # Jira Components
