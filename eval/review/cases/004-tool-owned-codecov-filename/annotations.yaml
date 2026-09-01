@@ -1,0 +1,24 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - risk/elevated
+    - risk/high
+    - risk/critical
+  risk_label_required: true
+
+findings:
+  required: []
+  forbidden:
+    - file-naming-convention
+
+max_turns: 40
+max_cost_usd: 4.00
+
+review_expectations: |
+  The PR adds `.codecov.yml`, a tool-owned configuration filename that
+  Codecov recognizes. Although existing root-level YAML files use `.yaml`,
+  the review must not recommend renaming `.codecov.yml` for consistency.
+  The review should approve or comment without a file-naming-convention
+  finding.
