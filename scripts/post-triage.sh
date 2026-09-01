@@ -973,6 +973,9 @@ forge_ensure_label() {
     fi
   fi
 
+  # forge_create_label uses upsert semantics (--force on GitHub, 409-ignore
+  # on GitLab).  This intentionally overwrites any admin-customized
+  # description/color — mandatory labels are agent-managed.
   forge_create_label "${name}" "${description}" "${color}"
 }
 # END bundled: lib/labels.lib.sh
