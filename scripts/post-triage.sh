@@ -65,6 +65,7 @@ GITHUB_TRIAGE_OPS_SH_LOADED=1
 # --- URL handling ---
 
 tracker_validate_issue_url() {
+  # shellcheck disable=SC2153 # ISSUE_URL is an expected env var, not a misspelling of issue_url
   if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: ${ISSUE_URL}" >&2
     return 1
@@ -317,6 +318,7 @@ _gitlab_api_with_status() {
 # --- URL handling ---
 
 tracker_validate_issue_url() {
+  # shellcheck disable=SC2153 # ISSUE_URL is an expected env var, not a misspelling of issue_url
   if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitLab pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
     return 1
@@ -649,6 +651,7 @@ _jira_api_with_status() {
 # --- URL handling ---
 
 tracker_validate_issue_url() {
+  # shellcheck disable=SC2153 # ISSUE_URL is an expected env var, not a misspelling of issue_url
   if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected Jira pattern: ${ISSUE_URL}" >&2
     return 1

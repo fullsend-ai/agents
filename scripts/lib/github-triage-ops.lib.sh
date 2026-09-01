@@ -19,6 +19,7 @@ GITHUB_TRIAGE_OPS_SH_LOADED=1
 # --- URL handling ---
 
 tracker_validate_issue_url() {
+  # shellcheck disable=SC2153 # ISSUE_URL is an expected env var, not a misspelling of issue_url
   if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: ${ISSUE_URL}" >&2
     return 1
