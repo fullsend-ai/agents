@@ -719,6 +719,16 @@ fi
 
 # --- Apply deferred label (must be last label mutation) ---
 
+if [[ "${DEFERRED_LABEL}" == "ready-to-code" ]] && [[ "${FULLSEND_TRACKER}" == "github" ]]; then
+  if ! ISSUE_STATE=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.state'); then
+    echo "::warning::Unable to verify issue #${ISSUE_NUMBER} state; skipping ready-to-code label"
+    DEFERRED_LABEL=""
+  elif [[ "${ISSUE_STATE}" != "open" ]]; then
+    echo "Issue #${ISSUE_NUMBER} is ${ISSUE_STATE}; skipping ready-to-code label"
+    DEFERRED_LABEL=""
+  fi
+fi
+
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
   # forge_ensure_label creates the label via `gh` against REPO. On Jira, REPO

@@ -23,6 +23,15 @@ MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
+# Return the configured issue state for the exact issue endpoint. Label APIs
+# use child paths and continue through to the call logger below.
+if [[ "\$1" == "api" ]] && [[ "\$2" == "repos/test-org/test-repo/issues/42" ]]; then
+  if [[ "\${MOCK_ISSUE_STATE:-open}" == "api-error" ]]; then
+    exit 1
+  fi
+  printf '%s\n' "\${MOCK_ISSUE_STATE:-open}"
+  exit 0
+fi
 # When querying the repo labels list, return a set of known test labels so that
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
@@ -639,6 +648,45 @@ run_test "ready-to-code-applied-without-label-actions" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent"
 
+# A human may close the issue while triage is running. Informational mutations
+# and the triage summary remain useful, but the routing label must not dispatch
+# a code agent for the now-closed issue.
+closed_issue_dir="${TMPDIR}/run-closed-issue-skips-ready-to-code"
+mkdir -p "${closed_issue_dir}/iteration-1/output"
+echo '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
+  > "${closed_issue_dir}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+closed_issue_exit=0
+(
+  cd "${closed_issue_dir}"
+  export MOCK_ISSUE_STATE=closed
+  bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout.log" 2>&1 || closed_issue_exit=$?
+
+if [[ ${closed_issue_exit} -ne 0 ]]; then
+  echo "FAIL: closed-issue-skips-ready-to-code — exit code ${closed_issue_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- "labels[]=ready-to-code" "${GH_LOG}"; then
+  echo "FAIL: closed-issue-skips-ready-to-code — ready-to-code was applied"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "labels[]=area/api" "${GH_LOG}"; then
+  echo "FAIL: closed-issue-skips-ready-to-code — informational label was not applied"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "fullsend post-comment" "${GH_LOG}"; then
+  echo "FAIL: closed-issue-skips-ready-to-code — triage comment was not posted"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "Issue #42 is closed; skipping ready-to-code label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: closed-issue-skips-ready-to-code — skip diagnostic was not logged"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: closed-issue-skips-ready-to-code"
+fi
+
 # Verify label-category consistency guard strips contradicting labels (#39).
 run_test_stdout "label-category-contradiction-stripped" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nDocs issue.","label_actions":{"reason":"Reclassifying to enhancement.","actions":[{"action":"add","label":"enhancement"}]}}' \
@@ -937,6 +985,13 @@ run_test_no_pattern_with_env() {
 
 # Shared fixture: sufficient bug.
 AUTO_CODE_BUG_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+
+# State lookup failures must fail closed for the routing label while allowing
+# the rest of post-triage processing to complete.
+run_test_no_pattern_with_env "issue-state-api-error-skips-ready-to-code" \
+  "${AUTO_CODE_BUG_FIXTURE}" \
+  "labels[]=ready-to-code" \
+  "MOCK_ISSUE_STATE=api-error"
 
 # Shared fixture: sufficient documentation.
 AUTO_CODE_DOCS_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nDocs issue."}'
