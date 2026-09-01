@@ -220,7 +220,6 @@ access through the `jira-ro` provider. Extract the issue key from
 if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
   ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
   curl --fail-with-body --silent \
-    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
 else
   # GitHub:

@@ -8,12 +8,13 @@ description: >-
 
 # Jira Cloud API
 
-Use `curl` with the Jira Cloud REST API (v3). The environment provides
-`JIRA_USER_EMAIL` and `JIRA_TOKEN` for Basic auth, and `JIRA_BASE_URL` for
-the instance host. All requests include:
+Use `curl` with the Jira Cloud REST API (v3). The `jira-ro` provider
+handles authentication at the network layer — no `--user` flag or
+explicit credentials are needed. The environment provides `JIRA_BASE_URL`
+for the instance host. All requests include:
 
 ```bash
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --silent \
   --header "Content-Type: application/json" \
   "${JIRA_BASE_URL}/rest/api/3/..."
 ```
@@ -31,15 +32,15 @@ Server/Data Center is not supported.
 
 ```bash
 # View an issue with full details
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent \
   "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
 
 # List issue comments (newest first, so the most recent reply is on page one)
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent \
   "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50"
 
 # List open issues in the project
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent \
   --header "Content-Type: application/json" \
   --get --data-urlencode "jql=project = ${PROJECT_KEY} AND statusCategory != Done" \
   --data-urlencode "fields=summary,status,labels" \
@@ -67,14 +68,14 @@ that could be mistaken for an empty result set.
 
 ```bash
 # Search issues by keyword (JQL text search)
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent \
   --header "Content-Type: application/json" \
   --get --data-urlencode "jql=project = ${PROJECT_KEY} AND text ~ \"keyword\"" \
   --data-urlencode "fields=summary,status,labels" \
   "${JIRA_BASE_URL}/rest/api/3/search/jql"
 
 # Search across all projects visible to the account
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent \
   --header "Content-Type: application/json" \
   --get --data-urlencode "jql=text ~ \"keyword\" ORDER BY updated DESC" \
   --data-urlencode "fields=summary,status,labels" \
@@ -85,7 +86,7 @@ curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
 
 ```bash
 # Search issues in another project (use its project key)
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent \
   --header "Content-Type: application/json" \
   --get --data-urlencode "jql=project = OTHERPROJ AND text ~ \"keyword\"" \
   --data-urlencode "fields=summary,status,labels" \
@@ -99,7 +100,7 @@ issue as a web link shows up as a remote link:
 
 ```bash
 # List remote links on an issue (may include manually linked PRs/MRs)
-curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+curl --fail-with-body --silent \
   "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/remotelink"
 ```
 
