@@ -187,7 +187,7 @@ tracker_dispatch_triage() {
   local err_output
   if ! err_output=$(gh api "${endpoint}" -f "labels[]=ready-for-triage" --silent 2>&1); then
     echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${issue_url}")" >&2
-    [[ -n "${err_output}" ]] && echo "ERROR: ${err_output}" >&2
+    [[ -n "${err_output}" ]] && echo "ERROR: $(_gha_sanitize "${err_output}")" >&2
     return 1
   fi
 }
