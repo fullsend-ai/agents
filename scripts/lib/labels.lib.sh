@@ -2,8 +2,8 @@
 # labels.lib.sh — Mandatory label management for fullsend agent scripts.
 #
 # Provides forge_ensure_label() which creates mandatory dispatch labels
-# without --force, preserving admin customizations. Non-mandatory labels
-# are silently skipped (no-op).
+# by delegating to forge_create_label(). Non-mandatory labels are silently
+# skipped (no-op).
 
 # shellcheck shell=bash
 

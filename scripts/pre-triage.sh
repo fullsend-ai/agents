@@ -135,6 +135,11 @@ tracker_create_label() {
     --force 2>/dev/null || true
 }
 
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
+}
+
 # --- Comments ---
 
 tracker_post_comment() {
@@ -395,6 +400,11 @@ tracker_create_label() {
     --data-urlencode "name=${name}" \
     --data-urlencode "description=${description}" \
     --data-urlencode "color=#${color}" > /dev/null 2>/dev/null || true
+}
+
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
 }
 
 # --- Bot identity (for sticky-comment author filtering) ---
@@ -736,6 +746,11 @@ tracker_list_repo_labels() {
 # unused label to an issue works without registering it first.
 tracker_create_label() {
   :
+}
+
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
 }
 
 # --- Components ---
