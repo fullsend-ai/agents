@@ -42,23 +42,5 @@ forge_ensure_label() {
     fi
   fi
 
-  local create_args=("${name}" --repo "${REPO_FULL_NAME:-${REPO}}")
-  [[ -n "${description}" ]] && create_args+=(--description "${description}")
-  [[ -n "${color}" ]] && create_args+=(--color "${color}")
-
-  local err
-  if ! err=$(gh label create "${create_args[@]}" 2>&1); then
-    case "${err}" in
-      *already\ exists*) ;;
-      *)
-        err="${err//$'\n'/ }"
-        err="${err//::/:}"
-        err="${err//%0A/}"
-        err="${err//%0a/}"
-        err="${err//%0D/}"
-        err="${err//%0d/}"
-        echo "Warning: gh label create ${name}: ${err}" >&2
-        ;;
-    esac
-  fi
+  forge_create_label "${name}" "${description}" "${color}"
 }
