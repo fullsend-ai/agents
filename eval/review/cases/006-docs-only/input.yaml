@@ -1,0 +1,36 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "docs: clarify order lookup and discount rounding"
+  body: |
+    ## Summary
+
+    Two small doc clarifications, no code changes:
+
+    - Note that `GET /orders/{id}` returns 404 when the order doesn't exist.
+    - Note that discount percentages are whole numbers and the total is
+      rounded to the nearest cent.
+
+    ## Test plan
+
+    Docs-only change; no tests to run.
+  base: main
+  head_branch: "docs/clarify-order-lookup"
+  files:
+    - path: docs/api.md
+      content: |
+        # API Reference
+
+        ## GET /orders/{id}
+
+        Returns a single order by id, or 404 if no order with that id exists.
+
+        ## POST /orders
+
+        Creates a new order. Applies any active discount before returning the total.
+
+        ## Pricing
+
+        Discounts are expressed as whole-number percentages (0-100) and are applied
+        to the subtotal before tax. The discounted total is rounded to the nearest
+        cent.

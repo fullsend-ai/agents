@@ -110,9 +110,11 @@ Each case directory under `eval/<agent>/cases/` contains:
 - `input.yaml` — fixture definition (forge, fixture type, title, body,
   PR files)
 - `annotations.yaml` — expected outcomes (labels, review expectations,
-  `max_turns`, `max_cost_usd`)
+  `max_turns`, `max_cost_usd`, and for the review suite the optional
+  `required_findings` / `forbidden_findings` ground truth)
 - `repo/` (optional) — base repo contents pushed to main before the
-  fixture is created
+  fixture is created, either inline or a symlink to a fixture repo
+  shared by several cases under `eval/<agent>/repos/`
 
 ## Lifecycle
 
@@ -123,7 +125,8 @@ Each test case follows this lifecycle:
 2. **`run-fullsend.sh`** — clones the ephemeral repo and runs the agent
    pipeline against it.
 3. **`capture-fixture.sh`** — snapshots the fixture state (labels,
-   comments, reviews) into `fixture-state.json` for judges.
+   comments, reviews, and for PR fixtures the inline review comments
+   that carry each review finding) into `fixture-state.json` for judges.
 4. **`teardown-fixture.sh`** — deletes the ephemeral repo.
 
 ## Known issues

@@ -1,5 +1,12 @@
 name: review-eval
-description: Functional test of the fullsend review agent pipeline
+description: >
+  Functional test of the fullsend review agent pipeline. The label and
+  decision judges measure the review's *outcome*; required_findings and
+  forbidden_findings measure its *precision*, because outcome labels alone
+  cannot tell a review that found the three seeded bugs from one that
+  approved blindly, nor a review that dismissed FP bait from one that
+  promoted it to a vulnerability. Only inspecting the findings themselves
+  can.
 
 skill: review
 
@@ -65,16 +72,28 @@ dataset:
   schema: |
     Each case directory contains:
     - input.yaml: Fixture definition with forge, fixture type, title, body, and PR files.
-    - annotations.yaml: Expected fixture state (labels, reviews, state).
-    - repo/: Directory with the base repo contents (pushed to main before the PR).
+    - annotations.yaml: Expected fixture state (labels, reviews, state) and,
+      optionally, required_findings / forbidden_findings ground truth.
+    - repo/: Directory (or symlink into ../../repos/) with the base repo
+      contents (pushed to main before the PR).
 
 outputs:
   - path: output
     schema: |
       fixture-state.json: Captured state of the GitHub PR after the
       full agent pipeline (pre-script, agent, post-script) has run.
-      Contains: state, labels, comments, reviews, assignees, and
-      review_decision.
+      Contains: state, labels, comments, reviews, assignees,
+      review_decision, and review_comments.
+
+      review_comments is the PR's inline/file-level review comments — one
+      per review finding, each {path, line, body}, captured by
+      capture-fixture.sh from GET /repos/{repo}/pulls/{n}/comments. The
+      `comments` array holds the agent's sticky top-level write-up;
+      review_comments holds the individually positioned findings. Findings
+      with no file or line never reach review_comments — postreview.go
+      keeps them in the sticky body only — which is why the precision
+      judge also scans `comments` and `reviews` before trusting an empty
+      review_comments as a clean review.
 
 # ---------------------------------------------------------------------------
 # Judges
@@ -164,6 +183,396 @@ judges:
           return False, f"No risk/* label found (actual: {actual})"
       return True, f"Risk label present: {risk_labels}"
 
+  - name: required_findings
+    # Skip only when the case declares no ground truth: the key is absent
+    # or an explicitly empty list. A truthiness check here would also skip
+    # malformed-but-falsy values ({}, "", 0) that the check body exists to
+    # fail loudly on — and a skipped judge leaves the pass-rate denominator
+    # instead of failing.
+    if: "annotations.get('required_findings') not in (None, [])"
+    description: >
+      Finding-level check for review precision. The outcome label and the
+      review decision say whether the agent approved; neither can say
+      whether it found the right things, so this judge inspects the
+      findings themselves. annotations.required_findings is a list of
+      {file, category, min_severity?, description?}; every entry must be
+      satisfied by at least one finding the agent actually posted, read
+      from fixture-state.json's review_comments (the PR's inline review
+      comments, captured by capture-fixture.sh). A finding is recognised
+      by the "**[severity]** category" header that formatFindingComment
+      renders (fullsend internal/cli/postreview.go); the regex searches
+      rather than anchors because the file-level fallback path in that
+      same file prefixes the body with "_Line N_ · " when GitHub rejects a
+      positioned comment. Bodies without that header are not findings and
+      are skipped. `category` is matched against the whole comment body —
+      the category token plus the description and remediation — not
+      against the category token alone. The review agent's categories are
+      fine-grained kebab-case tokens (injection-vuln, logic-error,
+      stale-doc; see skills/pr-review/SKILL.md's per-dimension table), the
+      output schema constrains them only to a non-empty string, and
+      SKILL.md explicitly routes unrecognised categories to the nearest
+      dimension — so a correct SQL-injection finding may arrive as
+      injection-vuln or sql-injection with "SQL injection" appearing only
+      in the description. Pinning the token alone would fail correct
+      reviews on a synonym. Matching is word-boundary aware, so a required
+      "injection" is not satisfied by a finding that only says
+      "injections" and a forbidden "command" is not tripped by
+      "commandeer" — case-insensitive substring matching is the bug class
+      that let VerboseLoggingEnabled satisfy a VerboseLogging requirement
+      in eval/code's removed_symbols judge. Boundaries use lookarounds
+      rather than \b so a phrase with a non-word edge ("c++") still
+      behaves, and internal whitespace is matched flexibly. An empty
+      category means "any finding on this file". File paths compare exactly and
+      case-sensitively (git paths are case-sensitive); lowercasing them
+      would let a finding on Src/Auth.py satisfy a requirement on
+      src/auth.py. Entries are validated up front — a non-list value, a
+      non-mapping entry, a null/non-string file or category, an
+      out-of-vocabulary min_severity, or an unknown key (a typo'd
+      min_sevirity that would otherwise fall back to the default) fails
+      the case with a message rather than silently degrading to a weaker
+      check. A severity string outside info/low/medium/high/critical never
+      satisfies a required entry (fail closed). Passes trivially when a
+      case declares no required_findings. A missing review_comments key,
+      a non-list value, or review_comments_fetch_failed all fail the case:
+      an empty finding list would otherwise read as "the agent posted
+      nothing" when the truth is "we could not look". Recall caveat when
+      triaging a failure: postreview.go drops findings with no file or no
+      line from the inline comments entirely, drops findings on files
+      outside the PR diff, and on a GitHub 422 retries the review without
+      inline comments — folding the findings into the review body, where
+      neither comments endpoint sees them. A miss here can therefore be a
+      posting-path artifact rather than a review miss; check the sticky
+      comment in `comments` before blaming the agent.
+    check: |
+      import json
+      import re
+
+      SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+      SEVERITY_NAMES = sorted(SEVERITY_ORDER, key=SEVERITY_ORDER.get)
+      # search, not match: postreview.go's file-level fallback prefixes the
+      # body with "_Line N_ · " ahead of the header.
+      FINDING_RE = re.compile(r"\*\*\[([^\]\n]+)\]\*\*[ \t]*([^\n]*)")
+      ALLOWED_KEYS = {"file", "category", "min_severity", "description"}
+
+      entries = outputs.get("annotations", {}).get("required_findings")
+      # Trivial pass only for "no ground truth declared" (absent or []).
+      # Any other falsy value ({}, "", 0) is malformed and falls through to
+      # the type check — `if not entries` would silently bless it.
+      if entries is None or entries == []:
+          return True, "No required_findings declared"
+      if not isinstance(entries, list):
+          return False, (
+              "required_findings must be a list of {file, category, min_severity?}, "
+              f"got {type(entries).__name__}"
+          )
+      # Validate before reading state: a null category or a typo'd
+      # min_severity key would otherwise fall back to a default and
+      # silently weaken the requirement into a near-unconditional pass.
+      for i, e in enumerate(entries):
+          if not isinstance(e, dict):
+              return False, f"required_findings[{i}]: entry must be a mapping, got {type(e).__name__}"
+          unknown = sorted(set(e) - ALLOWED_KEYS)
+          if unknown:
+              return False, f"required_findings[{i}]: unknown key(s) {unknown}, allowed {sorted(ALLOWED_KEYS)}"
+          if not isinstance(e.get("file"), str) or not e["file"].strip():
+              return False, f"required_findings[{i}]: file must be a non-empty string, got {e.get('file')!r}"
+          if not isinstance(e.get("category"), str):
+              return False, (
+                  f"required_findings[{i}]: category must be a string "
+                  f"(empty string matches any finding on the file), got {e.get('category')!r}"
+              )
+          sev = e.get("min_severity", "info")
+          if not isinstance(sev, str) or sev.strip().lower() not in SEVERITY_ORDER:
+              return False, f"required_findings[{i}]: min_severity must be one of {SEVERITY_NAMES}, got {sev!r}"
+
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
+      if state.get("review_comments_fetch_failed"):
+          return False, "review_comments_fetch_failed — the agent's findings could not be read"
+      comments = state.get("review_comments")
+      if comments is None:
+          return False, "review_comments missing from fixture-state.json — stale capture-fixture.sh?"
+      if not isinstance(comments, list):
+          return False, f"review_comments must be a list, got {type(comments).__name__}"
+
+      def norm_path(p):
+          p = (p or "").strip()
+          return p[2:] if p.startswith("./") else p
+
+      # 422 fallback. When GitHub rejects the positioned comments,
+      # post-review retries without them and embeds each finding in the
+      # review body under a fixed note (buildFallbackReviewBody in
+      # postreview.go). The findings are real; only the delivery changed.
+      # Reading inline comments alone makes the recall judge report a miss
+      # the agent never made, and leaves the precision judge unable to see
+      # a promoted bait at all — which is the 422 blocker the review eval
+      # was parked on, not a defect in the review.
+      FALLBACK_NOTE = "could not be posted on the diff (GitHub returned 422)"
+      # Bullet shape: "- **`path:line`**: <body>" or
+      #               "- **`path`** (file-level): <body>".
+      FALLBACK_BULLET_RE = re.compile(r"^- \*\*`([^`\n]+)`\*\*(?: \(file-level\))?: ", re.M)
+      saw_fallback = False
+      fallback_findings = []
+      for r in (state.get("reviews") or []):
+          if not isinstance(r, dict):
+              continue
+          rbody = r.get("body") or ""
+          if FALLBACK_NOTE not in rbody:
+              continue
+          saw_fallback = True
+          section = rbody.split(FALLBACK_NOTE, 1)[1]
+          marks = list(FALLBACK_BULLET_RE.finditer(section))
+          for i, mk in enumerate(marks):
+              end = marks[i + 1].start() if i + 1 < len(marks) else len(section)
+              chunk = section[mk.end():end]
+              fm = FINDING_RE.search(chunk)
+              if not fm:
+                  continue
+              # Strip only a trailing ":<line>", never a colon inside a path.
+              fallback_findings.append({
+                  "file": norm_path(re.sub(r":\d+$", "", mk.group(1))),
+                  "severity": fm.group(1).strip().lower(),
+                  "category": fm.group(2).strip(),
+                  "text": chunk,
+              })
+
+      posted = list(fallback_findings)
+      for c in comments:
+          if not isinstance(c, dict):
+              continue
+          body = c.get("body") or ""
+          m = FINDING_RE.search(body)
+          if not m:
+              continue  # not a finding: human note, or a non-finding agent comment
+          posted.append({
+              "file": norm_path(c.get("path")),
+              "severity": m.group(1).strip().lower(),
+              "category": m.group(2).strip(),
+              "text": body,
+          })
+      # Diagnostics without the full bodies.
+      summary = [{k: p[k] for k in ("file", "severity", "category")} for p in posted]
+
+      def cat_matches(want, got):
+          if not want:
+              return True  # empty category: any finding on this file
+          # Lookarounds, not \b: \b after a non-word edge ("c++") would
+          # demand a following word character and never match.
+          pat = r"(?<!\w)" + r"\s+".join(re.escape(t) for t in want.split()) + r"(?!\w)"
+          return re.search(pat, got, re.I) is not None
+
+      missing = []
+      for e in entries:
+          want_file = norm_path(e["file"])
+          want_cat = e["category"].strip()
+          floor = SEVERITY_ORDER[e.get("min_severity", "info").strip().lower()]
+          # Unknown severity -> -1, so it never satisfies a requirement.
+          if not any(
+              p["file"] == want_file
+              and SEVERITY_ORDER.get(p["severity"], -1) >= floor
+              and cat_matches(want_cat, p["text"])
+              for p in posted
+          ):
+              missing.append(
+                  f"{e['file']} [{want_cat or 'any category'} >= {e.get('min_severity', 'info')}]"
+              )
+
+      if missing:
+          return False, f"Missing required findings: {missing} (posted: {summary})"
+      return True, f"All {len(entries)} required findings present"
+
+  - name: forbidden_findings
+    # Same gate as required_findings: skip only for absent or [], never for
+    # malformed-but-falsy values, which must reach the check body and fail.
+    if: "annotations.get('forbidden_findings') not in (None, [])"
+    description: >
+      The false-positive half of required_findings — same parsing, same
+      word-boundary matching, same up-front validation and fail-closed
+      rules (see that judge's description for the full contract). Every
+      annotations.forbidden_findings entry names an FP-bait pattern that
+      the agent must NOT flag: the case fails if any posted finding is on
+      that file, matches the category, and is at or above the entry's
+      min_severity. min_severity defaults to "high" here rather than
+      "info", because a considered low/info note that the pattern was
+      examined and dismissed is good reviewing, not a false positive —
+      only promoting the bait to a real vulnerability is. An empty
+      category forbids any finding on that file at or above the floor,
+      which is how a docs-only or version-bump case asserts "invent
+      nothing here". A severity string outside the known vocabulary is
+      treated as a violation (fail closed) — the opposite direction from
+      required_findings, and conservative in both. A review with zero
+      positioned findings passes only when no finding headers appear in
+      the sticky/issue comments or review bodies either: postreview.go
+      keeps fileless/lineless findings in the sticky comment body only,
+      and findings visible there but nowhere this judge can grade them
+      make precision unverifiable, which must not read as a clean pass.
+    check: |
+      import json
+      import re
+
+      SEVERITY_ORDER = {"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+      SEVERITY_NAMES = sorted(SEVERITY_ORDER, key=SEVERITY_ORDER.get)
+      FINDING_RE = re.compile(r"\*\*\[([^\]\n]+)\]\*\*[ \t]*([^\n]*)")
+      ALLOWED_KEYS = {"file", "category", "min_severity", "description"}
+
+      entries = outputs.get("annotations", {}).get("forbidden_findings")
+      # Same rule as required_findings: absent or [] passes trivially, any
+      # other falsy value is malformed and must fail the type check below.
+      if entries is None or entries == []:
+          return True, "No forbidden_findings declared"
+      if not isinstance(entries, list):
+          return False, (
+              "forbidden_findings must be a list of {file, category, min_severity?}, "
+              f"got {type(entries).__name__}"
+          )
+      for i, e in enumerate(entries):
+          if not isinstance(e, dict):
+              return False, f"forbidden_findings[{i}]: entry must be a mapping, got {type(e).__name__}"
+          unknown = sorted(set(e) - ALLOWED_KEYS)
+          if unknown:
+              return False, f"forbidden_findings[{i}]: unknown key(s) {unknown}, allowed {sorted(ALLOWED_KEYS)}"
+          if not isinstance(e.get("file"), str) or not e["file"].strip():
+              return False, f"forbidden_findings[{i}]: file must be a non-empty string, got {e.get('file')!r}"
+          if not isinstance(e.get("category"), str):
+              return False, (
+                  f"forbidden_findings[{i}]: category must be a string "
+                  f"(empty string forbids any finding on the file), got {e.get('category')!r}"
+              )
+          sev = e.get("min_severity", "high")
+          if not isinstance(sev, str) or sev.strip().lower() not in SEVERITY_ORDER:
+              return False, f"forbidden_findings[{i}]: min_severity must be one of {SEVERITY_NAMES}, got {sev!r}"
+
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
+      if state.get("review_comments_fetch_failed"):
+          return False, "review_comments_fetch_failed — the agent's findings could not be read"
+      comments = state.get("review_comments")
+      if comments is None:
+          return False, "review_comments missing from fixture-state.json — stale capture-fixture.sh?"
+      if not isinstance(comments, list):
+          return False, f"review_comments must be a list, got {type(comments).__name__}"
+
+      def norm_path(p):
+          p = (p or "").strip()
+          return p[2:] if p.startswith("./") else p
+
+      # 422 fallback. When GitHub rejects the positioned comments,
+      # post-review retries without them and embeds each finding in the
+      # review body under a fixed note (buildFallbackReviewBody in
+      # postreview.go). The findings are real; only the delivery changed.
+      # Reading inline comments alone makes the recall judge report a miss
+      # the agent never made, and leaves the precision judge unable to see
+      # a promoted bait at all — which is the 422 blocker the review eval
+      # was parked on, not a defect in the review.
+      FALLBACK_NOTE = "could not be posted on the diff (GitHub returned 422)"
+      # Bullet shape: "- **`path:line`**: <body>" or
+      #               "- **`path`** (file-level): <body>".
+      FALLBACK_BULLET_RE = re.compile(r"^- \*\*`([^`\n]+)`\*\*(?: \(file-level\))?: ", re.M)
+      saw_fallback = False
+      fallback_findings = []
+      for r in (state.get("reviews") or []):
+          if not isinstance(r, dict):
+              continue
+          rbody = r.get("body") or ""
+          if FALLBACK_NOTE not in rbody:
+              continue
+          saw_fallback = True
+          section = rbody.split(FALLBACK_NOTE, 1)[1]
+          marks = list(FALLBACK_BULLET_RE.finditer(section))
+          for i, mk in enumerate(marks):
+              end = marks[i + 1].start() if i + 1 < len(marks) else len(section)
+              chunk = section[mk.end():end]
+              fm = FINDING_RE.search(chunk)
+              if not fm:
+                  continue
+              # Strip only a trailing ":<line>", never a colon inside a path.
+              fallback_findings.append({
+                  "file": norm_path(re.sub(r":\d+$", "", mk.group(1))),
+                  "severity": fm.group(1).strip().lower(),
+                  "category": fm.group(2).strip(),
+                  "text": chunk,
+              })
+
+      posted = list(fallback_findings)
+      for c in comments:
+          if not isinstance(c, dict):
+              continue
+          body = c.get("body") or ""
+          m = FINDING_RE.search(body)
+          if not m:
+              continue
+          posted.append({
+              "file": norm_path(c.get("path")),
+              "severity": m.group(1).strip().lower(),
+              "category": m.group(2).strip(),
+              "text": body,
+          })
+
+      def cat_matches(want, got):
+          if not want:
+              return True
+          pat = r"(?<!\w)" + r"\s+".join(re.escape(t) for t in want.split()) + r"(?!\w)"
+          return re.search(pat, got, re.I) is not None
+
+      violations = []
+      for e in entries:
+          want_file = norm_path(e["file"])
+          want_cat = e["category"].strip()
+          floor = SEVERITY_ORDER[e.get("min_severity", "high").strip().lower()]
+          for p in posted:
+              # Unknown severity -> 99, so an unparseable severity still trips.
+              if (
+                  p["file"] == want_file
+                  and SEVERITY_ORDER.get(p["severity"], 99) >= floor
+                  and cat_matches(want_cat, p["text"])
+              ):
+                  violations.append({k: p[k] for k in ("file", "severity", "category")})
+
+      if violations:
+          return False, f"Forbidden findings present: {violations}"
+      if not posted:
+          # Comments exist but none parsed as findings: the agent's findings
+          # did not reach the inline comments this judge reads.
+          # postreview.go folds findings into the review body on a 422 and
+          # drops any finding with no file or line, so precision is
+          # unverifiable here — and an unverifiable case must not read as a
+          # clean pass, which is how a promoted bait would slip through.
+          if comments or saw_fallback:
+              return False, (
+                  f"{len(comments)} review comment(s) present but none parsed as findings "
+                  "— cannot verify precision (findings may have been folded into the "
+                  "review body, or posted without a file/line)"
+              )
+          # Zero inline comments is still not proof of a clean review:
+          # findingsToReviewComments omits findings with no file or line
+          # from the inline comments entirely — "they remain in the sticky
+          # comment body" (postreview.go) — so a review whose findings ALL
+          # lacked a position posts nothing inline and leaves no 422
+          # marker. Scan the sticky/issue comments and review bodies for
+          # finding headers; any there mean the agent emitted findings this
+          # judge cannot attribute to a file, so precision is unverifiable
+          # and must fail closed rather than read as verified clean.
+          stray = sorted({
+              src
+              for src, items in (
+                  ("issue comments", state.get("comments") or []),
+                  ("review bodies", state.get("reviews") or []),
+              )
+              for it in items
+              if isinstance(it, dict) and FINDING_RE.search(it.get("body") or "")
+          })
+          if stray:
+              return False, (
+                  f"No inline findings, but finding header(s) present in {stray} "
+                  "— the findings were dropped from the inline comments (no "
+                  "file/line) and cannot be checked against forbidden_findings"
+              )
+      return True, f"None of the {len(entries)} forbidden findings were raised"
+
   - name: max_turns
     description: Agent must complete within the declared turn budget
     check: |
@@ -212,6 +621,28 @@ thresholds:
     min_pass_rate: 1.0
   forbidden_labels:
     min_pass_rate: 1.0
+  # Both findings judges carry an `if:` so they are skipped — not counted
+  # as passes — for cases that declare no findings ground truth. Without
+  # it the rate is averaged over all five cases, and a case that declares
+  # nothing passes trivially: required_findings at 0.70 could not fail
+  # even if the only case with seeded bugs missed all of them.
+  #
+  # With today's case counts both gates resolve to "every case must pass":
+  # two recall cases (004, 008) make 0, 0.5 and 1.0 the only reachable
+  # rates, and three precision cases (005, 006, 007) make it 0, 0.33, 0.66
+  # and 1.0. Neither threshold buys the slack its number suggests.
+  #
+  # That is deliberate for now. 008 is the anti-bait case — it exists to
+  # catch a prompt change that over-suppresses — so allowing it to fail
+  # while the suite stays green would make it decorative, which is the
+  # exact defect these thresholds were fixed for. Revisit when the case
+  # count grows; loosen recall before precision, since missing one seeded
+  # bug is a known ceiling of today's agent while promoting bait to a real
+  # vulnerability is the failure this suite exists to catch.
+  required_findings:
+    min_pass_rate: 0.70
+  forbidden_findings:
+    min_pass_rate: 0.9
   max_turns:
     min_pass_rate: 1.0
   max_cost:

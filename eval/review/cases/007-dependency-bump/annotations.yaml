@@ -1,0 +1,44 @@
+# Expected fixture state after the review agent runs.
+#
+# Renovate-style single-line patch bump. The agent should approve or
+# comment without inventing a blocker.
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - rejected
+
+required_findings: []
+
+# An empty category forbids ANY finding on this file at or above the floor
+# (see eval.yaml's forbidden_findings judge). The floor stays at the default
+# "high": a low-severity "no changelog link provided" note is a legitimate
+# observation on a bot bump, but nothing in a one-line patch bump justifies
+# a high/critical finding.
+forbidden_findings:
+  - file: requirements.txt
+    category: ""
+    min_severity: high
+    description: |
+      Any high/critical finding on a single-line patch version bump with
+      no breaking changes is fabricated.
+
+max_turns: 50
+max_cost_usd: 6.00
+
+review_expectations: |
+  This is a routine, bot-style dependency bump (patch version only,
+  requests 2.32.2 -> 2.32.3, no breaking changes). A strong review
+  recognizes this as low-risk and approves or comments without inventing
+  findings — it should not fabricate a vulnerability, a breaking-change
+  claim, or a "verify this manually" blocker that isn't grounded in the
+  actual diff (a one-line version bump).
+
+  The diff touches no source file, so there is no correctness, security or
+  intent surface to review beyond the bump itself.
+
+  A review that approves (or comments with only a genuine, low-severity
+  observation like "no changelog link provided") is high quality. A review
+  that invents a high/critical finding about this bump is fabricating
+  findings and is lower quality.
