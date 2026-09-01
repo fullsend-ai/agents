@@ -306,7 +306,7 @@ tracker_dispatch_triage() {
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request PUT \
     --data-urlencode "add_labels=ready-for-triage" \
-    "https://${target_host}/api/v4/projects/${encoded_target}/issues/${target_number}" > /dev/null 2>/dev/null; then
+    "https://${target_host}/api/v4/projects/${encoded_target}/issues/${target_number}" > /dev/null; then
     echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${issue_url}")" >&2
     return 1
   fi
