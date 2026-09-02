@@ -67,6 +67,8 @@ script-test:
 	$(call run-timed,bash scripts/post-prioritize-test.sh)
 	$(call run-timed,bash scripts/pre-code-test.sh)
 	$(call run-timed,bash scripts/pre-code-jira-test.sh)
+	$(call run-timed,bash scripts/harness-jira-test.sh)
+	$(call run-timed,bash scripts/sandbox-credential-boundary-test.sh)
 	$(call run-timed,bash scripts/post-code-test.sh)
 	$(call run-timed,bash scripts/pre-review-test.sh)
 	$(call run-timed,bash scripts/post-review-test.sh)
