@@ -49,85 +49,27 @@ assert_fail() {
 # expansion patterns like ${VAR}.
 check_env_sandbox() {
   local harness_file="$1" denied_var="$2"
-  python3 - "$harness_file" "$denied_var" <<'PYEOF'
-import yaml, sys
-
-harness_file = sys.argv[1]
-denied_var = sys.argv[2]
-pattern = "${" + denied_var + "}"
-
-with open(harness_file) as f:
-    doc = yaml.safe_load(f)
-
-hits = []
-
-def scan_sandbox(env_block, label):
-    sandbox = (env_block or {}).get("sandbox") or {}
-    for k, v in sandbox.items():
-        # Key IS the denylisted var (direct inclusion)
-        if k == denied_var:
-            hits.append(f"{label}: key {k}")
-        # Value references the denylisted var (alias / expansion)
-        if pattern in str(v):
-            hits.append(f"{label}: {k}={v}")
-
-# Top-level env.sandbox
-scan_sandbox(doc.get("env"), "top-level env.sandbox")
-
-# Overlay env.sandbox
-for i, ov in enumerate(doc.get("overlays") or []):
-    when = ov.get("when", f"overlay[{i}]")
-    scan_sandbox(ov.get("env"), f"overlay [{when}] env.sandbox")
-
-for h in hits:
-    print(h)
-PYEOF
+  local pattern="\${${denied_var}}"
+  yq -r '[.env.sandbox // {}, .overlays[]?.env.sandbox // {}] | .[] | to_entries[] | [.key, .value] | @tsv' "${harness_file}" |
+    while IFS=$'\t' read -r key value; do
+      if [[ "${key}" == "${denied_var}" || "${value}" == *"${pattern}"* ]]; then
+        echo "${key}=${value}"
+      fi
+    done
 }
 
 # check_host_files — scan host_files with expand: true for denylisted
 # variable references in their source files.
 check_host_files() {
   local harness_file="$1" denied_var="$2"
-  python3 - "$harness_file" "$denied_var" "$REPO_ROOT" <<'PYEOF'
-import yaml, os, sys
-
-harness_file = sys.argv[1]
-denied_var = sys.argv[2]
-repo_root = sys.argv[3]
-pattern = "${" + denied_var + "}"
-
-with open(harness_file) as f:
-    doc = yaml.safe_load(f)
-
-hits = []
-
-def scan_host_files(hfs, label):
-    for hf in (hfs or []):
-        if not hf.get("expand"):
-            continue
-        src = hf.get("src", "")
-        # Skip dynamic paths (e.g. ${GOOGLE_APPLICATION_CREDENTIALS})
-        if "$" in src:
-            continue
-        src_path = os.path.join(repo_root, src)
-        if not os.path.isfile(src_path):
-            continue
-        with open(src_path) as sf:
-            content = sf.read()
-        if pattern in content or denied_var in content:
-            hits.append(f"{label}: {src}")
-
-# Top-level host_files
-scan_host_files(doc.get("host_files"), "top-level")
-
-# Overlay host_files
-for i, ov in enumerate(doc.get("overlays") or []):
-    when = ov.get("when", f"overlay[{i}]")
-    scan_host_files(ov.get("host_files"), f"overlay [{when}]")
-
-for h in hits:
-    print(h)
-PYEOF
+  local src src_path
+  while IFS= read -r src; do
+    [[ "${src}" == *'$'* ]] && continue
+    src_path="${REPO_ROOT}/${src}"
+    if [[ -f "${src_path}" ]] && grep -qF "${denied_var}" "${src_path}"; then
+      echo "${src}"
+    fi
+  done < <(yq -r '[.host_files // [], .overlays[]?.host_files // []] | flatten | .[] | select(.expand == true) | .src' "${harness_file}")
 }
 
 # ---------------------------------------------------------------------------

@@ -211,11 +211,9 @@ Determine which issue to implement:
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue content. When `FULLSEND_TRACKER` is `jira`, use the
-Jira Cloud REST API via `curl` with Basic auth. `JIRA_TOKEN` inside
-the sandbox is the opaque placeholder supplied by the `jira-ro`
-provider — the real API token never enters the sandbox. Extract the
-issue key from `ISSUE_URL` and query the API:
+Fetch the issue content. For Jira, query its REST API with Basic auth.
+The sandbox's `JIRA_TOKEN` is the `jira-ro` provider's opaque placeholder,
+not the real token. Extract the issue key from `ISSUE_URL`:
 
 ```bash
 if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
