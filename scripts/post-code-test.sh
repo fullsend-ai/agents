@@ -188,13 +188,10 @@ fi
 # ---------------------------------------------------------------------------
 select_commit_subject() {
   local commit_subjects="$1"  # newline-separated, in chronological order
-  local commit_count="$2"
-
-  if [ "${commit_count}" -gt 1 ]; then
-    echo "${commit_subjects}" | head -1
-  else
-    echo "${commit_subjects}" | head -1
-  fi
+  # Production code always picks the first commit's subject: for single-
+  # commit PRs it is the only one; for multi-commit PRs it is the primary
+  # work (later commits are follow-ups like lint fixes).
+  echo "${commit_subjects}" | head -1
 }
 
 run_commit_select_test() {
@@ -244,10 +241,10 @@ chore(#42): update test fixtures" \
 # git repo to verify the git log --reverse pipeline produces the correct
 # subject.
 # ---------------------------------------------------------------------------
-MULTI_COMMIT_TMPDIR="$(mktemp -d)"
+MC_TMPDIR="$(mktemp -d)"
 
 MC_REAL_GIT="$(which git)"
-_mc_repo="${MULTI_COMMIT_TMPDIR}/repo"
+_mc_repo="${MC_TMPDIR}/repo"
 ${MC_REAL_GIT} init -q -b main "${_mc_repo}"
 ${MC_REAL_GIT} -C "${_mc_repo}" config user.email "test@example.com"
 ${MC_REAL_GIT} -C "${_mc_repo}" config user.name "Test"
@@ -302,7 +299,7 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-rm -rf "${MULTI_COMMIT_TMPDIR}"
+rm -rf "${MC_TMPDIR}"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the PR body assembly logic from post-code.sh
