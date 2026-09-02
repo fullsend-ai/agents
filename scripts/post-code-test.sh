@@ -193,7 +193,7 @@ select_commit_subject() {
   if [ "${commit_count}" -gt 1 ]; then
     echo "${commit_subjects}" | head -1
   else
-    echo "${commit_subjects}" | tail -1
+    echo "${commit_subjects}" | head -1
   fi
 }
 
@@ -246,31 +246,31 @@ chore(#42): update test fixtures" \
 # ---------------------------------------------------------------------------
 MULTI_COMMIT_TMPDIR="$(mktemp -d)"
 
-REAL_GIT_MC="$(which git)"
+MC_REAL_GIT="$(which git)"
 _mc_repo="${MULTI_COMMIT_TMPDIR}/repo"
-${REAL_GIT_MC} init -q -b main "${_mc_repo}"
-${REAL_GIT_MC} -C "${_mc_repo}" config user.email "test@example.com"
-${REAL_GIT_MC} -C "${_mc_repo}" config user.name "Test"
+${MC_REAL_GIT} init -q -b main "${_mc_repo}"
+${MC_REAL_GIT} -C "${_mc_repo}" config user.email "test@example.com"
+${MC_REAL_GIT} -C "${_mc_repo}" config user.name "Test"
 echo "init" > "${_mc_repo}/README.md"
-${REAL_GIT_MC} -C "${_mc_repo}" add README.md
-${REAL_GIT_MC} -C "${_mc_repo}" commit -q -m "init"
+${MC_REAL_GIT} -C "${_mc_repo}" add README.md
+${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "init"
 
-_mc_merge_base="$(${REAL_GIT_MC} -C "${_mc_repo}" rev-parse HEAD)"
+_mc_merge_base="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-parse HEAD)"
 
-${REAL_GIT_MC} -C "${_mc_repo}" checkout -q -b agent/42-test
+${MC_REAL_GIT} -C "${_mc_repo}" checkout -q -b agent/42-test
 echo "feature" > "${_mc_repo}/feature.txt"
-${REAL_GIT_MC} -C "${_mc_repo}" add feature.txt
-${REAL_GIT_MC} -C "${_mc_repo}" commit -q -m "feat(#42): add primary feature"
+${MC_REAL_GIT} -C "${_mc_repo}" add feature.txt
+${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "feat(#42): add primary feature"
 echo "fix" > "${_mc_repo}/fix.txt"
-${REAL_GIT_MC} -C "${_mc_repo}" add fix.txt
-${REAL_GIT_MC} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
+${MC_REAL_GIT} -C "${_mc_repo}" add fix.txt
+${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
 
 # Reimplement the multi-commit title selection from post-code.src.sh
-_mc_count="$(${REAL_GIT_MC} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
+_mc_count="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
 if [ "${_mc_count}" -gt 1 ]; then
-  _mc_subject="$(${REAL_GIT_MC} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
 else
-  _mc_subject="$(${REAL_GIT_MC} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
+  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
 fi
 
 if [ "${_mc_subject}" = "feat(#42): add primary feature" ]; then
@@ -284,12 +284,12 @@ else
 fi
 
 # Single-commit case: rewind to one commit and verify
-${REAL_GIT_MC} -C "${_mc_repo}" reset -q --hard HEAD~1
-_mc_count_single="$(${REAL_GIT_MC} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
+${MC_REAL_GIT} -C "${_mc_repo}" reset -q --hard HEAD~1
+_mc_count_single="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
 if [ "${_mc_count_single}" -gt 1 ]; then
-  _mc_subject_single="$(${REAL_GIT_MC} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
 else
-  _mc_subject_single="$(${REAL_GIT_MC} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
+  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
 fi
 
 if [ "${_mc_subject_single}" = "feat(#42): add primary feature" ]; then
