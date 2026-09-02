@@ -968,8 +968,9 @@ in your own reasoning for auditability — there is no field for it in
 review body.
 
 Steps 6e–6f below refer to the *adjudicated set*: the challenger's
-`adjudicated_findings`, or the unchanged 6a–6c set when the challenger
-was skipped or fell back after a failure (step 4 below).
+`adjudicated_findings`; the unchanged 6a–6c set when the challenger
+was skipped; or, when it failed, the 6a–6c set plus the recorded
+`sub-agent-failure` finding (step 4 below).
 
 Otherwise, dispatch the challenger:
 
