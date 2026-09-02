@@ -180,6 +180,131 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test helper — reimplements the multi-commit title selection logic from
+# post-code.sh so we can test it without a git repo or network access.
+#
+# Given a list of commit subjects (one per line) and a commit count,
+# returns which subject would be used for the PR title.
+# ---------------------------------------------------------------------------
+select_commit_subject() {
+  local commit_subjects="$1"  # newline-separated, in chronological order
+  local commit_count="$2"
+
+  if [ "${commit_count}" -gt 1 ]; then
+    echo "${commit_subjects}" | head -1
+  else
+    echo "${commit_subjects}" | tail -1
+  fi
+}
+
+run_commit_select_test() {
+  local test_name="$1"
+  local commit_subjects="$2"
+  local commit_count="$3"
+  local expected="$4"
+
+  local actual
+  actual="$(select_commit_subject "${commit_subjects}" "${commit_count}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  commit_count: ${commit_count}"
+    echo "  expected:     '${expected}'"
+    echo "  actual:       '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Single commit — uses the only commit's subject (existing behavior)
+run_commit_select_test "single-commit-uses-only-subject" \
+  "feat(#42): add primary feature" \
+  "1" \
+  "feat(#42): add primary feature"
+
+# Multiple commits — uses the first commit's subject (primary work)
+run_commit_select_test "multi-commit-uses-first-subject" \
+  "feat(#42): add primary feature
+fix(#42): suppress lint warning" \
+  "2" \
+  "feat(#42): add primary feature"
+
+# Three commits — still uses the first commit's subject
+run_commit_select_test "three-commits-uses-first-subject" \
+  "feat(#42): add dispatch triage support
+fix(#42): suppress SC2153 shellcheck warning
+chore(#42): update test fixtures" \
+  "3" \
+  "feat(#42): add dispatch triage support"
+
+# ---------------------------------------------------------------------------
+# Integration test — exercises the multi-commit title selection using a real
+# git repo to verify the git log --reverse pipeline produces the correct
+# subject.
+# ---------------------------------------------------------------------------
+MULTI_COMMIT_TMPDIR="$(mktemp -d)"
+
+REAL_GIT_MC="$(which git)"
+_mc_repo="${MULTI_COMMIT_TMPDIR}/repo"
+${REAL_GIT_MC} init -q -b main "${_mc_repo}"
+${REAL_GIT_MC} -C "${_mc_repo}" config user.email "test@example.com"
+${REAL_GIT_MC} -C "${_mc_repo}" config user.name "Test"
+echo "init" > "${_mc_repo}/README.md"
+${REAL_GIT_MC} -C "${_mc_repo}" add README.md
+${REAL_GIT_MC} -C "${_mc_repo}" commit -q -m "init"
+
+_mc_merge_base="$(${REAL_GIT_MC} -C "${_mc_repo}" rev-parse HEAD)"
+
+${REAL_GIT_MC} -C "${_mc_repo}" checkout -q -b agent/42-test
+echo "feature" > "${_mc_repo}/feature.txt"
+${REAL_GIT_MC} -C "${_mc_repo}" add feature.txt
+${REAL_GIT_MC} -C "${_mc_repo}" commit -q -m "feat(#42): add primary feature"
+echo "fix" > "${_mc_repo}/fix.txt"
+${REAL_GIT_MC} -C "${_mc_repo}" add fix.txt
+${REAL_GIT_MC} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
+
+# Reimplement the multi-commit title selection from post-code.src.sh
+_mc_count="$(${REAL_GIT_MC} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
+if [ "${_mc_count}" -gt 1 ]; then
+  _mc_subject="$(${REAL_GIT_MC} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+else
+  _mc_subject="$(${REAL_GIT_MC} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
+fi
+
+if [ "${_mc_subject}" = "feat(#42): add primary feature" ]; then
+  echo "PASS: multi-commit-git-integration-uses-first"
+else
+  echo "FAIL: multi-commit-git-integration-uses-first"
+  echo "  commit_count: ${_mc_count}"
+  echo "  expected:     'feat(#42): add primary feature'"
+  echo "  actual:       '${_mc_subject}'"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Single-commit case: rewind to one commit and verify
+${REAL_GIT_MC} -C "${_mc_repo}" reset -q --hard HEAD~1
+_mc_count_single="$(${REAL_GIT_MC} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
+if [ "${_mc_count_single}" -gt 1 ]; then
+  _mc_subject_single="$(${REAL_GIT_MC} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+else
+  _mc_subject_single="$(${REAL_GIT_MC} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
+fi
+
+if [ "${_mc_subject_single}" = "feat(#42): add primary feature" ]; then
+  echo "PASS: single-commit-git-integration-uses-last"
+else
+  echo "FAIL: single-commit-git-integration-uses-last"
+  echo "  commit_count: ${_mc_count_single}"
+  echo "  expected:     'feat(#42): add primary feature'"
+  echo "  actual:       '${_mc_subject_single}'"
+  FAILURES=$((FAILURES + 1))
+fi
+
+rm -rf "${MULTI_COMMIT_TMPDIR}"
+
+# ---------------------------------------------------------------------------
 # Test helper — reimplements the PR body assembly logic from post-code.sh
 # so we can test it without a git repo or network access.
 # ---------------------------------------------------------------------------

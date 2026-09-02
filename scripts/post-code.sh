@@ -2550,7 +2550,19 @@ fi
 
 echo "Creating PR..."
 
-COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
+# When the agent made multiple commits, the first commit is typically the
+# primary work and the last may be a minor follow-up (e.g. lint fix). Use
+# the first commit's subject for the PR title in that case.
+if [ -n "${MERGE_BASE}" ]; then
+  COMMIT_COUNT="$(git rev-list --count "${MERGE_BASE}..HEAD")"
+else
+  COMMIT_COUNT=1
+fi
+if [ "${COMMIT_COUNT}" -gt 1 ]; then
+  COMMIT_SUBJECT="$(git log --format='%s' --reverse "${MERGE_BASE}..HEAD" | head -1)"
+else
+  COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
+fi
 
 # Read pr_body from agent output. Fall back to commit body if absent.
 PR_BODY_FROM_RESULT=""
