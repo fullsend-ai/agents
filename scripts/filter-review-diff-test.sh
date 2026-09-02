@@ -545,6 +545,36 @@ run_test "gitlab-kept-section-byte-identical" "${GITLAB_KEPT_SECTION}" "${GITLAB
 run_test_contains "gitlab-lockfile-in-summary" "package-lock.json" "$(/bin/cat "${TMPDIR}/gitlab.summary")"
 run_test_contains "gitlab-lockfile-reason" "lockfile" "$(/bin/cat "${TMPDIR}/gitlab.summary")"
 
+# --- 22. A REMOVED content line whose original text begins "-- a/..."
+#         renders as `--- a/...` — it must NOT be taken for a GitLab
+#         section boundary (a real boundary is `--- ` immediately
+#         followed by `+++ `). The section passes through intact with
+#         no false exclusion. ---
+
+GITLAB_FAKE_BOUNDARY='--- a/src/real.js
++++ b/src/real.js
+@@ -1,4 +1,3 @@
+ function real() {
+--- a/vendor/fake.js
+-  var y = 2
++  var z = 3
+ }
+@@ -10,2 +9,2 @@
+ more()
+-old()
++new()'
+
+printf '%s\n' "${GITLAB_FAKE_BOUNDARY}" > "${TMPDIR}/gitlab-fake.in"
+"${FILTER}" "${TMPDIR}/gitlab-fake.summary" < "${TMPDIR}/gitlab-fake.in" > "${TMPDIR}/gitlab-fake.out"
+if cmp -s "${TMPDIR}/gitlab-fake.in" "${TMPDIR}/gitlab-fake.out"; then
+  echo "PASS: gitlab-fake-boundary-passthrough"
+else
+  echo "FAIL: gitlab-fake-boundary-passthrough"
+  diff -u "${TMPDIR}/gitlab-fake.in" "${TMPDIR}/gitlab-fake.out" || true
+  FAILURES=$((FAILURES + 1))
+fi
+run_test "gitlab-fake-boundary-empty-summary" "" "$(/bin/cat "${TMPDIR}/gitlab-fake.summary" 2>/dev/null || true)"
+
 # --- Wrap up ---
 
 echo ""

@@ -552,10 +552,13 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   # The threshold is absolute: even actionable findings are filtered
   # (#1046). provenance-warning and excluded-content are threshold-exempt
   # process disclosures (see "Severity filtering" in agents/review.md) —
-  # dropping them here would undo the exemption the agent honors.
+  # dropping them here would undo the exemption the agent honors. The
+  # exemption covers only their normal info severity: a higher-severity
+  # finding that happens to use these categories is a real finding and
+  # filters (and blocks) like any other.
   jq --argjson rank "$threshold_rank" '
     .findings |= [.[] | select(
-      .category == "provenance-warning" or .category == "excluded-content" or
+      ((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") or
       (if .severity == "info" then 0
        elif .severity == "low" then 1
        elif .severity == "medium" then 2
@@ -565,9 +568,10 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
     )]
   ' "${RESULT_FILE}" > "${FILTERED_RESULT}"
   filtered_count=$(jq '.findings | length' "${FILTERED_RESULT}")
-  # Findings that can justify a blocking verdict — the exempt process
-  # disclosures above cannot.
-  blocking_count=$(jq '[.findings[] | select(.category != "provenance-warning" and .category != "excluded-content")] | length' "${FILTERED_RESULT}")
+  # Findings that can justify a blocking verdict — the exempt info-level
+  # disclosures above cannot, but a higher-severity finding in those
+  # categories can.
+  blocking_count=$(jq '[.findings[] | select(((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") | not)] | length' "${FILTERED_RESULT}")
 
   if [ "${filtered_count}" -lt "${original_count}" ]; then
     echo "Severity filter (threshold=${REVIEW_FINDING_SEVERITY_THRESHOLD}): kept ${filtered_count}/${original_count} findings"

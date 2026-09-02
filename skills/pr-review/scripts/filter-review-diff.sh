@@ -286,30 +286,30 @@ function finalize_section() {
   # phase == "keep": already streamed directly, buffer is already empty.
 }
 
-BEGIN { in_diff = 0; gitlab_mode = 0; reset_section() }
+# A possible GitLab section boundary: a `--- ` path line seen where a
+# new section could start. Only a candidate — a REMOVED content line
+# whose original text begins "-- a/..." produces exactly the same
+# bytes, so the boundary is confirmed only when the very next line is
+# the paired `+++ ` header (one-line lookahead in the main block).
+function is_gl_candidate(line) {
+  if (line !~ /^--- (a\/|"a\/)/ && line != "--- /dev/null") return 0
+  if (!in_diff) return 1
+  return gitlab_mode && phase != "header"
+}
 
-{
-  line = $0
-
+# One input line through the full state machine. Factored into a
+# function so the GitLab-boundary lookahead in the main block can
+# replay a rejected candidate line through the exact same logic.
+function process(line,   c) {
   if (!in_diff) {
     if (line ~ /^diff --git /) {
       in_diff = 1
       buf[++buf_n] = line
       parse_git_header(line)
-      next
-    }
-    if (line ~ /^--- (a\/|"a\/)/ || line == "--- /dev/null") {
-      # GitLab MR diffs carry no `diff --git` headers: sections start
-      # directly at the ---/+++ pair. Open a section here so path
-      # filtering works on that shape too.
-      in_diff = 1
-      gitlab_mode = 1
-      set_old_path(line)
-      buf[++buf_n] = line
-      next
+      return
     }
     print line
-    next
+    return
   }
 
   if (line ~ /^diff --git /) {
@@ -317,52 +317,41 @@ BEGIN { in_diff = 0; gitlab_mode = 0; reset_section() }
     reset_section()
     buf[++buf_n] = line
     parse_git_header(line)
-    next
-  }
-
-  # In gitlab_mode the next section starts at the next `--- a/` line
-  # (there is no `diff --git` separator). Only once the current section
-  # has left the header phase — its own `--- ` line was consumed above.
-  if (gitlab_mode && phase != "header" && (line ~ /^--- (a\/|"a\/)/ || line == "--- /dev/null")) {
-    finalize_section()
-    reset_section()
-    set_old_path(line)
-    buf[++buf_n] = line
-    next
+    return
   }
 
   if (phase == "keep") {
     print line
-    next
+    return
   }
 
   if (phase == "strip") {
     c = substr(line, 1, 1)
     if (c == "+") sec_adds++
     else if (c == "-") sec_dels++
-    next
+    return
   }
 
   if (phase == "header") {
     if (line ~ /^--- /) {
       set_old_path(line)
       buf[++buf_n] = line
-      next
+      return
     }
     if (line ~ /^\+\+\+ /) {
       set_new_path(line)
       buf[++buf_n] = line
-      next
+      return
     }
     if (line ~ /^rename to /) {
       if (new_path == "") new_path = rename_path(substr(line, 11))
       buf[++buf_n] = line
-      next
+      return
     }
     if (line ~ /^rename from /) {
       if (old_path == "") old_path = rename_path(substr(line, 13))
       buf[++buf_n] = line
-      next
+      return
     }
     if (line ~ /^@@ / || line ~ /^Binary files /) {
       buf[++buf_n] = line
@@ -370,15 +359,15 @@ BEGIN { in_diff = 0; gitlab_mode = 0; reset_section() }
       if (path == "") {
         # Fail-open: no path parsed from any header — never classify
         # (much less strip) a section this parser cannot even name.
-        phase = "keep"; flush_buf(); next
+        phase = "keep"; flush_buf(); return
       }
       classify_path()
-      if (phase == "keep") { flush_buf(); next }
-      if (phase == "strip") { buf_n = 0; next }
-      next   # phase == "pending": keep buffering into the content below
+      if (phase == "keep") { flush_buf(); return }
+      if (phase == "strip") { buf_n = 0; return }
+      return   # phase == "pending": keep buffering into the content below
     }
     buf[++buf_n] = line
-    next
+    return
   }
 
   # phase == "pending": buffering, watching the first 5 added lines and
@@ -405,8 +394,39 @@ BEGIN { in_diff = 0; gitlab_mode = 0; reset_section() }
     if (generated_hit) { reason = "generated-marker"; phase = "strip"; buf_n = 0 }
     else { phase = "keep"; flush_buf() }
   }
+}
+
+BEGIN { in_diff = 0; gitlab_mode = 0; gl_cand = ""; reset_section() }
+
+{
+  if (gl_cand != "") {
+    cand = gl_cand
+    gl_cand = ""
+    if ($0 ~ /^\+\+\+ /) {
+      # Confirmed GitLab section boundary: the ---/+++ pair. GitLab MR
+      # diffs carry no `diff --git` headers — sections start here.
+      if (in_diff) finalize_section()
+      reset_section()
+      in_diff = 1
+      gitlab_mode = 1
+      set_old_path(cand)
+      buf[++buf_n] = cand
+      process($0)
+      next
+    }
+    # Not a boundary: the candidate was ordinary content — replay it.
+    process(cand)
+  }
+  if (is_gl_candidate($0)) {
+    gl_cand = $0
+    next
+  }
+  process($0)
   next
 }
 
-END { if (in_diff) finalize_section() }
+END {
+  if (gl_cand != "") process(gl_cand)
+  if (in_diff) finalize_section()
+}
 '

@@ -144,7 +144,7 @@ filter_findings_json() {
   echo "$result_json" | jq --argjson rank "$threshold_rank" '
     if .findings then
       .findings |= [.[] | select(
-        .category == "provenance-warning" or .category == "excluded-content" or
+        ((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") or
         (if .severity == "info" then 0
          elif .severity == "low" then 1
          elif .severity == "medium" then 2
@@ -221,10 +221,11 @@ filter_and_downgrade() {
 
   local filtered
   filtered="$(filter_findings_json "$result_json" "$threshold")"
-  # Findings that can justify a blocking verdict — the exempt process
-  # disclosures (provenance-warning, excluded-content) cannot.
+  # Findings that can justify a blocking verdict — the exempt info-level
+  # disclosures (provenance-warning, excluded-content) cannot, but a
+  # higher-severity finding in those categories can.
   local blocking
-  blocking="$(echo "$filtered" | jq 'if .findings then ([.findings[] | select(.category != "provenance-warning" and .category != "excluded-content")] | length) else -1 end')"
+  blocking="$(echo "$filtered" | jq 'if .findings then ([.findings[] | select(((.category == "provenance-warning" or .category == "excluded-content") and .severity == "info") | not)] | length) else -1 end')"
 
   if [ "$blocking" -eq 0 ]; then
     local action
@@ -343,6 +344,22 @@ DISCLOSURE_PLUS_BLOCKING='{"action":"request-changes","findings":[
 
 run_downgrade_test "disclosure-plus-blocking-no-downgrade" \
   "$DISCLOSURE_PLUS_BLOCKING" "low" "request-changes" "true"
+
+# The exemption is category AND info severity: a high-severity finding
+# in a disclosure category is a real finding — it filters by rank (so
+# threshold=critical drops it) and it sustains a blocking verdict.
+HIGH_EXCLUDED_CONTENT='{"action":"request-changes","findings":[
+  {"severity":"high","category":"excluded-content","file":"x.go","description":"real problem"}
+]}'
+
+run_filter_test "high-severity-disclosure-category-survives-low" \
+  "$HIGH_EXCLUDED_CONTENT" "low" "1"
+
+run_filter_test "high-severity-disclosure-category-not-exempt-at-critical" \
+  "$HIGH_EXCLUDED_CONTENT" "critical" "0"
+
+run_downgrade_test "high-severity-disclosure-category-blocks" \
+  "$HIGH_EXCLUDED_CONTENT" "low" "request-changes" "true"
 
 # ---------------------------------------------------------------------------
 # Severity-threshold downgrade tests with actionable findings: the severity
@@ -1003,13 +1020,13 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
 # Actionable low findings below threshold → downgraded (threshold is absolute)
 run_label_test_with_env_stdout "severity-filter-actionable-still-downgrades" \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"naming-convention","file":"a.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true}]}' \
-  "All findings removed by severity filter" \
+  "No blocking findings after severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
 # Non-actionable low findings below threshold → downgraded
 run_label_test_with_env_stdout "severity-filter-non-actionable-downgrades" \
   '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor","actionable":false}]}' \
-  "All findings removed by severity filter" \
+  "No blocking findings after severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
 # --- Severity-threshold sanitization tests ---
