@@ -278,12 +278,18 @@ If you use `base:` composition to override `harness/triage.yaml`:
   shape to guide the agent toward the correct format.
 - **Jira credentials use provider-backed delivery**: The `jira-ro`
   provider and `fullsend-jira-ro` OpenShell profile handle Jira API
-  token injection at the network layer. The sandbox receives the
-  provider's opaque placeholder for `JIRA_TOKEN`, not the real secret.
-  `JIRA_USER_EMAIL` and `JIRA_BASE_URL` remain in `env.sandbox` as
-  non-secret configuration. Runner-side post-scripts retain the real
-  `JIRA_TOKEN` via `env.runner` for trusted mutations (label writes,
-  transitions, comment posting).
+  token injection at the network layer. Sandbox curl commands use
+  `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` for Basic auth, but
+  `JIRA_TOKEN` inside the sandbox is the provider's opaque placeholder
+  — the real API token is never expanded into sandbox config or env
+  files. OpenShell replaces the placeholder in the Basic Authorization
+  header at the proxy boundary. `JIRA_USER_EMAIL` and `JIRA_BASE_URL`
+  remain in `env.sandbox` as non-secret configuration. Runner-side
+  post-scripts retain the real `JIRA_TOKEN` via `env.runner` for
+  trusted mutations (label writes, transitions, comment posting).
+  Do not switch to bearer auth — the Jira Cloud tenant URL
+  (`*.atlassian.net/rest/api/3/...`) requires Basic auth with
+  `email:api_token`.
 - **GitLab and Jira functional eval coverage is deferred**: The eval cases
   under `eval/triage/cases/` currently cover GitHub only. GitLab and Jira
   behavior is covered by unit-level bash tests in

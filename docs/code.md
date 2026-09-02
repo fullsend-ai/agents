@@ -184,9 +184,12 @@ vars. Key differences from single-forge setup:
 - **Jira-source overlay** — when the work item originates from Jira
   (`event.source.system == "jira"`), a dedicated overlay attaches the
   `jira-ro` provider and `fullsend-jira-ro` OpenShell profile so the
-  sandbox can read the Jira work item directly through provider-backed
-  API access. The real `JIRA_TOKEN` never enters the sandbox — only
-  the provider's opaque placeholder is available. The Jira overlay
+  sandbox can read the Jira work item via the REST API. Sandbox curl
+  commands use `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` for Basic
+  auth, but `JIRA_TOKEN` inside the sandbox is the provider's opaque
+  placeholder — the real API token is never expanded into sandbox
+  config or env files. OpenShell replaces the placeholder in the
+  Basic Authorization header at the proxy boundary. The Jira overlay
   composes with the target-forge overlay (GitHub or GitLab) via
   merge-all-matching.
 - **External work-item identity** — when the source tracker differs from the

@@ -212,14 +212,15 @@ Determine which issue to implement:
 - If none was provided, stop rather than guessing.
 
 Fetch the issue content. When `FULLSEND_TRACKER` is `jira`, use the
-Jira Cloud REST API via `curl` — the sandbox has provider-backed
-access through the `jira-ro` provider. Extract the issue key from
-`ISSUE_URL` and query the API:
+Jira Cloud REST API via `curl` with Basic auth. `JIRA_TOKEN` inside
+the sandbox is the opaque placeholder supplied by the `jira-ro`
+provider — the real API token never enters the sandbox. Extract the
+issue key from `ISSUE_URL` and query the API:
 
 ```bash
 if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
   ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
-  curl --fail-with-body --silent \
+  curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
 else
   # GitHub:

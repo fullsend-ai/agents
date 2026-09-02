@@ -25,7 +25,7 @@ PROJECT_KEY="${ISSUE_KEY%-*}"
 Query the project's components from the Jira Cloud REST API:
 
 ```bash
-curl --silent \
+curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
   "${JIRA_BASE_URL}/rest/api/3/project/${PROJECT_KEY}/components" \
   | jq '[.[] | {name, description}]'
 ```
@@ -36,7 +36,7 @@ emit `component_actions`.
 ## Step 2: Check current components on the issue
 
 ```bash
-curl --silent \
+curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
   "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}?fields=components" \
   | jq '[.fields.components[].name]'
 ```

@@ -164,6 +164,55 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Skill-level tests: sandbox curl commands must use Basic auth with the
+# opaque provider placeholder (--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}").
+# The real token never enters the sandbox; JIRA_TOKEN in these commands is
+# the provider-supplied placeholder that OpenShell replaces at the proxy
+# boundary.
+# ---------------------------------------------------------------------------
+SKILL_FILES=(
+  "${REPO_ROOT}/skills/jira-forge/SKILL.md"
+  "${REPO_ROOT}/skills/issue-labels/jira/SKILL.md"
+  "${REPO_ROOT}/skills/jira-components/SKILL.md"
+  "${REPO_ROOT}/skills/code-implementation/SKILL.md"
+)
+
+for skill_file in "${SKILL_FILES[@]}"; do
+  skill_name="$(basename "$(dirname "${skill_file}")")"
+  test_name="skill-${skill_name}-basic-auth-placeholder"
+
+  if [ ! -f "${skill_file}" ]; then
+    assert_fail "${test_name}" "${skill_file} not found"
+    continue
+  fi
+
+  # Every Jira curl command in the skill must use --user for Basic auth.
+  # Check that at least one --user flag exists alongside JIRA_TOKEN.
+  if grep -qF -- '--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"' "${skill_file}"; then
+    assert_pass "${test_name}"
+  else
+    assert_fail "${test_name}" "missing --user \"\${JIRA_USER_EMAIL}:\${JIRA_TOKEN}\" in ${skill_file}"
+  fi
+done
+
+# Verify no Jira skill curl command uses bearer auth (would require OAuth
+# token and the api.atlassian.com endpoint model, not the tenant URL).
+for skill_file in "${SKILL_FILES[@]}"; do
+  skill_name="$(basename "$(dirname "${skill_file}")")"
+  test_name="skill-${skill_name}-no-bearer-auth"
+
+  if [ ! -f "${skill_file}" ]; then
+    continue  # already reported above
+  fi
+
+  if grep -qi 'Authorization.*Bearer' "${skill_file}"; then
+    assert_fail "${test_name}" "bearer auth found in ${skill_file} (use Basic auth for tenant URL)"
+  else
+    assert_pass "${test_name}"
+  fi
+done
+
+# ---------------------------------------------------------------------------
 # Provider and profile file existence
 # ---------------------------------------------------------------------------
 if [ -f "${REPO_ROOT}/providers/jira-ro.yaml" ]; then

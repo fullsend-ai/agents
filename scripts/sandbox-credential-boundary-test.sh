@@ -180,6 +180,36 @@ for harness in "${HARNESS_FILES[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
+# Test: Jira skill files carry the opaque placeholder through Basic auth
+# ---------------------------------------------------------------------------
+# This is the positive complement to the sandbox env denylist above:
+# the real JIRA_TOKEN never enters sandbox config (env.sandbox, env files),
+# but sandbox curl commands must still carry the provider-supplied opaque
+# placeholder via --user for Basic auth.
+JIRA_SKILL_FILES=(
+  "${REPO_ROOT}/skills/jira-forge/SKILL.md"
+  "${REPO_ROOT}/skills/issue-labels/jira/SKILL.md"
+  "${REPO_ROOT}/skills/jira-components/SKILL.md"
+  "${REPO_ROOT}/skills/code-implementation/SKILL.md"
+)
+
+for skill_file in "${JIRA_SKILL_FILES[@]}"; do
+  skill_name="$(basename "$(dirname "${skill_file}")")"
+  test_name="skill-${skill_name}-uses-basic-auth-placeholder"
+
+  if [ ! -f "${skill_file}" ]; then
+    assert_fail "${test_name}" "${skill_file} not found"
+    continue
+  fi
+
+  if grep -qF -- '--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"' "${skill_file}"; then
+    assert_pass "${test_name}"
+  else
+    assert_fail "${test_name}" "missing --user Basic auth with opaque JIRA_TOKEN placeholder"
+  fi
+done
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
