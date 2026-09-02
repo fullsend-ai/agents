@@ -162,7 +162,10 @@ require `ISSUE_NUMBER`. It derives the work-item key from
 external key as a GitHub or GitLab issue number.
 
 ```bash
-# Jira-source env vars (runner-only — never enter sandbox)
+# Jira-source env vars (JIRA_USER_EMAIL and JIRA_BASE_URL enter the code
+# sandbox as non-secret config; JIRA_TOKEN is read by the jira-ro
+# provider on the host — it never enters the code agent's runner or
+# sandbox environment)
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
@@ -175,10 +178,10 @@ export GH_TOKEN="$(gh auth token)"
 
 Run `fullsend run code` the same way as step 3 above. `--target-repo`
 should point at a local checkout of the repo where the PR will be
-created. The Jira pre-script fetches the issue via the `fullsend` CLI
-and writes the context to `/tmp/jira-issue-context.json`, which
-`host_files` copies into the sandbox as
-`/sandbox/workspace/.issue-context.json`.
+created. The Jira pre-script validates the issue URL and installs
+pre-commit tool dependencies. The sandbox reads the Jira work item
+directly through provider-backed API access (the `jira-ro` provider
+handles credential injection at the network layer).
 
 ## Testing a new configuration option
 

@@ -47,7 +47,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 |----------|-------------|---------|--------------|
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script reads it from the runner when present and validates the agent's chosen target branch before pushing. It is never injected into the sandbox. | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
-| `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent requires issue context at `/sandbox/workspace/.issue-context.json` (prepared by the Jira pre-script) instead of calling forge APIs. Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
+| `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads the Jira work item directly via provider-backed Jira API access (the `jira-ro` provider handles credential injection at the network layer). Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
 | `ISSUE_NUMBER` | Numeric source issue identifier used when the source tracker is the target forge. It is optional for external-tracker runs because that work-item key is not a target-forge issue number. | (set by forge-native workflows) | Positive integer |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
@@ -182,11 +182,16 @@ vars. Key differences from single-forge setup:
   per-forge env file (`env/github/code.env` or `env/gitlab/code.env`)
   maps the platform-specific variable to `ISSUE_URL`.
 - **Jira-source overlay** — when the work item originates from Jira
-  (`event.source.system == "jira"`), a dedicated overlay fetches the
-  issue via `fullsend issues get --tracker jira` on the runner and
-  copies the context into the sandbox. Jira credentials stay on the
-  runner. The Jira overlay composes with the target-forge overlay
-  (GitHub or GitLab) via merge-all-matching.
+  (`event.source.system == "jira"`), a dedicated overlay attaches the
+  `jira-ro` provider and `fullsend-jira-ro` OpenShell profile so the
+  sandbox can read the Jira work item via the REST API. Sandbox curl
+  commands use `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` for Basic
+  auth, but `JIRA_TOKEN` inside the sandbox is the provider's opaque
+  placeholder — the real API token is never expanded into sandbox
+  config or env files. OpenShell replaces the placeholder in the
+  Basic Authorization header at the proxy boundary. The Jira overlay
+  composes with the target-forge overlay (GitHub or GitLab) via
+  merge-all-matching.
 - **External work-item identity** — when the source tracker differs from the
   target forge, the code agent derives the key from `ISSUE_URL`.
   Branch names and PR text use that key and link the source URL; they do not

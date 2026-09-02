@@ -9,8 +9,9 @@ description: >-
 # Jira Cloud API
 
 Use `curl` with the Jira Cloud REST API (v3). The environment provides
-`JIRA_USER_EMAIL` and `JIRA_TOKEN` for Basic auth, and `JIRA_BASE_URL` for
-the instance host. All requests include:
+`JIRA_USER_EMAIL`, `JIRA_TOKEN`, and `JIRA_BASE_URL`. `JIRA_TOKEN` inside
+the sandbox is the opaque placeholder supplied by the `jira-ro` provider —
+the real API token never enters the sandbox. All requests use Basic auth:
 
 ```bash
 curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \

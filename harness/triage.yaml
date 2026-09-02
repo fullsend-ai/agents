@@ -117,6 +117,5 @@ overlays:
       sandbox:
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
         JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
-        JIRA_TOKEN: "${JIRA_TOKEN}"
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
         FULLSEND_FORGE: jira

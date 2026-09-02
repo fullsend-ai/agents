@@ -211,18 +211,15 @@ Determine which issue to implement:
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue content. When `FULLSEND_TRACKER` is `jira`, the
-pre-script has already fetched the Jira issue and placed it at
-`/sandbox/workspace/.issue-context.json`. Read that file instead of
-calling forge APIs:
+Fetch the issue content. For Jira, query its REST API with Basic auth.
+The sandbox's `JIRA_TOKEN` is the `jira-ro` provider's opaque placeholder,
+not the real token. Extract the issue key from `ISSUE_URL`:
 
 ```bash
-if [ "${FULLSEND_TRACKER:-}" = "jira" ] \
-   && [ -f /sandbox/workspace/.issue-context.json ]; then
-  cat /sandbox/workspace/.issue-context.json
-elif [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
-  echo "ERROR: FULLSEND_TRACKER=jira but /sandbox/workspace/.issue-context.json is missing" >&2
-  exit 1
+if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+  curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+    "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
 else
   # GitHub:
   gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
