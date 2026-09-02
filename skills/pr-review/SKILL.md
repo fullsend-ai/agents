@@ -140,7 +140,8 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
    - fold it into the orchestrator's own context — it is not part of
      the diff sub-agents receive, they only ever see the filtered output
    - if it is non-empty, add an `excluded-content` info-level finding at
-     step 7 (same mechanism as the `provenance-warning` finding below —
+     step 7 (threshold-exempt, see step 7; same mechanism as the
+     `provenance-warning` finding below —
      not a footer; SKILL.md step 7 explicitly forbids appending one):
      "N generated/lockfile file(s) changed but not reviewed
      line-by-line: <list>" — a stripped lockfile must still be visible
@@ -176,6 +177,13 @@ exist at the PR head and the contents API will return 404) and binary
 files (images, compiled artifacts — they waste tokens). Skip files
 that exceed the forge's file-size limit; log a warning so the
 orchestrator knows which files were omitted.
+
+Also skip every path named in step 2's exclusion summary: the same
+generated/lockfile/minified/sourcemap/vendored files stripped from the
+diff must not re-enter model context as full file contents here.
+Migrations are unaffected — the exemption keeps them out of the
+exclusion summary entirely. No separate disclosure is needed: the
+`excluded-content` finding from step 2 already names these paths.
 
 Use the forge-specific review skill's "File contents at PR head"
 commands to fetch each file. Emit with per-file header and fenced
@@ -657,7 +665,9 @@ For each selected sub-agent, assemble a context package containing:
   concatenation, migrations are exempt — see step 2 for the exclusion-
   summary handling.
 - `source_files`: full contents of changed files at the PR head revision,
-  fetched by the orchestrator in step 2b. Each file is preceded by a
+  fetched by the orchestrator in step 2b. Paths named in step 2's
+  exclusion summary are omitted here for the same reason they are
+  stripped from the diff. Each file is preceded by a
   `#### <relative-path>` header and wrapped in a fenced code block with
   the appropriate language identifier. For large PRs (>20 files or >5000
   lines), include only the files most relevant to the sub-agent's
@@ -1320,7 +1330,10 @@ info-level finding in the review output:
 If step 2's diff filtering produced a non-empty exclusion summary,
 include an info-level finding in the review output (this is a
 disclosure, not a footer — it goes through the same findings/severity
-structure as everything else in this section):
+structure as everything else in this section). This disclosure is
+exempt from `$REVIEW_FINDING_SEVERITY_THRESHOLD`: emit it whenever the
+summary is non-empty, even though `info` sits below the default `low`
+threshold (see "Severity filtering" in the agent definition):
 
 - **[excluded-content]** — N generated/lockfile file(s) changed but not
   reviewed line-by-line: `<path>` (`<reason>`), ... — listing every
