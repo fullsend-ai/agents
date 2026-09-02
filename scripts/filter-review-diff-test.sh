@@ -151,6 +151,47 @@ MALFORMED='This is not a diff.
 Just some random text.
 No file markers here.'
 
+BINARY_VENDORED='diff --git a/vendor/blob.bin b/vendor/blob.bin
+index 1111111..2222222 100644
+Binary files a/vendor/blob.bin and b/vendor/blob.bin differ'
+
+MODE_ONLY_VENDORED='diff --git a/vendor/tool.sh b/vendor/tool.sh
+old mode 100644
+new mode 100755'
+
+QUOTED_VENDORED='diff --git "a/vendor/caf\303\251.min.js" "b/vendor/caf\303\251.min.js"
+index 1111111..2222222 100644
+--- "a/vendor/caf\303\251.min.js"
++++ "b/vendor/caf\303\251.min.js"
+@@ -1 +1 @@
+-old
++new'
+
+NO_PATH_GENERATED='diff --git malformed-header-no-paths
+@@ -0,0 +1,2 @@
++// @generated
++package gen'
+
+REMIGRATIONS_LOCKFILE='diff --git a/db/remigrations/package-lock.json b/db/remigrations/package-lock.json
+index aaaaaaa..bbbbbbb 100644
+--- a/db/remigrations/package-lock.json
++++ b/db/remigrations/package-lock.json
+@@ -1,3 +1,3 @@
+ {
+-  "version": "1.0.0"
++  "version": "1.0.1"
+ }'
+
+MIGRATIONS_LOCKFILE='diff --git a/db/migrations/package-lock.json b/db/migrations/package-lock.json
+index aaaaaaa..bbbbbbb 100644
+--- a/db/migrations/package-lock.json
++++ b/db/migrations/package-lock.json
+@@ -1,3 +1,3 @@
+ {
+-  "version": "1.0.0"
++  "version": "1.0.1"
+ }'
+
 # --- 1. Normal-code diff passes through byte-identical (the critical
 #        transparency property: cmp, not just string equality). ---
 
@@ -268,6 +309,96 @@ else
   diff -u "${TMPDIR}/malformed.in" "${TMPDIR}/malformed.out" || true
   FAILURES=$((FAILURES + 1))
 fi
+
+# --- 9. Stale summary file is truncated: a run with no exclusions must
+#        leave the caller-supplied summary empty, not a prior run's
+#        contents. ---
+
+printf 'stale/path.js  +9/-9  lockfile\n' > "${TMPDIR}/stale.summary"
+printf '%s\n' "${NORMAL_DIFF}" > "${TMPDIR}/stale.in"
+"${FILTER}" "${TMPDIR}/stale.summary" < "${TMPDIR}/stale.in" > /dev/null
+run_test "stale-summary-truncated" "" "$(/bin/cat "${TMPDIR}/stale.summary")"
+
+# --- 10. Binary and mode-only sections have no ---/+++ headers; the
+#         path must come from the `diff --git` header itself. ---
+
+printf '%s\n' "${BINARY_VENDORED}" > "${TMPDIR}/binary.in"
+BINARY_OUT=$("${FILTER}" "${TMPDIR}/binary.summary" < "${TMPDIR}/binary.in")
+run_test "binary-vendored-stdout-empty" "" "${BINARY_OUT}"
+run_test_contains "binary-vendored-in-summary" "vendor/blob.bin" "$(/bin/cat "${TMPDIR}/binary.summary")"
+
+printf '%s\n' "${MODE_ONLY_VENDORED}" > "${TMPDIR}/mode-only.in"
+MODE_ONLY_OUT=$("${FILTER}" "${TMPDIR}/mode-only.summary" < "${TMPDIR}/mode-only.in")
+run_test "mode-only-vendored-stdout-empty" "" "${MODE_ONLY_OUT}"
+run_test_contains "mode-only-vendored-in-summary" "vendor/tool.sh" "$(/bin/cat "${TMPDIR}/mode-only.summary")"
+
+# --- 11. Git-quoted paths are dequoted before classification. ---
+
+printf '%s\n' "${QUOTED_VENDORED}" > "${TMPDIR}/quoted.in"
+QUOTED_OUT=$("${FILTER}" "${TMPDIR}/quoted.summary" < "${TMPDIR}/quoted.in")
+run_test "quoted-path-stdout-empty" "" "${QUOTED_OUT}"
+run_test_contains "quoted-path-in-summary" "vendor/caf" "$(/bin/cat "${TMPDIR}/quoted.summary")"
+run_test_contains "quoted-path-reason-recorded" "minified" "$(/bin/cat "${TMPDIR}/quoted.summary")"
+
+# --- 12. Fail-open: a section with a hunk and an @generated added line
+#         but no parseable path anywhere passes through unchanged, with
+#         no summary record. ---
+
+printf '%s\n' "${NO_PATH_GENERATED}" > "${TMPDIR}/no-path.in"
+"${FILTER}" "${TMPDIR}/no-path.summary" < "${TMPDIR}/no-path.in" > "${TMPDIR}/no-path.out"
+if cmp -s "${TMPDIR}/no-path.in" "${TMPDIR}/no-path.out"; then
+  echo "PASS: no-parseable-path-fails-open"
+else
+  echo "FAIL: no-parseable-path-fails-open"
+  diff -u "${TMPDIR}/no-path.in" "${TMPDIR}/no-path.out" || true
+  FAILURES=$((FAILURES + 1))
+fi
+run_test "no-parseable-path-empty-summary" "" "$(/bin/cat "${TMPDIR}/no-path.summary" 2>/dev/null || true)"
+
+# --- 13. Migration exemption matches whole path components only:
+#         db/remigrations/ is NOT exempt, db/migrations/ is (even for a
+#         lockfile name). ---
+
+printf '%s\n' "${REMIGRATIONS_LOCKFILE}" > "${TMPDIR}/remigrations.in"
+REMIG_OUT=$("${FILTER}" "${TMPDIR}/remigrations.summary" < "${TMPDIR}/remigrations.in")
+run_test "remigrations-not-exempt-stdout-empty" "" "${REMIG_OUT}"
+run_test_contains "remigrations-in-summary" "db/remigrations/package-lock.json" "$(/bin/cat "${TMPDIR}/remigrations.summary")"
+
+printf '%s\n' "${MIGRATIONS_LOCKFILE}" > "${TMPDIR}/migrations-lock.in"
+"${FILTER}" "${TMPDIR}/migrations-lock.summary" < "${TMPDIR}/migrations-lock.in" > "${TMPDIR}/migrations-lock.out"
+if cmp -s "${TMPDIR}/migrations-lock.in" "${TMPDIR}/migrations-lock.out"; then
+  echo "PASS: migrations-component-exempt"
+else
+  echo "FAIL: migrations-component-exempt"
+  diff -u "${TMPDIR}/migrations-lock.in" "${TMPDIR}/migrations-lock.out" || true
+  FAILURES=$((FAILURES + 1))
+fi
+run_test "migrations-lockfile-empty-summary" "" "$(/bin/cat "${TMPDIR}/migrations-lock.summary" 2>/dev/null || true)"
+
+# --- 14. Pending-state buffering is bounded: a deletion-heavy section
+#         resolves keep at the buffer cap, so an @generated added line
+#         arriving after 100+ buffered lines no longer strips and the
+#         section streams through unchanged. ---
+
+{
+  echo 'diff --git a/src/big.go b/src/big.go'
+  echo 'index 1111111..2222222 100644'
+  echo '--- a/src/big.go'
+  echo '+++ b/src/big.go'
+  echo '@@ -1,150 +1,2 @@'
+  for i in $(seq 1 150); do echo "-deleted line ${i}"; done
+  echo '+// @generated'
+  echo '+package big'
+} > "${TMPDIR}/deletion.in"
+"${FILTER}" "${TMPDIR}/deletion.summary" < "${TMPDIR}/deletion.in" > "${TMPDIR}/deletion.out"
+if cmp -s "${TMPDIR}/deletion.in" "${TMPDIR}/deletion.out"; then
+  echo "PASS: deletion-heavy-section-bounded-keep"
+else
+  echo "FAIL: deletion-heavy-section-bounded-keep"
+  diff -u "${TMPDIR}/deletion.in" "${TMPDIR}/deletion.out" || true
+  FAILURES=$((FAILURES + 1))
+fi
+run_test "deletion-heavy-empty-summary" "" "$(/bin/cat "${TMPDIR}/deletion.summary" 2>/dev/null || true)"
 
 # --- Wrap up ---
 

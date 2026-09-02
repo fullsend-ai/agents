@@ -213,8 +213,9 @@ Read the exclusion-summary file it writes (never emitted on stdout):
 - fold it into the orchestrator's own context — it is not part of the
   diff sub-agents receive, they only ever see the filtered output
 - if it is non-empty, add an `excluded-content` info-level finding at
-  step 7 (same mechanism as the `provenance-warning` finding below —
-  not a footer; step 7 explicitly forbids appending one): "N
+  step 7 (threshold-exempt, see step 7; same mechanism as the
+  `provenance-warning` finding below — not a footer; step 7 explicitly
+  forbids appending one): "N
   generated/lockfile file(s) changed but not reviewed line-by-line:
   <list>" — a stripped lockfile must still be visible to whoever reads
   the review, even though no model read its contents.
@@ -666,6 +667,8 @@ For each selected sub-agent, assemble a context package containing:
 - `pr_head`: the MANIFEST lines (step 2b) for the files this sub-agent
   should look at — all changed files for `correctness`, `security` and
   `style-conventions`, the dimension-relevant subset otherwise. Paths
+  named in step 2c's exclusion summary are omitted: content stripped
+  from the diff must not re-enter model context as a whole file. Paths
   only; sub-agents Read from `/sandbox/workspace/pr-head/`.
 - `head_sha`: the PR head commit SHA (from step 1), included for
   reference in sub-agent findings and review anchoring
@@ -1327,7 +1330,10 @@ info-level finding in the review output:
 If step 2's diff filtering produced a non-empty exclusion summary,
 include an info-level finding in the review output (this is a
 disclosure, not a footer — it goes through the same findings/severity
-structure as everything else in this section):
+structure as everything else in this section). This disclosure is
+exempt from `$REVIEW_FINDING_SEVERITY_THRESHOLD`: emit it whenever the
+summary is non-empty, even though `info` sits below the default `low`
+threshold (see "Severity filtering" in the agent definition):
 
 - **[excluded-content]** — N generated/lockfile file(s) changed but not
   reviewed line-by-line: `<path>` (`<reason>`), ... — listing every

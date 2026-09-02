@@ -64,6 +64,9 @@ findings to include. The severity order from lowest to highest is:
 
 Suppress findings below the threshold — do not mention them in the
 review body and do not include them in the `findings` array.
+Exception: the `provenance-warning` and `excluded-content` process
+disclosures are exempt — include them whenever their trigger condition
+holds, regardless of the threshold.
 
 This filtering applies to the narrative body text and the structured
 findings equally. If filtering removes all findings from a
