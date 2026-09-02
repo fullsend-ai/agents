@@ -276,6 +276,20 @@ tracker_close_issue() {
   fi
 }
 
+# Echo the normalized issue state ("open" or "closed") and return 0 on success.
+# GitLab reports "opened"/"closed"; map "opened" to "open" for a tracker-neutral
+# contract. Returns non-zero if the state cannot be determined (caller fails closed).
+tracker_issue_state() {
+  local raw state
+  raw=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null) || return 1
+  state=$(printf '%s' "${raw}" | jq -r '.state // empty' 2>/dev/null) || return 1
+  case "${state}" in
+    opened) printf 'open\n' ;;
+    closed) printf 'closed\n' ;;
+    *) return 1 ;;
+  esac
+}
+
 tracker_create_issue() {
   local target_repo="$1"
   local title="$2"

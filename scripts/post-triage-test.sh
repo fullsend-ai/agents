@@ -1436,9 +1436,14 @@ if [[ "${URL}" =~ /user$ ]] && [[ "${METHOD}" == "GET" ]]; then
   exit 0
 fi
 
-# Return labels for the issue when queried.
+# Return the issue when queried. MOCK_GITLAB_ISSUE_STATE overrides the reported
+# state (default "opened"); "api-error" simulates a lookup failure so the
+# ready-to-code closed-issue guard can be exercised.
 if [[ "${URL}" =~ /issues/42$ ]] && [[ "${METHOD}" == "GET" ]]; then
-  echo '{"iid":42,"title":"Test issue","labels":["area/api","old-label"],"state":"opened"}'
+  if [[ "${MOCK_GITLAB_ISSUE_STATE:-opened}" == "api-error" ]]; then
+    exit 1
+  fi
+  echo "{\"iid\":42,\"title\":\"Test issue\",\"labels\":[\"area/api\",\"old-label\"],\"state\":\"${MOCK_GITLAB_ISSUE_STATE:-opened}\"}"
   exit 0
 fi
 
@@ -1720,6 +1725,80 @@ run_gitlab_test "gitlab-close-issue-api-error-fails" \
   "true"
 rm -f "${MOCK_CURL_CLOSE_FAIL}"
 
+# GitLab closed-issue guard: a bug closed during triage keeps informational
+# mutations and the comment but must not receive the ready-to-code routing label.
+gl_closed_dir="${TMPDIR}/run-gitlab-closed-issue-skips-ready-to-code"
+mkdir -p "${gl_closed_dir}/iteration-1/output"
+printf '%s\n' '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
+  > "${gl_closed_dir}/iteration-1/output/agent-result.json"
+: > "${CURL_LOG}"
+gl_closed_exit=0
+(
+  cd "${gl_closed_dir}"
+  MOCK_GITLAB_ISSUE_STATE=closed bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout.log" 2>&1 || gl_closed_exit=$?
+
+if [[ ${gl_closed_exit} -ne 0 ]]; then
+  echo "FAIL: gitlab-closed-issue-skips-ready-to-code — exit code ${gl_closed_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- "add_labels=ready-to-code" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-closed-issue-skips-ready-to-code — ready-to-code was applied"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "add_labels=area/api" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-closed-issue-skips-ready-to-code — informational label was not applied"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "/issues/42/notes" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-closed-issue-skips-ready-to-code — triage comment was not posted"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "Issue #42 is closed; skipping ready-to-code label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gitlab-closed-issue-skips-ready-to-code — skip diagnostic was not logged"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gitlab-closed-issue-skips-ready-to-code"
+fi
+
+# GitLab state-lookup failure must fail closed for the routing label while
+# still applying informational mutations and posting the comment.
+gl_err_dir="${TMPDIR}/run-gitlab-issue-state-api-error-skips-ready-to-code"
+mkdir -p "${gl_err_dir}/iteration-1/output"
+printf '%s\n' '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API area.","actions":[{"action":"add","label":"area/api"}]}}' \
+  > "${gl_err_dir}/iteration-1/output/agent-result.json"
+: > "${CURL_LOG}"
+gl_err_exit=0
+(
+  cd "${gl_err_dir}"
+  MOCK_GITLAB_ISSUE_STATE=api-error bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout.log" 2>&1 || gl_err_exit=$?
+
+if [[ ${gl_err_exit} -ne 0 ]]; then
+  echo "FAIL: gitlab-issue-state-api-error-skips-ready-to-code — exit code ${gl_err_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- "add_labels=ready-to-code" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-issue-state-api-error-skips-ready-to-code — ready-to-code was applied"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "add_labels=area/api" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-issue-state-api-error-skips-ready-to-code — informational label was not applied"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "/issues/42/notes" "${CURL_LOG}"; then
+  echo "FAIL: gitlab-issue-state-api-error-skips-ready-to-code — triage comment was not posted"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "::warning::Unable to verify issue #42 state; skipping ready-to-code label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gitlab-issue-state-api-error-skips-ready-to-code — warning was not logged"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gitlab-issue-state-api-error-skips-ready-to-code"
+fi
+
 # ---------------------------------------------------------------------------
 # Jira tracker tests
 # Verify that post-triage.sh works correctly with FULLSEND_TRACKER=jira.
@@ -1785,6 +1864,17 @@ fi
 # Return components for the issue (used by component_actions handler).
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+  exit 0
+fi
+
+# Return the issue status (used by the ready-to-code closed-issue guard).
+# MOCK_JIRA_STATUS_CATEGORY selects the statusCategory.key ("done" == closed);
+# MOCK_JIRA_STATUS_FAIL simulates a lookup failure. Defaults to an open issue.
+if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ -n "${MOCK_JIRA_STATUS_FAIL:-}" ]]; then
+    exit 1
+  fi
+  echo "{\"fields\":{\"status\":{\"statusCategory\":{\"key\":\"${MOCK_JIRA_STATUS_CATEGORY:-indeterminate}\"}}}}"
   exit 0
 fi
 
@@ -2059,6 +2149,75 @@ else
   echo "PASS: jira-ready-to-code-skips-gh-label-create"
 fi
 
+# Jira closed-issue guard: an issue whose status category is terminal ("done")
+# must not receive the ready-to-code routing label, while the triage comment
+# still posts.
+jira_closed_dir="${TMPDIR}/run-jira-closed-issue-skips-ready-to-code"
+mkdir -p "${jira_closed_dir}/iteration-1/output"
+printf '%s\n' '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  > "${jira_closed_dir}/iteration-1/output/agent-result.json"
+: > "${JIRA_CURL_LOG}"
+: > "${GH_LOG}"
+jira_closed_exit=0
+(
+  cd "${jira_closed_dir}"
+  MOCK_JIRA_STATUS_CATEGORY=done bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout.log" 2>&1 || jira_closed_exit=$?
+
+if [[ ${jira_closed_exit} -ne 0 ]]; then
+  echo "FAIL: jira-closed-issue-skips-ready-to-code — exit code ${jira_closed_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- '"add":"ready-to-code"' "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-closed-issue-skips-ready-to-code — ready-to-code was applied"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "fullsend issues post-comment --tracker jira" "${GH_LOG}"; then
+  echo "FAIL: jira-closed-issue-skips-ready-to-code — triage comment was not posted"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "is closed; skipping ready-to-code label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira-closed-issue-skips-ready-to-code — skip diagnostic was not logged"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-closed-issue-skips-ready-to-code"
+fi
+
+# Jira status-lookup failure must fail closed for the routing label while the
+# triage comment still posts.
+jira_err_dir="${TMPDIR}/run-jira-issue-state-api-error-skips-ready-to-code"
+mkdir -p "${jira_err_dir}/iteration-1/output"
+printf '%s\n' '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
+  > "${jira_err_dir}/iteration-1/output/agent-result.json"
+: > "${JIRA_CURL_LOG}"
+: > "${GH_LOG}"
+jira_err_exit=0
+(
+  cd "${jira_err_dir}"
+  MOCK_JIRA_STATUS_FAIL=1 bash "${POST_SCRIPT}"
+) > "${TMPDIR}/stdout.log" 2>&1 || jira_err_exit=$?
+
+if [[ ${jira_err_exit} -ne 0 ]]; then
+  echo "FAIL: jira-issue-state-api-error-skips-ready-to-code — exit code ${jira_err_exit}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- '"add":"ready-to-code"' "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-issue-state-api-error-skips-ready-to-code — ready-to-code was applied"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "fullsend issues post-comment --tracker jira" "${GH_LOG}"; then
+  echo "FAIL: jira-issue-state-api-error-skips-ready-to-code — triage comment was not posted"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "state; skipping ready-to-code label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: jira-issue-state-api-error-skips-ready-to-code — warning was not logged"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-issue-state-api-error-skips-ready-to-code"
+fi
+
 # Jira sufficient feature action applies triaged label (not ready-to-code).
 run_jira_test "jira-sufficient-feature-gets-triaged" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
@@ -2186,6 +2345,13 @@ if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
 fi
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+  exit 0
+fi
+if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ -n "${MOCK_JIRA_STATUS_FAIL:-}" ]]; then
+    exit 1
+  fi
+  echo "{\"fields\":{\"status\":{\"statusCategory\":{\"key\":\"${MOCK_JIRA_STATUS_CATEGORY:-indeterminate}\"}}}}"
   exit 0
 fi
 exit 0
