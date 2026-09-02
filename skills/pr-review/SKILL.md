@@ -168,7 +168,8 @@ Both buckets write the same file, and both then filter it in place —
 see step 2c. One deterministic definition of "generated" for both
 paths, instead of a separate prompt-level list here.
 
-3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
+3. FILE_COUNT>200, LINE_COUNT>10K (the same unfiltered counts computed
+   above — never the post-filter numbers): emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
 
 ### 2b. Materialise the PR head
@@ -203,10 +204,11 @@ Filter `/sandbox/workspace/pr-diff.txt` in place through
 `skills/pr-review/scripts/filter-review-diff.sh <summary-file>` before
 it enters any context package (step 3d). The script deterministically
 strips lockfiles, `*.min.js`/`*.min.css`, sourcemaps, and vendored
-paths (`vendor/`, `node_modules/`, `third_party/`), and files carrying
-an `@generated` marker in their added lines — migrations are exempt
-from every one of those rules. See the script's header comment for the
-exact classification.
+paths (`vendor/`, `node_modules/`, `third_party/`), and
+generated-looking files (protobuf/codegen suffixes; `generated/`,
+`dist/`, `build/` paths) carrying a generated-content marker —
+migrations are exempt from every one of those rules. See the script's
+header comment for the exact classification.
 
 Read the exclusion-summary file it writes (never emitted on stdout):
 
