@@ -192,6 +192,23 @@ index aaaaaaa..bbbbbbb 100644
 +  "version": "1.0.1"
  }'
 
+BINARY_SPACE_B='diff --git a/vendor/lib b/data.bin b/vendor/lib b/data.bin
+index 1111111..2222222 100644
+Binary files a/vendor/lib b/data.bin and b/vendor/lib b/data.bin differ'
+
+QUOTED_RENAME_VENDORED='diff --git "a/src/caf\303\251.js" "b/vendor/caf\303\251.js"
+similarity index 100%
+rename from "src/caf\303\251.js"
+rename to "vendor/caf\303\251.js"'
+
+QUOTED_NEWLINE_VENDORED='diff --git "a/vendor/we\nird.js" "b/vendor/we\nird.js"
+index 1111111..2222222 100644
+--- "a/vendor/we\nird.js"
++++ "b/vendor/we\nird.js"
+@@ -1 +1 @@
+-old
++new'
+
 # --- 1. Normal-code diff passes through byte-identical (the critical
 #        transparency property: cmp, not just string equality). ---
 
@@ -399,6 +416,34 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 run_test "deletion-heavy-empty-summary" "" "$(/bin/cat "${TMPDIR}/deletion.summary" 2>/dev/null || true)"
+
+# --- 15. A path itself containing " b/" splits at the position where
+#         both header sides name the same file, not at the last " b/"
+#         marker. ---
+
+printf '%s\n' "${BINARY_SPACE_B}" > "${TMPDIR}/space-b.in"
+SPACE_B_OUT=$("${FILTER}" "${TMPDIR}/space-b.summary" < "${TMPDIR}/space-b.in")
+run_test "space-b-path-stdout-empty" "" "${SPACE_B_OUT}"
+run_test_contains "space-b-path-in-summary" "vendor/lib b/data.bin" "$(/bin/cat "${TMPDIR}/space-b.summary")"
+
+# --- 16. Quoted rename from/to metadata is dequoted before
+#         classification: a rename into vendor/ is stripped. ---
+
+printf '%s\n' "${QUOTED_RENAME_VENDORED}" > "${TMPDIR}/quoted-rename.in"
+QUOTED_RENAME_OUT=$("${FILTER}" "${TMPDIR}/quoted-rename.summary" < "${TMPDIR}/quoted-rename.in")
+run_test "quoted-rename-stdout-empty" "" "${QUOTED_RENAME_OUT}"
+run_test_contains "quoted-rename-in-summary" "vendor/caf" "$(/bin/cat "${TMPDIR}/quoted-rename.summary")"
+run_test_contains "quoted-rename-reason-recorded" "vendored" "$(/bin/cat "${TMPDIR}/quoted-rename.summary")"
+
+# --- 17. A \n escape in a quoted path stays a literal backslash
+#         sequence: the file still classifies by path shape and its
+#         summary record is exactly one physical line. ---
+
+printf '%s\n' "${QUOTED_NEWLINE_VENDORED}" > "${TMPDIR}/quoted-nl.in"
+QUOTED_NL_OUT=$("${FILTER}" "${TMPDIR}/quoted-nl.summary" < "${TMPDIR}/quoted-nl.in")
+run_test "quoted-newline-stdout-empty" "" "${QUOTED_NL_OUT}"
+run_test_contains "quoted-newline-reason-recorded" "vendored" "$(/bin/cat "${TMPDIR}/quoted-nl.summary")"
+run_test "quoted-newline-single-summary-line" "1" "$(wc -l < "${TMPDIR}/quoted-nl.summary" | tr -d ' ')"
 
 # --- Wrap up ---
 
