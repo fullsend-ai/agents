@@ -133,8 +133,10 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
    before it enters any context package (step 3d). The script
    deterministically strips lockfiles, `*.min.js`/`*.min.css`,
    sourcemaps, and vendored paths (`vendor/`, `node_modules/`,
-   `third_party/`), and files carrying an `@generated` marker in their
-   added lines — migrations are exempt from every one of those rules.
+   `third_party/`), and generated-looking files (protobuf/codegen
+   suffixes; `generated/`, `dist/`, `build/` paths) carrying a
+   generated-content marker — migrations are exempt from every one of
+   those rules.
    See the script's header comment for the exact classification. Read
    the exclusion-summary file it writes (never emitted on stdout):
    - fold it into the orchestrator's own context — it is not part of
@@ -162,7 +164,8 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
    - Concatenate per-file diffs into a single blob per sub-agent (see
      step 3d for the format)
 
-3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
+3. FILE_COUNT>200, LINE_COUNT>10K (the same unfiltered counts computed
+   above — never the post-filter numbers): emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
 
 ### 2b. Fetch source file contents (PR head)

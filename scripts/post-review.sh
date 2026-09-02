@@ -549,9 +549,10 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
   FILTERED_RESULT=$(mktemp)
   CLEANUP_FILES+=("${FILTERED_RESULT}")
-  # provenance-warning and excluded-content are threshold-exempt process
-  # disclosures (see "Severity filtering" in agents/review.md) — dropping
-  # them here would undo the exemption the agent honors.
+  # The threshold is absolute: even actionable findings are filtered
+  # (#1046). provenance-warning and excluded-content are threshold-exempt
+  # process disclosures (see "Severity filtering" in agents/review.md) —
+  # dropping them here would undo the exemption the agent honors.
   jq --argjson rank "$threshold_rank" '
     .findings |= [.[] | select(
       .category == "provenance-warning" or .category == "excluded-content" or
@@ -564,31 +565,34 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
     )]
   ' "${RESULT_FILE}" > "${FILTERED_RESULT}"
   filtered_count=$(jq '.findings | length' "${FILTERED_RESULT}")
+  # Findings that can justify a blocking verdict — the exempt process
+  # disclosures above cannot.
+  blocking_count=$(jq '[.findings[] | select(.category != "provenance-warning" and .category != "excluded-content")] | length' "${FILTERED_RESULT}")
 
   if [ "${filtered_count}" -lt "${original_count}" ]; then
     echo "Severity filter (threshold=${REVIEW_FINDING_SEVERITY_THRESHOLD}): kept ${filtered_count}/${original_count} findings"
     RESULT_FILE="${FILTERED_RESULT}"
-
-    # If filtering removed all findings, delete the empty findings array
-    # (minItems: 1 in the schema). For request-changes/reject, also
-    # downgrade to comment — zero findings with a blocking verdict is
-    # semantically wrong. The threshold is absolute: even actionable
-    # findings are filtered (#1046). Use "comment" (not "approve") so
-    # the PR gets requires-manual-review, not ready-for-merge.
-    if [ "${filtered_count}" -eq 0 ]; then
-      original_action=$(jq -r '.action' "${FILTERED_RESULT}")
-      DOWNGRADE_RESULT=$(mktemp)
-      CLEANUP_FILES+=("${DOWNGRADE_RESULT}")
-      if [ "${original_action}" = "request-changes" ] || [ "${original_action}" = "reject" ]; then
-        echo "All findings removed by severity filter — downgrading '${original_action}' to 'comment'"
-        jq 'del(.findings) | .action = "comment"' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
-      else
-        jq 'del(.findings)' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
-      fi
-      RESULT_FILE="${DOWNGRADE_RESULT}"
-    fi
   else
     rm -f "${FILTERED_RESULT}"
+  fi
+
+  # A blocking verdict with no blocking finding is semantically wrong:
+  # downgrade request-changes/reject to comment. Use "comment" (not
+  # "approve") so the PR gets requires-manual-review, not
+  # ready-for-merge. An entirely empty findings array is deleted
+  # (minItems: 1 in the schema); a disclosure-only array is kept — the
+  # disclosures must still reach the review.
+  if [ "${blocking_count}" -eq 0 ]; then
+    original_action=$(jq -r '.action' "${RESULT_FILE}")
+    DOWNGRADE_RESULT=$(mktemp)
+    CLEANUP_FILES+=("${DOWNGRADE_RESULT}")
+    if [ "${original_action}" = "request-changes" ] || [ "${original_action}" = "reject" ]; then
+      echo "No blocking findings after severity filter — downgrading '${original_action}' to 'comment'"
+      jq 'if (.findings | length) == 0 then del(.findings) else . end | .action = "comment"' "${RESULT_FILE}" > "${DOWNGRADE_RESULT}"
+    else
+      jq 'if (.findings | length) == 0 then del(.findings) else . end' "${RESULT_FILE}" > "${DOWNGRADE_RESULT}"
+    fi
+    RESULT_FILE="${DOWNGRADE_RESULT}"
   fi
 fi
 
