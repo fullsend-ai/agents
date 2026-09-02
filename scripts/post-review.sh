@@ -549,8 +549,12 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
   FILTERED_RESULT=$(mktemp)
   CLEANUP_FILES+=("${FILTERED_RESULT}")
+  # provenance-warning and excluded-content are threshold-exempt process
+  # disclosures (see "Severity filtering" in agents/review.md) — dropping
+  # them here would undo the exemption the agent honors.
   jq --argjson rank "$threshold_rank" '
     .findings |= [.[] | select(
+      .category == "provenance-warning" or .category == "excluded-content" or
       (if .severity == "info" then 0
        elif .severity == "low" then 1
        elif .severity == "medium" then 2

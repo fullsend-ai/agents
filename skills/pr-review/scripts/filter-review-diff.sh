@@ -75,8 +75,10 @@ function quote_end(s,   i, c) {
 }
 
 # Undoes git path quoting: strips the surrounding double quotes and the
-# common escapes (\" \\ \t \n). Other escapes (octal bytes) are left
-# as-is — classification only pattern-matches path shape.
+# \" and \\ escapes. Control and octal escapes (\t \n \303...) are kept
+# as literal backslash sequences — classification only pattern-matches
+# path shape, and the exclusion summary must stay one physical line per
+# record, so a \n in a filename must never become a real newline.
 function dequote(s,   out, i, c) {
   s = substr(s, 2, length(s) - 2)
   out = ""
@@ -84,14 +86,22 @@ function dequote(s,   out, i, c) {
     c = substr(s, i, 1)
     if (c == "\\" && i < length(s)) {
       c = substr(s, i + 1, 1)
-      if (c == "t") { out = out "\t"; i++; continue }
-      if (c == "n") { out = out "\n"; i++; continue }
       if (c == "\"" || c == "\\") { out = out c; i++; continue }
       c = "\\"
     }
     out = out c
   }
   return out
+}
+
+# Rename metadata paths carry no a/ b/ prefix but may be git-quoted.
+# Undecodable quoting returns "" so section_path() falls back to the
+# diff --git header path.
+function rename_path(s,   i) {
+  if (substr(s, 1, 1) != "\"") return s
+  i = quote_end(s)
+  if (i == 0) return ""
+  return dequote(substr(s, 1, i))
 }
 
 # Position of the last occurrence of t in s, or 0.
@@ -106,7 +116,7 @@ function last_index(s, t,   i, p) {
 # to carry, and the fallback when the ---/+++ paths are git-quoted.
 # Leaves hdr_old/hdr_new empty when the line cannot be split (an
 # unparsed section fails open at classification time).
-function parse_git_header(line,   rest, i, cut) {
+function parse_git_header(line,   rest, i, p, cut, matched) {
   rest = substr(line, 12)
   if (substr(rest, 1, 1) == "\"") {
     i = quote_end(rest)
@@ -114,11 +124,22 @@ function parse_git_header(line,   rest, i, cut) {
     if (substr(rest, 2, 2) == "a/") hdr_old = substr(dequote(substr(rest, 1, i)), 3)
     rest = substr(rest, i + 2)
   } else {
-    # An unquoted a-path may itself contain spaces: the b-path starts
-    # at the last " b/" (or quoted: " \"b/) marker on the line.
-    cut = last_index(rest, " b/")
-    i = last_index(rest, " \"b/")
-    if (i > cut) cut = i
+    # An unquoted path may itself contain spaces — even " b/". Prefer
+    # the split where both sides name the same file (the overwhelmingly
+    # common non-rename case); otherwise fall back to the last " b/"
+    # (or quoted: " \"b/) marker on the line.
+    matched = 0
+    cut = 0
+    p = 0
+    for (i = index(rest, " b/"); i > 0; i = index(substr(rest, p + 1), " b/")) {
+      p += i
+      cut = p
+      if (substr(rest, 3, p - 3) == substr(rest, p + 3)) { matched = 1; break }
+    }
+    if (!matched) {
+      i = last_index(rest, " \"b/")
+      if (i > cut) cut = i
+    }
     if (cut == 0) return
     if (substr(rest, 1, 2) == "a/") hdr_old = substr(rest, 3, cut - 3)
     rest = substr(rest, cut + 1)
@@ -250,12 +271,12 @@ BEGIN { in_diff = 0; reset_section() }
       next
     }
     if (line ~ /^rename to /) {
-      if (new_path == "") new_path = substr(line, 11)
+      if (new_path == "") new_path = rename_path(substr(line, 11))
       buf[++buf_n] = line
       next
     }
     if (line ~ /^rename from /) {
-      if (old_path == "") old_path = substr(line, 13)
+      if (old_path == "") old_path = rename_path(substr(line, 13))
       buf[++buf_n] = line
       next
     }
