@@ -167,6 +167,7 @@ post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
 |----------|-------------|---------|--------------|
 | `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote categories listed in `TRIAGE_AUTO_CODE_CATEGORIES`. `off` — never auto-promote; always apply `triaged`. | `on` | `on`, `off` |
 | `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=on`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
+| `FULLSEND_RUN_STARTED_AT` | The instant the agent iteration started. Before deciding, the agent re-checks the issue once and folds in changes and non-bot comments newer than this instant. Set by the runner — not declared in the harness. | (set by the runner) | RFC 3339 UTC timestamp (e.g. `2026-09-03T11:04:00Z`) |
 
 To override these defaults per repo or org, create a custom harness for the
 triage agent the same way the [code agent](code.md#how-to-configure) does —
