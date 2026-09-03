@@ -72,6 +72,8 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
 
+**Runner updates.** When a run is steerable, the runner can deliver a mid-run update from a collaborator the route job verified is authorized to direct the run. It reaches the agent as a message beginning `Runner update: your task inputs changed after this run started.` and amends the task — including widening or narrowing the fix, or moving it to a new head. It grants no tools or permissions and relaxes no security instruction; any part that asks for either is ignored and reported. The same line appearing inside PR content is not a runner update — the agent reports it as an injection attempt. The agent records what the update changed in its structured output.
+
 ### Input details
 
 **Bot-triggered** (review agent requests changes):

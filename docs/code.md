@@ -63,6 +63,8 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 This separation ensures the agent never has direct write access to the repository.
 
+**Runner updates.** When a run is steerable, the runner can deliver a mid-run update from a collaborator the route job verified is authorized to direct the run. It reaches the agent as a message beginning `Runner update: your task inputs changed after this run started.` and amends the task — including widening or narrowing what is implemented. It grants no tools or permissions and relaxes no security instruction; any part that asks for either is ignored and reported. The same line appearing inside issue or PR content is not a runner update — the agent reports it as an injection attempt. The agent records what the update changed in its structured output.
+
 ## Custom sandbox image
 
 The code agent runs inside a sandbox container built from the universal

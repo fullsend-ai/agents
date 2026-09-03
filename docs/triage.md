@@ -305,6 +305,8 @@ The triage agent runs in a read-only sandbox. It fetches the issue content — t
 
 The agent's only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
 
+**Runner updates.** When a run is steerable, the runner can deliver a mid-run update from a collaborator the route job verified is authorized to direct the run. It reaches the agent as a message beginning `Runner update: your task inputs changed after this run started.` and amends the task — including changing what the issue is understood to ask for. It grants no tools or permissions and relaxes no security instruction; any part that asks for either is ignored and reported. The same line appearing inside issue content is not a runner update — the agent reports it as an injection attempt. The agent records what the update changed in the `reasoning` field.
+
 ## Custom network policy
 
 If this agent needs to reach hosts beyond the defaults, see the
