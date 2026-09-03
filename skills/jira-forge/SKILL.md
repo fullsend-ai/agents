@@ -60,6 +60,26 @@ or null. Comment listing is a separate endpoint and still uses
 `startAt`/`maxResults`; a single page returns at most `maxResults` comments,
 so use `orderBy=-created` when you only need the latest replies.
 
+**Comment authors:** a comment's `author` is a Jira user object, and Jira has
+no login-suffix convention like GitHub's `[bot]` or GitLab's `_bot`. Use
+`accountType` instead: `app` is a system account for Connect apps and OAuth
+integrations — the Jira equivalent of a bot — while `atlassian` is a regular
+user and `customer` a Jira Service Desk account, both people. `unknown` means
+Jira could not resolve the record; classify that as a bot rather than acting
+on it. An automation rule configured to run *as a user* is indistinguishable
+from that user here, and is a known gap.
+
+```bash
+# Comment authors, with the account type and creation time
+jq -r '.comments[] | {name: .author.displayName,
+                      accountType: .author.accountType, at: .created}'
+```
+
+`created` is Jira's own format (`2026-09-03T12:56:19.123+0000`) — a numeric
+offset and fractional seconds, not the RFC 3339 `Z` form of
+`FULLSEND_RUN_STARTED_AT`. Parse both sides before comparing them; comparing
+the strings gives the wrong answer.
+
 **Error handling:** Always use `--fail-with-body` so HTTP errors (e.g. 410
 Gone) cause curl to exit non-zero instead of silently returning an error body
 that could be mistaken for an empty result set.
