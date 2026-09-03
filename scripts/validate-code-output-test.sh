@@ -392,10 +392,18 @@ run_test_signoff_attribution() {
     git -C "${repo_dir}" checkout -q feature
     git -C "${repo_dir}" merge -q --no-ff --signoff -m "human merge" human-side
   else
-    echo "human change" >> "${repo_dir}/src.py"
-    git -C "${repo_dir}" add src.py
+    if [ "${agent_amend}" = "whitespace" ]; then
+      printf 'def value():\n    return 1\n' > "${repo_dir}/behavior.py"
+      git -C "${repo_dir}" add behavior.py
+    else
+      echo "human change" >> "${repo_dir}/src.py"
+      git -C "${repo_dir}" add src.py
+    fi
     if [ "${agent_amend}" = "unsigned" ]; then
       git -C "${repo_dir}" commit -q -m "human change"
+    elif [ "${agent_amend}" = "reorder" ]; then
+      git -C "${repo_dir}" commit -q -m "human change" \
+        -m $'Signed-off-by: Human <human@example.com>\nSigned-off-by: Reviewer <reviewer@example.com>'
     else
       git -C "${repo_dir}" commit -q -s -m "human change"
     fi
@@ -419,7 +427,18 @@ run_test_signoff_attribution() {
     fi
   fi
 
-  if [ "${agent_amend}" != "none" ]; then
+  if [ "${agent_amend}" = "whitespace" ]; then
+    printf 'def value():\nreturn 1\n' > "${repo_dir}/behavior.py"
+    git -C "${repo_dir}" add behavior.py
+    git -C "${repo_dir}" commit -q --amend --no-edit
+  elif [ "${agent_amend}" = "duplicate" ]; then
+    git -C "${repo_dir}" show -s --format='%B' > "${test_dir}/commit-message"
+    printf 'Signed-off-by: Human <human@example.com>\n' >> "${test_dir}/commit-message"
+    git -C "${repo_dir}" commit -q --amend -F "${test_dir}/commit-message"
+  elif [ "${agent_amend}" = "reorder" ]; then
+    git -C "${repo_dir}" commit -q --amend -m "human change" \
+      -m $'Signed-off-by: Reviewer <reviewer@example.com>\nSigned-off-by: Human <human@example.com>'
+  elif [ "${agent_amend}" != "none" ]; then
     git -C "${repo_dir}" commit -q --amend --no-edit --signoff
   elif [ "${agent_merge}" = "true" ]; then
     git -C "${repo_dir}" checkout -q -b agent-side
@@ -465,6 +484,9 @@ run_test_signoff_attribution "human-merge-signoff-ignored-after-rebase" "true" "
 run_test_signoff_attribution "agent-signoff-rejected" "false" "true" "false"
 run_test_signoff_attribution "agent-amended-signoff-rejected" "false" "false" "false" "false" "false" "unsigned"
 run_test_signoff_attribution "agent-added-signoff-rejected" "false" "false" "false" "false" "false" "signed"
+run_test_signoff_attribution "agent-whitespace-amend-rejected" "false" "false" "false" "false" "false" "whitespace"
+run_test_signoff_attribution "agent-duplicate-signoff-rejected" "false" "false" "false" "false" "false" "duplicate"
+run_test_signoff_attribution "agent-reordered-signoffs-rejected" "false" "false" "false" "false" "false" "reorder"
 # git cherry omits merges, so cover an agent-created signed merge explicitly.
 run_test_signoff_attribution "signed-agent-merge-rejected" "false" "true" "false" "true"
 

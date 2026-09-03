@@ -156,17 +156,17 @@ if [ -n "${PRE_AGENT_HEAD:-}" ]; then
     fi
     if [ "${parent_count}" -eq 0 ]; then
       patch_id="$(git show --format= --root "${commit_sha}" \
-        | git patch-id --stable | awk '{ print $1 }')"
+        | git patch-id --verbatim | awk '{ print $1 }')"
     else
       patch_id="$(git diff "${commit_sha}^1" "${commit_sha}" \
-      | git patch-id --stable | awk '{ print $1 }')"
+      | git patch-id --verbatim | awk '{ print $1 }')"
     fi
     if [ -z "${patch_id}" ]; then
       patch_id="empty:$(git show -s --format='%an <%ae>%n%s' "${commit_sha}" \
         | git hash-object --stdin)"
     fi
     signoff_id="$(git show -s --format='%b' "${commit_sha}" \
-      | grep '^Signed-off-by:' | sort -u | git hash-object --stdin)"
+      | grep '^Signed-off-by:' | git hash-object --stdin)"
     echo "${kind}:${patch_id}:${signoff_id}"
   }
 
