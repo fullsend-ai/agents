@@ -27,6 +27,11 @@ host_files:
 model: opus
 effort: high
 post_script: scripts/post-link-check.sh
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  schema: schemas/link-check-result.schema.json
+  max_iterations: 2
+  preflight_check: python3 -c "import jsonschema"
 env:
   runner:
     FULLSEND_FORGE: github
