@@ -68,7 +68,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
-2. **Sandbox** — the agent reads each review finding, implements targeted fixes, verifies them against tests and linters, and re-checks once for a moved head or non-bot comments newer than `FULLSEND_RUN_STARTED_AT` before committing.
+2. **Sandbox** — the agent reads each review finding, implements targeted fixes, verifies them against tests and linters, and re-checks once for a moved head or non-bot comments newer than `FULLSEND_RUN_STARTED_AT` before committing. On a moved head it fetches and rebases onto the new head and re-verifies, rather than leaving a stale-base commit for the post-script to force-push.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
 
