@@ -75,9 +75,9 @@ Capture the start time at the very beginning of step 1:
 AGENT_START=$(date +%s)
 ```
 
-Before starting pre-commit (9b), before each retry iteration (9c), and
-before commit (10), check remaining time **only if `TIMEOUT_SECONDS` is
-set**:
+Before starting pre-commit (9b), before the direct-execution fallback
+inside 9b, before each retry iteration (9c), and before commit (10),
+check remaining time **only if `TIMEOUT_SECONDS` is set**:
 
 ```bash
 if [ -n "${TIMEOUT_SECONDS:-}" ]; then
@@ -87,8 +87,9 @@ if [ -n "${TIMEOUT_SECONDS:-}" ]; then
 fi
 ```
 
-When `TIMEOUT_SECONDS` is set, use these thresholds (expressed as
-fractions of the budget so they scale to any timeout value):
+When `TIMEOUT_SECONDS` is set, use these thresholds (fractions of the
+budget so they scale to any timeout value; the one flat value is the
+300s fallback floor, whose cost does not scale with the budget):
 
 - **Before 9b (pre-commit):** If less than 10% of the budget remaining,
   skip pre-commit entirely. Note: the post-script's authoritative
@@ -97,6 +98,9 @@ fractions of the budget so they scale to any timeout value):
   re-dispatch. Running hooks in-sandbox, even via direct execution
   when `pre-commit` itself cannot fetch repos (see step 9b STEP C),
   is almost always cheaper than a terminal post-script failure.
+- **Before the direct-execution fallback in 9b:** if STEP B failed on
+  infrastructure and less than 300s remains, skip the fallback,
+  disclose it, and proceed to 9c (STEP C, RULE 1).
 - **Before a retry in 9c:** If less than 20% of the budget remaining,
   do NOT retry. Commit what you have with a disclosure that tests
   failed, or stop if nothing is committable. A disclosed partial commit
@@ -556,14 +560,16 @@ the scan passes.
 echo "::notice::STEP 9b: Pre-commit hooks"
 ```
 
-Pre-commit is bounded, not optional. Exactly two things let you stop
+Pre-commit is bounded, not optional. Exactly three things let you stop
 short: the time-budget threshold above (under 10% of the budget
-remaining), and STEP D's two-run cap. Nothing else authorizes skipping
-it. The post-script (`post-code.sh`) runs an authoritative pre-commit
-check on the CI runner before pushing. However, the post-script runs
-**after the sandbox is destroyed** — any failure it catches is
-terminal (`pre-commit-blocked`), ending the run with no PR and
-requiring human re-dispatch. "The post-script runs it authoritatively"
+remaining), the 300s fallback floor that guards STEP C's direct
+execution, and STEP D's two-run cap. Nothing else authorizes skipping
+it. The post-script
+(`post-code.sh`) runs an authoritative pre-commit check on the CI
+runner before pushing. However, the post-script runs **after the
+sandbox is destroyed** — any failure it catches is terminal
+(`pre-commit-blocked`), ending the run with no PR and requiring human
+re-dispatch. "The post-script runs it authoritatively"
 is therefore **not** a valid reason to skip verification. Running
 hooks in-sandbox catches the same failures while the agent can still
 fix them, avoiding an expensive terminal failure.
@@ -637,10 +643,47 @@ The first run may be slow (installs hook environments). This is normal.
   ```
 
 - **Any other failure** (exit 3, network error, infrastructure error) —
-  **do not skip verification.** When `pre-commit` fails because it
-  cannot fetch remote hook repositories (common in sandboxes with
-  restricted network access), fall back to running the configured
-  hooks directly:
+  **do not skip verification — unless the floor below says you cannot
+  afford to.** When `pre-commit` fails because it cannot fetch remote
+  hook repositories (common in sandboxes with restricted network
+  access), fall back to running the configured hooks directly, after
+  this recheck.
+
+  **Time recheck before the fallback.** The 10% gate measured the fast
+  path; the fallback `pip install`s each hook at its pinned `rev`, and
+  timing out mid-install leaves no commit at all — worse than committing
+  with the hooks disclosed as unrun. Re-check against a flat 300s floor
+  (its cost does not scale with the budget; it may sit below 9c's 20%
+  retry floor, deliberately):
+
+  ```bash
+  RUN_FALLBACK=1
+  if [ -n "${TIMEOUT_SECONDS:-}" ] && [ -n "${AGENT_START:-}" ]; then
+    REMAINING=$(( TIMEOUT_SECONDS - ($(date +%s) - AGENT_START) ))
+    if [ "$REMAINING" -lt 300 ]; then
+      RUN_FALLBACK=0; echo "::warning::Direct-execution fallback skipped: ${REMAINING}s remaining < 300s floor"
+    else
+      echo "::notice::Fallback time check: ${REMAINING}s remaining >= 300s floor — proceeding"
+    fi
+  else
+    echo "::notice::Fallback time check skipped: TIMEOUT_SECONDS or AGENT_START unset — no floor applied"
+  fi
+  ```
+
+  Guard both variables (an unset `AGENT_START` reads as 0 and would
+  always skip) and print on every path.
+
+  If `RUN_FALLBACK` is `0`: skip substeps 1-5 (`repo: local` hooks
+  included — a local `entry` can fetch too; 9c's lint still runs), treat
+  9b as finished, go to 9c, and put this in the commit message:
+
+  > Note: pre-commit hooks were not run. `pre-commit` could not
+  > complete (infrastructure failure), and the remaining time budget
+  > was below the floor for running the hooks directly.
+
+  Skipping consumes no run but closes 9b for this iteration (RULE 1).
+
+  If `1`, proceed with the fallback:
 
   1. Parse `.pre-commit-config.yaml` to identify each hook's `repo`
      type, `entry` command, `args`, `rev`, `stages`,
@@ -718,7 +761,7 @@ The first run may be slow (installs hook environments). This is normal.
 
 If the second run passes (whether `pre-commit run` or direct execution
 of hooks), great. If it fails again, **you are done with pre-commit for
-the entire session**. Log the exact hook name, file, and error in your
+this iteration**. Log the exact hook name, file, and error in your
 commit message and move on to 9c. Do NOT attempt a third run. Do NOT try
 a different fix. What is exhausted is the retry budget, not the problem:
 RULE 2 still requires you to disclose the failure, so a human sees it
@@ -726,13 +769,14 @@ even if the runner rejects the commit.
 
 **RULES:**
 
-1. **Maximum 2 pre-commit/hook-execution runs total across the entire
-   session.** One initial run, one retry. A `pre-commit run` that failed
+1. **Maximum 2 pre-commit/hook-execution runs per iteration, not per
+   sandbox.** One initial run, one retry. A `pre-commit run` that failed
    on infrastructure before executing any hook does not count — the
-   direct-execution fallback takes its place as the initial run. No
-   more — not even if step 9c sends you back to fix your code. Once
-   you have used your 2 runs, pre-commit is done. Do not re-run it
-   during retries.
+   direct-execution fallback takes its place; if the 300s floor blocked
+   the fallback, 9b is closed with no run spent. Not even if step 9c
+   sends you back to fix your code. A validation-loop retry (R6) starts
+   a fresh clock and budget, which is what lets it fix a
+   `pre-commit-blocked` failure; 9c's internal retries do not.
 2. **Always disclose.** If pre-commit did not pass, say so in the commit
    message with the exact error. Never claim hooks passed when they did
    not.
@@ -820,8 +864,9 @@ must disclose that.
    refactor unrelated code or disable the lint rule.
 3. Re-run secret scan (9a), then tests and linters (9c). This consumes
    one retry iteration. **Do NOT re-run pre-commit (9b) during
-   retries** — you already used your 2 pre-commit runs, and RULE 2
-   requires you to disclose any hook failure in the commit message.
+   retries** — your pre-commit budget for this iteration is closed
+   whether you spent it or skipped it, and RULE 2 requires you to
+   disclose any hook failure in the commit message.
 4. Repeat until both tests and linters pass or the retry limit is
    reached.
 
@@ -1006,7 +1051,8 @@ the title or body exceeds the configured limits.
 
 If a git hook fires during `git commit` and fails (e.g., the repo shipped
 a `.git/hooks/pre-commit`), do NOT enter a fix-and-retry loop. You already
-ran pre-commit in step 9b (which is the same check). Commit with
+ran pre-commit in step 9b (which is the same check), or recorded there why
+you could not. Commit with
 `--no-verify` to bypass the git hook and disclose the failure in the commit
 message. The post-script runs an authoritative pre-commit on the runner.
 

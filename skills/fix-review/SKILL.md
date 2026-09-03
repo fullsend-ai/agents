@@ -33,8 +33,9 @@ Capture the start time at the very beginning:
 AGENT_START=$(date +%s)
 ```
 
-Before starting pre-commit (7b), before each retry iteration (7c), and
-before commit (8), check remaining time **only if `TIMEOUT_SECONDS` is set**:
+Before starting pre-commit (7b), before the direct-execution fallback
+inside 7b, before each retry iteration (7c), and before commit (8),
+check remaining time **only if `TIMEOUT_SECONDS` is set**:
 
 ```bash
 if [ -n "${TIMEOUT_SECONDS:-}" ]; then
@@ -44,8 +45,12 @@ if [ -n "${TIMEOUT_SECONDS:-}" ]; then
 fi
 ```
 
-Thresholds (fractions of budget):
+Thresholds (fractions of budget, except the fallback floor, which is
+a flat 300s — what it guards costs the same whatever the budget is):
 - **Before 7b (pre-commit):** < 10% remaining → skip pre-commit
+- **Before the direct-execution fallback in 7b:** < 300s remaining →
+  skip the fallback (its `pip install` steps risk a hard timeout),
+  proceed to 7c and disclose the skip in the commit message
 - **Before retry in 7c:** < 20% remaining → commit with disclosure
 - **Before 8 (commit):** < 8% remaining → skip gitlint validation
 
@@ -166,12 +171,16 @@ echo "::notice::STEP 7b: Pre-commit hooks"
 
 Same rules as the code agent (see step 9b of the code-implementation
 skill for the full text):
-- Maximum 2 pre-commit/hook-execution runs total across the entire
-  session. A `pre-commit run` that failed on infrastructure before
-  executing any hook does not count.
+- Maximum 2 pre-commit/hook-execution runs per validation-loop
+  iteration (not per sandbox). A `pre-commit run` that failed on
+  infrastructure before executing any hook does not count — the
+  direct-execution fallback takes its place. A validation-loop retry
+  is a new iteration with a fresh budget; 7c's own retries do not
+  reopen 7b.
 - Pre-format your code before running pre-commit.
 - If `pre-commit` itself cannot run — typically because it cannot
-  fetch remote hook repositories — do not skip verification. Fall
+  fetch remote hook repositories — do not skip verification, unless
+  the fallback floor below says you cannot afford it. Otherwise fall
   back to running the configured hooks directly, honoring each hook's
   `entry`, `args`, `rev`, `stages`, `additional_dependencies`, and
   file filters.
@@ -183,6 +192,43 @@ skill for the full text):
 test -f .pre-commit-config.yaml && pre-commit run --files <all-changed-files>
 ```
 
+**Time recheck before the fallback.** Run this **only** when the
+`pre-commit run` above failed on infrastructure (could not fetch hook
+repositories, or died before executing any hook) — not after a pass,
+not after real hook errors. The 10% gate measured the fast path; the
+fallback `pip install`s each hook at its pinned `rev` and can outrun a
+thin margin, timing out with no commit at all. Re-check against a flat
+300s floor (absolute, because the cost does not scale with the budget):
+
+```bash
+RUN_FALLBACK=1
+if [ -n "${TIMEOUT_SECONDS:-}" ] && [ -n "${AGENT_START:-}" ]; then
+  REMAINING=$(( TIMEOUT_SECONDS - ($(date +%s) - AGENT_START) ))
+  if [ "$REMAINING" -lt 300 ]; then
+    RUN_FALLBACK=0; echo "::warning::Direct-execution fallback skipped: ${REMAINING}s remaining < 300s floor"
+  else
+    echo "::notice::Fallback time check: ${REMAINING}s remaining >= 300s floor — proceeding"
+  fi
+else
+  echo "::notice::Fallback time check skipped: TIMEOUT_SECONDS or AGENT_START unset — no floor applied"
+fi
+```
+
+Guard both variables (an unset `AGENT_START` reads as 0 and would
+always skip) and print on every path.
+
+If `RUN_FALLBACK` is `0`: skip the fallback — `repo: local` hooks
+included, since a local `entry` can fetch too and 7c's lint still runs —
+treat 7b as finished, and put this in the commit message:
+
+> Note: pre-commit hooks were not run. `pre-commit` could not
+> complete (infrastructure failure), and the remaining time budget
+> was below the floor for running the hooks directly.
+
+Skipping consumes no run but closes 7b for this iteration.
+
+If `1`, run the fallback as described above.
+
 **7c. Tests and linters — MANDATORY**
 
 ```bash
@@ -191,7 +237,7 @@ echo "::notice::STEP 7c: Tests and linters"
 
 Discover build/test commands: Read Makefile, package.json, pyproject.toml, or equivalent. Run test command (e.g., `make test`, `npm test`, `go test ./...`, `pytest`), then lint command (e.g., `make lint`, `golangci-lint run`, `eslint`, `ruff`) as separate invocations (not `&&`-chained; lint runs even if tests fail).
 
-If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit. Retry limit: `MAX_RETRIES` (default: 1).
+If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit — 7b is closed for this iteration whether you spent the budget or skipped it. Retry limit: `MAX_RETRIES` (default: 1).
 
 **7d. Self-review**
 
