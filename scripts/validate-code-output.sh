@@ -19,6 +19,7 @@
 #   FULLSEND_OUTPUT_FILE   — filename to validate (default: agent-result.json)
 #   TARGET_REPO_DIR        — path to the target repo (empty on sweep path)
 #   TARGET_BRANCH          — branch the PR targets (for merge-base derivation)
+#   PRE_AGENT_HEAD         — fix branch HEAD before the agent ran
 #
 # Category gating:
 #   pre-commit-blocked — agent-fixable; consumes a retry iteration
@@ -889,11 +890,63 @@ echo "Changed files for pre-commit gate:"
 echo "${CHANGED_FILES}" | sed 's/^/  /'
 
 # --- Check for Signed-off-by trailers ---
-echo "Checking for Signed-off-by trailers..."
-if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-  echo "FAIL: signed-off-by: Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
-  exit 1
+# Fix runs start from an existing PR whose human commits may legitimately have
+# Signed-off-by trailers. A signed commit is allowed only when an equivalent
+# patch with the same sign-off trailers existed on the PR branch before the
+# agent ran. This recognizes commits replayed by rebase (including merges)
+# while still rejecting an agent that adds a trailer with commit --amend.
+# Code runs have no PRE_AGENT_HEAD and create an agent-owned branch, so
+# SCAN_RANGE is already the correct scope.
+if [ -n "${PRE_AGENT_HEAD:-}" ]; then
+  signed_commit_identity() {
+    local commit_sha="$1" parent_count patch_id signoff_id kind="commit"
+    parent_count="$(git show -s --format='%P' "${commit_sha}" | awk '{ print NF }')"
+    if [ "${parent_count}" -gt 1 ]; then
+      kind="merge"
+    fi
+    if [ "${parent_count}" -eq 0 ]; then
+      patch_id="$(git show --format= --root "${commit_sha}" \
+        | git patch-id --stable | awk '{ print $1 }')"
+    else
+      patch_id="$(git diff "${commit_sha}^1" "${commit_sha}" \
+      | git patch-id --stable | awk '{ print $1 }')"
+    fi
+    if [ -z "${patch_id}" ]; then
+      patch_id="empty:$(git show -s --format='%an <%ae>%n%s' "${commit_sha}" \
+        | git hash-object --stdin)"
+    fi
+    signoff_id="$(git show -s --format='%b' "${commit_sha}" \
+      | grep '^Signed-off-by:' | sort -u | git hash-object --stdin)"
+    echo "${kind}:${patch_id}:${signoff_id}"
+  }
+
+  PRE_AGENT_SIGNED_IDENTITIES="$(
+    while IFS= read -r _pre_agent_commit; do
+      if git show -s --format='%b' "${_pre_agent_commit}" | grep -q '^Signed-off-by:'; then
+        signed_commit_identity "${_pre_agent_commit}"
+      fi
+    done < <(git rev-list --right-only "origin/${TARGET_BRANCH}...${PRE_AGENT_HEAD}")
+  )"
+  COMMITS_TO_CHECK="$(git rev-list --right-only "${PRE_AGENT_HEAD}...HEAD" \
+    --not "origin/${TARGET_BRANCH}")"
+else
+  COMMITS_TO_CHECK="$(git rev-list "${SCAN_RANGE}")"
 fi
+
+echo "Checking for Signed-off-by trailers..."
+while IFS= read -r _commit_to_check; do
+  [ -n "${_commit_to_check}" ] || continue
+  if git show -s --format='%b' "${_commit_to_check}" | grep -q '^Signed-off-by:'; then
+    if [ -n "${PRE_AGENT_HEAD:-}" ]; then
+      _signed_commit_identity="$(signed_commit_identity "${_commit_to_check}")"
+      if grep -qxF "${_signed_commit_identity}" <<< "${PRE_AGENT_SIGNED_IDENTITIES}"; then
+        continue
+      fi
+    fi
+    echo "FAIL: signed-off-by: Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
+    exit 1
+  fi
+done <<< "${COMMITS_TO_CHECK}"
 
 # --- Install pre-commit tool dependencies ---
 precommit_install_deps "${TARGET_BRANCH}"
