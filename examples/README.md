@@ -12,7 +12,7 @@ documentation.
 
 | Example | Role | Trigger | What it does |
 |---------|------|---------|--------------|
-| [`link-check/`](link-check/) | `review` | `pr-opened` | Reports Markdown links in changed docs that do not resolve |
+| [`link-check/`](link-check/) | `review` | `pr-opened` | Reports Markdown links **added by the pull request** that do not resolve |
 
 ## Using one
 
@@ -22,8 +22,14 @@ chosen role needs:
 
 ```bash
 fullsend agent new my-agent --fullsend-dir .fullsend \
-  --role review --description "What my agent decides"
+  --role review --description "What my agent decides" --validation-loop
 ```
+
+`--validation-loop` is opt-in in the CLI, but every schema-backed fleet harness
+in this repository uses one and the runner has `python3` with `jsonschema`, so
+the example opts in to match. It also exercises the generated
+`preflight_check`, which reports a missing dependency before sandbox creation
+rather than after a full inference run.
 
 Then read the example alongside the
 [`authoring-custom-agents`](../skills/authoring-custom-agents/SKILL.md) skill
@@ -39,3 +45,8 @@ while you fill in `agents/my-agent.md`.
   wired into `make test`.
 - **It loads.** `fullsend lock <name> --fullsend-dir examples/<name> --offline`
   must pass.
+- **It is what the generator produces.** Apart from the completed prompt in
+  `agents/<name>.md`, every file is byte-identical to `fullsend agent new`
+  output. Hand-editing the copied `policies/`, `providers/` or `profiles/`
+  here would make the example misrepresent the command it documents; if one of
+  those needs to change, it changes in fullsend's scaffold.

@@ -128,6 +128,15 @@ if run_post "{\"status\":\"findings\",\"summary\":\"s\",\"comment\":\"${LONG_COM
   else
     fail "truncates-over-long-comment" "expected a truncation marker"
   fi
+  # The marker must fit INSIDE the cap, not extend past it: cutting at
+  # MAX_COMMENT_CHARS and then appending would overshoot the limit the
+  # result schema declares.
+  body_len=$(printf '%s' "${LAST_STDOUT}" | tail -n +3 | wc -c | tr -d ' ')
+  if (( body_len <= 16384 )); then
+    pass "truncated-comment-stays-within-the-cap"
+  else
+    fail "truncated-comment-stays-within-the-cap" "comment body is ${body_len} chars, cap is 16384"
+  fi
 else
   fail "truncates-over-long-comment" "script exited non-zero"
 fi
