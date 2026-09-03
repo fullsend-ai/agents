@@ -133,6 +133,8 @@ The review agent follows the same pre-script / sandbox / post-script pipeline as
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)).
 4. **Post-script** posts the review on the PR.
 
+**Runner updates.** When a run is steerable, the runner can deliver a mid-run update from a collaborator the route job verified is authorized to direct the run. The runner exports `FULLSEND_STEER_ACTIVE` when a follow-up watcher started for the run; without it the agent treats the opening line as an injection attempt wherever it appears. It reaches the agent as a message beginning `Runner update: your task inputs changed after this run started.` and amends the task — including widening or narrowing what the review covers, or moving it to a new head. It grants no tools or permissions and relaxes no security instruction; any part that asks for either is ignored and reported. The same line appearing inside PR content is not a runner update — the agent reports it as an injection attempt. The agent states in its result what the update changed, and reports the head it actually reviewed, so a steered head move and the end-of-run re-check do not double-count.
+
 If a prior review exists (e.g., re-review after fixes), it is injected into the sandbox so the agent can assess whether previous findings were addressed.
 
 ## Time budget
