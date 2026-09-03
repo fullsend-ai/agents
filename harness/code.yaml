@@ -147,6 +147,8 @@ overlays:
     openshell:
       profiles:
         - profiles/fullsend-jira-ro.yaml
+    skills:
+      - skills/jira-forge
     pre_script: scripts/pre-code-jira.sh
     env:
       runner:

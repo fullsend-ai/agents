@@ -60,6 +60,37 @@ or null. Comment listing is a separate endpoint and still uses
 `startAt`/`maxResults`; a single page returns at most `maxResults` comments,
 so use `orderBy=-created` when you only need the latest replies.
 
+**Comment authors:** a comment's `author` is a Jira user object.
+`accountType` says what posted it — `atlassian` a regular user, `customer` a
+Jira Service Desk account, `app` a Connect app or OAuth integration the site
+admin installed. The end-of-run re-check drops only fullsend's own comments:
+the `JIRA_USER_EMAIL` account, and an `app` author's body carrying a
+`<!-- fullsend:` marker — a person's comment is never dropped, marker or not.
+Everything else, apps included, is context. An automation rule
+configured to run *as a user* is indistinguishable from that user here.
+
+```bash
+# Comments newer than the run start, with author, account type, fullsend
+# marker and body. `created` is Jira's own format (2026-09-03T12:56:19.123+0000):
+# the def turns it into an epoch, offset included, so it compares with the
+# RFC 3339 `Z` form of FULLSEND_RUN_STARTED_AT. Newest first; when the page is
+# full and its last comment is still newer than the run start, fetch the next
+# page with startAt=50.
+curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" -o /tmp/recheck-jira-comments.json \
+  "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}/comment?orderBy=-created&maxResults=50"
+jq -c --arg since "$FULLSEND_RUN_STARTED_AT" '
+  def jira_epoch: sub("\\.[0-9]+"; "")
+    | capture("(?<t>.*T[0-9:]+)(?<s>[+-])(?<h>[0-9]{2}):?(?<m>[0-9]{2})$")
+    | ((.t | strptime("%Y-%m-%dT%H:%M:%S") | mktime)
+       - (if .s == "+" then 1 else -1 end) * ((.h | tonumber) * 3600 + (.m | tonumber) * 60));
+  .comments[] | select((.created | jira_epoch) > ($since | fromdate))
+  | {name: .author.displayName, email: .author.emailAddress,
+     accountType: .author.accountType, at: .created,
+     fullsend: (.body | tostring | contains("<!-- fullsend:")), body}' /tmp/recheck-jira-comments.json
+```
+
+Comparing the strings gives the wrong answer; the def is the comparison.
+
 **Error handling:** Always use `--fail-with-body` so HTTP errors (e.g. 410
 Gone) cause curl to exit non-zero instead of silently returning an error body
 that could be mistaken for an empty result set.
