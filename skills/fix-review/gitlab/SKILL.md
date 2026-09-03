@@ -44,3 +44,29 @@ curl --silent --config - \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/notes?per_page=100&sort=asc" \
   <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\""
 ```
+
+## Re-check Data
+
+The final re-check needs the current head and the notes created after the run
+started, with the author and time of each.
+
+```bash
+# Current head SHA
+curl --silent --config - \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
+  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\"" \
+  | jq -r '.sha'
+
+# Notes with author and creation time. Request page=1, then increment until a
+# page returns fewer than per_page notes — an active MR exceeds one page.
+curl --silent --config - \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/notes?per_page=100&sort=asc&page=1" \
+  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\"" \
+  | jq -c '.[] | select(.system != true)
+           | {username: .author.username, at: .created_at, body}'
+```
+
+`select(.system != true)` drops GitLab's own state notes, which are not
+comments; usernames ending in `_bot` are bot accounts. GitLab's `created_at`
+carries fractional seconds, so parse both sides before comparing with
+`FULLSEND_RUN_STARTED_AT` rather than comparing the strings.

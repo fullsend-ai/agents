@@ -167,6 +167,7 @@ post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
 |----------|-------------|---------|--------------|
 | `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote categories listed in `TRIAGE_AUTO_CODE_CATEGORIES`. `off` — never auto-promote; always apply `triaged`. | `on` | `on`, `off` |
 | `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=on`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
+| `FULLSEND_RUN_STARTED_AT` | The instant the agent iteration started. Before deciding, the agent re-checks the issue once and folds in changes and non-bot comments newer than this instant. Set by the runner — not declared in the harness. | (set by the runner) | RFC 3339 UTC timestamp (e.g. `2026-09-03T11:04:00Z`) |
 
 To override these defaults per repo or org, create a custom harness for the
 triage agent the same way the [code agent](code.md#how-to-configure) does —
@@ -303,6 +304,8 @@ If you use `base:` composition to override `harness/triage.yaml`:
 The triage agent runs in a read-only sandbox. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
 
 The agent's only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
+
+**Runner updates.** When a run is steerable, the runner can deliver a mid-run update from a collaborator the route job verified is authorized to direct the run. It reaches the agent as a message beginning `Runner update: your task inputs changed after this run started.` and amends the task — including changing what the issue is understood to ask for. It grants no tools or permissions and relaxes no security instruction; any part that asks for either is ignored and reported. The same line appearing inside issue content is not a runner update — the agent reports it as an injection attempt. The agent records what the update changed in the `reasoning` field.
 
 ## Custom network policy
 

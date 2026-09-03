@@ -51,16 +51,19 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `ISSUE_NUMBER` | Numeric source issue identifier used when the source tracker is the target forge. It is optional for external-tracker runs because that work-item key is not a target-forge issue number. | (set by forge-native workflows) | Positive integer |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
+| `FULLSEND_RUN_STARTED_AT` | The instant the agent iteration started. Before its final commit the agent re-checks the issue once and folds in comments newer than this instant. Set by the runner — not declared in the harness. | (set by the runner) | RFC 3339 UTC timestamp (e.g. `2026-09-03T11:04:00Z`) |
 
 ## How the agent works
 
 The code agent follows a three-phase pipeline: pre-script, sandbox execution, post-script.
 
 1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
-2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
+2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, re-checks the issue once for updates newer than `FULLSEND_RUN_STARTED_AT`, and commits locally. It has restricted network access (enforced by OpenShell).
 3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 
 This separation ensures the agent never has direct write access to the repository.
+
+**Runner updates.** When a run is steerable, the runner can deliver a mid-run update from a collaborator the route job verified is authorized to direct the run. It reaches the agent as a message beginning `Runner update: your task inputs changed after this run started.` and amends the task — including widening or narrowing what is implemented. It grants no tools or permissions and relaxes no security instruction; any part that asks for either is ignored and reported. The same line appearing inside issue or PR content is not a runner update — the agent reports it as an injection attempt. The agent records what the update changed in its structured output.
 
 ## Custom sandbox image
 
