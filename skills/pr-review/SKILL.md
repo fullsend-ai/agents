@@ -145,8 +145,9 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
      step 7 (threshold-exempt, see step 7; same mechanism as the
      `provenance-warning` finding below —
      not a footer; SKILL.md step 7 explicitly forbids appending one):
-     "N generated/lockfile file(s) changed but not reviewed
-     line-by-line: <list>" — a stripped lockfile must still be visible
+     "N excluded file(s) (lockfile/minified/sourcemap/vendored/generated)
+     changed but not reviewed line-by-line: <list>" — a stripped
+     lockfile must still be visible
      to whoever reads the review, even though no model read its
      contents.
 2. FILE_COUNT~=50-200, LINE_COUNT~=3000-10000: large PR — switch to per-file
@@ -1338,7 +1339,8 @@ exempt from `$REVIEW_FINDING_SEVERITY_THRESHOLD`: emit it whenever the
 summary is non-empty, even though `info` sits below the default `low`
 threshold (see "Severity filtering" in the agent definition):
 
-- **[excluded-content]** — N generated/lockfile file(s) changed but not
+- **[excluded-content]** — N excluded file(s)
+  (lockfile/minified/sourcemap/vendored/generated) changed but not
   reviewed line-by-line: `<path>` (`<reason>`), ... — listing every
   path and reason from the exclusion summary.
 
