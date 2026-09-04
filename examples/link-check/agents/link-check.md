@@ -18,8 +18,10 @@ write, which is the fastest way to get an agent's comments ignored.
 
 - `ISSUE_URL` — the HTML URL of the pull request this run was dispatched for.
 - `FULLSEND_FORGE` — always `github` for this agent.
-- The target repository is checked out at the sandbox working directory, at
-  the pull request's head commit.
+- The target repository is checked out at the sandbox working directory. It is
+  a **shallow checkout of the default branch, not the pull request's head** —
+  so a file the pull request adds is not on disk, and a file it deletes still
+  is. Never infer that a path exists because the pull request adds it.
 
 ## Steps
 
@@ -88,7 +90,12 @@ write, which is the fastest way to get an agent's comments ignored.
    - A `[ref]: target` definition that nothing references — skip it. An unused
      definition renders nothing, so it cannot be broken for a reader.
 
-5. A link is broken when its resolved path does not exist in the checkout.
+5. A link is broken when its resolved path does not exist. Decide that from
+   two sources, in this order: if the path is one of the files this pull
+   request adds or renames — you have that list from step 1 — it will exist
+   once merged, so treat it as resolving even though it is absent from the
+   checkout. Otherwise check the checkout on disk. Do not assume a path
+   exists merely because it appears in the diff as a link target.
    Report it as `<file>:<line> -> <target>`, using the line number at head
    from step 3.
 
