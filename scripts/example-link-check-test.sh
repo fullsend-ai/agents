@@ -194,6 +194,68 @@ else
 fi
 rm -rf "${workdir}"
 
+# --- iteration-10 must beat iteration-9 (numeric, not lexical, ordering) ---
+
+workdir="$(mktemp -d)"
+for n in 9 10; do
+  mkdir -p "${workdir}/iteration-${n}/output"
+  printf '{"status":"findings","summary":"iteration %s","comment":"c"}' "${n}" \
+    > "${workdir}/iteration-${n}/output/agent-result.json"
+done
+out=$( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
+    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 bash "${POST_SCRIPT}" 2>/dev/null )
+if [[ "${out}" == *"iteration 10"* ]]; then
+  pass "iteration-10-beats-iteration-9"
+else
+  fail "iteration-10-beats-iteration-9" "lexical ordering would pick 9; got: ${out}"
+fi
+rm -rf "${workdir}"
+
+# --- A validated iteration dir with no result is an error, not a fallback ---
+
+workdir="$(mktemp -d)"
+mkdir -p "${workdir}/iteration-1/output" "${workdir}/empty"
+printf '{"status":"findings","summary":"s","comment":"c"}' \
+  > "${workdir}/iteration-1/output/agent-result.json"
+rc=0
+( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
+    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 \
+    FULLSEND_VALIDATED_ITERATION_DIR="${workdir}/empty" \
+    bash "${POST_SCRIPT}" ) >/dev/null 2>"${workdir}/err" || rc=$?
+if [[ "${rc}" -ne 0 ]] && grep -q "no agent-result.json" "${workdir}/err"; then
+  pass "validated-dir-without-result-is-an-error"
+else
+  fail "validated-dir-without-result-is-an-error" "expected a failure, got rc=${rc}"
+fi
+rm -rf "${workdir}"
+
+# --- status: error still posts (it is a finding the author should see) ---
+
+if run_post '{"status":"error","summary":"could not read the PR","comment":"gh api failed"}'; then
+  if [[ "${LAST_STDOUT}" == *"could not read the PR"* ]]; then
+    pass "error-status-is-posted"
+  else
+    fail "error-status-is-posted" "expected the error summary in the output"
+  fi
+else
+  fail "error-status-is-posted" "script exited non-zero"
+fi
+
+# --- GH_TOKEN is required, like ISSUE_URL ---
+
+workdir="$(mktemp -d)"
+mkdir -p "${workdir}/iteration-1/output"
+echo '{}' > "${workdir}/iteration-1/output/agent-result.json"
+rc=0
+( cd "${workdir}" && env -u GH_TOKEN ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
+    bash "${POST_SCRIPT}" ) >/dev/null 2>&1 || rc=$?
+if [[ "${rc}" -ne 0 ]]; then
+  pass "requires-gh-token"
+else
+  fail "requires-gh-token" "script ran without GH_TOKEN"
+fi
+rm -rf "${workdir}"
+
 # --- Required environment ---
 
 workdir="$(mktemp -d)"

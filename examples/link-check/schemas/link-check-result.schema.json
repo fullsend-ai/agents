@@ -20,6 +20,7 @@
     "summary": {
       "maxLength": 200,
       "minLength": 1,
+      "pattern": "^[^\\r\\n]*$",
       "type": "string"
     }
   },
