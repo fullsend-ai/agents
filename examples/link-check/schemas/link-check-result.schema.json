@@ -1,5 +1,5 @@
 {
-  "$id": "link-check-result.schema.json",
+  "$id": "https://fullsend.sh/schemas/link-check-result.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "description": "Structured output from the link-check agent, consumed by scripts/post-link-check.sh.",
