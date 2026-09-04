@@ -16,6 +16,20 @@ documentation.
 |---------|------|---------|--------------|
 | [`link-check/`](link-check/) | `review` | pull request opened, updated, or marked ready — not from a fork | Reports Markdown links **added by the pull request** that do not resolve |
 
+To run one locally, register it first — the examples are deliberately not in
+this repository's `config.yaml`, so `fullsend run` cannot find them until you
+add one to a copy:
+
+```bash
+cp -r examples/link-check /tmp/demo-fullsend
+printf 'version: "1"\nroles: [review]\n' > /tmp/demo-fullsend/config.yaml
+fullsend agent add harness/link-check.yaml --name link-check \
+  --fullsend-dir /tmp/demo-fullsend
+```
+
+Without that step the run fails with `resolving agent "link-check": no config
+and agents-repo fallback unavailable`.
+
 ## Using one
 
 Generate your own rather than copying this directory. The command records the
