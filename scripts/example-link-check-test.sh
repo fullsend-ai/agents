@@ -44,6 +44,21 @@ run_post() {
   return "${rc}"
 }
 
+# --- No unfilled generator markers anywhere under examples/ ---
+#
+# skillsaw's content-placeholder-text rule catches TODO and bracket
+# placeholders but NOT the `<!-- FILL IN: ... -->` marker `fullsend agent new`
+# actually emits — verified by appending one and watching `make lint` pass.
+# This is the check that makes the README's claim true.
+# Scoped to agent definitions: those are the files the generator writes
+# markers into. examples/README.md names the marker in prose, on purpose.
+_marked=$(grep -rln "FILL IN" "${REPO_ROOT}"/examples/*/agents/*.md 2>/dev/null || true)
+if [[ -n "${_marked}" ]]; then
+  fail "no-unfilled-markers" "unfilled FILL IN marker(s) in: ${_marked}"
+else
+  pass "no-unfilled-markers"
+fi
+
 # --- The script exists and is executable ---
 
 if [[ -x "${POST_SCRIPT}" ]]; then

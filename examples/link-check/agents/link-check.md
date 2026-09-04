@@ -1,7 +1,7 @@
 ---
 name: link-check
 description: Check that links in changed documentation resolve
-tools: Bash(gh,jq), Read, Grep, Glob
+tools: Bash(gh,jq), Read, Glob
 model: opus
 ---
 
@@ -23,30 +23,44 @@ write, which is the fastest way to get an agent's comments ignored.
 
 ## Steps
 
-1. Read the pull request's changed files. Use the REST API, not `git`: this
-   agent's sandbox permits the `gh` binary only, and its network profile
-   allows REST but not GraphQL — so `gh pr view --json` and any `git` command
-   will be refused.
+1. Read the pull request's changed files. Use the REST API rather than `git`:
+   the repository is checked out shallow and not at the pull request's head,
+   so there is no history to diff against locally.
 
    ```bash
-   gh api --paginate "repos/{owner}/{repo}/pulls/{number}/files" \
-     --jq '.[] | select(.status != "removed") | select(.filename | endswith(".md"))
+   # ISSUE_URL looks like https://github.com/OWNER/REPO/pull/NUMBER
+   read -r OWNER REPO NUMBER < <(sed -E 's#^https://github[.]com/([^/]+)/([^/]+)/(pull|issues)/([0-9]+)$#\1 \2 \4#' <<<"$ISSUE_URL")
+   gh api --paginate "repos/${OWNER}/${REPO}/pulls/${NUMBER}/files" \
+     --jq '.[] | select(.status != "removed")
+           | select(.filename | endswith(".md"))
+           | select(.patch != null)
            | {filename, patch}'
    ```
 
-   Take `{owner}`, `{repo}` and `{number}` from `ISSUE_URL`. `select(.status
-   != "removed")` drops files the pull request deletes, which no longer exist
-   at head. If the command fails, write a result with `status: "error"`, a
-   `summary` naming the command that failed, and stop.
+   Interpolate those three values yourself, as above. Do not write
+   `{owner}`/`{repo}` literally: those are `gh`'s own placeholders for the
+   *current checkout's* remote, there is no `{number}` placeholder at all,
+   and a literal `{number}` is sent through unsubstituted and returns 404.
+
+   `select(.status != "removed")` drops files the pull request deletes.
+   `select(.patch != null)` drops files GitHub returned without a diff — a
+   pure rename, or one it considered too large. If any `.md` file was dropped
+   for that reason, or the response reached the endpoint's 3,000-file cap,
+   say so and use `status: "error"`: reporting `ok` would claim links were
+   checked when they were not.
+
+   If the command fails, write a result with `status: "error"`, a `summary`
+   naming the command that failed, and stop.
 
 2. If no `.md` files changed, write `status: "ok"` with the summary
    `No documentation changes` and stop.
 
 3. Each `patch` is a unified diff. Walk it and keep only the **added** lines —
-   those beginning with a single `+`, excluding the `+++` file header. Track
+   those beginning with a single `+`. Track
    the line number in the file at head: each hunk header `@@ -a,b +c,d @@`
    restarts the counter at `c`, an added line advances it by one, and a
-   context line advances it by one.
+   context line advances it by one. A REST `patch` starts at its first `@@`,
+   so there are no file headers to skip.
 
 4. From those added lines, extract every Markdown link target: the target in
    `[text](target)` and in `[ref]: target` definitions. Classify each:
@@ -61,6 +75,16 @@ write, which is the fastest way to get an agent's comments ignored.
      skip it. The sandbox has no general egress, so a network check would be
      flaky rather than wrong.
    - **Anchor-only** (`#section`) — skip it.
+
+   Before classifying, normalise the target: unwrap a `<...>` destination, and
+   drop an optional title following the destination (`[t](x.md "Title")` has
+   the target `x.md`, not `x.md "Title"`). Both are valid CommonMark and both
+   otherwise yield a target that can never exist on disk.
+
+   Skip any candidate inside a backtick code span or a fenced code block — a
+   documentation change that shows Markdown syntax is not adding a link. The
+   patch alone cannot tell you the fence state, so read the file at head when
+   a candidate looks like it may be inside one.
    - A `[ref]: target` definition that nothing references — skip it. An unused
      definition renders nothing, so it cannot be broken for a reader.
 

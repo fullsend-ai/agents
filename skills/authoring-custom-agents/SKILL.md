@@ -34,9 +34,11 @@ instead — this skill is the authoring procedure, not the evaluation lens.
 
 ## Procedure
 
-1. **Replace every `<!-- FILL IN -->` marker.** Leaving one is a lint failure
-   in repositories that run `skillsaw --strict`, and a vague step is the most
-   common reason a custom agent produces unusable output.
+1. **Replace every `<!-- FILL IN -->` marker.** `skillsaw --strict` will not
+   catch a leftover one: it recognises `TODO` and bracket placeholders, not
+   this marker. Unless your repository greps for it, nothing fails the build —
+   check by hand. A vague step here is the most common reason a custom agent
+   produces unusable output.
 
 2. **Write the Steps section as commands, not intentions.** Name the exact
    command to run, the exact files to read, and the thresholds that decide the
@@ -63,6 +65,9 @@ instead — this skill is the authoring procedure, not the evaluation lens.
    commenting, labelling and every other mutating call. The agent's only
    output is the JSON result file. This is what makes model output safe to act
    on: the post-script validates and allowlists it.
+
+   If the agent only reads the repository, also set `readonly_repo: true` in
+   the harness. The prompt is a request; that field is enforcement.
 
 ## Validate before committing
 
