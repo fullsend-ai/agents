@@ -40,20 +40,26 @@ while you fill in `agents/my-agent.md`.
 
 ## What each example must satisfy
 
-- **No placeholders.** `skillsaw --strict` runs over `examples/**/agents/*.md`
-  (see `content-paths` in `.skillsaw.yaml`); an unfilled `FILL IN` marker or a
-  stale `TODO` fails `make lint`.
+- **No placeholders.** Two gates, because neither covers the other.
+  `skillsaw --strict` runs over `examples/**/agents/*.md` (see `content-paths`
+  in `.skillsaw.yaml`) and catches a stale `TODO`; it does **not** recognise
+  the `<!-- FILL IN: ... -->` marker the generator emits, so
+  `scripts/example-link-check-test.sh` greps for that one and fails
+  `make test` if any survives.
 - **A tested post-script.** The script that turns the agent's output into a
   comment is fed whatever the model produced, so it is tested as carefully as
   the ones in `scripts/` — see `scripts/example-link-check-test.sh`, wired into
   `make test`.
 - **It loads.** `fullsend lock <name> --fullsend-dir examples/<name> --offline`
-  must pass. That command reads `config.yaml` from the directory it is given,
-  so run it from a copy of the example that has one — the example itself is
-  deliberately unregistered.
-- **It is what the generator produces.** Apart from the completed prompt in
-  `agents/<name>.md`, every file is byte-identical to `fullsend agent new`
-  output. Hand-editing the copied `policies/`, `providers/` or `profiles/`
-  here would make the example misrepresent the command it documents. If one of
-  those needs to change, it changes in fullsend, in the copy the command reads
-  from.
+  must pass. It resolves the harness by path, so it works against the example
+  as it sits here, unregistered.
+- **The shared assets are what the generator produces.** `policies/`,
+  `providers/`, `profiles/` and `scripts/validate-output-schema.sh` are
+  byte-identical to `fullsend agent new` output, and are not hand-edited here:
+  they are vendored copies of files that live in fullsend, so a change to one
+  belongs there, not in this copy. Two of them currently differ from what
+  fullsend's own scaffold ships, which is tracked as
+  [fullsend-ai/fullsend#6981](https://github.com/fullsend-ai/fullsend/issues/6981)
+  and [#7014](https://github.com/fullsend-ai/fullsend/issues/7014).
+- **The prompt is written by hand.** `agents/<name>.md` is the one file the
+  generator leaves for you, and completing it is the point of the example.
