@@ -18,20 +18,21 @@ documentation.
 
 ## Using one
 
-Generate your own skeleton rather than copying a directory — the generator
-pins the current sandbox image and writes the providers and profiles your
-chosen role needs:
+Generate your own rather than copying this directory. The command records the
+exact container image the agents in this repository currently run on, and
+writes the network-access files the role you pick needs:
 
 ```bash
 fullsend agent new my-agent --fullsend-dir .fullsend \
   --role review --description "What my agent decides" --validation-loop
 ```
 
-`--validation-loop` is opt-in in the CLI, but every schema-backed fleet harness
-in this repository uses one and the runner has `python3` with `jsonschema`, so
-the example opts in to match. It also exercises the generated
-`preflight_check`, which reports a missing dependency before sandbox creation
-rather than after a full inference run.
+`--validation-loop` re-runs the agent if its JSON output does not match the
+schema. It is off by default in the command, but every agent in this
+repository's `harness/` directory that has a schema uses one, so the example
+turns it on to match. It needs `python3` and the `jsonschema` package on the
+machine running the agent; the generated `preflight_check` checks for them
+before starting the agent rather than after it has finished.
 
 Then read the example alongside the
 [`authoring-custom-agents`](../skills/authoring-custom-agents/SKILL.md) skill
@@ -42,13 +43,15 @@ while you fill in `agents/my-agent.md`.
 - **No placeholders.** `skillsaw --strict` runs over `examples/**/agents/*.md`
   (see `content-paths` in `.skillsaw.yaml`); an unfilled `FILL IN` marker or a
   stale `TODO` fails `make lint`.
-- **A tested post-script.** It consumes untrusted model output, so it gets the
-  same scrutiny as a fleet one — see `scripts/example-link-check-test.sh`,
-  wired into `make test`.
+- **A tested post-script.** The script that turns the agent's output into a
+  comment is fed whatever the model produced, so it is tested as carefully as
+  the ones in `scripts/` — see `scripts/example-link-check-test.sh`, wired into
+  `make test`.
 - **It loads.** `fullsend lock <name> --fullsend-dir examples/<name> --offline`
   must pass.
 - **It is what the generator produces.** Apart from the completed prompt in
   `agents/<name>.md`, every file is byte-identical to `fullsend agent new`
   output. Hand-editing the copied `policies/`, `providers/` or `profiles/`
-  here would make the example misrepresent the command it documents; if one of
-  those needs to change, it changes in fullsend's scaffold.
+  here would make the example misrepresent the command it documents. If one of
+  those needs to change, it changes in fullsend, in the copy the command reads
+  from.
