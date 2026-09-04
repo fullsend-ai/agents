@@ -4,6 +4,7 @@ description: Lightweight classifier that identifies security-critical files in l
 model: haiku
 tools: Read, Grep, Glob
 permissionMode: dontAsk
+background: true
 ---
 
 # Security Triage
