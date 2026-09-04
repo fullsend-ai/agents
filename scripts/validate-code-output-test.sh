@@ -360,6 +360,136 @@ run_test_precommit_repo "signoff-consumes-iteration" \
   "pass" "true" "true" "true" \
   "false" "FAIL: signed-off-by"
 
+# The Signed-off-by check must inspect only commits introduced or modified by
+# the current fix run. Human-authored PR commits may legitimately carry DCO
+# trailers, including after the agent rebases them onto an updated target.
+run_test_signoff_attribution() {
+  local test_name="$1" rebase="$2" agent_signoff="$3" expect_pass="$4"
+  local agent_merge="${5:-false}"
+  local human_merge="${6:-false}"
+  local agent_amend="${7:-none}"
+  local test_dir="${TMPDIR}/${test_name}"
+  local repo_dir="${test_dir}/repo"
+  local bin_dir="${test_dir}/bin"
+  mkdir -p "${test_dir}/output"
+  echo '{"target_branch":"main"}' > "${test_dir}/output/agent-result.json"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email human@example.com
+  git -C "${repo_dir}" config user.name Human
+  echo "base" > "${repo_dir}/src.py"
+  printf 'repos: []\n' > "${repo_dir}/.pre-commit-config.yaml"
+  git -C "${repo_dir}" add -A
+  git -C "${repo_dir}" commit -q -m "base"
+  git -C "${repo_dir}" update-ref refs/remotes/origin/main HEAD
+
+  git -C "${repo_dir}" checkout -q -b feature
+  if [ "${human_merge}" = "true" ]; then
+    git -C "${repo_dir}" checkout -q -b human-side
+    echo "human change" > "${repo_dir}/human.txt"
+    git -C "${repo_dir}" add human.txt
+    git -C "${repo_dir}" commit -q -m "human change"
+    git -C "${repo_dir}" checkout -q feature
+    git -C "${repo_dir}" merge -q --no-ff --signoff -m "human merge" human-side
+  else
+    if [ "${agent_amend}" = "whitespace" ]; then
+      printf 'def value():\n    return 1\n' > "${repo_dir}/behavior.py"
+      git -C "${repo_dir}" add behavior.py
+    else
+      echo "human change" >> "${repo_dir}/src.py"
+      git -C "${repo_dir}" add src.py
+    fi
+    if [ "${agent_amend}" = "unsigned" ]; then
+      git -C "${repo_dir}" commit -q -m "human change"
+    elif [ "${agent_amend}" = "reorder" ]; then
+      git -C "${repo_dir}" commit -q -m "human change" \
+        -m $'Signed-off-by: Human <human@example.com>\nSigned-off-by: Reviewer <reviewer@example.com>'
+    else
+      git -C "${repo_dir}" commit -q -s -m "human change"
+    fi
+  fi
+  local pre_agent_head
+  pre_agent_head="$(git -C "${repo_dir}" rev-parse HEAD)"
+
+  git -C "${repo_dir}" config user.email agent@example.com
+  git -C "${repo_dir}" config user.name Agent
+  if [ "${rebase}" = "true" ]; then
+    git -C "${repo_dir}" checkout -q main
+    echo "upstream change" > "${repo_dir}/upstream.txt"
+    git -C "${repo_dir}" add upstream.txt
+    git -C "${repo_dir}" commit -q -m "upstream change"
+    git -C "${repo_dir}" update-ref refs/remotes/origin/main HEAD
+    git -C "${repo_dir}" checkout -q feature
+    if [ "${human_merge}" = "true" ]; then
+      git -C "${repo_dir}" rebase -q --rebase-merges main
+    else
+      git -C "${repo_dir}" rebase -q main
+    fi
+  fi
+
+  if [ "${agent_amend}" = "whitespace" ]; then
+    printf 'def value():\nreturn 1\n' > "${repo_dir}/behavior.py"
+    git -C "${repo_dir}" add behavior.py
+    git -C "${repo_dir}" commit -q --amend --no-edit
+  elif [ "${agent_amend}" = "duplicate" ]; then
+    git -C "${repo_dir}" show -s --format='%B' > "${test_dir}/commit-message"
+    printf 'Signed-off-by: Human <human@example.com>\n' >> "${test_dir}/commit-message"
+    git -C "${repo_dir}" commit -q --amend -F "${test_dir}/commit-message"
+  elif [ "${agent_amend}" = "reorder" ]; then
+    git -C "${repo_dir}" commit -q --amend -m "human change" \
+      -m $'Signed-off-by: Reviewer <reviewer@example.com>\nSigned-off-by: Human <human@example.com>'
+  elif [ "${agent_amend}" != "none" ]; then
+    git -C "${repo_dir}" commit -q --amend --no-edit --signoff
+  elif [ "${agent_merge}" = "true" ]; then
+    git -C "${repo_dir}" checkout -q -b agent-side
+    echo "agent change" > "${repo_dir}/agent.txt"
+    git -C "${repo_dir}" add agent.txt
+    git -C "${repo_dir}" commit -q -m "agent change"
+    git -C "${repo_dir}" checkout -q feature
+    git -C "${repo_dir}" merge -q --no-ff --signoff -m "agent merge" agent-side
+  else
+    echo "agent change" > "${repo_dir}/agent.txt"
+    git -C "${repo_dir}" add agent.txt
+    if [ "${agent_signoff}" = "true" ]; then
+      git -C "${repo_dir}" commit -q -s -m "agent change"
+    else
+      git -C "${repo_dir}" commit -q -m "agent change"
+    fi
+  fi
+  make_precommit_stub "${bin_dir}" "pass"
+
+  local fake_home="${test_dir}/home"
+  mkdir -p "${fake_home}"
+  local exit_code=0
+  HOME="${fake_home}" PATH="${bin_dir}:${PATH}" \
+  FULLSEND_OUTPUT_SCHEMA="${SCHEMA}" TARGET_REPO_DIR="${repo_dir}" \
+  TARGET_BRANCH="main" PRE_AGENT_HEAD="${pre_agent_head}" \
+    bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [ "${expect_pass}" = "true" ] && [ "${exit_code}" -eq 0 ]; then
+    echo "PASS: ${test_name}"
+  elif [ "${expect_pass}" = "false" ] && [ "${exit_code}" -ne 0 ] \
+    && grep -qF "FAIL: signed-off-by" "${TMPDIR}/stdout.log"; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — unexpected exit ${exit_code}"
+    head -20 "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_test_signoff_attribution "human-signoff-ignored" "false" "false" "true"
+run_test_signoff_attribution "human-signoff-ignored-after-rebase" "true" "false" "true"
+run_test_signoff_attribution "human-merge-signoff-ignored-after-rebase" "true" "false" "true" "false" "true"
+run_test_signoff_attribution "agent-signoff-rejected" "false" "true" "false"
+run_test_signoff_attribution "agent-amended-signoff-rejected" "false" "false" "false" "false" "false" "unsigned"
+run_test_signoff_attribution "agent-added-signoff-rejected" "false" "false" "false" "false" "false" "signed"
+run_test_signoff_attribution "agent-whitespace-amend-rejected" "false" "false" "false" "false" "false" "whitespace"
+run_test_signoff_attribution "agent-duplicate-signoff-rejected" "false" "false" "false" "false" "false" "duplicate"
+run_test_signoff_attribution "agent-reordered-signoffs-rejected" "false" "false" "false" "false" "false" "reorder"
+# git cherry omits merges, so cover an agent-created signed merge explicitly.
+run_test_signoff_attribution "signed-agent-merge-rejected" "false" "true" "false" "true"
+
 # No agent commit (HEAD == origin/main) -> nothing to gate.
 run_test_precommit_repo "no-changed-files-softpass" \
   "fail" "true" "false" "false" \
