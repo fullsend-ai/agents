@@ -20,14 +20,16 @@ pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1 — $2"; FAILURES=$((FAILURES + 1)); }
 
 # run_post <result-json> [env assignments...]
-# Runs the post-script in a scratch iteration directory with the result file
-# in place, always in dry-run mode so nothing is ever posted.
+# Runs the post-script the way fullsend runs it: the working directory is the
+# RUN directory and the agent's output lives in iteration-<N>/output/, per
+# `postCmd.Dir = runDir` in internal/cli/run.go. Always in dry-run mode, so
+# nothing is ever posted.
 run_post() {
   local result_json="$1"; shift
   local workdir
   workdir="$(mktemp -d)"
-  mkdir -p "${workdir}/output"
-  printf '%s' "${result_json}" > "${workdir}/output/agent-result.json"
+  mkdir -p "${workdir}/iteration-1/output"
+  printf '%s' "${result_json}" > "${workdir}/iteration-1/output/agent-result.json"
 
   local rc=0
   ( cd "${workdir}" \
@@ -87,7 +89,16 @@ assert_rejected() {
   fi
 }
 
-assert_rejected "rejects-invalid-json" 'not json at all' "not valid JSON"
+assert_rejected "rejects-invalid-json" 'not json at all' "is not a JSON object"
+# `jq -e .` used to be the gate: it reports a bare null/false document as
+# invalid JSON, and lets a top-level array through to a raw jq error under
+# set -e. All three must now be refused as "not a JSON object".
+assert_rejected "rejects-bare-null" 'null' "is not a JSON object"
+assert_rejected "rejects-bare-false" 'false' "is not a JSON object"
+assert_rejected "rejects-top-level-array" '[{"status":"ok"}]' "is not a JSON object"
+assert_rejected "rejects-multiline-summary" \
+  '{"status":"findings","summary":"line one\nline two","comment":"c"}' \
+  "summary must be a single line"
 assert_rejected "rejects-unknown-status" '{"status":"explode","summary":"s","comment":"c"}' "status must be"
 assert_rejected "rejects-missing-summary" '{"status":"findings","comment":"c"}' "summary is required"
 assert_rejected "rejects-missing-comment" '{"status":"findings","summary":"s"}' "comment is required"
@@ -147,18 +158,47 @@ workdir="$(mktemp -d)"
 rc=0
 ( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
     GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 bash "${POST_SCRIPT}" ) >/dev/null 2>"${workdir}/err" || rc=$?
-if [[ "${rc}" -ne 0 ]] && grep -q "not found" "${workdir}/err"; then
+if [[ "${rc}" -ne 0 ]] && grep -q "no agent-result.json found" "${workdir}/err"; then
   pass "rejects-missing-result-file"
 else
-  fail "rejects-missing-result-file" "expected a not-found failure"
+  fail "rejects-missing-result-file" "expected a not-found failure, got: $(cat "${workdir}/err")"
+fi
+rm -rf "${workdir}"
+
+# --- Later iterations win, and a validated iteration wins over both ---
+
+workdir="$(mktemp -d)"
+for n in 1 2; do
+  mkdir -p "${workdir}/iteration-${n}/output"
+  printf '{"status":"findings","summary":"iteration %s","comment":"c"}' "${n}" \
+    > "${workdir}/iteration-${n}/output/agent-result.json"
+done
+out=$( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
+    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 bash "${POST_SCRIPT}" 2>/dev/null )
+if [[ "${out}" == *"iteration 2"* ]]; then
+  pass "uses-the-last-iteration"
+else
+  fail "uses-the-last-iteration" "expected iteration 2, got: ${out}"
+fi
+
+# FULLSEND_VALIDATED_ITERATION_DIR names the iteration that passed validation,
+# which is not necessarily the last one, so it must win over the scan.
+out=$( cd "${workdir}" && ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
+    GH_TOKEN=t POST_LINK_CHECK_DRY_RUN=1 \
+    FULLSEND_VALIDATED_ITERATION_DIR="${workdir}/iteration-1/output" \
+    bash "${POST_SCRIPT}" 2>/dev/null )
+if [[ "${out}" == *"iteration 1"* ]]; then
+  pass "validated-iteration-wins"
+else
+  fail "validated-iteration-wins" "expected iteration 1, got: ${out}"
 fi
 rm -rf "${workdir}"
 
 # --- Required environment ---
 
 workdir="$(mktemp -d)"
-mkdir -p "${workdir}/output"
-echo '{}' > "${workdir}/output/agent-result.json"
+mkdir -p "${workdir}/iteration-1/output"
+echo '{}' > "${workdir}/iteration-1/output/agent-result.json"
 rc=0
 ( cd "${workdir}" && env -u ISSUE_URL GH_TOKEN=t bash "${POST_SCRIPT}" ) >/dev/null 2>&1 || rc=$?
 if [[ "${rc}" -ne 0 ]]; then
