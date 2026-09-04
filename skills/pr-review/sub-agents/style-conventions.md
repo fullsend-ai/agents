@@ -3,7 +3,7 @@ name: style-conventions
 description: >-
   Evaluates repo-specific naming, error-handling idioms, API shape,
   and code organization.
-model: claude-sonnet-4-6@default
+model: sonnet
 tools: Read, Grep, Glob
 permissionMode: dontAsk
 background: true
