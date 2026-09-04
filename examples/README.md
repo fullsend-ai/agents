@@ -14,7 +14,7 @@ documentation.
 
 | Example | Role | Trigger | What it does |
 |---------|------|---------|--------------|
-| [`link-check/`](link-check/) | `review` | `pr-opened` | Reports Markdown links **added by the pull request** that do not resolve |
+| [`link-check/`](link-check/) | `review` | pull request opened, updated, or marked ready — not from a fork | Reports Markdown links **added by the pull request** that do not resolve |
 
 ## Using one
 
@@ -48,7 +48,9 @@ while you fill in `agents/my-agent.md`.
   the ones in `scripts/` — see `scripts/example-link-check-test.sh`, wired into
   `make test`.
 - **It loads.** `fullsend lock <name> --fullsend-dir examples/<name> --offline`
-  must pass.
+  must pass. That command reads `config.yaml` from the directory it is given,
+  so run it from a copy of the example that has one — the example itself is
+  deliberately unregistered.
 - **It is what the generator produces.** Apart from the completed prompt in
   `agents/<name>.md`, every file is byte-identical to `fullsend agent new`
   output. Hand-editing the copied `policies/`, `providers/` or `profiles/`

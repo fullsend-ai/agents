@@ -87,7 +87,7 @@ files, so a clean listing does not mean the agent works.
 - The Output contract, the schema and the post-script name the same fields.
 - `tools:` lists exactly what the Steps use.
 - The prompt forbids mutation.
-- `fullsend lock <name> --offline` passes.
+- `fullsend lock <name> --fullsend-dir <dir> --offline` passes.
 
 See `examples/link-check/` in this repository for a completed agent generated
 this way.

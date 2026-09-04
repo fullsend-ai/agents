@@ -1,7 +1,7 @@
 ---
 name: link-check
 description: Check that links in changed documentation resolve
-tools: Bash(gh,git,jq), Read, Grep, Glob
+tools: Bash(gh,jq), Read, Grep, Glob
 model: opus
 ---
 
@@ -23,45 +23,52 @@ write, which is the fastest way to get an agent's comments ignored.
 
 ## Steps
 
-1. Find the pull request's base:
+1. Read the pull request's changed files. Use the REST API, not `git`: this
+   agent's sandbox permits the `gh` binary only, and its network profile
+   allows REST but not GraphQL — so `gh pr view --json` and any `git` command
+   will be refused.
 
    ```bash
-   gh pr view "$ISSUE_URL" --json baseRefName,headRefName
+   gh api --paginate "repos/{owner}/{repo}/pulls/{number}/files" \
+     --jq '.[] | select(.status != "removed") | select(.filename | endswith(".md"))
+           | {filename, patch}'
    ```
 
-   If the command fails, write a result with `status: "error"`, a `summary`
-   naming the command that failed, and stop.
+   Take `{owner}`, `{repo}` and `{number}` from `ISSUE_URL`. `select(.status
+   != "removed")` drops files the pull request deletes, which no longer exist
+   at head. If the command fails, write a result with `status: "error"`, a
+   `summary` naming the command that failed, and stop.
 
-2. Collect the added lines in Markdown files that still exist at head:
+2. If no `.md` files changed, write `status: "ok"` with the summary
+   `No documentation changes` and stop.
 
-   ```bash
-   git diff -U0 --diff-filter=AMR "origin/<baseRefName>...HEAD" -- '*.md'
-   ```
+3. Each `patch` is a unified diff. Walk it and keep only the **added** lines —
+   those beginning with a single `+`, excluding the `+++` file header. Track
+   the line number in the file at head: each hunk header `@@ -a,b +c,d @@`
+   restarts the counter at `c`, an added line advances it by one, and a
+   context line advances it by one.
 
-   `--diff-filter=AMR` keeps added, modified and renamed files and drops
-   deleted ones, so a file removed by the pull request is never opened.
-   `-U0` means no context lines, so every `+` line in the output is a line
-   this pull request actually adds. Ignore the `+++` file headers.
+4. From those added lines, extract every Markdown link target: the target in
+   `[text](target)` and in `[ref]: target` definitions. Classify each:
 
-3. From those added lines only, extract every Markdown link target — the
-   target in `[text](target)` and in `[ref]: target` definitions. Classify
-   each:
-
-   - **Relative path** (`../guides/x.md`, `./y.md#anchor`) — resolve it
-     against the directory of the file that contains it, strip any `#anchor`,
-     and check whether the path exists in the checkout.
+   - **Relative path** (`../guides/x.md`, `./y.md#anchor`) — resolve it against
+     the directory of the file that contains it. Strip any `#anchor` and any
+     `?query` suffix, and percent-decode the result (`My%20Guide.md` is
+     `My Guide.md`), then check whether that path exists in the checkout.
    - **Root-relative path** (`/docs/x.md`) — resolve against the repository
      root and check the same way.
-   - **Absolute URL** (any `https` or `http` scheme) — do **not** request it.
-     The sandbox has no general egress, so a network check would be flaky
-     rather than wrong. Skip it.
+   - **Absolute URL** (any scheme, including `https`, `http` and `mailto`) —
+     skip it. The sandbox has no general egress, so a network check would be
+     flaky rather than wrong.
    - **Anchor-only** (`#section`) — skip it.
+   - A `[ref]: target` definition that nothing references — skip it. An unused
+     definition renders nothing, so it cannot be broken for a reader.
 
-4. A link is broken when its resolved path does not exist in the checkout.
-   Report it as `<file>:<line> -> <target>`, using the line number in the
-   file at head.
+5. A link is broken when its resolved path does not exist in the checkout.
+   Report it as `<file>:<line> -> <target>`, using the line number at head
+   from step 3.
 
-5. Decide:
+6. Decide:
    - No added links, or none broken: `status: "ok"`.
    - One or more broken added links: `status: "findings"`.
    - A step could not be completed at all: `status: "error"`.
