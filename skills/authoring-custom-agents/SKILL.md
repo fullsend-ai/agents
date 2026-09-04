@@ -12,6 +12,13 @@ description: >-
 complete except the prompt. Your job is to finish `agents/<name>.md` without
 breaking the contract the other generated files encode.
 
+Three of those files matter here. The **agent definition**
+(`agents/<name>.md`) is the prompt — the instructions the agent follows. The
+**result schema** describes the single JSON object the agent must write. The
+**post-script** (`scripts/post-<name>.sh`) runs afterwards, on the machine
+outside the sandbox, and is the only thing that touches the issue or pull
+request. The agent itself changes nothing.
+
 For diagnosing why an existing agent underperforms, use `agent-scaffolding`
 instead — this skill is the authoring procedure, not the evaluation lens.
 
@@ -22,7 +29,7 @@ instead — this skill is the authoring procedure, not the evaluation lens.
 | `agents/<name>.md` | **Yes — this is the work.** |
 | `schemas/<name>-result.schema.json` | Only alongside the prompt and post-script |
 | `scripts/post-<name>.sh` | Only if the result shape changes |
-| `harness/<name>.yaml` | Only to change how it runs, not what it does |
+| `harness/<name>.yaml` (how it runs: image, timeout, trigger) | Only to change how it runs, not what it does |
 | `policies/`, `providers/`, `profiles/` | No — shared by every agent here |
 
 ## Procedure
@@ -67,11 +74,12 @@ fullsend lock <name> --fullsend-dir <dir> --offline
   ✓ Harness has no remote dependencies — nothing to lock
 ```
 
-That loads the harness through the same loader dispatch uses. `--offline`
-proves the agent needs no network.
+That loads the agent the same way the automation does when a real event
+arrives, so a mistake shows up now rather than the first time it runs.
+`--offline` proves the agent needs nothing from the network.
 
-`fullsend agent list` shows registrations only — it never opens a harness
-file, so it is not a validity check.
+`fullsend agent list` only lists what is registered — it never opens these
+files, so a clean listing does not mean the agent works.
 
 ## Before you call it done
 
