@@ -160,22 +160,12 @@ code block:
 ```
 
 **Size guard for large PRs:** If the PR exceeds 20 changed files or
-5000 total changed lines, do not fetch all files upfront. Instead,
-defer file selection to step 3d (context package assembly), where the
-orchestrator selects dimension-relevant files for each sub-agent:
-
-- **correctness:** files with the most changes, test files, and files
-  they import
-- **security:** files touching auth, permissions, secrets, config, and
-  data handling paths
-- **style-conventions:** files with the most changes
-- **other dimensions:** files most relevant to their review scope
-
-For omitted changed files in large PRs, sub-agents should treat those
-files as unavailable for PR-head verification. Any findings about
-omitted files must state that the file contents could not be verified
-against the PR head. Sub-agents must not read omitted changed files
-from disk, since disk contains base-branch code, not the PR head.
+5000 total changed lines, do not fetch file contents at all — skip
+this step entirely. Sub-agents will receive only per-file diffs
+(assembled in step 3d) and use their Read tool to access files on
+demand. This prevents the orchestrator from exhausting the context
+window and time budget by inlining thousands of lines of source into
+each sub-agent prompt.
 
 If the PR body references linked issues, fetch them for intent context
 using the forge-specific review skill's "Issue context" commands.
@@ -627,10 +617,9 @@ For each selected sub-agent, assemble a context package containing:
   fetched by the orchestrator in step 2b. Each file is preceded by a
   `#### <relative-path>` header and wrapped in a fenced code block with
   the appropriate language identifier. For large PRs (>20 files or >5000
-  lines), include only the files most relevant to the sub-agent's
-  dimension; omitted changed files should be treated as unavailable for
-  PR-head verification (sub-agents do not have Bash access to fetch them
-  via the forge API).
+  lines), **omit `source_files` entirely** — sub-agents receive only
+  per-file diffs and use their Read tool to access files on demand
+  (see step 2b size guard).
 - `head_sha`: the PR head commit SHA (from step 1), included for
   reference in sub-agent findings and review anchoring
 - `repo_full_name`: the full `owner/repo` string, included for reference
@@ -783,13 +772,11 @@ runs in step 3c-2, and `challenger` which runs in step 6d):
    <full file contents at PR head>
    ```
 
-   (For large PRs where not all files are included:)
-   **Note:** Not all changed files are included above due to PR size.
-   Changed files not listed here should be treated as unavailable for
-   PR-head verification. If you produce findings about files not included
-   above, you must state that the file contents could not be verified against the
-   PR head. Do not read changed files from disk — disk contains
-   base-branch code, not the PR head.
+   (For large PRs — >20 files or >5000 lines — omit this section.
+   Replace with:)
+   **Note:** Source files omitted due to PR size. Use your Read tool
+   to access files on disk for surrounding context — disk contains the
+   base branch, so cross-reference against the diff for PR-head state.
 
    ### Changed files
    <file list>
@@ -820,7 +807,11 @@ runs in step 3c-2, and `challenger` which runs in step 6d):
    ```
 
 2. Spawn the subagents with their `prompt` argument composed from parts
-   1–5 above
+   1–5 above. Set `subagent_type: "Explore"` for Sonnet-tier
+   dimensions (`intent-coherence`, `style-conventions`,
+   `docs-currency`, `cross-repo-contracts`) — they are read-only and
+   benefit from Explore's lighter footprint. Leave Opus-tier
+   dimensions (`correctness`, `security`) on the default agent type.
 
 **All sub-agents MUST be dispatched simultaneously** — include all
 Agent calls in a single message so they run concurrently. This is the
