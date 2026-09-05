@@ -1,38 +1,14 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-08-31T17:22:24.387426+00:00",
+  "generated_at": "2026-09-05T14:02:39.491245+00:00",
   "violations": [
-    {
-      "fingerprint": "10342080fcd47b75",
-      "rule_id": "agentskill-name",
-      "file_path": "skills/gitlab-forge/SKILL.md",
-      "line": 2,
-      "message": "Name 'gitlab' does not match directory name 'gitlab-forge'",
-      "severity": "error"
-    },
-    {
-      "fingerprint": "34efa8521ae07039",
-      "rule_id": "agentskill-name",
-      "file_path": "skills/github-forge/SKILL.md",
-      "line": 2,
-      "message": "Name 'github' does not match directory name 'github-forge'",
-      "severity": "error"
-    },
     {
       "fingerprint": "d9a273225a48337f",
       "rule_id": "agentskill-name",
       "file_path": "skills/issue-labels/gitlab/SKILL.md",
       "line": 2,
       "message": "Name 'issue-labels' does not match directory name 'gitlab'",
-      "severity": "error"
-    },
-    {
-      "fingerprint": "327f1f40724439b7",
-      "rule_id": "agentskill-name",
-      "file_path": "skills/issue-labels/jira/SKILL.md",
-      "line": 2,
-      "message": "Name 'issue-labels' does not match directory name 'jira'",
       "severity": "error"
     },
     {
@@ -44,6 +20,22 @@
       "severity": "error"
     },
     {
+      "fingerprint": "327f1f40724439b7",
+      "rule_id": "agentskill-name",
+      "file_path": "skills/issue-labels/jira/SKILL.md",
+      "line": 2,
+      "message": "Name 'issue-labels' does not match directory name 'jira'",
+      "severity": "error"
+    },
+    {
+      "fingerprint": "10342080fcd47b75",
+      "rule_id": "agentskill-name",
+      "file_path": "skills/gitlab-forge/SKILL.md",
+      "line": 2,
+      "message": "Name 'gitlab' does not match directory name 'gitlab-forge'",
+      "severity": "error"
+    },
+    {
       "fingerprint": "4aecb9c5f36aa70f",
       "rule_id": "agentskill-name",
       "file_path": "skills/jira-forge/SKILL.md",
@@ -52,21 +44,20 @@
       "severity": "error"
     },
     {
-      "fingerprint": "3841c25d67e33e68",
-      "rule_id": "context-budget",
-      "file_path": "skills/pr-risk-assessment/SKILL.md",
-      "message": "Estimated 3,778 tokens exceeds skill warn limit of 3,000",
-      "severity": "warning",
-      "value": 3778,
-      "baseline_mode": "ceiling"
+      "fingerprint": "34efa8521ae07039",
+      "rule_id": "agentskill-name",
+      "file_path": "skills/github-forge/SKILL.md",
+      "line": 2,
+      "message": "Name 'github' does not match directory name 'github-forge'",
+      "severity": "error"
     },
     {
       "fingerprint": "8aba1d160bb4c413",
       "rule_id": "context-budget",
       "file_path": "skills/code-implementation/SKILL.md",
-      "message": "Estimated 12,180 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 12,185 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 12180,
+      "value": 12185,
       "baseline_mode": "ceiling"
     },
     {
@@ -79,12 +70,30 @@
       "baseline_mode": "ceiling"
     },
     {
+      "fingerprint": "910d4f5f259c6510",
+      "rule_id": "context-budget",
+      "file_path": "skills/fix-review/SKILL.md",
+      "message": "Estimated 3,004 tokens exceeds skill warn limit of 3,000",
+      "severity": "warning",
+      "value": 3004,
+      "baseline_mode": "ceiling"
+    },
+    {
       "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
       "file_path": "skills/pr-review/SKILL.md",
       "message": "Estimated 15,709 tokens exceeds skill error limit of 6,000",
       "severity": "error",
       "value": 15709,
+      "baseline_mode": "ceiling"
+    },
+    {
+      "fingerprint": "3841c25d67e33e68",
+      "rule_id": "context-budget",
+      "file_path": "skills/pr-risk-assessment/SKILL.md",
+      "message": "Estimated 3,778 tokens exceeds skill warn limit of 3,000",
+      "severity": "warning",
+      "value": 3778,
       "baseline_mode": "ceiling"
     }
   ]
