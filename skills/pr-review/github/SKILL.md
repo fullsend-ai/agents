@@ -50,13 +50,10 @@ test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure
 ## Materialise PR head files
 
 ```bash
-# Every changed file at HEAD_SHA → /sandbox/workspace/pr-head/<path>, 16
-# fetches in flight, from the file list saved in "PR data fetching".
-# Bookkeeping lives beside the tree, never inside it:
-# /sandbox/workspace/pr-head.manifest = "<status> <path>" per file.
-# Written in the dialect the sandbox's Bash scanner can parse (it still
-# scans every command — this is not an allowlist): `test`, not `[ ]`; no
-# nested $( ); no glob `case` arm after a literal one; no rm.
+# Every changed file at HEAD_SHA → /sandbox/workspace/pr-head/<path>
+# (16 fetches in flight); manifest beside the tree, never inside it.
+# Scanner dialect (fullsend-ai/agents#1190): `test` not `[ ]`, no
+# nested $( ), no glob `case` arm after a literal one, no rm.
 # Run this call with a 600 s tool timeout.
 PR_HEAD=/sandbox/workspace/pr-head; WORK=/sandbox/workspace/pr-head.work; MANIFEST=/sandbox/workspace/pr-head.manifest
 FILES=/sandbox/workspace/pr-files.json

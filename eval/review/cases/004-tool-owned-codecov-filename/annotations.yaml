@@ -13,10 +13,8 @@ findings:
   forbidden:
     - file-naming-convention
 
-# num_turns includes a sub-agent's own tool turns when it returns inline
-# (Claude Code backgrounds only long-running sub-agents), and sub-agents
-# now Read PR-head files from disk instead of receiving them pasted:
-# measured 43–45 on this case with the fixed budget, 10 before.
+# num_turns counts a sub-agent's own tool turns when it returns inline,
+# and sub-agents now Read PR-head files: measured 43–45 here, 10 before.
 max_turns: 80
 max_cost_usd: 4.00
 

@@ -56,14 +56,11 @@ test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure
 ## Materialise MR head files
 
 ```bash
-# Every changed file at HEAD_SHA → /sandbox/workspace/pr-head/<path>, 16
-# fetches in flight, from the changes saved in "MR data fetching".
-# Bookkeeping lives beside the tree, never inside it:
-# /sandbox/workspace/pr-head.manifest = "<status> <path>" per file.
-# Written in the dialect the sandbox's Bash scanner can parse (it still
-# scans every command — this is not an allowlist): `test`, not `[ ]`; no
-# nested $( ); no glob `case` arm after a literal one; no rm;
-# the token goes through a curl config file, never the command line.
+# Every changed file at HEAD_SHA → /sandbox/workspace/pr-head/<path>
+# (16 fetches in flight); manifest beside the tree, never inside it.
+# Scanner dialect (fullsend-ai/agents#1190): `test` not `[ ]`, no
+# nested $( ), no glob `case` arm after a literal one, no rm; the token
+# goes through a curl config file, never the command line.
 # Run this call with a 600 s tool timeout, then scrub the config file in
 # its own call (see below) whether this one succeeded, failed or timed out.
 PR_HEAD=/sandbox/workspace/pr-head; WORK=/sandbox/workspace/pr-head.work; MANIFEST=/sandbox/workspace/pr-head.manifest
