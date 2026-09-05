@@ -440,6 +440,21 @@ echo "  REPO=${REPO}"
 echo "  PR_URL=${PR_URL}"
 
 # ---------------------------------------------------------------------------
+# Diagnostic: verify the sonnet model pin is intact in the env source file.
+# Sub-agents use explicit model IDs in their frontmatter, but the alias pin
+# still matters for the parent agent. Surface missing/empty pins early so
+# mount or sourcing failures don't cascade into model-not-available errors.
+# ---------------------------------------------------------------------------
+_ENV_FILE="${SCRIPT_DIR}/../env/gcp-vertex.env"
+if [[ -f "${_ENV_FILE}" ]]; then
+  if ! grep -q 'ANTHROPIC_DEFAULT_SONNET_MODEL=' "${_ENV_FILE}"; then
+    echo "::warning::env/gcp-vertex.env does not set ANTHROPIC_DEFAULT_SONNET_MODEL — sonnet alias may resolve to an unavailable model"
+  fi
+else
+  echo "::warning::env/gcp-vertex.env not found — ANTHROPIC_DEFAULT_SONNET_MODEL will not be set in the sandbox"
+fi
+
+# ---------------------------------------------------------------------------
 # Check PR state — skip review on merged or closed PRs
 # ---------------------------------------------------------------------------
 if [[ -z "${REVIEW_TOKEN:-}" ]]; then

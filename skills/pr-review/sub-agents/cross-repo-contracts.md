@@ -2,7 +2,7 @@
 name: cross-repo-contracts
 description: >-
   Evaluates potential API contract breakage affecting other repos.
-model: sonnet
+model: claude-sonnet-4-6
 tools: Read, Grep, Glob
 permissionMode: dontAsk
 background: true
