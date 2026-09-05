@@ -514,19 +514,35 @@ fi
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 3b. Reject Signed-off-by trailers
+# 3b. Strip Signed-off-by trailers
 #
-# Agents must never produce Signed-off-by trailers. DCO is a human
-# attestation — the DCO app already waives the check for bot authors.
-# The bot noreply email makes the trailer ~90 characters, which causes
-# gitlint body-max-line-length failures in repos with a 72-char limit.
+# Agents must not sign off: DCO waives bot authors, and the bot noreply
+# address makes the trailer ~90 chars, failing gitlint body-max-line-length.
+# Strip it and continue; fail only if one survives the rewrite.
 # ---------------------------------------------------------------------------
 echo "Checking for Signed-off-by trailers in agent's commit(s)..."
-if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-  post_fail_to_issue signed-off-by \
-    "Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
+SIGNOFF_STRIPPED=false
+SIGNOFF_STRIPPED_COUNT=0
+_signoff_count="$(signoff_count_range "${SCAN_RANGE}")"
+if [ "${_signoff_count}" -gt 0 ]; then
+  gha_echo warning "Found Signed-off-by trailer(s) in ${_signoff_count} agent commit(s) — stripping"
+
+  if ! SIGNOFF_STRIP_ERROR="$(signoff_strip_range "${SCAN_RANGE}" 2>&1 >/dev/null)"; then
+    post_fail_to_issue signoff-rewrite-failed \
+      "Failed to strip Signed-off-by trailer(s) from agent commit(s): ${SIGNOFF_STRIP_ERROR}"
+  fi
+
+  # Re-scan: fail only if a trailer survives a rewrite that reported success
+  if signoff_present_in_range "${SCAN_RANGE}"; then
+    post_fail_to_issue signed-off-by \
+      "Signed-off-by trailer persists after rewrite attempt. Manual intervention required."
+  fi
+  SIGNOFF_STRIPPED=true
+  SIGNOFF_STRIPPED_COUNT="${_signoff_count}"
+  echo "Signed-off-by trailer(s) removed from ${_signoff_count} agent commit(s)"
+else
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
-echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
 # 4. Auto-install pre-commit tool dependencies
@@ -550,7 +566,7 @@ if [ "${PRECOMMIT_GATE_SECRET_FAIL}" = "true" ]; then
   post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
 fi
 if [ "${PRECOMMIT_GATE_SIGNOFF_FAIL}" = "true" ]; then
-  post_fail_to_issue signed-off-by "${PRECOMMIT_GATE_DETAIL}"
+  post_fail_to_issue "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
 fi
 if [ "${PRECOMMIT_GATE_RESULT}" = "fail" ]; then
   post_fail_to_issue "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
@@ -649,6 +665,13 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   forge_write_output "pr_url" "${EXISTING_PR_URL}"
+
+  # This path exits before the PR body is assembled, so the note goes here.
+  if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
+    forge_post_pr_comment "${EXISTING_PR_NUM}" \
+      "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
+      || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
+  fi
 
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
@@ -797,6 +820,12 @@ case "${PR_BODY_SCAN_STATUS}" in
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
 esac
 
+SIGNOFF_STRIPPED_LINE=""
+if [ "${SIGNOFF_STRIPPED:-false}" = "true" ]; then
+  SIGNOFF_STRIPPED_LINE="
+- [x] Removed Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)"
+fi
+
 if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
   ISSUE_REFERENCE="Related to ${WORK_ITEM_URL}"
 elif [ "${CLOSES_ISSUE}" = "false" ]; then
@@ -815,7 +844,7 @@ ${ISSUE_REFERENCE}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}"
+${PR_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(forge_create_pr \

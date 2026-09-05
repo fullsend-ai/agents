@@ -245,6 +245,7 @@ post_failure_category_label() {
     secret-scan) echo "Secret scan blocked" ;;
     pre-commit-blocked) echo "Pre-commit blocked" ;;
     signed-off-by) echo "Signed-off-by rejected" ;;
+    signoff-rewrite-failed) echo "Signed-off-by strip failed" ;;
     push-workflow-permission) echo "Push rejected — workflows permission" ;;
     push-rejected) echo "Push rejected" ;;
     push-failed) echo "Push failed" ;;
@@ -567,6 +568,141 @@ install_gitleaks() {
 PRECOMMIT_GATE_SH_LOADED=1
 
 # ---------------------------------------------------------------------------
+# Signed-off-by trailer helpers
+#
+# The post-scripts strip an agent's trailer instead of discarding the run.
+# SCAN_RANGE can cover human commits (post-fix widens it to merge-base after a
+# rebase), and a human's sign-off is a DCO attestation that must survive, so
+# every helper is scoped to agent-authored commits.
+# ---------------------------------------------------------------------------
+
+# signoff_bot_email — agent's git identity, exported by the dispatch workflow.
+# Empty means unknown: detection stays broad so a trailer is still noticed, but
+# signoff_strip_range refuses to rewrite rather than risk a human's sign-off.
+signoff_bot_email() {
+  printf '%s' "${GIT_BOT_EMAIL:-${GIT_COMMITTER_EMAIL:-}}"
+}
+
+# signoff_is_bot_commit <sha> — 0 when the commit is in scope for rewriting.
+# Author, not committer: a rebase re-stamps the committer onto commits the
+# human wrote. Author is also what the DCO app checks when it waives bots.
+signoff_is_bot_commit() {
+  local _sb_bot
+  _sb_bot="$(signoff_bot_email)"
+  [ -z "${_sb_bot}" ] && return 0
+  [ "$(git log -1 --format='%ae' "$1" 2>/dev/null)" = "${_sb_bot}" ]
+}
+
+# signoff_count_range <range> — number of in-scope commits carrying a trailer.
+signoff_count_range() {
+  local _sc_n=0 _sc_sha
+  for _sc_sha in $(git rev-list "$1" 2>/dev/null); do
+    if signoff_is_bot_commit "${_sc_sha}" \
+       && git log -1 --format='%B' "${_sc_sha}" | grep -q '^Signed-off-by:'; then
+      _sc_n=$((_sc_n + 1))
+    fi
+  done
+  printf '%s' "${_sc_n}"
+}
+
+# signoff_present_in_range <range> — 0 when an in-scope commit carries one.
+signoff_present_in_range() {
+  [ "$(signoff_count_range "$1")" -gt 0 ]
+}
+
+# signoff_strip_range <range> — drop the trailer from in-scope messages.
+# Diagnoses to stderr and returns non-zero on rewrite failure so callers fail
+# closed. Never touches commits below the range's base.
+signoff_strip_range() {
+  local _ss_range="$1" _ss_bot _ss_tmp _ss_sed _ss_sha
+  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0
+  _ss_bot="$(signoff_bot_email)"
+  # Skip line 1 so a message whose subject IS the trailer keeps a subject.
+  _ss_sed='1!{/^Signed-off-by:/d;}'
+
+  # Without an identity every commit looks like the agent's, and the range can
+  # hold a human's DCO sign-off. Refuse rather than guess.
+  if [ -z "${_ss_bot}" ]; then
+    echo "signoff-strip: agent git identity unavailable (GIT_BOT_EMAIL unset)" >&2
+    return 1
+  fi
+
+  # Narrow the rewrite to the contiguous run of agent commits at the tip.
+  # filter-branch re-creates every commit it is handed even when the filter is
+  # cat, and commit-tree cannot reproduce gpgsig, so a human commit inside the
+  # range would lose its signature and change SHA. Agent commits sit at the
+  # tip in practice; an in-scope trailer below a human commit fails closed.
+  for _ss_sha in $(git rev-list "${_ss_range}" 2>/dev/null); do
+    if [ "${_ss_in_tip}" -eq 1 ] && signoff_is_bot_commit "${_ss_sha}"; then
+      _ss_tip_n=$((_ss_tip_n + 1))
+      _ss_base="${_ss_sha}"
+    else
+      _ss_in_tip=0
+      if signoff_is_bot_commit "${_ss_sha}" \
+         && git log -1 --format='%B' "${_ss_sha}" | grep -q '^Signed-off-by:'; then
+        _ss_below=1
+      fi
+    fi
+  done
+  if [ "${_ss_below}" -eq 1 ]; then
+    echo "signoff-strip: an agent commit with a trailer sits below a non-agent commit; refusing to rewrite past it" >&2
+    return 1
+  fi
+  [ "${_ss_tip_n}" -eq 0 ] && return 0
+
+  # filter-branch refuses on unstaged changes; refresh first because
+  # diff-files is stat-based and a fresh checkout can look dirty.
+  git update-index -q --refresh >/dev/null 2>&1 || true
+  if ! git diff-files --quiet; then
+    echo "signoff-strip: worktree has unstaged changes to tracked files" >&2
+    return 1
+  fi
+
+  if [ "${_ss_tip_n}" -eq 1 ]; then
+    _ss_tmp="$(mktemp)"
+    if ! git log -1 --format='%B' HEAD | sed "${_ss_sed}" > "${_ss_tmp}"; then
+      rm -f "${_ss_tmp}"
+      echo "signoff-strip: could not read the commit message" >&2
+      return 1
+    fi
+    # --amend re-stamps the committer, so carry the original across.
+    # --only keeps it to the message; a bare --amend would sweep staged
+    # files in past the secret scan.
+    if ! GIT_COMMITTER_NAME="$(git log -1 --format='%cn' HEAD)" \
+         GIT_COMMITTER_EMAIL="$(git log -1 --format='%ce' HEAD)" \
+         GIT_COMMITTER_DATE="$(git log -1 --format='%cD' HEAD)" \
+         git commit --amend --only --no-verify -F "${_ss_tmp}" >/dev/null; then
+      rm -f "${_ss_tmp}"
+      echo "signoff-strip: git commit --amend failed" >&2
+      return 1
+    fi
+    rm -f "${_ss_tmp}"
+    return 0
+  fi
+
+  # filter-branch also refuses on a dirty index. The single-commit path above
+  # tolerates one, because --only keeps staged files out of the commit.
+  if ! git diff-index --quiet --cached HEAD; then
+    echo "signoff-strip: index has staged changes" >&2
+    return 1
+  fi
+
+  # The narrowed range is agent-only by construction; the author check in the
+  # filter is a second line of defence. filter-branch exports each original
+  # commit's identity, so $GIT_AUTHOR_EMAIL is the commit being rewritten. The
+  # bot address goes through the environment, not the filter text: it
+  # contains "[bot]" and "+".
+  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_BOT_EMAIL="${_ss_bot}" \
+       git filter-branch -f \
+       --msg-filter 'if [ "${GIT_AUTHOR_EMAIL}" = "${SIGNOFF_BOT_EMAIL}" ]; then sed '"'${_ss_sed}'"'; else cat; fi' \
+       -- "${_ss_base}^..HEAD" >/dev/null; then
+    echo "signoff-strip: git filter-branch failed" >&2
+    return 1
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # precommit_install_deps <target_branch>
 #
 # Auto-install pre-commit tool dependencies from .pre-commit-tools.yaml.
@@ -731,17 +867,35 @@ precommit_run_gate() {
       return 0
     fi
 
-    # Re-check signed-off-by trailers.
-    if git log --format='%b' "${_pg_scan_range}" | grep -q '^Signed-off-by:'; then
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_SIGNOFF_FAIL="true"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_RESULT="fail"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_CATEGORY="signed-off-by"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_DETAIL="Amended commit contains a Signed-off-by trailer after pre-commit auto-fix."
-      return 0
+    # Re-check signed-off-by trailers — strip if present (defense-in-depth).
+    # The auto-fix amend above can only have re-added a trailer to HEAD (a repo
+    # commit-msg hook); section 3b already cleaned the rest of the range.
+    if signoff_present_in_range "${_pg_scan_range}"; then
+      gha_echo warning "Signed-off-by trailer found after auto-fix amend — stripping"
+      if ! signoff_strip_range "${_pg_scan_range}"; then
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_SIGNOFF_FAIL="true"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_RESULT="fail"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_CATEGORY="signoff-rewrite-failed"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_DETAIL="Could not strip the Signed-off-by trailer added after pre-commit auto-fix."
+        return 0
+      fi
+      # Re-scan: fail only if a trailer survives a rewrite that reported success
+      if signoff_present_in_range "${_pg_scan_range}"; then
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_SIGNOFF_FAIL="true"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_RESULT="fail"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_CATEGORY="signed-off-by"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_DETAIL="Signed-off-by trailer persists after rewrite attempt."
+        return 0
+      fi
+      echo "Signed-off-by trailer removed after auto-fix amend"
     fi
 
     # Re-derive changed files after the amend.
@@ -2405,19 +2559,35 @@ fi
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 3b. Reject Signed-off-by trailers
+# 3b. Strip Signed-off-by trailers
 #
-# Agents must never produce Signed-off-by trailers. DCO is a human
-# attestation — the DCO app already waives the check for bot authors.
-# The bot noreply email makes the trailer ~90 characters, which causes
-# gitlint body-max-line-length failures in repos with a 72-char limit.
+# Agents must not sign off: DCO waives bot authors, and the bot noreply
+# address makes the trailer ~90 chars, failing gitlint body-max-line-length.
+# Strip it and continue; fail only if one survives the rewrite.
 # ---------------------------------------------------------------------------
 echo "Checking for Signed-off-by trailers in agent's commit(s)..."
-if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-  post_fail_to_issue signed-off-by \
-    "Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
+SIGNOFF_STRIPPED=false
+SIGNOFF_STRIPPED_COUNT=0
+_signoff_count="$(signoff_count_range "${SCAN_RANGE}")"
+if [ "${_signoff_count}" -gt 0 ]; then
+  gha_echo warning "Found Signed-off-by trailer(s) in ${_signoff_count} agent commit(s) — stripping"
+
+  if ! SIGNOFF_STRIP_ERROR="$(signoff_strip_range "${SCAN_RANGE}" 2>&1 >/dev/null)"; then
+    post_fail_to_issue signoff-rewrite-failed \
+      "Failed to strip Signed-off-by trailer(s) from agent commit(s): ${SIGNOFF_STRIP_ERROR}"
+  fi
+
+  # Re-scan: fail only if a trailer survives a rewrite that reported success
+  if signoff_present_in_range "${SCAN_RANGE}"; then
+    post_fail_to_issue signed-off-by \
+      "Signed-off-by trailer persists after rewrite attempt. Manual intervention required."
+  fi
+  SIGNOFF_STRIPPED=true
+  SIGNOFF_STRIPPED_COUNT="${_signoff_count}"
+  echo "Signed-off-by trailer(s) removed from ${_signoff_count} agent commit(s)"
+else
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
-echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
 # 4. Auto-install pre-commit tool dependencies
@@ -2441,7 +2611,7 @@ if [ "${PRECOMMIT_GATE_SECRET_FAIL}" = "true" ]; then
   post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
 fi
 if [ "${PRECOMMIT_GATE_SIGNOFF_FAIL}" = "true" ]; then
-  post_fail_to_issue signed-off-by "${PRECOMMIT_GATE_DETAIL}"
+  post_fail_to_issue "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
 fi
 if [ "${PRECOMMIT_GATE_RESULT}" = "fail" ]; then
   post_fail_to_issue "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
@@ -2540,6 +2710,13 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR #${EXISTING_PR_NUM} already exists — branch updated with new commits"
   echo "PR: ${EXISTING_PR_URL}"
   forge_write_output "pr_url" "${EXISTING_PR_URL}"
+
+  # This path exits before the PR body is assembled, so the note goes here.
+  if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
+    forge_post_pr_comment "${EXISTING_PR_NUM}" \
+      "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
+      || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
+  fi
 
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
@@ -2688,6 +2865,12 @@ case "${PR_BODY_SCAN_STATUS}" in
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
 esac
 
+SIGNOFF_STRIPPED_LINE=""
+if [ "${SIGNOFF_STRIPPED:-false}" = "true" ]; then
+  SIGNOFF_STRIPPED_LINE="
+- [x] Removed Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)"
+fi
+
 if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
   ISSUE_REFERENCE="Related to ${WORK_ITEM_URL}"
 elif [ "${CLOSES_ISSUE}" = "false" ]; then
@@ -2706,7 +2889,7 @@ ${ISSUE_REFERENCE}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}"
+${PR_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(forge_create_pr \

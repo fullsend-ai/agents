@@ -62,6 +62,49 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 This separation ensures the agent never has direct write access to the repository.
 
+### Signed-off-by trailers
+
+Agents must not sign off their commits — DCO is a human attestation, and the
+DCO app waives bot authors. If an agent adds the trailer anyway, the
+post-script **removes it and continues** rather than discarding the run.
+
+Only commits the agent authored are rewritten. A human's sign-off on the same
+branch is left alone, including after the agent rebases (a rebase re-stamps the
+committer, so the author is what decides):
+
+```text
+--- before ---
+6f56c9e 123+fullsend-ai-coder[bot]@… | fix: agent change | signoff=fullsend-ai-coder <123+…>
+c07aea4 human@example.com            | feat: human work  | signoff=Real Human <human@example.com>
+
+--- after ---
+d72d44c 123+fullsend-ai-coder[bot]@… | fix: agent change | signoff=
+c07aea4 human@example.com            | feat: human work  | signoff=Real Human <human@example.com>
+```
+
+The agent's commit is rewritten (`6f56c9e` → `d72d44c`); the human's keeps both
+its trailer and its SHA. Author, committer and both dates are preserved on
+rewritten commits, and the rest of the message is untouched.
+
+The PR body records what happened:
+
+```text
+- [x] Removed Signed-off-by trailer from 1 agent commit(s)
+```
+
+On a branch that already has an open PR, the same note is posted as a comment
+instead, because that path exits before the PR body is built.
+
+The run only fails on a trailer if the rewrite itself could not run — for
+example an unstaged change to a tracked file, which `git filter-branch` refuses.
+That is reported as **Signed-off-by strip failed**, distinct from
+**Signed-off-by rejected**, which now means only that a trailer survived a
+rewrite that reported success.
+
+The validation loop does not fail on the trailer either: it soft-passes and
+leaves the repair to the post-script, so a trailer never costs a retry
+iteration.
+
 ## Custom sandbox image
 
 The code agent runs inside a sandbox container built from the universal

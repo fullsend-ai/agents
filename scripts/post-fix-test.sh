@@ -678,6 +678,11 @@ run_rebase_diffbase_test "rebase-diffbase-no-false-positive"
 
 rm -rf "${REBASE_TMPDIR}"
 
+# Signed-off-by trailer stripping is covered by scripts/signoff-strip-test.sh,
+# which exercises the real rewrite (git filter-branch / git commit --amend)
+# against real repositories: identity and date preservation, commit counts,
+# authorship scoping, the folded-subject case, and the failure paths.
+
 # ---------------------------------------------------------------------------
 # Security integration tests — verify that security controls fail closed.
 # These run the REAL post-fix.sh against a minimal repo with mock binaries.
