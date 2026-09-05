@@ -514,19 +514,57 @@ fi
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 3b. Reject Signed-off-by trailers
+# 3b. Strip Signed-off-by trailers
 #
 # Agents must never produce Signed-off-by trailers. DCO is a human
 # attestation — the DCO app already waives the check for bot authors.
 # The bot noreply email makes the trailer ~90 characters, which causes
 # gitlint body-max-line-length failures in repos with a 72-char limit.
+#
+# Instead of rejecting the entire run, strip the trailer and continue.
+# Fail only if the trailer persists after the rewrite attempt.
 # ---------------------------------------------------------------------------
 echo "Checking for Signed-off-by trailers in agent's commit(s)..."
+SIGNOFF_STRIPPED=false
+SIGNOFF_STRIPPED_COUNT=0
 if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-  post_fail_to_issue signed-off-by \
-    "Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
+  _signoff_count=0
+  for _sha in $(git rev-list "${SCAN_RANGE}"); do
+    if git log -1 --format='%b' "${_sha}" | grep -q '^Signed-off-by:'; then
+      _signoff_count=$((_signoff_count + 1))
+    fi
+  done
+  gha_echo warning "Found Signed-off-by trailer(s) in ${_signoff_count} agent commit(s) — stripping"
+
+  _signoff_commit_total="$(git rev-list --count "${SCAN_RANGE}")"
+  if [ "${_signoff_commit_total}" -eq 1 ]; then
+    _signoff_tmpfile="$(mktemp)"
+    git log -1 --format='%B' HEAD | sed '/^Signed-off-by:/d' > "${_signoff_tmpfile}"
+    if ! git commit --amend -F "${_signoff_tmpfile}"; then
+      rm -f "${_signoff_tmpfile}"
+      post_fail_to_issue signed-off-by \
+        "Failed to strip Signed-off-by trailer from agent commit: amend failed."
+    fi
+    rm -f "${_signoff_tmpfile}"
+  else
+    if ! FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
+         --msg-filter "sed '/^Signed-off-by:/d'" -- "${SCAN_RANGE}"; then
+      post_fail_to_issue signed-off-by \
+        "Failed to strip Signed-off-by trailers from agent commits: filter-branch failed."
+    fi
+  fi
+
+  # Re-scan: fail only if trailer survives the rewrite
+  if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+    post_fail_to_issue signed-off-by \
+      "Signed-off-by trailer persists after rewrite attempt. Manual intervention required."
+  fi
+  SIGNOFF_STRIPPED=true
+  SIGNOFF_STRIPPED_COUNT="${_signoff_count}"
+  echo "Signed-off-by trailer(s) removed from ${_signoff_count} agent commit(s)"
+else
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
-echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
 # 4. Auto-install pre-commit tool dependencies
@@ -797,6 +835,12 @@ case "${PR_BODY_SCAN_STATUS}" in
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
 esac
 
+SIGNOFF_STRIPPED_LINE=""
+if [ "${SIGNOFF_STRIPPED:-false}" = "true" ]; then
+  SIGNOFF_STRIPPED_LINE="
+- [x] Removed Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)"
+fi
+
 if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
   ISSUE_REFERENCE="Related to ${WORK_ITEM_URL}"
 elif [ "${CLOSES_ISSUE}" = "false" ]; then
@@ -815,7 +859,7 @@ ${ISSUE_REFERENCE}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}"
+${PR_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(forge_create_pr \

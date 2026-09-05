@@ -189,17 +189,26 @@ precommit_run_gate() {
       return 0
     fi
 
-    # Re-check signed-off-by trailers.
+    # Re-check signed-off-by trailers — strip if present (defense-in-depth).
     if git log --format='%b' "${_pg_scan_range}" | grep -q '^Signed-off-by:'; then
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_SIGNOFF_FAIL="true"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_RESULT="fail"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_CATEGORY="signed-off-by"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_DETAIL="Amended commit contains a Signed-off-by trailer after pre-commit auto-fix."
-      return 0
+      gha_echo warning "Signed-off-by trailer found after auto-fix amend — stripping"
+      _pg_signoff_tmpfile="$(mktemp)"
+      git log -1 --format='%B' HEAD | sed '/^Signed-off-by:/d' > "${_pg_signoff_tmpfile}"
+      git commit --amend -F "${_pg_signoff_tmpfile}"
+      rm -f "${_pg_signoff_tmpfile}"
+      # Re-scan: fail only if trailer survives the rewrite
+      if git log --format='%b' "${_pg_scan_range}" | grep -q '^Signed-off-by:'; then
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_SIGNOFF_FAIL="true"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_RESULT="fail"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_CATEGORY="signed-off-by"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_DETAIL="Signed-off-by trailer persists after rewrite attempt."
+        return 0
+      fi
+      echo "Signed-off-by trailer removed after auto-fix amend"
     fi
 
     # Re-derive changed files after the amend.

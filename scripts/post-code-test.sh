@@ -1116,9 +1116,14 @@ run_artifact_test "strip-empty-input" \
 # ---------------------------------------------------------------------------
 detect_signed_off_by() {
   local commit_body="$1"
+  local rewrite_fails="${2:-false}"
 
   if echo "${commit_body}" | grep -q '^Signed-off-by:'; then
-    echo "blocked:signed-off-by"
+    if [ "${rewrite_fails}" = "true" ]; then
+      echo "blocked:signed-off-by"
+    else
+      echo "stripped"
+    fi
   else
     echo "pass"
   fi
@@ -1128,9 +1133,10 @@ run_signoff_test() {
   local test_name="$1"
   local commit_body="$2"
   local expected="$3"
+  local rewrite_fails="${4:-false}"
 
   local actual
-  actual="$(detect_signed_off_by "${commit_body}")"
+  actual="$(detect_signed_off_by "${commit_body}" "${rewrite_fails}")"
 
   if [ "${actual}" != "${expected}" ]; then
     echo "FAIL: ${test_name}"
@@ -1146,12 +1152,12 @@ run_signoff_test() {
 
 # --- Signed-off-by detection test cases ---
 
-# Commit with Signed-off-by trailer should be blocked
-run_signoff_test "signoff-present-blocked" \
+# Commit with Signed-off-by trailer should be stripped
+run_signoff_test "signoff-present-stripped" \
   "Fix widget rendering.
 
 Signed-off-by: fullsend-ai-coder[bot] <123456+fullsend-ai-coder[bot]@users.noreply.github.com>" \
-  "blocked:signed-off-by"
+  "stripped"
 
 # Commit without Signed-off-by trailer should pass
 run_signoff_test "signoff-absent-passes" \
@@ -1170,13 +1176,13 @@ run_signoff_test "signoff-mid-line-passes" \
   "Removed the Signed-off-by: trailer from commits." \
   "pass"
 
-# Multiple trailers including Signed-off-by should be blocked
-run_signoff_test "signoff-among-other-trailers-blocked" \
+# Multiple trailers including Signed-off-by should be stripped
+run_signoff_test "signoff-among-other-trailers-stripped" \
   "Fix rendering bug.
 
 Co-authored-by: someone <someone@example.com>
 Signed-off-by: bot <bot@noreply.github.com>" \
-  "blocked:signed-off-by"
+  "stripped"
 
 # Variant casing should pass (detection is intentionally case-sensitive)
 run_signoff_test "signoff-variant-casing-passes" \
@@ -1184,6 +1190,30 @@ run_signoff_test "signoff-variant-casing-passes" \
 
 signed-off-by: bot <bot@noreply.github.com>" \
   "pass"
+
+# Signed-off-by in mid-body position should be stripped
+run_signoff_test "signoff-mid-body-stripped" \
+  "Fix widget rendering.
+
+Signed-off-by: bot <bot@noreply.github.com>
+
+More context about the change here." \
+  "stripped"
+
+# Multi-commit case: trailer present should be stripped
+run_signoff_test "signoff-multi-commit-stripped" \
+  "Commit 1 message.
+
+Signed-off-by: bot <bot@noreply.github.com>" \
+  "stripped"
+
+# Rewrite failure: only path that should still block
+run_signoff_test "signoff-rewrite-failure-blocked" \
+  "Fix widget rendering.
+
+Signed-off-by: bot <bot@noreply.github.com>" \
+  "blocked:signed-off-by" \
+  "true"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the pre-commit auto-fix retry decision logic

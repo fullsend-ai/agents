@@ -1086,17 +1086,26 @@ precommit_run_gate() {
       return 0
     fi
 
-    # Re-check signed-off-by trailers.
+    # Re-check signed-off-by trailers — strip if present (defense-in-depth).
     if git log --format='%b' "${_pg_scan_range}" | grep -q '^Signed-off-by:'; then
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_SIGNOFF_FAIL="true"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_RESULT="fail"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_CATEGORY="signed-off-by"
-      # shellcheck disable=SC2034
-      PRECOMMIT_GATE_DETAIL="Amended commit contains a Signed-off-by trailer after pre-commit auto-fix."
-      return 0
+      gha_echo warning "Signed-off-by trailer found after auto-fix amend — stripping"
+      _pg_signoff_tmpfile="$(mktemp)"
+      git log -1 --format='%B' HEAD | sed '/^Signed-off-by:/d' > "${_pg_signoff_tmpfile}"
+      git commit --amend -F "${_pg_signoff_tmpfile}"
+      rm -f "${_pg_signoff_tmpfile}"
+      # Re-scan: fail only if trailer survives the rewrite
+      if git log --format='%b' "${_pg_scan_range}" | grep -q '^Signed-off-by:'; then
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_SIGNOFF_FAIL="true"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_RESULT="fail"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_CATEGORY="signed-off-by"
+        # shellcheck disable=SC2034
+        PRECOMMIT_GATE_DETAIL="Signed-off-by trailer persists after rewrite attempt."
+        return 0
+      fi
+      echo "Signed-off-by trailer removed after auto-fix amend"
     fi
 
     # Re-derive changed files after the amend.
@@ -1406,19 +1415,53 @@ if [ "${NO_PUSH}" = "false" ]; then
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
   # -------------------------------------------------------------------------
-  # 1b. Reject Signed-off-by trailers
+  # 1b. Strip Signed-off-by trailers
   #
   # Agents must never produce Signed-off-by trailers. DCO is a human
   # attestation — the DCO app already waives the check for bot authors.
   # The bot noreply email makes the trailer ~90 characters, which causes
   # gitlint body-max-line-length failures in repos with a 72-char limit.
+  #
+  # Instead of rejecting the entire run, strip the trailer and continue.
+  # Fail only if the trailer persists after the rewrite attempt.
   # -------------------------------------------------------------------------
   echo "Checking for Signed-off-by trailers in agent's commit(s)..."
   if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-    post_fail_to_pr signed-off-by \
-      "Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
+    _signoff_count=0
+    for _sha in $(git rev-list "${SCAN_RANGE}"); do
+      if git log -1 --format='%b' "${_sha}" | grep -q '^Signed-off-by:'; then
+        _signoff_count=$((_signoff_count + 1))
+      fi
+    done
+    gha_echo warning "Found Signed-off-by trailer(s) in ${_signoff_count} agent commit(s) — stripping"
+
+    _signoff_commit_total="$(git rev-list --count "${SCAN_RANGE}")"
+    if [ "${_signoff_commit_total}" -eq 1 ]; then
+      _signoff_tmpfile="$(mktemp)"
+      git log -1 --format='%B' HEAD | sed '/^Signed-off-by:/d' > "${_signoff_tmpfile}"
+      if ! git commit --amend -F "${_signoff_tmpfile}"; then
+        rm -f "${_signoff_tmpfile}"
+        post_fail_to_pr signed-off-by \
+          "Failed to strip Signed-off-by trailer from agent commit: amend failed."
+      fi
+      rm -f "${_signoff_tmpfile}"
+    else
+      if ! FILTER_BRANCH_SQUELCH_WARNING=1 git filter-branch -f \
+           --msg-filter "sed '/^Signed-off-by:/d'" -- "${SCAN_RANGE}"; then
+        post_fail_to_pr signed-off-by \
+          "Failed to strip Signed-off-by trailers from agent commits: filter-branch failed."
+      fi
+    fi
+
+    # Re-scan: fail only if trailer survives the rewrite
+    if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+      post_fail_to_pr signed-off-by \
+        "Signed-off-by trailer persists after rewrite attempt. Manual intervention required."
+    fi
+    echo "Signed-off-by trailer(s) removed from ${_signoff_count} agent commit(s)"
+  else
+    echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
   fi
-  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
 
 # ---------------------------------------------------------------------------

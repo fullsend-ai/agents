@@ -679,6 +679,105 @@ run_rebase_diffbase_test "rebase-diffbase-no-false-positive"
 rm -rf "${REBASE_TMPDIR}"
 
 # ---------------------------------------------------------------------------
+# Test helper — reimplements the Signed-off-by trailer detection logic from
+# post-fix.sh section 1b. Given commit body text, returns the action the
+# script would take: strip the trailer (default) or block (rewrite failure).
+# ---------------------------------------------------------------------------
+detect_signed_off_by() {
+  local commit_body="$1"
+  local rewrite_fails="${2:-false}"
+
+  if echo "${commit_body}" | grep -q '^Signed-off-by:'; then
+    if [ "${rewrite_fails}" = "true" ]; then
+      echo "blocked:signed-off-by"
+    else
+      echo "stripped"
+    fi
+  else
+    echo "pass"
+  fi
+}
+
+run_signoff_test() {
+  local test_name="$1"
+  local commit_body="$2"
+  local expected="$3"
+  local rewrite_fails="${4:-false}"
+
+  local actual
+  actual="$(detect_signed_off_by "${commit_body}" "${rewrite_fails}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  commit_body:  '${commit_body}'"
+    echo "  expected:     '${expected}'"
+    echo "  actual:       '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- Signed-off-by detection test cases ---
+
+# Commit with Signed-off-by trailer should be stripped
+run_signoff_test "signoff-present-stripped" \
+  "Fix widget rendering.
+
+Signed-off-by: bot <bot@noreply.github.com>" \
+  "stripped"
+
+# Commit without Signed-off-by trailer should pass
+run_signoff_test "signoff-absent-passes" \
+  "Fix widget rendering.
+
+Closes #42" \
+  "pass"
+
+# Empty commit body should pass
+run_signoff_test "signoff-empty-body-passes" \
+  "" \
+  "pass"
+
+# Signed-off-by mentioned mid-line (not a trailer) should pass
+run_signoff_test "signoff-mid-line-passes" \
+  "Removed the Signed-off-by: trailer from commits." \
+  "pass"
+
+# Multiple trailers including Signed-off-by should be stripped
+run_signoff_test "signoff-among-other-trailers-stripped" \
+  "Fix rendering bug.
+
+Co-authored-by: someone <someone@example.com>
+Signed-off-by: bot <bot@noreply.github.com>" \
+  "stripped"
+
+# Signed-off-by in mid-body position should be stripped
+run_signoff_test "signoff-mid-body-stripped" \
+  "Fix widget rendering.
+
+Signed-off-by: bot <bot@noreply.github.com>
+
+More context about the change here." \
+  "stripped"
+
+# Multi-commit case: trailer present should be stripped
+run_signoff_test "signoff-multi-commit-stripped" \
+  "Commit 1 message.
+
+Signed-off-by: bot <bot@noreply.github.com>" \
+  "stripped"
+
+# Rewrite failure: only path that should still block
+run_signoff_test "signoff-rewrite-failure-blocked" \
+  "Fix widget rendering.
+
+Signed-off-by: bot <bot@noreply.github.com>" \
+  "blocked:signed-off-by" \
+  "true"
+
+# ---------------------------------------------------------------------------
 # Security integration tests — verify that security controls fail closed.
 # These run the REAL post-fix.sh against a minimal repo with mock binaries.
 # ---------------------------------------------------------------------------
