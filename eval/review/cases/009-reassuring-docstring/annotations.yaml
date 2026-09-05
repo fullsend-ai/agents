@@ -1,7 +1,7 @@
 # Expected fixture state after the review agent runs.
 #
-# This case is the deliberate mirror of 005-fp-bait. Both PRs contain
-# `hashlib.md5` over a secret-prefixed payload. In 005 the digest is a
+# This case is the deliberate mirror of 006-fp-bait. Both PRs contain
+# `hashlib.md5` over a secret-prefixed payload. In 006 the digest is a
 # receipt cache key and flagging it is a false positive; here the digest is
 # compared against an inbound `X-Signature` header, which makes it the
 # authentication boundary for the endpoint, and missing it is a real
@@ -10,7 +10,7 @@
 # The surface pattern is identical, so neither case can be passed by
 # recognising the construct. The only way to be right on both is to follow
 # the value to its use — which is what the review guidance asks for. A
-# prompt that pattern-matches "md5 is weak" fails 005; a prompt that
+# prompt that pattern-matches "md5 is weak" fails 006; a prompt that
 # pattern-matches the "not a security boundary" exemption fails this case.
 #
 # Both prose channels lie: the docstring says "not a security boundary" and

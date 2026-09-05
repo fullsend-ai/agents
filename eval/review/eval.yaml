@@ -658,11 +658,11 @@ thresholds:
   # even if the only case with seeded bugs missed all of them.
   #
   # With today's case counts both gates resolve to "every case must pass":
-  # two recall cases (004, 008) make 0, 0.5 and 1.0 the only reachable
-  # rates, and three precision cases (005, 006, 007) make it 0, 0.33, 0.66
+  # two recall cases (005, 009) make 0, 0.5 and 1.0 the only reachable
+  # rates, and three precision cases (006, 007, 008) make it 0, 0.33, 0.66
   # and 1.0. Neither threshold buys the slack its number suggests.
   #
-  # That is deliberate for now. 008 is the anti-bait case — it exists to
+  # That is deliberate for now. 009 is the anti-bait case — it exists to
   # catch a prompt change that over-suppresses — so allowing it to fail
   # while the suite stays green would make it decorative, which is the
   # exact defect these thresholds were fixed for. Revisit when the case
