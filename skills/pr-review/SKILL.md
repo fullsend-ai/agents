@@ -1354,17 +1354,22 @@ underlying code changes. It only prevents a dismissed, unchanged finding
 from re-inflating the verdict (e.g. forcing `request-changes`) on every
 subsequent push.
 
-The target is `low`, not `info`, deliberately. The fleet default
-`REVIEW_FINDING_SEVERITY_THRESHOLD` is `low`, and both the agent
-instructions and the post-review filter strip everything below the
-threshold from the posted review — an `info` downgrade would silently
-delete the finding *and* its annotation, and with them the prior-text
-markers the rules here match against, because the prior-review context
-is rebuilt each round from the posted body. `low` survives the default
-threshold and, per step 6f, still resolves to the same non-blocking
-verdict. A repo that raises its threshold above `low` filters these
-annotations along with everything else at that severity — that repo's
-stated choice, at the cost of this step's round-to-round memory.
+The target is `low`, not `info`, deliberately. Three layers strip
+everything below the threshold, and the fleet default threshold is
+`low`: `harness/review.yaml` sets `REVIEW_FINDING_SEVERITY_THRESHOLD:
+"low"` for both runner and sandbox, `agents/review.md` tells the agent
+to suppress findings below it in the body *and* in the `findings` array,
+and `scripts/post-review.src.sh` re-filters the result the same way as
+defense in depth — emptying `findings` there also rewrites a
+`request-changes` verdict to `comment`. An `info` downgrade would
+therefore silently delete the finding *and* its annotation, and with
+them the prior-text markers the rules here match against, because the
+prior-review context is rebuilt each round from the posted body. `low`
+survives the default threshold and, per step 6f, still resolves to the
+same non-blocking verdict. A repo that raises its threshold above `low`
+filters these annotations along with everything else at that severity —
+that repo's stated choice, at the cost of this step's round-to-round
+memory.
 
 **Critical findings are never downgraded by a dismissal.** A finding
 assessed **critical** is emitted at critical whatever the reply,
