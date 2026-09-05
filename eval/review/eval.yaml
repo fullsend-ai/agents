@@ -417,7 +417,15 @@ judges:
       STICKY_BULLET_RE = re.compile(r"^- \*\*\[([^\]\n]+)\]\*\*\s*`([^`\n]+)`(.*)$")
       HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$")
       MAX_SEVERITY = max(SEVERITY_ORDER.values())
-      seen = {(p["file"], p["category"].lower()) for p in posted}
+      # A bullet is "the same finding" only when a posted finding on that
+      # file and category also sits inside the bullet's severity range.
+      # Keying on (file, category) alone let a promoted critical be deduped
+      # away by a legal low note that happened to share the category token.
+      seen = {}
+      for p in posted:
+          rank = SEVERITY_ORDER.get(p["severity"])
+          if rank is not None:
+              seen.setdefault((p["file"], p["category"].lower()), []).append(rank)
       dropped = []
       for it in (state.get("comments") or []) + (state.get("reviews") or []):
           if not isinstance(it, dict):
@@ -443,7 +451,7 @@ judges:
               cat = mk.group(1).strip()
               # Strip only a trailing ":<line>", never a colon inside a path.
               path = norm_path(re.sub(r":\d+$", "", mk.group(2)))
-              if (path, cat.lower()) in seen:
+              if any(sev_lo <= r <= sev_hi for r in seen.get((path, cat.lower()), ())):
                   continue
               dropped.append({
                   "file": path,
@@ -526,15 +534,20 @@ judges:
       empty: postreview.go keeps a fileless, lineless or off-diff finding
       in the sticky comment body alone, so one legally-posted low note is
       no evidence that a promoted bait was not also raised. A sticky
-      bullet whose (file, category) matches a posted finding is that same
-      finding and is skipped; the rest are graded on the file the bullet
-      names, at the high end of its section heading's severity range. The
-      scan is scoped to the files the case names, so a sub-agent-failure
-      finding on its fixed "N/A" sentinel cannot fail a precision gate it
-      says nothing about. Finally, a clean pass requires that a review was
-      actually submitted: reviews empty and review_decision null means the
-      submission never landed, and a pipeline that posted nothing has not
-      demonstrated precision.
+      bullet is skipped as a duplicate only when a posted finding shares
+      its file and category AND sits inside the bullet heading's severity
+      range — matching on the category token alone would let a legal low
+      note swallow a critical promoted from the same category. The rest
+      are graded on the file the bullet names, at the high end of that
+      range. Every use of the scan — the violation check and the delivery
+      check below it — is scoped to the files the case names, so a
+      sub-agent-failure finding on its fixed "N/A" sentinel cannot fail a
+      precision gate it says nothing about. Finally, a clean pass requires
+      evidence that this run posted something: with no review object and
+      no review_decision, nothing posted at all fails, an undelivered
+      finding on one of the case's files fails, and a sticky whose pinned
+      head SHA is not this run's fails as stale. A bullet with no file to
+      attribute it to is graded by neither judge.
     check: |
       import json
       import re
@@ -670,7 +683,15 @@ judges:
       STICKY_BULLET_RE = re.compile(r"^- \*\*\[([^\]\n]+)\]\*\*\s*`([^`\n]+)`(.*)$")
       HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$")
       MAX_SEVERITY = max(SEVERITY_ORDER.values())
-      seen = {(p["file"], p["category"].lower()) for p in posted}
+      # A bullet is "the same finding" only when a posted finding on that
+      # file and category also sits inside the bullet's severity range.
+      # Keying on (file, category) alone let a promoted critical be deduped
+      # away by a legal low note that happened to share the category token.
+      seen = {}
+      for p in posted:
+          rank = SEVERITY_ORDER.get(p["severity"])
+          if rank is not None:
+              seen.setdefault((p["file"], p["category"].lower()), []).append(rank)
       dropped = []
       for it in (state.get("comments") or []) + (state.get("reviews") or []):
           if not isinstance(it, dict):
@@ -696,7 +717,7 @@ judges:
               cat = mk.group(1).strip()
               # Strip only a trailing ":<line>", never a colon inside a path.
               path = norm_path(re.sub(r":\d+$", "", mk.group(2)))
-              if (path, cat.lower()) in seen:
+              if any(sev_lo <= r <= sev_hi for r in seen.get((path, cat.lower()), ())):
                   continue
               dropped.append({
                   "file": path,
@@ -712,6 +733,7 @@ judges:
           pat = r"(?<!\w)" + r"\s+".join(re.escape(t) for t in want.split()) + r"(?!\w)"
           return re.search(pat, got, re.I) is not None
 
+      want_files = {norm_path(e["file"]) for e in entries}
       violations = []
       dropped_violations = []
       for e in entries:
@@ -780,11 +802,37 @@ judges:
                   "nothing was posted — no review, no review decision and no comment, so "
                   "there is no review to verify precision against"
               )
-          if dropped:
+          # Scoped like the violation loops above, and for the same reason:
+          # SKILL.md tells the agent to report a sub-agent failure on the
+          # fixed "N/A" sentinel, postreview.go drops it for want of a line,
+          # and a COMMENT review with no inline findings is never submitted
+          # — so a clean case that merely hit a harness hiccup would
+          # otherwise fail the precision gate on a finding about harness
+          # health.
+          # A sticky left by an earlier run must not read as this run's
+          # clean review. SKILL.md pins the reviewed SHA in the sticky's
+          # first line, so when that marker is present it has to name the
+          # captured head. Absent marker means no opinion, never a failure.
+          head = state.get("head_sha") or ""
+          marks = re.findall(
+              r"\*\*Head SHA:\*\*\s*([0-9a-f]{7,40})",
+              "\n".join(
+                  it.get("body") or ""
+                  for it in (state.get("comments") or [])
+                  if isinstance(it, dict)
+              ),
+          )
+          if head and marks and head not in marks:
               return False, (
-                  f"no review was submitted, but {len(dropped)} finding(s) appear in the "
-                  "sticky/review body — the submission never landed and the findings "
-                  "reached nowhere this judge can grade them"
+                  f"no review was submitted and the sticky names head {marks[0][:8]}, not the "
+                  f"captured {head[:8]} — the write-up is from an earlier run"
+              )
+          undelivered = [d for d in dropped if d["file"] in want_files]
+          if undelivered:
+              return False, (
+                  f"no review was submitted, but {len(undelivered)} finding(s) on this case's "
+                  "files appear in the sticky/review body — the submission never landed and "
+                  "the findings reached nowhere this judge can grade them"
               )
       return True, f"None of the {len(entries)} forbidden findings were raised"
 

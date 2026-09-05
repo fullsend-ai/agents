@@ -408,15 +408,70 @@ CASES = [
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
           state=state_with([], [], issue_comments=[
               {"author": "review-bot", "body": "Looks good to me"}])), True),
-    # Same shape, but the write-up carries findings: the submission never
-    # landed and they reached nowhere the judge can grade them. The file is
-    # one the case says nothing about, so only the delivery check can catch it.
-    ("forbidden: a sticky with findings and no review object fails closed",
+    # Same shape, but the write-up carries a finding on a file this case
+    # names: the submission never landed and it reached nowhere the judge
+    # can grade it.
+    ("forbidden: a sticky finding on a case file with no review fails closed",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [], issue_comments=[
+              sticky([("weak-hash", "src/orders/receipts.py",
+                       "MD5 used for the cache key is insecure.")],
+                     heading="Critical")])), False),
+
+    # ...but the delivery branch is scoped like the violation loops. A
+    # sub-agent failure is reported on the fixed "N/A" sentinel, is dropped
+    # from the inline comments for want of a line, and leaves no review
+    # object because postreview.go skips a COMMENT review with nothing to
+    # attach. A clean case that merely hit a harness hiccup must still pass.
+    ("forbidden: a sub-agent-failure sentinel with no review object still passes",
+     "forbidden_findings",
+     forb([{"file": "docs/api.md", "category": "", "min_severity": "low"}], [],
+          state=state_with([], [], issue_comments=[
+              sticky([("sub-agent-failure", "N/A",
+                       "The security sub-agent did not return findings: timeout.")],
+                     heading="High")])), True),
+    ("forbidden: the N/A:0 sentinel spelling passes too", "forbidden_findings",
+     forb([{"file": "docs/api.md", "category": "", "min_severity": "low"}], [],
+          state=state_with([], [], issue_comments=[
+              sticky([("sub-agent-failure", "N/A:0",
+                       "The correctness sub-agent did not return findings.")],
+                     heading="High")])), True),
+    # A sticky pinned to a different head is last run's write-up, not this
+    # run's clean review. An absent marker is no opinion, not a failure.
+    ("forbidden: a stale sticky with no review object fails closed",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=dict(state_with([], [], issue_comments=[
+              {"author": "review-bot",
+               "body": "<!-- **Head SHA:** " + "a" * 40 + " -->\nLooks good to me"}]),
+              head_sha="b" * 40)), False),
+    ("forbidden: a sticky pinned to this run's head is a clean pass",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=dict(state_with([], [], issue_comments=[
+              {"author": "review-bot",
+               "body": "<!-- **Head SHA:** " + "b" * 40 + " -->\nLooks good to me"}]),
+              head_sha="b" * 40)), True),
+
+    ("forbidden: an unrelated sticky finding with no review still passes",
      "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
           state=state_with([], [], issue_comments=[
               sticky([("logic-error", "src/orders/pricing.py",
-                       "apply_discount lost its divisor.")], heading="High")])), False),
+                       "apply_discount lost its divisor.")], heading="High")])), True),
+
+    # Dedup is by (file, category) AND an overlapping severity. A promoted
+    # critical that shares a category token with a legal low note is a
+    # different finding, and must still be graded.
+    ("forbidden: a shared category token does not hide a promoted critical",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}],
+          [finding("src/orders/receipts.py", "low", "weak-hash",
+                   "Noted the md5 here; a cache key, not a boundary.")],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("weak-hash", "src/orders/receipts.py",
+                       "The md5 hash here is a real vulnerability.")])]}), False),
 
     # --- both judges: a malformed capture fails, it does not raise ----------
     # score.py drops a raising judge from the pass-rate denominator, so an
