@@ -92,9 +92,37 @@ def fallback_review(comments, original_body="## Review"):
     return {"author": "review-bot", "state": "COMMENTED", "body": body}
 
 
+# A review that found nothing still leaves a review object behind; only a
+# submission that never landed leaves reviews empty. The forbidden judge
+# reads that difference, so the default fixture carries a landed review.
+LANDED_REVIEW = {"author": "review-bot", "state": "APPROVED", "body": "Looks good to me"}
+
+
+def sticky(bullets, heading="Critical", author="review-bot"):
+    """A sticky comment body as skills/pr-review/SKILL.md's template writes it.
+
+    Findings are grouped under a severity heading (which may name several,
+    e.g. "Medium / Low / Info") and each bullet names the category and the
+    file. Mirrored here verbatim so the judges are tested against the shape
+    they will actually meet.
+    """
+    body = f"## Review\n\n### Findings\n\n#### {heading}\n\n"
+    for category, path, description in bullets:
+        body += f"- **[{category}]** `{path}` \u2014 {description}\n"
+    return {"author": author, "body": body}
+
+
+def sticky_review(bullets, heading="Critical"):
+    """The same body, carried on a review instead of an issue comment."""
+    item = sticky(bullets, heading)
+    item["state"] = "COMMENTED"
+    return item
+
+
 def outputs_for(entries, comments, key, state_extra=None, state=None):
     if state is None:
-        state = {"review_comments": comments, "review_comments_fetch_failed": False}
+        state = {"review_comments": comments, "review_comments_fetch_failed": False,
+                 "reviews": [LANDED_REVIEW]}
         if state_extra:
             state.update(state_extra)
     return {
@@ -293,24 +321,128 @@ CASES = [
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], []), True),
 
     # postreview.go omits findings with no file or line from the inline
-    # comments — they remain in the sticky comment body only. Zero inline
-    # comments with finding headers visible elsewhere is a dropped-findings
-    # review, not a clean one, and must fail closed.
+    # comments — they remain in the sticky comment body only. A forbidden
+    # file carrying a matching bullet there is a false positive the inline
+    # comments cannot see, and must fail closed.
     ("forbidden: findings only in the sticky comment fail closed", "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
-          state=state_with([], [], issue_comments=[
-              {"author": "review-bot",
-               "body": "## Review\n\n**[critical]** weak-hash\n\nMD5 used for "
-                       "the cache key is insecure."}])), False),
+          state=state_with([], [LANDED_REVIEW], issue_comments=[
+              sticky([("weak-hash", "src/orders/receipts.py",
+                       "MD5 used for the cache key is insecure.")])])), False),
     ("forbidden: findings only in a non-422 review body fail closed", "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
-          state=state_with([], [
-              {"author": "review-bot", "state": "COMMENTED",
-               "body": "**[high]** injection-vuln\n\nPossible injection."}])), False),
+          state=state_with([], [sticky_review([
+              ("weak-hash", "src/orders/receipts.py",
+               "MD5 used for the cache key is insecure.")])])), False),
+
+    # The reviewer's scenario for the short-circuit: one legally-posted
+    # low note beside a bait promoted to critical with no line. The low
+    # note filled `posted`, so the guard used to be skipped entirely.
+    ("forbidden: a legal inline note does not hide a dropped critical",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}],
+          [finding("src/orders/receipts.py", "low", "style-note",
+                   "Prefer sha256 for consistency; not a security issue.")],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("weak-crypto", "src/orders/receipts.py",
+                       "The md5 hash here is a real vulnerability.")])]}), False),
+
+    # Same bullet, same finding: it reached the inline comments and is
+    # already graded there. Grading the sticky copy again would fail every
+    # case whose floor sits above the section heading's range.
+    ("forbidden: a sticky copy of a posted finding is not graded twice",
+     "forbidden_findings",
+     forb([{"file": "docs/api.md", "category": "", "min_severity": "low"}],
+          [finding("docs/api.md", "info", "stale-doc", "Minor wording nit.")],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("stale-doc", "docs/api.md", "Minor wording nit.")],
+                     heading="Medium / Low / Info")]}), True),
+
+    # A sub-agent failure is harness health, not precision. Its file is the
+    # fixed "N/A" sentinel, so scoping the scan to the case's own files is
+    # what keeps an infrastructure hiccup off the precision gate.
+    ("forbidden: a sub-agent-failure bullet does not fail the precision gate",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("sub-agent-failure", "N/A",
+                       "The security sub-agent did not return findings: timeout.")],
+                     heading="High")]}), True),
+    ("forbidden: a sticky bullet on an unrelated file is not graded",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("weak-hash", "src/orders/other.py",
+                       "MD5 hash used here is insecure.")])]}), True),
+
+    # A "Medium / Low / Info" heading is a range, so the fail-closed end is
+    # medium — below the default high floor, and a dismissal note survives.
+    ("forbidden: an ambiguous sticky heading stays below the high floor",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("weak-hash", "src/orders/receipts.py",
+                       "Noted the md5 hash and dismissed it; not a boundary.")],
+                     heading="Medium / Low / Info")]}), True),
+
+    # --- forbidden_findings: the review must have landed --------------------
+    # reviews: [] with review_decision: null is a submission that never
+    # happened (the self-review 422), not a clean review. It used to report
+    # 1.0 precision on a pipeline that posted and evaluated nothing.
+    ("forbidden: a review that never landed fails closed", "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [])), False),
+    ("forbidden: a landed review with no findings is a clean pass",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [LANDED_REVIEW])), True),
+    ("forbidden: a review decision alone proves a review landed",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=dict(state_with([], []), review_decision="APPROVED")), True),
+
+    # --- both judges: a malformed capture fails, it does not raise ----------
+    # score.py drops a raising judge from the pass-rate denominator, so an
+    # exception here is silently identical to an `if:` skip.
+    ("required: truncated fixture-state.json fails closed", "required_findings",
+     {"annotations": {"required_findings": REQUIRED_THREE},
+      "files": {"output/fixture-state.json": '{"review_comments": [{"path"'}}, False),
+    ("forbidden: truncated fixture-state.json fails closed", "forbidden_findings",
+     {"annotations": {"forbidden_findings": [{"file": "a.py", "category": ""}]},
+      "files": {"output/fixture-state.json": '{"review_comments": [{"path"'}}, False),
+    ("required: a JSON array instead of an object fails closed",
+     "required_findings",
+     {"annotations": {"required_findings": REQUIRED_THREE},
+      "files": {"output/fixture-state.json": "[]"}}, False),
+    ("forbidden: outputs with no files map fails closed", "forbidden_findings",
+     {"annotations": {"forbidden_findings": [{"file": "a.py", "category": ""}]}}, False),
+    ("forbidden: a non-list comments key fails closed", "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": {"body": "oops"}}), False),
+
+    # --- required_findings: dropped findings are credited, not missed -------
+    # A correct finding with no line never reaches review_comments. Reading
+    # only the inline comments reported a miss the agent never made.
+    ("required: a finding dropped by the posting path is credited",
+     "required_findings",
+     req(REQUIRED_THREE, [TIMING, PRICING],
+         state_extra={"reviews": [LANDED_REVIEW], "comments": [
+             sticky([("injection-vuln", "src/orders/repository.py",
+                      "order_id is interpolated into the query — SQL injection.")],
+                    heading="High")]}), True),
+    # The low end of an ambiguous heading governs a credit, so a bullet that
+    # might be info cannot satisfy a `high` requirement.
+    ("required: an ambiguous sticky heading cannot satisfy a high floor",
+     "required_findings",
+     req(REQUIRED_THREE, [TIMING, PRICING],
+         state_extra={"reviews": [LANDED_REVIEW], "comments": [
+             sticky([("injection-vuln", "src/orders/repository.py",
+                      "order_id is interpolated into the query — SQL injection.")],
+                    heading="Medium / Low / Info")]}), False),
     ("forbidden: a chatty sticky without finding headers still passes",
      "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
-          state=state_with([], [], issue_comments=[
+          state=state_with([], [LANDED_REVIEW], issue_comments=[
               {"author": "review-bot",
                "body": "Review complete — no findings. Nice, clean change."}])), True),
     ("forbidden: sticky duplicates of positioned findings do not trip the guard",
@@ -318,9 +450,9 @@ CASES = [
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
           state=state_with(
               [finding("src/orders/pricing.py", "high", "logic-error", "lost divisor")],
-              [], issue_comments=[
-                  {"author": "review-bot",
-                   "body": "## Review\n\n**[high]** logic-error\n\nlost divisor"}])),
+              [LANDED_REVIEW], issue_comments=[
+                  sticky([("logic-error", "src/orders/pricing.py", "lost divisor")],
+                         heading="High")])),
      True),
     ("forbidden: MD5 bait flagged critical is a violation", "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}],

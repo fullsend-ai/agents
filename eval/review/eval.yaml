@@ -99,9 +99,10 @@ outputs:
       `comments` array holds the agent's sticky top-level write-up;
       review_comments holds the individually positioned findings. Findings
       with no file or line never reach review_comments — postreview.go
-      keeps them in the sticky body only — which is why the precision
-      judge also scans `comments` and `reviews` before trusting an empty
-      review_comments as a clean review.
+      keeps them in the sticky body only — which is why both findings
+      judges always also read `comments` and `reviews`, and why the
+      precision judge treats an absent review submission as unverifiable
+      rather than clean.
 
 # ---------------------------------------------------------------------------
 # Judges
@@ -263,14 +264,19 @@ judges:
       case declares no required_findings. A missing review_comments key,
       a non-list value, or review_comments_fetch_failed all fail the case:
       an empty finding list would otherwise read as "the agent posted
-      nothing" when the truth is "we could not look". Recall caveat when
-      triaging a failure: postreview.go drops findings with no file or no
-      line from the inline comments entirely, drops findings on files
-      outside the PR diff, and on a GitHub 422 retries the review without
-      inline comments — folding the findings into the review body, where
-      neither comments endpoint sees them. A miss here can therefore be a
-      posting-path artifact rather than a review miss; check the sticky
-      comment in `comments` before blaming the agent.
+      nothing" when the truth is "we could not look". A finding the agent
+      made but the posting path dropped is credited rather than counted as
+      a miss: postreview.go drops findings with no file or no line from
+      the inline comments entirely, drops findings on files outside the PR
+      diff, and on a GitHub 422 retries the review without inline comments
+      — in every case the finding survives in the sticky comment body,
+      whose bullet format (skills/pr-review/SKILL.md) names the file, so
+      the judge reads it there. Severity in the sticky comes from the
+      section heading, which may cover a range ("Medium / Low / Info"); a
+      credit uses the low end of that range, so an ambiguous bullet never
+      satisfies a `high` requirement. A bullet with no file to attribute
+      it to (the sub-agent-failure sentinel, a provenance warning) is not
+      graded either way.
     check: |
       import json
       import re
@@ -282,7 +288,7 @@ judges:
       FINDING_RE = re.compile(r"\*\*\[([^\]\n]+)\]\*\*[ \t]*([^\n]*)")
       ALLOWED_KEYS = {"file", "category", "min_severity", "description"}
 
-      entries = outputs.get("annotations", {}).get("required_findings")
+      entries = (outputs.get("annotations") or {}).get("required_findings")
       # Trivial pass only for "no ground truth declared" (absent or []).
       # Any other falsy value ({}, "", 0) is malformed and falls through to
       # the type check — `if not entries` would silently bless it.
@@ -313,10 +319,22 @@ judges:
           if not isinstance(sev, str) or sev.strip().lower() not in SEVERITY_ORDER:
               return False, f"required_findings[{i}]: min_severity must be one of {SEVERITY_NAMES}, got {sev!r}"
 
-      raw = outputs["files"].get("output/fixture-state.json")
+      # Fail closed on a malformed capture. score.py drops a judge that
+      # raises from the pass-rate denominator entirely (it aggregates only
+      # results whose value is not None), so an exception here is
+      # indistinguishable from an `if:` skip and the remaining cases carry
+      # the rate. capture-fixture.sh writes fixture-state.json with a plain
+      # redirect under the after_each timeout, so a truncated file is a live
+      # path, not a hypothetical.
+      raw = (outputs.get("files") or {}).get("output/fixture-state.json")
       if not raw:
           return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
-      state = json.loads(raw)
+      try:
+          state = json.loads(raw)
+      except ValueError as exc:
+          return False, f"fixture-state.json is not valid JSON: {exc}"
+      if not isinstance(state, dict):
+          return False, f"fixture-state.json must be a JSON object, got {type(state).__name__}"
       if state.get("review_comments_fetch_failed"):
           return False, "review_comments_fetch_failed — the agent's findings could not be read"
       comments = state.get("review_comments")
@@ -380,6 +398,60 @@ judges:
               "category": m.group(2).strip(),
               "text": body,
           })
+      # Findings the posting path dropped. postreview.go's
+      # findingsToReviewComments omits a finding with no file or no line
+      # (:464) and one whose file is outside the diff hunks (:470) from the
+      # inline comments — they survive only in the sticky comment body. Its
+      # bullet shape is fixed by skills/pr-review/SKILL.md's review
+      # template: "- **[<category>]** `<file>:<line>` — <description>",
+      # grouped under a "#### <severity>" heading that may name several
+      # ("Medium / Low / Info"), so a bullet carries a severity range
+      # rather than a point. This scan runs unconditionally: a single
+      # legally-posted low note used to short-circuit it, which let a
+      # promoted-but-dropped critical finding read as a clean pass.
+      # Bullets that mirror a posted finding are that same finding, not a
+      # dropped one, and are excluded so nothing is graded twice.
+      for _key in ("comments", "reviews"):
+          if not isinstance(state.get(_key) or [], list):
+              return False, f"{_key} must be a list in fixture-state.json, got {type(state.get(_key)).__name__}"
+      STICKY_BULLET_RE = re.compile(r"^- \*\*\[([^\]\n]+)\]\*\*\s*`([^`\n]+)`(.*)$")
+      HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$")
+      MAX_SEVERITY = max(SEVERITY_ORDER.values())
+      seen = {(p["file"], p["category"].lower()) for p in posted}
+      dropped = []
+      for it in (state.get("comments") or []) + (state.get("reviews") or []):
+          if not isinstance(it, dict):
+              continue
+          # Before any severity heading, assume the whole range: sev_lo is
+          # the conservative end for crediting, sev_hi the fail-closed end
+          # for forbidding, so an unheaded bullet is strict in both judges.
+          sev_lo, sev_hi = 0, MAX_SEVERITY
+          for line in (it.get("body") or "").splitlines():
+              head = HEADING_RE.match(line)
+              if head:
+                  named = [
+                      SEVERITY_ORDER[w]
+                      for w in re.split(r"[^a-z]+", head.group(1).lower())
+                      if w in SEVERITY_ORDER
+                  ]
+                  if named:
+                      sev_lo, sev_hi = min(named), max(named)
+                  continue
+              mk = STICKY_BULLET_RE.match(line)
+              if not mk:
+                  continue
+              cat = mk.group(1).strip()
+              # Strip only a trailing ":<line>", never a colon inside a path.
+              path = norm_path(re.sub(r":\d+$", "", mk.group(2)))
+              if (path, cat.lower()) in seen:
+                  continue
+              dropped.append({
+                  "file": path,
+                  "category": cat,
+                  "sev_lo": sev_lo,
+                  "sev_hi": sev_hi,
+                  "text": line,
+              })
       # Diagnostics without the full bodies.
       summary = [{k: p[k] for k in ("file", "severity", "category")} for p in posted]
 
@@ -392,23 +464,42 @@ judges:
           return re.search(pat, got, re.I) is not None
 
       missing = []
+      credited = []
       for e in entries:
           want_file = norm_path(e["file"])
           want_cat = e["category"].strip()
           floor = SEVERITY_ORDER[e.get("min_severity", "info").strip().lower()]
           # Unknown severity -> -1, so it never satisfies a requirement.
-          if not any(
+          if any(
               p["file"] == want_file
               and SEVERITY_ORDER.get(p["severity"], -1) >= floor
               and cat_matches(want_cat, p["text"])
               for p in posted
           ):
-              missing.append(
-                  f"{e['file']} [{want_cat or 'any category'} >= {e.get('min_severity', 'info')}]"
-              )
+              continue
+          # The finding may have been made and then dropped on the way out.
+          # Credit it from the sticky, using the LOW end of an ambiguous
+          # severity heading so a "Medium / Low / Info" bullet cannot
+          # satisfy a `high` requirement.
+          if any(
+              d["file"] == want_file
+              and d["sev_lo"] >= floor
+              and cat_matches(want_cat, d["text"])
+              for d in dropped
+          ):
+              credited.append(f"{e['file']} [{want_cat or 'any category'}]")
+              continue
+          missing.append(
+              f"{e['file']} [{want_cat or 'any category'} >= {e.get('min_severity', 'info')}]"
+          )
 
       if missing:
           return False, f"Missing required findings: {missing} (posted: {summary})"
+      if credited:
+          return True, (
+              f"All {len(entries)} required findings present; {credited} reached only the "
+              "sticky/review body — made, then dropped by the posting path"
+          )
       return True, f"All {len(entries)} required findings present"
 
   - name: forbidden_findings
@@ -430,12 +521,20 @@ judges:
       which is how a docs-only or version-bump case asserts "invent
       nothing here". A severity string outside the known vocabulary is
       treated as a violation (fail closed) — the opposite direction from
-      required_findings, and conservative in both. A review with zero
-      positioned findings passes only when no finding headers appear in
-      the sticky/issue comments or review bodies either: postreview.go
-      keeps fileless/lineless findings in the sticky comment body only,
-      and findings visible there but nowhere this judge can grade them
-      make precision unverifiable, which must not read as a clean pass.
+      required_findings, and conservative in both. The sticky/review-body
+      scan runs unconditionally, not only when the inline comments are
+      empty: postreview.go keeps a fileless, lineless or off-diff finding
+      in the sticky comment body alone, so one legally-posted low note is
+      no evidence that a promoted bait was not also raised. A sticky
+      bullet whose (file, category) matches a posted finding is that same
+      finding and is skipped; the rest are graded on the file the bullet
+      names, at the high end of its section heading's severity range. The
+      scan is scoped to the files the case names, so a sub-agent-failure
+      finding on its fixed "N/A" sentinel cannot fail a precision gate it
+      says nothing about. Finally, a clean pass requires that a review was
+      actually submitted: reviews empty and review_decision null means the
+      submission never landed, and a pipeline that posted nothing has not
+      demonstrated precision.
     check: |
       import json
       import re
@@ -445,7 +544,7 @@ judges:
       FINDING_RE = re.compile(r"\*\*\[([^\]\n]+)\]\*\*[ \t]*([^\n]*)")
       ALLOWED_KEYS = {"file", "category", "min_severity", "description"}
 
-      entries = outputs.get("annotations", {}).get("forbidden_findings")
+      entries = (outputs.get("annotations") or {}).get("forbidden_findings")
       # Same rule as required_findings: absent or [] passes trivially, any
       # other falsy value is malformed and must fail the type check below.
       if entries is None or entries == []:
@@ -472,10 +571,22 @@ judges:
           if not isinstance(sev, str) or sev.strip().lower() not in SEVERITY_ORDER:
               return False, f"forbidden_findings[{i}]: min_severity must be one of {SEVERITY_NAMES}, got {sev!r}"
 
-      raw = outputs["files"].get("output/fixture-state.json")
+      # Fail closed on a malformed capture. score.py drops a judge that
+      # raises from the pass-rate denominator entirely (it aggregates only
+      # results whose value is not None), so an exception here is
+      # indistinguishable from an `if:` skip and the remaining cases carry
+      # the rate. capture-fixture.sh writes fixture-state.json with a plain
+      # redirect under the after_each timeout, so a truncated file is a live
+      # path, not a hypothetical.
+      raw = (outputs.get("files") or {}).get("output/fixture-state.json")
       if not raw:
           return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
-      state = json.loads(raw)
+      try:
+          state = json.loads(raw)
+      except ValueError as exc:
+          return False, f"fixture-state.json is not valid JSON: {exc}"
+      if not isinstance(state, dict):
+          return False, f"fixture-state.json must be a JSON object, got {type(state).__name__}"
       if state.get("review_comments_fetch_failed"):
           return False, "review_comments_fetch_failed — the agent's findings could not be read"
       comments = state.get("review_comments")
@@ -540,6 +651,61 @@ judges:
               "text": body,
           })
 
+      # Findings the posting path dropped. postreview.go's
+      # findingsToReviewComments omits a finding with no file or no line
+      # (:464) and one whose file is outside the diff hunks (:470) from the
+      # inline comments — they survive only in the sticky comment body. Its
+      # bullet shape is fixed by skills/pr-review/SKILL.md's review
+      # template: "- **[<category>]** `<file>:<line>` — <description>",
+      # grouped under a "#### <severity>" heading that may name several
+      # ("Medium / Low / Info"), so a bullet carries a severity range
+      # rather than a point. This scan runs unconditionally: a single
+      # legally-posted low note used to short-circuit it, which let a
+      # promoted-but-dropped critical finding read as a clean pass.
+      # Bullets that mirror a posted finding are that same finding, not a
+      # dropped one, and are excluded so nothing is graded twice.
+      for _key in ("comments", "reviews"):
+          if not isinstance(state.get(_key) or [], list):
+              return False, f"{_key} must be a list in fixture-state.json, got {type(state.get(_key)).__name__}"
+      STICKY_BULLET_RE = re.compile(r"^- \*\*\[([^\]\n]+)\]\*\*\s*`([^`\n]+)`(.*)$")
+      HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$")
+      MAX_SEVERITY = max(SEVERITY_ORDER.values())
+      seen = {(p["file"], p["category"].lower()) for p in posted}
+      dropped = []
+      for it in (state.get("comments") or []) + (state.get("reviews") or []):
+          if not isinstance(it, dict):
+              continue
+          # Before any severity heading, assume the whole range: sev_lo is
+          # the conservative end for crediting, sev_hi the fail-closed end
+          # for forbidding, so an unheaded bullet is strict in both judges.
+          sev_lo, sev_hi = 0, MAX_SEVERITY
+          for line in (it.get("body") or "").splitlines():
+              head = HEADING_RE.match(line)
+              if head:
+                  named = [
+                      SEVERITY_ORDER[w]
+                      for w in re.split(r"[^a-z]+", head.group(1).lower())
+                      if w in SEVERITY_ORDER
+                  ]
+                  if named:
+                      sev_lo, sev_hi = min(named), max(named)
+                  continue
+              mk = STICKY_BULLET_RE.match(line)
+              if not mk:
+                  continue
+              cat = mk.group(1).strip()
+              # Strip only a trailing ":<line>", never a colon inside a path.
+              path = norm_path(re.sub(r":\d+$", "", mk.group(2)))
+              if (path, cat.lower()) in seen:
+                  continue
+              dropped.append({
+                  "file": path,
+                  "category": cat,
+                  "sev_lo": sev_lo,
+                  "sev_hi": sev_hi,
+                  "text": line,
+              })
+
       def cat_matches(want, got):
           if not want:
               return True
@@ -547,6 +713,7 @@ judges:
           return re.search(pat, got, re.I) is not None
 
       violations = []
+      dropped_violations = []
       for e in entries:
           want_file = norm_path(e["file"])
           want_cat = e["category"].strip()
@@ -559,46 +726,55 @@ judges:
                   and cat_matches(want_cat, p["text"])
               ):
                   violations.append({k: p[k] for k in ("file", "severity", "category")})
+          # A forbidden finding that never reached the inline comments is
+          # still a forbidden finding. Use the HIGH end of an ambiguous
+          # severity heading so an unattributable bullet fails closed. The
+          # scan is scoped to the files this case names, so a
+          # sub-agent-failure finding on its fixed "N/A" sentinel — or any
+          # header on a file the case says nothing about — cannot turn a
+          # harness hiccup into a red precision gate.
+          for d in dropped:
+              if (
+                  d["file"] == want_file
+                  and d["sev_hi"] >= floor
+                  and cat_matches(want_cat, d["text"])
+              ):
+                  dropped_violations.append({
+                      "file": d["file"],
+                      "category": d["category"],
+                      "severity": f"<={SEVERITY_NAMES[d['sev_hi']]}",
+                  })
 
       if violations:
           return False, f"Forbidden findings present: {violations}"
-      if not posted:
+      if dropped_violations:
+          return False, (
+              f"Forbidden findings present in the sticky/review body only: {dropped_violations} "
+              "— dropped from the inline comments by the posting path (no file/line, or a "
+              "file outside the diff hunks), so review_comments alone cannot see them"
+          )
+      if not posted and (comments or saw_fallback):
           # Comments exist but none parsed as findings: the agent's findings
-          # did not reach the inline comments this judge reads.
-          # postreview.go folds findings into the review body on a 422 and
-          # drops any finding with no file or line, so precision is
-          # unverifiable here — and an unverifiable case must not read as a
-          # clean pass, which is how a promoted bait would slip through.
-          if comments or saw_fallback:
-              return False, (
-                  f"{len(comments)} review comment(s) present but none parsed as findings "
-                  "— cannot verify precision (findings may have been folded into the "
-                  "review body, or posted without a file/line)"
-              )
-          # Zero inline comments is still not proof of a clean review:
-          # findingsToReviewComments omits findings with no file or line
-          # from the inline comments entirely — "they remain in the sticky
-          # comment body" (postreview.go) — so a review whose findings ALL
-          # lacked a position posts nothing inline and leaves no 422
-          # marker. Scan the sticky/issue comments and review bodies for
-          # finding headers; any there mean the agent emitted findings this
-          # judge cannot attribute to a file, so precision is unverifiable
-          # and must fail closed rather than read as verified clean.
-          stray = sorted({
-              src
-              for src, items in (
-                  ("issue comments", state.get("comments") or []),
-                  ("review bodies", state.get("reviews") or []),
-              )
-              for it in items
-              if isinstance(it, dict) and FINDING_RE.search(it.get("body") or "")
-          })
-          if stray:
-              return False, (
-                  f"No inline findings, but finding header(s) present in {stray} "
-                  "— the findings were dropped from the inline comments (no "
-                  "file/line) and cannot be checked against forbidden_findings"
-              )
+          # did not reach the inline comments this judge reads, and the
+          # sticky scan above could not attribute them to a file either, so
+          # precision is unverifiable — which must not read as a clean pass.
+          return False, (
+              f"{len(comments)} review comment(s) present but none parsed as findings "
+              "— cannot verify precision (findings may have been folded into the "
+              "review body, or posted without a file/line)"
+          )
+      # Delivery check. A submission that never landed leaves reviews: []
+      # and review_decision: null — the GET succeeded and legitimately
+      # returned zero rows, so review_comments_fetch_failed is not set and
+      # every check above passes vacuously. A pipeline that posted and
+      # evaluated nothing is otherwise indistinguishable from a genuinely
+      # clean review and would report 1.0 precision. A real approve/comment
+      # review always leaves a review object behind.
+      if not (state.get("reviews") or []) and state.get("review_decision") is None:
+          return False, (
+              "no review was submitted — reviews is empty and review_decision is null, so "
+              "nothing was posted to measure and precision cannot be verified"
+          )
       return True, f"None of the {len(entries)} forbidden findings were raised"
 
   - name: max_turns
