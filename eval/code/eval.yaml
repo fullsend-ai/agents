@@ -451,7 +451,8 @@ judges:
       capture-fixture.sh clones each PR head and runs `go build ./...` and
       `go test ./...`, recording exit codes under pull_requests[].checks;
       this judge requires both to be 0. Passes trivially when the case
-      declares no removed_symbols. A recorded skip passes with the reason in
+      declares no removed_symbols, and fails closed when removed_symbols is
+      present but not a mapping. A recorded skip passes with the reason in
       the message — recorded, not silent — except "no go.mod" for a case
       whose removed_symbols name .go files: there the missing go.mod is the
       PR's own doing (deleting it is never a fix) and skipping would hand
@@ -475,11 +476,12 @@ judges:
           return False, "No open/merged PR to inspect"
       # A Go case cannot legitimately end with no go.mod on the PR head, so
       # that skip must not be the way past the gate the whole judge exists
-      # to enforce. Shape-guarded: removed_symbols is the judge that rejects
-      # a malformed annotation, and it should do so with its own message
-      # rather than this judge raising AttributeError first.
-      sym_map = symbols if isinstance(symbols, dict) else {}
-      go_case = any(f.endswith(".go") for sites in sym_map.values()
+      # to enforce. The shape check fails closed here in its own right
+      # rather than leaning on removed_symbols to reject the annotation,
+      # so this judge stays correct wherever it is reused.
+      if not isinstance(symbols, dict):
+          return False, "removed_symbols is malformed; see the removed_symbols judge for the schema"
+      go_case = any(f.endswith(".go") for sites in symbols.values()
                     if isinstance(sites, dict) for f in sites)
       skips = []
       problems = []
