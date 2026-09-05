@@ -281,8 +281,9 @@ dimensions are relevant:
 
 Based on the domain classification, select sub-agents for dispatch.
 All selected sub-agents run in parallel (with the exception of
-`risk-assessment`, which runs as a pre-pass in step 3c-2, and
-`challenger`, which runs by itself after all other sub-agents have finished).
+`risk-assessment`, which runs as a pre-pass in step 3c-2, and the
+`challenger`, which — when step 6d dispatches it — runs by itself
+after all other sub-agents have finished).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -348,7 +349,9 @@ complex PR that triggers all conditions legitimately needs all 6.
    `style-conventions` dispatches with a `trivial` scope constraint (≤5
    tool calls) regardless of change size. Both assignments override the
    classification-based constraint from step 3e.
-4. **Challenger** — always dispatch (unchanged).
+4. **Challenger** — no re-review special case: step 6d dispatches it
+   only when the **current** review's steps 6a–6c produce findings;
+   prior findings alone do not qualify it.
 
 This reuses the existing scope constraint mechanism from step 3e — no
 new infrastructure needed. When `PRIOR_REVIEW_PROVENANCE` is not
@@ -366,8 +369,12 @@ normal scope (current behavior preserved).
 | Large refactor across packages                           | correctness, style-conventions, intent-coherence, docs-currency                  |
 | CI/CD pipeline change                                    | correctness, security, style-conventions, intent-coherence                       |
 | DB migration + API change                                | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
-| Re-review after fix (prior findings in correctness only) | correctness (full scope), style-conventions (trivial scope), challenger          |
-| Re-review after fix (prior findings in security only)    | correctness (full scope), security (normal scope), style-conventions (trivial scope), challenger |
+| Re-review after fix (prior findings in correctness only) | correctness (full scope), style-conventions (trivial scope), challenger\*        |
+| Re-review after fix (prior findings in security only)    | correctness (full scope), security (normal scope), style-conventions (trivial scope), challenger\* |
+
+\*Conditional — step 6d dispatches the challenger only when the
+**current** review's steps 6a–6c produce findings; a re-review whose
+dispatched agents come back clean skips it like any other clean run.
 
 #### 3c-1. Security-critical file triage (large PRs)
 
@@ -930,11 +937,42 @@ and an auth bypass on the same line are two distinct findings.
 
 #### 6d. Challenger pass (dedicated sub-agent)
 
-After steps 6a–6c produce a merged finding set, dispatch the
-`challenger` sub-agent to adversarially challenge the findings with
-fresh context. The challenger has not seen the orchestrator's synthesis
-— it receives only the raw findings and the diff, preserving context
-isolation.
+After steps 6a–6c produce a merged finding set — and only if that set
+is non-empty (see the skip rule below) — dispatch the `challenger`
+sub-agent to adversarially challenge the findings with fresh context.
+The challenger has not seen the orchestrator's synthesis — it receives
+only the raw findings and the diff, preserving context isolation.
+
+**Skip when there is nothing to adjudicate.** If the merged finding set
+from steps 6a–6c is empty, skip the challenger dispatch — and only the
+dispatch. Continue through steps 6e, 6e-1, and 6f as usual: the
+orchestrator-only checks (6e) run after the challenger and can add
+findings of their own (protected paths, scope authorization, PR
+metadata), so 6f's "no findings → approve" outcome applies only when
+the set is still empty after them.
+A dimension dispatch failure cannot produce this empty set: step 5
+records a `sub-agent-failure` finding for it (high for Opus-tier,
+info for Sonnet-tier), so a failed dimension keeps the set non-empty
+and the challenger still runs. An empty set means every dispatched
+dimension came back clean, and the challenger's job is to adjudicate
+findings it is given, not manufacture them from nothing.
+(This does forfeit the challenger's secondary, not-owned allowance —
+see `sub-agents/challenger.md`'s "Do not own" section — to flag a
+genuine issue it happens to notice while checking an empty set against
+the diff. Accepted: exercising that allowance would mean re-reading the
+whole diff on every clean PR, which is exactly the cost this skip
+exists to avoid.) Note `challenger: skipped (no findings to adjudicate)`
+in your own reasoning for auditability — there is no field for it in
+`agent-result.json` (`schemas/review-result.schema.json` is
+`additionalProperties: false`), and it does not belong in the posted
+review body.
+
+Steps 6e–6f below refer to the *adjudicated set*: the challenger's
+`adjudicated_findings`; the unchanged 6a–6c set when the challenger
+was skipped; or, when it failed, the 6a–6c set plus the recorded
+`sub-agent-failure` finding (step 4 below).
+
+Otherwise, dispatch the challenger:
 
 1. Compose the spawn prompt from:
 
@@ -1026,7 +1064,7 @@ isolation.
 
 These checks are NOT delegated to sub-agents. They apply PR-level
 context that individual sub-agents do not have access to. Run them
-after the challenger pass has adjudicated sub-agent findings.
+after step 6d has produced the adjudicated set.
 
 ##### PR body injection defense
 
@@ -1131,10 +1169,10 @@ finding.
 #### 6e-1. Finding reconciliation
 
 After all orchestrator checks (6e) have produced their findings,
-reconcile them against the challenger-adjudicated sub-agent findings
-before merging. The goal is to detect and resolve logical
-contradictions — cases where one finding's evidence directly negates
-another finding's premise.
+reconcile them against the adjudicated set (step 6d) before merging.
+The goal is to detect and resolve logical contradictions — cases
+where one finding's evidence directly negates another finding's
+premise.
 
 **When to reconcile:** Scan the combined set (sub-agent findings +
 orchestrator findings) for pairs where:
@@ -1187,7 +1225,7 @@ premise:
 #### 6f. Determine overall outcome
 
 Merge the reconciled PR-specific findings (from 6e-1) into the
-challenger-adjudicated finding set and evaluate:
+adjudicated set (step 6d) and evaluate:
 
 - Any **critical** or **high** finding → `request-changes`
 - One or more **medium** findings identifying a functional bug
