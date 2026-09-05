@@ -32,18 +32,24 @@ execution:
   #
   # Sized for the JOB, not one case: this value is applied per case, and
   # parallelism: 1 runs the suite's cases back to back inside one matrix
-  # leg capped at timeout-minutes: 45 (2700s). With two cases the worst
-  # case is 2 x (120 + 800 + 180 + 30) = 2260s, leaving 440s for job setup
+  # leg capped at timeout-minutes: 45 (2700s). Derived for THREE cases,
+  # because a third is already in flight (#1058 adds
+  # 002-needs-input-uninterpretable to this same leg) and whichever of the
+  # two PRs merges second would otherwise land a budget that no longer
+  # holds: 3 x (120 + 420 + 180 + 30) = 2250s, leaving 450s for job setup
   # — a deliberate margin, not an exact fit: podman alone routinely takes
   # ~190s of it and the rest (checkout, python/uv, harness install,
   # fullsend download) varies, so the allowance must absorb a bad day
   # without handing the whole leg to the GitHub Actions hard timeout,
-  # which produces no artifacts for either case. The previous 1800 gave
-  # 2 x 2010 = 4020s, so a hang in the first case would have had the
-  # second killed that way. Re-derive if a third case lands here:
-  # 3 x 1130 = 3390s no longer fits, and the cases would need their own
-  # matrix legs.
-  timeout: 800
+  # which produces no artifacts for any case. Two cases at this value are
+  # 1500s, so merging before #1058 is safe too. Note the setup margin is
+  # what fixes the ceiling, not the case count: 800 fitted two cases with
+  # 440s to spare and three with none, and 500 (the arithmetic that
+  # reaches 2490s) leaves 210s — inside podman's own ~190s alone. A fourth
+  # case does not fit at any useful per-case value; the cases would need
+  # their own matrix legs. 003 still has no observed CI runtime, so
+  # re-derive from its first real run.
+  timeout: 420
   parallelism: 1
   # Advisory only — the opaque-CLI-runner contract does not enforce this for
   # our runner type; a runaway run still spends what it spends and only
@@ -83,27 +89,31 @@ execution:
     # timeout envelope; the window is derived from the job budget instead
     # (see execution.timeout above).
     #
-    # Two cases share this window, run back to back (parallelism: 1) inside
-    # one 45-minute matrix leg: 001-fix-add (a 2-line arithmetic bug that
-    # completes in well under a minute) and 003-dead-config-field (a
-    # cross-file dead-config removal with a larger 60-turn / $4.00 budget).
-    # 700s here, 100s under execution.timeout (800) so this inner `timeout`
+    # Every case in this suite shares this window, run back to back
+    # (parallelism: 1) inside one 45-minute matrix leg: today 001-fix-add
+    # (a 2-line arithmetic bug that completes in well under a minute) and
+    # 003-dead-config-field (a cross-file dead-config removal with a larger
+    # 60-turn / $4.00 budget), with #1058's 002-needs-input-uninterpretable
+    # in flight — three is what execution.timeout above is derived for.
+    # 320s here, 100s under execution.timeout (420) so this inner `timeout`
     # fires first and fullsend still writes a partial metrics.json before
     # returning (see writeMetricsJSON in run.go's error path), giving an
     # inconclusive but readable "metrics.json not found"-adjacent judge
-    # failure rather than a harness SIGKILL. The 800s outer value is what
+    # failure rather than a harness SIGKILL. The 420s outer value is what
     # makes the job budget add up with real setup margin — see
-    # execution.timeout above — so a hang in either case still leaves the
-    # other its full window and its artifacts; at the old 1700/1800 a
-    # first-case hang left the second case to the GitHub Actions job
-    # timeout, which produces no artifacts. Neither fixture is expected to
-    # approach 700s (001 observed 12 and 35 turns in well under a minute);
-    # 003 has no observed CI runtime yet, so re-derive from its first run.
+    # execution.timeout above — so a hang in one case still leaves the
+    # others their full window and their artifacts; at the old 1700/1800 a
+    # first-case hang left the rest to the GitHub Actions job timeout,
+    # which produces no artifacts. 001 is not expected to approach 320s (it
+    # observed 12 and 35 turns in well under a minute); 003 has no observed
+    # CI runtime at all, and 320s is a job-budget quotient, not a measured
+    # fit — if its first real run needs more, the code cases need their own
+    # matrix legs rather than a larger share of this one.
     # Separately, pr_created can also fail when the agent finishes
     # in-budget but never emits a schema-valid code-result.json —
     # validation_loop then skips post_script (ADR 0022), so no PR is
     # created despite a clean timeout path.
-    EVAL_TIMEOUT: "700"
+    EVAL_TIMEOUT: "320"
 
 hooks:
   before_each:
@@ -115,10 +125,12 @@ hooks:
     - command: "capture-fixture.sh"
       # 180 rather than the sibling suites' 60: removed_symbols cases also
       # shallow-clone the PR head (up to 6 attempts, ~15s backoff) and run
-      # go build + go test on it, each under its own `timeout 45` (see
-      # run_go_checks), on top of the diff-fetch readiness poll (~16s) and
-      # the retried gh reads (~12s): ~135s worst case, with slack for the
-      # clone/build themselves. The script writes fixture-state.json
+      # go build + go test on it, each under its own `timeout 45` plus a
+      # 5s --kill-after grace (see run_go_checks), on top of the diff-fetch
+      # readiness poll (~16s) and the retried gh reads (~12s): ~143s worst
+      # case, with slack for the clone/build themselves. A test that forks
+      # a detached child can still outlive both, which is the residual
+      # run_go_checks documents. The script writes fixture-state.json
       # before this expensive stage, so even an overrun here costs the
       # fixture_checks verdict, not every judge's input. Counted in
       # execution.timeout's job-budget arithmetic above.

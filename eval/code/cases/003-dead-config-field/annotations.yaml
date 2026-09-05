@@ -30,12 +30,17 @@ removed_symbols:
     config/fields.go: 1       # case "verbose_logging"
     config/config_test.go: 1  # raw literal in TestLoad
 
-# Code agent budgets (sandbox work + retries). Unmeasured ceiling: this case
-# has no CI run of its own yet — re-derive from its first run. Values mirror
-# 001-fix-add's ceiling (60 turns / $4.00) and eval.yaml's max_budget_usd.
-# For reference, 001 (a trivial fixture) observed 12 turns / $2.12 (CI run
-# 29424512121) and 35 turns / $0.98 (CI run 30166455238); this cross-file
-# task is harder, so its ceiling is set no lower.
+# Code agent budgets (sandbox work + retries). Unmeasured ceiling, and to be
+# precise about what "unmeasured" means here: the eval harness has never
+# executed this case at all. Every Functional Tests run on the branch that
+# adds it was gated off by check-e2e-authorization.sh (external contributor,
+# no ok-to-test label), so nothing below is derived from a run of this
+# fixture — the numbers are a ceiling, not an observation. Re-derive from
+# the first real run, which needs a maintainer to apply ok-to-test.
+# Values mirror 001-fix-add's ceiling (60 turns / $4.00) and eval.yaml's
+# max_budget_usd. For reference, 001 (a trivial fixture) observed 12 turns /
+# $2.12 (CI run 29424512121) and 35 turns / $0.98 (CI run 30166455238); this
+# cross-file task is harder, so its ceiling is set no lower.
 max_turns: 60
 max_cost_usd: 4.00
 
