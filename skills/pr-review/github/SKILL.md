@@ -118,8 +118,8 @@ DISMISSALS=$(gh api graphql \
 query($owner:String!,$name:String!,$pr:Int!){
  repository(owner:$owner,name:$name){ pullRequest(number:$pr){
   author{ login }
-  comments(last:100){ nodes{ author{ login } authorAssociation } }
-  reviews(last:100){ nodes{ author{ login } authorAssociation } }
+  comments(last:100){ nodes{ author{ login } body createdAt } }
+  reviews(last:100){ nodes{ author{ login } body createdAt } }
   reviewThreads(last:100){
    pageInfo{ hasPreviousPage }
    nodes{
@@ -127,7 +127,6 @@ query($owner:String!,$name:String!,$pr:Int!){
     resolvedBy{ login }
     comments(first:50){ pageInfo{ hasNextPage } nodes{
      author{ __typename login }
-     authorAssociation
      body createdAt path diffHunk
      line originalLine startLine originalStartLine
      reactionGroups{ content reactors(first:10){ totalCount nodes{ ... on User { login } } } }
@@ -140,13 +139,13 @@ query($owner:String!,$name:String!,$pr:Int!){
 
 Reading the response:
 
-- `pullRequest.author.login` is the PR author, excluded from the trust
-  boundary.
-- `comments` and `reviews` exist for the trust lookup only: they carry
-  the `authorAssociation` of everyone who wrote a PR-level comment or a
-  review body, so resolvers and reactors can be tiered without an extra
-  request. `last: 100` keeps the newest of each; the lookup is
-  best-effort over what these return.
+- `pullRequest.author.login` is the PR author, who can never dismiss a
+  finding (their refutations are still heard — see step 2a-1).
+- `comments` and `reviews` carry the text of PR-level comments and
+  review bodies, because a dismissal or a refutation is as often written
+  there as in the thread it belongs to. `last: 100` keeps the newest of
+  each. They carry no thread anchor, so step 2a-1 applies one only when
+  it names a single finding unambiguously.
 - Within a thread, `comments.nodes[0]` is the root comment and every later
   node is a reply — hence `first: 50` there, which must not become `last`.
   When a thread's own `comments.pageInfo.hasNextPage` is true its newest
@@ -163,7 +162,9 @@ Reading the response:
   edge — always fall back to `originalLine`/`originalStartLine`.
 - `reactionGroups` returns all eight reaction contents even at zero, so
   select `content == "THUMBS_DOWN"` and check `totalCount` before reading
-  `reactors.nodes`.
+  `reactors.nodes`. `first: 10` truncates the list when `totalCount`
+  exceeds it: a login's absence from `nodes` is then not evidence that
+  they did not react, and nothing may be concluded from it either way.
 
 **Bot logins have two spellings and this query returns both.** GraphQL
 reports a `Bot`-typed `author.login` **without** the `[bot]` suffix —
@@ -175,16 +176,19 @@ source, or strip a trailing `[bot]` from both sides first.
 [fullsend#6456](https://github.com/fullsend-ai/fullsend/issues/6456)
 corrected this same mismatch in another skill.
 
-Trust tiers come from `authorAssociation`, which the query returns on every
-thread comment. Resolvers and reactors carry none of their own, so look
-their login up among those associations first.
-
-The last-resort lookup is the collaborator-permission endpoint:
+**Authorization to dismiss is the effective repository role, and
+nothing else.** The query deliberately does not select
+`authorAssociation`: `OWNER`/`MEMBER`/`COLLABORATOR` describe a
+relationship, not a permission, and fullsend
+[ADR 0054](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
+rejected `author_association` as authorization evidence for the same
+reason. There is no association fallback to reach for. Resolve the role
+per login, cache it, and accept only `admin`, `maintain`, or `write`:
 
 ```bash
-# Collaborator permission fallback — cache per login.
+# Effective repository role — the only dismissal gate. Cache per login.
 # Requires push access; expect 403 under the review agent's read-only
-# token and treat any error as "not trusted" (step 2a-1 fails closed).
+# token and treat any error as unverified (step 2a-1 fails closed).
 gh api "repos/${REPO_FULL_NAME}/collaborators/${LOGIN}/permission" \
   --jq '.role_name'
 ```
@@ -194,7 +198,12 @@ read-only` in `policies/github/review.yaml`), but GitHub itself rejects
 the call without push access — "Must have push access to view collaborator
 permission." The review harness is `readonly_repo: true` with
 `providers/github-ro.yaml`, so this is the expected result here, not a
-misconfiguration.
+misconfiguration: under it most dismissals stay unverified and their
+findings stay actionable, which step 2a-1 requires the review to state
+in one line. Resolving the role on the runner and passing a normalized
+role into the sandbox is
+[fullsend#6860](https://github.com/fullsend-ai/fullsend/issues/6860)'s
+job, not this skill's.
 
 ## Interactive mode (non-pipeline)
 
