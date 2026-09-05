@@ -78,6 +78,23 @@ COMPARE=$(curl --fail --silent --show-error \
 CHANGED_FILES=$(echo "$COMPARE" | jq -r '.diffs[].new_path')
 ```
 
+## Review thread dismissals
+
+**Not implemented for GitLab — this section supplies no commands.** Step
+2a-1 skips when the forge supplies no dismissal fetch, so re-reviews on
+GitLab keep today's behavior. This section exists to record why, and what
+a follow-up would need; it is not a fetch to attempt.
+
+The signals do exist here and parity is a reasonable follow-up: MR
+discussions expose `resolved` and `resolved_by` per note
+(`/merge_requests/<iid>/discussions`), replies are the notes after the
+first in a discussion, and 👎 is the `award_emoji` sub-resource on a note
+(`thumbsdown`). What is missing is a verified mapping onto the three
+signals — in particular which field carries the note author's project
+role, since the trust boundary in step 2a-1 is the part that must not be
+approximated. Anyone adding it should confirm that against a live
+instance rather than from the API docs.
+
 ## Notes
 
 - The sandbox policy allows `curl` but not `gh` for GitLab forges.
