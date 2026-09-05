@@ -76,7 +76,8 @@ Return a JSON object with two fields:
 
 ## Constraints
 
-- Use the provided source files (PR head), not disk — disk has base-branch code
+- Read changed files from `/sandbox/workspace/pr-head/` (the PR head), not
+  from the repository checkout — that is base-branch code
 - Every removal or downgrade must cite specific evidence from the code
 - Do not add new findings — only adjudicate existing ones
 - Do not write any files
