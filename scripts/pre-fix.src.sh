@@ -17,12 +17,16 @@
 #   ITERATION_CAP      — max bot-triggered iterations (default: 5)
 #   ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
 #   HUMAN_INSTRUCTION  — instruction text (only for human-triggered runs)
+#   PR_LABELS          — newline-separated PR labels; a `fullsend-fix-budget/N`
+#                        label may tighten (never raise) the iteration cap
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${FULLSEND_FORGE:?FULLSEND_FORGE is required — set to 'github' or 'gitlab'}"
 # shellcheck source=lib/fix-ops.lib.sh
 source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+# shellcheck source=lib/fix-budget.lib.sh
+source "${SCRIPT_DIR}/lib/fix-budget.lib.sh"
 
 errors=0
 
@@ -98,8 +102,21 @@ fi
 # Iteration cap check
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
-BOT_CAP="${ITERATION_CAP:-5}"
+DEFAULT_BOT_CAP="${ITERATION_CAP:-5}"
+BOT_CAP="${DEFAULT_BOT_CAP}"
 HUMAN_CAP="${ITERATION_CAP_HUMAN:-10}"
+
+# A per-PR `fullsend-fix-budget/N` label may tighten the BOT cap only (never
+# raise it, never touch the human cap). The label bounds how many autonomous
+# review→fix cycles run before escalating to a human; the human /fs-fix escape
+# hatch keeps its full ITERATION_CAP_HUMAN budget, so a label can never lock a
+# human out (preserving the guarantee documented in agents/fix.md).
+FIX_BUDGET="$(parse_fix_budget "${PR_LABELS:-}")"
+BUDGET_APPLIED=0
+if [[ -n "${FIX_BUDGET}" && "${FIX_BUDGET}" -lt "${BOT_CAP}" ]]; then
+  BOT_CAP="${FIX_BUDGET}"
+  BUDGET_APPLIED=1
+fi
 
 if is_bot_user "${TRIGGER_SOURCE}"; then
   CAP="${BOT_CAP}"
@@ -107,9 +124,18 @@ else
   CAP="${HUMAN_CAP}"
 fi
 
+# Notice only when the label actually lowered the bot cap. Emit it regardless of
+# this run's trigger so a maintainer sees the effect even on a human /fs-fix run.
+if [[ "${BUDGET_APPLIED}" -eq 1 ]]; then
+  gha_echo notice "PR label ${FIX_BUDGET_LABEL_PREFIX}${FIX_BUDGET} caps the autonomous fix loop at ${BOT_CAP} iteration(s) (default ${DEFAULT_BOT_CAP}); remove the label to restore it. Human /fs-fix stays available up to ${HUMAN_CAP}."
+fi
+
 if [[ "${ITERATION}" -gt "${CAP}" ]]; then
   if is_bot_user "${TRIGGER_SOURCE}"; then
     gha_echo error "Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+    if [[ "${BUDGET_APPLIED}" -eq 1 ]]; then
+      gha_echo error "This cap was set by the ${FIX_BUDGET_LABEL_PREFIX}${FIX_BUDGET} PR label; remove it to restore the default bot cap of ${DEFAULT_BOT_CAP}."
+    fi
     gha_echo error "The review→fix loop has run ${ITERATION} times without converging."
     gha_echo error "A human can still direct the agent with /fs-fix (up to ${HUMAN_CAP} total iterations)."
   else

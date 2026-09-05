@@ -341,25 +341,11 @@ run_downgrade_test "reject-actionable-filtered-downgraded" \
 # ---------------------------------------------------------------------------
 # Control-label guard tests
 # ---------------------------------------------------------------------------
-
-REVIEW_CONTROL_LABELS=(
-  "ready-for-merge" "requires-manual-review" "rejected"
-  "ready-for-review" "fullsend-no-fix" "fullsend-fix"
-)
-
-is_control_label() {
-  local label="$1"
-  for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
-    if [[ "${cl}" == "${label}" ]]; then
-      return 0
-    fi
-  done
-  # Pipeline-managed label prefixes
-  if [[ "${label}" == risk/* ]]; then
-    return 0
-  fi
-  return 1
-}
+# Source the production is_control_label from its lib, so these tests fail if
+# the production branch is removed or drifts — not a copy that always passes.
+_LABELS_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+# shellcheck source=lib/review-labels.lib.sh
+source "${_LABELS_LIB_DIR}/review-labels.lib.sh"
 
 run_control_label_test() {
   local test_name="$1"
@@ -399,8 +385,13 @@ run_control_label_test "risk-elevated-is-control" "risk/elevated" "true"
 run_control_label_test "risk-high-is-control" "risk/high" "true"
 run_control_label_test "risk-critical-is-control" "risk/critical" "true"
 
+# Maintainer-set fix-budget labels should be control labels
+run_control_label_test "fix-budget-3-is-control" "fullsend-fix-budget/3" "true"
+run_control_label_test "fix-budget-99999-is-control" "fullsend-fix-budget/99999" "true"
+
 # Non-control labels should NOT be recognized
 run_control_label_test "area-api-not-control" "area/api" "false"
+run_control_label_test "fix-budget-prefix-only-not-control" "fullsend-fix-budget" "false"
 run_control_label_test "priority-high-not-control" "priority/high" "false"
 run_control_label_test "bug-not-control" "bug" "false"
 run_control_label_test "empty-not-control" "" "false"

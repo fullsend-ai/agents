@@ -34,6 +34,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/review-ops.lib.sh
 source "${SCRIPT_DIR}/lib/review-ops.lib.sh"
+# shellcheck source=lib/review-labels.lib.sh
+source "${SCRIPT_DIR}/lib/review-labels.lib.sh"
 
 forge_validate_pr_url
 forge_parse_pr_url
@@ -282,25 +284,6 @@ fi
 # (e.g. area/api, priority/high). Validate them here so the label reason
 # appears in the review body. Actual label API calls happen after posting.
 # ---------------------------------------------------------------------------
-REVIEW_CONTROL_LABELS=(
-  "ready-for-merge" "requires-manual-review" "rejected"
-  "ready-for-review" "fullsend-no-fix" "fullsend-fix"
-)
-
-is_control_label() {
-  local label="$1"
-  for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
-    if [[ "${cl}" == "${label}" ]]; then
-      return 0
-    fi
-  done
-  # Pipeline-managed label prefixes
-  if [[ "${label}" == risk/* ]]; then
-    return 0
-  fi
-  return 1
-}
-
 remove_stale_risk_labels() {
   local keep="${1:-}"
   for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
