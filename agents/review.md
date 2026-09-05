@@ -243,39 +243,45 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 
 **Top-level object** (`additionalProperties: false`):
 
-| Field       | Type    | Always required | Description                                      |
-|-------------|---------|-----------------|--------------------------------------------------|
-| `action`    | string  | yes             | One of: `approve`, `request-changes`, `comment`, `reject`, `failure` |
-| `pr_number` | integer | yes             | PR number (minimum 1)                            |
-| `repo`      | string  | yes             | `owner/repo` format (pattern: `^[^/]+/[^/]+$`)  |
-| `head_sha`  | string  | conditional     | Commit SHA (40 or 64 hex chars)                  |
-| `body`      | string  | conditional     | Markdown review comment (min 1 char)             |
-| `findings`  | array   | conditional     | Array of finding objects (min 1 item when present)|
-| `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit` |
-| `label_actions` | object | no | Contextual label recommendations (see `issue-labels` skill) |
-| `risk_assessment` | object | no | Risk assessment from the pre-pass sub-agent (see `pr-risk-assessment` skill) |
+| Field             | Type    | Always required | Description                                                                    |
+|-------------------|---------|-----------------|--------------------------------------------------------------------------------|
+| `action`          | string  | yes             | One of: `approve`, `request-changes`, `comment`, `reject`, `failure`           |
+| `pr_number`       | integer | yes             | PR number (minimum 1)                                                          |
+| `repo`            | string  | yes             | `owner/repo` format (pattern: `^[^/]+/[^/]+$`)                                 |
+| `head_sha`        | string  | conditional     | Commit SHA (40 or 64 hex chars)                                                |
+| `body`            | string  | conditional     | Markdown review comment (min 1 char)                                           |
+| `findings`        | array   | conditional     | Array of finding objects (min 1 item when present)                             |
+| `reason`          | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit` |
+| `label_actions`   | object  | no              | Contextual label recommendations (see `issue-labels` skill)                    |
+| `risk_assessment` | object  | no              | Risk assessment from the pre-pass sub-agent (see `pr-risk-assessment` skill)   |
 
 **Required fields per action:**
 
-| Action            | Required fields                          |
-|-------------------|------------------------------------------|
-| `approve`         | `body`, `head_sha`                       |
-| `request-changes` | `body`, `head_sha`, `findings`           |
-| `comment`         | `body`, `head_sha`                       |
-| `reject`          | `body`, `head_sha`, `findings`           |
-| `failure`         | `reason`                                 |
+| Action            | Required fields                |
+|-------------------|--------------------------------|
+| `approve`         | `body`, `head_sha`             |
+| `request-changes` | `body`, `head_sha`, `findings` |
+| `comment`         | `body`, `head_sha`             |
+| `reject`          | `body`, `head_sha`, `findings` |
+| `failure`         | `reason`                       |
 
 **Finding object** (`additionalProperties: false`):
 
-| Field         | Type    | Required | Description                                   |
-|---------------|---------|----------|-----------------------------------------------|
-| `severity`    | string  | yes      | One of: `critical`, `high`, `medium`, `low`, `info` |
-| `category`    | string  | yes      | Finding category (min 1 char)                 |
-| `file`        | string  | yes      | File path (min 1 char)                        |
-| `line`        | integer | no       | Line number (minimum 1)                       |
-| `description` | string  | yes      | Finding description (min 1 char)              |
-| `remediation` | string  | no       | Suggested fix                                 |
-| `actionable`  | boolean | no       | When true with a non-empty `remediation`, routes the verdict to `request-changes` so the fix agent can address the finding automatically (follow-up issue creation is temporarily disabled; see #1137) |
+| Field                 | Type    | Required | Description                                                          |
+|-----------------------|---------|----------|----------------------------------------------------------------------|
+| `severity`            | string  | yes      | One of: `critical`, `high`, `medium`, `low`, `info`                  |
+| `category`            | string  | yes      | Finding category (min 1 char)                                        |
+| `file`                | string  | yes      | File path (min 1 char)                                               |
+| `line`                | integer | no       | Line number (minimum 1)                                              |
+| `description`         | string  | yes      | Finding description (min 1 char)                                     |
+| `remediation`         | string  | no       | Suggested fix                                                        |
+| `actionable`          | boolean | no       | If `true`, marks the finding for future follow-up issue creation[1]  |
+| `verified_variables`  | array   | yes      | Variables confirmed as having the security control applied[2][3]     |
+| `unchecked_variables` | array   | yes      | Variables not confirmed as having the security control applied[3][2] |
+
+[1] *Only* for low/info findings in an `approve` result
+[2] *Required* in findings that identify a sanitization or security control function
+[3] Use `[]` for non-security findings
 
 Schema validation failures trigger a harness retry iteration. The jq
 examples below show the exact JSON shape for each action.
@@ -294,7 +300,22 @@ jq -n \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
-For `request-changes` (including actionable low/info findings) or `reject`:
+For `approve` with actionable low/info findings:
+
+```bash
+jq -n \
+  --arg action "approve" \
+  --argjson pr_number <number> \
+  --arg repo "<owner/repo>" \
+  --arg head_sha "<sha>" \
+  --arg body "<markdown review comment>" \
+  --argjson findings '[{"severity":"low","category":"<category>","file":"<path>","description":"<desc>","actionable":true,"verified_variables":["<var1>"],"unchecked_variables":["<var2>"]}]' \
+  '{action: $action, pr_number: $pr_number, repo: $repo,
+    head_sha: $head_sha, body: $body, findings: $findings}' \
+  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+For `request-changes` or `reject`:
 
 ```bash
 jq -n \
@@ -303,7 +324,7 @@ jq -n \
   --arg repo "<owner/repo>" \
   --arg head_sha "<sha>" \
   --arg body "<markdown review comment>" \
-  --argjson findings '<findings array>' \
+  --argjson findings '[{"severity":"high","category":"<category>","file":"<path>","description":"<desc>","verified_variables":[],"unchecked_variables":[]}]' \
   '{action: $action, pr_number: $pr_number, repo: $repo,
     head_sha: $head_sha, body: $body, findings: $findings}' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"

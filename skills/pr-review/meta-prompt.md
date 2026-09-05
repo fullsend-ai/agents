@@ -19,9 +19,16 @@ For each finding, return a JSON array as follows
   "line": "<line number, optional>",
   "description": "<explanation>",
   "remediation": "<fix, required for critical/high>",
-  "actionable": true|false
+  "actionable": true|false,
+  "verified_variables": ["<verified-input>"],
+  "unchecked_variables": ["<unchecked-input>"]
 }
 ```
+
+Both `verified_variables` and `unchecked_variables` are **required** on
+every finding. Security sub-agents populate them with the names of
+variables they verified or could not verify; non-security sub-agents
+set both to `[]`.
 
 **Line number accuracy:** For the `line` field, cite the exact line
 number where the problematic code or text appears. After determining
