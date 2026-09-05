@@ -767,14 +767,25 @@ judges:
       # and review_decision: null — the GET succeeded and legitimately
       # returned zero rows, so review_comments_fetch_failed is not set and
       # every check above passes vacuously. A pipeline that posted and
-      # evaluated nothing is otherwise indistinguishable from a genuinely
-      # clean review and would report 1.0 precision. A real approve/comment
-      # review always leaves a review object behind.
+      # evaluated nothing would then report 1.0 precision on a review it
+      # never saw. Two things legitimately leave no review object, so the
+      # sticky is what tells them apart: postreview.go skips a formal
+      # COMMENT review that has no inline findings to attach, and a review
+      # that ran and found nothing still posts its write-up. A write-up
+      # carrying finding bullets with no review behind it is a delivery
+      # failure (the self-review 422), not a clean pass.
       if not (state.get("reviews") or []) and state.get("review_decision") is None:
-          return False, (
-              "no review was submitted — reviews is empty and review_decision is null, so "
-              "nothing was posted to measure and precision cannot be verified"
-          )
+          if not (state.get("comments") or []):
+              return False, (
+                  "nothing was posted — no review, no review decision and no comment, so "
+                  "there is no review to verify precision against"
+              )
+          if dropped:
+              return False, (
+                  f"no review was submitted, but {len(dropped)} finding(s) appear in the "
+                  "sticky/review body — the submission never landed and the findings "
+                  "reached nowhere this judge can grade them"
+              )
       return True, f"None of the {len(entries)} forbidden findings were raised"
 
   - name: max_turns

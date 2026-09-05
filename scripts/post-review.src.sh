@@ -8,6 +8,10 @@
 # if the PR touches sensitive paths, an "approve" action is downgraded
 # to "comment" so only a human can grant approval.
 #
+# It also degrades a blocking review event to "comment" when the review
+# token is the PR author, because a forge rejects a self-approval or a
+# self-requested change (see #245).
+#
 # Required environment variables:
 #   REVIEW_TOKEN                      — token with pull-requests:write on the target repo
 #   PR_URL                            — HTML URL of the PR/MR
@@ -296,6 +300,49 @@ if [ "${ACTION}" = "approve" ]; then
     fi
   fi
 fi
+
+# ---------------------------------------------------------------------------
+# Self-review: a forge rejects an approve or a request-changes review on your
+# own pull request (GitHub returns 422). fullsend's post-review retries a 422
+# with the same event, so the whole submission fails and neither the verdict
+# nor the inline findings reach the PR. When the review token owns the PR,
+# degrade the review EVENT to "comment": the sticky write-up and the findings
+# still land, and only the blocking verdict is dropped.
+#
+# ACTION is deliberately not re-read, so the outcome label still follows the
+# agent's real verdict — this changes delivery, not judgement. DOWNGRADED is
+# left alone for the same reason: this is not the protected-path policy
+# downgrade, which is a decision about who may approve.
+#
+# This is a workaround, not the fix. A review-posting identity distinct from
+# the PR author (a second account, or a GitHub App installation token in
+# REVIEW_TOKEN) removes the collision outright — see
+# https://github.com/fullsend-ai/agents/issues/245.
+# ---------------------------------------------------------------------------
+# Read the action from the result file, not from ACTION: a protected-path
+# downgrade has already rewritten it to "comment", which a forge accepts.
+case "$(jq -r '.action' "${RESULT_FILE}")" in
+  approve|request-changes|reject)
+    REVIEW_USER=$(forge_get_review_user)
+    PR_AUTHOR=$(forge_get_pr_author)
+    if [ -n "${REVIEW_USER}" ] && [ "${REVIEW_USER}" = "${PR_AUTHOR}" ]; then
+      echo "Review token is the PR author — posting the review as a comment (#245)"
+
+      SELF_REVIEW_NOTICE=$'\n\n---\n\n'
+      SELF_REVIEW_NOTICE+=$'> **Posted as a comment review** — the review token is the author of\n'
+      SELF_REVIEW_NOTICE+=$'> this pull request, and a forge does not accept an approval or a\n'
+      SELF_REVIEW_NOTICE+=$'> change request on your own PR. The findings below are the review; the\n'
+      SELF_REVIEW_NOTICE+=$'> verdict is on the outcome label.\n'
+
+      SELF_REVIEW_RESULT=$(mktemp)
+      CLEANUP_FILES+=("${SELF_REVIEW_RESULT}")
+      jq --arg notice "${SELF_REVIEW_NOTICE}" \
+        '.action = "comment" | .body = (.body + $notice)' \
+        "${RESULT_FILE}" > "${SELF_REVIEW_RESULT}"
+      RESULT_FILE="${SELF_REVIEW_RESULT}"
+    fi
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Label-actions validation: the review agent may recommend contextual labels

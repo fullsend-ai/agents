@@ -442,6 +442,20 @@ if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* 
   exit 0
 fi
 
+# gh api user --jq .login → the review token's own login, configurable via
+# MOCK_REVIEW_USER. Defaults differ from MOCK_PR_AUTHOR so the self-review
+# degrade stays off unless a test asks for it.
+if [[ "\$1" == "api" ]] && [[ "\$2" == "user" ]]; then
+  echo "\${MOCK_REVIEW_USER-review-bot}"
+  exit 0
+fi
+
+# gh pr view ... --json author → the PR author, configurable via MOCK_PR_AUTHOR.
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json author"* ]]; then
+  echo "\${MOCK_PR_AUTHOR-pr-author}"
+  exit 0
+fi
+
 # gh api repos/.../pulls/{n}/files --paginate --jq '.[].filename'
 # → configurable via MOCK_PR_FILES (the mock emits the already-jq'd
 # filename list, matching what forge_get_pr_files consumes). Uses
@@ -1484,6 +1498,91 @@ run_protected_paths_test "custom-paths-empty-entries-ignored" \
 run_protected_paths_test "custom-paths-empty-entries-valid-match" \
   "${APPROVE_JSON}" "PR touches protected paths" "present" \
   ",deploy/,,manifests/," "deploy/production.yaml"
+
+# ---------------------------------------------------------------------------
+# Self-review degrade tests
+# A forge rejects an approve or a request-changes review on your own PR, so
+# when the review token is the PR author the EVENT is degraded to "comment"
+# and the findings still land. ACTION is not re-read, so the outcome label
+# still follows the agent's real verdict.
+# ---------------------------------------------------------------------------
+run_self_review_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local review_user="$3"
+  local pr_author="$4"
+  local expected_action="$5"
+  local expected_label="$6"   # label expected in an --add-label call, or ""
+  local expected_body="${7:-}" # substring expected in the posted body, or ""
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_REVIEW_USER="${review_user}"
+    export MOCK_PR_AUTHOR="${pr_author}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local actual_action
+  actual_action="$(jq -r '.action' "${TMPDIR}/last-result.json")"
+  if [[ "${actual_action}" != "${expected_action}" ]]; then
+    echo "FAIL: ${test_name} — expected action '${expected_action}', got '${actual_action}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_label}" ]] && ! grep -qF -- "--add-label ${expected_label}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected '--add-label ${expected_label}' in the gh log"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_body}" ]] && ! jq -r '.body' "${TMPDIR}/last-result.json" | grep -qF -- "${expected_body}"; then
+    echo "FAIL: ${test_name} — expected body substring '${expected_body}'"
+    jq -r '.body' "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+SELF_REVIEW_RC_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}]}'
+SELF_REVIEW_APPROVE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}'
+
+# Same identity: the event degrades so the findings still reach the PR.
+run_self_review_test "self-review-request-changes-degrades-to-comment" \
+  "${SELF_REVIEW_RC_JSON}" "alice" "alice" "comment" "" "Posted as a comment review"
+
+# The verdict is unchanged, so an approve still earns ready-for-merge.
+run_self_review_test "self-review-approve-keeps-the-outcome-label" \
+  "${SELF_REVIEW_APPROVE_JSON}" "alice" "alice" "comment" "ready-for-merge"
+
+# A distinct review identity — the real fix for #245 — changes nothing.
+run_self_review_test "distinct-review-identity-keeps-the-event" \
+  "${SELF_REVIEW_RC_JSON}" "review-bot" "alice" "request-changes" ""
 
 # Abort when REVIEW_PROTECTED_PATHS is unset. harness/review.yaml always
 # sets it (with a default, overridable per-repo via harness composition),

@@ -131,10 +131,19 @@ Each test case follows this lifecycle:
 
 ## Known issues
 
-- **Self-review 422.** The runner reuses `GH_TOKEN` as `REVIEW_TOKEN`.
-  If the token owner is also the PR author, GitHub rejects
-  `REQUEST_CHANGES` reviews on your own PR. Use a token from a
-  different account or a GitHub App installation token.
+- **Self-review 422.** The runner falls back to `GH_TOKEN` for
+  `REVIEW_TOKEN`, and `setup-fixture.sh` opens the fixture PR with the
+  same token, so the reviewer is the PR author. GitHub rejects both
+  `APPROVE` and `REQUEST_CHANGES` reviews on your own PR, and fullsend's
+  422 retry re-submits the same event, so the whole submission fails and
+  no finding reaches the PR.
+
+  `post-review.sh` detects the collision and degrades the review event to
+  `COMMENT`, so the sticky write-up and the inline findings still land and
+  the findings judges still have something to measure. The outcome label
+  continues to follow the agent's real verdict. That is a workaround: set
+  `REVIEW_TOKEN` to a token from a different account or a GitHub App
+  installation and the eval measures the real review event.
   See [#245](https://github.com/fullsend-ai/agents/issues/245).
 
 - **fullsend `UploadFile` bug.** In fullsend v0.31.0, `UploadFile`

@@ -400,6 +400,23 @@ CASES = [
      "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
           state=dict(state_with([], []), review_decision="APPROVED")), True),
+    # postreview.go skips a formal COMMENT review with no inline findings to
+    # attach, so a clean review legitimately leaves no review object. Its
+    # sticky write-up is the evidence that the pipeline actually ran.
+    ("forbidden: a clean sticky with no review object is a clean pass",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [], issue_comments=[
+              {"author": "review-bot", "body": "Looks good to me"}])), True),
+    # Same shape, but the write-up carries findings: the submission never
+    # landed and they reached nowhere the judge can grade them. The file is
+    # one the case says nothing about, so only the delivery check can catch it.
+    ("forbidden: a sticky with findings and no review object fails closed",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=state_with([], [], issue_comments=[
+              sticky([("logic-error", "src/orders/pricing.py",
+                       "apply_discount lost its divisor.")], heading="High")])), False),
 
     # --- both judges: a malformed capture fails, it does not raise ----------
     # score.py drops a raising judge from the pass-rate denominator, so an

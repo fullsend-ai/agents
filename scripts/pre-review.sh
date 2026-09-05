@@ -77,6 +77,10 @@ forge_get_pr_author() {
     --repo "${REPO}" --json author --jq '.author.login' 2>/dev/null || true
 }
 
+forge_get_review_user() {
+  GH_TOKEN="${REVIEW_TOKEN}" gh api user --jq '.login' 2>/dev/null || true
+}
+
 forge_get_pr_info() {
   GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
     --repo "${REPO}" --json state,isDraft 2>/dev/null || {
@@ -306,6 +310,12 @@ forge_get_pr_author() {
   local mr_data
   mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || { echo ""; return; }
   echo "${mr_data}" | jq -r '.author.username // empty'
+}
+
+forge_get_review_user() {
+  local user_data
+  user_data=$(_gitlab_api GET "/user" 2>/dev/null) || { echo ""; return; }
+  echo "${user_data}" | jq -r '.username // empty'
 }
 
 forge_get_pr_info() {
