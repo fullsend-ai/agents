@@ -9,7 +9,8 @@
 # diff) paths in SKILL.md step 2c share one definition of "generated".
 #
 # Usage:
-#   filter-review-diff.sh [summary-file] [pr-head-root] < unified-diff
+#   filter-review-diff.sh [summary-file] [pr-head-root] \
+#       < unified-diff > filtered-diff
 #
 #   $1 (optional) — path to write the exclusion summary to. One line per
 #                   stripped file: "<path>  +<adds>/-<dels>  <reason>".

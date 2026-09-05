@@ -165,8 +165,10 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
      the checkout is the base branch, so `git diff` there is wrong
 
 Both buckets write the same file, and both then filter it in place —
-see step 2c. One deterministic definition of "generated" for both
-paths, instead of a separate prompt-level list here.
+see step 2c. The large-PR bucket has already had the forge skill's own
+coarse jq exclusions applied to it ("Per-file diffs"); step 2c is what
+both buckets share, and it is the only rule with the migrations
+exemption.
 
 3. FILE_COUNT>200, LINE_COUNT>10K (the same unfiltered counts computed
    above — never the post-filter numbers): emit failure with reason
@@ -200,17 +202,26 @@ against the diff.
 
 ### 2c. Filter unreviewable content
 
-Filter `/sandbox/workspace/pr-diff.txt` in place through
+Filter `/sandbox/workspace/pr-diff.txt` before it enters any context
+package (step 3d). The script is a stdin-to-stdout filter, so it writes
+a new file and that file replaces the diff. Run it as written:
 
-```
-skills/pr-review/scripts/filter-review-diff.sh <summary-file> /sandbox/workspace/pr-head
+```bash
+# Scanner dialect (fullsend-ai/agents#1190): `test` not `[ ]`, no rm.
+skills/pr-review/scripts/filter-review-diff.sh /sandbox/workspace/pr-excluded.txt \
+  /sandbox/workspace/pr-head \
+  < /sandbox/workspace/pr-diff.txt > /sandbox/workspace/pr-diff.filtered
+mv /sandbox/workspace/pr-diff.filtered /sandbox/workspace/pr-diff.txt
+test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF after filtering — produce a failure result (reason tool-failure)"
 ```
 
-before it enters any context package (step 3d). The second argument is
-the tree materialised in step 2b — with it the script can read a file's
-own first 20 lines at the PR head, which is where a generated-file
-marker lives and where a mid-file regen hunk never reaches. Without it
-the script still runs, but only sees what the hunk itself contains.
+`$1` is the exclusion summary, read below; `$2` is the tree
+materialised in step 2b — with it the script can read a file's own
+first 20 lines at the PR head, which is where a generated-file marker
+lives and where a mid-file regen hunk never reaches. Drop `$2` and the
+script still runs, but only sees what the hunk itself contains.
+Downstream steps keep reading `/sandbox/workspace/pr-diff.txt`; after
+this step its contents are the filtered diff.
 
 The script deterministically strips lockfiles, `*.min.js`/`*.min.css`,
 sourcemaps, and vendored paths (`vendor/`, `node_modules/`,
@@ -229,7 +240,8 @@ still author-controlled, so a hand-written file parked at e.g.
 below is the mitigation — every excluded path is named in the review,
 so a human can see exactly what was hidden.
 
-Read the exclusion-summary file it writes (never emitted on stdout):
+Read `/sandbox/workspace/pr-excluded.txt` (the summary is never
+emitted on stdout):
 
 - fold it into the orchestrator's own context — it is not part of the
   diff sub-agents receive, they only ever see the filtered output
@@ -678,14 +690,15 @@ safety-critical).
 
 For each selected sub-agent, assemble a context package containing:
 
-- `diff`: the path `/sandbox/workspace/pr-diff.txt` written in step 2
-  and filtered in step 2c. Sub-agents Read it; never paste the diff into
+- `diff`: the path `/sandbox/workspace/pr-diff.txt`, written in step 2
+  and replaced by its filtered self in step 2c. Sub-agents Read it;
+  never paste the diff into
   a prompt — seven copies of a large diff are minutes of output tokens
   before any review starts.
 - `pr_head`: the MANIFEST lines (step 2b) for the files this sub-agent
   should look at — all changed files for `correctness`, `security` and
   `style-conventions`, the dimension-relevant subset otherwise. Paths
-  named in step 2c's exclusion summary are omitted: content stripped
+  named in `/sandbox/workspace/pr-excluded.txt` are omitted: content stripped
   from the diff must not re-enter model context as a whole file. Paths
   only; sub-agents Read from `/sandbox/workspace/pr-head/`.
 - `head_sha`: the PR head commit SHA (from step 1), included for
@@ -1345,7 +1358,7 @@ info-level finding in the review output:
   provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
   This review treats all findings as first-time assessments.
 
-If step 2c's diff filtering produced a non-empty exclusion summary,
+If step 2c left a non-empty `/sandbox/workspace/pr-excluded.txt`,
 include an info-level finding in the review output (this is a
 disclosure, not a footer — it goes through the same findings/severity
 structure as everything else in this section). This disclosure is
