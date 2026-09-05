@@ -1044,13 +1044,10 @@ echo "${CHANGED_FILES}" | sed 's/^/  /'
 
 # --- Check for Signed-off-by trailers ---
 #
-# Soft-pass, same bucket as secret-scan: NOT agent-fixable here, handled
-# terminally by the post-script. TARGET_REPO_DIR is an extracted copy, so a
-# rewrite here would be invisible to the sandbox agent anyway (see the
-# PRECOMMIT_GATE_AUTOFIX="false" contract below) — and post-code.sh section 3b
-# / post-fix.sh section 1b now STRIP the trailer instead of rejecting.
-# Failing here would burn a validation iteration for something already
-# repaired downstream, which is the retry half of the #1184 cost.
+# Soft-pass, same bucket as secret-scan: the post-scripts strip the trailer,
+# so failing here would burn an iteration for something already repaired.
+# A rewrite here is impossible anyway — TARGET_REPO_DIR is an extracted copy
+# and PRECOMMIT_GATE_AUTOFIX="false" forbids git writes.
 echo "Checking for Signed-off-by trailers..."
 if git log --format='%B' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
   gha_echo warning "Signed-off-by trailer present — deferring to post-script (strips it); not consuming an iteration"

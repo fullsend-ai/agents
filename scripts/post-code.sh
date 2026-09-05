@@ -2561,13 +2561,9 @@ echo "Secret scan passed — no leaks in agent's commit(s)"
 # ---------------------------------------------------------------------------
 # 3b. Strip Signed-off-by trailers
 #
-# Agents must never produce Signed-off-by trailers. DCO is a human
-# attestation — the DCO app already waives the check for bot authors.
-# The bot noreply email makes the trailer ~90 characters, which causes
-# gitlint body-max-line-length failures in repos with a 72-char limit.
-#
-# Instead of rejecting the entire run, strip the trailer and continue.
-# Fail only if the trailer persists after the rewrite attempt.
+# Agents must not sign off: DCO waives bot authors, and the bot noreply
+# address makes the trailer ~90 chars, failing gitlint body-max-line-length.
+# Strip it and continue; fail only if one survives the rewrite.
 # ---------------------------------------------------------------------------
 echo "Checking for Signed-off-by trailers in agent's commit(s)..."
 SIGNOFF_STRIPPED=false
@@ -2715,8 +2711,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR: ${EXISTING_PR_URL}"
   forge_write_output "pr_url" "${EXISTING_PR_URL}"
 
-  # This path exits before the PR body is assembled, so the strip note has to
-  # be posted here or the rewrite leaves no durable trace on an existing PR.
+  # This path exits before the PR body is assembled, so the note goes here.
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
     forge_post_pr_comment "${EXISTING_PR_NUM}" \
       "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \

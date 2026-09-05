@@ -1448,8 +1448,8 @@ fi
 # ---------------------------------------------------------------------------
 BRANCH="$(git branch --show-current)"
 
-# Set when section 1b rewrites agent commit messages; surfaced on the PR by
-# process-fix-result.py. Declared here because 1b only runs when NO_PUSH=false.
+# Set by 1b, surfaced on the PR by process-fix-result.py. Declared here
+# because 1b only runs when NO_PUSH=false.
 SIGNOFF_STRIPPED=false
 SIGNOFF_STRIPPED_COUNT=0
 
@@ -1567,19 +1567,13 @@ if [ "${NO_PUSH}" = "false" ]; then
   # -------------------------------------------------------------------------
   # 1b. Strip Signed-off-by trailers
   #
-  # Agents must never produce Signed-off-by trailers. DCO is a human
-  # attestation — the DCO app already waives the check for bot authors.
-  # The bot noreply email makes the trailer ~90 characters, which causes
-  # gitlint body-max-line-length failures in repos with a 72-char limit.
-  #
-  # Instead of rejecting the entire run, strip the trailer and continue.
-  # Fail only if the trailer persists after the rewrite attempt.
+  # Agents must not sign off: DCO waives bot authors, and the bot noreply
+  # address makes the trailer ~90 chars, failing gitlint body-max-line-length.
+  # Strip it and continue; fail only if one survives the rewrite.
   # -------------------------------------------------------------------------
   echo "Checking for Signed-off-by trailers in agent's commit(s)..."
-  # SCAN_RANGE widens to merge-base on the rebase path (see DIFF_BASE above),
-  # so it can cover human commits already on the PR branch. The helpers scope
-  # both the count and the rewrite to bot-authored commits — a human's DCO
-  # sign-off is required by CONTRIBUTING.md and must survive untouched.
+  # SCAN_RANGE widens to merge-base on the rebase path, so it can cover human
+  # commits; the helpers scope count and rewrite to agent-authored ones.
   _signoff_count="$(signoff_count_range "${SCAN_RANGE}")"
   if [ "${_signoff_count}" -gt 0 ]; then
     gha_echo warning "Found Signed-off-by trailer(s) in ${_signoff_count} agent commit(s) — stripping"

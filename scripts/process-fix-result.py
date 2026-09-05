@@ -286,9 +286,7 @@ def main(argv=None):
     print(f"Processed: {fixed} fixed, {disagreed} disagreed")
 
     summary_body = build_summary_body(data)
-    # The post-script strips Signed-off-by trailers from agent commits rather
-    # than discarding the run; record that on the PR so the rewrite is visible
-    # to the human reviewing it.
+    # Record the post-script's trailer strip so the rewrite is visible.
     signoff_note = ""
     try:
         stripped = int(os.environ.get("SIGNOFF_STRIPPED_COUNT", "0") or "0")
