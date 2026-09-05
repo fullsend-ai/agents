@@ -196,6 +196,40 @@ post_summary = mod.post_summary
 MAX_COMMENT_LENGTH = mod.MAX_COMMENT_LENGTH
 
 
+_VALID_FIX_RESULT = {
+    "pr_number": 1,
+    "trigger_source": "bot",
+    "actions": [{"type": "fix", "finding": "nil check", "description": "Fixed"}],
+    "summary": "Short.",
+    "tests_passed": True,
+    "files_changed": ["foo.go"],
+}
+
+
+def _run_main_capture(data):
+    """Run main() in dry-run mode, capturing the body and suffix handed to
+    post_summary so tests can assert on the assembled comment text."""
+    captured = {}
+
+    def fake_post_summary(repo, pr_number, body, suffix="", dry_run=False):
+        captured["body"] = body
+        captured["suffix"] = suffix
+        return True
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(data, f)
+        path = f.name
+    try:
+        with patch.dict(os.environ, _SCHEMA_ENV), \
+             patch.object(mod, "post_summary", fake_post_summary), \
+             contextlib.redirect_stdout(io.StringIO()):
+            rc = main([path, "org/repo", "1", "--dry-run"])
+    finally:
+        os.unlink(path)
+    return rc, captured.get("body", ""), captured.get("suffix", "")
+
+
+
 class TestCommentTruncation(unittest.TestCase):
     def test_long_body_truncated(self):
         data = {
@@ -211,6 +245,39 @@ class TestCommentTruncation(unittest.TestCase):
         self.assertIn("[dry-run]", output)
         self.assertRegex(output, r"\d+ chars\)")
         reported = int(output.split("(")[1].split(" chars")[0])
+        self.assertLessEqual(reported, MAX_COMMENT_LENGTH)
+
+    def test_signoff_note_rendered_from_env(self):
+        data = dict(_VALID_FIX_RESULT)
+        with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": "1"}):
+            rc, _body, suffix = _run_main_capture(data)
+        self.assertEqual(rc, 0)
+        self.assertIn("Removed a Signed-off-by trailer from 1 agent commit.", suffix)
+        self.assertNotIn("commits.", suffix)
+        with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": "3"}):
+            _rc, _body, suffix = _run_main_capture(data)
+        self.assertIn("Removed a Signed-off-by trailer from 3 agent commits.", suffix)
+
+    def test_signoff_note_absent_when_unset_or_zero(self):
+        data = dict(_VALID_FIX_RESULT)
+        for val in ("", "0", "not-a-number"):
+            with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": val}):
+                rc, _body, suffix = _run_main_capture(data)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("Signed-off-by", suffix)
+
+    def test_signoff_note_survives_truncation(self):
+        # The note lives in the suffix, which post_summary must keep whole while
+        # it trims the body to fit. Take a real suffix from a valid run, then
+        # feed an oversized body through the real truncation path.
+        with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": "2"}):
+            rc, _body, suffix = _run_main_capture(dict(_VALID_FIX_RESULT))
+        self.assertEqual(rc, 0)
+        self.assertIn("Removed a Signed-off-by trailer from 2 agent commits.", suffix)
+        body = build_summary_body(dict(_VALID_FIX_RESULT, summary="x" * 70000))
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            post_summary("org/repo", "1", body, suffix=suffix, dry_run=True)
+        reported = int(captured.getvalue().split("(")[1].split(" chars")[0])
         self.assertLessEqual(reported, MAX_COMMENT_LENGTH)
 
     def test_short_body_not_truncated(self):
