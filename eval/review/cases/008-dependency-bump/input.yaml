@@ -1,13 +1,13 @@
 forge: github
 fixture:
   type: pull_request
-  title: "fix(deps): update dependency requests to v2.32.3"
+  title: "fix(deps): update dependency requests to v2.33.1"
   body: |
     This PR contains the following updates:
 
     | Package | Change |
     |---|---|
-    | requests | `2.32.2` -> `2.32.3` |
+    | requests | `2.33.0` -> `2.33.1` |
 
     Configured by a dependency update bot. Patch-level release, no known
     breaking changes in the changelog between these versions.
@@ -16,5 +16,5 @@ fixture:
   files:
     - path: requirements.txt
       content: |
-        requests==2.32.3
-        flask==3.0.3
+        requests==2.33.1
+        flask==3.1.3

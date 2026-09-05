@@ -7,7 +7,8 @@ fixture:
 
     Two small doc clarifications, no code changes:
 
-    - Note that `GET /orders/{id}` returns 404 when the order doesn't exist.
+    - Note that the `GET /orders/{id}` lookup yields no order when the id
+      is unknown.
     - Note that discount percentages are whole numbers and the total is
       rounded to the nearest cent.
 
@@ -23,7 +24,8 @@ fixture:
 
         ## GET /orders/{id}
 
-        Returns a single order by id, or 404 if no order with that id exists.
+        Returns a single order by id. The lookup returns `None` when no order
+        with that id exists.
 
         ## POST /orders
 
