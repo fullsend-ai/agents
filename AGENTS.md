@@ -165,3 +165,112 @@ when identical across forges). When reviewing PRs, do not flag a
 static literal default in these blocks as hardcoded, but do flag a
 regression that replaces one of these computed passthrough values
 with a literal.
+
+## 9. Shell scripting defensive patterns
+
+When creating or modifying `.sh` files, follow these rules to prevent
+common shell scripting bugs. These patterns address recurring issues
+found in code review (see PR #918) and are independently valuable
+alongside the review-time shell pitfall checks proposed in issue #131.
+
+### 9a. stdin handling
+
+When a function reads stdin (piped input), save it to a variable or
+tempfile before any branching logic. Never pass stdin through a
+conditional where only one branch consumes it — the other branch
+silently receives empty input.
+
+```bash
+# Wrong — only the first branch consumes stdin; the second gets nothing.
+if [ "$mode" = "a" ]; then
+  process_a    # reads stdin
+else
+  process_b    # stdin already consumed
+fi
+
+# Right — capture once, use in any branch.
+input=$(cat)
+if [ "$mode" = "a" ]; then
+  echo "$input" | process_a
+else
+  echo "$input" | process_b
+fi
+```
+
+### 9b. jq null safety
+
+Always guard jq output against literal `null` strings using
+`// empty` or `// "default"`. Raw jq output of `null` silently
+becomes the four-character string `null` in bash, causing arithmetic
+errors, incorrect comparisons, and downstream failures.
+
+```bash
+# Wrong — if .count is missing, count becomes the string "null".
+count=$(echo "$json" | jq -r '.count')
+total=$(( count + 1 ))  # arithmetic error
+
+# Right — use // empty to produce an empty string on null, then
+# default in bash.
+count=$(echo "$json" | jq -r '.count // empty')
+total=$(( ${count:-0} + 1 ))
+```
+
+### 9c. GHA output sanitization
+
+Never echo environment variables or untrusted content to
+stdout/stderr without sanitizing. In GitHub Actions context,
+unsanitized output can contain workflow command sequences
+(`::set-output::`, `::set-env::`) that enable command injection.
+Pass all untrusted values through `_gha_sanitize` or an equivalent
+function before writing to any output stream.
+
+```bash
+# Wrong — FULLSEND_FORGE could contain GHA workflow commands.
+echo "ERROR: invalid forge: '${FULLSEND_FORGE}'" >&2
+
+# Right — sanitize before echoing.
+echo "ERROR: invalid forge: '$(_gha_sanitize "${FULLSEND_FORGE:-}")'" >&2
+```
+
+### 9d. stderr preservation
+
+Never use `2>/dev/null` without an inline comment explaining why
+stderr suppression is safe. Silent suppression hides diagnostic
+information that is critical for debugging failures. Prefer explicit
+stderr handling over blanket suppression.
+
+```bash
+# Wrong — diagnostic stderr silently discarded.
+result=$(some_command 2>/dev/null)
+
+# Right — explain why suppression is intentional.
+# stderr suppressed: command prints a benign deprecation
+# warning on every invocation that clutters logs.
+result=$(some_command 2>/dev/null)
+
+# Better — redirect stderr to a log or capture it.
+result=$(some_command 2>>"${LOG_FILE}")
+```
+
+### 9e. Exit code propagation
+
+Wrapper functions must capture and return exit codes from inner
+commands. Do not let wrapper boundaries silently swallow failures.
+Use `local rc=$?` to capture the exit code and `return $rc` to
+propagate it.
+
+```bash
+# Wrong — the wrapper always returns 0.
+forge_post_comment() {
+  _inner_post "$@"
+  echo "Done"
+}
+
+# Right — capture and propagate the exit code.
+forge_post_comment() {
+  local rc=0
+  _inner_post "$@" || rc=$?
+  echo "Done"
+  return $rc
+}
+```
