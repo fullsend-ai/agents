@@ -127,31 +127,51 @@ run_go_checks() {
     return 0
   fi
   # The checkout is agent-authored code, and `go test` compiles and RUNS
-  # it. This is the one place that output executes outside the podman
-  # sandbox, on a runner whose environment carries live credentials
-  # (EVAL_GH_TOKEN, GOOGLE_APPLICATION_CREDENTIALS, OIDC id-token) under
-  # pull_request_target. The scrubbed environment below is load-bearing —
-  # do not simplify it away: env -i drops every runner secret from the
-  # child, GOPROXY=off keeps the build off the network, -mod=readonly
-  # stops an agent-edited go.mod from fetching, GOTOOLCHAIN=local pins
-  # the toolchain, CGO_ENABLED=0 removes the C toolchain from the attack
-  # surface, and HOME/GOPATH/GOCACHE keep all writes inside the scratch
-  # dir. Each invocation gets its own timeout so an agent-written test
-  # that blocks records exit 124 instead of overrunning the hook budget
-  # (see after_each in eval/code/eval.yaml for the 180s derivation);
-  # `timeout` is coreutils — present on CI, absent on stock macOS, where
-  # the gate runs unbounded rather than not at all.
+  # it — every test in the cloned head, fixture-supplied ones included.
+  # This is the one place that output executes outside the podman sandbox,
+  # on a runner whose environment carries live credentials (EVAL_GH_TOKEN,
+  # GOOGLE_APPLICATION_CREDENTIALS, OIDC id-token) under
+  # pull_request_target.
+  #
+  # What the scrub below actually does: env -i drops every runner secret
+  # carried IN THE ENVIRONMENT, GOTOOLCHAIN=local pins the toolchain,
+  # CGO_ENABLED=0 removes the C toolchain from the attack surface, and
+  # HOME/TMPDIR/GOPATH/GOCACHE keep the go tool's own writes inside the
+  # scratch dir.
+  #
+  # What it does NOT do, so nobody plans around a containment that is not
+  # here: no filesystem isolation — the credentials the environment named
+  # are files at predictable paths (gha-creds-*.json under
+  # GITHUB_WORKSPACE, gcp-oidc-* under RUNNER_TEMP) and stay readable by
+  # this same uid; and no network isolation — GOPROXY=off and
+  # -mod=readonly only stop the GO TOOL from fetching modules, while a
+  # test binary's own net/http, or /usr/bin/curl on the PATH below, is
+  # unrestricted. A hostile test can therefore read and exfiltrate that
+  # credential material. The residual is accepted because the job runs
+  # only behind the maintainer-applied ok-to-test label and the fixture
+  # repo contents are reviewed; moving the gate into the podman sandbox
+  # the job already installs (--network none, read-only mount) is the fix
+  # if that stops being enough.
+  #
+  # Each invocation gets its own timeout so an agent-written test that
+  # blocks records exit 124 instead of overrunning the hook budget (see
+  # after_each in eval/code/eval.yaml for the 180s derivation), with
+  # --kill-after so a test that ignores SIGTERM is still killed; a
+  # detached grandchild can outlive either. `timeout` is coreutils —
+  # present on CI, absent on stock macOS, where the gate runs unbounded
+  # rather than not at all.
   local godir scratch
   godir="$(dirname "$(command -v go)")"
   scratch="$(mktemp -d)"
-  mkdir -p "${scratch}/home"
+  mkdir -p "${scratch}/home" "${scratch}/tmp"
   local scrub=(env -i "PATH=${godir}:/usr/bin:/bin" "HOME=${scratch}/home"
+    "TMPDIR=${scratch}/tmp"
     GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-mod=readonly CGO_ENABLED=0
     "GOCACHE=${scratch}/gocache" "GOPATH=${scratch}/gopath")
   # `runner` is never an empty array: expanding one under `set -u` is an
   # unbound-variable error on bash 3.2 (macOS's /bin/bash).
   local runner=(go)
-  command -v timeout >/dev/null 2>&1 && runner=(timeout 45 go)
+  command -v timeout >/dev/null 2>&1 && runner=(timeout --kill-after 5 45 go)
   (cd "$dir" && "${scrub[@]}" "${runner[@]}" build ./...) >/dev/null 2>&1 || build_exit=$?
   (cd "$dir" && "${scrub[@]}" "${runner[@]}" test ./...) >/dev/null 2>&1 || test_exit=$?
   rm -rf "$scratch"
