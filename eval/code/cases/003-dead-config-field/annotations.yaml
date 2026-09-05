@@ -1,0 +1,53 @@
+state: open
+
+expected_files:
+  - config/config.go
+  - config/fields.go
+  - config/config_test.go
+
+labels:
+  forbidden: []
+
+# Consumed by eval.yaml's removed_symbols judge: for each symbol, each file
+# maps to the minimum number of deletion lines that must name the symbol,
+# and the symbol must not survive in any added or context line of the diff.
+# Both the Go identifier and its YAML key must vanish from all three sites.
+#
+# Counts rather than a bare file list on purpose: one deletion line per
+# file is satisfied by the struct field alone, while the `VerboseLogging:
+# false,` in Defaults() sits 11 lines away — outside git's 3-line context,
+# so it is neither deleted nor visible as a survivor, and the tree no
+# longer compiles. The counts are the lines that name the symbol today
+# (`grep -n` in eval/code/repos/taskrunner/config/), excluding the doc
+# comment above the field, which a fix may legitimately leave or drop.
+removed_symbols:
+  VerboseLogging:
+    config/config.go: 2       # struct field, Defaults()
+    config/fields.go: 1       # c.VerboseLogging = v
+    config/config_test.go: 6  # TestDefaults, TestLoad, TestLoadPartial (2 each)
+  verbose_logging:
+    config/config.go: 1       # yaml tag on the struct field
+    config/fields.go: 1       # case "verbose_logging"
+    config/config_test.go: 1  # raw literal in TestLoad
+
+# Code agent budgets (sandbox work + retries). Unmeasured ceiling: this case
+# has no CI run of its own yet — re-derive from its first run. Values mirror
+# 001-fix-add's ceiling (60 turns / $4.00) and eval.yaml's max_budget_usd.
+# For reference, 001 (a trivial fixture) observed 12 turns / $2.12 (CI run
+# 29424512121) and 35 turns / $0.98 (CI run 30166455238); this cross-file
+# task is harder, so its ceiling is set no lower.
+max_turns: 60
+max_cost_usd: 4.00
+
+# Human reference only; not consumed by judges (unlike triage/review quality).
+code_expectations: |
+  The repo has a dead config field: Config.VerboseLogging is declared, defaulted,
+  parsed, and tested, but never read by any consumer (runner/runner.go doesn't
+  use it). A successful run creates a PR that removes VerboseLogging from: the
+  struct definition (config.go), the Defaults() return value (config.go), the
+  SetField() switch case (fields.go), and all test assertions (config_test.go).
+  Tests must still pass after removal. This case tests cross-file dead-code
+  removal — tracing symbol references across multiple files to determine what
+  to change, not just fixing a single line. The raw YAML literal in TestLoad
+  (verbose_logging: true) must also be removed — SetField rejects unknown keys,
+  so leaving it breaks Load().
