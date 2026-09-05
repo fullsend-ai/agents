@@ -3,7 +3,7 @@ name: risk-assessment
 description: >-
   Computes composite PR risk score from metadata, git history,
   and linked issue signals.
-model: sonnet
+model: claude-sonnet-4-6  # pin; sonnet alias unavailable on Vertex — bump with env/gcp-vertex.env
 tools: Read, Bash, Grep, Glob
 permissionMode: dontAsk
 background: false

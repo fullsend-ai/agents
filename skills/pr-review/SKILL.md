@@ -593,7 +593,7 @@ be absent from the result JSON.
    ```
 
 5. Spawn via Agent tool with:
-   - `model`: `sonnet` (from the sub-agent frontmatter)
+   - `model`: `claude-sonnet-4-6` (from the sub-agent frontmatter)
    - `prompt`: composed from parts 1–3
    - Run **synchronously** (not in the background) — the result is
      stored for inclusion in the final review result

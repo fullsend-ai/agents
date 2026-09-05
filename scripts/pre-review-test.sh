@@ -487,6 +487,86 @@ run_gitlab_test_stdout "gitlab-no-token-proceeds" \
   0 \
   "REVIEW_TOKEN="
 
+# ---------------------------------------------------------------------------
+# Diagnostic guard: ANTHROPIC_DEFAULT_SONNET_MODEL env file check
+# ---------------------------------------------------------------------------
+
+# The guard uses SCRIPT_DIR/../env/gcp-vertex.env. When running from the
+# real repo, the file exists and contains the variable → no warning.
+run_test_stdout "sonnet-pin-guard-no-warning-when-present" \
+  "OPEN" "some-user" \
+  "proceeding with review agent" \
+  0
+
+# Verify the happy path does NOT emit the warning.
+_sonnet_test_mock_bin="$(build_mock "OPEN" "some-user")"
+_sonnet_test_exit=0
+env \
+  PATH="${_sonnet_test_mock_bin}:${PATH}" \
+  PR_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  PR_URL="https://github.com/test-org/test-repo/pull/42" \
+  FULLSEND_FORGE="github" \
+  REVIEW_TOKEN="fake-token" \
+  GH_TOKEN="fake-token" \
+  bash "${SCRIPT_DIR}/pre-review.sh" \
+  > "${TMPDIR}/sonnet-guard-stdout.log" 2>&1 || _sonnet_test_exit=$?
+if grep -q "ANTHROPIC_DEFAULT_SONNET_MODEL" "${TMPDIR}/sonnet-guard-stdout.log" 2>/dev/null; then
+  echo "FAIL: sonnet-pin-guard-no-false-positive — warning should not appear when env file is intact"
+  cat "${TMPDIR}/sonnet-guard-stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: sonnet-pin-guard-no-false-positive"
+fi
+
+# When pre-review.sh runs from a directory where ../env/gcp-vertex.env
+# does not exist, the guard should emit a warning.
+_guard_tmp="$(mktemp -d)"
+cp "${SCRIPT_DIR}/pre-review.sh" "${_guard_tmp}/pre-review.sh"
+_guard_mock_bin="$(build_mock "OPEN" "some-user")"
+_guard_exit=0
+env \
+  PATH="${_guard_mock_bin}:${PATH}" \
+  PR_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  PR_URL="https://github.com/test-org/test-repo/pull/42" \
+  FULLSEND_FORGE="github" \
+  REVIEW_TOKEN="fake-token" \
+  GH_TOKEN="fake-token" \
+  bash "${_guard_tmp}/pre-review.sh" \
+  > "${TMPDIR}/guard-missing-stdout.log" 2>&1 || _guard_exit=$?
+if ! grep -qF "env/gcp-vertex.env not found" "${TMPDIR}/guard-missing-stdout.log" 2>/dev/null; then
+  echo "FAIL: sonnet-pin-guard-warns-when-env-missing — expected warning not found"
+  cat "${TMPDIR}/guard-missing-stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: sonnet-pin-guard-warns-when-env-missing"
+fi
+
+# When the env file exists but does not contain the variable, the guard
+# should warn about the missing pin.
+mkdir -p "${_guard_tmp}/../env"
+printf 'export CLAUDE_CODE_USE_VERTEX=1\n' > "${_guard_tmp}/../env/gcp-vertex.env"
+_guard_novar_exit=0
+env \
+  PATH="${_guard_mock_bin}:${PATH}" \
+  PR_NUMBER="42" \
+  REPO_FULL_NAME="test-org/test-repo" \
+  PR_URL="https://github.com/test-org/test-repo/pull/42" \
+  FULLSEND_FORGE="github" \
+  REVIEW_TOKEN="fake-token" \
+  GH_TOKEN="fake-token" \
+  bash "${_guard_tmp}/pre-review.sh" \
+  > "${TMPDIR}/guard-novar-stdout.log" 2>&1 || _guard_novar_exit=$?
+if ! grep -qF "does not set ANTHROPIC_DEFAULT_SONNET_MODEL" "${TMPDIR}/guard-novar-stdout.log" 2>/dev/null; then
+  echo "FAIL: sonnet-pin-guard-warns-when-var-missing — expected warning not found"
+  cat "${TMPDIR}/guard-novar-stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: sonnet-pin-guard-warns-when-var-missing"
+fi
+rm -rf "${_guard_tmp}"
+
 # --- Summary ---
 
 echo ""

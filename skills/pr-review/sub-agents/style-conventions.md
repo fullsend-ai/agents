@@ -3,7 +3,7 @@ name: style-conventions
 description: >-
   Evaluates repo-specific naming, error-handling idioms, API shape,
   and code organization.
-model: sonnet
+model: claude-sonnet-4-6  # pin; sonnet alias unavailable on Vertex — bump with env/gcp-vertex.env
 tools: Read, Grep, Glob
 permissionMode: dontAsk
 background: true
