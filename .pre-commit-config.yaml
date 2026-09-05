@@ -58,3 +58,9 @@ repos:
         language: script
         files: ^(eval/measurements/|eval/lint-measurements)
         pass_filenames: false
+      - id: verify-sha256-pins
+        name: verify URL sha256 integrity pins
+        entry: ./hack/verify-sha256-pins
+        language: script
+        files: ^(harness/|\.fullsend/config\.yaml|hack/verify-sha256-pins)
+        pass_filenames: false
