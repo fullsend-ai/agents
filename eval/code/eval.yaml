@@ -242,8 +242,14 @@ judges:
       from the @@ header are honoured, so content whose own text begins with
       "--" or "++" (a deleted SQL comment, an added "++ " line) is never
       mistaken for a file header. Whole-file deletions (+++ /dev/null) are
-      attributed to the deleted path, so deleting a now-empty file satisfies
-      its requirement. Diff-scoped: a symbol surviving in a file the PR never
+      attributed to the deleted path so their lines are counted against the
+      right file, but deleting a declared file outright is itself a failure:
+      every "-" line of that file would otherwise satisfy its count, and a
+      deleted file contributes no added or context line for the survivor scan
+      to object to. Declaring a file here asserts the symbol must leave it,
+      not that the file may go — a case where deleting the file IS the fix
+      should leave it out of removed_symbols and rely on expected_files.
+      Diff-scoped: a symbol surviving in a file the PR never
       touched is invisible here (naming the file makes its absence a failure
       instead), and a site commented out in place is invisible too — one
       real deletion line plus an exempt comment addition — which is why the
@@ -298,9 +304,12 @@ judges:
       # "--- a/" path when the "+++" side is /dev/null (whole-file deletion:
       # every line is a deletion line and must count toward that path).
       # "diff --git" resets the identity so a header-less block (mode-only
-      # change) cannot inherit the previous file's.
+      # change) cannot inherit the previous file's. Those deleted paths are
+      # also remembered: a declared file deleted wholesale is a failure, not
+      # a way to satisfy its deletion count (see the description).
       HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
       per_file = {}
+      deleted_files = set()
       current = old_path = None
       old_left = new_left = 0
       for pr in prs:
@@ -333,7 +342,12 @@ judges:
                   continue
               if line.startswith("+++ "):
                   path = line[4:].strip().split("\t")[0]
-                  current = old_path if path == "/dev/null" else re.sub(r"^b/", "", path)
+                  if path == "/dev/null":
+                      current = old_path
+                      if current:
+                          deleted_files.add(current)
+                  else:
+                      current = re.sub(r"^b/", "", path)
                   continue
               m = HUNK.match(line)
               if m:
@@ -376,6 +390,15 @@ judges:
 
       problems = []
       for sym, sites in sorted(symbols.items()):
+          # Checked before the counts: a wholesale deletion supplies as many
+          # "-" lines as the file has, so the count loop below would read it
+          # as an over-satisfied requirement instead of a skipped edit.
+          gone = sorted(f for f in sites if f in deleted_files)
+          if gone:
+              problems.append(
+                  f"{sym}: declared file(s) deleted wholesale instead of edited: {gone}"
+              )
+              continue
           survivors = []
           for path, lines in per_file.items():
               if is_doc(path):
@@ -416,9 +439,13 @@ judges:
       capture-fixture.sh clones each PR head and runs `go build ./...` and
       `go test ./...`, recording exit codes under pull_requests[].checks;
       this judge requires both to be 0. Passes trivially when the case
-      declares no removed_symbols. A recorded skip (no go.mod in the
-      checkout, or no go toolchain on the runner) passes with the reason in
-      the message — recorded, not silent. Missing checks or a clone failure
+      declares no removed_symbols. A recorded skip passes with the reason in
+      the message — recorded, not silent — except "no go.mod" for a case
+      whose removed_symbols name .go files: there the missing go.mod is the
+      PR's own doing (deleting it is never a fix) and skipping would hand
+      the agent a free pass on the whole build/test gate, so it fails. A
+      missing toolchain is an environment fact rather than agent behaviour
+      and still passes as a recorded skip. Missing checks or a clone failure
       fail the case: evidence must exist, the same stance as
       diff_fetch_failed, since this runs at min_pass_rate 1.0.
     check: |
@@ -434,6 +461,11 @@ judges:
              if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
       if not prs:
           return False, "No open/merged PR to inspect"
+      # A Go case cannot legitimately end with no go.mod on the PR head, so
+      # that skip must not be the way past the gate the whole judge exists
+      # to enforce.
+      go_case = any(f.endswith(".go") for sites in symbols.values()
+                    if isinstance(sites, dict) for f in sites)
       skips = []
       problems = []
       for p in prs:
@@ -444,7 +476,13 @@ judges:
           elif checks.get("clone_failed"):
               problems.append(f"PR #{num}: could not clone head for build/test")
           elif "skipped" in checks:
-              skips.append(f"PR #{num}: checks skipped ({checks['skipped']})")
+              if go_case and checks["skipped"] == "no go.mod":
+                  problems.append(
+                      f"PR #{num}: no go.mod on the PR head — the build/test gate "
+                      "cannot be skipped by a case whose removed_symbols name .go files"
+                  )
+              else:
+                  skips.append(f"PR #{num}: checks skipped ({checks['skipped']})")
           elif checks.get("build_exit") != 0 or checks.get("test_exit") != 0:
               problems.append(
                   f"PR #{num}: go build exit {checks.get('build_exit')}, "

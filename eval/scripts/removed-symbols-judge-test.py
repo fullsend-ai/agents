@@ -92,6 +92,19 @@ DELETE_TEST = hunk(
     ' \tif cfg.Name != "x" {',
 )
 COMPLETE = "\n".join([DELETE_CONFIG, DELETE_FIELDS, DELETE_TEST])
+# The whole-file-deletion shape: config_test.go removed outright rather than
+# edited. Its "-" lines cover both symbols' declared counts for that file.
+DELETE_TEST_FILE = "\n".join([
+    "diff --git a/config/config_test.go b/config/config_test.go",
+    "deleted file mode 100644",
+    "index 2222222..0000000",
+    "--- a/config/config_test.go",
+    "+++ /dev/null",
+    "@@ -1,3 +0,0 @@",
+    "-verbose_logging: true",
+    "-\tif cfg.VerboseLogging != true {",
+    "-}",
+])
 
 
 def outputs_for(diff, symbols=None, pr_state=None):
@@ -257,19 +270,25 @@ CASES = [
      ]), symbols={**SYMBOLS, "VerboseLogging": {
          **SYMBOLS["VerboseLogging"], "config/config.go": 2}}), True),
     # Whole-file deletion: git emits "+++ /dev/null", so the lines must be
-    # attributed to the "--- a/" path or the declared file looks untouched.
-    ("whole-file deletion satisfies the declared file",
+    # attributed to the "--- a/" path — but deleting a declared file is not a
+    # way to meet its count. Every "-" line of the file would otherwise
+    # satisfy the requirement while the unrelated tests it also holds
+    # (TestLoadMalformedLine, TestLoadUnknownKey) are thrown away, and a
+    # deleted file offers the survivor scan no added or context line.
+    ("whole-file deletion of a declared file fails",
+     outputs_for("\n".join([DELETE_CONFIG, DELETE_FIELDS, DELETE_TEST_FILE])), False),
+    # An undeclared file may still be deleted outright.
+    ("whole-file deletion of an undeclared file is fine",
      outputs_for("\n".join([
-         DELETE_CONFIG, DELETE_FIELDS,
-         "diff --git a/config/config_test.go b/config/config_test.go",
+         COMPLETE,
+         "diff --git a/config/legacy.go b/config/legacy.go",
          "deleted file mode 100644",
          "index 2222222..0000000",
-         "--- a/config/config_test.go",
+         "--- a/config/legacy.go",
          "+++ /dev/null",
-         "@@ -1,3 +0,0 @@",
-         "-verbose_logging: true",
-         "-\tif cfg.VerboseLogging != true {",
-         "-}",
+         "@@ -1,2 +0,0 @@",
+         "-package config",
+         "-// VerboseLogging lived here once",
      ])), True),
     ("no removed_symbols declared passes trivially",
      outputs_for(DELETE_CONFIG, symbols={}), True),
@@ -310,8 +329,16 @@ FIXTURE_CHECKS_CASES = [
      outputs_for(COMPLETE, pr_state=pr_with_checks({"build_exit": 1, "test_exit": 0})), False),
     ("test failure fails the case",
      outputs_for(COMPLETE, pr_state=pr_with_checks({"build_exit": 0, "test_exit": 2})), False),
-    ("recorded skip passes with the reason surfaced",
-     outputs_for(COMPLETE, pr_state=pr_with_checks({"skipped": "no go.mod"})), True),
+    # A missing toolchain is an environment fact: recorded, surfaced, passes.
+    ("missing toolchain is a recorded skip that passes",
+     outputs_for(COMPLETE, pr_state=pr_with_checks({"skipped": "go not installed"})), True),
+    # A missing go.mod is the PR's own doing — deleting it would otherwise
+    # skip the whole build/test gate for a Go case.
+    ("no go.mod fails a case whose symbols name .go files",
+     outputs_for(COMPLETE, pr_state=pr_with_checks({"skipped": "no go.mod"})), False),
+    ("no go.mod is a recorded skip when no .go file is declared",
+     outputs_for(COMPLETE, symbols={"verbose_logging": {"config/app.yaml": 1}},
+                 pr_state=pr_with_checks({"skipped": "no go.mod"})), True),
     ("missing checks fail the case",
      outputs_for(COMPLETE, pr_state={"number": 7, "state": "OPEN"}), False),
     ("clone failure fails the case",
