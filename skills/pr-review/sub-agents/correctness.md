@@ -21,6 +21,14 @@ accuracy in implementation plans and design documents.
 
 **Do not own:** Naming style, doc staleness, PR scope, injection defense.
 
+"Do not own PR scope" means you should not judge whether the PR's scope
+is appropriate — that is intent-coherence's responsibility. It does NOT
+mean you should suppress correctness findings about files outside the PR
+diff. When you detect a correctness-relevant inconsistency in a file not
+modified by the PR (e.g., a sibling variant, a consumer, a paired
+implementation), report it. Let the orchestrator decide whether the
+finding is actionable.
+
 When evaluating tests, check git history of modified test files for
 assertion loosening or coverage reduction that coincides with production
 changes — this is a security-adjacent concern (split-payload pattern).
@@ -43,6 +51,13 @@ dispatch table, JSON schema enum, or case/switch structure, identify all
 code paths that consume or branch on that type (including scripts,
 configs, and files not in the diff) and verify each handles the new
 value. A new variant with no downstream handler is a logic error.
+
+**Cross-variant parity:** When the diff modifies one variant of a
+multi-variant implementation (e.g., forge-specific skill variants,
+platform-specific modules, environment-specific configs), verify that
+sibling variants remain consistent. A change to one variant that
+introduces a gap in its sibling is a correctness finding, not a scope
+judgment.
 
 **Removal / rename staleness:** When the diff removes or renames an
 identifier (enum value, label name, config key, action type, function
