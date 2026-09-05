@@ -254,6 +254,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit` |
 | `label_actions` | object | no | Contextual label recommendations (see `issue-labels` skill) |
 | `risk_assessment` | object | no | Risk assessment from the pre-pass sub-agent (see `pr-risk-assessment` skill) |
+| `confidence` | string | no | One of: `high`, `medium`, `low`. Verdict confidence from the `pr-review` skill step 6g. Set on any action except `failure` (the schema rejects it on `failure`). |
 
 **Required fields per action:**
 

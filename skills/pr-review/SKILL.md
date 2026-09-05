@@ -916,6 +916,12 @@ When merging
 - Combine descriptions if they add complementary detail
 - Keep the more specific remediation
 - Preserve `actionable: true` if either finding had it
+- If the merged findings disagreed on severity, record that disagreement
+  and the size of the gap (in severity levels) in your synthesis notes.
+  Merging to the higher severity discards the disagreement from the
+  finding set, so step 6g reads these notes when setting confidence. This
+  applies only to the same-category merges here in 6b, not to the
+  distinct-category findings preserved in 6c.
 
 #### 6c. Preserve distinct-category findings
 
@@ -1220,6 +1226,69 @@ require action, because `comment` (COMMENTED review state) does not
 block the PR. When the summary language and the verdict action
 contradict each other, escalate the verdict to match the language.
 
+#### 6g. Determine confidence level
+
+After the outcome is fixed (6f), set an optional `confidence` value
+(`high`, `medium`, or `low`) describing how strongly the evidence and
+sub-agent agreement support the verdict. Confidence is advisory: it does
+not change the action, it only annotates the verdict for the human
+reviewer and for downstream graduated-approval work (see
+[`graduated-approval-policy.md`](https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/graduated-approval-policy.md)).
+Omit `confidence` entirely for the `failure` action.
+
+**Evaluation order.** The bands below can overlap, so evaluate them in a
+fixed order and assign the **first** band whose condition holds: low
+first, then medium, then high. The most cautious matching band wins;
+never promote to a higher band once a lower one has matched.
+
+**Low** (checked first). Assign if any of:
+
+- The challenger pass failed and you fell back to the pre-challenger
+  finding set (a `sub-agent-failure` info finding is present, see 6d).
+- A 6b merge combined findings that disagreed on severity by two or more
+  levels (for example, one sub-agent said `low` and another said `high`
+  for the same category and location), and that finding drives the
+  verdict.
+- The verdict rests on a finding the challenger downgraded, or on a
+  reconciliation (6e-1) that resolved a direct contradiction between
+  sub-agents.
+- Required PR context was missing or partial.
+
+**Medium** (checked next). Assign if no low condition holds and any of:
+
+- A 6b merge combined findings that disagreed on severity by exactly one
+  level.
+- The verdict rests on a single finding with no corroboration from a
+  second sub-agent or from the challenger.
+- The action is `comment-only`. Medium is the ceiling for `comment-only`
+  unless the single driving medium finding was raised by more than one
+  sub-agent AND survived the challenger unchanged; only then may
+  `comment-only` reach high.
+- The action is `reject`. A reject reflects a judgment call on
+  architecture or scope, so default to medium. Promote to high only when
+  the architectural objection is corroborated, meaning it was raised
+  independently by more than one sub-agent or explicitly confirmed by the
+  challenger.
+
+**High** (checked last). Assign only if no low or medium condition holds
+and:
+
+- No detected conflict survived synthesis: no `sub-agent-failure`
+  finding, no severity disagreement in any 6b merge, and no
+  reconciliation contradiction. This is *absence of detected conflict*,
+  not positive corroboration. Sub-agents that examined disjoint areas do
+  not corroborate each other, so high additionally requires that each
+  finding driving the verdict was either raised by more than one
+  sub-agent or confirmed by the challenger.
+- For an `approve` with no findings, high is appropriate when all
+  dimension sub-agents ran and returned without error.
+
+**Provisional boundaries.** The one-level and two-level severity-gap
+splits above are provisional heuristics, not calibrated thresholds. Per
+`graduated-approval-policy.md`, confidence bands should ultimately be
+derived from observed review outcomes; treat this rubric as a starting
+point pending eval-case calibration.
+
 ### 7. Produce the review result
 
 Compose the review comment using this structure:
@@ -1295,6 +1364,10 @@ The table below lists the **additional** required fields per action:
 | comment-only    | `comment`         | `body`, `head_sha`                                                                            |
 | failure         | `failure`         | `reason` (body optional)                                                                      |
 | reject          | `reject`          | `body`, `head_sha`, `findings[]`                                                              |
+
+`confidence` (`high`/`medium`/`low`, from step 6g) is an optional field on
+every action except `failure`. Include it when you have determined a band;
+the schema rejects it on `failure`.
 
 #### Pipeline mode (`$FULLSEND_OUTPUT_DIR` is set)
 
