@@ -160,6 +160,17 @@ tracker_close_issue() {
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "${reason}"
 }
 
+# Echo the normalized issue state ("open" or "closed") and return 0 on success.
+# Returns non-zero if the state cannot be determined (caller fails closed).
+tracker_issue_state() {
+  local state
+  state=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.state' 2>/dev/null) || return 1
+  case "${state}" in
+    open | closed) printf '%s\n' "${state}" ;;
+    *) return 1 ;;
+  esac
+}
+
 tracker_create_issue() {
   local target_repo="$1"
   local title="$2"
@@ -496,6 +507,20 @@ tracker_close_issue() {
     echo "ERROR: failed to close issue #${ISSUE_NUMBER} in ${REPO}" >&2
     return 1
   fi
+}
+
+# Echo the normalized issue state ("open" or "closed") and return 0 on success.
+# GitLab reports "opened"/"closed"; map "opened" to "open" for a tracker-neutral
+# contract. Returns non-zero if the state cannot be determined (caller fails closed).
+tracker_issue_state() {
+  local raw state
+  raw=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null) || return 1
+  state=$(printf '%s' "${raw}" | jq -r '.state // empty' 2>/dev/null) || return 1
+  case "${state}" in
+    opened) printf 'open\n' ;;
+    closed) printf 'closed\n' ;;
+    *) return 1 ;;
+  esac
 }
 
 tracker_create_issue() {
@@ -852,6 +877,21 @@ tracker_close_issue() {
     echo "ERROR: failed to transition issue ${ISSUE_NUMBER} via '${transition_name}'" >&2
     return 1
   fi
+}
+
+# Echo the normalized issue state ("open" or "closed") and return 0 on success.
+# Jira has no open/closed flag; its status category "done" is the terminal state,
+# so map "done" to "closed" and every other category to "open". Returns non-zero
+# if the state cannot be determined (caller fails closed).
+tracker_issue_state() {
+  local raw category
+  raw=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status" 2>/dev/null) || return 1
+  category=$(printf '%s' "${raw}" | jq -r '.fields.status.statusCategory.key // empty' 2>/dev/null) || return 1
+  case "${category}" in
+    done) printf 'closed\n' ;;
+    "") return 1 ;;
+    *) printf 'open\n' ;;
+  esac
 }
 
 _text_to_adf() {
