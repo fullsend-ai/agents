@@ -109,6 +109,13 @@ budget so they scale to any timeout value; the one flat value is the
   gitlint validation and commit immediately. A commit that fails gitlint
   CI is better than no commit at all.
 
+## Critical rule — commit before exit
+
+**CRITICAL RULE: Your final tool calls before any text response MUST
+include `git add` and `git commit`. Working-tree edits are lost when the
+sandbox exits. Commit is the single most important step in this
+workflow — a disclosed partial commit is always better than no commit.**
+
 ## Process
 
 Follow these steps in order. Do not skip steps — with one exception,
@@ -900,6 +907,10 @@ Read every line. Check for:
 - Protected-path files (see agent definition for the authoritative list)
 
 If you added more than necessary, revert the extras before staging.
+
+**After verification passes, proceed IMMEDIATELY to Step 10 (Commit).
+Do not produce any text summary, status update, or final response
+before committing your changes. The commit step is not optional.**
 
 ### 10. Commit
 
