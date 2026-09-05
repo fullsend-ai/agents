@@ -454,6 +454,23 @@ CASES = [
                "body": "<!-- **Head SHA:** " + "b" * 40 + " -->\nLooks good to me"}]),
               head_sha="b" * 40)), True),
 
+    # SKILL.md's worked example pins an abbreviated SHA, so the marker is
+    # compared by prefix in both directions.
+    ("forbidden: an abbreviated sticky head SHA that matches passes",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=dict(state_with([], [], issue_comments=[
+              {"author": "review-bot",
+               "body": "<!-- **Head SHA:** bbbbbbb -->\nLooks good to me"}]),
+              head_sha="b" * 40)), True),
+    ("forbidden: an abbreviated sticky head SHA that does not match fails",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=dict(state_with([], [], issue_comments=[
+              {"author": "review-bot",
+               "body": "<!-- **Head SHA:** aaaaaaa -->\nLooks good to me"}]),
+              head_sha="b" * 40)), False),
+
     ("forbidden: an unrelated sticky finding with no review still passes",
      "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],

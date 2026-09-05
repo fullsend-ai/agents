@@ -822,7 +822,11 @@ judges:
                   if isinstance(it, dict)
               ),
           )
-          if head and marks and head not in marks:
+          # Prefix compare, not equality: SKILL.md's worked example pins an
+          # abbreviated SHA, and the marker regex accepts one.
+          if head and marks and not any(
+              head.startswith(m) or m.startswith(head) for m in marks
+          ):
               return False, (
                   f"no review was submitted and the sticky names head {marks[0][:8]}, not the "
                   f"captured {head[:8]} — the write-up is from an earlier run"
