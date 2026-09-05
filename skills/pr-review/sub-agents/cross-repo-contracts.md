@@ -2,7 +2,7 @@
 name: cross-repo-contracts
 description: >-
   Evaluates potential API contract breakage affecting other repos.
-model: claude-sonnet-4-6
+model: claude-sonnet-4-6  # pin; sonnet alias unavailable on Vertex — bump with env/gcp-vertex.env
 tools: Read, Grep, Glob
 permissionMode: dontAsk
 background: true

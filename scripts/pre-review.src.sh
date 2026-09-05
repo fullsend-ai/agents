@@ -37,7 +37,7 @@ echo "  PR_URL=${PR_URL}"
 # ---------------------------------------------------------------------------
 _ENV_FILE="${SCRIPT_DIR}/../env/gcp-vertex.env"
 if [[ -f "${_ENV_FILE}" ]]; then
-  if ! grep -q 'ANTHROPIC_DEFAULT_SONNET_MODEL=' "${_ENV_FILE}"; then
+  if ! grep -q '^[^#]*ANTHROPIC_DEFAULT_SONNET_MODEL=.\+' "${_ENV_FILE}"; then
     echo "::warning::env/gcp-vertex.env does not set ANTHROPIC_DEFAULT_SONNET_MODEL — sonnet alias may resolve to an unavailable model"
   fi
 else
