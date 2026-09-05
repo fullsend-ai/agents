@@ -390,6 +390,49 @@ Retry with \`/fs-code\` if appropriate."
 }
 
 # ---------------------------------------------------------------------------
+# 0. Check for needs_input signal
+#
+# The agent may signal that it cannot proceed without human input. When
+# needs_input is true, apply the fs-code-needs-input label to the issue,
+# post a comment explaining the blocker, and exit without creating a PR.
+# This is an expected path — exit 0, not a failure.
+# ---------------------------------------------------------------------------
+AGENT_NEEDS_INPUT="false"
+if [ -n "${RESULT_FILE:-}" ] && [ -f "${RESULT_FILE}" ]; then
+  AGENT_NEEDS_INPUT="$(jq -r '.needs_input // false' "${RESULT_FILE}" 2>/dev/null || echo "false")"
+fi
+
+if [ "${AGENT_NEEDS_INPUT}" = "true" ]; then
+  NEEDS_INPUT_REASON="$(jq -r '.needs_input_reason // "No reason provided"' "${RESULT_FILE}" 2>/dev/null || echo "No reason provided")"
+  gha_echo notice "Agent signaled needs_input — posting comment and applying label"
+
+  safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
+  _post_failure_ensure_token
+
+  run_url="$(forge_get_workflow_run_url)"
+  sanitized_reason="$(sanitize_failure_detail "${NEEDS_INPUT_REASON}")"
+
+  needs_input_body="🛑 **Needs human input** — code agent cannot proceed
+
+The code agent evaluated issue #${safe_issue_number} but determined it cannot make progress without human intervention.
+
+**Reason:** ${sanitized_reason}
+
+**Workflow run:** ${run_url}
+
+Please address the blocker above, then retry with \`/fs-code\`."
+
+  forge_create_label "fs-code-needs-input" "Code agent needs human input to proceed" "FBCA04"
+  forge_add_label "fs-code-needs-input"
+
+  if ! forge_post_issue_comment "${needs_input_body}"; then
+    gha_echo warning "Failed to post needs_input comment to issue #${safe_issue_number}"
+  fi
+
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Verify feature branch
 # ---------------------------------------------------------------------------
 BRANCH="$(git branch --show-current)"

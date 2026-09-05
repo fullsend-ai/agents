@@ -1517,6 +1517,200 @@ else
   echo "PASS: script-has-noop-comment"
 fi
 
+# ---------------------------------------------------------------------------
+# Test: needs_input handling — verify the post-script contains the
+# needs_input detection logic and label/comment infrastructure.
+# ---------------------------------------------------------------------------
+
+# Verify needs_input detection is present in the post-code script
+if ! grep -q 'needs_input' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-needs-input"
+  echo "  ${POST_SCRIPT} missing needs_input handling"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-needs-input"
+fi
+
+# Verify fs-code-needs-input label is created
+if ! grep -q 'fs-code-needs-input' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-needs-input-label"
+  echo "  ${POST_SCRIPT} missing fs-code-needs-input label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-needs-input-label"
+fi
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the needs_input detection logic from
+# post-code.src.sh so we can test it without a git repo or network access.
+# ---------------------------------------------------------------------------
+detect_needs_input() {
+  local result_json="$1"
+
+  local needs_input
+  needs_input="$(echo "${result_json}" | jq -r '.needs_input // false' 2>/dev/null || echo "false")"
+
+  if [ "${needs_input}" = "true" ]; then
+    local reason
+    reason="$(echo "${result_json}" | jq -r '.needs_input_reason // "No reason provided"' 2>/dev/null || echo "No reason provided")"
+    echo "needs_input:${reason}"
+  else
+    echo "proceed"
+  fi
+}
+
+run_needs_input_test() {
+  local test_name="$1"
+  local result_json="$2"
+  local expected_prefix="$3"
+
+  local actual
+  actual="$(detect_needs_input "${result_json}")"
+
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  result_json:     '${result_json}'"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- needs_input detection test cases ---
+
+# needs_input=true with reason → signal needs_input
+run_needs_input_test "needs-input-true-with-reason" \
+  '{"target_branch":"main","needs_input":true,"needs_input_reason":"Build tooling is broken"}' \
+  "needs_input:Build tooling is broken"
+
+# needs_input=true without reason → signal needs_input with default
+run_needs_input_test "needs-input-true-no-reason" \
+  '{"target_branch":"main","needs_input":true}' \
+  "needs_input:No reason provided"
+
+# needs_input=false → proceed normally
+run_needs_input_test "needs-input-false" \
+  '{"target_branch":"main","needs_input":false}' \
+  "proceed"
+
+# needs_input absent → proceed normally
+run_needs_input_test "needs-input-absent" \
+  '{"target_branch":"main"}' \
+  "proceed"
+
+# needs_input=true with detailed reason → signal with full reason
+run_needs_input_test "needs-input-scan-secrets-missing" \
+  '{"target_branch":"main","needs_input":true,"needs_input_reason":"scan-secrets is not installed in the sandbox image"}' \
+  "needs_input:scan-secrets is not installed in the sandbox image"
+
+# needs_input=true for uninterpretable issue
+run_needs_input_test "needs-input-uninterpretable" \
+  '{"target_branch":"main","needs_input":true,"needs_input_reason":"Issue description is not interpretable: no clear problem statement or actionable scope"}' \
+  "needs_input:Issue description is not interpretable"
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the needs_input comment body construction from
+# post-code.src.sh so we can test it without a GitHub API.
+# ---------------------------------------------------------------------------
+build_needs_input_comment() {
+  local reason="$1"
+  local issue_number="$2"
+  local repo_full_name="$3"
+
+  cat <<EOF
+🛑 **Needs human input** — code agent cannot proceed
+
+The code agent evaluated issue #${issue_number} but determined it cannot make progress without human intervention.
+
+**Reason:** ${reason}
+
+**Workflow run:** https://github.com/${repo_full_name}/actions/runs/unknown
+
+Please address the blocker above, then retry with \`/fs-code\`.
+EOF
+}
+
+run_needs_input_comment_test() {
+  local test_name="$1"
+  local reason="$2"
+  local issue_number="$3"
+  local repo_full_name="$4"
+  local check_pattern="$5"
+  local expect_present="$6"  # "yes" or "no"
+
+  local actual
+  actual="$(build_needs_input_comment "${reason}" "${issue_number}" "${repo_full_name}")"
+
+  if [ "${expect_present}" = "yes" ]; then
+    if ! echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if echo "${actual}" | grep -qF "${check_pattern}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected NOT to find: '${check_pattern}'"
+      echo "  in body:"
+      echo "${actual}" | sed 's/^/    /'
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# --- needs_input comment test cases ---
+
+# Comment should include the reason
+run_needs_input_comment_test "needs-input-comment-includes-reason" \
+  "Build tooling is broken: make setup failed" \
+  "42" "my-org/my-repo" \
+  "Build tooling is broken" "yes"
+
+# Comment should include the issue number
+run_needs_input_comment_test "needs-input-comment-includes-issue" \
+  "Build tooling is broken" \
+  "505" "my-org/my-repo" \
+  "#505" "yes"
+
+# Comment should include retry instruction
+run_needs_input_comment_test "needs-input-comment-includes-retry" \
+  "Build tooling is broken" \
+  "42" "my-org/my-repo" \
+  "/fs-code" "yes"
+
+# Comment should include workflow run URL
+run_needs_input_comment_test "needs-input-comment-includes-run-url" \
+  "Build tooling is broken" \
+  "42" "my-org/my-repo" \
+  "my-org/my-repo/actions/runs/" "yes"
+
+# Comment should include the stop emoji header
+run_needs_input_comment_test "needs-input-comment-includes-header" \
+  "Build tooling is broken" \
+  "42" "my-org/my-repo" \
+  "Needs human input" "yes"
+
+# Comment should NOT contain "No PR created" (that's the no-op path)
+run_needs_input_comment_test "needs-input-comment-no-noop-text" \
+  "Build tooling is broken" \
+  "42" "my-org/my-repo" \
+  "No PR created" "no"
+
+# Comment should NOT contain PUSH_TOKEN
+run_needs_input_comment_test "needs-input-comment-no-token-leak" \
+  "Build tooling is broken" \
+  "42" "my-org/my-repo" \
+  "PUSH_TOKEN" "no"
+
 # --- Branch validation test cases ---
 
 # Auto-correct: agent writes main, default is master, no allowed list → corrected

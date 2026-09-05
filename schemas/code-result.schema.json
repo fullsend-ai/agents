@@ -21,6 +21,27 @@
       "type": "boolean",
       "default": true,
       "description": "Whether the PR should close the linked issue on merge. Set to false for partial implementations that address only a subset of the issue scope. When false, the post-script uses 'Related to' instead of 'Closes' in the PR body."
+    },
+    "needs_input": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, the agent is signaling that it cannot proceed without human input. The post-script applies the fs-code-needs-input label to the issue, posts a comment with the reason, and skips PR creation. No code changes are expected."
+    },
+    "needs_input_reason": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Human-readable explanation of why the agent needs input. Required when needs_input is true. Describes the specific blocker (broken tooling, uninterpretable issue, missing scan-secrets, etc.)."
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "needs_input": { "const": true } },
+        "required": ["needs_input"]
+      },
+      "then": {
+        "required": ["needs_input_reason"]
+      }
+    }
+  ]
 }

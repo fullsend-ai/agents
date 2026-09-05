@@ -84,10 +84,14 @@ the review agent — if the triage was wrong, your code will fail review.
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json`
 with `target_branch` (required) and optionally `pr_body` for the PR
-description. The `code-implementation` skill describes the schema and
-the exact steps where you write each field. The post-script reads this
-file to determine the PR target branch and description. Without this
-file, the validation loop rejects the run and retries.
+description. When the agent cannot proceed without human intervention,
+set `needs_input` to `true` and provide a `needs_input_reason` string
+explaining the blocker. The `code-implementation` skill describes the
+schema and the exact steps where you write each field. The post-script
+reads this file to determine the PR target branch and description, or
+to apply the `fs-code-needs-input` label when the agent signals it
+needs help. Without this file, the validation loop rejects the run and
+retries.
 
 After writing the file, validate it before exiting:
 
@@ -109,6 +113,9 @@ Your exit state is the handoff contract:
 - **Clean commit on the feature branch + valid structured output** → the
   post-script pushes and creates the PR (after its own authoritative secret
   scan).
+- **`needs_input: true` in structured output** → the post-script applies the
+  `fs-code-needs-input` label to the issue, posts a comment with the reason,
+  and exits without creating a PR. No code changes are expected.
 - **No commit** → the post-script reads your transcript and exit code to
   report the failure. Structured output should still be written when possible
   so the post-script knows which branch was targeted.
