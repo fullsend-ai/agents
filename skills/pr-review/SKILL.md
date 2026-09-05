@@ -46,17 +46,14 @@ relative to this file.
 | `style-conventions`    | parallel   | Repo-specific naming, error-handling idioms, API shape, code organization                                               |
 | `docs-currency`        | parallel   | Documentation staleness (follows docs-review skill inline)                                                              |
 | `cross-repo-contracts` | parallel   | API contract breakage affecting other repos (conditional)                                                               |
-| `risk-assessment`      | pre-pass   | Composite risk score (metadata, git history, linked issue)                                                              |
+| `risk-assessment`      | parallel   | Composite risk score (metadata, git history, linked issue)                                                              |
 | `challenger`           | sequential | Adversarial challenge of findings, false-positive removal, deduplication                                                |
 
-**Non-standard dispatch types:** `security-triage` (pre-pass),
-`risk-assessment` (pre-pass), and `challenger` (sequential) are not
-dimension sub-agents and are NOT dispatched in step 4's parallel loop.
-`security-triage` runs as a preprocessing classifier in step 3c-1;
-`risk-assessment` runs as a risk scorer in step 3c-2 (gated by
-`REVIEW_RISK_ASSESSMENT_ENABLED`); `challenger` runs as a
-post-processing adversarial pass in step 6d. All three produce different
-output formats from the standard findings array.
+**Non-standard dispatch types:** `security-triage` (preprocessing
+classifier, step 3c-1), `risk-assessment` (composed in 3c-2, gated by
+`REVIEW_RISK_ASSESSMENT_ENABLED`, dispatched in step 4's batch) and
+`challenger` (adversarial pass, step 6d) are not dimension sub-agents
+and produce different output formats from the findings array.
 
 ## Findings vs inline comments
 
@@ -87,6 +84,36 @@ log messages from `post-review` say "inline comment(s) omitted" (not
 ## Process
 
 Follow these steps in order. Do not skip steps.
+
+### Time budget
+
+The runner kills the sandbox at the harness `timeout_minutes` with no
+wrap-up: a review that has not written `agent-result.json` by then
+posts nothing. The harness mirrors that value into `TIMEOUT_SECONDS`;
+skip every time check when it is unset.
+
+Before anything else in step 1: `date +%s > /sandbox/workspace/agent-start`
+(a file: shell variables do not survive between Bash calls). The
+runner's clock starts 1–2 minutes before yours, so:
+
+```bash
+if test -n "${TIMEOUT_SECONDS:-}" && test -s /sandbox/workspace/agent-start; then
+  NOW=$(date +%s); AGENT_START=$(cat /sandbox/workspace/agent-start)
+  REMAINING=$(( TIMEOUT_SECONDS - 120 - NOW + AGENT_START ))
+fi
+```
+
+(`test`, not `[ ]`; no nested `$( )` — the sandbox scanner blocks both.)
+
+Checkpoints:
+
+- **Before 6d:** under 600 s remaining, skip the challenger (2.5–6
+  minutes on any PR) as described there; a review without it is still
+  a review.
+- **When a sub-agent returns after step 4** under 240 s remaining with
+  others still outstanding: stop waiting; write a `failure` result
+  (step 7) with `reason` `time-budget` and no `body` (the post-script's
+  own notice says the PR was not reviewed). A kill posts nothing.
 
 ### 1. Identify the PR
 
@@ -123,59 +150,36 @@ skill commands:
 From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 
 1. FILE_COUNT<50, LINE_COUNT<3000: small PR — fetch the full unified diff
+   into `/sandbox/workspace/pr-diff.txt` (the forge skill's command
+   writes it there)
 2. FILE_COUNT~=50-200, LINE_COUNT~=3000-10000: large PR — switch to per-file
    mode
 
-   - Extract file paths from PR_STATS
-   - Filter out generated files (lockfiles, vendor/, protobuf, etc.)
-   - Produce per-file diffs via `git diff <merge-base>..HEAD -- <file>`
-   - Concatenate per-file diffs into a single blob per sub-agent (see
-     step 3d for the format)
+   - Write the forge's per-file patches, generated files dropped, into
+     `/sandbox/workspace/pr-diff.txt` (forge skill "Per-file diffs");
+     the checkout is the base branch, so `git diff` there is wrong
 
 3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
 
-### 2b. Fetch source file contents (PR head)
+### 2b. Materialise the PR head
 
-After fetching the diff, read the full contents of each changed file at
-the PR head revision. These will be passed to sub-agents so they do not
-need to re-read files from disk (which would read base-branch code, not
-PR-head code, and waste tokens on redundant I/O).
+The repository checkout (`target-repo/`) is the BASE branch. Before
+dispatching anything, fetch every changed file at `HEAD_SHA` into
+`/sandbox/workspace/pr-head/<path>` (outside the checkout) with the
+forge-specific review skill's "Materialise PR head files" command —
+one Bash call with a 600 s tool timeout, parallel fetches (GitLab:
+then scrub the token file in its own call). Run it as written, even
+for a one-file PR: a hand-rolled fetch with `[ ]` or a one-line
+`if …; then x=$(( … )); fi` is blocked by the sandbox's Bash scanner.
 
-Use `HEAD_SHA` from step 1. Filter out removed files (they do not
-exist at the PR head and the contents API will return 404) and binary
-files (images, compiled artifacts — they waste tokens). Skip files
-that exceed the forge's file-size limit; log a warning so the
-orchestrator knows which files were omitted.
-
-Use the forge-specific review skill's "File contents at PR head"
-commands to fetch each file. Emit with per-file header and fenced
-code block:
-
-```markdown
-#### path/to/file.go
-```go
-<decoded file contents>
-```
-```
-
-**Size guard for large PRs:** If the PR exceeds 20 changed files or
-5000 total changed lines, do not fetch all files upfront. Instead,
-defer file selection to step 3d (context package assembly), where the
-orchestrator selects dimension-relevant files for each sub-agent:
-
-- **correctness:** files with the most changes, test files, and files
-  they import
-- **security:** files touching auth, permissions, secrets, config, and
-  data handling paths
-- **style-conventions:** files with the most changes
-- **other dimensions:** files most relevant to their review scope
-
-For omitted changed files in large PRs, sub-agents should treat those
-files as unavailable for PR-head verification. Any findings about
-omitted files must state that the file contents could not be verified
-against the PR head. Sub-agents must not read omitted changed files
-from disk, since disk contains base-branch code, not the PR head.
+It writes `/sandbox/workspace/pr-head.manifest` (beside the tree, out
+of the PR's reach), one `<status> <path>` per line: `ok`, `too-large`
+(over 2 MB), `binary`, `failed`, `removed`, `unsafe` (JSON-quoted: a
+path with a newline, a leading `/` or a `..` component — never
+fetched). Only `ok` files are verifiable at the PR head; context
+packages (3d) carry the manifest lines. Never inline file contents into
+a prompt; sub-agents Read from the tree.
 
 If the PR body references linked issues, fetch them for intent context
 using the forge-specific review skill's "Issue context" commands.
@@ -280,9 +284,9 @@ dimensions are relevant:
 #### 3c. Select sub-agents
 
 Based on the domain classification, select sub-agents for dispatch.
-All selected sub-agents run in parallel (with the exception of
-`risk-assessment`, which runs as a pre-pass in step 3c-2, and
-`challenger`, which runs by itself after all other sub-agents have finished).
+All selected sub-agents run in parallel — `risk-assessment` (composed
+in step 3c-2) among them — except `challenger`, which runs by itself
+after all other sub-agents have finished.
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -515,11 +519,11 @@ incident.
   files treated as security-critical). Log an info-level note in the
   review output.
 
-#### 3c-2. Risk assessment pre-pass
+#### 3c-2. Compose the risk assessment
 
 When `REVIEW_RISK_ASSESSMENT_ENABLED` is set to `true` (the
-default), run a risk assessment pre-pass to compute a composite risk
-score before preparing context packages. If the env var is `false`
+default), compose a risk-assessment sub-agent prompt here and dispatch
+it with the step 4 batch. If the env var is `false`
 or empty, skip this step entirely — the `risk_assessment` field will
 be absent from the result JSON.
 
@@ -592,11 +596,11 @@ be absent from the result JSON.
    <prior score, level, and rationale — or "none (first review)">
    ```
 
-5. Spawn via Agent tool with:
-   - `model`: `sonnet` (from the sub-agent frontmatter)
-   - `prompt`: composed from parts 1–3
-   - Run **synchronously** (not in the background) — the result is
-     stored for inclusion in the final review result
+5. Do not spawn it here. Dispatch the composed prompt (parts 1–3,
+   `model: sonnet` from the frontmatter) in the same message as the
+   step 4 dimension sub-agents. Nothing in step 4 consumes its output
+   (it only goes into `agent-result.json`, step 7); running it first
+   serialised a 2–3 minute sub-agent for nothing.
 
 6. Parse the risk assessment output. The sub-agent returns a JSON
    object with `score`, `level`, `rationale`, and optional signal
@@ -616,21 +620,13 @@ safety-critical).
 
 For each selected sub-agent, assemble a context package containing:
 
-- `diff`: For small PRs (< 50 files, < 3000 lines), the full unified PR
-  diff (fetched via the forge-specific review skill). For large PRs (step 2 criteria), a concatenation
-  of per-file diffs, each produced by
-  `git diff <merge-base>..HEAD -- <file>`. Each per-file diff is preceded
-  by a `### File: <relative-path>` header so sub-agents can identify file
-  boundaries. Generated files (lockfiles, vendor/, protobuf output) are
-  excluded from the concatenation.
-- `source_files`: full contents of changed files at the PR head revision,
-  fetched by the orchestrator in step 2b. Each file is preceded by a
-  `#### <relative-path>` header and wrapped in a fenced code block with
-  the appropriate language identifier. For large PRs (>20 files or >5000
-  lines), include only the files most relevant to the sub-agent's
-  dimension; omitted changed files should be treated as unavailable for
-  PR-head verification (sub-agents do not have Bash access to fetch them
-  via the forge API).
+- `diff`: the path `/sandbox/workspace/pr-diff.txt` written in step 2.
+  Sub-agents Read it; never paste the diff into a prompt — seven copies
+  of a large diff are minutes of output tokens before any review starts.
+- `pr_head`: the MANIFEST lines (step 2b) for the files this sub-agent
+  should look at — all changed files for `correctness`, `security` and
+  `style-conventions`, the dimension-relevant subset otherwise. Paths
+  only; sub-agents Read from `/sandbox/workspace/pr-head/`.
 - `head_sha`: the PR head commit SHA (from step 1), included for
   reference in sub-agent findings and review anchoring
 - `repo_full_name`: the full `owner/repo` string, included for reference
@@ -686,20 +682,16 @@ selected per-file mode and the triage pass succeeded), modify the
 context packages for the `security` and `correctness` sub-agents as
 follows:
 
-1. **Security sub-agent:** Provide the full per-file diffs for all
-   `security_critical_files` first, clearly marked with a
-   `### Security-critical file: <path>` header and the triage reason.
-   Include standard files' diffs after, under a
-   `### Standard files` header. This ordering ensures
-   security-critical files receive primary attention within the
-   sub-agent's context window.
+1. **Security sub-agent:** Order its `pr_head` manifest lines with the
+   `security_critical_files` first, each tagged with the triage reason,
+   under `### Security-critical files`; standard files follow under
+   `### Standard files`. Content still comes from `pr-diff.txt` and the
+   tree — the ordering tells the sub-agent where to start.
 
-2. **Correctness sub-agent:** Same prioritized ordering — security-
-   critical files first with their triage classification, then
-   standard files. Correctness and security findings often overlap on
-   the same code (e.g., a fail-open bug is both a logic error and a
-   security vulnerability), so the correctness sub-agent also benefits
-   from knowing which files the triage pass flagged.
+2. **Correctness sub-agent:** Same prioritized ordering. Correctness
+   and security findings often overlap on the same code (a fail-open
+   bug is both), so the correctness sub-agent also benefits from
+   knowing which files the triage pass flagged.
 
 3. **Other sub-agents** (`intent-coherence`, `style-conventions`,
    `docs-currency`, `cross-repo-contracts`): Receive the standard
@@ -723,8 +715,9 @@ prioritization.
 ### 4. Dispatch sub-agents
 
 For each selected **dimension** sub-agent (from step 3c — excludes
-`security-triage` which runs in step 3c-1, `risk-assessment` which
-runs in step 3c-2, and `challenger` which runs in step 6d):
+`security-triage`, which runs in step 3c-1, and `challenger`, which
+runs in step 6d; `risk-assessment`, composed in 3c-2, is dispatched
+here):
 
 1. Compose the spawn prompt from:
 
@@ -749,9 +742,9 @@ runs in step 3c-2, and `challenger` which runs in step 6d):
    **Part 3 — Linked skill (conditional):** Check the skill-loading
    table below. If the sub-agent has a linked skill, read the skill
    file and include its contents verbatim after the sub-agent
-   definition. (This table is also referenced by step 3c-2 for the
-   risk-assessment pre-pass — `risk-assessment` is not dispatched
-   in this step's parallel loop.)
+   definition. (This table is also referenced by step 3c-2, whose
+   composed risk-assessment prompt is dispatched in this step's batch
+   when risk assessment is enabled.)
 
    | Sub-agent          | Linked skill                         |
    |--------------------|--------------------------------------|
@@ -765,31 +758,13 @@ runs in step 3c-2, and `challenger` which runs in step 6d):
    ## Context
 
    ### Diff
-   <diff content>
+   Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
 
-   ### Source files (PR head)
-   The following are the full contents of changed files at the PR head
-   commit. Use these instead of reading files from disk — they reflect
-   the PR head, not the base branch. Only read additional files from
-   disk if you need context beyond the changed files listed here.
-
-   #### path/to/file1.go
-   ```go
-   <full file contents at PR head>
-   ```
-
-   #### path/to/file2.go
-   ```go
-   <full file contents at PR head>
-   ```
-
-   (For large PRs where not all files are included:)
-   **Note:** Not all changed files are included above due to PR size.
-   Changed files not listed here should be treated as unavailable for
-   PR-head verification. If you produce findings about files not included
-   above, you must state that the file contents could not be verified against the
-   PR head. Do not read changed files from disk — disk contains
-   base-branch code, not the PR head.
+   ### PR head files
+   Read changed files from `/sandbox/workspace/pr-head/` (PR head);
+   `target-repo/` is the BASE branch. A file whose status below is not
+   `ok` is not verifiable from the tree: say so in any finding about it.
+   <MANIFEST lines for this sub-agent's files>
 
    ### Changed files
    <file list>
@@ -820,13 +795,19 @@ runs in step 3c-2, and `challenger` which runs in step 6d):
    ```
 
 2. Spawn the subagents with their `prompt` argument composed from parts
-   1–5 above
+   1–5 above and `model` set from each sub-agent file's frontmatter
+   (`opus` for `correctness` and `security`, `sonnet` for the rest).
+   Do not set `subagent_type` — the persona comes from the prompt.
 
 **All sub-agents MUST be dispatched simultaneously** — include all
-Agent calls in a single message so they run concurrently. This is the
-core parallelism benefit of the architecture.
+Agent calls in a single message so they run concurrently, and include
+the risk-assessment call composed in step 3c-2 in that same message
+when risk assessment is enabled. Leave `run_in_background` unset: the
+default delivers completions as notifications (when the Time budget
+checkpoint runs); `false` blocks until all have returned.
 
-Wait for all sub-agents to complete.
+Wait for all sub-agents to complete; apply the Time budget checkpoint
+as each returns.
 
 ### 5. Collect findings
 
@@ -936,6 +917,12 @@ fresh context. The challenger has not seen the orchestrator's synthesis
 — it receives only the raw findings and the diff, preserving context
 isolation.
 
+**Time check first — as a Bash call, not an estimate from the runner's
+ticker.** With `TIMEOUT_SECONDS` set and `REMAINING` under 600 (Time
+budget section), skip the challenger: keep the merged finding set from
+6a–6c, record the item-4 `low` finding with the reason `time budget:
+<n>s remaining`, and continue to 6e.
+
 1. Compose the spawn prompt from:
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
@@ -955,11 +942,10 @@ isolation.
    <JSON array of all findings from steps 6a–6c>
 
    ### Diff
-   <diff content>
+   Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
 
-   ### Source files (PR head)
-   <same source files section as step 4 — full contents of changed
-   files at PR head, with #### headers and fenced code blocks>
+   ### PR head files
+   <same section as step 4, with the full MANIFEST>
 
    ### Changed files
    <file list>
@@ -977,12 +963,10 @@ isolation.
 2. Spawn the subagents with their `prompt` argument composed from parts
    1–4 above
 
-   **Prompt size guard:** If the combined context package (findings
-   JSON + diff + file list + PR metadata) exceeds 80 000 tokens,
-   truncate the diff to the files referenced by findings only. If it
-   still exceeds the limit, omit the full diff and include only the
-   hunks that correspond to finding line ranges. The challenger can
-   read full files via the `Read` tool if it needs broader context.
+   **Prompt size guard:** If the findings JSON alone exceeds 80 000
+   tokens, withhold `low` and `info` findings from the challenger's
+   input and re-append them, unchallenged, after step 3. The diff and
+   files are read from disk, not pasted.
 
    The challenger runs **after** dimension sub-agents complete (it
    needs their findings as input), so it is dispatched sequentially,
@@ -998,23 +982,24 @@ isolation.
      (`challenger_action`, `challenger_reason`) before merging into the
      review finding set — these are logged for transparency but are not
      part of the standard finding schema.
-   - If `adjudicated_findings` is empty but the pre-challenger finding
-     set was non-empty, treat this as a challenger failure (fall back
+   - If `adjudicated_findings` is empty but the set sent to the
+     challenger was non-empty, treat this as a challenger failure (fall back
      per the immediate next step below). A legitimate challenger pass
      that removes all findings is unlikely — an empty result more likely
      indicates a parsing error or context truncation.
-   - Otherwise, replace the merged finding set with the challenger's
-     `adjudicated_findings`.
+   - Otherwise, replace the challenged subset with the challenger's
+     `adjudicated_findings` (then re-append anything withheld).
    - Log any `removed_findings` for transparency but do not include
      them in the final review.
 
 4. If the challenger sub-agent fails (timeout, error, empty
-   response), fall back to using the pre-challenger merged finding
-   set from steps 6a–6c. Record an **info**-level finding:
+   response) or was skipped on the time check, fall back to using the
+   pre-challenger merged finding set from steps 6a–6c. Record a
+   **low**-level finding (`info` is below the posting threshold):
 
    ```json
    {
-     "severity": "info",
+     "severity": "low",
      "category": "sub-agent-failure",
      "file": "N/A",
      "description": "The challenger sub-agent did not return findings: <reason>. Using pre-challenger finding set.",
@@ -1350,6 +1335,9 @@ wins.
   complete the review (tool failure, missing context, all sub-agents
   failed), produce a failure result (see step 7) rather than posting
   an incomplete result.
+- **Write a result before the budget runs out.** A kill at
+  `timeout_minutes` posts nothing; a `failure` result with `reason`
+  `time-budget` written in time is posted as a notice (Time budget).
 - **Always include the PR head SHA in a hidden HTML comment.** The
   SHA must appear in the format described in step 7 so the re-review
   anchoring script can extract it, but it must not be visible to

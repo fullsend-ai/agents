@@ -13,7 +13,9 @@ findings:
   forbidden:
     - file-naming-convention
 
-max_turns: 40
+# num_turns counts a sub-agent's own tool turns when it returns inline,
+# and sub-agents now Read PR-head files: measured 43–45 here, 10 before.
+max_turns: 80
 max_cost_usd: 4.00
 
 review_expectations: |

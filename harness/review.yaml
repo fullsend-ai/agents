@@ -46,7 +46,10 @@ post_script: scripts/post-review.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
-  max_iterations: 2
+  # Interim, pending fullsend-ai/fullsend#7042: the runner cannot tell a
+  # timeout from a schema failure, so a second iteration replays a killed
+  # review from scratch. Restore 2 with `feedback_mode: append` then.
+  max_iterations: 1
 
 env:
   # REVIEW_FINDING_SEVERITY_THRESHOLD and REVIEW_PROTECTED_PATHS are set
@@ -65,8 +68,13 @@ env:
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
     PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
+    # Mirror of timeout_minutes (the code/fix convention); the pr-review
+    # skill budgets its tail from it. Keep the two in sync.
+    TIMEOUT_SECONDS: "2700"
 
-timeout_minutes: 20
+# Per iteration. The pipeline has a ~13–18 minute floor independent of
+# PR size; 20 sat on it. Mirrored as TIMEOUT_SECONDS in env.sandbox.
+timeout_minutes: 45
 
 forge:
   github:

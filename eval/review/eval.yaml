@@ -5,9 +5,17 @@ skill: review
 
 execution:
   mode: case
-  timeout: 1200  # 20 min — agent timeout is 20 min, plus setup/teardown
+  # Harness hard-kill, above execution.env.EVAL_TIMEOUT so the script
+  # timeout fires first. Sized to the functional-tests job's 45-minute cap
+  # (as eval/code/eval.yaml), not to the harness's own 45-minute budget —
+  # so the skill's time-budget checkpoints are not exercised here.
+  timeout: 1800
   parallelism: 4
   env:
+    # Script-level timeout for run-fullsend.sh; must live under
+    # execution.env (runner.env is inert for type: cli). Under
+    # execution.timeout so trap cleanup EXIT still runs.
+    EVAL_TIMEOUT: "1700"
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
     FULLSEND_DIR: $FULLSEND_DIR
