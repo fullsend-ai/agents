@@ -475,8 +475,11 @@ judges:
           return False, "No open/merged PR to inspect"
       # A Go case cannot legitimately end with no go.mod on the PR head, so
       # that skip must not be the way past the gate the whole judge exists
-      # to enforce.
-      go_case = any(f.endswith(".go") for sites in symbols.values()
+      # to enforce. Shape-guarded: removed_symbols is the judge that rejects
+      # a malformed annotation, and it should do so with its own message
+      # rather than this judge raising AttributeError first.
+      sym_map = symbols if isinstance(symbols, dict) else {}
+      go_case = any(f.endswith(".go") for sites in sym_map.values()
                     if isinstance(sites, dict) for f in sites)
       skips = []
       problems = []

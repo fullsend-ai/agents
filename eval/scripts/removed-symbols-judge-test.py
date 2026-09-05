@@ -346,6 +346,11 @@ FIXTURE_CHECKS_CASES = [
     ("no removed_symbols declared passes trivially",
      outputs_for(COMPLETE, symbols={},
                  pr_state=pr_with_checks({"build_exit": 1, "test_exit": 1})), True),
+    # A malformed annotation is removed_symbols' failure to report, not this
+    # judge's to raise on: the legacy list shape must still grade normally.
+    ("legacy list schema does not crash this judge",
+     outputs_for(COMPLETE, symbols=["VerboseLogging"],
+                 pr_state=pr_with_checks({"build_exit": 0, "test_exit": 0})), True),
 ]
 
 
