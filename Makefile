@@ -78,6 +78,7 @@ script-test:
 	$(call run-timed,bash scripts/post-retro-test.sh)
 	$(call run-timed,bash scripts/pre-scribe-test.sh)
 	$(call run-timed,bash scripts/post-scribe-test.sh)
+	$(call run-timed,bash scripts/example-link-check-test.sh)
 	$(call run-timed,bash scripts/validate-output-schema-test.sh)
 	$(call run-timed,bash scripts/validate-code-output-test.sh)
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
