@@ -165,3 +165,60 @@ when identical across forges). When reviewing PRs, do not flag a
 static literal default in these blocks as hardcoded, but do flag a
 regression that replaces one of these computed passthrough values
 with a literal.
+
+## 9. Bundled script architecture
+
+Files in `scripts/lib/*.lib.sh` are shared libraries. They are not
+executed directly — they are inlined into standalone executables by
+`scripts/bundle-sh.sh`. Each `scripts/*.src.sh` file is a source
+template that `source`s one or more lib files; `make script-build`
+compiles every `.src.sh` into a self-contained `.sh` script with all
+library code inlined.
+
+A single lib file may be bundled into multiple executables. For
+example, `labels.lib.sh` is sourced by both `post-code.src.sh` and
+`post-triage.src.sh`, which have different dependency chains.
+
+### Function-naming conventions
+
+Different agent types use different ops-file prefixes:
+
+- **code, review, fix, retro, scribe, prioritize** scripts source a
+  dispatch wrapper (e.g., `code-ops.lib.sh`, `review-ops.lib.sh`) that
+  loads a forge-specific ops file (`github-code-ops.lib.sh`,
+  `gitlab-code-ops.lib.sh`, etc.). Functions in these ops files use the
+  `forge_*` prefix.
+
+- **triage** scripts source `triage-ops.lib.sh`, which loads a
+  tracker-specific ops file (`github-triage-ops.lib.sh`,
+  `gitlab-triage-ops.lib.sh`, `jira-triage-ops.lib.sh`). Functions in
+  these ops files use the `tracker_*` prefix. Where a shared lib file
+  calls a `forge_*` function (e.g., `labels.lib.sh` calls
+  `forge_create_label`), the triage ops files provide a `forge_*` alias
+  that delegates to the corresponding `tracker_*` function.
+
+### Cross-context verification
+
+When modifying a lib file to introduce or change a function call:
+
+1. **Identify all consumers.** Search for the lib filename across
+   `.src.sh` files to find every bundled context that includes it:
+   ```
+   grep -r 'the-lib-filename.lib.sh' scripts/*.src.sh
+   ```
+2. **Trace each consumer's dependency chain.** For each `.src.sh` file,
+   check which ops dispatch wrapper it sources (e.g., `code-ops.lib.sh`
+   vs `triage-ops.lib.sh`) and verify that the called function is
+   defined in every ops file that wrapper loads.
+3. **Watch for naming mismatches.** If the function uses the `forge_*`
+   prefix but the lib is bundled into a triage context, confirm that
+   the triage ops files provide a `forge_*` alias. If no alias exists,
+   add one — do not rename the function in the lib file.
+4. **Rebuild and test.** After any change to a lib file:
+   ```
+   make script-build
+   make script-test
+   ```
+   `script-build` regenerates the bundled `.sh` files. `script-test`
+   runs the full shell script test suite to catch undefined-function
+   errors and other regressions. Always run both.
