@@ -144,8 +144,10 @@ Reading the response:
 - `comments` and `reviews` carry the text of PR-level comments and
   review bodies, because a dismissal or a refutation is as often written
   there as in the thread it belongs to. `last: 100` keeps the newest of
-  each. They carry no thread anchor, so step 2a-1 applies one only when
-  it names a single finding unambiguously.
+  each and truncates once a PR has more: an older PR-level dismissal may
+  go unread, and its absence from these nodes is not evidence that it was
+  never written. They carry no thread anchor either, so step 2a-1 applies
+  one only when it names a single finding unambiguously.
 - Within a thread, `comments.nodes[0]` is the root comment and every later
   node is a reply — hence `first: 50` there, which must not become `last`.
   When a thread's own `comments.pageInfo.hasNextPage` is true its newest
@@ -201,9 +203,12 @@ permission." The review harness is `readonly_repo: true` with
 misconfiguration: under it most dismissals stay unverified and their
 findings stay actionable, which step 2a-1 requires the review to state
 in one line. Resolving the role on the runner and passing a normalized
-role into the sandbox is
-[fullsend#6860](https://github.com/fullsend-ai/fullsend/issues/6860)'s
-job, not this skill's.
+role into the sandbox would close that, but no issue tracks that
+transport yet;
+[fullsend#6860](https://github.com/fullsend-ai/fullsend/issues/6860)
+documents the authorization model this gate follows, not the transport.
+Interactive mode below is unaffected: a token with push access answers
+this call, so the gate verifies there today.
 
 ## Interactive mode (non-pipeline)
 

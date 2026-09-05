@@ -300,13 +300,20 @@ Still record it, with `role_verified: no`, so step 6e can emit the
 finding unchanged and say in one line why the dismissal was not applied
 — an unverified dismissal must be visible, not silently dropped.
 
-Under the read-only token that is the common case, not the edge: most
-dismissals here will come back unverified until the effective role is
-resolved on the runner and passed into the sandbox as a normalized role.
-That transport is
-[fullsend#6860](https://github.com/fullsend-ai/fullsend/issues/6860)'s
-job — an infra change, not a patch in this skill — and until it lands
-this step fails closed rather than guessing from association.
+Under the review harness's read-only token that is the common case, not
+the edge: most dismissals there come back unverified. Closing that means
+resolving the effective role on the runner and passing it into the
+sandbox as a normalized role, and no issue tracks that transport yet.
+[fullsend#6860](https://github.com/fullsend-ai/fullsend/issues/6860)
+documents the authorization model this gate follows — the role ordering,
+the `triage+`/`write+` thresholds, fail-closed on unknown roles — not
+the transport. Until one exists this step declines rather than guessing
+from association.
+
+Run interactively the gate works today, with no infra change at all: a
+maintainer reviewing from their own push-access token gets a real
+`role_name` back, so a `write+` dismissal verifies. The inertness above
+is a property of the read-only harness, not of the rule.
 
 Everyone else — including the PR author themself, even holding a
 qualifying role — dismisses nothing. **Never** treat their reply,
