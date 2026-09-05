@@ -22,7 +22,7 @@
 #
 # Category gating:
 #   pre-commit-blocked — agent-fixable; consumes a retry iteration
-#   signed-off-by      — agent-fixable; consumes a retry iteration
+#   signed-off-by      — NOT agent-fixable; soft-pass (post-script strips it)
 #   secret-scan        — NOT agent-fixable; soft-pass (post-script handles terminally)
 #   infra/transient    — NOT agent-fixable; soft-pass
 
@@ -1043,10 +1043,17 @@ echo "Changed files for pre-commit gate:"
 echo "${CHANGED_FILES}" | sed 's/^/  /'
 
 # --- Check for Signed-off-by trailers ---
+#
+# Soft-pass, same bucket as secret-scan: NOT agent-fixable here, handled
+# terminally by the post-script. TARGET_REPO_DIR is an extracted copy, so a
+# rewrite here would be invisible to the sandbox agent anyway (see the
+# PRECOMMIT_GATE_AUTOFIX="false" contract below) — and post-code.sh section 3b
+# / post-fix.sh section 1b now STRIP the trailer instead of rejecting.
+# Failing here would burn a validation iteration for something already
+# repaired downstream, which is the retry half of the #1184 cost.
 echo "Checking for Signed-off-by trailers..."
-if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-  echo "FAIL: signed-off-by: Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
-  exit 1
+if git log --format='%B' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+  gha_echo warning "Signed-off-by trailer present — deferring to post-script (strips it); not consuming an iteration"
 fi
 
 # --- Install pre-commit tool dependencies ---
@@ -1112,7 +1119,7 @@ case "${PRECOMMIT_GATE_RESULT}" in
       CATEGORY="$(classify_checkonly_failure "${PRECOMMIT_GATE_DETAIL}")"
     fi
     case "${CATEGORY}" in
-      pre-commit-blocked|signed-off-by)
+      pre-commit-blocked)
         # Agent-fixable: consume a retry iteration with feedback. The lib
         # already printed the sanitised hook output above — do not echo it
         # again: this stream is truncated to 10 KiB before it becomes the

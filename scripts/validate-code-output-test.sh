@@ -354,11 +354,13 @@ run_test_precommit_repo "precommit-pass" \
   "pass" "true" "true" "false" \
   "true" "Pre-commit passed"
 
-# A Signed-off-by trailer is agent-fixable and consumes an iteration; it is
-# caught before pre-commit even runs.
-run_test_precommit_repo "signoff-consumes-iteration" \
+# A Signed-off-by trailer soft-passes here: post-code.sh section 3b and
+# post-fix.sh section 1b strip it, so failing validation would burn a retry
+# iteration for something already repaired downstream. Same bucket as
+# secret-scan — not agent-fixable at this stage.
+run_test_precommit_repo "signoff-softpasses-no-iteration" \
   "pass" "true" "true" "true" \
-  "false" "FAIL: signed-off-by"
+  "true" "Pre-commit passed"
 
 # No agent commit (HEAD == origin/main) -> nothing to gate.
 run_test_precommit_repo "no-changed-files-softpass" \
