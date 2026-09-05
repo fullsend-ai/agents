@@ -150,8 +150,8 @@ run_go_checks() {
   # credential material. The residual is accepted because the job runs
   # only behind the maintainer-applied ok-to-test label and the fixture
   # repo contents are reviewed; moving the gate into the podman sandbox
-  # the job already installs (--network none, read-only mount) is the fix
-  # if that stops being enough.
+  # the job already installs, run with --network none and a read-only
+  # mount, is the fix if that stops being enough.
   #
   # Each invocation gets its own timeout so an agent-written test that
   # blocks records exit 124 instead of overrunning the hook budget (see
