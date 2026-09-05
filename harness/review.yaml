@@ -46,6 +46,14 @@ post_script: scripts/post-review.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
+  # Interim, pending fullsend-ai/fullsend#7042. The runner cannot tell a
+  # timeout from a schema failure (internal/cli/run.go scopes its timeout
+  # detection to agents without a validation loop), so a second iteration
+  # replays a killed review from scratch with no memory of the first.
+  # Fleet data 2026-08-18 → 09-05: every iteration 2 (49 runs) followed a
+  # 20m0s kill — zero schema failures — and 11 finished only because the
+  # replay happened to land under the cap. Restore 2 with
+  # `feedback_mode: append` once the runner distinguishes the two.
   max_iterations: 1
 
 env:
@@ -65,7 +73,17 @@ env:
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
     PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
+    # Mirror of timeout_minutes (same convention as code/fix). The runner
+    # does not export its budget; the pr-review skill reads this to skip
+    # the challenger pass and write a result before the kill. Keep the two
+    # in sync — an overlay that changes one must change both.
+    TIMEOUT_SECONDS: "2700"
 
+# Per iteration. The review pipeline has a ~13–18 minute floor that does
+# not depend on PR size (context → dispatch → dimensions → synthesis →
+# challenger → assembly); 20 sat on that floor and killed
+# 51-line PRs as readily as 5 000-line ones. Mirrored as TIMEOUT_SECONDS
+# in env.sandbox above.
 timeout_minutes: 45
 
 forge:

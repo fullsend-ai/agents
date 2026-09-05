@@ -5,9 +5,26 @@ skill: review
 
 execution:
   mode: case
-  timeout: 1200  # 20 min — agent timeout is 20 min, plus setup/teardown
+  # Harness hard-kill. Keep slightly above execution.env.EVAL_TIMEOUT so the
+  # script-level timeout can fire first and trap cleanup EXIT still runs.
+  # harness/review.yaml allows one 45-minute iteration (timeout_minutes: 45,
+  # mirrored as TIMEOUT_SECONDS in env.sandbox) on top of sandbox creation
+  # and pre/post scripts — more than the functional-tests CI job's 45-minute
+  # cap can hold, so this eval does not reproduce the production envelope
+  # (same approach as eval/code/eval.yaml, which sizes for the job cap:
+  # 40 min of case + before/after hooks + setup does not fit). Review
+  # cases complete in 15–25 min in practice; one past 30 min fails the
+  # eval, not the job. Note the sandbox budget (TIMEOUT_SECONDS 2700) is
+  # above this kill, so the skill's time-budget checkpoints are not
+  # exercised here.
+  timeout: 1800
   parallelism: 4
   env:
+    # Script-level timeout for run-fullsend.sh (default 1800 when unset).
+    # Must live under execution.env — runner.env has no effect for
+    # runner: type: cli (see eval/code/eval.yaml). Slightly under
+    # execution.timeout so trap cleanup EXIT still runs.
+    EVAL_TIMEOUT: "1700"
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
     FULLSEND_DIR: $FULLSEND_DIR
