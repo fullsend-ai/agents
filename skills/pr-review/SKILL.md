@@ -201,27 +201,42 @@ against the diff.
 ### 2c. Filter unreviewable content
 
 Filter `/sandbox/workspace/pr-diff.txt` in place through
-`skills/pr-review/scripts/filter-review-diff.sh <summary-file>` before
-it enters any context package (step 3d). The script deterministically
-strips lockfiles, `*.min.js`/`*.min.css`, sourcemaps, and vendored
-paths (`vendor/`, `node_modules/`, `third_party/`), and
-generated-looking files (protobuf/codegen suffixes; `generated/`,
-`dist/`, `build/` paths) carrying a generated-content marker —
-migrations are exempt from every one of those rules. See the script's
-header comment for the exact classification.
+
+```
+skills/pr-review/scripts/filter-review-diff.sh <summary-file> /sandbox/workspace/pr-head
+```
+
+before it enters any context package (step 3d). The second argument is
+the tree materialised in step 2b — with it the script can read a file's
+own first 20 lines at the PR head, which is where a generated-file
+marker lives and where a mid-file regen hunk never reaches. Without it
+the script still runs, but only sees what the hunk itself contains.
+
+The script deterministically strips lockfiles, `*.min.js`/`*.min.css`,
+sourcemaps, and vendored paths (`vendor/`, `node_modules/`,
+`third_party/`), and generated-looking files (protobuf/codegen
+suffixes; `generated/`, `dist/`, `build/` paths) carrying a
+generated-content marker in those first 20 lines or in the section's
+bounded window — migrations are exempt from every one of those rules.
+It handles both the GitHub unified diff (`diff --git` sections) and the
+GitLab MR shape (sections starting at `--- a/…`); input it cannot parse
+passes through unfiltered. See the script's header comment for the
+exact classification.
+
+**Accepted risk:** on a path that already looks generated the marker is
+still author-controlled, so a hand-written file parked at e.g.
+`dist/x.go` can be kept out of line-by-line review. The disclosure
+below is the mitigation — every excluded path is named in the review,
+so a human can see exactly what was hidden.
 
 Read the exclusion-summary file it writes (never emitted on stdout):
 
 - fold it into the orchestrator's own context — it is not part of the
   diff sub-agents receive, they only ever see the filtered output
-- if it is non-empty, add an `excluded-content` info-level finding at
-  step 7 (threshold-exempt, see step 7; same mechanism as the
-  `provenance-warning` finding below — not a footer; step 7 explicitly
-  forbids appending one): "N excluded file(s)
-  (lockfile/minified/sourcemap/vendored/generated) changed but not
-  reviewed line-by-line: <list>" — a stripped lockfile must still be
-  visible to whoever reads the review, even though no model read its
-  contents.
+- if it is non-empty, add one `excluded-content` info-level finding
+  **per excluded file** at step 7 (threshold-exempt, see step 7; same
+  mechanism as the `provenance-warning` finding below — not a footer;
+  step 7 explicitly forbids appending one)
 
 ### 2a. Prior review context (re-reviews)
 
@@ -1330,18 +1345,24 @@ info-level finding in the review output:
   provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
   This review treats all findings as first-time assessments.
 
-If step 2's diff filtering produced a non-empty exclusion summary,
+If step 2c's diff filtering produced a non-empty exclusion summary,
 include an info-level finding in the review output (this is a
 disclosure, not a footer — it goes through the same findings/severity
 structure as everything else in this section). This disclosure is
 exempt from `$REVIEW_FINDING_SEVERITY_THRESHOLD`: emit it whenever the
 summary is non-empty, even though `info` sits below the default `low`
-threshold (see "Severity filtering" in the agent definition):
+threshold (see "Severity filtering" in the agent definition).
 
-- **[excluded-content]** — N excluded file(s)
-  (lockfile/minified/sourcemap/vendored/generated) changed but not
-  reviewed line-by-line: `<path>` (`<reason>`), ... — listing every
-  path and reason from the exclusion summary.
+Emit **one finding per line of the exclusion summary**, not one finding
+listing them all: `file` is a single required string in the schema (see
+the agent definition), so a finding covering several paths has nowhere
+to put them. Omit `line` — these are file-level disclosures, and a
+finding with no line never becomes an inline comment on a file nobody
+reviewed.
+
+- **[excluded-content]** — `file`: the excluded path; `description`:
+  "Excluded from line-by-line review (`<reason>`, +A/-D lines); no
+  model read its contents." — one per path in the exclusion summary.
 
 Map the outcome to an action value. `action`, `pr_number`, and `repo`
 are always required (see the agent definition for the full schema).
