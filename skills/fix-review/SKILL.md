@@ -38,9 +38,10 @@ inside 7b, before each retry iteration (7c), and before commit (8),
 check remaining time **only if `TIMEOUT_SECONDS` is set**:
 
 ```bash
-if [ -n "${TIMEOUT_SECONDS:-}" ]; then
-  ELAPSED=$(( $(date +%s) - AGENT_START ))
-  REMAINING=$(( TIMEOUT_SECONDS - ELAPSED ))
+if test -n "${TIMEOUT_SECONDS:-}"; then
+  NOW=$(date +%s)
+  ELAPSED=$((NOW - AGENT_START))
+  REMAINING=$((TIMEOUT_SECONDS - ELAPSED))
   echo "::notice::Time check: ${ELAPSED}s elapsed, ${REMAINING}s remaining"
 fi
 ```
@@ -202,9 +203,10 @@ thin margin, timing out with no commit at all. Re-check against a flat
 
 ```bash
 RUN_FALLBACK=1
-if [ -n "${TIMEOUT_SECONDS:-}" ] && [ -n "${AGENT_START:-}" ]; then
-  REMAINING=$(( TIMEOUT_SECONDS - ($(date +%s) - AGENT_START) ))
-  if [ "$REMAINING" -lt 300 ]; then
+if test -n "${TIMEOUT_SECONDS:-}" && test -n "${AGENT_START:-}"; then
+  NOW=$(date +%s)
+  REMAINING=$((TIMEOUT_SECONDS - (NOW - AGENT_START)))
+  if test "$REMAINING" -lt 300; then
     RUN_FALLBACK=0; echo "::warning::Direct-execution fallback skipped: ${REMAINING}s remaining < 300s floor"
   else
     echo "::notice::Fallback time check: ${REMAINING}s remaining >= 300s floor — proceeding"
