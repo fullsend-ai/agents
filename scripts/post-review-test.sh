@@ -497,6 +497,16 @@ echo "gh \$*" >> "${GH_LOG}"
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
 
+# Mock sleep: no-op. The empty-PR-files retry branch in post-review.sh
+# calls `sleep 10` before re-fetching; without this mock the real sleep
+# runs in every empty-list integration test, adding ~10s each to a
+# serial suite run. The retry logic doesn't depend on real elapsed time.
+cat > "${MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${MOCK_BIN}/sleep"
+
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock fullsend: log the call, consume stdin if --result - is used,
