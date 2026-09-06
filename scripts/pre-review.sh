@@ -86,8 +86,13 @@ forge_get_pr_info() {
 }
 
 forge_get_pr_files() {
-  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
-    --repo "${REPO}" --json files --jq '.files[].path'
+  # Use the paginated /pulls/{n}/files REST endpoint rather than the
+  # `gh pr view --json files` summary field: the summary is populated
+  # asynchronously and can transiently return an empty list right after
+  # a merge-commit update, whereas the files endpoint reflects the
+  # computed diff directly. See fullsend-ai/fullsend#2093.
+  GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename'
 }
 
 # --- PR mutations ---

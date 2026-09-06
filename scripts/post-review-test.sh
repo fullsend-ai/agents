@@ -442,10 +442,33 @@ if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* 
   exit 0
 fi
 
-# gh pr view ... --json files ... → configurable via MOCK_PR_FILES.
-# Uses \${VAR-default} (not \${VAR:-default}) so an explicitly-empty
+# gh api repos/.../pulls/{n}/files --paginate --jq '.[].filename'
+# → configurable via MOCK_PR_FILES (the mock emits the already-jq'd
+# filename list, matching what forge_get_pr_files consumes). Uses
+# \${VAR-default} (not \${VAR:-default}) so an explicitly-empty
 # MOCK_PR_FILES="" can simulate "no changed files" instead of falling
 # back to the default.
+#
+# MOCK_PR_FILES_ON_RETRY, when set, makes the FIRST call return an empty
+# list and later calls return its value — simulating the transient
+# forge data race in fullsend-ai/fullsend#2093 that the call-site retry
+# recovers from. MOCK_FILES_CALL_MARKER tracks whether the first call
+# has happened; the retry test resets it before running.
+if [[ "\$1" == "api" ]] && [[ "\$*" == *"/pulls/"* ]] && [[ "\$*" == *"/files"* ]]; then
+  if [[ -n "\${MOCK_PR_FILES_ON_RETRY:-}" ]]; then
+    if [[ -f "\${MOCK_FILES_CALL_MARKER:-${TMPDIR}/pr-files-call-marker}" ]]; then
+      echo "\${MOCK_PR_FILES_ON_RETRY}"
+    else
+      : > "\${MOCK_FILES_CALL_MARKER:-${TMPDIR}/pr-files-call-marker}"
+    fi
+    exit 0
+  fi
+  echo "\${MOCK_PR_FILES-src/main.go}"
+  exit 0
+fi
+
+# gh pr view ... --json files ... → legacy summary path, retained for any
+# caller still using it. Configurable via MOCK_PR_FILES (see above).
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
   echo "\${MOCK_PR_FILES-src/main.go}"
   exit 0
@@ -1660,6 +1683,112 @@ run_empty_pr_files_with_protection_disabled_test() {
   echo "PASS: ${test_name}"
 }
 run_empty_pr_files_with_protection_disabled_test
+
+# forge_get_pr_files can transiently return an empty list right after a
+# merge-commit update (fullsend-ai/fullsend#2093). The call site retries
+# once before refusing to approve: a first-empty-then-populated response
+# must recover and proceed rather than abort.
+run_empty_pr_files_retry_recovers_test() {
+  local test_name="empty-pr-files-retry-recovers"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/marker-${test_name}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    # First files call returns empty, the retry returns a real file.
+    export MOCK_PR_FILES_ON_RETRY="src/main.go"
+    export MOCK_FILES_CALL_MARKER="${TMPDIR}/marker-${test_name}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected success after retry recovered the file list"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "retrying once in case of a transient forge data race" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected retry notice in output"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — should not abort once the retry returned files"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_empty_pr_files_retry_recovers_test
+
+# When both the initial fetch and the retry come back empty, the safety
+# net must still refuse to approve — the retry loosens the guard for
+# transient races only, not for genuinely empty results.
+run_empty_pr_files_retry_still_fails_test() {
+  local test_name="empty-pr-files-retry-still-fails"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES=""
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit when both attempts are empty"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "retrying once in case of a transient forge data race" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected the retry to be attempted before aborting"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected empty-PR-files abort message after retry"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_empty_pr_files_retry_still_fails_test
 
 # The REVIEW_PROTECTED_PATHS default above is duplicated verbatim in
 # harness/review.yaml's env.runner/env.sandbox (there's no single structural

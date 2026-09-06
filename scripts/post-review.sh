@@ -101,8 +101,13 @@ forge_get_pr_info() {
 }
 
 forge_get_pr_files() {
-  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
-    --repo "${REPO}" --json files --jq '.files[].path'
+  # Use the paginated /pulls/{n}/files REST endpoint rather than the
+  # `gh pr view --json files` summary field: the summary is populated
+  # asynchronously and can transiently return an empty list right after
+  # a merge-commit update, whereas the files endpoint reflects the
+  # computed diff directly. See fullsend-ai/fullsend#2093.
+  GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename'
 }
 
 # --- PR mutations ---
@@ -643,6 +648,16 @@ if [ "${ACTION}" = "approve" ]; then
   # enabled — only the pattern-matching loop below is gated on a
   # non-empty REVIEW_ACTIVE_PROTECTED_PATHS.
   PR_FILES=$(forge_get_pr_files)
+  if [ -z "${PR_FILES}" ]; then
+    # An empty file list can be a transient forge data race: right after a
+    # merge-commit update the diff may not be computed yet, so the files
+    # endpoint briefly returns nothing. Retry once before refusing to
+    # approve, so we don't fail a genuinely non-empty PR. See
+    # fullsend-ai/fullsend#2093.
+    echo "::notice::PR files came back empty; retrying once in case of a transient forge data race (forge_get_pr_files)" >&2
+    sleep 10
+    PR_FILES=$(forge_get_pr_files)
+  fi
   if [ -z "${PR_FILES}" ]; then
     echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve (forge_get_pr_files)" >&2
     exit 1

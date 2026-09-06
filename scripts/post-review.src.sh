@@ -234,6 +234,16 @@ if [ "${ACTION}" = "approve" ]; then
   # non-empty REVIEW_ACTIVE_PROTECTED_PATHS.
   PR_FILES=$(forge_get_pr_files)
   if [ -z "${PR_FILES}" ]; then
+    # An empty file list can be a transient forge data race: right after a
+    # merge-commit update the diff may not be computed yet, so the files
+    # endpoint briefly returns nothing. Retry once before refusing to
+    # approve, so we don't fail a genuinely non-empty PR. See
+    # fullsend-ai/fullsend#2093.
+    echo "::notice::PR files came back empty; retrying once in case of a transient forge data race (forge_get_pr_files)" >&2
+    sleep 10
+    PR_FILES=$(forge_get_pr_files)
+  fi
+  if [ -z "${PR_FILES}" ]; then
     echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve (forge_get_pr_files)" >&2
     exit 1
   fi
