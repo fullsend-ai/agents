@@ -21,7 +21,7 @@
 #
 # Category gating:
 #   pre-commit-blocked — agent-fixable; consumes a retry iteration
-#   signed-off-by      — agent-fixable; consumes a retry iteration
+#   signed-off-by      — NOT agent-fixable; soft-pass (post-script strips it)
 #   secret-scan        — NOT agent-fixable; soft-pass (post-script handles terminally)
 #   infra/transient    — NOT agent-fixable; soft-pass
 
@@ -139,10 +139,14 @@ echo "Changed files for pre-commit gate:"
 echo "${CHANGED_FILES}" | sed 's/^/  /'
 
 # --- Check for Signed-off-by trailers ---
+#
+# Soft-pass, same bucket as secret-scan: the post-scripts strip the trailer,
+# so failing here would burn an iteration for something already repaired.
+# A rewrite here is impossible anyway — TARGET_REPO_DIR is an extracted copy
+# and PRECOMMIT_GATE_AUTOFIX="false" forbids git writes.
 echo "Checking for Signed-off-by trailers..."
-if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-  echo "FAIL: signed-off-by: Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
-  exit 1
+if git log --format='%B' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
+  gha_echo warning "Signed-off-by trailer present — deferring to post-script (strips it); not consuming an iteration"
 fi
 
 # --- Install pre-commit tool dependencies ---
@@ -208,7 +212,7 @@ case "${PRECOMMIT_GATE_RESULT}" in
       CATEGORY="$(classify_checkonly_failure "${PRECOMMIT_GATE_DETAIL}")"
     fi
     case "${CATEGORY}" in
-      pre-commit-blocked|signed-off-by)
+      pre-commit-blocked)
         # Agent-fixable: consume a retry iteration with feedback. The lib
         # already printed the sanitised hook output above — do not echo it
         # again: this stream is truncated to 10 KiB before it becomes the

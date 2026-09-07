@@ -3,7 +3,7 @@ name: risk-assessment
 description: >-
   Computes composite PR risk score from metadata, git history,
   and linked issue signals.
-model: claude-sonnet-4-6@default
+model: sonnet
 tools: Read, Bash, Grep, Glob
 permissionMode: dontAsk
 background: false

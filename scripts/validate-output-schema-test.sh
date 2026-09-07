@@ -456,6 +456,18 @@ run_test_custom_filename "review-reject-missing-body" \
   "${REVIEW_SCHEMA}" \
   "false"
 
+run_test_custom_filename "review-failure-time-budget-valid" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"time-budget"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-failure-unknown-reason-rejected" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"ran-out-of-time"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
 run_test_custom_filename "review-approve-valid" \
   '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good, only minor nits."}' \
   "agent-result.json" \

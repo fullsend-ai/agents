@@ -175,8 +175,10 @@ to a specific actor.
 
 The target repository is usually checked out at `/sandbox/workspace/target-repo/`,
 depending on the path outside the sandbox. If you don't find that path, search
-within `/sandbox/workspace`. When reading source files referenced
-in the PR diff, use this path prefix — not `/home/runner/work/` or any other path.
+within `/sandbox/workspace`. That checkout is the base branch. Changed
+files at the PR head are materialised by the `pr-review` skill under
+`/sandbox/workspace/pr-head/` — read PR-head code from there, and use
+`target-repo/` only for unchanged context. Never `/home/runner/work/`.
 
 ## Forge API
 
@@ -251,9 +253,9 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `head_sha`  | string  | conditional     | Commit SHA (40 or 64 hex chars)                  |
 | `body`      | string  | conditional     | Markdown review comment (min 1 char)             |
 | `findings`  | array   | conditional     | Array of finding objects (min 1 item when present)|
-| `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit` |
+| `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit`, `time-budget` |
 | `label_actions` | object | no | Contextual label recommendations (see `issue-labels` skill) |
-| `risk_assessment` | object | no | Risk assessment from the pre-pass sub-agent (see `pr-risk-assessment` skill) |
+| `risk_assessment` | object | no | Risk assessment from the risk-assessment sub-agent (see `pr-risk-assessment` skill) |
 
 **Required fields per action:**
 
@@ -316,7 +318,7 @@ jq -n \
   --arg action "failure" \
   --argjson pr_number <number> \
   --arg repo "<owner/repo>" \
-  --arg reason "<tool-failure|missing-context|ambiguous-findings|token-limit>" \
+  --arg reason "<tool-failure|missing-context|ambiguous-findings|token-limit|time-budget>" \
   '{action: $action, pr_number: $pr_number, repo: $repo,
     reason: $reason}' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
@@ -376,7 +378,7 @@ When the review cannot be completed, the failure body is:
 
 ## Review
 
-**Reason:** <tool-failure | missing-context | ambiguous-findings | token-limit>
+**Reason:** <tool-failure | missing-context | ambiguous-findings | token-limit | time-budget>
 
 This PR was NOT reviewed. Do not count this as an approval.
 ```

@@ -22,7 +22,7 @@
     },
     "reason": {
       "type": "string",
-      "enum": ["tool-failure", "missing-context", "ambiguous-findings", "token-limit"]
+      "enum": ["tool-failure", "missing-context", "ambiguous-findings", "token-limit", "time-budget"]
     },
     "label_actions": {
       "$ref": "#/$defs/label_actions"

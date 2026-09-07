@@ -145,6 +145,11 @@ fi
 # ---------------------------------------------------------------------------
 BRANCH="$(git branch --show-current)"
 
+# Set by 1b, surfaced on the PR by process-fix-result.py. Declared here
+# because 1b only runs when NO_PUSH=false.
+SIGNOFF_STRIPPED=false
+SIGNOFF_STRIPPED_COUNT=0
+
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
   gha_echo warning "Agent did not produce a commit on a feature branch (current: '${BRANCH:-detached HEAD}')"
   gha_echo warning "Processing structured output only (no push)."
@@ -257,19 +262,35 @@ if [ "${NO_PUSH}" = "false" ]; then
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
   # -------------------------------------------------------------------------
-  # 1b. Reject Signed-off-by trailers
+  # 1b. Strip Signed-off-by trailers
   #
-  # Agents must never produce Signed-off-by trailers. DCO is a human
-  # attestation — the DCO app already waives the check for bot authors.
-  # The bot noreply email makes the trailer ~90 characters, which causes
-  # gitlint body-max-line-length failures in repos with a 72-char limit.
+  # Agents must not sign off: DCO waives bot authors, and the bot noreply
+  # address makes the trailer ~90 chars, failing gitlint body-max-line-length.
+  # Strip it and continue; fail only if one survives the rewrite.
   # -------------------------------------------------------------------------
   echo "Checking for Signed-off-by trailers in agent's commit(s)..."
-  if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-    post_fail_to_pr signed-off-by \
-      "Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
+  # SCAN_RANGE widens to merge-base on the rebase path, so it can cover human
+  # commits; the helpers scope count and rewrite to agent-authored ones.
+  _signoff_count="$(signoff_count_range "${SCAN_RANGE}")"
+  if [ "${_signoff_count}" -gt 0 ]; then
+    gha_echo warning "Found Signed-off-by trailer(s) in ${_signoff_count} agent commit(s) — stripping"
+
+    if ! SIGNOFF_STRIP_ERROR="$(signoff_strip_range "${SCAN_RANGE}" 2>&1 >/dev/null)"; then
+      post_fail_to_pr signoff-rewrite-failed \
+        "Failed to strip Signed-off-by trailer(s) from agent commit(s): ${SIGNOFF_STRIP_ERROR}"
+    fi
+
+    # Re-scan: fail only if a trailer survives a rewrite that reported success
+    if signoff_present_in_range "${SCAN_RANGE}"; then
+      post_fail_to_pr signed-off-by \
+        "Signed-off-by trailer persists after rewrite attempt. Manual intervention required."
+    fi
+    SIGNOFF_STRIPPED=true
+    SIGNOFF_STRIPPED_COUNT="${_signoff_count}"
+    echo "Signed-off-by trailer(s) removed from ${_signoff_count} agent commit(s)"
+  else
+    echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
   fi
-  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -297,7 +318,7 @@ if [ "${NO_PUSH}" = "false" ]; then
     post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
   fi
   if [ "${PRECOMMIT_GATE_SIGNOFF_FAIL}" = "true" ]; then
-    post_fail_to_pr signed-off-by "${PRECOMMIT_GATE_DETAIL}"
+    post_fail_to_pr "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
   fi
   if [ "${PRECOMMIT_GATE_RESULT}" = "fail" ]; then
     post_fail_to_pr "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
@@ -386,10 +407,22 @@ else
   done
 fi
 
+# The summary comment normally carries the strip note; when it is skipped, post
+# the note on its own so the rewrite still leaves a trace on the PR.
+signoff_note_fallback() {
+  if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
+    forge_post_pr_comment "${PR_NUMBER}" \
+      "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)." \
+      || gha_echo warning "Could not post the Signed-off-by strip note to PR #${PR_NUMBER}"
+  fi
+}
+
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   gha_echo warning "No agent-result.json found — skipping summary comment"
+  signoff_note_fallback
 elif [ ! -f "${PROCESS_SCRIPT}" ]; then
   gha_echo warning "process-fix-result.py not found at ${PROCESS_SCRIPT} — skipping"
+  signoff_note_fallback
 else
   # Scan agent-result.json for secrets before posting content as a PR comment.
   # The agent could have been tricked into embedding sensitive data in the
@@ -407,7 +440,8 @@ else
 
   echo "Processing agent-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
-  python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
+  SIGNOFF_STRIPPED_COUNT="${SIGNOFF_STRIPPED_COUNT}" \
+    python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
     post_fail_to_pr process-output-failed \
       "process-fix-result.py failed with exit code 1 (bad input) for PR #${PR_NUMBER} in ${REPO_FULL_NAME}"

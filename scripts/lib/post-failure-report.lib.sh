@@ -189,6 +189,7 @@ post_failure_category_label() {
     secret-scan) echo "Secret scan blocked" ;;
     pre-commit-blocked) echo "Pre-commit blocked" ;;
     signed-off-by) echo "Signed-off-by rejected" ;;
+    signoff-rewrite-failed) echo "Signed-off-by strip failed" ;;
     push-workflow-permission) echo "Push rejected — workflows permission" ;;
     push-rejected) echo "Push rejected" ;;
     push-failed) echo "Push failed" ;;
