@@ -75,7 +75,7 @@ If you're testing a new env var, export it here too. You can also use
 The issue URL above points at an issue in a separate repo (e.g.
 `your-org/test-repo`) — clone it to its own local path so `--target-repo`
 has real content to work against. The harness maps `GITHUB_ISSUE_URL`,
-`GITLAB_ISSUE_URL`, or `TRIGGER_ENTITY_URL` to a generic `ISSUE_URL` via the
+`GITLAB_ISSUE_URL`, or `FULLSEND_WORK_ITEM_URL` to a generic `ISSUE_URL` via the
 per-forge env file (`env/github/*.env`, `env/gitlab/*.env`, or
 `env/jira/triage.env`):
 
@@ -130,7 +130,7 @@ Jira-specific env vars — `forge.jira` resolves natively with the current
 runner, no override workaround needed:
 
 ```bash
-export TRIGGER_ENTITY_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
+export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
@@ -146,6 +146,42 @@ Run `fullsend run triage` the same way as step 3 above — `--target-repo`
 should still point at a local checkout of the codebase the Jira issue
 concerns, since triage reads repository context (docs, existing issues,
 PRs) regardless of which forge hosts the issue itself.
+
+## Testing code agent with Jira
+
+The code agent supports Jira Cloud as a work-item source via the
+`event.source.system == "jira"` overlay in `harness/code.yaml`. Unlike
+triage (which uses `FULLSEND_FORGE=jira`), the code agent keeps
+`FULLSEND_FORGE` set to the target forge (`github` or `gitlab`) and uses
+a separate `FULLSEND_TRACKER=jira` signal. The Jira overlay composes
+with the target-forge overlay via merge-all-matching.
+
+When the source tracker differs from the target forge, the code agent does not
+require `ISSUE_NUMBER`. It derives the work-item key from
+`FULLSEND_WORK_ITEM_URL`, uses it in the branch and PR, and does not treat the
+external key as a GitHub or GitLab issue number.
+
+```bash
+# Jira-source env vars (JIRA_USER_EMAIL and JIRA_BASE_URL enter the code
+# sandbox as non-secret config; JIRA_TOKEN is read by the jira-ro
+# provider on the host — it never enters the code agent's runner or
+# sandbox environment)
+export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
+export JIRA_USER_EMAIL="you@example.com"
+export JIRA_TOKEN="your-jira-api-token"
+export JIRA_BASE_URL="https://your-site.atlassian.net"
+
+# Target forge — the code agent still pushes/creates PRs on this forge
+export FULLSEND_FORGE="github"
+export GH_TOKEN="$(gh auth token)"
+```
+
+Run `fullsend run code` the same way as step 3 above. `--target-repo`
+should point at a local checkout of the repo where the PR will be
+created. The Jira pre-script validates the issue URL and installs
+pre-commit tool dependencies. The sandbox reads the Jira work item
+directly through provider-backed API access (the `jira-ro` provider
+handles credential injection at the network layer).
 
 ## Testing a new configuration option
 

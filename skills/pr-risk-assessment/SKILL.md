@@ -1,11 +1,11 @@
 ---
 name: pr-risk-assessment
 description: >-
-  Computes composite PR risk score from metadata, git history, and linked
-  issue signals. Three-tier scoring model: metadata 50%, git history 30%,
-  linked issue 20% (redistributed to 62/38 when no issue linked). Outputs
-  JSON risk object with score (1-5), level (low/moderate/elevated/high/critical),
-  tier signals, and rationale.
+  Use when computing a composite PR risk score from metadata, git history,
+  and linked issue signals. Three-tier scoring model: metadata 50%, git
+  history 30%, linked issue 20% (redistributed to 62/38 when no issue
+  linked). Outputs JSON risk object with score (1-5),
+  level (low/moderate/elevated/high/critical), tier signals, and rationale.
 ---
 
 # PR Risk Assessment Scoring Model

@@ -5,9 +5,17 @@ skill: review
 
 execution:
   mode: case
-  timeout: 1200  # 20 min — agent timeout is 20 min, plus setup/teardown
+  # Harness hard-kill, above execution.env.EVAL_TIMEOUT so the script
+  # timeout fires first. Sized to the functional-tests job's 45-minute cap
+  # (as eval/code/eval.yaml), not to the harness's own 45-minute budget —
+  # so the skill's time-budget checkpoints are not exercised here.
+  timeout: 1800
   parallelism: 4
   env:
+    # Script-level timeout for run-fullsend.sh; must live under
+    # execution.env (runner.env is inert for type: cli). Under
+    # execution.timeout so trap cleanup EXIT still runs.
+    EVAL_TIMEOUT: "1700"
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
     FULLSEND_DIR: $FULLSEND_DIR
@@ -147,6 +155,26 @@ judges:
           return False, f"Forbidden labels present: {present} (actual: {actual})"
       return True, f"No forbidden labels found (checked: {forbidden})"
 
+  - name: finding_expectations
+    description: Required findings must appear and forbidden findings must not appear
+    check: |
+      import json
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found"
+      state = json.loads(raw)
+      bodies = [item.get("body", "") for item in state.get("comments", [])]
+      bodies.extend(item.get("body", "") for item in state.get("reviews", []))
+      review_text = "\n".join(bodies).lower()
+      expected = outputs.get("annotations", {}).get("findings", {})
+      required = [finding.lower() for finding in expected.get("required", [])]
+      forbidden = [finding.lower() for finding in expected.get("forbidden", [])]
+      missing = [finding for finding in required if f"[{finding}]" not in review_text]
+      present = [finding for finding in forbidden if f"[{finding}]" in review_text]
+      if missing or present:
+          return False, f"Finding mismatch: missing={missing}, forbidden_present={present}"
+      return True, f"Finding expectations met: required={required}, forbidden={forbidden}"
+
   - name: risk_label_present
     description: When risk_label_required is set, at least one risk/* label must be present
     check: |
@@ -211,6 +239,8 @@ thresholds:
   risk_label_present:
     min_pass_rate: 1.0
   forbidden_labels:
+    min_pass_rate: 1.0
+  finding_expectations:
     min_pass_rate: 1.0
   max_turns:
     min_pass_rate: 1.0

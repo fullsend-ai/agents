@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+# harness-jira-test.sh — Verify Jira provider/profile configuration and
+# credential boundary in triage and code harness files.
+#
+# Run from the repo root: bash scripts/harness-jira-test.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+FAILURES=0
+
+assert_pass() {
+  local test_name="$1"
+  echo "PASS: ${test_name}"
+}
+
+assert_fail() {
+  local test_name="$1"
+  local detail="$2"
+  echo "FAIL: ${test_name} — ${detail}"
+  FAILURES=$((FAILURES + 1))
+}
+
+# ---------------------------------------------------------------------------
+# Helper: extract a field from the Jira overlay in a harness YAML file.
+# Uses yq, which the script-test workflow installs.
+#   $1 = harness YAML path
+#   $2 = yq expression evaluated on the Jira overlay.
+# ---------------------------------------------------------------------------
+jira_overlay_field() {
+  local harness_file="$1"
+  local yq_expr="$2"
+  yq -r ".overlays[] | select(.when | contains(\"jira\")) | ${yq_expr}" "${harness_file}"
+}
+
+# ---------------------------------------------------------------------------
+# Triage harness tests
+# ---------------------------------------------------------------------------
+TRIAGE_HARNESS="${REPO_ROOT}/harness/triage.yaml"
+
+# Provider present
+if jira_overlay_field "${TRIAGE_HARNESS}" ".providers[]" | grep -qF "providers/jira-ro.yaml"; then
+  assert_pass "triage-jira-provider-present"
+else
+  assert_fail "triage-jira-provider-present" "providers/jira-ro.yaml not in Jira overlay"
+fi
+
+# Profile present
+if jira_overlay_field "${TRIAGE_HARNESS}" ".openshell.profiles[]" | grep -qF "profiles/fullsend-jira-ro.yaml"; then
+  assert_pass "triage-jira-profile-present"
+else
+  assert_fail "triage-jira-profile-present" "profiles/fullsend-jira-ro.yaml not in Jira overlay"
+fi
+
+# JIRA_TOKEN not in sandbox env
+if jira_overlay_field "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_TOKEN"; then
+  assert_fail "triage-jira-token-not-in-sandbox" "JIRA_TOKEN found in sandbox env"
+else
+  assert_pass "triage-jira-token-not-in-sandbox"
+fi
+
+# JIRA_TOKEN still in runner env (needed for post-script mutations)
+if jira_overlay_field "${TRIAGE_HARNESS}" "(.env.runner // {}) | keys | .[]" | grep -qF "JIRA_TOKEN"; then
+  assert_pass "triage-jira-token-in-runner"
+else
+  assert_fail "triage-jira-token-in-runner" "JIRA_TOKEN missing from runner env (needed for post-script)"
+fi
+
+# JIRA_USER_EMAIL in sandbox env (non-secret, needed for Basic auth)
+if jira_overlay_field "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_USER_EMAIL"; then
+  assert_pass "triage-jira-email-in-sandbox"
+else
+  assert_fail "triage-jira-email-in-sandbox" "JIRA_USER_EMAIL missing from sandbox env"
+fi
+
+# JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
+if jira_overlay_field "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_BASE_URL"; then
+  assert_pass "triage-jira-base-url-in-sandbox"
+else
+  assert_fail "triage-jira-base-url-in-sandbox" "JIRA_BASE_URL missing from sandbox env"
+fi
+
+# env/jira/triage.env does not contain JIRA_TOKEN
+TRIAGE_ENV="${REPO_ROOT}/env/jira/triage.env"
+if [ -f "${TRIAGE_ENV}" ]; then
+  if grep -qF "JIRA_TOKEN" "${TRIAGE_ENV}"; then
+    assert_fail "triage-env-file-no-token" "JIRA_TOKEN found in ${TRIAGE_ENV}"
+  else
+    assert_pass "triage-env-file-no-token"
+  fi
+else
+  assert_fail "triage-env-file-no-token" "${TRIAGE_ENV} not found"
+fi
+
+# ---------------------------------------------------------------------------
+# Code harness tests
+# ---------------------------------------------------------------------------
+CODE_HARNESS="${REPO_ROOT}/harness/code.yaml"
+
+# Provider present
+if jira_overlay_field "${CODE_HARNESS}" ".providers[]" | grep -qF "providers/jira-ro.yaml"; then
+  assert_pass "code-jira-provider-present"
+else
+  assert_fail "code-jira-provider-present" "providers/jira-ro.yaml not in Jira overlay"
+fi
+
+# Profile present
+if jira_overlay_field "${CODE_HARNESS}" ".openshell.profiles[]" | grep -qF "profiles/fullsend-jira-ro.yaml"; then
+  assert_pass "code-jira-profile-present"
+else
+  assert_fail "code-jira-profile-present" "profiles/fullsend-jira-ro.yaml not in Jira overlay"
+fi
+
+# JIRA_TOKEN not in sandbox env
+if jira_overlay_field "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_TOKEN"; then
+  assert_fail "code-jira-token-not-in-sandbox" "JIRA_TOKEN found in sandbox env"
+else
+  assert_pass "code-jira-token-not-in-sandbox"
+fi
+
+# JIRA_TOKEN not in runner env (code agent runner doesn't need Jira creds)
+if jira_overlay_field "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" | grep -qF "JIRA_TOKEN"; then
+  assert_fail "code-jira-token-not-in-runner" "JIRA_TOKEN found in runner env (no longer needed)"
+else
+  assert_pass "code-jira-token-not-in-runner"
+fi
+
+# JIRA_USER_EMAIL in sandbox env (non-secret, needed for Basic auth)
+if jira_overlay_field "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_USER_EMAIL"; then
+  assert_pass "code-jira-email-in-sandbox"
+else
+  assert_fail "code-jira-email-in-sandbox" "JIRA_USER_EMAIL missing from sandbox env"
+fi
+
+# JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
+if jira_overlay_field "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_BASE_URL"; then
+  assert_pass "code-jira-base-url-in-sandbox"
+else
+  assert_fail "code-jira-base-url-in-sandbox" "JIRA_BASE_URL missing from sandbox env"
+fi
+
+# No .issue-context.json host_file (prefetch removed)
+if jira_overlay_field "${CODE_HARNESS}" ".host_files[]?.dest" | grep -qF ".issue-context.json"; then
+  assert_fail "code-no-issue-context-host-file" ".issue-context.json still in host_files"
+else
+  assert_pass "code-no-issue-context-host-file"
+fi
+
+# JIRA_ISSUE_CONTEXT_FILE not in runner env (prefetch removed)
+if jira_overlay_field "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" | grep -qF "JIRA_ISSUE_CONTEXT_FILE"; then
+  assert_fail "code-no-issue-context-file-env" "JIRA_ISSUE_CONTEXT_FILE still in runner env"
+else
+  assert_pass "code-no-issue-context-file-env"
+fi
+
+# ---------------------------------------------------------------------------
+# Skill-level tests: sandbox curl commands must use Basic auth with the
+# opaque provider placeholder (--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}").
+# The real token never enters the sandbox; JIRA_TOKEN in these commands is
+# the provider-supplied placeholder that OpenShell replaces at the proxy
+# boundary.
+# ---------------------------------------------------------------------------
+SKILL_FILES=(
+  "${REPO_ROOT}/skills/jira-forge/SKILL.md"
+  "${REPO_ROOT}/skills/issue-labels/jira/SKILL.md"
+  "${REPO_ROOT}/skills/jira-components/SKILL.md"
+  "${REPO_ROOT}/skills/code-implementation/SKILL.md"
+)
+
+for skill_file in "${SKILL_FILES[@]}"; do
+  skill_name="$(basename "$(dirname "${skill_file}")")"
+  test_name="skill-${skill_name}-basic-auth-placeholder"
+
+  if [ ! -f "${skill_file}" ]; then
+    assert_fail "${test_name}" "${skill_file} not found"
+    continue
+  fi
+
+  # Every Jira curl command in the skill must use --user for Basic auth.
+  # Check that at least one --user flag exists alongside JIRA_TOKEN.
+  if grep -qF -- '--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"' "${skill_file}"; then
+    assert_pass "${test_name}"
+  else
+    assert_fail "${test_name}" "missing --user \"\${JIRA_USER_EMAIL}:\${JIRA_TOKEN}\" in ${skill_file}"
+  fi
+done
+
+# Verify no Jira skill curl command uses bearer auth (would require OAuth
+# token and the api.atlassian.com endpoint model, not the tenant URL).
+for skill_file in "${SKILL_FILES[@]}"; do
+  skill_name="$(basename "$(dirname "${skill_file}")")"
+  test_name="skill-${skill_name}-no-bearer-auth"
+
+  if [ ! -f "${skill_file}" ]; then
+    continue  # already reported above
+  fi
+
+  if grep -qi 'Authorization.*Bearer' "${skill_file}"; then
+    assert_fail "${test_name}" "bearer auth found in ${skill_file} (use Basic auth for tenant URL)"
+  else
+    assert_pass "${test_name}"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Provider and profile file existence
+# ---------------------------------------------------------------------------
+if [ -f "${REPO_ROOT}/providers/jira-ro.yaml" ]; then
+  assert_pass "provider-file-exists"
+else
+  assert_fail "provider-file-exists" "providers/jira-ro.yaml not found"
+fi
+
+if [ -f "${REPO_ROOT}/profiles/fullsend-jira-ro.yaml" ]; then
+  assert_pass "profile-file-exists"
+else
+  assert_fail "profile-file-exists" "profiles/fullsend-jira-ro.yaml not found"
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+echo ""
+if [[ ${FAILURES} -gt 0 ]]; then
+  echo "${FAILURES} test(s) failed"
+  exit 1
+fi
+echo "All harness Jira tests passed"

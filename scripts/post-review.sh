@@ -568,8 +568,9 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
     # If filtering removed all findings, delete the empty findings array
     # (minItems: 1 in the schema). For request-changes/reject, also
     # downgrade to comment — zero findings with a blocking verdict is
-    # semantically wrong. Use "comment" (not "approve") so the PR gets
-    # requires-manual-review, not ready-for-merge.
+    # semantically wrong. The threshold is absolute: even actionable
+    # findings are filtered (#1046). Use "comment" (not "approve") so
+    # the PR gets requires-manual-review, not ready-for-merge.
     if [ "${filtered_count}" -eq 0 ]; then
       original_action=$(jq -r '.action' "${FILTERED_RESULT}")
       DOWNGRADE_RESULT=$(mktemp)

@@ -1,8 +1,9 @@
 ---
 name: issue-labels
 description: >-
-  Discover labels already in use and recommend contextual labels to add or
-  remove on Jira issues. Jira variant using curl against the Jira Cloud REST
+  Use when labeling a Jira issue based on its content and the project's
+  established labels. Discovers labels already in use and recommends contextual
+  labels to add or remove. Jira variant using curl against the Jira Cloud REST
   API. Produces label_actions in the agent result JSON.
 ---
 

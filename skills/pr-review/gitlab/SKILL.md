@@ -32,26 +32,69 @@ MR_DATA=$(curl --fail --silent --show-error \
 HEAD_SHA=$(echo "$MR_DATA" | jq -r '.sha')
 IS_DRAFT=$(echo "$MR_DATA" | jq -r '.draft')
 
-# MR changes (includes diff per file)
-MR_CHANGES=$(curl --fail --silent --show-error \
+# MR changes (includes diff per file), saved for later Bash calls
+# (shell variables do not survive between calls; files do)
+curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}/changes")
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}/changes" \
+  > /sandbox/workspace/mr-changes.json
 
 # Changed file paths
-echo "$MR_CHANGES" | jq -r '.changes[].new_path'
+jq -r '.changes[].new_path' /sandbox/workspace/mr-changes.json
 ```
 
-## File contents at MR head
+## Unified diff (small and large MRs)
 
 ```bash
-# Fetch file contents at a specific ref (base64-encoded)
-FILE_ENCODED=$(printf '%s' "${FILE}" | jq -sRr @uri)
-CONTENT=$(curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/files/${FILE_ENCODED}?ref=${HEAD_SHA}" \
-  | jq -r '.content // empty')
-echo "$CONTENT" | base64 --decode
+# Per-file diffs from the changes payload, written to disk for the sub-agents
+# to Read; generated files dropped. An empty file is a tool failure.
+jq -r '.changes[] | select(.new_path | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
+  | "### File: \(.new_path)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
+test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```
+
+## Materialise MR head files
+
+```bash
+# Every changed file at HEAD_SHA → /sandbox/workspace/pr-head/<path>
+# (16 fetches in flight); manifest beside the tree, never inside it.
+# Scanner dialect (fullsend-ai/agents#1190): `test` not `[ ]`, no
+# nested $( ), no glob `case` arm after a literal one, no rm; the token
+# goes through a curl config file, never the command line.
+# Run this call with a 600 s tool timeout, then scrub the config file in
+# its own call (see below) whether this one succeeded, failed or timed out.
+PR_HEAD=/sandbox/workspace/pr-head; WORK=/sandbox/workspace/pr-head.work; MANIFEST=/sandbox/workspace/pr-head.manifest
+CHANGES=/sandbox/workspace/mr-changes.json; CURLRC=/tmp/pr-head.curlrc
+API="https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/files"
+mkdir -p "$PR_HEAD" "$WORK"; : > "$MANIFEST"; : > "$WORK/failed"; FETCH_START=$(date +%s)
+OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\nfail\nsilent\n' "$GITLAB_TOKEN" > "$CURLRC"; umask "$OLDMASK"
+jq -r '.changes[] | select(.deleted_file) | "removed \(.new_path)"' "$CHANGES" >> "$MANIFEST"
+jq -r '.changes[] | select(.deleted_file | not) | .new_path
+  | select(test("\n") or startswith("/") or test("(^|/)\\.\\.(/|$)")) | "unsafe \(. | @json)"' "$CHANGES" >> "$MANIFEST"
+jq -r '.changes[] | select(.deleted_file | not) | .new_path
+  | select((test("\n") or startswith("/") or test("(^|/)\\.\\.(/|$)")) | not) | "\(@uri) \(.)"' "$CHANGES" > "$WORK/files"
+n=0
+while IFS=' ' read -r enc f; do
+  mkdir -p "$PR_HEAD/$(dirname -- "$f")"
+  curl -K "$CURLRC" "${API}/${enc}/raw?ref=${HEAD_SHA}" > "$PR_HEAD/$f" || printf '%s\n' "$f" >> "$WORK/failed" &
+  n=$(( n + 1 )); test "$(( n % 16 ))" -eq 0 && wait
+done < "$WORK/files"
+wait
+while IFS=' ' read -r enc f; do
+  dest="$PR_HEAD/$f"
+  if grep -qxF -e "$f" "$WORK/failed"; then echo "failed $f"
+  elif ! test -f "$dest"; then echo "failed $f"
+  elif test "$(wc -c < "$dest")" -gt 2097152; then echo "too-large $f"
+  elif test -s "$dest" && ! grep -Iq '' "$dest"; then echo "binary $f"
+  else echo "ok $f"; fi >> "$MANIFEST"
+done < "$WORK/files"
+sort -o "$MANIFEST" "$MANIFEST"; : > "$CURLRC"
+FETCH_END=$(date +%s); OK=$(grep -c '^ok ' "$MANIFEST" || true); ALL=$(wc -l < "$MANIFEST")
+echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
+```
+
+Then, as its own Bash call — whether the call above succeeded, failed or
+timed out — scrub the token: `: > /tmp/pr-head.curlrc`.
 
 ## Issue context
 

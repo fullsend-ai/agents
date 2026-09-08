@@ -23,7 +23,8 @@
 #                       GitHub: contents:write + issues:write + pull-requests:write
 #                       GitLab: api scope (project or personal access token)
 #   REPO_FULL_NAME    — owner/repo or group/project path
-#   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab)
+#   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab); not required
+#                       when the source tracker differs from FULLSEND_FORGE
 #   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
@@ -194,11 +195,27 @@ RUN_DIR="$(pwd)"
 
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
-: "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
-trap 'report_post_failure_to_issue' ERR
+ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+WORK_ITEM_URL="${FULLSEND_WORK_ITEM_URL:-${ISSUE_URL:-}}"
+EXTERNAL_WORK_ITEM=false
 
-[[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
-  post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
+if [ -n "${FULLSEND_TRACKER:-}" ] \
+   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_FORGE}" ]; then
+  EXTERNAL_WORK_ITEM=true
+  : "${WORK_ITEM_URL:?FULLSEND_WORK_ITEM_URL is required for external-tracker runs}"
+  WORK_ITEM_KEY="${FULLSEND_WORK_ITEM_KEY:-${WORK_ITEM_URL%/}}"
+  WORK_ITEM_KEY="${WORK_ITEM_KEY##*/}"
+  if [[ ! "${WORK_ITEM_KEY}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    gha_echo error "FULLSEND_WORK_ITEM_URL does not contain a valid work-item key"
+    exit 1
+  fi
+else
+  : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
+  [[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
+    post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
+  WORK_ITEM_KEY="${ISSUE_NUMBER}"
+fi
+trap 'report_post_failure_to_issue' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -322,6 +339,12 @@ fi
 # ---------------------------------------------------------------------------
 post_noop_comment() {
   local reason="$1"
+
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    gha_echo notice "No PR created for ${WORK_ITEM_KEY}: ${reason}"
+    return 0
+  fi
+
   local safe_issue_number
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
 
@@ -421,14 +444,13 @@ if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ];
 fi
 
 # ---------------------------------------------------------------------------
-# 1b. Enforce agent/<ISSUE_NUMBER>-* branch namespace
+# 1b. Enforce agent/<WORK_ITEM_KEY>-* branch namespace
 #
 # The agent chooses its own branch name inside the sandbox. Rename it
-# deterministically using the trusted ISSUE_NUMBER (sourced from the
-# CI event, not from agent output) so agent-authored pushes are
+# deterministically using the trusted work-item identifier so agent-authored pushes are
 # confined to this issue's namespace.
 # ---------------------------------------------------------------------------
-SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${ISSUE_NUMBER}")"
+SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${WORK_ITEM_KEY}")"
 if [ "${BRANCH}" != "${SAFE_BRANCH}" ]; then
   gha_echo warning "Renaming agent branch '${BRANCH}' to '${SAFE_BRANCH}'"
   git branch -M "${SAFE_BRANCH}"
@@ -535,19 +557,35 @@ fi
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 3b. Reject Signed-off-by trailers
+# 3b. Strip Signed-off-by trailers
 #
-# Agents must never produce Signed-off-by trailers. DCO is a human
-# attestation — the DCO app already waives the check for bot authors.
-# The bot noreply email makes the trailer ~90 characters, which causes
-# gitlint body-max-line-length failures in repos with a 72-char limit.
+# Agents must not sign off: DCO waives bot authors, and the bot noreply
+# address makes the trailer ~90 chars, failing gitlint body-max-line-length.
+# Strip it and continue; fail only if one survives the rewrite.
 # ---------------------------------------------------------------------------
 echo "Checking for Signed-off-by trailers in agent's commit(s)..."
-if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-  post_fail_to_issue signed-off-by \
-    "Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
+SIGNOFF_STRIPPED=false
+SIGNOFF_STRIPPED_COUNT=0
+_signoff_count="$(signoff_count_range "${SCAN_RANGE}")"
+if [ "${_signoff_count}" -gt 0 ]; then
+  gha_echo warning "Found Signed-off-by trailer(s) in ${_signoff_count} agent commit(s) — stripping"
+
+  if ! SIGNOFF_STRIP_ERROR="$(signoff_strip_range "${SCAN_RANGE}" 2>&1 >/dev/null)"; then
+    post_fail_to_issue signoff-rewrite-failed \
+      "Failed to strip Signed-off-by trailer(s) from agent commit(s): ${SIGNOFF_STRIP_ERROR}"
+  fi
+
+  # Re-scan: fail only if a trailer survives a rewrite that reported success
+  if signoff_present_in_range "${SCAN_RANGE}"; then
+    post_fail_to_issue signed-off-by \
+      "Signed-off-by trailer persists after rewrite attempt. Manual intervention required."
+  fi
+  SIGNOFF_STRIPPED=true
+  SIGNOFF_STRIPPED_COUNT="${_signoff_count}"
+  echo "Signed-off-by trailer(s) removed from ${_signoff_count} agent commit(s)"
+else
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
-echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
 # 4. Auto-install pre-commit tool dependencies
@@ -571,7 +609,7 @@ if [ "${PRECOMMIT_GATE_SECRET_FAIL}" = "true" ]; then
   post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
 fi
 if [ "${PRECOMMIT_GATE_SIGNOFF_FAIL}" = "true" ]; then
-  post_fail_to_issue signed-off-by "${PRECOMMIT_GATE_DETAIL}"
+  post_fail_to_issue "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
 fi
 if [ "${PRECOMMIT_GATE_RESULT}" = "fail" ]; then
   post_fail_to_issue "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
@@ -607,26 +645,30 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
       "Could not query open PRs for branch '${BRANCH}' — refusing to push."
   fi
   if [ -z "${OPEN_PR}" ]; then
-    if [[ "${BRANCH}" != agent/${ISSUE_NUMBER}-* ]]; then
+    if [[ "${BRANCH}" != agent/${WORK_ITEM_KEY}-* ]]; then
       post_fail_to_issue branch-namespace-violation \
-        "Branch '${BRANCH}' is outside agent/${ISSUE_NUMBER}-* namespace — refusing to delete."
+        "Branch '${BRANCH}' is outside agent/${WORK_ITEM_KEY}-* namespace — refusing to delete."
     fi
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
     forge_delete_remote_branch "${BRANCH}"
   else
     # Verify the open PR belongs to this issue. With deterministic branch
-    # naming (agent/<ISSUE_NUMBER>-*) this should always hold, but check
+    # naming (agent/<WORK_ITEM_KEY>-*) this should always hold, but check
     # anyway as defense-in-depth against cross-issue commit injection.
     PR_BODY_TEXT="$(forge_get_pr_details "${OPEN_PR}" "body" | jq -r '.body // .description // empty' 2>/dev/null || true)"
     PR_CLOSES_THIS_ISSUE=false
-    if pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
+    if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+      if printf '%s\n' "${PR_BODY_TEXT}" | grep -qwF -- "${WORK_ITEM_URL}"; then
+        PR_CLOSES_THIS_ISSUE=true
+      fi
+    elif pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
       PR_CLOSES_THIS_ISSUE=true
     fi
     if [ "${PR_CLOSES_THIS_ISSUE}" = "false" ]; then
       post_fail_to_issue branch-collision \
-        "Remote branch '${BRANCH}' backs open PR #${OPEN_PR}, which does not reference issue #${ISSUE_NUMBER}. Refusing to push to avoid cross-issue commit injection."
+        "Remote branch '${BRANCH}' backs open PR #${OPEN_PR}, which does not reference work item ${WORK_ITEM_KEY}. Refusing to push to avoid cross-work-item commit injection."
     fi
-    echo "Open PR #${OPEN_PR} uses ${BRANCH} and references issue #${ISSUE_NUMBER} — keeping remote branch"
+    echo "Open PR #${OPEN_PR} uses ${BRANCH} and references ${WORK_ITEM_KEY} — keeping remote branch"
   fi
 fi
 
@@ -667,14 +709,35 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR: ${EXISTING_PR_URL}"
   forge_write_output "pr_url" "${EXISTING_PR_URL}"
 
+  # This path exits before the PR body is assembled, so the note goes here.
+  if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
+    forge_post_pr_comment "${EXISTING_PR_NUM}" \
+      "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
+      || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
+  fi
+
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
-  maybe_assign_pr "${EXISTING_PR_NUM}"
+  if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
+    maybe_assign_pr "${EXISTING_PR_NUM}"
+  fi
   exit 0
 fi
 
 echo "Creating PR..."
 
-COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
+# When the agent made multiple commits, the first commit is typically the
+# primary work and the last may be a minor follow-up (e.g. lint fix). Use
+# the first commit's subject for the PR title in that case.
+if [ -n "${MERGE_BASE}" ]; then
+  COMMIT_COUNT="$(git rev-list --count "${MERGE_BASE}..HEAD")"
+else
+  COMMIT_COUNT=1
+fi
+if [ "${COMMIT_COUNT}" -gt 1 ]; then
+  COMMIT_SUBJECT="$(git log --format='%s' --reverse "${MERGE_BASE}..HEAD" | head -1)"
+else
+  COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
+fi
 
 # Read pr_body from agent output. Fall back to commit body if absent.
 PR_BODY_FROM_RESULT=""
@@ -769,7 +832,11 @@ if echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+\('; then
   PR_TITLE="${COMMIT_SUBJECT}"
 elif echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+: '; then
   # Conventional commit without scope — inject issue reference
-  PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(${WORK_ITEM_KEY}): /")"
+  else
+    PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
+  fi
 else
   # Non-conventional title — leave as-is
   PR_TITLE="${COMMIT_SUBJECT}"
@@ -780,7 +847,11 @@ if [ -z "${COMMIT_BODY}" ]; then
 fi
 
 if [ -z "${COMMIT_BODY}" ]; then
-  DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    DESCRIPTION="Automated implementation for ${WORK_ITEM_KEY}."
+  else
+    DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
+  fi
 else
   DESCRIPTION="${COMMIT_BODY}"
 fi
@@ -792,23 +863,31 @@ case "${PR_BODY_SCAN_STATUS}" in
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
 esac
 
-if [ "${CLOSES_ISSUE}" = "false" ]; then
-  ISSUE_REF_KEYWORD="Related to"
+SIGNOFF_STRIPPED_LINE=""
+if [ "${SIGNOFF_STRIPPED:-false}" = "true" ]; then
+  SIGNOFF_STRIPPED_LINE="
+- [x] Removed Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)"
+fi
+
+if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+  ISSUE_REFERENCE="Related to ${WORK_ITEM_URL}"
+elif [ "${CLOSES_ISSUE}" = "false" ]; then
+  ISSUE_REFERENCE="Related to #${ISSUE_NUMBER}"
 else
-  ISSUE_REF_KEYWORD="Closes"
+  ISSUE_REFERENCE="Closes #${ISSUE_NUMBER}"
 fi
 
 PR_BODY="${DESCRIPTION}
 
 ---
 
-${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}
+${ISSUE_REFERENCE}
 
 ### Post-script verification
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}"
+${PR_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(forge_create_pr \
@@ -840,4 +919,6 @@ forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 # ---------------------------------------------------------------------------
 enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
-maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
+  maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+fi

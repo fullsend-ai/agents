@@ -70,6 +70,25 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
 
+### Signed-off-by trailers
+
+Same behaviour as the [code agent](code.md#signed-off-by-trailers): a trailer
+the agent added is removed and the run continues, instead of being discarded.
+
+This matters more on a fix run, because the commits being scanned are not
+always the agent's. When the agent rebases, the scan widens to everything on
+the PR branch since it diverged from the target — which on a human's PR
+includes the human's own commits. Only commits the **agent authored** are
+rewritten, so a contributor's DCO sign-off survives with its SHA intact; the
+rebase is what makes this necessary, since it leaves the bot as committer on a
+commit the human wrote.
+
+The strip is recorded on the PR summary comment:
+
+```text
+_Removed a Signed-off-by trailer from 1 agent commit._
+```
+
 ### Input details
 
 **Bot-triggered** (review agent requests changes):
@@ -176,9 +195,9 @@ forge-specific skills provide the appropriate CLI recipes.
 
 `gitlab-fix-ops.lib.sh` validates `GITLAB_HOST` against `CI_SERVER_HOST`,
 a GitLab CI predefined variable set automatically by the runner. Validation
-fails closed when `CI_SERVER_HOST` is not set. The network policy in
-`policies/gitlab/fix.yaml` must also be updated to allow connections to
-the host.
+fails closed when `CI_SERVER_HOST` is not set. The GitLab profile in
+`profiles/fullsend-gitlab-code.yaml` must also be updated to allow
+connections to the host.
 
 ## Custom network policy
 

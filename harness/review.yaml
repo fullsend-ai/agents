@@ -9,7 +9,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:7b2bcbdb40b2c0ca6d3f93a0d64b18fbdbb66a62354a3572fae4c9e9f8919ca3
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:ea2a31f38ee80e2a9a898a898a289fe432aa882fa5a4046c3236ab8e2627d7e7
 policy: policies/base.yaml
 readonly_repo: true
 openshell:
@@ -46,7 +46,10 @@ post_script: scripts/post-review.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
-  max_iterations: 2
+  # Interim, pending fullsend-ai/fullsend#7042: the runner cannot tell a
+  # timeout from a schema failure, so a second iteration replays a killed
+  # review from scratch. Restore 2 with `feedback_mode: append` then.
+  max_iterations: 1
 
 env:
   # REVIEW_FINDING_SEVERITY_THRESHOLD and REVIEW_PROTECTED_PATHS are set
@@ -65,8 +68,13 @@ env:
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
     PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
+    # Mirror of timeout_minutes (the code/fix convention); the pr-review
+    # skill budgets its tail from it. Keep the two in sync.
+    TIMEOUT_SECONDS: "2700"
 
-timeout_minutes: 20
+# Per iteration. The pipeline has a ~13–18 minute floor independent of
+# PR size; 20 sat on it. Mirrored as TIMEOUT_SECONDS in env.sandbox.
+timeout_minutes: 45
 
 forge:
   github:
@@ -75,7 +83,6 @@ forge:
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
-    policy: policies/github/review.yaml
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -99,7 +106,11 @@ forge:
         FULLSEND_FORGE: github
         REVIEW_RISK_ASSESSMENT_ENABLED: "true"
   gitlab:
-    policy: policies/gitlab/review.yaml
+    providers:
+      - providers/gitlab-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-ro.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab

@@ -135,6 +135,11 @@ tracker_create_label() {
     --force 2>/dev/null || true
 }
 
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
+}
+
 # --- Comments ---
 
 tracker_post_comment() {
@@ -395,6 +400,11 @@ tracker_create_label() {
     --data-urlencode "name=${name}" \
     --data-urlencode "description=${description}" \
     --data-urlencode "color=#${color}" > /dev/null 2>/dev/null || true
+}
+
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
 }
 
 # --- Bot identity (for sticky-comment author filtering) ---
@@ -736,6 +746,36 @@ tracker_list_repo_labels() {
 # unused label to an issue works without registering it first.
 tracker_create_label() {
   :
+}
+
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
+}
+
+# --- Components ---
+
+# Set components on a Jira issue. Accepts a JSON array of component objects
+# (e.g., [{"name":"backend"},{"name":"frontend"}]) and replaces the issue's
+# component list with that set.
+tracker_set_components() {
+  local components_json="$1"
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --argjson c "${components_json}" '{fields:{components:$c}}')" > /dev/null; then
+    echo "ERROR: failed to set components on issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
+}
+
+# Get current components on a Jira issue. Returns a JSON array of component
+# name strings (e.g., ["backend","frontend"]).
+tracker_get_components() {
+  local response
+  response=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=components" 2>/dev/null) || {
+    echo "ERROR: failed to get components for issue ${ISSUE_NUMBER}" >&2
+    return 1
+  }
+  echo "${response}" | jq -r '[(.fields.components // [])[].name]'
 }
 
 # --- Comments ---

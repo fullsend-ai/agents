@@ -64,11 +64,16 @@ fi
 rewrite_title() {
   local commit_subject="$1"
   local issue_number="$2"
+  local identity_mode="${3:-forge-native}"
 
   if echo "${commit_subject}" | grep -qE '^[a-z]+\('; then
     echo "${commit_subject}"
   elif echo "${commit_subject}" | grep -qE '^[a-z]+: '; then
-    echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
+    if [ "${identity_mode}" = "external" ]; then
+      echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(${issue_number}): /"
+    else
+      echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
+    fi
   else
     echo "${commit_subject}"
   fi
@@ -166,6 +171,136 @@ run_test "ci-type" \
   "10" \
   "ci(#10): update workflow permissions"
 
+actual_external_title="$(rewrite_title "fix: handle cross-forge work" "FSENDAI-4804" external)"
+if [ "${actual_external_title}" != "fix(FSENDAI-4804): handle cross-forge work" ]; then
+  echo "FAIL: external-tracker-title-uses-work-item-key"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: external-tracker-title-uses-work-item-key"
+fi
+
+# ---------------------------------------------------------------------------
+# Test helper — reimplements the multi-commit title selection logic from
+# post-code.sh so we can test it without a git repo or network access.
+#
+# Given a list of commit subjects (one per line) and a commit count,
+# returns which subject would be used for the PR title.
+# ---------------------------------------------------------------------------
+select_commit_subject() {
+  local commit_subjects="$1"  # newline-separated, in chronological order
+  # Production code always picks the first commit's subject: for single-
+  # commit PRs it is the only one; for multi-commit PRs it is the primary
+  # work (later commits are follow-ups like lint fixes).
+  echo "${commit_subjects}" | head -1
+}
+
+run_commit_select_test() {
+  local test_name="$1"
+  local commit_subjects="$2"
+  local commit_count="$3"
+  local expected="$4"
+
+  local actual
+  actual="$(select_commit_subject "${commit_subjects}" "${commit_count}")"
+
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  commit_count: ${commit_count}"
+    echo "  expected:     '${expected}'"
+    echo "  actual:       '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Single commit — uses the only commit's subject (existing behavior)
+run_commit_select_test "single-commit-uses-only-subject" \
+  "feat(#42): add primary feature" \
+  "1" \
+  "feat(#42): add primary feature"
+
+# Multiple commits — uses the first commit's subject (primary work)
+run_commit_select_test "multi-commit-uses-first-subject" \
+  "feat(#42): add primary feature
+fix(#42): suppress lint warning" \
+  "2" \
+  "feat(#42): add primary feature"
+
+# Three commits — still uses the first commit's subject
+run_commit_select_test "three-commits-uses-first-subject" \
+  "feat(#42): add dispatch triage support
+fix(#42): suppress SC2153 shellcheck warning
+chore(#42): update test fixtures" \
+  "3" \
+  "feat(#42): add dispatch triage support"
+
+# ---------------------------------------------------------------------------
+# Integration test — exercises the multi-commit title selection using a real
+# git repo to verify the git log --reverse pipeline produces the correct
+# subject.
+# ---------------------------------------------------------------------------
+MC_TMPDIR="$(mktemp -d)"
+
+MC_REAL_GIT="$(which git)"
+_mc_repo="${MC_TMPDIR}/repo"
+${MC_REAL_GIT} init -q -b main "${_mc_repo}"
+${MC_REAL_GIT} -C "${_mc_repo}" config user.email "test@example.com"
+${MC_REAL_GIT} -C "${_mc_repo}" config user.name "Test"
+echo "init" > "${_mc_repo}/README.md"
+${MC_REAL_GIT} -C "${_mc_repo}" add README.md
+${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "init"
+
+_mc_merge_base="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-parse HEAD)"
+
+${MC_REAL_GIT} -C "${_mc_repo}" checkout -q -b agent/42-test
+echo "feature" > "${_mc_repo}/feature.txt"
+${MC_REAL_GIT} -C "${_mc_repo}" add feature.txt
+${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "feat(#42): add primary feature"
+echo "fix" > "${_mc_repo}/fix.txt"
+${MC_REAL_GIT} -C "${_mc_repo}" add fix.txt
+${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
+
+# Reimplement the multi-commit title selection from post-code.src.sh
+_mc_count="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
+if [ "${_mc_count}" -gt 1 ]; then
+  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+else
+  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
+fi
+
+if [ "${_mc_subject}" = "feat(#42): add primary feature" ]; then
+  echo "PASS: multi-commit-git-integration-uses-first"
+else
+  echo "FAIL: multi-commit-git-integration-uses-first"
+  echo "  commit_count: ${_mc_count}"
+  echo "  expected:     'feat(#42): add primary feature'"
+  echo "  actual:       '${_mc_subject}'"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Single-commit case: rewind to one commit and verify
+${MC_REAL_GIT} -C "${_mc_repo}" reset -q --hard HEAD~1
+_mc_count_single="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
+if [ "${_mc_count_single}" -gt 1 ]; then
+  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+else
+  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
+fi
+
+if [ "${_mc_subject_single}" = "feat(#42): add primary feature" ]; then
+  echo "PASS: single-commit-git-integration-uses-last"
+else
+  echo "FAIL: single-commit-git-integration-uses-last"
+  echo "  commit_count: ${_mc_count_single}"
+  echo "  expected:     'feat(#42): add primary feature'"
+  echo "  actual:       '${_mc_subject_single}'"
+  FAILURES=$((FAILURES + 1))
+fi
+
+rm -rf "${MC_TMPDIR}"
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the PR body assembly logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -178,6 +313,8 @@ build_pr_body() {
   local pr_body_from_result="${5:-}"  # optional: agent-provided pr_body
   local pr_body_scan_status="${6:-skipped}"  # passed|blocked|error|skipped
   local closes_issue="${7:-true}"  # optional: "true" or "false"
+  local identity_mode="${8:-forge-native}"
+  local issue_url="${9:-}"
 
   local description=""
   if [ -n "${pr_body_from_result}" ]; then
@@ -204,17 +341,23 @@ build_pr_body() {
   # Fall back if pr_body was absent or stripped to empty
   if [ -z "${description}" ]; then
     if [ -z "${commit_body}" ]; then
-      description="Automated implementation for issue #${issue_number}."
+      if [ "${identity_mode}" = "external" ]; then
+        description="Automated implementation for ${issue_number}."
+      else
+        description="Automated implementation for issue #${issue_number}."
+      fi
     else
       description="${commit_body}"
     fi
   fi
 
-  local issue_ref_keyword
-  if [ "${closes_issue}" = "false" ]; then
-    issue_ref_keyword="Related to"
+  local issue_reference
+  if [ "${identity_mode}" = "external" ]; then
+    issue_reference="Related to ${issue_url}"
+  elif [ "${closes_issue}" = "false" ]; then
+    issue_reference="Related to #${issue_number}"
   else
-    issue_ref_keyword="Closes"
+    issue_reference="Closes #${issue_number}"
   fi
 
   local pr_body_scan_line
@@ -229,7 +372,7 @@ build_pr_body() {
 
 ---
 
-${issue_ref_keyword} #${issue_number}
+${issue_reference}
 
 ### Post-script verification
 
@@ -297,6 +440,15 @@ run_body_test "empty-body-fallback" \
   "" \
   "99" "agent/99-add-feature" \
   "Automated implementation for issue #99." "yes"
+
+external_body="$(build_pr_body "" "FSENDAI-4804" "agent/FSENDAI-4804-fix" "abc123..def456" "" skipped true external "https://redhat.atlassian.net/browse/FSENDAI-4804")"
+if ! grep -qF "Related to https://redhat.atlassian.net/browse/FSENDAI-4804" <<<"${external_body}" \
+   || grep -qF "Closes #" <<<"${external_body}"; then
+  echo "FAIL: external-tracker-body-links-work-item-without-forge-close"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: external-tracker-body-links-work-item-without-forge-close"
+fi
 
 # Empty commit body should still not have Changed files
 run_body_test "empty-body-no-changed-files" \
@@ -957,81 +1109,10 @@ run_artifact_test "strip-empty-input" \
   "" \
   ""
 
-# ---------------------------------------------------------------------------
-# Test helper — reimplements the Signed-off-by trailer detection logic from
-# post-code.sh section 3b. Given commit body text, returns whether the
-# trailer was detected.
-# ---------------------------------------------------------------------------
-detect_signed_off_by() {
-  local commit_body="$1"
-
-  if echo "${commit_body}" | grep -q '^Signed-off-by:'; then
-    echo "blocked:signed-off-by"
-  else
-    echo "pass"
-  fi
-}
-
-run_signoff_test() {
-  local test_name="$1"
-  local commit_body="$2"
-  local expected="$3"
-
-  local actual
-  actual="$(detect_signed_off_by "${commit_body}")"
-
-  if [ "${actual}" != "${expected}" ]; then
-    echo "FAIL: ${test_name}"
-    echo "  commit_body:  '${commit_body}'"
-    echo "  expected:     '${expected}'"
-    echo "  actual:       '${actual}'"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-
-  echo "PASS: ${test_name}"
-}
-
-# --- Signed-off-by detection test cases ---
-
-# Commit with Signed-off-by trailer should be blocked
-run_signoff_test "signoff-present-blocked" \
-  "Fix widget rendering.
-
-Signed-off-by: fullsend-ai-coder[bot] <123456+fullsend-ai-coder[bot]@users.noreply.github.com>" \
-  "blocked:signed-off-by"
-
-# Commit without Signed-off-by trailer should pass
-run_signoff_test "signoff-absent-passes" \
-  "Fix widget rendering.
-
-Closes #42" \
-  "pass"
-
-# Empty commit body should pass
-run_signoff_test "signoff-empty-body-passes" \
-  "" \
-  "pass"
-
-# Signed-off-by mentioned mid-line (not a trailer) should pass
-run_signoff_test "signoff-mid-line-passes" \
-  "Removed the Signed-off-by: trailer from commits." \
-  "pass"
-
-# Multiple trailers including Signed-off-by should be blocked
-run_signoff_test "signoff-among-other-trailers-blocked" \
-  "Fix rendering bug.
-
-Co-authored-by: someone <someone@example.com>
-Signed-off-by: bot <bot@noreply.github.com>" \
-  "blocked:signed-off-by"
-
-# Variant casing should pass (detection is intentionally case-sensitive)
-run_signoff_test "signoff-variant-casing-passes" \
-  "Fix rendering bug.
-
-signed-off-by: bot <bot@noreply.github.com>" \
-  "pass"
+# Signed-off-by trailer stripping is covered by scripts/signoff-strip-test.sh,
+# which exercises the real rewrite (git filter-branch / git commit --amend)
+# against real repositories: identity and date preservation, commit counts,
+# authorship scoping, the folded-subject case, and the failure paths.
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the pre-commit auto-fix retry decision logic

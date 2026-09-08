@@ -20,7 +20,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:7b2bcbdb40b2c0ca6d3f93a0d64b18fbdbb66a62354a3572fae4c9e9f8919ca3
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:ea2a31f38ee80e2a9a898a898a289fe432aa882fa5a4046c3236ab8e2627d7e7
 policy: policies/base.yaml
 openshell:
   profiles:
@@ -67,6 +67,7 @@ validation_loop:
 env:
   runner:
     CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
+    TARGET_REPO_DIR: "${TARGET_REPO_DIR}"
     PUSH_TOKEN: "${PUSH_TOKEN}"
     PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
@@ -83,8 +84,8 @@ env:
 
 timeout_minutes: 35
 
-forge:
-  github:
+overlays:
+  - when: 'runtime.forge == "github"'
     providers:
       - providers/github-code.yaml
     openshell:
@@ -106,8 +107,12 @@ forge:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
-  gitlab:
-    policy: policies/gitlab/code.yaml
+  - when: 'runtime.forge == "gitlab"'
+    providers:
+      - providers/gitlab-code.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-code.yaml
     skills:
       - skills/gitlab-forge
     host_files:
@@ -124,3 +129,32 @@ forge:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
+  # Jira-source overlay — provides provider-backed Jira API access so
+  # the sandbox can read work items directly through the credential
+  # boundary.  Ordered AFTER forge overlays so its env vars (especially
+  # ISSUE_URL) win under last-writer-wins merge semantics when both the
+  # Jira overlay and a forge overlay match.
+  # pre_script overrides the top-level default.  Post-script selection
+  # stays with the target forge (GitHub/GitLab).
+  - when: 'event.source.system == "jira"'
+    providers:
+      - providers/jira-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-jira-ro.yaml
+    pre_script: scripts/pre-code-jira.sh
+    env:
+      runner:
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        # A Jira source work item has a key, not a target-forge issue number.
+        # Override the inherited compatibility variable so harness expansion
+        # does not require ISSUE_NUMBER for cross-forge runs.
+        ISSUE_NUMBER: ""
+        FULLSEND_TRACKER: jira
+      sandbox:
+        FULLSEND_TRACKER: jira
+        ISSUE_NUMBER: ""
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"

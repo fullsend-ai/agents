@@ -20,23 +20,67 @@ PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
 HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
 IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
 
-# PR files list (paginated — loop if needed)
-PR_FILES=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100")
-
-# Full unified diff
-gh pr diff "${PR_NUMBER}" --repo "${REPO_FULL_NAME}"
-
-# Per-file diff (for large PRs)
-git diff <merge-base>..HEAD -- <file>
+# PR files list — every page, flattened, saved for later Bash calls
+# (shell variables do not survive between calls; files do)
+gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100" \
+  | jq 'add // []' > /sandbox/workspace/pr-files.json
+FILE_COUNT=$(jq 'length' /sandbox/workspace/pr-files.json)
+LINE_COUNT=$(jq '[.[] | .additions + .deletions] | add // 0' /sandbox/workspace/pr-files.json)
 ```
 
-## File contents at PR head
+## Full unified diff (small PRs)
 
 ```bash
-# Fetch file contents at a specific ref (base64-encoded)
-CONTENT=$(gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}" \
-  --jq '.content // empty' 2>/dev/null)
-echo "$CONTENT" | base64 --decode
+# Written to disk for the sub-agents to Read; an empty file is a tool failure
+gh pr diff "${PR_NUMBER}" --repo "${REPO_FULL_NAME}" > /sandbox/workspace/pr-diff.txt
+test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
+```
+
+## Per-file diffs (large PRs)
+
+```bash
+# From the files API — the checkout is the base branch, so never `git diff` it.
+# Generated files are dropped here.
+jq -r '.[] | select(.filename | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
+  | "### File: \(.filename)\n\(.patch // "(no patch from the API: binary or oversized)")"' \
+  /sandbox/workspace/pr-files.json > /sandbox/workspace/pr-diff.txt
+test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
+```
+
+## Materialise PR head files
+
+```bash
+# Every changed file at HEAD_SHA → /sandbox/workspace/pr-head/<path>
+# (16 fetches in flight); manifest beside the tree, never inside it.
+# Scanner dialect (fullsend-ai/agents#1190): `test` not `[ ]`, no
+# nested $( ), no glob `case` arm after a literal one, no rm.
+# Run this call with a 600 s tool timeout.
+PR_HEAD=/sandbox/workspace/pr-head; WORK=/sandbox/workspace/pr-head.work; MANIFEST=/sandbox/workspace/pr-head.manifest
+FILES=/sandbox/workspace/pr-files.json
+mkdir -p "$PR_HEAD" "$WORK"; : > "$MANIFEST"; : > "$WORK/failed"; FETCH_START=$(date +%s)
+jq -r '.[] | select(.status == "removed") | "removed \(.filename)"' "$FILES" >> "$MANIFEST"
+jq -r '.[] | select(.status != "removed") | .filename
+  | select(test("\n") or startswith("/") or test("(^|/)\\.\\.(/|$)")) | "unsafe \(. | @json)"' "$FILES" >> "$MANIFEST"
+jq -r '.[] | select(.status != "removed") | .filename
+  | select((test("\n") or startswith("/") or test("(^|/)\\.\\.(/|$)")) | not)' "$FILES" > "$WORK/files"
+n=0
+while IFS= read -r f; do
+  mkdir -p "$PR_HEAD/$(dirname -- "$f")"
+  gh api -H "Accept: application/vnd.github.raw+json" "repos/$REPO_FULL_NAME/contents/$f?ref=$HEAD_SHA" > "$PR_HEAD/$f" 2>/dev/null || printf '%s\n' "$f" >> "$WORK/failed" &
+  n=$(( n + 1 )); test "$(( n % 16 ))" -eq 0 && wait
+done < "$WORK/files"
+wait
+while IFS= read -r f; do
+  dest="$PR_HEAD/$f"
+  if grep -qxF -e "$f" "$WORK/failed"; then echo "failed $f"
+  elif ! test -f "$dest"; then echo "failed $f"
+  elif test "$(wc -c < "$dest")" -gt 2097152; then echo "too-large $f"
+  elif test -s "$dest" && ! grep -Iq '' "$dest"; then echo "binary $f"
+  else echo "ok $f"; fi >> "$MANIFEST"
+done < "$WORK/files"
+sort -o "$MANIFEST" "$MANIFEST"
+FETCH_END=$(date +%s); OK=$(grep -c '^ok ' "$MANIFEST" || true); ALL=$(wc -l < "$MANIFEST")
+echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
 ```
 
 ## Issue context

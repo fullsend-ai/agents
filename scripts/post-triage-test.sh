@@ -1698,6 +1698,12 @@ if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
   exit 0
 fi
 
+# Return components for the issue (used by component_actions handler).
+if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+  exit 0
+fi
+
 # Everything else (label add/remove PUTs, transition POSTs): accept silently.
 exit 0
 CURLMOCK
@@ -2094,9 +2100,55 @@ if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
   printf '\n201'
   exit 0
 fi
+if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+  exit 0
+fi
 exit 0
 CURLMOCK
 chmod +x "${MOCK_BIN}/curl"
+
+# --- Jira component_actions tests (#1073) ---
+
+# Jira component_actions: add action sets components via PUT.
+run_jira_test "jira-component-actions-add" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Backend component applies to this API bug.","actions":[{"action":"add","component":"backend"}]}}' \
+  '"name":"backend"'
+
+# Jira component_actions: remove action removes the component.
+run_jira_test "jira-component-actions-remove" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Removing stale component.","actions":[{"action":"remove","component":"existing-component"}]}}' \
+  '"components":[]'
+
+# Jira component_actions: reason is appended to comment.
+run_jira_test "jira-component-actions-reason-appended" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Backend component applies.","actions":[{"action":"add","component":"backend"}]}}' \
+  "Backend component applies."
+
+# Jira component_actions: works alongside label_actions.
+run_jira_test "jira-component-actions-with-labels" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label.","actions":[{"action":"add","label":"area-api"}]},"component_actions":{"reason":"Backend component.","actions":[{"action":"add","component":"backend"}]}}' \
+  '"name":"backend"'
+
+# GitHub ignores component_actions (not supported on GitHub tracker).
+export FULLSEND_TRACKER="github"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export GH_TOKEN="fake-token"
+unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
+
+run_test_stdout "github-component-actions-ignored" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Backend component.","actions":[{"action":"add","component":"backend"}]}}' \
+  "Ignoring component_actions"
+
+# Restore Jira tracker for subsequent tests.
+export FULLSEND_TRACKER="jira"
+export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
+export JIRA_USER_EMAIL="triage@example.com"
+export JIRA_TOKEN="fake-jira-token"
+export JIRA_DUPLICATE_TRANSITION="Duplicate"
+export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
+export JIRA_SPLIT_TRANSITION="Done"
+unset GH_TOKEN
 
 # --- Jira credential guard tests (#876) ---
 # Verify that source-time :? guards reject unset/empty JIRA_TOKEN and

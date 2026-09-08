@@ -46,8 +46,10 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script validates the agent's chosen target branch against this variable before pushing. Set via `env.runner` in `harness/code.yaml` (never injected into the sandbox). | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
-| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
+| `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script reads it from the runner when present and validates the agent's chosen target branch before pushing. It is never injected into the sandbox. | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
+| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
+| `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads the Jira work item directly via provider-backed Jira API access (the `jira-ro` provider handles credential injection at the network layer). Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
+| `ISSUE_NUMBER` | Numeric source issue identifier used when the source tracker is the target forge. It is optional for external-tracker runs because that work-item key is not a target-forge issue number. | (set by forge-native workflows) | Positive integer |
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
 
@@ -60,6 +62,49 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 
 This separation ensures the agent never has direct write access to the repository.
+
+### Signed-off-by trailers
+
+Agents must not sign off their commits — DCO is a human attestation, and the
+DCO app waives bot authors. If an agent adds the trailer anyway, the
+post-script **removes it and continues** rather than discarding the run.
+
+Only commits the agent authored are rewritten. A human's sign-off on the same
+branch is left alone, including after the agent rebases (a rebase re-stamps the
+committer, so the author is what decides):
+
+```text
+--- before ---
+6f56c9e 123+fullsend-ai-coder[bot]@… | fix: agent change | signoff=fullsend-ai-coder <123+…>
+c07aea4 human@example.com            | feat: human work  | signoff=Real Human <human@example.com>
+
+--- after ---
+d72d44c 123+fullsend-ai-coder[bot]@… | fix: agent change | signoff=
+c07aea4 human@example.com            | feat: human work  | signoff=Real Human <human@example.com>
+```
+
+The agent's commit is rewritten (`6f56c9e` → `d72d44c`); the human's keeps both
+its trailer and its SHA. Author, committer and both dates are preserved on
+rewritten commits, and the rest of the message is untouched.
+
+The PR body records what happened:
+
+```text
+- [x] Removed Signed-off-by trailer from 1 agent commit(s)
+```
+
+On a branch that already has an open PR, the same note is posted as a comment
+instead, because that path exits before the PR body is built.
+
+The run only fails on a trailer if the rewrite itself could not run — for
+example an unstaged change to a tracked file, which `git filter-branch` refuses.
+That is reported as **Signed-off-by strip failed**, distinct from
+**Signed-off-by rejected**, which now means only that a trailer survived a
+rewrite that reported success.
+
+The validation loop does not fail on the trailer either: it soft-passes and
+leaves the repair to the post-script, so a trailer never costs a retry
+iteration.
 
 ## Custom sandbox image
 
@@ -82,9 +127,8 @@ need a custom image.
 ### Image requirements
 
 A custom image must work within the constraints enforced by the sandbox
-policy ([`policies/base.yaml`](../policies/base.yaml)), network
-profiles ([`profiles/`](../profiles/)), and forge-specific policy
-([`policies/gitlab/code.yaml`](../policies/gitlab/code.yaml) for GitLab):
+policy ([`policies/base.yaml`](../policies/base.yaml)) and network
+profiles ([`profiles/`](../profiles/)):
 
 | Requirement | Detail |
 |-------------|--------|
@@ -171,26 +215,44 @@ The precedence is as follows:
 
 ## Multi-forge support
 
-The code agent supports both GitHub and GitLab. The harness
-`forge.<platform>` sections configure platform-specific policies,
-skills, and env vars. Key differences from single-forge
-setup:
+The code agent supports both GitHub and GitLab, and can also consume
+work items from Jira. The harness uses `overlays:` with CEL `when:`
+expressions to configure platform-specific policies, skills, and env
+vars. Key differences from single-forge setup:
 
-- **`FULLSEND_FORGE`** is required. Set automatically by the harness
-  `forge.<platform>.env` section (`"github"` or `"gitlab"`).
+- **`FULLSEND_FORGE`** is required. Set automatically by the matching
+  forge overlay's `env` section (`"github"` or `"gitlab"`).
 - **`ISSUE_URL`** replaces `GITHUB_ISSUE_URL` in scripts. The
   per-forge env file (`env/github/code.env` or `env/gitlab/code.env`)
   maps the platform-specific variable to `ISSUE_URL`.
-- **Policy** is per-forge: `policies/base.yaml` (GitHub) or
-  `policies/gitlab/code.yaml` (GitLab). Custom harnesses using `base:`
-  composition should override at the forge level if needed.
+- **Jira-source overlay** — when the work item originates from Jira
+  (`event.source.system == "jira"`), a dedicated overlay attaches the
+  `jira-ro` provider and `fullsend-jira-ro` OpenShell profile so the
+  sandbox can read the Jira work item via the REST API. Sandbox curl
+  commands use `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` for Basic
+  auth, but `JIRA_TOKEN` inside the sandbox is the provider's opaque
+  placeholder — the real API token is never expanded into sandbox
+  config or env files. OpenShell replaces the placeholder in the
+  Basic Authorization header at the proxy boundary. The Jira overlay
+  composes with the target-forge overlay (GitHub or GitLab) via
+  merge-all-matching.
+- **External work-item identity** — when the source tracker differs from the
+  target forge, the code agent derives the key from `ISSUE_URL`.
+  Branch names and PR text use that key and link the source URL; they do not
+  invent a numeric target-forge issue reference. Target-forge issue comments
+  and assignee lookup are skipped when no such issue exists.
+- **Policy** is `policies/base.yaml` for all forges. Network access is
+  provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
+  harnesses using `base:` composition should override at the forge level
+  if needed.
 - **GitLab uses `curl`** instead of `gh` for API access. The GitLab
-  sandbox policy allows `curl` for `gitlab_api` endpoints only.
+  profile (`fullsend-gitlab-code`) allows `curl` for GitLab API
+  endpoints only.
 - **GitLab host validation** — `forge_validate_issue_url` validates
   the host against `CI_SERVER_HOST`, a GitLab CI predefined variable
   set automatically by the runner. Validation fails closed when
-  `CI_SERVER_HOST` is not set. The network policy in
-  `policies/gitlab/code.yaml` must also be updated.
+  `CI_SERVER_HOST` is not set. The GitLab profile in
+  `profiles/fullsend-gitlab-code.yaml` must also be updated.
 
 ## Custom network policy
 

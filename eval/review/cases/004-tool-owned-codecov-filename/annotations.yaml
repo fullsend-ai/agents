@@ -1,0 +1,26 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - risk/elevated
+    - risk/high
+    - risk/critical
+  risk_label_required: true
+
+findings:
+  required: []
+  forbidden:
+    - file-naming-convention
+
+# num_turns counts a sub-agent's own tool turns when it returns inline,
+# and sub-agents now Read PR-head files: measured 43–45 here, 10 before.
+max_turns: 80
+max_cost_usd: 4.00
+
+review_expectations: |
+  The PR adds `.codecov.yml`, a tool-owned configuration filename that
+  Codecov recognizes. Although existing root-level YAML files use `.yaml`,
+  the review must not recommend renaming `.codecov.yml` for consistency.
+  The review should approve or comment without a file-naming-convention
+  finding.

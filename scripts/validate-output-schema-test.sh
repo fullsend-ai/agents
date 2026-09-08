@@ -384,7 +384,7 @@ run_test_output "additional-properties-shows-allowed" \
 run_test_output "additional-properties-lists-known-keys" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
   "false" \
-  "action, clarity_scores, comment, duplicate_of, label_actions, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
+  "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
 
 run_test_output "valid-output-no-allowed-line" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
@@ -452,6 +452,18 @@ run_test_custom_filename "review-reject-missing-findings" \
 
 run_test_custom_filename "review-reject-missing-body" \
   '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "review-failure-time-budget-valid" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"time-budget"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-failure-unknown-reason-rejected" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"ran-out-of-time"}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
