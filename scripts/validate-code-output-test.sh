@@ -114,7 +114,7 @@ run_test "schema-fail-needs-input-true-without-reason" \
   '{"target_branch":"main","needs_input":true}' \
   "false"
 
-run_test "schema-valid-needs-input-reason-only" \
+run_test "schema-valid-needs-input-reason-without-flag" \
   '{"target_branch":"main","needs_input_reason":"some reason"}' \
   "true"
 

@@ -83,10 +83,10 @@ the review agent — if the triage was wrong, your code will fail review.
 ## Structured output
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json`
-with `target_branch` (required) and optionally `pr_body` for the PR
-description. When the agent cannot proceed without human intervention,
-set `needs_input` to `true` and provide a `needs_input_reason` string
-explaining the blocker. The `code-implementation` skill describes the
+with `target_branch` and optionally `pr_body` for the PR description.
+`target_branch` is required for normal runs; when `needs_input` is
+`true`, `needs_input_reason` is required instead (and `target_branch`
+is optional). The `code-implementation` skill describes the
 schema and the exact steps where you write each field. The post-script
 reads this file to determine the PR target branch and description, or
 to apply the `fs-code-needs-input` label when the agent signals it

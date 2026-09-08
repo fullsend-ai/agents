@@ -1122,8 +1122,12 @@ echo "::notice::STEP 11: Validate structured output"
 cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body`, `closes_issue`, `needs_input`, and `needs_input_reason`:
+The file must be valid JSON. The schema uses conditional requirements:
+
+- **Normal runs:** `target_branch` is required. `pr_body` and `closes_issue`
+  are optional.
+- **`needs_input` runs:** When `needs_input` is `true`, `needs_input_reason`
+  is required and `target_branch` is optional.
 
 ```json
 {

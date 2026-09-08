@@ -8,7 +8,7 @@
   "properties": {
     "target_branch": {
       "type": "string",
-      "description": "Branch the PR should target. Determined by the agent from issue context.",
+      "description": "Branch the PR should target. Determined by the agent from issue context. Required for normal runs; optional when needs_input is true.",
       "pattern": "^[a-zA-Z0-9._/-]+$"
     },
     "pr_body": {
@@ -34,6 +34,7 @@
   },
   "allOf": [
     {
+      "$comment": "required: [needs_input] guards against vacuous truth — without it, objects lacking needs_input would match the if, triggering then (requiring needs_input_reason) instead of else (requiring target_branch).",
       "if": {
         "properties": { "needs_input": { "const": true } },
         "required": ["needs_input"]
