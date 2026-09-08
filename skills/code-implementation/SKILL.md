@@ -42,9 +42,7 @@ The `scan-secrets` helper is pre-installed in the sandbox image at
 command -v scan-secrets
 ```
 
-If missing, emit a `needs_input` result and **STOP**. Do not improvise a
-replacement or skip scanning. See [Emitting needs_input](#emitting-needs_input)
-for the procedure.
+If missing, emit `needs_input` and **STOP**; do not improvise or skip scanning.
 
 Two modes:
 
@@ -513,9 +511,8 @@ When requirements are ambiguous, distinguish between "vague but actionable"
 (you can make a reasonable conservative interpretation) and "genuinely
 uninterpretable" (no viable path forward). For vague-but-actionable issues,
 implement the most conservative interpretation and note your assumptions in
-the commit message. For genuinely uninterpretable issues, emit a
-`needs_input` result and stop — see
-[Emitting needs_input](#emitting-needs_input) for the procedure.
+the commit message. For genuinely uninterpretable issues, emit `needs_input`
+and stop.
 
 Do not start writing code until you can articulate: what you will change, why,
 and how you will verify it works.
@@ -850,10 +847,8 @@ failures.
 **If tests or linters fail due to missing tools or infrastructure** (not
 due to your code): try the Makefile's setup targets first (`make deps`,
 `make setup`, etc.). If the tool genuinely cannot be installed in the
-sandbox and no tests or linters can run at all, emit a `needs_input`
-result and stop — see [Emitting needs_input](#emitting-needs_input).
-If only one tool is missing but other verification succeeded, note the
-gap in your commit message body so reviewers know what was not verified:
+sandbox and no tests or linters can run at all, emit `needs_input` and stop.
+If one tool is missing, disclose the gap in the commit message:
 
 > Note: <suite-name> tests could not run (<reason>). <other-suite>
 > tests passed. Manual verification of <suite-name> is required.
@@ -1128,8 +1123,7 @@ cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body`, `closes_issue`, `needs_input`, and
-`needs_input_reason`:
+optionally `pr_body`, `closes_issue`, `needs_input`, and `needs_input_reason`:
 
 ```json
 {
@@ -1139,66 +1133,14 @@ optionally `pr_body`, `closes_issue`, `needs_input`, and
 ```
 
 **Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch`, `pr_body`, `closes_issue`, `needs_input`, and
-`needs_input_reason` are allowed. Any other fields will cause validation
-to fail.
-
 Validate the output against the schema:
 
 ```bash
 fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-If validation fails, read the error output, fix the JSON file, and
-re-run the check. If it still fails after 3 attempts, write the best
-JSON you have and exit.
-
-## Emitting needs_input
-
-When the agent cannot proceed without human intervention, it emits a
-structured `needs_input` signal instead of silently no-oping. This
-applies to three cases:
-
-1. **Missing `scan-secrets`** (step 9a) — the sandbox image is broken
-   and the mandatory secret scanner is not available.
-2. **Genuinely uninterpretable issue** (step 8) — the issue cannot be
-   understood well enough to form any implementation plan.
-3. **Broken build/test tooling** (step 9c) — no test suite or linter
-   can run at all due to missing infrastructure that `make setup` did
-   not fix.
-
-**Procedure:**
-
-1. Write the `needs_input` fields to the structured output file:
-
-   ```bash
-   reason="<one-sentence explanation of the blocker>"
-   jq --arg r "${reason}" \
-     '. + {needs_input: true, needs_input_reason: $r}' \
-     "${FULLSEND_OUTPUT_DIR}/agent-result.json" \
-     > "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" \
-     && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" \
-           "${FULLSEND_OUTPUT_DIR}/agent-result.json"
-   ```
-
-2. Validate the output:
-
-   ```bash
-   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
-   ```
-
-3. **Stop.** Do not commit, do not create a branch with code changes.
-   The post-script reads `needs_input`, applies the `fs-code-needs-input`
-   label to the issue, posts a comment with the reason, and exits without
-   creating a PR.
-
-The `needs_input_reason` must be a concise, human-readable sentence that
-explains the specific blocker — not a stack trace or log dump. Examples:
-
-- `"scan-secrets is not installed in the sandbox image"`
-- `"Issue description is not interpretable: no clear problem statement,
-  reproduction steps, or actionable scope"`
-- `"Build tooling is broken: make setup failed and go is not installed"`
+Fix validation errors and retry up to three times; then write the best JSON
+available and exit.
 
 ## Partial work
 

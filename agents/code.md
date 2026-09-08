@@ -103,11 +103,17 @@ If validation fails, read the error output, fix the JSON file, and
 re-run the check. If it still fails after 3 attempts, write the best
 JSON you have and exit.
 
+If you cannot proceed because `scan-secrets` is unavailable, the issue is
+uninterpretable, or setup cannot make tests/linters run, set `needs_input` to
+`true` and add a concise `needs_input_reason` with `jq`. Validate the file,
+then stop without committing; the post-script labels the issue, posts the
+reason, and exits without creating a PR.
+
 ## Failure handling
 
 Secret scanning is **non-negotiable**. The `scan-secrets` helper runs before
-tests on every verification pass. If secrets are detected — or if the helper
-script is missing — hard stop. Do not improvise a replacement or skip the scan.
+tests on every verification pass. If secrets are detected, hard stop. If the
+helper is missing, use the `needs_input` path above; do not improvise or skip.
 
 Your exit state is the handoff contract:
 - **Clean commit on the feature branch + valid structured output** → the
