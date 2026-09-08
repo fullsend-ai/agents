@@ -1,7 +1,7 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-09-08T21:04:06.779268+00:00",
+  "generated_at": "2026-09-08T21:27:41.503372+00:00",
   "violations": [
     {
       "fingerprint": "34efa8521ae07039",
@@ -82,9 +82,9 @@
       "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
       "file_path": "skills/pr-review/SKILL.md",
-      "message": "Estimated 15,996 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 16,020 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 15996,
+      "value": 16020,
       "baseline_mode": "ceiling"
     }
   ]

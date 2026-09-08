@@ -449,13 +449,14 @@ incident.
    ```
 
 4. Spawn via Agent tool with `prompt` composed from parts 1–3 and:
-   - runtime note lists `security-triage` (pi): `subagent_type`:
-     `security-triage`, no `model` (the runner resolves both the model
-     and the read-only tool set)
-   - no runtime note (Claude Code): `model`: `haiku`, `subagent_type`:
-     `Explore` (read-only)
-   - runtime note without `security-triage`: `subagent_type`: `Explore`,
-     no `model` (step 4 item 2 fallback)
+   - **Persona listed in the runtime note (pi):** `subagent_type`:
+     `security-triage`, no `model` — the runner resolves both the model
+     and the read-only tool set.
+   - **No runtime note (Claude Code):** `model`: `haiku`,
+     `subagent_type`: `Explore` (read-only).
+   - **Runtime note present, persona not listed (pi):**
+     `subagent_type`: `Explore` (a built-in read-only type the runner
+     always accepts), no `model` — resolves as in step 4 item 2.
 
    This agent runs **synchronously** (not in the background) because
    its output feeds into step 3d's context package assembly. It uses
@@ -602,7 +603,8 @@ be absent from the result JSON.
 
 5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
    the same message as the step 4 dimension sub-agents, with the step 4
-   item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4 consumes its output
+   item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
+   consumes its output
    (it only goes into `agent-result.json`, step 7); running it first
    serialised a 2–3 minute sub-agent for nothing.
 
@@ -811,10 +813,10 @@ here):
    - **No runtime note (Claude Code):** `model` from the sub-agent
      frontmatter (`opus` for `correctness` and `security`, `sonnet` for
      the rest), no `subagent_type` — the persona comes from the prompt.
-   - **Runtime note present, persona not listed (pi):** the run cannot
-     serve its model, so the frontmatter alias would be rejected too.
-     Omit **both** `subagent_type` and `model`; the child runs on this
-     run's sub-agent default, which is always servable.
+   - **Runtime note present, persona not listed (pi):** usually the run
+     cannot serve its model, so the frontmatter alias would be rejected
+     too. Omit **both** `subagent_type` and `model`; the child runs on
+     this run's sub-agent default, which is always servable.
 
 **All sub-agents MUST be dispatched simultaneously** — include all
 Agent calls in a single message so they run concurrently, and include
