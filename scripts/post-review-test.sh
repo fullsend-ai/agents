@@ -455,6 +455,10 @@ fi
 # recovers from. MOCK_FILES_CALL_MARKER tracks whether the first call
 # has happened; the retry test resets it before running.
 if [[ "\$1" == "api" ]] && [[ "\$*" == *"/pulls/"* ]] && [[ "\$*" == *"/files"* ]]; then
+  if [[ -n "\${MOCK_PR_FILES_FAIL:-}" ]]; then
+    echo "mock gh api failure" >&2
+    exit 1
+  fi
   if [[ -n "\${MOCK_PR_FILES_ON_RETRY:-}" ]]; then
     if [[ -f "\${MOCK_FILES_CALL_MARKER:-${TMPDIR}/pr-files-call-marker}" ]]; then
       echo "\${MOCK_PR_FILES_ON_RETRY}"
@@ -569,6 +573,10 @@ fi
 
 # GET /merge_requests/:iid/changes → changed files
 if [[ "\${URL}" == *"/changes"* ]]; then
+  if [[ -n "\${MOCK_MR_FILES_FAIL:-}" ]]; then
+    echo "mock curl failure" >&2
+    exit 1
+  fi
   echo '{"changes":[{"new_path":"'"\${MOCK_MR_FILES:-src/main.go}"'"}]}'
   exit 0
 fi
@@ -692,6 +700,45 @@ run_gitlab_label_test_stdout "gitlab-control-label-refused" \
 run_gitlab_label_test "gitlab-no-label-actions-still-posts" \
   '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
   "fullsend post-review"
+
+run_gitlab_pr_files_fetch_error_fails_closed_test() {
+  local test_name="gitlab-pr-files-fetch-error-fails-closed"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export CI_SERVER_HOST="gitlab.com"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_MR_FILES_FAIL="1"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF "retrying once in case of a transient forge data race" "${TMPDIR}/stdout-${test_name}.log" || \
+     ! grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected retry and fail-closed messages"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_gitlab_pr_files_fetch_error_fails_closed_test
 
 run_label_test() {
   local test_name="$1"
@@ -1693,6 +1740,45 @@ run_empty_pr_files_with_protection_disabled_test() {
   echo "PASS: ${test_name}"
 }
 run_empty_pr_files_with_protection_disabled_test
+
+run_github_pr_files_fetch_error_fails_closed_test() {
+  local test_name="github-pr-files-fetch-error-fails-closed"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES_FAIL="1"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF "retrying once in case of a transient forge data race" "${TMPDIR}/stdout-${test_name}.log" || \
+     ! grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected retry and fail-closed messages"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_github_pr_files_fetch_error_fails_closed_test
 
 # forge_get_pr_files can transiently return an empty list right after a
 # merge-commit update (fullsend-ai/fullsend#2093). The call site retries

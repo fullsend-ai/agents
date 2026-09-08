@@ -52,10 +52,11 @@ forge_get_pr_info() {
 
 forge_get_pr_files() {
   # Use the paginated /pulls/{n}/files REST endpoint rather than the
-  # `gh pr view --json files` summary field: the summary is populated
-  # asynchronously and can transiently return an empty list right after
-  # a merge-commit update, whereas the files endpoint reflects the
-  # computed diff directly. See fullsend-ai/fullsend#2093.
+  # `gh pr view --json files` summary field: issue #2093 found empty
+  # results correlated with recent merge-commit updates and hypothesized
+  # asynchronous diff computation, but GitHub does not document that as
+  # an API contract. The files endpoint reflects the computed diff more
+  # directly.
   GH_TOKEN="${REVIEW_TOKEN}" gh api \
     "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename'
 }
