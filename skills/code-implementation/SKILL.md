@@ -512,7 +512,7 @@ When requirements are ambiguous, distinguish between "vague but actionable"
 uninterpretable" (no viable path forward). For vague-but-actionable issues,
 implement the most conservative interpretation and note your assumptions in
 the commit message. For genuinely uninterpretable issues, emit `needs_input`
-and stop.
+and **STOP**.
 
 Do not start writing code until you can articulate: what you will change, why,
 and how you will verify it works.
@@ -847,7 +847,7 @@ failures.
 **If tests or linters fail due to missing tools or infrastructure** (not
 due to your code): try the Makefile's setup targets first (`make deps`,
 `make setup`, etc.). If the tool genuinely cannot be installed in the
-sandbox and no tests or linters can run at all, emit `needs_input` and stop.
+sandbox and no tests or linters can run at all, emit `needs_input` and **STOP**.
 If one tool is missing, disclose the gap in the commit message:
 
 > Note: <suite-name> tests could not run (<reason>). <other-suite>

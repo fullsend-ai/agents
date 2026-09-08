@@ -121,7 +121,8 @@ Your exit state is the handoff contract:
   scan).
 - **`needs_input: true` in structured output** → the post-script applies the
   `fs-code-needs-input` label to the issue, posts a comment with the reason,
-  and exits without creating a PR. No code changes are expected.
+  and exits without creating a PR. The agent should not commit code changes
+  before signaling `needs_input`, but the post-script does not enforce this.
 - **No commit** → the post-script reads your transcript and exit code to
   report the failure. Structured output should still be written when possible
   so the post-script knows which branch was targeted.

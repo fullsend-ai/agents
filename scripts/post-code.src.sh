@@ -406,6 +406,11 @@ if [ "${AGENT_NEEDS_INPUT}" = "true" ]; then
   NEEDS_INPUT_REASON="$(jq -r '.needs_input_reason // "No reason provided"' "${RESULT_FILE}" 2>/dev/null || echo "No reason provided")"
   gha_echo notice "Agent signaled needs_input — posting comment and applying label"
 
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    gha_echo notice "Needs input for ${WORK_ITEM_KEY}: ${NEEDS_INPUT_REASON}"
+    exit 0
+  fi
+
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
   _post_failure_ensure_token
 
