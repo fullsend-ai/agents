@@ -454,9 +454,12 @@ incident.
      sub-agent personas (pi): `subagent_type`: `security-triage`, and no
      `model` — the runner resolves the model and the read-only tool set
      for the persona
-   - otherwise (no runtime note, as on Claude Code, or the persona is
-     not listed): `model`: `haiku` (from the sub-agent frontmatter) and
-     `subagent_type`: `Explore` (read-only)
+   - no runtime note (Claude Code): `model`: `haiku` (from the
+     sub-agent frontmatter) and `subagent_type`: `Explore` (read-only)
+   - a runtime note that does not list `security-triage` (pi, persona
+     not registered): `subagent_type`: `Explore` and no `model` — the
+     child takes this run's sub-agent default, which is servable; the
+     frontmatter alias may not be (step 4 item 2)
 
    This agent runs **synchronously** (not in the background) because
    its output feeds into step 3d's context package assembly. It uses
@@ -604,8 +607,8 @@ be absent from the result JSON.
 5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
    the same message as the step 4 dimension sub-agents, with the same
    dispatch shape as step 4 item 2 (`subagent_type: risk-assessment`
-   when the runtime note lists that persona, else `model: sonnet` from
-   the frontmatter). Nothing in step 4 consumes its output
+   when the runtime note lists that persona; otherwise the fallback
+   described there). Nothing in step 4 consumes its output
    (it only goes into `agent-result.json`, step 7); running it first
    serialised a 2–3 minute sub-agent for nothing.
 
@@ -815,13 +818,18 @@ here):
      `.fullsend/config.yaml` (`agents[].subagents`) and the file's
      frontmatter; a `model` argument is ignored, and a `subagent_type`
      that is not in the list is rejected rather than run.
-   - **There is no runtime note (Claude Code), or the persona is not in
-     its list** (a persona whose model this run cannot serve is not
-     registered). Set `model` from the sub-agent file's frontmatter
-     (`opus` for `correctness` and `security`, `sonnet` for the rest)
-     and do not set `subagent_type` — the persona comes from the
-     prompt. Never dispatch a name the note does not list: the dimension
-     would be rejected instead of reviewed.
+   - **There is no runtime note (Claude Code).** Set `model` from the
+     sub-agent file's frontmatter (`opus` for `correctness` and
+     `security`, `sonnet` for the rest) and do not set `subagent_type`
+     — the persona comes from the prompt.
+   - **The runtime note is present but the persona is not in its list
+     (pi).** A persona is left unregistered when this run cannot serve
+     its model, so its frontmatter alias would be rejected too. Omit
+     **both** `subagent_type` and `model`: the child then runs on this
+     run's sub-agent default (the repository's `subagents.default`, else
+     the parent's model), which is always servable. Never dispatch a
+     name the note does not list: the dimension would be rejected
+     instead of reviewed.
 
 **All sub-agents MUST be dispatched simultaneously** — include all
 Agent calls in a single message so they run concurrently, and include
@@ -987,7 +995,7 @@ budget section), skip the challenger: keep the merged finding set from
 2. Spawn the subagents with their `prompt` argument composed from parts
    1–4 above, with the same dispatch shape as step 4 item 2
    (`subagent_type: challenger` when the runtime note lists that
-   persona, else `model: opus` from the frontmatter).
+   persona; otherwise the fallback described there).
 
    **Prompt size guard:** If the findings JSON alone exceeds 80 000
    tokens, withhold `low` and `info` findings from the challenger's
