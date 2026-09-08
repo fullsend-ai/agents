@@ -2456,27 +2456,27 @@ if [ "${AGENT_NEEDS_INPUT}" = "true" ]; then
     exit 0
   fi
 
-  safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
+  SAFE_ISSUE_NUMBER="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
   _post_failure_ensure_token
 
-  run_url="$(forge_get_workflow_run_url)"
-  sanitized_reason="$(sanitize_failure_detail "${NEEDS_INPUT_REASON}")"
+  RUN_URL="$(forge_get_workflow_run_url)"
+  SANITIZED_REASON="$(sanitize_failure_detail "${NEEDS_INPUT_REASON}")"
 
-  needs_input_body="🛑 **Needs human input** — code agent cannot proceed
+  NEEDS_INPUT_BODY="🛑 **Needs human input** — code agent cannot proceed
 
-The code agent evaluated issue #${safe_issue_number} but determined it cannot make progress without human intervention.
+The code agent evaluated issue #${SAFE_ISSUE_NUMBER} but determined it cannot make progress without human intervention.
 
-**Reason:** ${sanitized_reason}
+**Reason:** ${SANITIZED_REASON}
 
-**Workflow run:** ${run_url}
+**Workflow run:** ${RUN_URL}
 
 Please address the blocker above, then retry with \`/fs-code\`."
 
   forge_create_label "fs-code-needs-input" "Code agent needs human input to proceed" "FBCA04"
   forge_add_label "fs-code-needs-input"
 
-  if ! forge_post_issue_comment "${needs_input_body}"; then
-    gha_echo warning "Failed to post needs_input comment to issue #${safe_issue_number}"
+  if ! forge_post_issue_comment "${NEEDS_INPUT_BODY}"; then
+    gha_echo warning "Failed to post needs_input comment to issue #${SAFE_ISSUE_NUMBER}"
   fi
 
   exit 0

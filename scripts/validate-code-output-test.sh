@@ -118,6 +118,12 @@ run_test "schema-valid-needs-input-reason-only" \
   '{"target_branch":"main","needs_input_reason":"some reason"}' \
   "true"
 
+# needs_input=true with reason but without target_branch → valid
+# (target_branch is only required when needs_input is not true)
+run_test "schema-valid-needs-input-without-target-branch" \
+  '{"needs_input":true,"needs_input_reason":"Issue is uninterpretable"}' \
+  "true"
+
 # The run_test helper always creates output/agent-result.json, so testing a
 # missing output directory requires a separate helper.
 run_test_no_output_dir() {
