@@ -1,16 +1,8 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-08-31T17:22:24.387426+00:00",
+  "generated_at": "2026-09-09T12:46:25.099998+00:00",
   "violations": [
-    {
-      "fingerprint": "10342080fcd47b75",
-      "rule_id": "agentskill-name",
-      "file_path": "skills/gitlab-forge/SKILL.md",
-      "line": 2,
-      "message": "Name 'gitlab' does not match directory name 'gitlab-forge'",
-      "severity": "error"
-    },
     {
       "fingerprint": "34efa8521ae07039",
       "rule_id": "agentskill-name",
@@ -52,12 +44,20 @@
       "severity": "error"
     },
     {
-      "fingerprint": "3841c25d67e33e68",
+      "fingerprint": "10342080fcd47b75",
+      "rule_id": "agentskill-name",
+      "file_path": "skills/gitlab-forge/SKILL.md",
+      "line": 2,
+      "message": "Name 'gitlab' does not match directory name 'gitlab-forge'",
+      "severity": "error"
+    },
+    {
+      "fingerprint": "43a3bb24cb22288e",
       "rule_id": "context-budget",
-      "file_path": "skills/pr-risk-assessment/SKILL.md",
-      "message": "Estimated 3,778 tokens exceeds skill warn limit of 3,000",
+      "file_path": "skills/code-review/SKILL.md",
+      "message": "Estimated 3,846 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3778,
+      "value": 3846,
       "baseline_mode": "ceiling"
     },
     {
@@ -70,21 +70,21 @@
       "baseline_mode": "ceiling"
     },
     {
-      "fingerprint": "43a3bb24cb22288e",
+      "fingerprint": "3841c25d67e33e68",
       "rule_id": "context-budget",
-      "file_path": "skills/code-review/SKILL.md",
-      "message": "Estimated 3,846 tokens exceeds skill warn limit of 3,000",
+      "file_path": "skills/pr-risk-assessment/SKILL.md",
+      "message": "Estimated 3,778 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3846,
+      "value": 3778,
       "baseline_mode": "ceiling"
     },
     {
       "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
       "file_path": "skills/pr-review/SKILL.md",
-      "message": "Estimated 15,709 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 16,050 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 15709,
+      "value": 16050,
       "baseline_mode": "ceiling"
     }
   ]

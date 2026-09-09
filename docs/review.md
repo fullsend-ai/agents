@@ -246,7 +246,7 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 ## Runtime support
 
-Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, review runs in single-context mode — the parallel sub-agent orchestration is replaced by a single-pass review.
+Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, each sub-agent runs with its own model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for a sub-agent.
 
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 

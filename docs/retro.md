@@ -102,7 +102,7 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 ## Runtime support
 
-Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, retro runs in single-context mode — the multi-agent workflow reconstruction is replaced by a single-pass analysis.
+Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
 
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 
