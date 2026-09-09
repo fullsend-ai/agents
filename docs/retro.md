@@ -102,7 +102,7 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 ## Runtime support
 
-Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, retro dispatches its investigation sub-agents through the runner's `Agent` tool (fullsend 0.42.0 and later); they name no persona, so they inherit the parent's model unless the repository's `.fullsend/config.yaml` sets `subagents.default` on the retro entry.
+Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
 
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 

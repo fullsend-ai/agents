@@ -455,8 +455,10 @@ incident.
    - **No runtime note (Claude Code):** `model`: `haiku`,
      `subagent_type`: `Explore` (read-only).
    - **Runtime note present, persona not listed (pi):**
-     `subagent_type`: `Explore` (a built-in read-only type the runner
-     always accepts), no `model` — resolves as in step 4 item 2.
+     `subagent_type`: `Explore`, no `model`. Only the model follows
+     step 4 item 2 case 3; `subagent_type` stays `Explore` (a built-in
+     read-only type the runner always accepts) because this pre-pass
+     must stay read-only.
 
    This agent runs **synchronously** (not in the background) because
    its output feeds into step 3d's context package assembly. It uses
