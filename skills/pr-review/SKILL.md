@@ -813,8 +813,9 @@ here):
      `agents[].subagents` and the frontmatter; a `model` argument is
      ignored and an unlisted `subagent_type` is rejected.
    - **No runtime note (Claude Code):** `model` from the sub-agent
-     frontmatter (`opus` for `correctness` and `security`, `sonnet` for
-     the rest), no `subagent_type` — the persona comes from the prompt.
+     frontmatter (`opus` for `correctness`, `security` and `challenger`,
+     `sonnet` for the rest), no `subagent_type` — the persona comes from
+     the prompt.
    - **Runtime note present, persona not listed (pi):** usually the run
      cannot serve its model, so the frontmatter alias would be rejected
      too. Omit **both** `subagent_type` and `model`; the child runs on
