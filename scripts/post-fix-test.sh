@@ -33,6 +33,41 @@ else
   echo "PASS: bundled-script-has-gitleaks-install"
 fi
 
+# Fetch + rebase must run after forge_set_push_remote and before the push
+# so reconstructed GitLab history becomes a fast-forward (issue #1228).
+if ! grep -q 'git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-fetches-remote-branch-before-push"
+  echo "  ${POST_SCRIPT} missing force-update fetch of origin/\${BRANCH}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-fetches-remote-branch-before-push"
+fi
+
+if ! grep -q 'git rebase "origin/${BRANCH}"' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-rebases-onto-remote-before-push"
+  echo "  ${POST_SCRIPT} missing rebase onto origin/\${BRANCH}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-rebases-onto-remote-before-push"
+fi
+
+# A conflicted rebase must fail closed, not be swallowed with || true.
+if ! grep -q 'git rebase --abort' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-aborts-conflicted-rebase"
+  echo "  ${POST_SCRIPT} missing git rebase --abort on conflict"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-aborts-conflicted-rebase"
+fi
+
+if grep -E 'git rebase "origin/\$\{BRANCH\}".*\|\| true' "${POST_SCRIPT}" >/dev/null; then
+  echo "FAIL: bundled-script-does-not-ignore-rebase-failure"
+  echo "  ${POST_SCRIPT} swallows rebase failure with || true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-does-not-ignore-rebase-failure"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the push retry logic from post-fix.sh section 5.
 # Given a push exit code and output, returns the action.
@@ -1176,6 +1211,332 @@ run_prefix_github_validation_test "prefix-github-dotdot" \
   "owner/.."
 
 rm -rf "${PRE_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Fetch + rebase before push (issue #1228).
+#
+# On GitLab the sandbox reconstructs the MR source branch from API content,
+# so local history diverges from the remote. post-fix.sh must fetch the real
+# remote tip and rebase onto it so the push is a fast-forward. A git wrapper
+# no-ops `remote set-url` so origin stays the local bare remote (the real
+# script rewrites origin to a forge URL after forge_set_push_remote).
+# ---------------------------------------------------------------------------
+
+PUSH_REBASE_TMPDIR="$(mktemp -d)"
+PUSH_REBASE_MOCK_BIN="${PUSH_REBASE_TMPDIR}/bin"
+mkdir -p "${PUSH_REBASE_MOCK_BIN}"
+
+cat > "${PUSH_REBASE_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${PUSH_REBASE_MOCK_BIN}/sleep"
+
+cat > "${PUSH_REBASE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${PUSH_REBASE_MOCK_BIN}/gitleaks"
+
+cat > "${PUSH_REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view")
+    echo 'agent/99-test-fix'
+    exit 0
+    ;;
+  "pr comment"|"issue comment")
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --body) echo "$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${PUSH_REBASE_MOCK_BIN}/gh"
+
+cat > "${PUSH_REBASE_MOCK_BIN}/git" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "$1" = "remote" ] && [ "$2" = "set-url" ]; then
+  exit 0
+fi
+exec /usr/bin/git "$@"
+MOCKEOF
+chmod +x "${PUSH_REBASE_MOCK_BIN}/git"
+
+push_rebase_ident() {
+  git -C "$1" config user.email "test@example.com"
+  git -C "$1" config user.name "Test"
+}
+
+run_push_rebase_postfix() {
+  local run_dir="$1"
+  local stdout_log="$2"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${PUSH_REBASE_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export TARGET_BRANCH="main"
+    bash "${POST_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+  return "${exit_code}"
+}
+
+# Reconstructed local history (different SHAs, same tree as the real remote
+# tip) plus an agent fix. Fetch+rebase must replay the fix onto the real
+# remote tip so the push is a fast-forward of that tip.
+run_push_rebase_reconstructed_test() {
+  local test_name="push-rebase-reconstructed-history-fast-forward"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  # Reconstruct from main: same tree as A, different SHA, then the agent fix.
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Branch agent/99-test-fix pushed successfully" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — push did not report success"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_a}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — remote tip is not a fast-forward of real A"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_content
+  remote_content="$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-test-fix:file.txt)"
+  if [ "${remote_content}" != "fixed" ]; then
+    echo "FAIL: ${test_name} — remote file.txt is '${remote_content}', want 'fixed'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Local already matches remote (GitHub-style fetch in the sandbox). Rebase
+# is a no-op; the agent's commit SHA is unchanged and the push fast-forwards.
+run_push_rebase_matching_history_test() {
+  local test_name="push-rebase-matching-history-noop"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+  local local_f
+  local_f="$(git -C "${base}/repo" rev-parse HEAD)"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local pushed_f
+  pushed_f="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${pushed_f}" != "${local_f}" ]; then
+    echo "FAIL: ${test_name} — agent commit SHA changed (rebase was not a no-op)"
+    echo "  before: ${local_f}"
+    echo "  after:  ${pushed_f}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Remote feature branch does not exist yet. Fetch fails, rebase is skipped,
+# and the push creates the branch.
+run_push_rebase_fresh_branch_test() {
+  local test_name="push-rebase-fresh-branch-skips-rebase"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -b agent/99-test-fix
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skipping rebase" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected fetch miss to skip rebase"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" show-ref --verify --quiet \
+       refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — remote branch was not created"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Remote has a new commit that textually conflicts with the agent's fix.
+# Rebase must fail closed with an actionable message; nothing is pushed.
+run_push_rebase_conflict_test() {
+  local test_name="push-rebase-conflict-fails-closed"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "aaa" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  echo "bbb" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real B"
+  git -C "${base}/seed" push -q origin agent/99-test-fix
+  local real_b
+  real_b="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" reset -q --hard "${real_a}"
+  echo "fff" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit on rebase conflict"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "conflict with the agent's changes" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing actionable rebase-conflict message"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tip
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_tip}" != "${real_b}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved on conflict (pushed anyway)"
+    echo "  want ${real_b}, got ${remote_tip}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_push_rebase_reconstructed_test
+run_push_rebase_matching_history_test
+run_push_rebase_fresh_branch_test
+run_push_rebase_conflict_test
+
+rm -rf "${PUSH_REBASE_TMPDIR}"
 
 # --- Summary ---
 
