@@ -57,6 +57,25 @@ else
   echo "PASS: bundled-script-has-ensure-label"
 fi
 
+# Applying ready-for-review after PR creation fires pull_request_target.labeled
+# and double-dispatches review against the bot-authored opened event (#1239).
+# gh pr create --label is also not atomic (createPullRequest cannot set labels).
+if grep -q 'forge_add_label "ready-for-review"' "${POST_SCRIPT}"; then
+  echo "FAIL: post-create-does-not-add-ready-for-review"
+  echo "  ${POST_SCRIPT} still applies ready-for-review after PR creation"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-create-does-not-add-ready-for-review"
+fi
+
+if grep -A 15 '^forge_create_pr()' "${POST_SCRIPT}" | grep -q -- '--label'; then
+  echo "FAIL: forge-create-pr-does-not-pass-label"
+  echo "  ${POST_SCRIPT} forge_create_pr passes --label (not atomic on GitHub)"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: forge-create-pr-does-not-pass-label"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -1867,6 +1886,63 @@ else
   echo "  remote refs:    $(${REAL_GIT} -C "${_sec_ns_dir}/remote.git" branch --list)"
   cat "${SEC_CODE_TMPDIR}/stdout-namespace.log"
   FAILURES=$((FAILURES + 1))
+fi
+
+# --- PR create must not apply ready-for-review (separate labeled event) ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "$0 $*" >> "${GH_CALLS_FILE:-/dev/null}"
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_label_dir="${SEC_CODE_TMPDIR}/run-no-review-label"
+_sec_label_calls="${SEC_CODE_TMPDIR}/gh-calls-no-review-label.log"
+: > "${_sec_label_calls}"
+setup_sec_code_repo "${_sec_label_dir}" "agent/99-no-label"
+
+_sec_label_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_label_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export GH_CALLS_FILE="${_sec_label_calls}"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-no-review-label.log" 2>&1 || _sec_label_rc=$?
+
+if [ "${_sec_label_rc}" -ne 0 ]; then
+  echo "FAIL: post-create-skips-ready-for-review — post-code exited ${_sec_label_rc}"
+  cat "${SEC_CODE_TMPDIR}/stdout-no-review-label.log"
+  echo "  gh calls:"
+  cat "${_sec_label_calls}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q ' pr create ' "${_sec_label_calls}"; then
+  echo "FAIL: post-create-skips-ready-for-review — gh pr create was not called"
+  cat "${_sec_label_calls}"
+  cat "${SEC_CODE_TMPDIR}/stdout-no-review-label.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -e '--label' -e '--add-label' "${_sec_label_calls}" | grep -q 'ready-for-review'; then
+  echo "FAIL: post-create-skips-ready-for-review — ready-for-review passed to gh"
+  cat "${_sec_label_calls}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'issue edit' "${_sec_label_calls}"; then
+  echo "FAIL: post-create-skips-ready-for-review — gh issue edit still called"
+  cat "${_sec_label_calls}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-create-skips-ready-for-review"
 fi
 
 # --- gh pr list API failure → fail closed (not delete branch and proceed) ---
