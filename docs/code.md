@@ -49,8 +49,6 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
 | `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads the Jira work item directly via provider-backed Jira API access (the `jira-ro` provider handles credential injection at the network layer). Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
 | `ISSUE_NUMBER` | Numeric source issue identifier used when the source tracker is the target forge. It is optional for external-tracker runs because that work-item key is not a target-forge issue number. | (set by forge-native workflows) | Positive integer |
-| `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
-| `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
 
 ## How the agent works
 
