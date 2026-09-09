@@ -69,6 +69,16 @@ env:
     TRIGGER_SOURCE: "${TRIGGER_SOURCE}"
     HUMAN_INSTRUCTION: "${HUMAN_INSTRUCTION}"
     FIX_ITERATION: "${FIX_ITERATION}"
+    # NOTE: a `fullsend-fix-budget/N` PR label can tighten the autonomous (bot)
+    # fix cap; pre-fix/post-fix consume PR_LABELS to enforce it (the human
+    # /fs-fix cap is never tightened). No entry is needed in this shared block:
+    # childScriptEnv() builds the pre-/post-script env from os.Environ() first,
+    # so a step-level env var already reaches both consumers. To activate, set
+    # PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+    # on the "Run fix agent" step in reusable-fix.yml. If an env.runner entry is
+    # ever wanted it belongs in forge.github.env.runner — and in
+    # forge.gitlab.env.runner only once the GitLab agent template exports a
+    # set-possibly-empty PR_LABELS. Never in this shared block (fail-closed).
     REVIEW_BODY_FILE: "${REVIEW_BODY_FILE}"
     PRE_AGENT_HEAD: "${PRE_AGENT_HEAD}"
     PUSH_TOKEN: "${PUSH_TOKEN}"
