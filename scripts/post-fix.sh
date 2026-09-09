@@ -1655,13 +1655,17 @@ if [ "${NO_PUSH}" = "false" ]; then
       print_sanitized_gha_log "${REBASE_OUTPUT}"
       git rebase --abort 2>/dev/null || true
       post_fail_to_pr push-rejected \
-        "Could not rebase local '${BRANCH}' onto origin/${BRANCH}: the remote branch has commits that conflict with the agent's changes. Resolve the conflict on the MR and re-run /fs-fix.
+        "Could not rebase local '${BRANCH}' onto origin/${BRANCH}: the remote branch has commits that conflict with the agent's changes. Resolve the conflict on the PR/MR and re-run /fs-fix.
 ${REBASE_OUTPUT}"
     fi
     print_sanitized_gha_log "${REBASE_OUTPUT}"
-  else
-    echo "Remote branch ${BRANCH} not found (or fetch failed) — skipping rebase"
+  elif echo "${FETCH_OUTPUT}" | grep -qi "couldn't find remote ref"; then
+    echo "Remote branch ${BRANCH} not found — skipping rebase"
     print_sanitized_gha_log "${FETCH_OUTPUT}"
+  else
+    print_sanitized_gha_log "${FETCH_OUTPUT}"
+    post_fail_to_pr push-rejected \
+      "Could not fetch remote branch '${BRANCH}' before rebase: ${FETCH_OUTPUT}"
   fi
 
   # Plain push first. Falls back to --force-with-lease when the push

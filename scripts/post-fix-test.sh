@@ -1259,12 +1259,13 @@ esac
 MOCKEOF
 chmod +x "${PUSH_REBASE_MOCK_BIN}/gh"
 
-cat > "${PUSH_REBASE_MOCK_BIN}/git" <<'MOCKEOF'
+PUSH_REBASE_REAL_GIT="$(which git)"
+cat > "${PUSH_REBASE_MOCK_BIN}/git" <<MOCKEOF
 #!/usr/bin/env bash
-if [ "$1" = "remote" ] && [ "$2" = "set-url" ]; then
+if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
   exit 0
 fi
-exec /usr/bin/git "$@"
+exec ${PUSH_REBASE_REAL_GIT} "\$@"
 MOCKEOF
 chmod +x "${PUSH_REBASE_MOCK_BIN}/git"
 
@@ -1276,11 +1277,12 @@ push_rebase_ident() {
 run_push_rebase_postfix() {
   local run_dir="$1"
   local stdout_log="$2"
+  local mock_bin="${3:-${PUSH_REBASE_MOCK_BIN}}"
   local exit_code=0
   # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
-    export PATH="${PUSH_REBASE_MOCK_BIN}:${PATH}"
+    export PATH="${mock_bin}:${PATH}"
     export PUSH_TOKEN="fake-token"
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_NUMBER="99"
@@ -1531,10 +1533,99 @@ run_push_rebase_conflict_test() {
   echo "PASS: ${test_name}"
 }
 
+# Remote feature branch exists (reconstructed/divergent history), but the
+# fetch itself fails transiently (network blip, auth hiccup) rather than
+# reporting a missing ref. This must fail closed — not be treated the same
+# as a genuinely missing branch and fall through to a non-fast-forward push.
+run_push_rebase_fetch_failure_test() {
+  local test_name="push-rebase-transient-fetch-failure-fails-closed"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local fetch_fail_bin="${base}/bin"
+  mkdir -p "${fetch_fail_bin}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${fetch_fail_bin}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gitleaks" "${fetch_fail_bin}/gitleaks"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${fetch_fail_bin}/gh"
+  local fetch_fail_real_git="${PUSH_REBASE_REAL_GIT}"
+  cat > "${fetch_fail_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
+  exit 0
+fi
+if [ "\$1" = "fetch" ]; then
+  echo "fatal: unable to access remote: Could not resolve host" >&2
+  exit 128
+fi
+exec ${fetch_fail_real_git} "\$@"
+MOCKEOF
+  chmod +x "${fetch_fail_bin}/git"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${fetch_fail_bin}" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit on transient fetch failure"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "skipping rebase" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — transient fetch failure was treated as a missing branch"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Could not fetch remote branch" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing actionable fetch-failure message"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tip
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_tip}" != "${real_a}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved on transient fetch failure (pushed anyway)"
+    echo "  want ${real_a}, got ${remote_tip}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 run_push_rebase_reconstructed_test
 run_push_rebase_matching_history_test
 run_push_rebase_fresh_branch_test
 run_push_rebase_conflict_test
+run_push_rebase_fetch_failure_test
 
 rm -rf "${PUSH_REBASE_TMPDIR}"
 
