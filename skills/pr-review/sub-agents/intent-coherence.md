@@ -22,6 +22,19 @@ whether naming/abstraction choices align with existing project trajectory.
 
 **Do not own:** Code correctness, security vulnerabilities, style details.
 
+## Re-review remediation rule
+
+When the context package includes `Prior-finding remediation candidates`,
+verify each candidate against the prior finding and the current diff. Do not
+report a matched remediation candidate as scope creep when it directly
+addresses that verified prior finding. Continue reviewing remediation
+candidates for correctness and completeness, and report any unrelated change
+or extra file as scope creep when it is not covered by the prior finding.
+
+Never apply this exemption when prior-review provenance is missing or
+unverifiable. A prior finding authorizes only the specific remediation it
+describes, not unrelated work in the same push.
+
 ## Early exit criteria
 
 If the diff is a mechanical, generated, or value-only change — such as

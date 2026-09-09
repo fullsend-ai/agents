@@ -201,6 +201,10 @@ If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, the prior
 review file is empty and this run should proceed as a first review.
 Note the provenance failure as an info-level finding (see step 7).
 
+Trusted provenance is `app-verified` (GitHub) or `bot-verified` (GitLab).
+Empty, `none`, `unverifiable-*`, and unknown values cannot authorize
+remediation exemptions.
+
 If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
 changed since the prior review using the forge-specific review skill's
 "Prior review comparison" commands. Extract the list of changed file
@@ -236,6 +240,13 @@ Findings with unrecognized categories go to the nearest matching
 dimension by keyword, or to `correctness` as a fallback.
 
 Each sub-agent receives ONLY the prior findings for its own dimension.
+
+#### 3a-2. Prior-finding remediation candidates
+
+On re-review, pass a `Prior-finding remediation candidates` section to the
+intent-coherence sub-agent. Include only changed files matching a trusted
+prior finding's category and file; unmatched changes remain in scope for
+scope-creep review and matched changes still receive other reviews.
 
 #### 3a-1. Budget allocation priority
 
@@ -307,7 +318,7 @@ complex PR that triggers all conditions legitimately needs all 6.
   touch public API surface.
 
 **Re-review dispatch (prior-finding-aware):** When
-`PRIOR_REVIEW_PROVENANCE` is `app-verified` and prior findings exist
+`PRIOR_REVIEW_PROVENANCE` is trusted and prior findings exist
 (step 3a), narrow dispatch based on which dimensions had findings:
 
 1. **Dimensions WITH prior findings** (other than `correctness`, which
@@ -322,14 +333,12 @@ complex PR that triggers all conditions legitimately needs all 6.
    disjunct does NOT apply here. Each test is decided from
    `changed_since_prior` (a file set — filenames, step 2a):
    `docs-currency`, `security`, and `cross-repo-contracts` are
-   path/extension checks; `intent-coherence` additionally consults the
-   `diff` and `issue_context` already in the context package (step 3d),
-   since file paths alone cannot establish which changes bear on the
-   issue's claims.
-   - `intent-coherence` — re-qualifies only if `changed_since_prior`
-     includes files implementing behavior the linked issue makes claims
-     about (not merely because a linked issue exists, and not for "any
-     non-trivial change").
+   path/extension checks. `intent-coherence` always re-qualifies for a
+   non-empty delta and consults the complete `diff` and `issue_context`
+   already in the context package (step 3d).
+   - `intent-coherence` — always re-qualifies when `changed_since_prior`
+     is non-empty; inspect the complete incremental diff, including
+     unmatched files and extra edits within matched files.
    - `docs-currency` — re-qualifies only if `changed_since_prior`
      includes documentation files (not merely because the repository
      contains docs).
@@ -354,10 +363,9 @@ complex PR that triggers all conditions legitimately needs all 6.
    classification-based constraint from step 3e.
 4. **Challenger** — always dispatch (unchanged).
 
-This reuses the existing scope constraint mechanism from step 3e — no
-new infrastructure needed. When `PRIOR_REVIEW_PROVENANCE` is not
-`app-verified` or no prior findings exist, all sub-agents dispatch at
-normal scope (current behavior preserved).
+When `PRIOR_REVIEW_PROVENANCE` is not trusted
+or no prior findings exist, all sub-agents dispatch at normal scope
+(current behavior preserved).
 
 **Dispatch examples:**
 
@@ -541,7 +549,7 @@ be absent from the result JSON.
    `../pr-risk-assessment/SKILL.md`.
 3. **Fetch prior risk assessment (re-reviews only).** If this is a
    re-review (step 2a found a non-empty `prior-review.txt` and
-   `PRIOR_REVIEW_PROVENANCE` is `app-verified`), fetch the prior risk
+   `PRIOR_REVIEW_PROVENANCE` is trusted), fetch the prior risk
    assessment from the PR's sticky comment using the forge API:
 
    ```bash
@@ -779,6 +787,12 @@ here):
 
    ### Prior findings (this dimension only)
    <prior findings JSON or "none — first review">
+
+   ### Prior-finding remediation candidates
+   <matched changed files and prior findings, or "none">
+
+   ### Prior review provenance
+   <PRIOR_REVIEW_PROVENANCE value>
 
    ### Prior review SHA
    <sha or "none">
