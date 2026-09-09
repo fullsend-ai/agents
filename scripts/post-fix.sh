@@ -1634,6 +1634,40 @@ fi
 if [ "${NO_PUSH}" = "false" ]; then
   forge_set_push_remote "${PUSH_TOKEN}"
 
+  # Ensure local branch is up-to-date with the remote. On GitLab, the
+  # sandbox cannot git-fetch the source branch, so the agent reconstructs
+  # it from API content — the resulting commit history diverges from the
+  # remote. Fetching and rebasing here makes the push a fast-forward.
+  # Fetching also gives --force-with-lease a valid remote-tracking baseline
+  # (without it the lease has stale/empty info and is rejected).
+  # On GitHub this is a no-op when history already matches.
+  #
+  # The + refspec force-updates the tracking ref: a reconstructed local
+  # origin/<branch> is not an ancestor of the real remote tip, so a
+  # non-forced fetch of the tracking ref would fail.
+  echo "Fetching remote branch ${BRANCH} before push..."
+  FETCH_OUTPUT="$(git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && FETCH_RC=0 || FETCH_RC=$?
+  if [ "${FETCH_RC}" -eq 0 ]; then
+    print_sanitized_gha_log "${FETCH_OUTPUT}"
+    echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."
+    REBASE_OUTPUT="$(git rebase "origin/${BRANCH}" 2>&1)" && REBASE_RC=0 || REBASE_RC=$?
+    if [ "${REBASE_RC}" -ne 0 ]; then
+      print_sanitized_gha_log "${REBASE_OUTPUT}"
+      git rebase --abort 2>/dev/null || true
+      post_fail_to_pr push-rejected \
+        "Could not rebase local '${BRANCH}' onto origin/${BRANCH}: the remote branch has commits that conflict with the agent's changes. Resolve the conflict on the PR/MR and re-run /fs-fix.
+${REBASE_OUTPUT}"
+    fi
+    print_sanitized_gha_log "${REBASE_OUTPUT}"
+  elif echo "${FETCH_OUTPUT}" | grep -qi "couldn't find remote ref"; then
+    echo "Remote branch ${BRANCH} not found — skipping rebase"
+    print_sanitized_gha_log "${FETCH_OUTPUT}"
+  else
+    print_sanitized_gha_log "${FETCH_OUTPUT}"
+    post_fail_to_pr push-rejected \
+      "Could not fetch remote branch '${BRANCH}' before rebase: ${FETCH_OUTPUT}"
+  fi
+
   # Plain push first. Falls back to --force-with-lease when the push
   # is rejected (non-fast-forward), which happens after a rebase — the
   # agent rewrote history so the remote branch diverged. force-with-lease
