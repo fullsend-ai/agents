@@ -232,8 +232,13 @@ if [ "${ACTION}" = "approve" ]; then
   # run regardless of whether protected-path enforcement itself is
   # enabled — only the pattern-matching loop below is gated on a
   # non-empty REVIEW_ACTIVE_PROTECTED_PATHS.
-  PR_FILES=$(forge_get_pr_files || true)
-  if [ -z "${PR_FILES}" ]; then
+  if PR_FILES=$(forge_get_pr_files); then
+    PR_FILES_FETCH_FAILED=false
+  else
+    PR_FILES_FETCH_FAILED=true
+    PR_FILES=""
+  fi
+  if [ "${PR_FILES_FETCH_FAILED}" = true ] || [ -z "${PR_FILES}" ]; then
     # An empty file list may be a transient forge data race. Issue #2093
     # found empty results correlated with recent merge-commit updates and
     # hypothesized asynchronous diff computation, but the exact mechanism
@@ -241,9 +246,14 @@ if [ "${ACTION}" = "approve" ]; then
     # to approve, so we don't fail a genuinely non-empty PR.
     echo "::notice::PR files came back empty; retrying once in case of a transient forge data race (forge_get_pr_files)" >&2
     sleep 10
-    PR_FILES=$(forge_get_pr_files || true)
+    if PR_FILES=$(forge_get_pr_files); then
+      PR_FILES_FETCH_FAILED=false
+    else
+      PR_FILES_FETCH_FAILED=true
+      PR_FILES=""
+    fi
   fi
-  if [ -z "${PR_FILES}" ]; then
+  if [ "${PR_FILES_FETCH_FAILED}" = true ] || [ -z "${PR_FILES}" ]; then
     echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve (forge_get_pr_files)" >&2
     exit 1
   fi

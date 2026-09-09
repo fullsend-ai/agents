@@ -57,8 +57,12 @@ forge_get_pr_files() {
   # asynchronous diff computation, but GitHub does not document that as
   # an API contract. The files endpoint reflects the computed diff more
   # directly.
-  GH_TOKEN="${REVIEW_TOKEN}" gh api \
-    "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename'
+  local files
+  if ! files=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' 2>/dev/null); then
+    return 1
+  fi
+  [[ -n "${files}" ]] && printf '%s\n' "${files}"
 }
 
 # --- PR mutations ---

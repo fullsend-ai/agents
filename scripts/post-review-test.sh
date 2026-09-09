@@ -456,6 +456,7 @@ fi
 # has happened; the retry test resets it before running.
 if [[ "\$1" == "api" ]] && [[ "\$*" == *"/pulls/"* ]] && [[ "\$*" == *"/files"* ]]; then
   if [[ -n "\${MOCK_PR_FILES_FAIL:-}" ]]; then
+    echo "src/partial-before-fetch-failure.go"
     echo "mock gh api failure" >&2
     exit 1
   fi
@@ -709,6 +710,7 @@ run_gitlab_pr_files_fetch_error_fails_closed_test() {
   : > "${GH_LOG}"
 
   local exit_code=0
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${MOCK_BIN}:${PATH}"
@@ -1749,6 +1751,7 @@ run_github_pr_files_fetch_error_fails_closed_test() {
   : > "${GH_LOG}"
 
   local exit_code=0
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${MOCK_BIN}:${PATH}"
