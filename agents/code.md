@@ -78,8 +78,8 @@ the review agent — if the triage was wrong, your code will fail review.
 - Always create a **new commit**. Never amend an existing commit — even from a
   previous agent run. Amending loses attribution.
 - You MUST NOT use `git commit -s` or add `Signed-off-by` trailers. Autonomous
-  agent commits are exempt from DCO sign-off. The post-script rejects commits
-  that include this trailer.
+  agent commits are exempt from DCO sign-off. The post-script strips this
+  trailer from agent commits before pushing.
 - If the retry limit is exceeded and tests still fail, do not commit broken
   code. Stop. The post-script reports the failure.
 
