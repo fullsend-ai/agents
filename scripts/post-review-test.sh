@@ -579,6 +579,13 @@ if [[ "\${METHOD}" == "POST" ]]; then
   exit 0
 fi
 
+# GET /user → the review token's own identity, configurable via
+# MOCK_GITLAB_USER. Defaults differ from the MR author ("testuser").
+if [[ "\${URL}" == *"/user" ]]; then
+  echo '{"username":"'"\${MOCK_GITLAB_USER-review-bot}"'"}'
+  exit 0
+fi
+
 # GET /merge_requests/:iid → MR metadata
 if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" != *"/notes"* ]] && [[ "\${URL}" != *"/changes"* ]] && [[ "\${URL}" != *"/labels"* ]]; then
   DRAFT="\${MOCK_MR_IS_DRAFT:-false}"
@@ -1583,6 +1590,57 @@ run_self_review_test "self-review-approve-keeps-the-outcome-label" \
 # A distinct review identity — the real fix for #245 — changes nothing.
 run_self_review_test "distinct-review-identity-keeps-the-event" \
   "${SELF_REVIEW_RC_JSON}" "review-bot" "alice" "request-changes" ""
+
+# An empty identity lookup keeps the event (fail open) but must say so, or a
+# 422 on submit is indistinguishable from "the identities differ".
+run_self_review_test "empty-review-identity-keeps-the-event" \
+  "${SELF_REVIEW_RC_JSON}" "" "alice" "request-changes" ""
+if ! grep -qF "::warning::Self-review check skipped" "${TMPDIR}/stdout-empty-review-identity-keeps-the-event.log"; then
+  echo "FAIL: empty-review-identity-warns — no warning logged for an empty identity lookup"
+  cat "${TMPDIR}/stdout-empty-review-identity-keeps-the-event.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: empty-review-identity-warns"
+fi
+
+# GitLab: self-approval is a per-project setting, so the same identity does
+# not degrade the event there.
+run_gitlab_self_review_test() {
+  local test_name="gitlab-self-review-keeps-the-event"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${SELF_REVIEW_APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export CI_SERVER_HOST="gitlab.com"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_GITLAB_USER="testuser"   # == the mocked MR author
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  local actual_action
+  actual_action="$(jq -r '.action' "${TMPDIR}/last-result.json" 2>/dev/null || echo "<none>")"
+  if [[ ${exit_code} -ne 0 ]] || [[ "${actual_action}" != "approve" ]] \
+    || grep -qF "Review token is the PR author" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — exit ${exit_code}, action '${actual_action}'"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_gitlab_self_review_test
 
 # Abort when REVIEW_PROTECTED_PATHS is unset. harness/review.yaml always
 # sets it (with a default, overridable per-repo via harness composition),

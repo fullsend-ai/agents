@@ -321,11 +321,21 @@ fi
 # ---------------------------------------------------------------------------
 # Read the action from the result file, not from ACTION: a protected-path
 # downgrade has already rewritten it to "comment", which a forge accepts.
-case "$(jq -r '.action' "${RESULT_FILE}")" in
-  approve|request-changes|reject)
+#
+# GitHub only. GitLab's "prevent approval by author" is a per-project
+# setting that many instances leave off, so a self-approval there is often
+# a real, accepted approval and must not be rewritten into a note.
+case "${FULLSEND_FORGE}:$(jq -r '.action' "${RESULT_FILE}")" in
+  github:approve|github:request-changes|github:reject)
     REVIEW_USER=$(forge_get_review_user)
     PR_AUTHOR=$(forge_get_pr_author)
-    if [ -n "${REVIEW_USER}" ] && [ "${REVIEW_USER}" = "${PR_AUTHOR}" ]; then
+    if [ -z "${REVIEW_USER}" ] || [ -z "${PR_AUTHOR}" ]; then
+      # Both lookups fail open by design, so leave a trail: a 422 after this
+      # line is the self-review collision going undetected. Empty is expected
+      # for a GitHub App installation token (it cannot read /user, and its
+      # <slug>[bot] identity never collides); for a PAT it is a failed call.
+      echo "::warning::Self-review check skipped — identity lookup returned empty (review user: '${REVIEW_USER}', PR author: '${PR_AUTHOR}'). If the review token is a PAT that owns this PR, expect a 422 on submit (#245)" >&2
+    elif [ "${REVIEW_USER}" = "${PR_AUTHOR}" ]; then
       echo "Review token is the PR author — posting the review as a comment (#245)"
 
       SELF_REVIEW_NOTICE=$'\n\n---\n\n'
