@@ -51,8 +51,18 @@ forge_get_pr_info() {
 }
 
 forge_get_pr_files() {
-  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
-    --repo "${REPO}" --json files --jq '.files[].path'
+  # Use the paginated /pulls/{n}/files REST endpoint rather than the
+  # `gh pr view --json files` summary field: issue #2093 found empty
+  # results correlated with recent merge-commit updates and hypothesized
+  # asynchronous diff computation, but GitHub does not document that as
+  # an API contract. The files endpoint reflects the computed diff more
+  # directly.
+  local files
+  if ! files=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' 2>/dev/null); then
+    return 1
+  fi
+  [[ -n "${files}" ]] && printf '%s\n' "${files}"
 }
 
 # --- PR mutations ---
