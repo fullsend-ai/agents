@@ -250,7 +250,9 @@ judges:
       that let VerboseLoggingEnabled satisfy a VerboseLogging requirement
       in eval/code's removed_symbols judge. Boundaries use lookarounds
       rather than \b so a phrase with a non-word edge ("c++") still
-      behaves, and internal whitespace is matched flexibly. An empty
+      behaves, and internal whitespace is matched flexibly. "a | b" lists
+      alternative phrasings and any one satisfies the entry, so a timing
+      side channel reported as "not constant-time" still counts. An empty
       category means "any finding on this file". File paths compare exactly and
       case-sensitively (git paths are case-sensitive); lowercasing them
       would let a finding on Src/Auth.py satisfy a requirement on
@@ -466,10 +468,15 @@ judges:
       def cat_matches(want, got):
           if not want:
               return True  # empty category: any finding on this file
-          # Lookarounds, not \b: \b after a non-word edge ("c++") would
-          # demand a following word character and never match.
-          pat = r"(?<!\w)" + r"\s+".join(re.escape(t) for t in want.split()) + r"(?!\w)"
-          return re.search(pat, got, re.I) is not None
+          # "a | b" lists alternatives; any one satisfies. A blank
+          # alternative is ignored rather than matching everything.
+          for alt in filter(None, (a.strip() for a in want.split("|"))):
+              # Lookarounds, not \b: \b after a non-word edge ("c++") would
+              # demand a following word character and never match.
+              pat = r"(?<!\w)" + r"\s+".join(re.escape(t) for t in alt.split()) + r"(?!\w)"
+              if re.search(pat, got, re.I):
+                  return True
+          return False
 
       missing = []
       credited = []
@@ -730,8 +737,11 @@ judges:
       def cat_matches(want, got):
           if not want:
               return True
-          pat = r"(?<!\w)" + r"\s+".join(re.escape(t) for t in want.split()) + r"(?!\w)"
-          return re.search(pat, got, re.I) is not None
+          for alt in filter(None, (a.strip() for a in want.split("|"))):
+              pat = r"(?<!\w)" + r"\s+".join(re.escape(t) for t in alt.split()) + r"(?!\w)"
+              if re.search(pat, got, re.I):
+                  return True
+          return False
 
       want_files = {norm_path(e["file"]) for e in entries}
       violations = []

@@ -26,24 +26,29 @@ required_findings:
       injection-vuln category token so a finding categorised
       sql-injection still counts.
   - file: src/auth/session.py
-    category: "timing"
+    category: "timing | constant-time | constant time | compare_digest | side-channel | side channel"
     min_severity: medium
     description: |
       verify_session_token swapped hmac.compare_digest for a plain `==`
       comparison. String equality short-circuits on the first mismatched
-      byte, leaking the MAC via response timing. "timing" is the
-      substantive claim: naming the changed line is not enough.
+      byte, leaking the MAC via response timing. The substantive claim is
+      what is matched, not the changed line — but a correct finding may
+      phrase it as "not constant-time", "side-channel", or by naming
+      compare_digest without ever saying "timing", so any one of those
+      alternatives satisfies the entry.
   - file: src/orders/pricing.py
     category: "apply_discount"
-    min_severity: high
+    min_severity: medium
     description: |
       apply_discount dropped the `/ 100` when computing the discounted
       total, so every call returns a value ~100x too large (a 10% discount
       on $10.00 returns 9000 cents instead of 900). The file holds exactly
-      one function, so "a high finding naming apply_discount" is a precise
+      one function, so "a finding naming apply_discount" is a precise
       assertion — the phrasing of the arithmetic itself ("off by 100",
-      "missing divisor") varies too much to pin deterministically, and the
-      review_quality rubric below grades that nuance instead.
+      "missing divisor") varies too much to pin deterministically. The
+      floor is medium: a review that catches the bug and rates it medium
+      has found it, and the review_quality rubric below grades severity
+      calibration rather than this gate.
 
 forbidden_findings: []
 
