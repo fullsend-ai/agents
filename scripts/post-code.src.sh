@@ -285,11 +285,17 @@ else
   done
 fi
 CLOSES_ISSUE="true"
+INJECT_ISSUE_SCOPE="true"
 if [ -n "${RESULT_FILE}" ]; then
   AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
   AGENT_CLOSES="$(jq -r '.closes_issue // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+  # Do not use jq `//` here: it treats JSON false as missing.
+  AGENT_INJECT="$(jq -r '.inject_issue_scope' "${RESULT_FILE}" 2>/dev/null || true)"
   if [ "${AGENT_CLOSES}" = "false" ]; then
     CLOSES_ISSUE="false"
+  fi
+  if [ "${AGENT_INJECT}" = "false" ]; then
+    INJECT_ISSUE_SCOPE="false"
   fi
 fi
 if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
@@ -777,19 +783,22 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Ensure PR title includes an issue reference.
+# Ensure PR title includes an issue reference — unless the agent opted out.
 #
 # Many repos enforce PR title conventions like "type(TICKET): description".
 # The code agent may produce a plain "type: description" commit subject that
 # omits the issue reference. When the title follows conventional commit format
 # (word + colon), inject the issue number as a scope if no scope is present.
+# Skip injection when inject_issue_scope is false: the target repo treats
+# scope as a codebase-area noun, not a ticket id.
 # ---------------------------------------------------------------------------
 if echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+\('; then
-  # Already has a scope — e.g. "fix(#42): ..." or "feat(PROJ-123): ..."
+  # Already has a scope — e.g. "fix(#42): ..." or "feat(ui): ..."
   PR_TITLE="${COMMIT_SUBJECT}"
 elif echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+: '; then
-  # Conventional commit without scope — inject issue reference
-  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+  if [ "${INJECT_ISSUE_SCOPE}" = "false" ]; then
+    PR_TITLE="${COMMIT_SUBJECT}"
+  elif [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
     PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(${WORK_ITEM_KEY}): /")"
   else
     PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
