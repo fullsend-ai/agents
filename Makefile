@@ -1,9 +1,12 @@
 .DEFAULT_GOAL := help
-.PHONY: help script-build check-bundle script-test test lint lint-fix lint-baseline
+.PHONY: help script-build check-bundle script-test behaviour-test test lint lint-fix lint-baseline
 
 BUNDLE_SRCS := scripts/pre-code.src.sh scripts/pre-code-jira.src.sh scripts/post-code.src.sh scripts/pre-fix.src.sh scripts/post-fix.src.sh scripts/pre-prioritize.src.sh scripts/post-prioritize.src.sh scripts/pre-retro.src.sh scripts/post-retro.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-scribe.src.sh scripts/post-scribe.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh scripts/validate-code-output.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
 LIB_DEPS := $(wildcard scripts/lib/*.lib.sh)
+BEHAVIOUR_TEST_EXEC ?= $(CURDIR)/scripts/run-behaviour-test-exec.sh
+BEHAVIOUR_TEST_TAGS ?= behaviour
+BEHAVIOUR_GOFLAGS ?=
 
 # Source of truth: .skillsaw.yaml version field
 SKILLSAW_VERSION := $(shell grep '^version:' .skillsaw.yaml | sed 's/version: "\(.*\)"/\1/')
@@ -14,6 +17,7 @@ help:
 	@echo "  script-build  - Bundle .src.sh scripts into committed .sh artifacts"
 	@echo "  check-bundle  - Verify committed bundles match script-build output"
 	@echo "  script-test   - Run agent shell script unit tests"
+	@echo "  behaviour-test - Run live behaviour tests"
 	@echo "  test          - Alias for script-test"
 	@echo "  lint          - Lint skills/agents/instructions with skillsaw"
 	@echo "  lint-fix      - Apply skillsaw's automatic lint fixes"
@@ -37,6 +41,9 @@ define run-timed
 endef
 
 script-build: $(BUNDLE_OUTS)
+
+behaviour-test:
+	go test -tags "$(BEHAVIOUR_TEST_TAGS)" $(BEHAVIOUR_GOFLAGS) -exec "$(BEHAVIOUR_TEST_EXEC)" ./behaviour
 
 scripts/%.sh: scripts/%.src.sh scripts/bundle-sh.sh $(LIB_DEPS)
 	scripts/bundle-sh.sh -o $@ $<
