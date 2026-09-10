@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Run a go test binary from the pinned fullsend checkout when FULLSEND_CHECKOUT
+# is set, temporarily exposing the agents behaviour fixtures there.
+# Invocation: run-behaviour-test-exec.sh TEST-BINARY [ARGS...].
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then

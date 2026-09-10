@@ -16,6 +16,7 @@ Reference documentation for the default agents shipped by fullsend.
 
 | Guide | Summary |
 |-------|---------|
+| [Behaviour testing](behaviour-testing.md) | Live behaviour test suite for agents |
 | [Custom network policy](network-policy.md) | Configure sandbox network access for hosts beyond the default allowlist |
 
 For configuration, customization, and building your own agents, see the

@@ -33,6 +33,7 @@ scripts/     Pre-scripts (input validation) and post-scripts (forge mutations)
 skills/      Reusable skill definitions loaded by agents at runtime
 plugins/     Sandbox plugins (e.g. gopls LSP for the code agent)
 eval/        Functional eval harness and default online-scoring manifests
+behaviour/   Live behaviour test suite (BDD feature specs and runner)
 ```
 
 ## Architecture
@@ -54,6 +55,13 @@ make test
 ```
 
 This is an alias for `make script-test`, which runs the `scripts/*-test.sh` suites. CI also runs `make check-bundle` and executes `make script-test` twice (source and bundled modes) via `.github/workflows/script-test.yml`.
+
+The live behaviour suite runs the isolated dev scenarios described in
+[`docs/behaviour-testing.md`](docs/behaviour-testing.md):
+
+```bash
+make behaviour-test
+```
 
 Lint skills, agents, and instructions with [skillsaw](https://github.com/stbenjam/skillsaw):
 
