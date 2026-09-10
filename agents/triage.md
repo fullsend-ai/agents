@@ -366,7 +366,8 @@ Information is sufficient for a developer to investigate and fix.
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
-    "requires_workflow_changes": false
+    "requires_workflow_changes": false,
+    "promote_to_ready_to_code": "true | false — required when TRIAGE_AUTO_CODE is discretionary, omit otherwise"
   },
   "comment": "A triage summary comment formatted in markdown. Focus on information not already present in the issue body — omit sections that merely restate what the reporter wrote. Include the proposed test case as a fenced code block.",
   "label_actions": {
