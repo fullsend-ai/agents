@@ -74,7 +74,9 @@ env:
     ISSUE_NUMBER: "${ISSUE_NUMBER}"
   sandbox:
     MAX_RETRIES: "1"
-    TIMEOUT_SECONDS: "2100"
+    # Mirror of timeout_minutes. The code-implementation skill budgets
+    # its tail from it. Keep the two in sync.
+    TIMEOUT_SECONDS: "3600"
     GOPATH: "/sandbox/go"
     GOMODCACHE: "/sandbox/go/pkg/mod"
     GIT_AUTHOR_NAME: "fullsend-code"
@@ -82,7 +84,8 @@ env:
     GIT_COMMITTER_NAME: "fullsend-code"
     GIT_COMMITTER_EMAIL: "${GIT_BOT_EMAIL}"
 
-timeout_minutes: 35
+# Per iteration. Mirrored as TIMEOUT_SECONDS in env.sandbox.
+timeout_minutes: 60
 
 overlays:
   - when: 'runtime.forge == "github"'
