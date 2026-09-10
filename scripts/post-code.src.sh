@@ -48,7 +48,8 @@
 #
 # Exit codes:
 #   0  — branch pushed and PR/MR created, OR agent determined nothing to do
-#   1  — validation failure or error (nothing pushed)
+#   1  — validation failure or error (nothing pushed), including a
+#        timeout-killed run that left uncommitted work and no commit
 set -euo pipefail
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -390,11 +391,82 @@ Retry with \`/fs-code\` if appropriate."
 }
 
 # ---------------------------------------------------------------------------
+# Uncommitted-work detection (timeout-kill / incomplete commit)
+#
+# A timeout-killed sandbox can leave staged or untracked files in the
+# extracted repo with no commit. The no-op paths below would otherwise
+# treat that as "agent determined no changes needed" and exit 0, which
+# makes the CLI status badge report Success. Fail closed instead so the
+# badge is Failure and the issue comment lists the discarded files.
+# ---------------------------------------------------------------------------
+AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
+
+is_agent_artifact_path() {
+  local file="$1"
+  local pattern dir
+  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
+    dir="${pattern%/}"
+    case "${file}" in
+      "${dir}"/*|"${dir}") return 0 ;;
+      */"${dir}"/*|*/"${dir}") return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# git status --porcelain for the extracted repo, excluding agent working
+# directory artifacts. Empty means a clean tree (or only artifacts).
+uncommitted_work_status() {
+  git update-index -q --refresh >/dev/null 2>&1 || true
+  local porcelain
+  porcelain="$(git status --porcelain 2>/dev/null || true)"
+  if [ -z "${porcelain}" ]; then
+    printf ''
+    return 0
+  fi
+
+  local filtered="" line path
+  while IFS= read -r line || [ -n "${line}" ]; do
+    [ -z "${line}" ] && continue
+    path="${line#???}"
+    case "${path}" in
+      *" -> "*) path="${path##* -> }" ;;
+    esac
+    path="${path#\"}"
+    path="${path%\"}"
+    if is_agent_artifact_path "${path}"; then
+      continue
+    fi
+    if [ -n "${filtered}" ]; then
+      filtered="${filtered}"$'\n'"${line}"
+    else
+      filtered="${line}"
+    fi
+  done <<< "${porcelain}"
+  printf '%s' "${filtered}"
+}
+
+fail_if_uncommitted_work() {
+  local context="$1"
+  local dirty
+  dirty="$(uncommitted_work_status)"
+  if [ -z "${dirty}" ]; then
+    return 0
+  fi
+  gha_echo error "Agent left uncommitted changes — not a no-op (${context})"
+  echo "${dirty}" | sed 's/^/  /'
+  post_fail_to_issue uncommitted-work \
+    "Uncommitted files:
+${dirty}"
+}
+
+# ---------------------------------------------------------------------------
 # 1. Verify feature branch
 # ---------------------------------------------------------------------------
 BRANCH="$(git branch --show-current)"
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
+  fail_if_uncommitted_work "no feature branch (current: '${BRANCH:-detached HEAD}')"
   gha_echo notice "Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}') — nothing to do"
   post_noop_comment "Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}')"
   exit 0
@@ -430,6 +502,7 @@ else
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then
+  fail_if_uncommitted_work "no changed files in agent's commit(s)"
   gha_echo notice "No changed files in agent's commit(s) — nothing to do"
   post_noop_comment "No changed files in agent's commit(s)"
   exit 0
@@ -445,18 +518,9 @@ echo "${CHANGED_FILES}" | sed 's/^/  /'
 # appear in commits. The harness excludes them via .git/info/exclude, but
 # if an agent manages to stage them anyway, strip them here before push.
 # ---------------------------------------------------------------------------
-AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
 STRIPPED_FILES=""
 for file in ${CHANGED_FILES}; do
-  is_artifact=false
-  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
-    dir="${pattern%/}"  # strip trailing slash for prefix matching
-    case "${file}" in
-      "${dir}"/*|"${dir}") is_artifact=true; break ;;
-      */"${dir}"/*|*/"${dir}") is_artifact=true; break ;;
-    esac
-  done
-  if [ "${is_artifact}" = "true" ]; then
+  if is_agent_artifact_path "${file}"; then
     gha_echo warning "Stripping agent artifact from commit: ${file}"
     STRIPPED_FILES="${STRIPPED_FILES} ${file}"
   fi
@@ -486,6 +550,7 @@ if [ -n "${STRIPPED_FILES}" ]; then
   CHANGED_FILES="${CLEAN_FILES}"
 
   if [ -z "${CHANGED_FILES}" ]; then
+    fail_if_uncommitted_work "all committed files were agent artifacts"
     gha_echo notice "All changed files were agent artifacts — nothing to push"
     post_noop_comment "All changed files were agent artifacts — only working directory files were present"
     exit 0

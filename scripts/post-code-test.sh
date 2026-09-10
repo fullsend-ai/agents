@@ -910,6 +910,158 @@ run_noop_test "noop-on-main-with-changes" \
   "main" "src/widget.go" "noop:branch"
 
 # ---------------------------------------------------------------------------
+# Test helper — reimplements uncommitted-work detection from post-code.src.sh
+# so we can test porcelain filtering without a git repo.
+# ---------------------------------------------------------------------------
+AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
+
+is_agent_artifact_path() {
+  local file="$1"
+  local pattern dir
+  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
+    dir="${pattern%/}"
+    case "${file}" in
+      "${dir}"/*|"${dir}") return 0 ;;
+      */"${dir}"/*|*/"${dir}") return 0 ;;
+    esac
+  done
+  return 1
+}
+
+filter_uncommitted_work() {
+  local porcelain="$1"
+  if [ -z "${porcelain}" ]; then
+    printf ''
+    return 0
+  fi
+
+  local filtered="" line path
+  while IFS= read -r line || [ -n "${line}" ]; do
+    [ -z "${line}" ] && continue
+    path="${line#???}"
+    case "${path}" in
+      *" -> "*) path="${path##* -> }" ;;
+    esac
+    path="${path#\"}"
+    path="${path%\"}"
+    if is_agent_artifact_path "${path}"; then
+      continue
+    fi
+    if [ -n "${filtered}" ]; then
+      filtered="${filtered}"$'
+'"${line}"
+    else
+      filtered="${line}"
+    fi
+  done <<< "${porcelain}"
+  printf '%s' "${filtered}"
+}
+
+decide_uncommitted_work() {
+  local branch="$1"
+  local changed_files="$2"
+  local porcelain="$3"
+
+  local dirty
+  dirty="$(filter_uncommitted_work "${porcelain}")"
+
+  if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "master" ]; then
+    if [ -n "${dirty}" ]; then
+      echo "fail:uncommitted:${dirty}"
+      return 1
+    fi
+    echo "noop:branch"
+    return 0
+  fi
+
+  if [ -z "${changed_files}" ]; then
+    if [ -n "${dirty}" ]; then
+      echo "fail:uncommitted:${dirty}"
+      return 1
+    fi
+    echo "noop:files"
+    return 0
+  fi
+
+  echo "proceed"
+  return 0
+}
+
+run_uncommitted_work_test() {
+  local test_name="$1"
+  local branch="$2"
+  local changed_files="$3"
+  local porcelain="$4"
+  local expected_prefix="$5"
+  local expect_rc="$6"
+
+  local actual rc=0
+  actual="$(decide_uncommitted_work "${branch}" "${changed_files}" "${porcelain}")" || rc=$?
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc: ${expect_rc}"
+    echo "  actual rc:   ${rc}"
+    echo "  actual:      ${actual}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Staged files on a feature branch with no commits → fail, not no-op
+run_uncommitted_work_test "uncommitted-staged-on-feature-fails" \
+  "agent/42-fix-widget" "" $'M  src/widget.go' \
+  "fail:uncommitted" 1
+
+# Untracked files on a feature branch with no commits → fail
+run_uncommitted_work_test "uncommitted-untracked-on-feature-fails" \
+  "agent/42-fix-widget" "" $'?? scripts/openshell_job.sh' \
+  "fail:uncommitted" 1
+
+# Staged files on main (no feature branch) → fail, not no-op
+run_uncommitted_work_test "uncommitted-staged-on-main-fails" \
+  "main" "" $'A  src/widget.go' \
+  "fail:uncommitted" 1
+
+# Clean tree on a feature branch with no commits → still a genuine no-op
+run_uncommitted_work_test "clean-feature-branch-still-noop" \
+  "agent/42-fix-widget" "" "" \
+  "noop:files" 0
+
+# Agent working-dir artifacts only → still a genuine no-op
+run_uncommitted_work_test "agent-artifact-untracked-still-noop" \
+  "agent/42-fix-widget" "" $'?? .agentready/scratch.txt' \
+  "noop:files" 0
+
+# Mixed real files + artifacts → fail and keep the real file in the listing
+run_uncommitted_work_test "mixed-real-and-artifact-fails" \
+  "agent/42-fix-widget" "" $'M  src/widget.go\n?? .fullsend-workspace/tmp' \
+  "fail:uncommitted:M  src/widget.go" 1
+
+# Renames in porcelain use "old -> new"; the destination must be checked
+run_uncommitted_work_test "rename-to-real-file-fails" \
+  "agent/42-fix-widget" "" $'R  old.go -> src/new.go' \
+  "fail:uncommitted" 1
+
+run_uncommitted_work_test "rename-to-artifact-still-noop" \
+  "agent/42-fix-widget" "" $'R  scratch.txt -> .agentready/scratch.txt' \
+  "noop:files" 0
+
+# Feature branch WITH commits proceeds even if the tree is also dirty
+run_uncommitted_work_test "committed-changes-proceed" \
+  "agent/42-fix-widget" "src/widget.go" $' M src/widget.go' \
+  "proceed" 0
+
+# ---------------------------------------------------------------------------
 # Test helper — reimplements the stale branch cleanup decision logic from
 # post-code.sh section 7a. Given whether a remote branch exists and whether
 # an open PR references it, returns the action the script would take.
@@ -1517,6 +1669,23 @@ else
   echo "PASS: script-has-noop-comment"
 fi
 
+# Verify timeout-kill / uncommitted-work detection is present
+if ! grep -q 'fail_if_uncommitted_work' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-uncommitted-work-guard"
+  echo "  ${POST_SCRIPT} missing fail_if_uncommitted_work"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-uncommitted-work-guard"
+fi
+
+if ! grep -q 'uncommitted-work' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-uncommitted-work-category"
+  echo "  ${POST_SCRIPT} missing uncommitted-work category"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-uncommitted-work-category"
+fi
+
 # --- Branch validation test cases ---
 
 # Auto-correct: agent writes main, default is master, no allowed list → corrected
@@ -1909,6 +2078,94 @@ else
   echo "FAIL: security-api-failure-pr-list-fails-closed — rejected but wrong reason"
   cat "${SEC_CODE_TMPDIR}/stdout-api-failure.log"
   FAILURES=$((FAILURES + 1))
+fi
+
+# --- Timeout-kill: staged files, no commit → fail (not Success / no-op) ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "issue comment"|"pr comment")
+    printf '%s\n' "$@"
+    cat 2>/dev/null || true
+    exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_kill_dir="${SEC_CODE_TMPDIR}/run-killed-before-commit"
+setup_sec_code_repo "${_sec_kill_dir}" "agent/99-timeout-kill"
+# Drop the committed change and leave it staged instead — the timeout-kill
+# fingerprint from #1256 (git add, then killed before git commit).
+${REAL_GIT} -C "${_sec_kill_dir}/repo" reset --soft HEAD~1
+
+_sec_kill_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_kill_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-killed.log" 2>&1 || _sec_kill_rc=$?
+
+_sec_kill_log="${SEC_CODE_TMPDIR}/stdout-killed.log"
+if [ "${_sec_kill_rc}" -eq 0 ]; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — expected non-zero exit"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "killed before committing" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — missing failure heading"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "agent determined no changes needed" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — posted no-op comment"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "file.txt" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — staged file not listed"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: killed-before-commit-staged-exits-nonzero (exit ${_sec_kill_rc})"
+fi
+
+# --- Genuine no-op: feature branch, no commits, clean tree → exit 0 ---
+_sec_noop_dir="${SEC_CODE_TMPDIR}/run-genuine-noop"
+setup_sec_code_repo "${_sec_noop_dir}" "agent/99-already-fixed"
+${REAL_GIT} -C "${_sec_noop_dir}/repo" reset --hard HEAD~1
+
+_sec_noop_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_noop_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-genuine-noop.log" 2>&1 || _sec_noop_rc=$?
+
+_sec_noop_log="${SEC_CODE_TMPDIR}/stdout-genuine-noop.log"
+if [ "${_sec_noop_rc}" -ne 0 ]; then
+  echo "FAIL: genuine-noop-clean-tree-exits-zero — expected exit 0, got ${_sec_noop_rc}"
+  cat "${_sec_noop_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "agent determined no changes needed" "${_sec_noop_log}"; then
+  echo "FAIL: genuine-noop-clean-tree-exits-zero — missing no-op comment"
+  cat "${_sec_noop_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: genuine-noop-clean-tree-exits-zero"
 fi
 
 rm -rf "${SEC_CODE_TMPDIR}"
