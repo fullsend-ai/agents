@@ -778,6 +778,20 @@ GITLAB_QUOTED_OUT=$("${FILTER}" "${TMPDIR}/gitlab-quoted.summary" < "${TMPDIR}/g
 run_test "gitlab-quoted-path-stdout-empty" "" "${GITLAB_QUOTED_OUT}"
 run_test "gitlab-quoted-path-summary" "vendor/café.min.js  +1/-1  minified" "$(/bin/cat "${TMPDIR}/gitlab-quoted.summary")"
 
+# --- 29. Path rules are case-insensitive across the board: the lockfile,
+#         minified and sourcemap rules all match on the lowercased path. ---
+
+for case in "Cargo.lock:lockfile" "assets/Bundle.MIN.JS:minified" "assets/styles.MAP:sourcemap"; do
+  upper_path="${case%%:*}"
+  reason="${case#*:}"
+  label="case-${reason}"
+  printf 'diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -1,1 +1,1 @@\n-x\n+y\n' \
+    "${upper_path}" "${upper_path}" "${upper_path}" "${upper_path}" > "${TMPDIR}/${label}.in"
+  OUT=$("${FILTER}" "${TMPDIR}/${label}.summary" < "${TMPDIR}/${label}.in")
+  run_test "${label}-stdout-empty" "" "${OUT}"
+  run_test "${label}-summary" "${upper_path}  +1/-1  ${reason}" "$(/bin/cat "${TMPDIR}/${label}.summary")"
+done
+
 # --- Wrap up ---
 
 echo ""

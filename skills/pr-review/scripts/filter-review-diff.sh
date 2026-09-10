@@ -287,10 +287,10 @@ function classify_path(   lp) {
   if (lp ~ /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json|go\.sum|cargo\.lock|gemfile\.lock|poetry\.lock|composer\.lock)$/) {
     phase = "strip"; reason = "lockfile"; return
   }
-  if (path ~ /\.min\.(js|css)$/) {
+  if (lp ~ /\.min\.(js|css)$/) {
     phase = "strip"; reason = "minified"; return
   }
-  if (path ~ /\.map$/) {
+  if (lp ~ /\.map$/) {
     phase = "strip"; reason = "sourcemap"; return
   }
   if (path ~ /(^|\/)(vendor|node_modules|third_party)\//) {
