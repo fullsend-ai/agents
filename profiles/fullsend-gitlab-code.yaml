@@ -1,0 +1,26 @@
+---
+# Endpoints mirror fullsend-gitlab-ro.yaml — keep both in sync.
+# Differs only in binaries (adds git, pre-commit for repo operations).
+id: fullsend-gitlab-code
+display_name: Fullsend GitLab (code agents)
+description: Read-only GitLab API and Git operations for code and fix agents
+category: source_control
+endpoints:
+  - host: gitlab.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+    allow_encoded_slash: true
+  # Red Hat internal GitLab — supported deployment target for enrolled repos
+  - host: gitlab.cee.redhat.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+    allow_encoded_slash: true
+binaries:
+  - "**/curl"
+  - "**/git"
+  - "**/node"
+  - "**/pre-commit"

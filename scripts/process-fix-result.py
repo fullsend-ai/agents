@@ -15,6 +15,7 @@ Exit codes:
 
 import json
 import os
+import re
 import subprocess
 import sys
 
@@ -111,8 +112,88 @@ ATTRIBUTION = (
 )
 
 
+def _post_comment_github(repo, pr_number, full):
+    """Post a comment via the GitHub CLI."""
+    subprocess.run(
+        ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body-file", "-"],
+        input=full,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _get_allowed_gitlab_hosts():
+    """Build the allowed host set from CI_SERVER_HOST."""
+    ci_host = os.environ.get("CI_SERVER_HOST", "")
+    if not ci_host:
+        return set()
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", ci_host):
+        raise ValueError("CI_SERVER_HOST contains invalid characters")
+    return {ci_host.lower()}
+
+
+def _post_comment_gitlab(repo, pr_number, full):
+    """Post a comment via the GitLab REST API."""
+    from urllib.parse import quote, urlparse
+
+    gitlab_host = os.environ.get("GITLAB_HOST", "")
+    gitlab_token = os.environ.get("GITLAB_TOKEN", "")
+    if not gitlab_host:
+        pr_url = os.environ.get("PR_URL", "")
+        if pr_url:
+            parsed = urlparse(pr_url)
+            gitlab_host = parsed.hostname or ""
+        if not gitlab_host:
+            raise ValueError("GITLAB_HOST is not set and cannot be derived from PR_URL")
+    allowed_hosts = _get_allowed_gitlab_hosts()
+    if not allowed_hosts:
+        raise ValueError(
+            "No trusted GitLab host configured (CI_SERVER_HOST is not set)"
+        )
+    if gitlab_host.lower() not in allowed_hosts:
+        raise ValueError(
+            f"GITLAB_HOST '{gitlab_host}' is not in the allowed host list"
+        )
+    if not gitlab_token:
+        raise ValueError("GITLAB_TOKEN is not set")
+
+    repo_encoded = quote(repo, safe="")
+    api_url = (
+        f"https://{gitlab_host}/api/v4"
+        f"/projects/{repo_encoded}/merge_requests/{pr_number}/notes"
+    )
+    # Pass token via curl config on stdin so it never appears in
+    # CalledProcessError.cmd tracebacks.
+    config_stdin = f'header = "PRIVATE-TOKEN: {gitlab_token}"'
+    subprocess.run(
+        [
+            "curl",
+            "--fail",
+            "--silent",
+            "--show-error",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            "30",
+            "--config",
+            "-",
+            "--request",
+            "POST",
+            "--data-urlencode",
+            f"body={full}",
+            api_url,
+        ],
+        input=config_stdin,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def post_summary(repo, pr_number, body, suffix="", dry_run=False):
     """Post a summary comment on the PR."""
+    forge = os.environ.get("FULLSEND_FORGE", "github")
     full = body + suffix
     if len(full) > MAX_COMMENT_LENGTH:
         truncation_notice = "\n\n*[truncated — output exceeded comment size limit]*"
@@ -126,18 +207,21 @@ def post_summary(repo, pr_number, body, suffix="", dry_run=False):
         print(f"  [dry-run] Would post PR summary ({len(full)} chars)")
         return True
     try:
-        subprocess.run(
-            ["gh", "pr", "comment", str(pr_number), "--repo", repo, "--body-file", "-"],
-            input=full,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
+        if forge == "gitlab":
+            _post_comment_gitlab(repo, pr_number, full)
+        else:
+            _post_comment_github(repo, pr_number, full)
         return True
     except subprocess.CalledProcessError as e:
         sanitized = e.stderr.replace("\r", "").replace("\n", " ").replace("::", ": :")
         print(
             f"::warning::Failed to post PR summary: {sanitized}",
+            file=sys.stderr,
+        )
+        return False
+    except ValueError as e:
+        print(
+            f"::warning::Failed to post PR summary: {e}",
             file=sys.stderr,
         )
         return False
@@ -202,7 +286,18 @@ def main(argv=None):
     print(f"Processed: {fixed} fixed, {disagreed} disagreed")
 
     summary_body = build_summary_body(data)
-    suffix = FOOTER + ATTRIBUTION
+    # Record the post-script's trailer strip so the rewrite is visible.
+    signoff_note = ""
+    try:
+        stripped = int(os.environ.get("SIGNOFF_STRIPPED_COUNT", "0") or "0")
+    except ValueError:
+        stripped = 0
+    if stripped > 0:
+        plural = "s" if stripped != 1 else ""
+        signoff_note = (
+            f"\n\n_Removed a Signed-off-by trailer from {stripped} agent commit{plural}._"
+        )
+    suffix = signoff_note + FOOTER + ATTRIBUTION
     success = post_summary(repo, pr_number, summary_body, suffix=suffix, dry_run=dry_run)
 
     return 0 if success else 2

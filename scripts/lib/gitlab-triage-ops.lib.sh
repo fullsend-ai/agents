@@ -5,7 +5,7 @@
 # Bundled into pre-triage.sh and post-triage.sh via triage-ops.lib.sh.
 # All functions use curl against the GitLab REST API.
 #
-# Expected globals (set by forge_parse_issue_url):
+# Expected globals (set by tracker_parse_issue_url):
 #   REPO           — plain project path (e.g., "group/project")
 #   REPO_ENCODED   — URL-encoded project path (e.g., "group%2Fproject")
 #   ISSUE_NUMBER   — issue IID
@@ -29,11 +29,19 @@
 [[ -n "${GITLAB_TRIAGE_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_TRIAGE_OPS_SH_LOADED=1
 
+# shellcheck source=gitlab-host-validation.lib.sh
+source "${BASH_SOURCE[0]%/*}/gitlab-host-validation.lib.sh"
+
 _gitlab_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call tracker_parse_issue_url first" >&2
+    return 1
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -47,6 +55,11 @@ _gitlab_api_with_status() {
   shift
   local endpoint="$1"
   shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call tracker_parse_issue_url first" >&2
+    return 1
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   local err_file
   err_file=$(mktemp)
   local raw
@@ -75,23 +88,20 @@ _gitlab_api_with_status() {
 
 # --- URL handling ---
 
-forge_validate_issue_url() {
+tracker_validate_issue_url() {
   if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
-    echo "ERROR: ISSUE_URL does not match expected GitLab pattern: ${ISSUE_URL}" >&2
+    echo "ERROR: ISSUE_URL does not match expected GitLab pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
     return 1
   fi
   local host
-  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
-  case "${host}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list" >&2; return 1 ;;
-  esac
+  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  _validate_gitlab_host "${host}" || return 1
 }
 
-forge_parse_issue_url() {
+tracker_parse_issue_url() {
   # Extract host, project path, and issue IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
-  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
   REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
@@ -99,7 +109,7 @@ forge_parse_issue_url() {
 
 # --- Labels ---
 
-forge_add_label() {
+tracker_add_label() {
   local label="$1"
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "add_labels=${label}" > /dev/null; then
@@ -108,13 +118,13 @@ forge_add_label() {
   fi
 }
 
-forge_remove_label() {
+tracker_remove_label() {
   local label="$1"
   _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
 }
 
-forge_strip_labels() {
+tracker_strip_labels() {
   local labels=("$@")
   for label in "${labels[@]}"; do
     _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
@@ -122,7 +132,7 @@ forge_strip_labels() {
   done
 }
 
-forge_verify_labels_stripped() {
+tracker_verify_labels_stripped() {
   local labels=("$@")
   local current_labels
   current_labels=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null | jq -r '[.labels[]] | join(",")' 2>/dev/null || echo "VERIFY_FAILED")
@@ -152,7 +162,7 @@ forge_verify_labels_stripped() {
   fi
 }
 
-forge_list_repo_labels() {
+tracker_list_repo_labels() {
   local page=1 max_pages=50
   while [[ "${page}" -le "${max_pages}" ]]; do
     local batch
@@ -165,7 +175,7 @@ forge_list_repo_labels() {
   done
 }
 
-forge_create_label() {
+tracker_create_label() {
   local name="$1"
   local description="$2"
   local color="$3"
@@ -173,6 +183,11 @@ forge_create_label() {
     --data-urlencode "name=${name}" \
     --data-urlencode "description=${description}" \
     --data-urlencode "color=#${color}" > /dev/null 2>/dev/null || true
+}
+
+# Alias used by labels.lib.sh (forge_ensure_label delegates to forge_create_label).
+forge_create_label() {
+  tracker_create_label "$@"
 }
 
 # --- Bot identity (for sticky-comment author filtering) ---
@@ -192,13 +207,13 @@ _gitlab_bot_username() {
 
 # --- Comments (notes in GitLab) ---
 
-forge_post_comment() {
+tracker_post_comment() {
   local body="$1"
   _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
     --data-urlencode "body=${body}" > /dev/null
 }
 
-forge_post_sticky_comment() {
+tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
   local marked_body="${marker}
@@ -257,7 +272,7 @@ ${body}"
 
 # --- Issues ---
 
-forge_close_issue() {
+tracker_close_issue() {
   local _reason="$1"  # GitLab has no close-reason API; accepted for interface parity
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
     --data-urlencode "state_event=close" > /dev/null; then
@@ -266,7 +281,7 @@ forge_close_issue() {
   fi
 }
 
-forge_create_issue() {
+tracker_create_issue() {
   local target_repo="$1"
   local title="$2"
   local body="$3"

@@ -17,6 +17,11 @@
 #
 # Optional environment:
 #   FULLSEND_DIR  — path to fullsend scaffold directory (default: repo root)
+#   EVAL_RUNTIME  — run every case under this runtime (claude|pi) instead of
+#                   the workspace config.yaml's runtime (fullsend run --runtime)
+#   EVAL_MODEL    — model override for every case: alias, id or provider/id
+#                   (fullsend run --model), e.g. google-vertex/gemini-2.5-flash
+#   EVAL_EFFORT   — effort override (fullsend run --effort)
 #   GOOGLE_APPLICATION_CREDENTIALS, ANTHROPIC_VERTEX_PROJECT_ID, etc.
 #   AGENT_EVAL_HARNESS_DIR — path to agent-eval-harness
 set -euo pipefail
@@ -77,6 +82,8 @@ export GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"
 
 # Default FULLSEND_DIR to the repo root (the agents repo IS the scaffold).
 export FULLSEND_DIR="${FULLSEND_DIR:-${REPO_ROOT}}"
+# Per-run overrides forwarded to run-fullsend.sh (empty = not set).
+export EVAL_RUNTIME="${EVAL_RUNTIME:-}" EVAL_MODEL="${EVAL_MODEL:-}" EVAL_EFFORT="${EVAL_EFFORT:-}"
 FULLSEND_DIR="$(cd "$FULLSEND_DIR" && pwd)"
 export FULLSEND_DIR
 

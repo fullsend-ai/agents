@@ -2,7 +2,14 @@
 agent: agents/review.md
 doc: docs/review.md
 model: opus
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:de3ecbd7719a1927c983142ada96475f3314d2505d0f258bcf19c31411856eb6
+# Reasoning effort (low|medium|high|xhigh|max), pinned to what the fleet
+# already ran at implicitly: Claude Code's default effort is high on every
+# effort-capable model except Opus 4.7 (xhigh) — code.claude.com/docs/en/
+# model-config — and the fullsend pi runtime passes --thinking high when
+# effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
+# when the model: above moves to a generation with a different default.
+effort: high
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:623fc74588876062f12f40690ee759c6134ba516fabdd36e6dcfc4eeb9cd1d0b
 policy: policies/base.yaml
 readonly_repo: true
 openshell:
@@ -18,7 +25,7 @@ skills:
   - skills/pr-review
   - skills/code-review
   - skills/docs-review
-  - skills/issue-labels/github
+  - skills/pr-risk-assessment
 
 host_files:
   - src: env/gcp-vertex.env
@@ -39,7 +46,10 @@ post_script: scripts/post-review.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
-  max_iterations: 2
+  # Interim, pending fullsend-ai/fullsend#7042: the runner cannot tell a
+  # timeout from a schema failure, so a second iteration replays a killed
+  # review from scratch. Restore 2 with `feedback_mode: append` then.
+  max_iterations: 1
 
 env:
   # REVIEW_FINDING_SEVERITY_THRESHOLD and REVIEW_PROTECTED_PATHS are set
@@ -50,12 +60,21 @@ env:
   # override these keys via harness `base:` composition.
   runner:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
-    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
-    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+    REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
+    PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
+    # Mirror of timeout_minutes (the code/fix convention); the pr-review
+    # skill budgets its tail from it. Keep the two in sync.
+    TIMEOUT_SECONDS: "2700"
 
-timeout_minutes: 20
+# Per iteration. The pipeline has a ~13–18 minute floor independent of
+# PR size; 20 sat on it. Mirrored as TIMEOUT_SECONDS in env.sandbox.
+timeout_minutes: 45
 
 forge:
   github:
@@ -64,18 +83,51 @@ forge:
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
-    pre_script: scripts/pre-review.sh
-    post_script: scripts/post-review.sh
+    skills:
+      - skills/github-forge
+      - skills/issue-labels/github
+      - skills/pr-review/github
+    host_files:
+      - src: env/github/review.env
+        dest: /sandbox/workspace/.env.d/review.env
+        expand: true
     env:
       runner:
         REVIEW_TOKEN: "${REVIEW_TOKEN}"
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         PR_NUMBER: "${PR_NUMBER}"
-        GITHUB_PR_URL: "${GITHUB_PR_URL}"
-      sandbox:
-        GITHUB_PR_URL: "${GITHUB_PR_URL}"
+        PR_URL: "${GITHUB_PR_URL}"
         GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
+        REVIEW_RISK_ASSESSMENT_ENABLED: "true"
+      sandbox:
         PR_NUMBER: "${PR_NUMBER}"
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
-        PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"
-        PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
+        PR_URL: "${GITHUB_PR_URL}"
+        GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
+        REVIEW_RISK_ASSESSMENT_ENABLED: "true"
+  gitlab:
+    providers:
+      - providers/gitlab-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-ro.yaml
+    skills:
+      - skills/gitlab-forge
+      - skills/issue-labels/gitlab
+      - skills/pr-review/gitlab
+    host_files:
+      - src: env/gitlab/review.env
+        dest: /sandbox/workspace/.env.d/review.env
+        expand: true
+    env:
+      runner:
+        REVIEW_TOKEN: "${GITLAB_TOKEN}"
+        PR_NUMBER: "${MR_NUMBER}"
+        PR_URL: "${GITLAB_MR_URL}"
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab
+      sandbox:
+        PR_NUMBER: "${MR_NUMBER}"
+        PR_URL: "${GITLAB_MR_URL}"
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab

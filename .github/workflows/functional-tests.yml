@@ -44,6 +44,10 @@ on:
         required: false
       EVAL_GH_TOKEN:
         required: false
+    outputs:
+      agents_sha:
+        description: 'Resolved commit SHA of the agents checkout (for cross-repo tagging)'
+        value: ${{ jobs.detect.outputs.agents_sha }}
 
 concurrency:
   group: >-
@@ -103,6 +107,7 @@ jobs:
       contents: read
     outputs:
       agents: ${{ steps.agents.outputs.agents }}
+      agents_sha: ${{ steps.checkout.outputs.commit }}
     steps:
       - name: Get changed files
         id: changes
@@ -160,11 +165,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        id: checkout
         with:
           repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
           ref: >-
             ${{ github.repository != 'fullsend-ai/agents'
-                && github.workflow_sha
+                && 'main'
                 || (github.event_name == 'pull_request_target'
                     && github.event.pull_request.head.sha
                     || github.sha) }}
@@ -218,7 +224,7 @@ jobs:
           repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
           ref: >-
             ${{ github.repository != 'fullsend-ai/agents'
-                && github.workflow_sha
+                && (needs.detect.outputs.agents_sha || 'main')
                 || (github.event_name == 'pull_request_target'
                     && github.event.pull_request.head.sha
                     || github.sha) }}
@@ -397,25 +403,43 @@ jobs:
   # ---------------------------------------------------------------------------
   functional-tests-complete:
     needs: [gate, detect, functional-tests]
+    # Always runs. A pull_request_target `labeled` event for a label other
+    # than ok-to-test is handled inside check-rollup-result.sh, which mirrors
+    # the previous verdict on this commit rather than asserting a new one.
+    # Guarding this job with the gate's own `if:` was tried and rejected: a
+    # skipped job still publishes a check run that supersedes the previous
+    # one, and `skipped` satisfies a required check — so it would turn a
+    # genuinely failing run green the moment anyone labelled the PR. See #954.
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 1
     permissions:
       contents: read
+      # Read-only: the roll-up mirrors the previous check run of its own name
+      # on this commit when a label event carries no verdict.
+      checks: read
     steps:
       # Base branch only -- a PR must not be able to rewrite this script
       # to force-pass its own roll-up check.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.sha }}
+          repository: ${{ github.repository != 'fullsend-ai/agents' && 'fullsend-ai/agents' || github.repository }}
+          ref: >-
+            ${{ github.repository != 'fullsend-ai/agents'
+                && (needs.detect.outputs.agents_sha || 'main')
+                || github.sha }}
           persist-credentials: false
           sparse-checkout: .github/scripts
 
       - name: Check results
         env:
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GATE_RESULT: ${{ needs.gate.result }}
           DETECT_RESULT: ${{ needs.detect.result }}
           TESTS_RESULT: ${{ needs.functional-tests.result }}
           CROSS_REPO: ${{ github.repository != 'fullsend-ai/agents' }}
+          GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/check-rollup-result.sh

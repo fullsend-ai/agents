@@ -5,8 +5,8 @@
 # run output directory (e.g., /tmp/fullsend/agent-triage-<id>/iteration-1/).
 #
 # Required env vars:
-#   ISSUE_URL      — HTML URL of the issue
-#   FULLSEND_FORGE — "github" or "gitlab"
+#   ISSUE_URL        — HTML URL of the issue
+#   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
 #
 # The agent writes its decision to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
@@ -20,12 +20,15 @@
 set -euo pipefail
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
-: "${FULLSEND_FORGE:?FULLSEND_FORGE must be set}"
+FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
+: "${FULLSEND_TRACKER:?FULLSEND_TRACKER must be set}"
 
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/triage-ops.lib.sh
 source "${SCRIPT_DIR}/lib/triage-ops.lib.sh"
+# shellcheck source=lib/labels.lib.sh
+source "${SCRIPT_DIR}/lib/labels.lib.sh"
 
 # Find the triage result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -67,8 +70,8 @@ fi
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 
-forge_validate_issue_url
-forge_parse_issue_url
+tracker_validate_issue_url
+tracker_parse_issue_url
 
 echo "Action: ${ACTION}"
 echo "Repo: ${REPO}"
@@ -103,7 +106,7 @@ DEFERRED_LABEL=""
 # the new action. Every terminal action below resets its own set of control
 # labels, but "triaged" is only ever re-applied (never removed) by the
 # handlers themselves, so it must be cleared up front rather than per-branch.
-forge_remove_label "triaged"
+tracker_remove_label "triaged"
 
 # --- Cross-repo issue creation allowlist ---
 # Used by prerequisites and split actions. Read once before the case
@@ -117,12 +120,14 @@ fi
 
 ALLOWED_ORGS=""
 ALLOWED_REPOS=""
+ALLOWED_JIRA_PROJECTS=""
 if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
   echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
 fi
 if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
   ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
   ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+  ALLOWED_JIRA_PROJECTS=$(yq -r '.create_issues.allow_targets.jira_projects // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
 fi
 
 is_target_allowed() {
@@ -141,6 +146,10 @@ is_target_allowed() {
     return 0
   fi
 
+  if [[ -n "${ALLOWED_JIRA_PROJECTS}" ]] && echo "${ALLOWED_JIRA_PROJECTS}" | grep -qFx "${target_repo}"; then
+    return 0
+  fi
+
   return 1
 }
 
@@ -150,9 +159,9 @@ case "${ACTION}" in
       echo "ERROR: action is 'insufficient' but no comment provided" >&2
       exit 1
     fi
-    forge_remove_label "blocked"
-    forge_remove_label "pr-open"
-    forge_add_label "needs-info"
+    tracker_remove_label "blocked"
+    tracker_remove_label "pr-open"
+    tracker_add_label "needs-info"
     ;;
 
   duplicate)
@@ -161,13 +170,13 @@ case "${ACTION}" in
       exit 1
     fi
     DUPLICATE_OF=$(jq -r '.duplicate_of' "${RESULT_FILE}")
-    if [[ "${DUPLICATE_OF}" -eq "${ISSUE_NUMBER}" ]]; then
+    if [[ "${DUPLICATE_OF}" == "${ISSUE_NUMBER}" ]]; then
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
-    forge_remove_label "blocked"
-    forge_remove_label "pr-open"
-    forge_add_label "duplicate"
+    tracker_remove_label "blocked"
+    tracker_remove_label "pr-open"
+    tracker_add_label "duplicate"
     ;;
 
   prerequisites)
@@ -199,7 +208,7 @@ ${ISSUE_BODY}
       fi
 
       echo "Creating prerequisite issue in $(_gha_sanitize "${TARGET_REPO}")..."
-      CREATED_URL=$(forge_create_issue "${TARGET_REPO}" "${ISSUE_TITLE}" "${ISSUE_BODY}") || {
+      CREATED_URL=$(tracker_create_issue "${TARGET_REPO}" "${ISSUE_TITLE}" "${ISSUE_BODY}") || {
         echo "::warning::Failed to create issue in '$(_gha_sanitize "${TARGET_REPO}")' (see stderr for details)"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
@@ -244,10 +253,10 @@ ${ISSUE_BODY}
 ${FAILED_CREATES}"
     fi
 
-    forge_remove_label "ready-to-code"
-    forge_remove_label "needs-info"
-    forge_remove_label "pr-open"
-    forge_add_label "blocked"
+    tracker_remove_label "ready-to-code"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "blocked"
     ;;
 
   in-progress)
@@ -291,11 +300,11 @@ ${FAILED_CREATES}"
 
 **Addressed by:**${PR_LIST}"
 
-    forge_remove_label "blocked"
-    forge_remove_label "ready-to-code"
-    forge_remove_label "needs-info"
-    forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
-    forge_add_label "pr-open"
+    tracker_remove_label "blocked"
+    tracker_remove_label "ready-to-code"
+    tracker_remove_label "needs-info"
+    tracker_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
+    tracker_add_label "pr-open"
     ;;
 
   sufficient)
@@ -361,9 +370,9 @@ ${FAILED_CREATES}"
       fi
     fi
 
-    forge_remove_label "blocked"
-    forge_remove_label "needs-info"
-    forge_remove_label "pr-open"
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
@@ -428,31 +437,31 @@ ${FAILED_CREATES}"
       echo "::warning::Triage detected workflow file changes required (#325)"
       if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
         echo "Applying triaged label (workflow changes required)..."
-        forge_add_label "triaged"
+        tracker_add_label "triaged"
         WORKFLOW_BLOCKED=true
       fi
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
-        forge_add_label "bug"
+        tracker_add_label "bug"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          forge_add_label "triaged"
+          tracker_add_label "triaged"
         fi
         ;;
       documentation)
         echo "Applying documentation label..."
-        forge_add_label "documentation"
+        tracker_add_label "documentation"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          forge_add_label "triaged"
+          tracker_add_label "triaged"
         fi
         ;;
       performance)
@@ -461,17 +470,17 @@ ${FAILED_CREATES}"
           DEFERRED_LABEL="ready-to-code"
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          forge_add_label "triaged"
+          tracker_add_label "triaged"
         fi
         ;;
       feature)
         echo "Applying feature + triaged labels..."
-        forge_add_label "feature"
-        forge_add_label "triaged"
+        tracker_add_label "feature"
+        tracker_add_label "triaged"
         ;;
       *)
         echo "Applying triaged label (${CATEGORY})..."
-        forge_add_label "triaged"
+        tracker_add_label "triaged"
         ;;
     esac
     ;;
@@ -512,7 +521,7 @@ ${SUB_BODY}
       fi
 
       echo "Creating sub-issue ${i}: $(_gha_sanitize "${SAFE_TITLE}") (repo: $(_gha_sanitize "${TARGET_REPO}"))..."
-      CREATED_URL=$(forge_create_issue "${TARGET_REPO}" "${SUB_TITLE}" "${SUB_BODY}") || {
+      CREATED_URL=$(tracker_create_issue "${TARGET_REPO}" "${SUB_TITLE}" "${SUB_BODY}") || {
         echo "::warning::Failed to create sub-issue '$(_gha_sanitize "${SAFE_TITLE}")' (see stderr for details)"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
@@ -546,10 +555,10 @@ ${SUB_BODY}
 ${FAILED_CREATES}"
     fi
 
-    forge_remove_label "blocked"
-    forge_remove_label "needs-info"
-    forge_remove_label "ready-to-code"
-    forge_remove_label "pr-open"
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "ready-to-code"
+    tracker_remove_label "pr-open"
     ;;
 
   question)
@@ -557,10 +566,10 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'question' but no comment provided" >&2
       exit 1
     fi
-    forge_remove_label "blocked"
-    forge_remove_label "needs-info"
-    forge_remove_label "pr-open"
-    forge_add_label "question"
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "question"
     ;;
 
   not-planned)
@@ -568,10 +577,10 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'not-planned' but no comment provided" >&2
       exit 1
     fi
-    forge_remove_label "blocked"
-    forge_remove_label "needs-info"
-    forge_remove_label "pr-open"
-    forge_add_label "not-planned"
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "not-planned"
     ;;
 
   *)
@@ -589,7 +598,7 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
 
   echo "Processing ${LABEL_COUNT} label action(s)..."
 
-  EXISTING_LABELS=$(forge_list_repo_labels)
+  EXISTING_LABELS=$(tracker_list_repo_labels)
 
   label_exists() {
     local label="$1"
@@ -619,12 +628,12 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
           continue
         fi
         echo "Adding label '$(_gha_sanitize "${LA_LABEL}")'..."
-        forge_add_label "${LA_LABEL}"
+        tracker_add_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       remove)
         echo "Removing label '$(_gha_sanitize "${LA_LABEL}")'..."
-        forge_remove_label "${LA_LABEL}"
+        tracker_remove_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       *)
@@ -642,11 +651,83 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
   fi
 fi
 
+# --- Process component_actions (Jira only) ---
+
+HAS_COMPONENT_ACTIONS=$(jq 'has("component_actions")' "${RESULT_FILE}")
+if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
+  if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+    COMPONENT_REASON=$(jq -r '.component_actions.reason' "${RESULT_FILE}")
+    COMPONENT_COUNT=$(jq '.component_actions.actions | length' "${RESULT_FILE}")
+
+    echo "Processing ${COMPONENT_COUNT} component action(s)..."
+
+    # Get current components on the issue. Abort component processing on
+    # failure — falling back to "[]" would cause tracker_set_components (a
+    # full replacement via PUT) to silently delete pre-existing components.
+    if ! CURRENT_COMPONENTS=$(tracker_get_components); then
+      echo "::warning::Failed to fetch current components — skipping component mutations to avoid data loss"
+    else
+      # Build the new component list by applying add/remove actions.
+      NEW_COMPONENTS="${CURRENT_COMPONENTS}"
+      COMPONENTS_APPLIED=0
+      for i in $(seq 0 $((COMPONENT_COUNT - 1))); do
+        CA_ACTION=$(jq -r ".component_actions.actions[${i}].action" "${RESULT_FILE}")
+        CA_COMPONENT=$(jq -r ".component_actions.actions[${i}].component" "${RESULT_FILE}")
+
+        # Validate component name to prevent injection from untrusted agent output.
+        # More permissive than label regex — Jira component names may contain
+        # parentheses, ampersands, commas, and apostrophes.
+        if [[ ! "${CA_COMPONENT}" =~ ^[a-zA-Z0-9\ _./:+\(\)\&,\'\-]+$ ]]; then
+          echo "::warning::Refused component '$(_gha_sanitize "${CA_COMPONENT}")' -- contains invalid characters"
+          continue
+        fi
+
+        case "${CA_ACTION}" in
+          add)
+            echo "Adding component '$(_gha_sanitize "${CA_COMPONENT}")'..."
+            NEW_COMPONENTS=$(echo "${NEW_COMPONENTS}" | jq --arg c "${CA_COMPONENT}" \
+              'if any(. == $c) then . else . + [$c] end')
+            COMPONENTS_APPLIED=$((COMPONENTS_APPLIED + 1))
+            ;;
+          remove)
+            echo "Removing component '$(_gha_sanitize "${CA_COMPONENT}")'..."
+            NEW_COMPONENTS=$(echo "${NEW_COMPONENTS}" | jq --arg c "${CA_COMPONENT}" \
+              '[.[] | select(. != $c)]')
+            COMPONENTS_APPLIED=$((COMPONENTS_APPLIED + 1))
+            ;;
+          *)
+            echo "::warning::Unknown component action '$(_gha_sanitize "${CA_ACTION}")' for component '$(_gha_sanitize "${CA_COMPONENT}")'"
+            ;;
+        esac
+      done
+
+      # Apply the updated component list to the issue.
+      if [[ "${COMPONENTS_APPLIED}" -gt 0 ]]; then
+        COMPONENTS_PAYLOAD=$(echo "${NEW_COMPONENTS}" | jq '[.[] | {name: .}]')
+        tracker_set_components "${COMPONENTS_PAYLOAD}"
+
+        COMMENT="${COMMENT}
+
+---
+**Components:** ${COMPONENT_REASON}"
+      fi
+    fi
+  else
+    echo "Ignoring component_actions — not supported on ${FULLSEND_TRACKER} tracker"
+  fi
+fi
+
 # --- Apply deferred label (must be last label mutation) ---
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
-  forge_add_label "${DEFERRED_LABEL}"
+  # forge_ensure_label creates the label via `gh` against REPO. On Jira, REPO
+  # is a project key, not an OWNER/REPO, and Jira has no label registry to
+  # create into — any string is already a valid label.
+  if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
+    forge_ensure_label "${DEFERRED_LABEL}"
+  fi
+  tracker_add_label "${DEFERRED_LABEL}"
 fi
 
 # --- Append action-hints footer (sufficient only) ---
@@ -664,25 +745,25 @@ fi
 
 echo "Posting comment..."
 if [[ "${ACTION}" == "sufficient" ]]; then
-  forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
+  tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
 elif [[ "${ACTION}" == "in-progress" ]]; then
-  forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
+  tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
 else
-  forge_post_comment "${COMMENT}"
+  tracker_post_comment "${COMMENT}"
 fi
 
 # --- Post-action: close issues ---
 
 if [[ "${ACTION}" == "duplicate" ]]; then
-  forge_close_issue "duplicate"
+  tracker_close_issue "duplicate"
 fi
 
 if [[ "${ACTION}" == "not-planned" ]]; then
-  forge_close_issue "not planned"
+  tracker_close_issue "not planned"
 fi
 
 if [[ "${ACTION}" == "split" ]]; then
-  forge_close_issue "completed"
+  tracker_close_issue "completed"
 fi
 
 echo "Post-triage complete."

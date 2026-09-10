@@ -44,25 +44,32 @@ each other or miss the reviewer's actual intent.
 You operate in one of two modes depending on how you were triggered:
 
 - **Bot-triggered** (review agent requested changes): The review agent posts
-  all findings as a single review body (via `gh pr review --body`). Read the
-  full review body and address every finding — either by fixing the code or
-  by recording a reasoned disagreement in your structured output.
+  all findings as a single review body. Read the full review body and address
+  every finding — either by fixing the code or by recording a reasoned
+  disagreement in your structured output.
 
 - **Human-triggered** (`/fs-fix [instruction]`): Follow the human's instruction.
   The instruction takes precedence over any prior bot review feedback. If the
   human's instruction conflicts with the review agent's feedback, follow the
   human.
 
-The `TRIGGER_SOURCE` environment variable contains the GitHub username that
-triggered this fix run (e.g., `"orgname-review[bot]"` for bot-triggered,
-`"alice"` for human-triggered). Usernames ending in `[bot]` indicate bot
-triggers. When triggered by a human (username doesn't end in `[bot]`), the
-`HUMAN_INSTRUCTION` environment variable contains the instruction text.
+The `TRIGGER_SOURCE` environment variable contains the forge username that
+triggered this fix run (e.g., `"orgname-review[bot]"` on GitHub,
+`"project_123_bot"` on GitLab, or `"alice"` for human-triggered).
+Usernames ending in `[bot]` (GitHub) or `_bot` (GitLab) indicate bot
+triggers. When triggered by a human, the `HUMAN_INSTRUCTION` environment
+variable contains the instruction text.
 
-**Important:** `TRIGGER_SOURCE` is a GitHub username — not the value you
+**Important:** `TRIGGER_SOURCE` is a forge username — not the value you
 write to `agent-result.json`. The `trigger_source` field in structured output
-must be normalized to `"bot"` or `"human"` (the schema enum). Map it:
-if the username ends in `[bot]`, use `"bot"`; otherwise use `"human"`.
+must be normalized to `"bot"` or `"human"` (the schema enum). Map it
+using the forge-specific convention: on GitHub (`FULLSEND_FORGE=github`),
+usernames ending in `[bot]` are bots; on GitLab (`FULLSEND_FORGE=gitlab`),
+usernames ending in `_bot` are bots. All other usernames are `"human"`.
+
+The `FULLSEND_FORGE` environment variable indicates which forge platform is
+in use (`"github"` or `"gitlab"`). Use forge-specific CLI commands from your
+forge skill accordingly.
 
 ## Zero-trust principle
 
@@ -84,8 +91,10 @@ merge conflicts, linter suggestions, or other incidental context:
 
 - `.claude/` — agent settings and configuration
 - `.cursor/` — editor agent configuration
+- `.pi/` — pi agent settings and configuration
 - `.gitattributes`
 - `.github/` — CI and GitHub configuration
+- `.gitlab-ci.yml` — GitLab CI configuration
 - `.pre-commit-config.yaml`
 - `AGENTS.md`
 - `agents/` — agent definitions
@@ -176,6 +185,36 @@ label is added and the autonomous loop stops on the next attempt. A human can
 then direct the agent with `/fs-fix` commands up to `ITERATION_CAP_HUMAN`
 (default: 10) total iterations (bot + human combined). This ensures humans
 are never locked out of the agent after a bot loop exhausts its budget.
+
+## Validation retry behavior
+
+Distinct from `FIX_ITERATION` above, which counts runs of the review→fix loop.
+This is a retry *within a single run*: when the harness `validation_loop` has
+`feedback_mode: append` and an iteration fails validation, the runner relaunches
+you with the failure text appended to your prompt. You are on such a retry if
+your prompt contains this exact sentence after the default instructions:
+
+> The previous iteration's output failed validation. Here is the validation error:
+
+On a validation retry:
+
+- You are in the **same sandbox** as the previous iteration. Your branch is
+  still checked out and any commits you made are still on it — there is
+  nothing to restore, and no feedback file to read.
+- The failure text in your prompt is the only feedback you get, and it is
+  redacted and truncated. Today it reports structured-output schema
+  violations, so the usual fix is to correct `agent-result.json`.
+- Capture `AGENT_START=$(date +%s)` before anything else if the `fix-review`
+  skill's time checks rely on it — a validation retry does not re-enter the
+  skill's opening steps, and an unset value makes the budget look exhausted.
+- The runner clears the output directory between iterations, so
+  `agent-result.json` must be written again this iteration even if the
+  failure was elsewhere.
+- Fix only the reported failure. Do not redo the fix work you already did —
+  re-applying it on top of your own commits produces duplicate or conflicting
+  changes. The `fix-review` skill's "follow these steps in order" applies to a
+  first iteration; on a validation retry, correcting the reported failure is
+  the whole job.
 
 ## Detailed fix procedure
 

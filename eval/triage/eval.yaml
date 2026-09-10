@@ -15,6 +15,11 @@ execution:
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
     CLOUD_ML_REGION: $CLOUD_ML_REGION
+    # Per-run runtime/model/effort for A/B comparisons (run-functional.sh
+    # exports them; empty = use the workspace config / harness values).
+    EVAL_RUNTIME: $EVAL_RUNTIME
+    EVAL_MODEL: $EVAL_MODEL
+    EVAL_EFFORT: $EVAL_EFFORT
 
 hooks:
   before_each:
@@ -45,6 +50,11 @@ runner:
     ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
     GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
     CLOUD_ML_REGION: $CLOUD_ML_REGION
+    # Per-run runtime/model/effort for A/B comparisons (run-functional.sh
+    # exports them; empty = use the workspace config / harness values).
+    EVAL_RUNTIME: $EVAL_RUNTIME
+    EVAL_MODEL: $EVAL_MODEL
+    EVAL_EFFORT: $EVAL_EFFORT
 
 models:
   skill: claude-opus-4-6

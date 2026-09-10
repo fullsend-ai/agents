@@ -52,3 +52,9 @@ repos:
         language: script
         files: ^(harness/|docs/|hack/lint-agent-docs)
         pass_filenames: false
+      - id: lint-measurements
+        name: lint eval measurement manifests
+        entry: ./eval/lint-measurements.sh
+        language: script
+        files: ^(eval/measurements/|eval/lint-measurements)
+        pass_filenames: false

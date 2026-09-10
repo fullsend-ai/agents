@@ -12,6 +12,8 @@
 #
 # Required env (injected by harness from hook outputs + execution.env):
 #   FULLSEND_DIR    — path to the fullsend scaffold directory
+#   EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT — optional per-run overrides,
+#                     passed as fullsend run --runtime/--model/--effort
 #   GH_TOKEN        — GitHub token
 #   FIXTURE_URL     — URL of the fixture (issue or PR)
 #   FIXTURE_TYPE    — "issue" or "pull_request"
@@ -29,7 +31,7 @@ FIXTURE_TYPE="${FIXTURE_TYPE:?FIXTURE_TYPE is required (set by before_each hook)
 # The hook already created it and pushed content.
 #
 # Layout mirrors GHA for code/fix: harness expands
-# REPO_DIR=${GITHUB_WORKSPACE}/target-repo for post-scripts.
+# TARGET_REPO_DIR=${GITHUB_WORKSPACE}/target-repo for post-scripts.
 EPHEMERAL_REPO="${EPHEMERAL_REPO:?EPHEMERAL_REPO is required}"
 FIXTURE_NUMBER="${FIXTURE_NUMBER:?FIXTURE_NUMBER is required (set by before_each hook)}"
 
@@ -155,8 +157,8 @@ install -m 0600 /dev/null "$ENV_FILE"
 
   # Code/fix harness env.runner refs — mint normally sets these; eval skips mint.
   # Only override GITHUB_WORKSPACE for agents whose post-scripts expand
-  # REPO_DIR=${GITHUB_WORKSPACE}/target-repo (triage reads config.yaml from
-  # the real Actions workspace and must not be redirected to the temp clone).
+  # TARGET_REPO_DIR=${GITHUB_WORKSPACE}/target-repo (triage reads config.yaml
+  # from the real Actions workspace and must not be redirected to the temp clone).
   case "$AGENT" in
     code|fix)
       emit_env "PUSH_TOKEN_SOURCE" "eval"
@@ -164,6 +166,7 @@ install -m 0600 /dev/null "$ENV_FILE"
       # as fallback to the repo default branch (not "allow all"; use * for any).
       emit_env "CODE_ALLOWED_TARGET_BRANCHES" ""
       emit_env "GITHUB_WORKSPACE" "${EVAL_GH_WORKSPACE}"
+      emit_env "TARGET_REPO_DIR" "${TARGET_DIR}"
       emit_env "GIT_BOT_EMAIL" "fullsend-eval[bot]@users.noreply.github.com"
       ;;
   esac
@@ -203,6 +206,11 @@ install -m 0600 /dev/null "$ENV_FILE"
     emit_env "REVIEW_BODY_FILE" "${REVIEW_BODY_FILE}"
   fi
 
+  if [[ "$AGENT" == "retro" ]]; then
+    emit_env "ORIGINATING_URL" "${FIXTURE_URL}"
+    emit_env "RETRO_COMMENT" "${RETRO_COMMENT:-}"
+  fi
+
   # Review agent: both REVIEW_PROTECTED_PATHS and
   # REVIEW_FINDING_SEVERITY_THRESHOLD are literal defaults baked into
   # harness/review.yaml's env.runner/env.sandbox stanzas. Default here to
@@ -226,6 +234,14 @@ EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 mkdir -p "$OUTPUT_DIR"
 printf '%s\n' "$PRE_AGENT_HEAD" > "${OUTPUT_DIR}/pre-agent-head.txt"
 
+# Per-run overrides (EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT from
+# run-functional.sh) become explicit fullsend run flags so the choice shows
+# up in the run plan, metrics.json (requested_*) and the logs.
+override_args=()
+[[ -n "${EVAL_RUNTIME:-}" ]] && override_args+=(--runtime "$EVAL_RUNTIME")
+[[ -n "${EVAL_MODEL:-}" ]] && override_args+=(--model "$EVAL_MODEL")
+[[ -n "${EVAL_EFFORT:-}" ]] && override_args+=(--effort "$EVAL_EFFORT")
+
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
   --fullsend-dir "${FULLSEND_DIR}" \
@@ -233,6 +249,7 @@ timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
   --env-file "$ENV_FILE" \
   --output-dir "$OUTPUT_DIR" \
   --fullsend-binary "$FULLSEND_BIN" \
+  "${override_args[@]+"${override_args[@]}"}" \
   || rc=$?
 
 if [[ $rc -ne 0 ]]; then

@@ -21,6 +21,9 @@
 [[ -n "${GITLAB_CODE_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_CODE_OPS_SH_LOADED=1
 
+# shellcheck source=gitlab-host-validation.lib.sh
+source "${BASH_SOURCE[0]%/*}/gitlab-host-validation.lib.sh"
+
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() { echo "::${1}::${2:-}"; }
 fi
@@ -30,6 +33,11 @@ _gitlab_code_api() {
   shift
   local endpoint="$1"
   shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call forge_parse_issue_url first" >&2
+    return 1
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
@@ -43,6 +51,11 @@ _gitlab_code_api_with_status() {
   shift
   local endpoint="$1"
   shift
+  if [[ -z "${GITLAB_HOST:-}" ]]; then
+    echo "ERROR: GITLAB_HOST is not set — call forge_parse_issue_url first" >&2
+    return 1
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || return 1
   local err_file
   err_file=$(mktemp)
   local raw
@@ -76,22 +89,17 @@ _gitlab_code_api_with_status() {
 forge_validate_issue_url() {
   local url="${1:-${ISSUE_URL:-}}"
   if [[ ! "${url}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
-    echo "ERROR: ISSUE_URL does not match expected GitLab pattern: ${url}" >&2
+    echo "ERROR: ISSUE_URL does not match expected GitLab pattern: $(_gha_sanitize "${url}")" >&2
     return 1
   fi
   local host
-  host=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
-  # Allowed GitLab hosts. To support a self-hosted instance, add it here
-  # AND in the network policy (policies/gitlab/code.yaml).
-  case "${host}" in
-    gitlab.com|gitlab.cee.redhat.com) ;;
-    *) echo "ERROR: GitLab host '${host}' is not in the allowed host list (see gitlab-code-ops.lib.sh and policies/gitlab/code.yaml)" >&2; return 1 ;;
-  esac
+  host=$(echo "${url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  _validate_gitlab_host "${host}" || return 1
 }
 
 forge_parse_issue_url() {
   local url="${1:-${ISSUE_URL:-}}"
-  GITLAB_HOST=$(echo "${url}" | sed -E 's|^https://([^/]+)/.*|\1|')
+  GITLAB_HOST=$(echo "${url}" | sed -E 's|^https://([^/:]+)/.*|\1|')
   REPO_FULL_NAME=$(echo "${url}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
   ISSUE_NUMBER=$(basename "${url}")
@@ -154,13 +162,13 @@ forge_post_pr_comment() {
 # --- MR lifecycle ---
 
 forge_list_prs_for_issue() {
-  local search_term="$1"
+  local issue_number="$1"
   local bot_login="${2:-}"
   local coder_bot_login="${3:-}"
   # GitLab API: search MRs referencing the issue. Best-effort — GitLab does not
-  # have a direct "MRs linked to issue" search like GitHub's "in:body,title".
-  # Search open MRs and filter by body/title containing #<IID> with word
-  # boundaries to avoid false positives (e.g., #42 must not match #142 or #420).
+  # have a direct "MRs linked to issue" endpoint. Fetch open MRs and filter for
+  # closing keywords (Close, Fix, Resolve variants) targeting #<IID>. Plain
+  # mentions without closing keywords are excluded to avoid false positives.
   local all_mrs="[]"
   local page=1 max_pages=10
   while [[ "${page}" -le "${max_pages}" ]]; do
@@ -178,15 +186,16 @@ forge_list_prs_for_issue() {
     all_mrs=$(echo "${all_mrs}" "${batch}" | jq -s 'add') || break
     page=$((page + 1))
   done
-  # Filter for MRs mentioning #<IID> (anchored — bare or qualified ref),
-  # exclude agent branches and known bot authors.
-  echo "${all_mrs}" | jq -r --arg term "${search_term}" \
+  # Filter for MRs with closing keywords (Closes, Fixes, Resolves, etc.)
+  # targeting #<IID>. Plain mentions without closing keywords are excluded
+  # to avoid false positives (e.g., "Related: #42" should not block).
+  echo "${all_mrs}" | jq -r --arg issue_number "${issue_number}" \
     --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
     [.[] | select(
-      ((.title // "") | test("(^|\\W)([a-zA-Z0-9._/-]+)?#" + $term + "($|\\W)")) or
-      ((.description // "") | test("(^|\\W)([a-zA-Z0-9._/-]+)?#" + $term + "($|\\W)"))
+      ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
+      ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
     ) | select(
-      ((.source_branch // "") | test("^agent/" + $term + "-") | not)
+      ((.source_branch // "") | test("^agent/" + $issue_number + "-") | not)
     ) | select(
       (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
       (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and

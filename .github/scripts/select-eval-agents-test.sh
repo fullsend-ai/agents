@@ -47,23 +47,25 @@ host_files:
     dest: /sandbox/workspace/.env.d/gcp-vertex.env
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
-forge:
-  github:
+overlays:
+  - when: '(has(event.source) && event.source.system == "github") || (!has(event.source) && runtime.forge == "github")'
     providers:
       - providers/github-ro.yaml
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
-    pre_script: scripts/forge-pre-triage.sh
-    post_script: scripts/forge-post-triage.sh
     skills:
       - skills/github-forge
       - skills/issue-labels/github
     host_files:
       - src: env/github/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
-  gitlab:
-    policy: policies/gitlab/triage.yaml
+  - when: '(has(event.source) && event.source.system == "gitlab") || (!has(event.source) && runtime.forge == "gitlab")'
+    providers:
+      - providers/gitlab-rw.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-rw.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab
@@ -81,8 +83,6 @@ openshell:
     - profiles/fullsend-vertex-ai.yaml
 providers:
   - providers/vertex-ai.yaml
-pre_script: scripts/pre-review.sh
-post_script: scripts/post-review.sh
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/review-result.schema.json
@@ -103,6 +103,30 @@ forge:
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
+    pre_script: scripts/pre-review.sh
+    post_script: scripts/post-review.sh
+    skills:
+      - skills/github-forge
+      - skills/issue-labels/github
+      - skills/pr-review/github
+    host_files:
+      - src: env/github/review.env
+        dest: /sandbox/workspace/.env.d/review.env
+  gitlab:
+    providers:
+      - providers/gitlab-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-ro.yaml
+    pre_script: scripts/pre-review.sh
+    post_script: scripts/post-review.sh
+    skills:
+      - skills/gitlab-forge
+      - skills/issue-labels/gitlab
+      - skills/pr-review/gitlab
+    host_files:
+      - src: env/gitlab/review.env
+        dest: /sandbox/workspace/.env.d/review.env
 YAML
 
   # Agent with no eval config — should never be selected
@@ -217,7 +241,8 @@ cleanup_fixture "$FIXTURE"
 run_test
 FIXTURE="$(setup_fixture)"
 RESULT=$(echo "skills/issue-labels/github/README.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
+EXPECTED=$'review\ntriage'
+if [[ "$RESULT" == "$EXPECTED" ]]; then
   pass "skill subpath change selects agent"
 else
   fail "skill subpath change selects agent (got: '$RESULT')"
@@ -296,8 +321,8 @@ cleanup_fixture "$FIXTURE"
 # ---------------------------------------------------------------------------
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "scripts/forge-pre-triage.sh" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
+RESULT=$(echo "scripts/pre-review.sh" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+if [[ "$RESULT" == "review" ]]; then
   pass "forge script change selects agent"
 else
   fail "forge script change selects agent (got: '$RESULT')"
@@ -310,7 +335,8 @@ cleanup_fixture "$FIXTURE"
 run_test
 FIXTURE="$(setup_fixture)"
 RESULT=$(echo "skills/gitlab-forge/SKILL.md" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
-if [[ "$RESULT" == "triage" ]]; then
+EXPECTED=$'review\ntriage'
+if [[ "$RESULT" == "$EXPECTED" ]]; then
   pass "forge skill subpath change selects agent"
 else
   fail "forge skill subpath change selects agent (got: '$RESULT')"
@@ -319,11 +345,11 @@ cleanup_fixture "$FIXTURE"
 
 run_test
 FIXTURE="$(setup_fixture)"
-RESULT=$(echo "policies/gitlab/triage.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
+RESULT=$(echo "providers/gitlab-rw.yaml" | "$SELECT_SCRIPT" --repo-root "$FIXTURE")
 if [[ "$RESULT" == "triage" ]]; then
-  pass "forge policy change selects agent"
+  pass "forge provider change selects agent"
 else
-  fail "forge policy change selects agent (got: '$RESULT')"
+  fail "forge provider change selects agent (got: '$RESULT')"
 fi
 cleanup_fixture "$FIXTURE"
 

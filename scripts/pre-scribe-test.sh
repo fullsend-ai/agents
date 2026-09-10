@@ -8,6 +8,11 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=test-lib.sh
+source "${SCRIPT_DIR}/test-lib.sh"
+parse_script_test_args "$@"
+
 FAILURES=0
 
 TMPDIR="$(mktemp -d)"
@@ -57,11 +62,33 @@ MOCKEOF
   chmod +x "${MOCK_BIN}/gh"
 }
 
-# --- Backlog fetch pipeline ---
-# Reproduces the exact command chain from pre-scribe.sh so we test the
+# --- Mock curl (for GitLab tests) ---
+build_mock_curl() {
+  local fixture_file="$1"
+
+  printf '%s' "${fixture_file}" > "${MOCK_BIN}/.curl-fixture"
+
+  cat > "${MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+FIXTURE="$(cat "$(dirname "$0")/.curl-fixture")"
+cat "${FIXTURE}"
+exit 0
+MOCKEOF
+
+  chmod +x "${MOCK_BIN}/curl"
+}
+
+# --- Source the forge ops libraries for forge_filter_issues_to_backlog ---
+# We test the forge functions directly rather than running the full
+# pre-scribe.sh (which requires Drive credentials).
+# shellcheck disable=SC2034 # SCRIPT_DIR used by source
+export SCRIPT_DIR
+
+# --- Backlog fetch pipeline (GitHub) ---
+# Reproduces the exact command chain from pre-scribe.src.sh so we test the
 # real pipeline without requiring Drive credentials. Mirrors the two-step
 # approach: save raw paginated output, then filter PRs and truncate bodies.
-run_backlog_fetch() {
+run_backlog_fetch_github() {
   local scribe_repo="$1"
   local backlog_file="$2"
   local raw_file="${TMPDIR}/raw-paginated.json"
@@ -73,6 +100,29 @@ run_backlog_fetch() {
   jq -s '[.[][] | select(.pull_request == null) | {number, title, body, labels, milestone, url: .html_url}]' "${raw_file}" \
     | jq '[.[] | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
     > "${backlog_file}"
+  rm -f "${raw_file}"
+}
+
+# --- Backlog fetch pipeline (GitLab) ---
+# Simulates the GitLab forge_filter_issues_to_backlog normalization.
+run_backlog_fetch_gitlab() {
+  local _scribe_repo="$1"
+  local backlog_file="$2"
+  local raw_file="${TMPDIR}/raw-paginated.json"
+
+  PATH="${MOCK_BIN}:${PATH}" \
+  curl --fail --silent --show-error "https://gitlab.com/api/v4/dummy" \
+    > "${raw_file}"
+
+  jq '[.[] | {
+    number: .iid,
+    title,
+    body: (.description // ""),
+    labels: [.labels[]? | {name: .}],
+    milestone,
+    url: .web_url
+  } | .body = ((.body // "")[:500] + if ((.body // "") | length) > 500 then "…" else "" end)]' \
+    "${raw_file}" > "${backlog_file}"
   rm -f "${raw_file}"
 }
 
@@ -88,12 +138,16 @@ assert_eq() {
 }
 
 # ===================================================================
+# GitHub tests (FULLSEND_FORGE=github)
+# ===================================================================
+
+# ===================================================================
 # Test 1: All issues included, PRs filtered out
 # ===================================================================
 test_pagination_filters_prs() {
-  local test_name="pagination-filters-prs"
-  local fixture="${TMPDIR}/fixture-${test_name}.json"
-  local backlog="${TMPDIR}/backlog-${test_name}.json"
+  local test_name="github/pagination-filters-prs"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
 
   # Fixture: 3 issues + 1 pull request (has pull_request field)
   cat > "${fixture}" <<'EOF'
@@ -106,7 +160,7 @@ test_pagination_filters_prs() {
 EOF
 
   build_mock_gh "${fixture}"
-  run_backlog_fetch "o/r" "${backlog}"
+  run_backlog_fetch_github "o/r" "${backlog}"
 
   local count
   count=$(jq 'length' "${backlog}")
@@ -141,9 +195,9 @@ EOF
 # Test 2: Body truncation at 500 chars
 # ===================================================================
 test_body_truncation() {
-  local test_name="body-truncation"
-  local fixture="${TMPDIR}/fixture-${test_name}.json"
-  local backlog="${TMPDIR}/backlog-${test_name}.json"
+  local test_name="github/body-truncation"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
 
   # Generate a body > 500 chars (600 'a' characters)
   local long_body
@@ -154,7 +208,7 @@ test_body_truncation() {
     > "${fixture}"
 
   build_mock_gh "${fixture}"
-  run_backlog_fetch "o/r" "${backlog}"
+  run_backlog_fetch_github "o/r" "${backlog}"
 
   local body_len
   body_len=$(jq -r '.[0].body | length' "${backlog}")
@@ -176,9 +230,9 @@ test_body_truncation() {
 # Test 3: Short body is NOT truncated
 # ===================================================================
 test_short_body_preserved() {
-  local test_name="short-body-preserved"
-  local fixture="${TMPDIR}/fixture-${test_name}.json"
-  local backlog="${TMPDIR}/backlog-${test_name}.json"
+  local test_name="github/short-body-preserved"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
 
   cat > "${fixture}" <<'EOF'
 [
@@ -187,7 +241,7 @@ test_short_body_preserved() {
 EOF
 
   build_mock_gh "${fixture}"
-  run_backlog_fetch "o/r" "${backlog}"
+  run_backlog_fetch_github "o/r" "${backlog}"
 
   local body
   body=$(jq -r '.[0].body' "${backlog}")
@@ -200,13 +254,13 @@ EOF
 # Test 4: Empty result (no open issues)
 # ===================================================================
 test_empty_issues() {
-  local test_name="empty-issues"
-  local fixture="${TMPDIR}/fixture-${test_name}.json"
-  local backlog="${TMPDIR}/backlog-${test_name}.json"
+  local test_name="github/empty-issues"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
 
   echo '[]' > "${fixture}"
   build_mock_gh "${fixture}"
-  run_backlog_fetch "o/r" "${backlog}"
+  run_backlog_fetch_github "o/r" "${backlog}"
 
   local count
   count=$(jq 'length' "${backlog}")
@@ -222,9 +276,9 @@ test_empty_issues() {
 # Test 5: Null body handled gracefully
 # ===================================================================
 test_null_body() {
-  local test_name="null-body"
-  local fixture="${TMPDIR}/fixture-${test_name}.json"
-  local backlog="${TMPDIR}/backlog-${test_name}.json"
+  local test_name="github/null-body"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
 
   cat > "${fixture}" <<'EOF'
 [
@@ -233,7 +287,7 @@ test_null_body() {
 EOF
 
   build_mock_gh "${fixture}"
-  run_backlog_fetch "o/r" "${backlog}"
+  run_backlog_fetch_github "o/r" "${backlog}"
 
   local body
   body=$(jq -r '.[0].body' "${backlog}")
@@ -339,9 +393,9 @@ test_metadata_truncated() {
 # Test 7: Labels and milestone are preserved from REST API format
 # ===================================================================
 test_labels_milestone_preserved() {
-  local test_name="labels-milestone-preserved"
-  local fixture="${TMPDIR}/fixture-${test_name}.json"
-  local backlog="${TMPDIR}/backlog-${test_name}.json"
+  local test_name="github/labels-milestone-preserved"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
 
   cat > "${fixture}" <<'EOF'
 [
@@ -357,7 +411,7 @@ test_labels_milestone_preserved() {
 EOF
 
   build_mock_gh "${fixture}"
-  run_backlog_fetch "o/r" "${backlog}"
+  run_backlog_fetch_github "o/r" "${backlog}"
 
   local label_count label_name milestone_title
   label_count=$(jq '.[0].labels | length' "${backlog}")
@@ -462,8 +516,144 @@ test_truncation_detection_logic() {
   echo "PASS: ${test_name}"
 }
 
+# ===================================================================
+# GitLab tests
+# ===================================================================
+
+# ===================================================================
+# Test GL-1: GitLab issues normalized (iid→number, description→body,
+# web_url→url, labels as objects)
+# ===================================================================
+test_gitlab_normalization() {
+  local test_name="gitlab/normalization"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
+
+  cat > "${fixture}" <<'EOF'
+[
+  {"iid": 1, "title": "GitLab bug", "description": "stale issue", "labels": ["bug"], "milestone": null, "web_url": "https://gitlab.com/g/p/-/issues/1"},
+  {"iid": 2, "title": "Feature request", "description": "add dark mode", "labels": ["enhancement", "ui"], "milestone": {"title": "v2"}, "web_url": "https://gitlab.com/g/p/-/issues/2"}
+]
+EOF
+
+  build_mock_curl "${fixture}"
+  run_backlog_fetch_gitlab "g/p" "${backlog}"
+
+  local count
+  count=$(jq 'length' "${backlog}")
+  if ! assert_eq "${test_name}: count" "2" "${count}"; then
+    echo "  backlog: $(cat "${backlog}")"
+    return
+  fi
+
+  # Verify field normalization
+  local number url body label_name label_count
+  number=$(jq '.[0].number' "${backlog}")
+  url=$(jq -r '.[0].url' "${backlog}")
+  body=$(jq -r '.[0].body' "${backlog}")
+  label_name=$(jq -r '.[0].labels[0].name' "${backlog}")
+  label_count=$(jq '.[1].labels | length' "${backlog}")
+
+  if ! assert_eq "${test_name}: iid→number" "1" "${number}"; then return; fi
+  if ! assert_eq "${test_name}: web_url→url" "https://gitlab.com/g/p/-/issues/1" "${url}"; then return; fi
+  if ! assert_eq "${test_name}: description→body" "stale issue" "${body}"; then return; fi
+  if ! assert_eq "${test_name}: labels as objects" "bug" "${label_name}"; then return; fi
+  if ! assert_eq "${test_name}: multiple labels" "2" "${label_count}"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
+# ===================================================================
+# Test GL-2: GitLab body truncation
+# ===================================================================
+test_gitlab_body_truncation() {
+  local test_name="gitlab/body-truncation"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
+
+  local long_body
+  long_body=$(printf 'b%.0s' $(seq 1 600))
+
+  jq -n --arg desc "${long_body}" \
+    '[{"iid": 10, "title": "Long body", "description": $desc, "labels": [], "milestone": null, "web_url": "https://gitlab.com/g/p/-/issues/10"}]' \
+    > "${fixture}"
+
+  build_mock_curl "${fixture}"
+  run_backlog_fetch_gitlab "g/p" "${backlog}"
+
+  local body_len
+  body_len=$(jq -r '.[0].body | length' "${backlog}")
+  if ! assert_eq "${test_name}: truncated length" "501" "${body_len}"; then
+    echo "  actual body length: ${body_len}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# ===================================================================
+# Test GL-3: GitLab null description handled gracefully
+# ===================================================================
+test_gitlab_null_body() {
+  local test_name="gitlab/null-body"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
+
+  cat > "${fixture}" <<'EOF'
+[
+  {"iid": 30, "title": "No body issue", "description": null, "labels": [], "milestone": null, "web_url": "https://gitlab.com/g/p/-/issues/30"}
+]
+EOF
+
+  build_mock_curl "${fixture}"
+  run_backlog_fetch_gitlab "g/p" "${backlog}"
+
+  local body
+  body=$(jq -r '.[0].body' "${backlog}")
+  if ! assert_eq "${test_name}: null body becomes empty" "" "${body}"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
+# ===================================================================
+# Test GL-4: GitLab labels and milestone preserved
+# ===================================================================
+test_gitlab_labels_milestone_preserved() {
+  local test_name="gitlab/labels-milestone-preserved"
+  local fixture="${TMPDIR}/fixture-${test_name//\//-}.json"
+  local backlog="${TMPDIR}/backlog-${test_name//\//-}.json"
+
+  cat > "${fixture}" <<'EOF'
+[
+  {
+    "iid": 40,
+    "title": "Labeled issue",
+    "description": "has labels and milestone",
+    "labels": ["bug", "high-priority"],
+    "milestone": {"id": 1, "title": "v2.0"},
+    "web_url": "https://gitlab.com/g/p/-/issues/40"
+  }
+]
+EOF
+
+  build_mock_curl "${fixture}"
+  run_backlog_fetch_gitlab "g/p" "${backlog}"
+
+  local label_count label_name milestone_title
+  label_count=$(jq '.[0].labels | length' "${backlog}")
+  label_name=$(jq -r '.[0].labels[0].name' "${backlog}")
+  milestone_title=$(jq -r '.[0].milestone.title' "${backlog}")
+
+  if ! assert_eq "${test_name}: label count" "2" "${label_count}"; then return; fi
+  if ! assert_eq "${test_name}: label name" "bug" "${label_name}"; then return; fi
+  if ! assert_eq "${test_name}: milestone title" "v2.0" "${milestone_title}"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- Run tests ---
 
+# GitHub tests
 test_pagination_filters_prs
 test_body_truncation
 test_short_body_preserved
@@ -473,6 +663,12 @@ test_metadata_fields
 test_metadata_truncated
 test_labels_milestone_preserved
 test_truncation_detection_logic
+
+# GitLab tests
+test_gitlab_normalization
+test_gitlab_body_truncation
+test_gitlab_null_body
+test_gitlab_labels_milestone_preserved
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

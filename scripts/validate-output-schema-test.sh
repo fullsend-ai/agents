@@ -90,6 +90,22 @@ run_test "valid-split" \
   '{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"title":"Update error messages","body":"Error messages are outdated."}],"comment":"Splitting into independent sub-issues."}' \
   "true"
 
+# --- Jira tracker shapes ---
+# duplicate_of is an integer on GitHub/GitLab but a full issue key on Jira.
+run_test "valid-jira-duplicate-key" \
+  '{"action":"duplicate","reasoning":"same as PROJ-45","duplicate_of":"PROJ-45","comment":"Duplicate of PROJ-45."}' \
+  "true"
+
+# Jira prerequisite targets are bare project keys, not owner/name paths.
+run_test "valid-jira-prerequisites-create-project-key" \
+  '{"action":"prerequisites","reasoning":"needs upstream issue","prerequisites":{"existing":[{"url":"https://test.atlassian.net/browse/OTHERPROJ-7"}],"create":[{"repo":"OTHERPROJ","title":"Add X","body":"Need X."}]},"comment":"Blocked on upstream."}' \
+  "true"
+
+# Cross-project Jira sub-issues also use a bare project key in repo.
+run_test "valid-jira-split-project-key" \
+  '{"action":"split","reasoning":"issue bundles independent concerns","sub_issues":[{"title":"Fix crash on save","body":"The save handler crashes when input is empty."},{"repo":"OTHERPROJ","title":"Update error messages","body":"Error messages are outdated."}],"comment":"Splitting into independent sub-issues."}' \
+  "true"
+
 # --- Conditional requirement failures ---
 
 run_test "insufficient-missing-clarity-scores" \
@@ -368,7 +384,7 @@ run_test_output "additional-properties-shows-allowed" \
 run_test_output "additional-properties-lists-known-keys" \
   '{"action":"sufficient","reasoning":"ok","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix","proposed_test_case":"test"},"comment":"Done.","injected_field":"malicious"}' \
   "false" \
-  "action, clarity_scores, comment, duplicate_of, label_actions, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
+  "action, clarity_scores, comment, component_actions, duplicate_of, label_actions, prerequisites, pull_requests, reasoning, sub_issues, triage_summary"
 
 run_test_output "valid-output-no-allowed-line" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Can you share repro steps?"}' \
@@ -440,6 +456,18 @@ run_test_custom_filename "review-reject-missing-body" \
   "${REVIEW_SCHEMA}" \
   "false"
 
+run_test_custom_filename "review-failure-time-budget-valid" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"time-budget"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-failure-unknown-reason-rejected" \
+  '{"action":"failure","pr_number":1,"repo":"org/repo","reason":"ran-out-of-time"}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
 run_test_custom_filename "review-approve-valid" \
   '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good, only minor nits."}' \
   "agent-result.json" \
@@ -485,6 +513,70 @@ run_test_custom_filename "review-approve-no-protected-path-valid" \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
+
+# --- review-result.schema.json risk_assessment score↔level allOf ---
+
+RISK_BASE='{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Risk assessed."'
+
+run_test_custom_filename "risk-score-1-level-low-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":1,\"level\":\"low\",\"rationale\":\"Small change.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-2-level-moderate-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":2,\"level\":\"moderate\",\"rationale\":\"Some complexity.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-3-level-elevated-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":3,\"level\":\"elevated\",\"rationale\":\"Sensitive area.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-4-level-high-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":4,\"level\":\"high\",\"rationale\":\"Security-sensitive.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-5-level-critical-valid" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":5,\"level\":\"critical\",\"rationale\":\"Auth change.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "risk-score-level-mismatch-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":1,\"level\":\"critical\",\"rationale\":\"Mismatched.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "risk-score-2-level-high-mismatch-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":2,\"level\":\"high\",\"rationale\":\"Wrong level.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "risk-missing-rationale-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":3,\"level\":\"elevated\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "risk-score-out-of-range-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":6,\"level\":\"critical\",\"rationale\":\"Too high.\"}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "risk-additional-property-rejected" \
+  "${RISK_BASE},\"risk_assessment\":{\"score\":1,\"level\":\"low\",\"rationale\":\"Small.\",\"extra\":true}}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
 
 # --- Summary ---
 

@@ -1,0 +1,5 @@
+---
+name: jira-ro
+type: fullsend-jira-ro
+credentials:
+  JIRA_TOKEN: "${JIRA_TOKEN}"

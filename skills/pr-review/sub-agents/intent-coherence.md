@@ -3,7 +3,7 @@ name: intent-coherence
 description: >-
   Evaluates architectural coherence & fit, design coherence,
   intent alignment, PR scope, scope authorization, and tier matching
-model: claude-sonnet-4-6@default
+model: sonnet
 tools: Read, Grep, Glob
 permissionMode: dontAsk
 background: true

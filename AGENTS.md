@@ -72,6 +72,11 @@ workflow after GoReleaser succeeds.
 - `release.yml` — repo-specific release automation. Triggered by
   semver tag pushes from fullsend's release workflow. Creates a GitHub
   Release and moves the `v0` floating tag.
+- `notify-agent-sync.yml` — fires a `repository_dispatch` event to
+  `fullsend-ai/.fullsend` on every push to `main`, triggering
+  cross-repo agent digest sync. Requires `SYNC_CLIENT_ID` variable,
+  `SYNC_PRIVATE_KEY` secret (the fullsend-ai-sync GitHub App), and
+  `SLACK_WEBHOOK_URL` secret (for failure alerts).
 
 **The `v0` tag** is a floating tag that always points to the latest
 stable (non-prerelease) version. Downstream consumers can reference
@@ -131,7 +136,7 @@ flagged as a code-organization concern.
 ## 8. Harness env var literals are not "hardcoded" mistakes
 
 A literal value in a harness `env.runner`/`env.sandbox` block (e.g.
-`REVIEW_FINDING_SEVERITY_THRESHOLD: "low"` in `harness/review.yaml`)
+`REVIEW_FINDING_SEVERITY_THRESHOLD: "low"` in [`harness/review.yaml`](harness/review.yaml))
 is the correct, intended shape for a static agent-behavior-tuning
 default — not a bug. Per fullsend-ai/fullsend
 [ADR 0080](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0080-config-yaml-vs-agent-env-var-scope.md)
@@ -153,9 +158,10 @@ This rule is scoped to static, tunable defaults. It does not cover
 values that are genuinely computed per-repo or per-run, such as
 branch lists, tokens, or PR/issue numbers — those must stay as
 `${VAR}` passthrough, as already used by `CODE_ALLOWED_TARGET_BRANCHES`
-in `harness/code.yaml`'s `env.runner` block and by `REVIEW_TOKEN`,
-`REPO_FULL_NAME`, `PR_NUMBER`, and `GITHUB_PR_URL` in the
-`forge.github.env.runner` blocks. When reviewing PRs, do not flag a
+in [`harness/code.yaml`](harness/code.yaml)'s `env.runner` block and by `REVIEW_TOKEN`,
+`PR_NUMBER`, and `PR_URL` in the `forge.<platform>.env.runner` blocks
+(some passthroughs like `REPO_FULL_NAME` live at top-level `env.runner`
+when identical across forges). When reviewing PRs, do not flag a
 static literal default in these blocks as hardcoded, but do flag a
 regression that replaces one of these computed passthrough values
 with a literal.

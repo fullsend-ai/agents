@@ -189,6 +189,7 @@ post_failure_category_label() {
     secret-scan) echo "Secret scan blocked" ;;
     pre-commit-blocked) echo "Pre-commit blocked" ;;
     signed-off-by) echo "Signed-off-by rejected" ;;
+    signoff-rewrite-failed) echo "Signed-off-by strip failed" ;;
     push-workflow-permission) echo "Push rejected — workflows permission" ;;
     push-rejected) echo "Push rejected" ;;
     push-failed) echo "Push failed" ;;
@@ -295,6 +296,14 @@ report_post_failure_to_issue() {
     return 0
   fi
   POST_FAILURE_REPORTED=true
+
+  # An external tracker may have no corresponding target-forge issue. The
+  # workflow status notification remains the source-of-truth; do not guess a
+  # target issue number and risk commenting on unrelated work.
+  if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
+    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
+    return 0
+  fi
 
   _post_failure_ensure_token
 

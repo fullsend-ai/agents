@@ -75,9 +75,9 @@ Capture the start time at the very beginning of step 1:
 AGENT_START=$(date +%s)
 ```
 
-Before starting pre-commit (9b), before each retry iteration (9c), and
-before commit (10), check remaining time **only if `TIMEOUT_SECONDS` is
-set**:
+Before starting pre-commit (9b), before the direct-execution fallback
+inside 9b, before each retry iteration (9c), and before commit (10),
+check remaining time **only if `TIMEOUT_SECONDS` is set**:
 
 ```bash
 if [ -n "${TIMEOUT_SECONDS:-}" ]; then
@@ -87,11 +87,20 @@ if [ -n "${TIMEOUT_SECONDS:-}" ]; then
 fi
 ```
 
-When `TIMEOUT_SECONDS` is set, use these thresholds (expressed as
-fractions of the budget so they scale to any timeout value):
+When `TIMEOUT_SECONDS` is set, use these thresholds (fractions of the
+budget so they scale to any timeout value; the one flat value is the
+300s fallback floor, whose cost does not scale with the budget):
 
-- **Before 9b (pre-commit):** If less than 40% of the budget remaining,
-  skip pre-commit entirely. The post-script runs it authoritatively.
+- **Before 9b (pre-commit):** If less than 10% of the budget remaining,
+  skip pre-commit entirely. Note: the post-script's authoritative
+  pre-commit check runs **after the sandbox is destroyed** — failures
+  caught there are terminal (`pre-commit-blocked`) and require human
+  re-dispatch. Running hooks in-sandbox, even via direct execution
+  when `pre-commit` itself cannot fetch repos (see step 9b STEP C),
+  is almost always cheaper than a terminal post-script failure.
+- **Before the direct-execution fallback in 9b:** if STEP B failed on
+  infrastructure and less than 300s remains, skip the fallback,
+  disclose it, and proceed to 9c (STEP C, RULE 1).
 - **Before a retry in 9c:** If less than 20% of the budget remaining,
   do NOT retry. Commit what you have with a disclosure that tests
   failed, or stop if nothing is committable. A disclosed partial commit
@@ -102,7 +111,95 @@ fractions of the budget so they scale to any timeout value):
 
 ## Process
 
-Follow these steps in order. Do not skip steps.
+Follow these steps in order. Do not skip steps — with one exception,
+the retry path immediately below, which is entered only when the runner
+hands you a validation failure from a previous iteration.
+
+### Retry-prompt handling
+
+**This is the one case where you do not start at step 1.**
+
+You are on a retry iteration if your prompt contains this exact
+sentence after the default instructions:
+
+> The previous iteration's output failed validation. Here is the validation error:
+
+The runner emits that line verbatim when the harness sets
+`feedback_mode: append` and the previous iteration failed validation.
+Match on it rather than guessing from the shape of the text — if it is
+absent, you are on a first iteration and the normal process applies.
+
+A retry runs in the **same sandbox** as the previous iteration. The
+repository is exactly as you left it: your branch is still checked out
+and your previous commits are still on it. There is nothing to clone,
+check out, or restore, and no feedback file to read — the failure text
+in your prompt is the whole of what you are given.
+
+On a retry iteration, do these in order. They are lettered so they are
+not confused with the numbered process steps below:
+
+**R1. Start your clock.** Step 1 normally captures `AGENT_START`, and you
+   are skipping it — without this the time checks at 9b, 9c and 10
+   compute against an unset variable, conclude the budget is exhausted,
+   and skip pre-commit and gitlint on the very iteration that most needs
+   to pass them.
+
+   ```bash
+   AGENT_START=$(date +%s)
+   ```
+
+**R2. Read the failure text** in your prompt. It describes the specific
+   validation error from the previous iteration (e.g., a schema
+   violation in the structured output file).
+
+**R3. Confirm where you are** before changing anything:
+
+   ```bash
+   git status --short --branch
+   git log --oneline -3
+   ```
+
+   You should be on your feature branch with your own commits at HEAD.
+   If you are not — detached HEAD, or sitting on the target branch —
+   do not guess a branch name: follow step 4, which scopes the
+   branch search to this issue's number and explains why local refs
+   must be used rather than `origin/` ones.
+   Step 4 needs the work-item identifier that step 1 would normally have
+   established. On a retry, use `ISSUE_NUMBER` when the source tracker is the
+   target forge, or derive the key from `ISSUE_URL` when it is an
+   external tracker, rather than re-running step 1.
+
+**R4. Fix only the reported failure.** Parse the diagnostics, identify
+   the root cause, and make the minimal fix. Do not restart the
+   implementation from scratch — re-implementing on top of the earlier
+   attempt produces duplicate or conflicting changes. Step 4's scope
+   guardrail applies here too: do not "improve" working code while you
+   are in there.
+
+**R5. Rewrite the structured output.** The runner clears
+   `$FULLSEND_OUTPUT_DIR` between iterations, so the `agent-result.json`
+   the previous iteration wrote is gone. It must be written again this
+   iteration whatever else you do — a retry that fixes the reported
+   problem but leaves no output file fails validation again for a
+   different reason.
+
+**R6. Skip to step 9** (implement and verify). Run secret scan, tests,
+   and pre-commit on the changed files. Then commit (step 10) and
+   validate output (step 11). If the failure was purely in
+   `agent-result.json` and no source file needed changing, there is
+   nothing to commit — step 10 has nothing to do, and that is a correct
+   outcome, not a reason to manufacture a code change.
+
+If the failure text references the structured output file
+(`agent-result.json`), fix the JSON content. If it references a
+code issue, fix the code. The feedback is redacted and truncated to
+10 KiB — it contains enough to diagnose the problem but may not
+include full file contents.
+
+If you cannot determine what failed from the feedback text, restart at
+step 1 — step 4 will find your existing branch, and its guidance to
+treat existing work as your own and skip to verification still applies.
+Do not re-implement work that is already committed.
 
 ### 1. Identify the issue
 
@@ -112,21 +209,32 @@ echo "::notice::STEP 1: Identify issue"
 
 Determine which issue to implement:
 
-- If the `ISSUE_NUMBER` environment variable is set, use it.
+- When the source tracker is the target forge, use `ISSUE_NUMBER` when it is
+  set. For an external tracker, derive the key from `ISSUE_URL`;
+  do not invent a numeric target-forge issue.
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue using the forge-appropriate command from your forge
-skill (e.g., `gh issue view` on GitHub, `curl` on GitLab):
+Fetch the issue content. For Jira, query its REST API with Basic auth.
+The sandbox's `JIRA_TOKEN` is the `jira-ro` provider's opaque placeholder,
+not the real token. Extract the issue key from `ISSUE_URL`:
 
 ```bash
-# GitHub:
-gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
-# GitLab: use curl per the gitlab forge skill
+if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+  ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+  curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+    "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
+else
+  # GitHub:
+  gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees
+  # GitLab: use curl per the gitlab forge skill
+fi
 ```
 
-Record the **issue number**. You will reference it in the branch name and
-commit messages.
+Record the **work-item identifier**. You will reference it in the branch name
+and commit messages. When the source tracker differs from the target forge,
+derive it from `ISSUE_URL`; do not assume a target-forge issue
+number exists.
 
 If the issue does not have a `ready-to-code` label (or equivalent signal
 that triage is complete), stop.
@@ -257,10 +365,11 @@ using the forge-appropriate command from your forge skill (e.g.,
 `curl` on GitLab).
 
 - **Open PR/MR exists for this branch:** The work is already done and under
-  review. Validate structured output (step 3 already wrote it), then
-  **stop.** Do not add more commits on top of a working implementation —
-  that causes scope creep and timeouts. Your exit state (no new commit)
-  tells the post-script there is nothing new to push.
+  review. Validate structured output — step 3 already wrote it, but on a
+  validation retry the output directory was cleared, so write it again
+  before validating — then **stop.** Do not add more commits on top of a
+  working implementation — that causes scope creep and timeouts. Your exit
+  state (no new commit) tells the post-script there is nothing new to push.
 
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
@@ -445,18 +554,25 @@ scan-secrets <files-you-modified>
 If secrets are detected: hard stop. Remove them, re-scan. Only proceed after
 the scan passes.
 
-**9b. Pre-commit hooks — best-effort optimization**
+**9b. Pre-commit hooks — run them, do not skip them**
 
 ```bash
 echo "::notice::STEP 9b: Pre-commit hooks"
 ```
 
-Pre-commit is a **best-effort optimization**, not a hard gate. The
-post-script (`post-code.sh`) runs an authoritative pre-commit check on
-the CI runner before pushing — that is the real security gate.
-Running pre-commit here catches formatting and lint issues early so the
-post-script doesn't reject your commit, but burning excessive time on
-in-sandbox retries is worse than committing with a disclosed failure.
+Pre-commit is bounded, not optional. Exactly three things let you stop
+short: the time-budget threshold above (under 10% of the budget
+remaining), the 300s fallback floor that guards STEP C's direct
+execution, and STEP D's two-run cap. Nothing else authorizes skipping
+it. The post-script
+(`post-code.sh`) runs an authoritative pre-commit check on the CI
+runner before pushing. However, the post-script runs **after the
+sandbox is destroyed** — any failure it catches is terminal
+(`pre-commit-blocked`), ending the run with no PR and requiring human
+re-dispatch. "The post-script runs it authoritatively"
+is therefore **not** a valid reason to skip verification. Running
+hooks in-sandbox catches the same failures while the agent can still
+fix them, avoiding an expensive terminal failure.
 
 ```bash
 test -f .pre-commit-config.yaml && echo "pre-commit config found"
@@ -527,22 +643,140 @@ The first run may be slow (installs hook environments). This is normal.
   ```
 
 - **Any other failure** (exit 3, network error, infrastructure error) —
-  log the error and move on to step 9c.
+  **do not skip verification — unless the floor below says you cannot
+  afford to.** When `pre-commit` fails because it cannot fetch remote
+  hook repositories (common in sandboxes with restricted network
+  access), fall back to running the configured hooks directly, after
+  this recheck.
+
+  **Time recheck before the fallback.** The 10% gate measured the fast
+  path; the fallback `pip install`s each hook at its pinned `rev`, and
+  timing out mid-install leaves no commit at all — worse than committing
+  with the hooks disclosed as unrun. Re-check against a flat 300s floor
+  (its cost does not scale with the budget; it may sit below 9c's 20%
+  retry floor, deliberately):
+
+  ```bash
+  RUN_FALLBACK=1
+  if [ -n "${TIMEOUT_SECONDS:-}" ] && [ -n "${AGENT_START:-}" ]; then
+    REMAINING=$(( TIMEOUT_SECONDS - ($(date +%s) - AGENT_START) ))
+    if [ "$REMAINING" -lt 300 ]; then
+      RUN_FALLBACK=0; echo "::warning::Direct-execution fallback skipped: ${REMAINING}s remaining < 300s floor"
+    else
+      echo "::notice::Fallback time check: ${REMAINING}s remaining >= 300s floor — proceeding"
+    fi
+  else
+    echo "::notice::Fallback time check skipped: TIMEOUT_SECONDS or AGENT_START unset — no floor applied"
+  fi
+  ```
+
+  Guard both variables (an unset `AGENT_START` reads as 0 and would
+  always skip) and print on every path.
+
+  If `RUN_FALLBACK` is `0`: skip substeps 1-5 (`repo: local` hooks
+  included — a local `entry` can fetch too; 9c's lint still runs), treat
+  9b as finished, go to 9c, and put this in the commit message:
+
+  > Note: pre-commit hooks were not run. `pre-commit` could not
+  > complete (infrastructure failure), and the remaining time budget
+  > was below the floor for running the hooks directly.
+
+  Skipping consumes no run but closes 9b for this iteration (RULE 1).
+
+  If `1`, proceed with the fallback:
+
+  1. Parse `.pre-commit-config.yaml` to identify each hook's `repo`
+     type, `entry` command, `args`, `rev`, `stages`,
+     `additional_dependencies`, and file filters. Honor them when you
+     invoke the tool yourself: append the hook's `args` after `entry`,
+     pass only the changed files matching the hook's `files` /
+     `types` / `exclude` patterns, and pass no filenames at all when
+     the hook sets `pass_filenames: false`. Skip any hook whose
+     `stages` excludes the pre-commit stage — the post-script will not
+     run it either, so running it here invents a failure. Install a
+     hook's `additional_dependencies` alongside the tool; without
+     them a plugin-driven hook (a flake8 or mypy with plugins, say)
+     reports different results than the post-script will. A hook
+     invoked with the wrong arguments, the wrong file set, or the
+     wrong dependencies does not tell you what the post-script will
+     see.
+  2. **`repo: local` hooks:** Run the `entry` command directly. Local
+     hooks need no network beyond what the entry itself uses (e.g.,
+     `uvx`, `uv`, `pip` access to PyPI is typically allowed by the
+     sandbox network policy). Example:
+
+     ```bash
+     # .pre-commit-config.yaml entry: uvx ty check --ignore unresolved-import
+     uvx ty check --ignore unresolved-import <your-changed-files>
+     ```
+
+  3. **Remote hooks with obvious PyPI equivalents:** Install and run
+     the underlying tool directly, **in the same mode the configured
+     hook uses** — formatter hooks rewrite files, so run the formatter
+     in write mode and stage the result exactly as in the auto-fix
+     branch above; pure linters only report. Checking instead of
+     writing leaves the file unformatted, which is the failure the
+     post-script turns terminal. Common mappings:
+     - `astral-sh/ruff-pre-commit` → `ruff check` (reports; add
+       `--fix` only if the hook's `args` do) and `ruff format`
+       (writes)
+     - `psf/black` → `black` (writes)
+     - `pycqa/isort` → `isort` (writes)
+     - `pycqa/flake8` → `flake8` (reports)
+
+     Install via `pip`/`uvx` if not already on PATH — PyPI access is
+     allowed. Pin the install to the hook's `rev` from the YAML: a
+     newer release can format or lint differently from the version the
+     post-script runs, which turns an in-sandbox pass into a runner
+     failure. `rev` is a git tag, not a PyPI version — strip a leading
+     `v` (`rev: v0.6.9` → `pip install ruff==0.6.9`) and otherwise use
+     it verbatim. If the tag does not map cleanly onto a PyPI version
+     (date-based or project-specific tags), do not guess a pin and do
+     not silently fall back to the latest release: that is case 4
+     below. Likewise do not discard the installer's stderr — a tool
+     that cannot be installed is case 4, not a pass.
+
+     ```bash
+     # Example: ruff hooks from astral-sh/ruff-pre-commit, rev v0.6.9
+     command -v ruff &>/dev/null || pip install "ruff==0.6.9"
+     if command -v ruff &>/dev/null; then
+       ruff check <your-changed-files>   # plus the hook's args
+       ruff format <your-changed-files>  # writes — stage what it fixes
+       git add <your-changed-files>
+     else
+       echo "::warning::ruff unavailable — ruff hooks not run"  # case 4
+     fi
+     ```
+
+  4. **Remote hooks with no obvious equivalent:** Log that the hook
+     could not be run and why. Disclose this in the commit message.
+  5. **React to direct-execution results the same way as pre-commit
+     results:** if a hook reports errors, fix them and re-run the
+     direct execution once. A `pre-commit run` that died on
+     infrastructure executed no hooks, so it does not consume a run:
+     the direct-execution fallback takes its place as run 1, and the
+     re-run after your fixes is run 2. STEP D then applies.
 
 **STEP D — After the retry, STOP regardless of the result.**
 
-If the second pre-commit run passes, great. If it fails again, **you are
-done with pre-commit for the entire session**. Log the exact hook name,
-file, and error in your commit message and move on to 9c. Do NOT attempt
-a third run. Do NOT try a different fix. The post-script runs an
-authoritative pre-commit check on the runner before pushing.
+If the second run passes (whether `pre-commit run` or direct execution
+of hooks), great. If it fails again, **you are done with pre-commit for
+this iteration**. Log the exact hook name, file, and error in your
+commit message and move on to 9c. Do NOT attempt a third run. Do NOT try
+a different fix. What is exhausted is the retry budget, not the problem:
+RULE 2 still requires you to disclose the failure, so a human sees it
+even if the runner rejects the commit.
 
 **RULES:**
 
-1. **Maximum 2 pre-commit runs total across the entire session.** One
-   initial run, one retry. No more — not even if step 9c sends you back
-   to fix your code. Once you have used your 2 runs, pre-commit is done.
-   Do not re-run it during retries.
+1. **Maximum 2 pre-commit/hook-execution runs per iteration, not per
+   sandbox.** One initial run, one retry. A `pre-commit run` that failed
+   on infrastructure before executing any hook does not count — the
+   direct-execution fallback takes its place; if the 300s floor blocked
+   the fallback, 9b is closed with no run spent. Not even if step 9c
+   sends you back to fix your code. A validation-loop retry (R6) starts
+   a fresh clock and budget, which is what lets it fix a
+   `pre-commit-blocked` failure; 9c's internal retries do not.
 2. **Always disclose.** If pre-commit did not pass, say so in the commit
    message with the exact error. Never claim hooks passed when they did
    not.
@@ -630,8 +864,9 @@ must disclose that.
    refactor unrelated code or disable the lint rule.
 3. Re-run secret scan (9a), then tests and linters (9c). This consumes
    one retry iteration. **Do NOT re-run pre-commit (9b) during
-   retries** — you already used your 2 pre-commit runs. The post-script
-   handles pre-commit authoritatively on the runner.
+   retries** — your pre-commit budget for this iteration is closed
+   whether you spent it or skipped it, and RULE 2 requires you to
+   disclose any hook failure in the commit message.
 4. Repeat until both tests and linters pass or the retry limit is
    reached.
 
@@ -816,7 +1051,8 @@ the title or body exceeds the configured limits.
 
 If a git hook fires during `git commit` and fails (e.g., the repo shipped
 a `.git/hooks/pre-commit`), do NOT enter a fix-and-retry loop. You already
-ran pre-commit in step 9b (which is the same check). Commit with
+ran pre-commit in step 9b (which is the same check), or recorded there why
+you could not. Commit with
 `--no-verify` to bypass the git hook and disclose the failure in the commit
 message. The post-script runs an authoritative pre-commit on the runner.
 

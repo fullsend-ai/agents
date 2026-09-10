@@ -196,6 +196,40 @@ post_summary = mod.post_summary
 MAX_COMMENT_LENGTH = mod.MAX_COMMENT_LENGTH
 
 
+_VALID_FIX_RESULT = {
+    "pr_number": 1,
+    "trigger_source": "bot",
+    "actions": [{"type": "fix", "finding": "nil check", "description": "Fixed"}],
+    "summary": "Short.",
+    "tests_passed": True,
+    "files_changed": ["foo.go"],
+}
+
+
+def _run_main_capture(data):
+    """Run main() in dry-run mode, capturing the body and suffix handed to
+    post_summary so tests can assert on the assembled comment text."""
+    captured = {}
+
+    def fake_post_summary(repo, pr_number, body, suffix="", dry_run=False):
+        captured["body"] = body
+        captured["suffix"] = suffix
+        return True
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+        json.dump(data, f)
+        path = f.name
+    try:
+        with patch.dict(os.environ, _SCHEMA_ENV), \
+             patch.object(mod, "post_summary", fake_post_summary), \
+             contextlib.redirect_stdout(io.StringIO()):
+            rc = main([path, "org/repo", "1", "--dry-run"])
+    finally:
+        os.unlink(path)
+    return rc, captured.get("body", ""), captured.get("suffix", "")
+
+
+
 class TestCommentTruncation(unittest.TestCase):
     def test_long_body_truncated(self):
         data = {
@@ -211,6 +245,39 @@ class TestCommentTruncation(unittest.TestCase):
         self.assertIn("[dry-run]", output)
         self.assertRegex(output, r"\d+ chars\)")
         reported = int(output.split("(")[1].split(" chars")[0])
+        self.assertLessEqual(reported, MAX_COMMENT_LENGTH)
+
+    def test_signoff_note_rendered_from_env(self):
+        data = dict(_VALID_FIX_RESULT)
+        with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": "1"}):
+            rc, _body, suffix = _run_main_capture(data)
+        self.assertEqual(rc, 0)
+        self.assertIn("Removed a Signed-off-by trailer from 1 agent commit.", suffix)
+        self.assertNotIn("commits.", suffix)
+        with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": "3"}):
+            _rc, _body, suffix = _run_main_capture(data)
+        self.assertIn("Removed a Signed-off-by trailer from 3 agent commits.", suffix)
+
+    def test_signoff_note_absent_when_unset_or_zero(self):
+        data = dict(_VALID_FIX_RESULT)
+        for val in ("", "0", "not-a-number"):
+            with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": val}):
+                rc, _body, suffix = _run_main_capture(data)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("Signed-off-by", suffix)
+
+    def test_signoff_note_survives_truncation(self):
+        # The note lives in the suffix, which post_summary must keep whole while
+        # it trims the body to fit. Take a real suffix from a valid run, then
+        # feed an oversized body through the real truncation path.
+        with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": "2"}):
+            rc, _body, suffix = _run_main_capture(dict(_VALID_FIX_RESULT))
+        self.assertEqual(rc, 0)
+        self.assertIn("Removed a Signed-off-by trailer from 2 agent commits.", suffix)
+        body = build_summary_body(dict(_VALID_FIX_RESULT, summary="x" * 70000))
+        with contextlib.redirect_stdout(io.StringIO()) as captured:
+            post_summary("org/repo", "1", body, suffix=suffix, dry_run=True)
+        reported = int(captured.getvalue().split("(")[1].split(" chars")[0])
         self.assertLessEqual(reported, MAX_COMMENT_LENGTH)
 
     def test_short_body_not_truncated(self):
@@ -507,6 +574,166 @@ class TestSchemaEnvVar(unittest.TestCase):
                 self.assertEqual(result, 0)
             finally:
                 os.unlink(f.name)
+
+
+_post_comment_gitlab = mod._post_comment_gitlab
+
+
+class TestGitLabPostComment(unittest.TestCase):
+    """Tests for GitLab comment posting logic (#807)."""
+
+    def _valid_data(self):
+        return {
+            "pr_number": 42,
+            "trigger_source": "bot",
+            "actions": [
+                {"type": "fix", "finding": "nil check", "description": "Fixed"},
+            ],
+            "summary": "All good.",
+            "tests_passed": True,
+            "files_changed": ["foo.go"],
+        }
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "gitlab.com",
+            "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
+        },
+    )
+    @patch("subprocess.run")
+    def test_gitlab_uses_curl_not_gh(self, mock_run):
+        """GitLab mode calls curl, not gh."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        data = self._valid_data()
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            f.flush()
+            try:
+                result = main([f.name, "org/repo", "42"])
+                self.assertEqual(result, 0)
+                args_list = mock_run.call_args[0][0]
+                self.assertEqual(args_list[0], "curl")
+                # Token must NOT appear in the command args (security).
+                for arg in args_list:
+                    self.assertNotIn("fake-token", arg)
+                # Token is passed via --config - (stdin).
+                self.assertIn("--config", args_list)
+                self.assertIn("-", args_list)
+                config_input = mock_run.call_args[1].get("input", "")
+                self.assertIn("PRIVATE-TOKEN: fake-token", config_input)
+            finally:
+                os.unlink(f.name)
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "evil.example.com",
+            "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
+        },
+    )
+    def test_rejected_host_raises(self):
+        """A host not in the dynamic trust sources raises ValueError."""
+        with self.assertRaises(ValueError) as ctx:
+            _post_comment_gitlab("org/repo", "42", "body")
+        self.assertIn("evil.example.com", str(ctx.exception))
+        self.assertIn("not in the allowed host list", str(ctx.exception))
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
+        },
+        clear=False,
+    )
+    def test_missing_host_and_url_raises(self):
+        """Missing both GITLAB_HOST and PR_URL raises ValueError."""
+        os.environ.pop("GITLAB_HOST", None)
+        os.environ.pop("PR_URL", None)
+        with self.assertRaises(ValueError) as ctx:
+            _post_comment_gitlab("org/repo", "42", "body")
+        self.assertIn("cannot be derived", str(ctx.exception))
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
+            "PR_URL": "https://gitlab.com/group/project/-/merge_requests/42",
+        },
+        clear=False,
+    )
+    @patch("subprocess.run")
+    def test_host_derived_from_pr_url(self, mock_run):
+        """GITLAB_HOST is derived from PR_URL when not set directly."""
+        os.environ.pop("GITLAB_HOST", None)
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        _post_comment_gitlab("group/project", "42", "body")
+        args_list = mock_run.call_args[0][0]
+        # The API URL should use gitlab.com derived from PR_URL
+        api_url = args_list[-1]
+        self.assertIn("gitlab.com", api_url)
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "gitlab.com",
+            "CI_SERVER_HOST": "gitlab.com",
+        },
+        clear=False,
+    )
+    def test_missing_token_raises(self):
+        """Missing GITLAB_TOKEN raises ValueError."""
+        os.environ.pop("GITLAB_TOKEN", None)
+        with self.assertRaises(ValueError) as ctx:
+            _post_comment_gitlab("org/repo", "42", "body")
+        self.assertIn("GITLAB_TOKEN is not set", str(ctx.exception))
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "gitlab.com",
+            "GITLAB_TOKEN": "fake-token",
+            "CI_SERVER_HOST": "gitlab.com",
+        },
+    )
+    @patch("subprocess.run")
+    def test_allowed_host_accepted(self, mock_run):
+        """A host in the dynamic trust sources is accepted."""
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
+        _post_comment_gitlab("org/repo", "42", "body")
+        mock_run.assert_called_once()
+
+    @patch.dict(
+        os.environ,
+        {
+            **_SCHEMA_ENV,
+            "FULLSEND_FORGE": "gitlab",
+            "GITLAB_HOST": "gitlab.com",
+            "GITLAB_TOKEN": "fake-token",
+        },
+    )
+    def test_no_trust_source_fails_closed(self):
+        """Fails closed when CI_SERVER_HOST is not set."""
+        os.environ.pop("CI_SERVER_HOST", None)
+        with self.assertRaises(ValueError) as ctx:
+            _post_comment_gitlab("org/repo", "42", "body")
+        self.assertIn("No trusted GitLab host configured", str(ctx.exception))
 
 
 if __name__ == "__main__":

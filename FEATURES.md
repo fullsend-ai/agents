@@ -92,7 +92,10 @@ Ask yourself:
       that logic lives.
 - [ ] **Both:** Some features may require changes in both.
 - [ ] **Generated scripts:** `scripts/pre-code.sh`, `scripts/post-code.sh`,
-      `scripts/post-fix.sh`, `scripts/post-prioritize.sh`,
+      `scripts/pre-fix.sh`, `scripts/post-fix.sh`, `scripts/pre-prioritize.sh`, `scripts/post-prioritize.sh`,
+      `scripts/pre-retro.sh`, `scripts/post-retro.sh`,
+      `scripts/pre-review.sh`, `scripts/post-review.sh`,
+      `scripts/pre-scribe.sh`, `scripts/post-scribe.sh`,
       `scripts/pre-triage.sh`, and `scripts/post-triage.sh` are generated
       from the corresponding `scripts/<name>.src.sh` — edit the `.src.sh`
       file and run
@@ -162,7 +165,9 @@ agent prompt:
 If the new option requires the agent to reach a new external service
 from the sandbox:
 
-- [ ] Update `policies/<forge>/<agent>.yaml` to allow the new host/port
+- [ ] Add the new host/port to the appropriate profile under `profiles/`
+      (e.g., `fullsend-gitlab-ro.yaml`, `fullsend-gitlab-code.yaml`) or
+      create a new provider/profile pair under `providers/` and `profiles/`
 - [ ] This is rare — most configuration changes don't need network
       changes
 

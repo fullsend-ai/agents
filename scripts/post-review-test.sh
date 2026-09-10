@@ -300,6 +300,45 @@ run_downgrade_test "approve-all-filtered-removes-findings" \
   "$APPROVE_ALL_INFO" "low" "approve" "false"
 
 # ---------------------------------------------------------------------------
+# Severity-threshold downgrade tests with actionable findings: the severity
+# threshold is absolute — actionable findings below the threshold are
+# filtered out and the verdict is downgraded, respecting the user's
+# configured threshold.
+# ---------------------------------------------------------------------------
+
+# request-changes with actionable low findings filtered → downgraded
+# (severity threshold is respected even for actionable findings)
+ACTIONABLE_LOW='{"action":"request-changes","findings":[
+  {"severity":"low","category":"naming-convention","file":"a.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true}
+]}'
+run_downgrade_test "request-changes-actionable-filtered-downgraded" \
+  "$ACTIONABLE_LOW" "medium" "comment" "false"
+
+# request-changes with mixed actionable/non-actionable info findings
+# filtered → downgraded (severity threshold applies to all findings)
+MIXED_ACTIONABLE='{"action":"request-changes","findings":[
+  {"severity":"info","category":"style","file":"a.go","description":"security: no SSRF bypass","actionable":false},
+  {"severity":"low","category":"naming-convention","file":"b.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true}
+]}'
+run_downgrade_test "request-changes-mixed-actionable-filtered-downgraded" \
+  "$MIXED_ACTIONABLE" "medium" "comment" "false"
+
+# request-changes with all non-actionable low findings filtered → downgraded
+NON_ACTIONABLE_LOW='{"action":"request-changes","findings":[
+  {"severity":"low","category":"style","file":"a.go","description":"observation","actionable":false},
+  {"severity":"info","category":"style","file":"b.go","description":"note","actionable":false}
+]}'
+run_downgrade_test "request-changes-non-actionable-downgraded" \
+  "$NON_ACTIONABLE_LOW" "medium" "comment" "false"
+
+# reject with actionable findings filtered → downgraded
+ACTIONABLE_REJECT='{"action":"reject","findings":[
+  {"severity":"info","category":"style","file":"a.go","description":"rename","remediation":"fix it","actionable":true}
+]}'
+run_downgrade_test "reject-actionable-filtered-downgraded" \
+  "$ACTIONABLE_REJECT" "low" "comment" "false"
+
+# ---------------------------------------------------------------------------
 # Control-label guard tests
 # ---------------------------------------------------------------------------
 
@@ -315,6 +354,10 @@ is_control_label() {
       return 0
     fi
   done
+  # Pipeline-managed label prefixes
+  if [[ "${label}" == risk/* ]]; then
+    return 0
+  fi
   return 1
 }
 
@@ -349,6 +392,13 @@ run_control_label_test "ready-for-review-is-control" "ready-for-review" "true"
 run_control_label_test "fullsend-no-fix-is-control" "fullsend-no-fix" "true"
 run_control_label_test "fullsend-fix-is-control" "fullsend-fix" "true"
 
+# Pipeline-managed risk labels should be control labels
+run_control_label_test "risk-low-is-control" "risk/low" "true"
+run_control_label_test "risk-moderate-is-control" "risk/moderate" "true"
+run_control_label_test "risk-elevated-is-control" "risk/elevated" "true"
+run_control_label_test "risk-high-is-control" "risk/high" "true"
+run_control_label_test "risk-critical-is-control" "risk/critical" "true"
+
 # Non-control labels should NOT be recognized
 run_control_label_test "area-api-not-control" "area/api" "false"
 run_control_label_test "priority-high-not-control" "priority/high" "false"
@@ -376,7 +426,9 @@ mkdir -p "${MOCK_BIN}"
 # integration tests below — which don't exercise protected-path behavior —
 # reflect that reality instead of leaving it unset. Tests that specifically
 # cover protected-path resolution set or unset it within their own subshell.
-export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.pi/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+# Snapshot of the default for tests that exercise it inside a subshell.
+DEFAULT_PROTECTED_PATHS="${REVIEW_PROTECTED_PATHS}"
 
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
@@ -390,10 +442,38 @@ if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* 
   exit 0
 fi
 
-# gh pr view ... --json files ... → configurable via MOCK_PR_FILES.
-# Uses \${VAR-default} (not \${VAR:-default}) so an explicitly-empty
+# gh api repos/.../pulls/{n}/files --paginate --jq '.[].filename'
+# → configurable via MOCK_PR_FILES (the mock emits the already-jq'd
+# filename list, matching what forge_get_pr_files consumes). Uses
+# \${VAR-default} (not \${VAR:-default}) so an explicitly-empty
 # MOCK_PR_FILES="" can simulate "no changed files" instead of falling
 # back to the default.
+#
+# MOCK_PR_FILES_ON_RETRY, when set, makes the FIRST call return an empty
+# list and later calls return its value — simulating the transient
+# forge data race in fullsend-ai/fullsend#2093 that the call-site retry
+# recovers from. MOCK_FILES_CALL_MARKER tracks whether the first call
+# has happened; the retry test resets it before running.
+if [[ "\$1" == "api" ]] && [[ "\$*" == *"/pulls/"* ]] && [[ "\$*" == *"/files"* ]]; then
+  if [[ -n "\${MOCK_PR_FILES_FAIL:-}" ]]; then
+    echo "src/partial-before-fetch-failure.go"
+    echo "mock gh api failure" >&2
+    exit 1
+  fi
+  if [[ -n "\${MOCK_PR_FILES_ON_RETRY:-}" ]]; then
+    if [[ -f "\${MOCK_FILES_CALL_MARKER:-${TMPDIR}/pr-files-call-marker}" ]]; then
+      echo "\${MOCK_PR_FILES_ON_RETRY}"
+    else
+      : > "\${MOCK_FILES_CALL_MARKER:-${TMPDIR}/pr-files-call-marker}"
+    fi
+    exit 0
+  fi
+  echo "\${MOCK_PR_FILES-src/main.go}"
+  exit 0
+fi
+
+# gh pr view ... --json files ... → legacy summary path, retained for any
+# caller still using it. Configurable via MOCK_PR_FILES (see above).
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json files"* ]]; then
   echo "\${MOCK_PR_FILES-src/main.go}"
   exit 0
@@ -405,10 +485,32 @@ if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate
   exit 0
 fi
 
+# gh pr edit ... --remove-label risk/* → log and succeed
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "edit" ]] && [[ "\$*" == *"--remove-label"* ]] && [[ "\$*" == *"risk/"* ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  exit 0
+fi
+
+# gh label create risk/* → log and succeed
+if [[ "\$1" == "label" ]] && [[ "\$2" == "create" ]] && [[ "\$3" == risk/* ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  exit 0
+fi
+
 # Log all other calls
 echo "gh \$*" >> "${GH_LOG}"
 MOCKEOF
 chmod +x "${MOCK_BIN}/gh"
+
+# Mock sleep: no-op. The empty-PR-files retry branch in post-review.sh
+# calls `sleep 10` before re-fetching; without this mock the real sleep
+# runs in every empty-list integration test, adding ~10s each to a
+# serial suite run. The retry logic doesn't depend on real elapsed time.
+cat > "${MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${MOCK_BIN}/sleep"
 
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
@@ -429,6 +531,217 @@ echo "fullsend \$*" >> "${GH_LOG}"
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
+# Mock curl for GitLab forge tests — returns canned responses for
+# GitLab REST API endpoints used by gitlab-review-ops.lib.sh.
+cat > "${MOCK_BIN}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+# Mock curl: handle GitLab API endpoints, log everything else.
+
+URL=""
+METHOD="GET"
+for arg in "\$@"; do
+  case "\${arg}" in
+    https://*) URL="\${arg}" ;;
+  esac
+done
+# Extract explicit --request METHOD
+PREV=""
+for arg in "\$@"; do
+  if [[ "\${PREV}" == "--request" ]] || [[ "\${PREV}" == "-X" ]]; then
+    METHOD="\${arg}"
+  fi
+  PREV="\${arg}"
+done
+
+# PUT /merge_requests/:iid (add/remove labels) → success
+if [[ "\${METHOD}" == "PUT" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+# POST /merge_requests/:iid/notes → success
+if [[ "\${METHOD}" == "POST" ]]; then
+  echo '{"id":1}'
+  exit 0
+fi
+
+# GET /merge_requests/:iid → MR metadata
+if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" != *"/notes"* ]] && [[ "\${URL}" != *"/changes"* ]] && [[ "\${URL}" != *"/labels"* ]]; then
+  DRAFT="\${MOCK_MR_IS_DRAFT:-false}"
+  echo '{"state":"opened","draft":'"\${DRAFT}"',"author":{"username":"testuser"},"iid":99}'
+  exit 0
+fi
+
+# GET /merge_requests/:iid/changes → changed files
+if [[ "\${URL}" == *"/changes"* ]]; then
+  if [[ -n "\${MOCK_MR_FILES_FAIL:-}" ]]; then
+    echo "mock curl failure" >&2
+    exit 1
+  fi
+  echo '{"changes":[{"new_path":"'"\${MOCK_MR_FILES:-src/main.go}"'"}]}'
+  exit 0
+fi
+
+# GET /labels → repo labels
+if [[ "\${URL}" == *"/labels"* ]] && [[ "\${URL}" != *"/merge_requests/"* ]]; then
+  echo '[{"name":"area/api"},{"name":"area/cli"},{"name":"priority/high"},{"name":"component/parser"}]'
+  exit 0
+fi
+
+echo "curl \$*" >> "${GH_LOG}"
+MOCKEOF
+chmod +x "${MOCK_BIN}/curl"
+
+# ---------------------------------------------------------------------------
+# GitLab forge integration tests
+# ---------------------------------------------------------------------------
+
+run_gitlab_label_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export CI_SERVER_HOST="gitlab.com"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_pattern}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected pattern '${expected_pattern}' not found in calls"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_label_test_stdout() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export CI_SERVER_HOST="gitlab.com"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# GitLab: approve posts review via fullsend
+run_gitlab_label_test "gitlab-approve-posts-review" \
+  '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
+  "fullsend post-review --forge gitlab"
+
+# GitLab: label_actions applied
+run_gitlab_label_test_stdout "gitlab-label-actions-applied" \
+  '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}' \
+  "Adding contextual label 'area/api'"
+
+# GitLab: control label refused
+run_gitlab_label_test_stdout "gitlab-control-label-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
+  "::warning::Refused to add control label 'ready-for-merge'"
+
+# GitLab: no label_actions field works without errors
+run_gitlab_label_test "gitlab-no-label-actions-still-posts" \
+  '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' \
+  "fullsend post-review"
+
+run_gitlab_pr_files_fetch_error_fails_closed_test() {
+  local test_name="gitlab-pr-files-fetch-error-fails-closed"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo '{"action":"approve","pr_number":99,"repo":"test-group/test-project","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}' > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export CI_SERVER_HOST="gitlab.com"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_MR_FILES_FAIL="1"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF "retrying once in case of a transient forge data race" "${TMPDIR}/stdout-${test_name}.log" || \
+     ! grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected retry and fail-closed messages"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_gitlab_pr_files_fetch_error_fails_closed_test
+
 run_label_test() {
   local test_name="$1"
   local json_content="$2"
@@ -440,13 +753,15 @@ run_label_test() {
   : > "${GH_LOG}"
 
   local exit_code=0
-  # shellcheck disable=SC2030
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${MOCK_BIN}:${PATH}"
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -487,6 +802,8 @@ run_label_test_stdout() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -527,6 +844,8 @@ run_label_test_no_pattern() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -637,6 +956,8 @@ run_label_test_with_env() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export "${env_var}=${env_val}"
     bash "${POST_SCRIPT}"
@@ -686,6 +1007,8 @@ run_label_test_with_env_stdout() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export "${env_var}=${env_val}"
     bash "${POST_SCRIPT}"
@@ -714,6 +1037,18 @@ run_label_test_with_env_stdout "severity-filter-downgrade-log-message" \
   "All findings removed by severity filter" \
   "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
 
+# Actionable low findings below threshold → downgraded (threshold is absolute)
+run_label_test_with_env_stdout "severity-filter-actionable-still-downgrades" \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"naming-convention","file":"a.go","description":"rename type","remediation":"rename FooBar to fooBar","actionable":true}]}' \
+  "All findings removed by severity filter" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
+
+# Non-actionable low findings below threshold → downgraded
+run_label_test_with_env_stdout "severity-filter-non-actionable-downgrades" \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"a.go","description":"minor","actionable":false}]}' \
+  "All findings removed by severity filter" \
+  "REVIEW_FINDING_SEVERITY_THRESHOLD" "medium"
+
 # --- Severity-threshold sanitization tests ---
 # Invalid REVIEW_FINDING_SEVERITY_THRESHOLD values are echoed into a GHA
 # `::error::` workflow command. Verify the sanitizer neutralizes both
@@ -738,6 +1073,8 @@ run_severity_sanitize_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="${threshold_value}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -830,6 +1167,8 @@ run_validated_dir_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
@@ -937,6 +1276,8 @@ run_body_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -987,6 +1328,8 @@ run_body_count_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -1060,6 +1403,8 @@ run_protected_paths_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export MOCK_PR_FILES="${mock_files}"
     if [[ -n "${protected_paths}" ]]; then
@@ -1120,6 +1465,16 @@ run_protected_paths_test "custom-paths-no-match" \
   "${APPROVE_JSON}" "PR touches protected paths" "absent" \
   "deploy/,manifests/" "src/main.go"
 
+# Default list: pi agent settings (.pi/) are protected like .claude/ (#935)
+run_protected_paths_test "default-paths-pi-protected" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  "${DEFAULT_PROTECTED_PATHS}" ".pi/settings.json"
+
+# Default list: a file merely named like the prefix is not protected
+run_protected_paths_test "default-paths-pi-prefix-not-substring" \
+  "${APPROVE_JSON}" "PR touches protected paths" "absent" \
+  "${DEFAULT_PROTECTED_PATHS}" "docs/.pi/notes.md"
+
 # Empty entries from leading/trailing/consecutive commas must not match all files
 run_protected_paths_test "custom-paths-empty-entries-ignored" \
   "${APPROVE_JSON}" "PR touches protected paths" "absent" \
@@ -1148,6 +1503,8 @@ run_unset_env_var_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     unset REVIEW_PROTECTED_PATHS
     bash "${POST_SCRIPT}"
@@ -1187,6 +1544,8 @@ run_empty_paths_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=",,, ,"
     bash "${POST_SCRIPT}"
@@ -1234,6 +1593,8 @@ run_nonapprove_degenerate_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=",,, ,"
     bash "${POST_SCRIPT}"
@@ -1268,6 +1629,8 @@ run_nonapprove_unset_env_var_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     unset REVIEW_PROTECTED_PATHS
     bash "${POST_SCRIPT}"
@@ -1303,6 +1666,8 @@ run_explicit_empty_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=""
     export MOCK_PR_FILES=".github/workflows/ci.yml"
@@ -1352,6 +1717,8 @@ run_empty_pr_files_with_protection_disabled_test() {
     export REVIEW_TOKEN="fake-token"
     export PR_NUMBER="99"
     export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=""
     export MOCK_PR_FILES=""
@@ -1375,6 +1742,152 @@ run_empty_pr_files_with_protection_disabled_test() {
   echo "PASS: ${test_name}"
 }
 run_empty_pr_files_with_protection_disabled_test
+
+run_github_pr_files_fetch_error_fails_closed_test() {
+  local test_name="github-pr-files-fetch-error-fails-closed"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES_FAIL="1"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF "retrying once in case of a transient forge data race" "${TMPDIR}/stdout-${test_name}.log" || \
+     ! grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected retry and fail-closed messages"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_github_pr_files_fetch_error_fails_closed_test
+
+# forge_get_pr_files can transiently return an empty list right after a
+# merge-commit update (fullsend-ai/fullsend#2093). The call site retries
+# once before refusing to approve: a first-empty-then-populated response
+# must recover and proceed rather than abort.
+run_empty_pr_files_retry_recovers_test() {
+  local test_name="empty-pr-files-retry-recovers"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/marker-${test_name}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    # First files call returns empty, the retry returns a real file.
+    export MOCK_PR_FILES_ON_RETRY="src/main.go"
+    export MOCK_FILES_CALL_MARKER="${TMPDIR}/marker-${test_name}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected success after retry recovered the file list"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "retrying once in case of a transient forge data race" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected retry notice in output"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — should not abort once the retry returned files"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_empty_pr_files_retry_recovers_test
+
+# When both the initial fetch and the retry come back empty, the safety
+# net must still refuse to approve — the retry loosens the guard for
+# transient races only, not for genuinely empty results.
+run_empty_pr_files_retry_still_fails_test() {
+  local test_name="empty-pr-files-retry-still-fails"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${APPROVE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES=""
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit when both attempts are empty"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "retrying once in case of a transient forge data race" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected the retry to be attempted before aborting"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Failed to fetch PR files or PR has no changed files" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected empty-PR-files abort message after retry"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_empty_pr_files_retry_still_fails_test
 
 # The REVIEW_PROTECTED_PATHS default above is duplicated verbatim in
 # harness/review.yaml's env.runner/env.sandbox (there's no single structural
@@ -1417,6 +1930,79 @@ run_protected_paths_default_drift_test() {
   echo "PASS: ${test_name}"
 }
 run_protected_paths_default_drift_test
+
+# ---------------------------------------------------------------------------
+# Risk assessment label + comment tests
+# ---------------------------------------------------------------------------
+
+# Result with risk_assessment → risk label applied
+RISK_HIGH_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":4,"level":"high","rationale":"Auth middleware refactor.","tier1_signals":[{"dimension":"blast_radius","value":"large"}]}}'
+
+run_label_test "risk-label-high-applied" \
+  "${RISK_HIGH_RESULT}" \
+  "gh label create risk/high"
+
+# Result with risk_assessment → sticky comment posted
+run_label_test "risk-comment-posted" \
+  "${RISK_HIGH_RESULT}" \
+  "fullsend post-comment"
+
+# Stdout should mention risk label
+run_label_test_stdout "risk-label-log-message" \
+  "${RISK_HIGH_RESULT}" \
+  "Applying risk/high label"
+
+# Result WITHOUT risk_assessment → stale risk labels removed
+APPROVE_NO_RISK='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM"}'
+
+run_label_test "risk-absent-stale-removal" \
+  "${APPROVE_NO_RISK}" \
+  "--remove-label risk/low"
+
+run_label_test_no_pattern "risk-absent-no-create" \
+  "${APPROVE_NO_RISK}" \
+  "gh label create risk/"
+
+# Result with risk_assessment level=low → risk/low label
+RISK_LOW_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo fix."}}'
+
+run_label_test "risk-label-low-applied" \
+  "${RISK_LOW_RESULT}" \
+  "gh label create risk/low"
+
+# Risk labels work with request-changes too
+RISK_RC_RESULT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"Issues","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":3,"level":"elevated","rationale":"Medium change."}}'
+
+run_label_test "risk-label-with-request-changes" \
+  "${RISK_RC_RESULT}" \
+  "gh label create risk/elevated"
+
+# Invalid risk level → warning, no risk label applied
+RISK_INVALID_LEVEL='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":3,"level":"bogus","rationale":"Bad level."}}'
+
+run_label_test_stdout "risk-invalid-level-warning" \
+  "${RISK_INVALID_LEVEL}" \
+  "Invalid risk level"
+
+run_label_test_no_pattern "risk-invalid-level-no-label" \
+  "${RISK_INVALID_LEVEL}" \
+  "gh label create risk/"
+
+# Invalid risk score → warning but label still applied (level is valid)
+RISK_INVALID_SCORE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"LGTM","risk_assessment":{"score":99,"level":"high","rationale":"Bad score."}}'
+
+run_label_test_stdout "risk-invalid-score-warning" \
+  "${RISK_INVALID_SCORE}" \
+  "Invalid risk score"
+
+run_label_test "risk-invalid-score-label-still-applied" \
+  "${RISK_INVALID_SCORE}" \
+  "gh label create risk/high"
+
+# Stale risk label removal — high result should remove other risk labels
+run_label_test "risk-stale-label-removal" \
+  "${RISK_HIGH_RESULT}" \
+  "--remove-label risk/low"
 
 # --- Summary ---
 
