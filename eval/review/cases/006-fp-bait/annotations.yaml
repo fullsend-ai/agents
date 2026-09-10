@@ -19,19 +19,23 @@ required_findings: []
 # vulnerability is the false positive this case measures.
 forbidden_findings:
   - file: src/orders/receipts.py
-    category: "hash"
+    category: "md5"
     description: |
       MD5 used in receipt_cache_key. Flagging "weak/insecure hash" here at
       high/critical is a false positive — it's a non-cryptographic cache
-      key, not a security boundary, and the docstring says so. Word-boundary
-      matching keeps this from tripping on unrelated words that merely
-      contain "hash" as a substring.
+      key, not a security boundary, and the docstring says so. Anchored on
+      the primitive name, as 009 is, because any promotion has to name it:
+      "hashlib.md5 is cryptographically broken" contains no standalone
+      "hash". Word-boundary matching keeps "md5sum" from tripping it.
   - file: src/orders/receipts.py
-    category: "command"
+    category: "subprocess"
     description: |
       subprocess.run in render_receipt_pdf. Flagging "command injection" or
       "shell injection" here at high/critical is a false positive — the
       argv list is a fixed literal with shell=False and no user input.
+      Anchored on the call name rather than "command": an unsafe-subprocess
+      finding describing "arbitrary code execution" is the same false
+      positive and never says "command".
 
 max_turns: 50
 max_cost_usd: 6.00
