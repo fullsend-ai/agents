@@ -105,6 +105,7 @@ forge:
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
         REVIEW_RISK_ASSESSMENT_ENABLED: "true"
+        REVIEW_RISK_ROUTING_ENABLED: "false"
   gitlab:
     providers:
       - providers/gitlab-ro.yaml
