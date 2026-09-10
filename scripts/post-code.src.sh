@@ -430,6 +430,23 @@ uncommitted_work_status() {
   # repo-local config from that tree (fsmonitor hooks, hidden untracked
   # files) while PUSH_TOKEN is present in the environment.
   local trust_cfg=(-c core.fsmonitor=false -c core.useBuiltinFSMonitor=false -c core.hooksPath=/dev/null -c status.showUntrackedFiles=all)
+  # filter.<name>.clean/smudge/process drivers are a separate config
+  # namespace from hooks — core.hooksPath does not neutralize them. If
+  # .gitattributes in the untrusted tree maps a tracked file to a filter
+  # defined in the tree's own .git/config, update-index/status can invoke
+  # that filter's arbitrary command when the file's cached stat looks stale
+  # (routine after extraction, and certain for dirty files on the
+  # timeout-kill path this function exists to detect). Discover any
+  # repo-local filter drivers and neutralize each one with its own -c
+  # override; reading config values doesn't execute them, only invoking the
+  # filter does.
+  local filter_line filter_key filter_overrides=()
+  while IFS= read -r filter_line; do
+    [ -z "${filter_line}" ] && continue
+    filter_key="${filter_line%% *}"
+    filter_overrides+=(-c "${filter_key}=")
+  done < <(git config --local --get-regexp '^filter\..*\.(clean|smudge|process)$' 2>/dev/null || true)
+  trust_cfg+=("${filter_overrides[@]}")
   git "${trust_cfg[@]}" update-index -q --refresh >/dev/null 2>&1 || true
   local porcelain rc=0
   porcelain="$(git "${trust_cfg[@]}" status --porcelain --untracked-files=all 2>"${err_file}")" || rc=$?
