@@ -202,13 +202,14 @@ permission." The review harness is `readonly_repo: true` with
 `providers/github-ro.yaml`, so this is the expected result here, not a
 misconfiguration: under it most dismissals stay unverified and their
 findings stay actionable, which step 2a-1 requires the review to state
-in one line. Resolving the role on the runner and passing a normalized
-role into the sandbox would close that, but no issue tracks that
-transport yet;
+in one line. The mechanism is therefore **interactive-mode only for
+now**: a token with push access answers this call, so the gate verifies
+there today. Closing it for the pipeline is a fullsend change — the
+runner-side `pre-review.sh` resolving roles and writing a review-context
+snapshot next to `prior-review.txt` (step 2a-1 describes the contract)
+— not tracked yet;
 [fullsend#6860](https://github.com/fullsend-ai/fullsend/issues/6860)
 documents the authorization model this gate follows, not the transport.
-Interactive mode below is unaffected: a token with push access answers
-this call, so the gate verifies there today.
 
 ## Interactive mode (non-pipeline)
 

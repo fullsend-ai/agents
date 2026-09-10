@@ -223,6 +223,16 @@ across rounds, or dismissals expressed outside the PR's own discussion (a
 `wontfix` label, an issue). Treat the resulting behavior as a first
 iteration to evaluate against real PRs, not a complete fix for #106.
 
+**Scope: interactive mode only, for now.** Dismissals apply only when
+the dismisser's effective repository role has been verified, and the
+role lookup needs push access the pipeline's read-only review token
+does not have (see the role gate below). In pipeline mode this step
+therefore records dismissals but applies none — each finding is emitted
+unchanged with one sentence saying why (step 6e). Refutations are
+unaffected: they are evidence, not authority, and are evaluated in both
+modes. Pipeline-mode dismissals go live once the runner supplies the
+role, via the review-context snapshot described below.
+
 Skip this step entirely when any of these hold:
 
 - This is a first review (no prior review context from step 2a).
@@ -301,14 +311,22 @@ finding unchanged and say in one line why the dismissal was not applied
 — an unverified dismissal must be visible, not silently dropped.
 
 Under the review harness's read-only token that is the common case, not
-the edge: most dismissals there come back unverified. Closing that means
-resolving the effective role on the runner and passing it into the
-sandbox as a normalized role, and no issue tracks that transport yet.
+the edge: most dismissals there come back unverified. The boundary that
+closes it is the runner, not this skill: fullsend's `pre-review.sh`
+already runs there with the forge token, and is the place to fetch the
+review threads, replies, resolutions, reactions and review bodies to
+completion, resolve each actor's effective role, and write a JSON
+snapshot — head SHA, fetch time, completeness, thread ids, anchors,
+authors, normalized roles, `role_verified`, `authoritative_for_dismissal`
+— mounted beside `prior-review.txt`. When that snapshot exists this step
+reads its roles instead of calling the lookup, and treats an incomplete
+snapshot or a head-SHA mismatch as "verify nothing". It is a fullsend
+change, not tracked yet;
 [fullsend#6860](https://github.com/fullsend-ai/fullsend/issues/6860)
 documents the authorization model this gate follows — the role ordering,
 the `triage+`/`write+` thresholds, fail-closed on unknown roles — not
-the transport. Until one exists this step declines rather than guessing
-from association.
+the transport. Until the snapshot exists this step declines rather than
+guessing from association.
 
 Run interactively the gate works today, with no infra change at all: a
 maintainer reviewing from their own push-access token gets a real
@@ -1310,9 +1328,10 @@ finding.
 
 ##### Dismissed findings
 
-**Status: experimental** (see step 2a-1) — this check only fires when
-`DISMISSED_FINDINGS` is non-empty, so it has no effect until someone has
-actually dismissed a prior finding.
+**Status: experimental, interactive mode only** (see step 2a-1) — this
+check only fires when `DISMISSED_FINDINGS` is non-empty, and in pipeline
+mode every entry arrives with `role_verified: no`, so there its only
+effect is the one-sentence "not applied" note below.
 
 For each finding in the merged set, look for a `DISMISSED_FINDINGS` entry
 matching on **file and category** — not line number, since a finding's
