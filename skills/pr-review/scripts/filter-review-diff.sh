@@ -155,18 +155,28 @@ function rename_path(s,   i) {
 
 # Path extraction from `--- `/`+++ ` header lines. Git terminates the
 # path with a tab when it contains spaces — strip from the first tab so
-# $-anchored rules still match. The a/ b/ prefix is required; /dev/null
-# and quoted paths leave the variable unset (the diff --git header
-# fallback covers those).
-function set_old_path(line,   p) {
+# $-anchored rules still match. A git-quoted path is dequoted here too:
+# a GitLab-shaped section has no diff --git header to fall back on, so
+# leaving it unset would fail the section open. The a/ b/ prefix is
+# required; /dev/null and an unterminated quote leave the variable unset.
+function header_path(line,   p, i) {
   p = substr(line, 5)
+  if (substr(p, 1, 1) == "\"") {
+    i = quote_end(p)
+    if (i == 0) return ""
+    return dequote(substr(p, 1, i))
+  }
   sub(/\t.*$/, "", p)
+  return p
+}
+
+function set_old_path(line,   p) {
+  p = header_path(line)
   if (p != "/dev/null" && substr(p, 1, 2) == "a/") old_path = substr(p, 3)
 }
 
 function set_new_path(line,   p) {
-  p = substr(line, 5)
-  sub(/\t.*$/, "", p)
+  p = header_path(line)
   if (p != "/dev/null" && substr(p, 1, 2) == "b/") new_path = substr(p, 3)
 }
 

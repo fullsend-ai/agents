@@ -765,6 +765,19 @@ run_test "perfile-lockfile-only-exit-0" "0" "${PERFILE_ONLY_EXIT}"
 run_test "perfile-lockfile-only-stdout-empty" "" "${PERFILE_ONLY_OUT}"
 run_test "perfile-lockfile-only-summary" "package-lock.json  +1/-1  lockfile" "$(/bin/cat "${TMPDIR}/perfile-only.summary")"
 
+# --- 28. A quoted GitLab-shaped section (`--- "a/…"` / `+++ "b/…"`, no
+#         diff --git header to fall back on) is classified from the
+#         dequoted path, not failed open. ---
+
+{
+  printf -- '--- "a/vendor/caf\\303\\251.min.js"\n'
+  printf -- '+++ "b/vendor/caf\\303\\251.min.js"\n'
+  printf '@@ -1,1 +1,1 @@\n-x\n+y\n'
+} > "${TMPDIR}/gitlab-quoted.in"
+GITLAB_QUOTED_OUT=$("${FILTER}" "${TMPDIR}/gitlab-quoted.summary" < "${TMPDIR}/gitlab-quoted.in")
+run_test "gitlab-quoted-path-stdout-empty" "" "${GITLAB_QUOTED_OUT}"
+run_test "gitlab-quoted-path-summary" "vendor/café.min.js  +1/-1  minified" "$(/bin/cat "${TMPDIR}/gitlab-quoted.summary")"
+
 # --- Wrap up ---
 
 echo ""
