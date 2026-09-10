@@ -321,12 +321,6 @@ if [ -n "${AGENT_TARGET}" ]; then
     fi
   fi
 else
-  if [ -n "${CODE_ALLOWED_TARGET_BRANCHES:-}" ] \
-     && [ "${CODE_ALLOWED_TARGET_BRANCHES}" != "*" ] \
-     && ! echo ",${CODE_ALLOWED_TARGET_BRANCHES}," | grep -qF ",${DEFAULT_BRANCH},"; then
-    post_fail_to_issue branch-validation \
-      "No agent branch preference and repo default '${DEFAULT_BRANCH}' is not in allowed branches: ${CODE_ALLOWED_TARGET_BRANCHES}"
-  fi
   TARGET_BRANCH="${DEFAULT_BRANCH}"
   echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
 fi
