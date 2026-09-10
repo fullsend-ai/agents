@@ -55,9 +55,12 @@
 #      the review silently.
 #   4. Otherwise: kept, byte-identical.
 #
-# Sections are detected at `diff --git` headers; input with no such
-# headers where sections start directly at `--- a/X` (the GitLab MR
-# diff shape) is handled too — see the gitlab_mode transitions below.
+# Sections are detected at `diff --git` headers (`gh pr diff`), at
+# `### File: X` lines (the per-file shape both forge skills write from
+# the files/changes API, where the patch that follows starts straight
+# at @@), and, with no such headers, where sections start directly at
+# `--- a/X` (a synthesised GitLab MR diff) — see the gitlab_mode
+# transitions below.
 #
 # Bash 3.2 compatible (macOS ships 3.2 — no associative arrays, no
 # ${var,,}). The classifier itself is a single awk program reading stdin
@@ -68,7 +71,7 @@
 # line @generated check — capped at 100 buffered lines per section, so a
 # deletion-only section never buffers whole.
 #
-# Malformed input (neither `diff --git` nor `--- a/` section markers,
+# Malformed input (no `diff --git`, `### File: ` or `--- a/` section markers,
 # or a section this parser can't make sense of) passes through unchanged
 # rather than erroring: the failure mode here must be an unfiltered
 # review, never a broken one.
@@ -348,6 +351,19 @@ function is_gl_candidate(line) {
 # function so the GitLab-boundary lookahead in the main block can
 # replay a rejected candidate line through the exact same logic.
 function process(line,   c) {
+  # "### File: <path>" is the per-file header both forge skills write
+  # (github "Per-file diffs", gitlab "Unified diff"); the API patch that
+  # follows it is header-less and starts straight at @@. Diff content
+  # lines begin with +, -, space or \, so a bare "### File: " at column
+  # 0 is always a section boundary, never content.
+  if (line ~ /^### File: /) {
+    if (in_diff) finalize_section()
+    reset_section()
+    in_diff = 1
+    new_path = substr(line, 11)
+    buf[++buf_n] = line
+    return
+  }
   if (!in_diff) {
     if (line ~ /^diff --git /) {
       in_diff = 1

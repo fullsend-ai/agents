@@ -160,15 +160,14 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 2. FILE_COUNT~=50-200, LINE_COUNT~=3000-10000: large PR — switch to per-file
    mode
 
-   - Write the forge's per-file patches, generated files dropped, into
+   - Write the forge's per-file patches into
      `/sandbox/workspace/pr-diff.txt` (forge skill "Per-file diffs");
      the checkout is the base branch, so `git diff` there is wrong
 
-Both buckets write the same file, and both then filter it in place —
-see step 2c. The large-PR bucket has already had the forge skill's own
-coarse jq exclusions applied to it ("Per-file diffs"); step 2c is what
-both buckets share, and it is the only rule with the migrations
-exemption.
+Both buckets write the same file unfiltered, and both then filter it in
+place — see step 2c. The forge skills drop nothing themselves: step 2c
+is the one definition of "unreviewable", the only place the migrations
+exemption lives, and the only way an exclusion reaches the disclosure.
 
 3. FILE_COUNT>200, LINE_COUNT>10K (the same unfiltered counts computed
    above — never the post-filter numbers): emit failure with reason
@@ -229,9 +228,10 @@ sourcemaps, and vendored paths (`vendor/`, `node_modules/`,
 suffixes; `generated/`, `dist/`, `build/` paths) carrying a
 generated-content marker in those first 20 lines or in the section's
 bounded window — migrations are exempt from every one of those rules.
-It handles both the GitHub unified diff (`diff --git` sections) and the
-GitLab MR shape (sections starting at `--- a/…`); input it cannot parse
-passes through unfiltered. See the script's header comment for the
+It handles the `gh pr diff` output (`diff --git` sections) and the
+per-file shape both forge skills write from the files/changes API
+(`### File: <path>` followed by a header-less patch); input it cannot
+parse passes through unfiltered. See the script's header comment for the
 exact classification.
 
 **Accepted risk:** on a path that already looks generated the marker is

@@ -707,6 +707,64 @@ SHORTBIN_OUT=$("${FILTER}" "${TMPDIR}/shortbin.summary" < "${TMPDIR}/shortbin.in
 run_test "short-binary-header-still-strips" "" "${SHORTBIN_OUT}"
 run_test_contains "short-binary-header-in-summary" "vendor/blob2.bin" "$(/bin/cat "${TMPDIR}/shortbin.summary")"
 
+# --- 27. `### File: <path>` per-file shape — what both forge skills write
+#         from the files/changes API; the patch after each header is
+#         header-less and starts at @@. Lockfile stripped and disclosed,
+#         code kept byte-identical, migrations exempt, an API "(no patch)"
+#         placeholder classified from the path alone, and a removed
+#         "-- a/vendor/…" line inside a section is not a boundary. ---
+
+PERFILE_KEPT='### File: src/app.js
+@@ -1,2 +1,3 @@
+ function app() {
++  console.log("hi");
+ }'
+
+PERFILE_TAIL='### File: db/migrations/package-lock.json
+@@ -1,1 +1,1 @@
+-old
++new
+### File: src/real.js
+@@ -1,4 +1,3 @@
+ function real() {
+--- a/vendor/fake.js
++  var z = 3
+ }'
+
+PERFILE_DIFF="${PERFILE_KEPT}"'
+### File: package-lock.json
+@@ -1,3 +1,3 @@
+ {
+-  "version": "1.0.0"
++  "version": "1.0.1"
+ }
+### File: vendor/blob.bin
+(no patch from the API: binary or oversized)
+'"${PERFILE_TAIL}"
+
+printf '%s\n' "${PERFILE_DIFF}" > "${TMPDIR}/perfile.in"
+printf '%s\n%s\n' "${PERFILE_KEPT}" "${PERFILE_TAIL}" > "${TMPDIR}/perfile.expected"
+"${FILTER}" "${TMPDIR}/perfile.summary" < "${TMPDIR}/perfile.in" > "${TMPDIR}/perfile.out"
+if cmp -s "${TMPDIR}/perfile.expected" "${TMPDIR}/perfile.out"; then
+  echo "PASS: perfile-shape-kept-sections-byte-identical"
+else
+  echo "FAIL: perfile-shape-kept-sections-byte-identical"
+  diff -u "${TMPDIR}/perfile.expected" "${TMPDIR}/perfile.out" || true
+  FAILURES=$((FAILURES + 1))
+fi
+run_test "perfile-shape-summary" "package-lock.json  +1/-1  lockfile
+vendor/blob.bin  +0/-0  vendored" "$(/bin/cat "${TMPDIR}/perfile.summary")"
+
+# A lone per-file lockfile section is stripped to nothing, exit 0, and
+# fully disclosed — the all-excluded case SKILL.md step 2c must not
+# report as a tool failure.
+printf '### File: package-lock.json\n@@ -1,1 +1,1 @@\n-a\n+b\n' > "${TMPDIR}/perfile-only.in"
+PERFILE_ONLY_EXIT=0
+PERFILE_ONLY_OUT=$("${FILTER}" "${TMPDIR}/perfile-only.summary" < "${TMPDIR}/perfile-only.in") || PERFILE_ONLY_EXIT=$?
+run_test "perfile-lockfile-only-exit-0" "0" "${PERFILE_ONLY_EXIT}"
+run_test "perfile-lockfile-only-stdout-empty" "" "${PERFILE_ONLY_OUT}"
+run_test "perfile-lockfile-only-summary" "package-lock.json  +1/-1  lockfile" "$(/bin/cat "${TMPDIR}/perfile-only.summary")"
+
 # --- Wrap up ---
 
 echo ""
