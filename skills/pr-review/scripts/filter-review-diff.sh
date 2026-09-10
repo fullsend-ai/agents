@@ -68,8 +68,10 @@
 # buffered whole, in awk or in a shell variable. The only lines ever held
 # in memory are one file-section's header lines, plus (for sections that
 # are not fast-path classified by path) content lines up to the 5-added-
-# line @generated check — capped at 100 buffered lines per section, so a
-# deletion-only section never buffers whole.
+# line @generated check. Both phases are capped at 100 buffered lines per
+# section and fail open past it (the section is flushed unclassified, so
+# included), so neither a deletion-only section nor a `--binary` patch
+# preamble (no @@ line, no "Binary files" line) ever buffers whole.
 #
 # Malformed input (no `diff --git`, `### File: ` or `--- a/` section markers,
 # or a section this parser can't make sense of) passes through unchanged
