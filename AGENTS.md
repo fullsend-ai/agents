@@ -157,8 +157,10 @@ workflow `env:` block even if it configures agent behavior.
 This rule is scoped to static, tunable defaults. It does not cover
 values that are genuinely computed per-repo or per-run, such as
 branch lists, tokens, or PR/issue numbers — those must stay as
-`${VAR}` passthrough, as already used by `CODE_ALLOWED_TARGET_BRANCHES`
-in [`harness/code.yaml`](harness/code.yaml)'s `env.runner` block and by `REVIEW_TOKEN`,
+`${VAR}` passthrough. `CODE_ALLOWED_TARGET_BRANCHES` is an exception: it
+is optional and read directly by the post-code script when supplied, so do
+not map it through [`harness/code.yaml`](harness/code.yaml)'s `env.runner`
+block. Required runner values include `REVIEW_TOKEN`,
 `PR_NUMBER`, and `PR_URL` in the `forge.<platform>.env.runner` blocks
 (some passthroughs like `REPO_FULL_NAME` live at top-level `env.runner`
 when identical across forges). When reviewing PRs, do not flag a

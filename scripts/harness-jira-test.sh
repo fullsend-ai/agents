@@ -98,6 +98,15 @@ fi
 # ---------------------------------------------------------------------------
 CODE_HARNESS="${REPO_ROOT}/harness/code.yaml"
 
+# CODE_ALLOWED_TARGET_BRANCHES is optional. Mapping it through env.runner
+# makes fullsend reject runs where the host does not define it, before the
+# post-script can safely fall back to the repository default branch.
+if yq -e '.env.runner | has("CODE_ALLOWED_TARGET_BRANCHES")' "${CODE_HARNESS}" >/dev/null; then
+  assert_fail "code-optional-target-branches-not-required" "CODE_ALLOWED_TARGET_BRANCHES must not be mapped through env.runner"
+else
+  assert_pass "code-optional-target-branches-not-required"
+fi
+
 # Provider present
 if jira_overlay_field "${CODE_HARNESS}" ".providers[]" | grep -qF "providers/jira-ro.yaml"; then
   assert_pass "code-jira-provider-present"

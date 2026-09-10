@@ -1416,7 +1416,13 @@ validate_target_branch() {
       fi
     fi
   else
-    echo "default:${default_branch}"
+    if [ -n "${allowed_list}" ] \
+       && [ "${allowed_list}" != "*" ] \
+       && ! echo ",${allowed_list}," | grep -qF ",${default_branch},"; then
+      echo "reject:${default_branch}:allowed=${allowed_list}"
+    else
+      echo "default:${default_branch}"
+    fi
   fi
 }
 
@@ -1547,9 +1553,9 @@ run_branch_validation_test "explicit-list-accepts-match" \
 run_branch_validation_test "explicit-list-includes-default" \
   "main" "main" "main,develop" "accept:main"
 
-# No agent target with explicit list still uses default
-run_branch_validation_test "no-agent-target-ignores-allowed-list" \
-  "" "main" "release-1,release-2" "default:main"
+# No agent target must still obey an explicit allowed list.
+run_branch_validation_test "no-agent-target-respects-allowed-list" \
+  "" "main" "release-1,release-2" "reject:main"
 
 # Substring mismatch: agent writes "release" but only "release-1","release-2"
 # are allowed — comma-wrapping must reject the partial match.
@@ -1910,6 +1916,83 @@ else
   cat "${SEC_CODE_TMPDIR}/stdout-api-failure.log"
   FAILURES=$((FAILURES + 1))
 fi
+
+# --- Explicit allowed list applies even without an agent branch preference ---
+# The real post-script chooses the repository default in this case. That default
+# must still be allowed, otherwise a configured restriction is bypassed.
+_sec_allowlist_dir="${SEC_CODE_TMPDIR}/run-allowlist-no-agent-target"
+setup_sec_code_repo "${_sec_allowlist_dir}" "agent/99-test-fix"
+
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "issue comment"|"pr comment") exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_allowlist_rc=0
+(
+  cd "${_sec_allowlist_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export CODE_ALLOWED_TARGET_BRANCHES="release"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-allowlist-no-agent-target.log" 2>&1 || _sec_allowlist_rc=$?
+
+_sec_allowlist_pushed="$(${REAL_GIT} -C "${_sec_allowlist_dir}/remote.git" branch --list "agent/99-test-fix" 2>/dev/null)"
+if [ "${_sec_allowlist_rc}" -ne 0 ] && [ -z "${_sec_allowlist_pushed}" ]; then
+  echo "PASS: security-allowlist-rejects-default-without-agent-target"
+else
+  echo "FAIL: security-allowlist-rejects-default-without-agent-target"
+  echo "  exit code: ${_sec_allowlist_rc}"
+  echo "  pushed branch: '${_sec_allowlist_pushed}'"
+  cat "${SEC_CODE_TMPDIR}/stdout-allowlist-no-agent-target.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_no_agent_target_allowlist_success_test() {
+  local test_name="$1"
+  local allowed_list="$2"
+  local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
+  local pushed
+  local run_rc=0
+
+  setup_sec_code_repo "${run_dir}" "agent/99-test-fix"
+  (
+    cd "${run_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export CODE_ALLOWED_TARGET_BRANCHES="${allowed_list}"
+    bash "${POST_SCRIPT}"
+  ) > "${SEC_CODE_TMPDIR}/stdout-${test_name}.log" 2>&1 || run_rc=$?
+
+  pushed="$(${REAL_GIT} -C "${run_dir}/remote.git" branch --list "agent/99-test-fix" 2>/dev/null)"
+  if [ "${run_rc}" -eq 0 ] && [ -n "${pushed}" ]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name}"
+    echo "  exit code: ${run_rc}"
+    echo "  pushed branch: '${pushed}'"
+    cat "${SEC_CODE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_no_agent_target_allowlist_success_test "security-allowlist-allows-default-without-agent-target" "main,release"
+run_no_agent_target_allowlist_success_test "security-allowlist-wildcard-allows-default-without-agent-target" "*"
 
 rm -rf "${SEC_CODE_TMPDIR}"
 
