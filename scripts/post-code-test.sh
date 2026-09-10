@@ -2167,6 +2167,57 @@ else
   echo "PASS: genuine-noop-clean-tree-exits-zero"
 fi
 
+# --- git status failure: swallowed error must not look like a clean tree ---
+# Regression for the false "Success"/no-op this PR closes: if `git status`
+# itself fails, the script must fail closed, not report a genuine no-op.
+cat > "${SEC_CODE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "status" ]]; then
+  echo "fatal: index file smaller than expected" >&2
+  exit 128
+fi
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/git"
+
+_sec_gitstatus_dir="${SEC_CODE_TMPDIR}/run-git-status-fails"
+setup_sec_code_repo "${_sec_gitstatus_dir}" "agent/99-status-fails"
+${REAL_GIT} -C "${_sec_gitstatus_dir}/repo" reset --hard HEAD~1
+
+_sec_gitstatus_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_gitstatus_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-git-status-fails.log" 2>&1 || _sec_gitstatus_rc=$?
+
+_sec_gitstatus_log="${SEC_CODE_TMPDIR}/stdout-git-status-fails.log"
+if [ "${_sec_gitstatus_rc}" -eq 0 ]; then
+  echo "FAIL: git-status-failure-exits-nonzero — expected non-zero exit"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "agent determined no changes needed" "${_sec_gitstatus_log}"; then
+  echo "FAIL: git-status-failure-exits-nonzero — posted no-op comment despite git status failure"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qi "git status failed" "${_sec_gitstatus_log}"; then
+  echo "FAIL: git-status-failure-exits-nonzero — missing git-status-failure diagnostic"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: git-status-failure-exits-nonzero (exit ${_sec_gitstatus_rc})"
+fi
+
 rm -rf "${SEC_CODE_TMPDIR}"
 
 # ---------------------------------------------------------------------------

@@ -415,11 +415,24 @@ is_agent_artifact_path() {
 }
 
 # git status --porcelain for the extracted repo, excluding agent working
-# directory artifacts. Empty means a clean tree (or only artifacts).
+# directory artifacts. Empty stdout means a clean tree (or only artifacts).
+#
+# This runs inside a caller-side command substitution ($(...)), which is a
+# subshell — variables set here can't reach the caller. If `git status`
+# itself fails (e.g. a leftover .git/index.lock, or a corrupted extracted
+# repo), its exit code and stderr are written to $1/$2 instead, so the
+# caller can fail closed rather than silently treating a swallowed error as
+# an empty (clean) porcelain string.
 uncommitted_work_status() {
+  local rc_file="$1" err_file="$2"
   git update-index -q --refresh >/dev/null 2>&1 || true
-  local porcelain
-  porcelain="$(git status --porcelain 2>/dev/null || true)"
+  local porcelain rc=0
+  porcelain="$(git status --porcelain 2>"${err_file}")" || rc=$?
+  printf '%s' "${rc}" > "${rc_file}"
+  if [ "${rc}" -ne 0 ]; then
+    printf ''
+    return 0
+  fi
   if [ -z "${porcelain}" ]; then
     printf ''
     return 0
@@ -448,8 +461,20 @@ uncommitted_work_status() {
 
 fail_if_uncommitted_work() {
   local context="$1"
-  local dirty
-  dirty="$(uncommitted_work_status)"
+  local dirty rc err rc_file err_file
+  rc_file="$(mktemp)"
+  err_file="$(mktemp)"
+  dirty="$(uncommitted_work_status "${rc_file}" "${err_file}")"
+  rc="$(cat "${rc_file}")"
+  err="$(cat "${err_file}")"
+  rm -f "${rc_file}" "${err_file}"
+  if [ "${rc}" -ne 0 ]; then
+    gha_echo error "git status failed while checking for uncommitted work (${context}, exit ${rc})"
+    echo "${err}" | sed 's/^/  /'
+    post_fail_to_issue uncommitted-work-status-error \
+      "git status failed while checking for uncommitted work (${context}, exit ${rc}):
+${err}"
+  fi
   if [ -z "${dirty}" ]; then
     return 0
   fi
