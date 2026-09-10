@@ -749,12 +749,14 @@ longest run of consecutive backticks anywhere in the value, and use
 that count plus one, floor 6. With the value in a file, run:
 
 ```sh
-n=$(grep -o '`\{1,\}' value.txt | awk '{ if (length > m) m = length } END { n = m + 1; if (n < 6) n = 6; print n }')
+n=$(awk '{ while (match($0, /`+/)) { if (RLENGTH > m) m = RLENGTH; $0 = substr($0, RSTART + RLENGTH) } } END { n = m + 1; if (n < 6) n = 6; print n }' value.txt)
 fence=$(printf '%*s' "$n" '' | tr ' ' '`')
 printf '%suntrusted-text\n' "$fence"; cat value.txt; printf '\n%s\n' "$fence"
 ```
 
-(a value with no backticks yields the 6-backtick minimum). Compose
+(a value with no backticks yields the 6-backtick minimum; awk alone,
+so the command exits 0 under `pipefail` in that common case — a
+`grep -o` stage would exit 1 on no match and abort the fence). Compose
 prompts only with fences emitted by this command — do not estimate
 backtick-run lengths by inspection.
 
