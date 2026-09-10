@@ -50,6 +50,9 @@ FIXTURE_BODY=$(yq -r '.fixture.body' "$INPUT")
 FIXTURE_BASE=$(yq -r '.fixture.base // "main"' "$INPUT")
 FIXTURE_HEAD=$(yq -r '.fixture.head_branch // ""' "$INPUT")
 FIXTURE_FILES=$(yq -r '.fixture.files // "[]"' "$INPUT")
+FOLLOWUP_FILES=$(yq -r '.fixture.followup_files // "[]"' "$INPUT")
+PRIOR_REVIEW_BODY=$(yq -r '.prior_review.body // ""' "$INPUT")
+PRIOR_REVIEW_PROVENANCE=$(yq -r '.prior_review.provenance // "none"' "$INPUT")
 
 # --- Create ephemeral repo ---
 uuid=$(uuidgen | tr '[:upper:]' '[:lower:]' | cut -c1-8)
@@ -116,7 +119,19 @@ case "${FORGE}:${FIXTURE_TYPE}" in
     done
     git -C "$TARGET_DIR" add -A
     git -C "$TARGET_DIR" commit -m "eval: fixture changes"
+    PRIOR_REVIEW_SHA=$(git -C "$TARGET_DIR" rev-parse HEAD)
     git -C "$TARGET_DIR" push origin "$PR_BRANCH"
+    followup_count=$(echo "$FOLLOWUP_FILES" | yq -r 'length')
+    if [[ "$followup_count" -gt 0 ]]; then
+      for i in $(seq 0 $((followup_count - 1))); do
+        path=$(echo "$FOLLOWUP_FILES" | yq -r ".[$i].path")
+        mkdir -p "$TARGET_DIR/$(dirname "$path")"
+        echo "$FOLLOWUP_FILES" | yq -r ".[$i].content" > "$TARGET_DIR/$path"
+      done
+      git -C "$TARGET_DIR" add -A
+      git -C "$TARGET_DIR" commit -m "eval: re-review follow-up"
+      git -C "$TARGET_DIR" push origin "$PR_BRANCH"
+    fi
     FIXTURE_URL=$(gh pr create \
       --repo "$EPHEMERAL_REPO" \
       --base "$FIXTURE_BASE" \
@@ -135,6 +150,16 @@ esac
 # Clean up the local clone
 rm -rf "$TARGET_DIR"
 
+PRIOR_REVIEW_FILE=""
+if [[ -n "$PRIOR_REVIEW_BODY" ]]; then
+  if [[ -z "${PRIOR_REVIEW_SHA:-}" ]]; then
+    echo "ERROR: prior_review requires a pull_request fixture" >&2
+    exit 1
+  fi
+  PRIOR_REVIEW_FILE="${CASE_WORKSPACE}/prior-review.txt"
+  printf '%s\n' "$PRIOR_REVIEW_BODY" > "$PRIOR_REVIEW_FILE"
+fi
+
 # --- Write hook outputs ---
 # The harness reads this file and injects env vars into the CLI runner
 # and forward-propagates them to after_each hooks.
@@ -145,6 +170,9 @@ env:
   FIXTURE_NUMBER: "${FIXTURE_NUMBER}"
   FIXTURE_TYPE: "${FIXTURE_TYPE}"
   FORGE: "${FORGE}"
+  PRIOR_REVIEW_FILE: "${PRIOR_REVIEW_FILE}"
+  PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA:-}"
+  PRIOR_REVIEW_PROVENANCE: "${PRIOR_REVIEW_PROVENANCE}"
 data:
   ephemeral_repo: "${EPHEMERAL_REPO}"
   fixture_url: "${FIXTURE_URL}"

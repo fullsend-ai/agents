@@ -119,6 +119,8 @@ COMPARE=$(curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}")
 CHANGED_FILES=$(echo "$COMPARE" | jq -r '.diffs[].new_path')
+echo "$COMPARE" | jq -r '.diffs[] | "diff --git a/\(.old_path) b/\(.new_path)\n\(.diff // "")"' \
+  > /sandbox/workspace/pr-incremental-diff.txt
 ```
 
 ## Notes

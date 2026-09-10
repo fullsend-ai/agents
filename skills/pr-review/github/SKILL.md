@@ -99,6 +99,8 @@ gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
 # Compare commits between prior review and current HEAD
 COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${HEAD_SHA}")
 CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
+echo "$COMPARE" | jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch // "")"' \
+  > /sandbox/workspace/pr-incremental-diff.txt
 ```
 
 ## Interactive mode (non-pipeline)

@@ -1,0 +1,32 @@
+forge: github
+seed_issues:
+  - title: "Add the Foo command"
+    body: "Implement Foo and document its public behavior."
+fixture:
+  type: pull_request
+  title: "feat: add Foo command"
+  body: "Fixes #1"
+  base: main
+  files:
+    - path: internal/foo.go
+      content: |
+        package internal
+
+        func Foo() string { return "foo" }
+  followup_files:
+    - path: docs/foo.md
+      content: |
+        # Foo
+
+        `Foo` returns the string `foo`.
+    - path: CHANGELOG.md
+      content: |
+        # Changelog
+
+        Unrelated release-note placeholder.
+prior_review:
+  provenance: app-verified
+  body: |
+    ## Findings
+
+    - [missing-doc] `internal/foo.go`: Document the public Foo behavior in `docs/foo.md`.
