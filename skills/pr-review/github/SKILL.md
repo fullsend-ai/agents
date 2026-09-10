@@ -42,7 +42,7 @@ test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure
 # From the files API — the checkout is the base branch, so never `git diff` it.
 # Generated files are dropped here.
 jq -r '.[] | select(.filename | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
-  | "### File: \(.filename)\n\(.patch // "(no patch from the API: binary or oversized)")"' \
+  | "### File: \(.filename | @json)\n\(.patch // "(no patch from the API: binary or oversized)")"' \
   /sandbox/workspace/pr-files.json > /sandbox/workspace/pr-diff.txt
 test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```

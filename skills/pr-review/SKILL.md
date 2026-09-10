@@ -773,9 +773,13 @@ sections of the challenger's Part 3 context package (step 6d), and
 the `### Changed files`, `### PR metadata`, `### Issue context` and
 `### Prior risk assessment` sections of the risk-assessment Part 3
 context package (step 3c-2), composed there and dispatched with the
-step 4 batch. Diff bodies and file contents are not interpolated at
-all — step 3d passes paths and sub-agents Read them — so only their
-paths need the treatment. It also applies to the security-triage
+step 4 batch. Diff bodies and file contents are not interpolated
+into prompts at all — step 3d passes paths and sub-agents Read them —
+so only their paths need the treatment; the one place a path is
+written into a file sub-agents Read, the `### File:` heading the forge
+skill's per-file diff command writes into `pr-diff.txt`, JSON-quotes
+it, so a path-borne newline stays `\n` on the heading line. It also
+applies to the security-triage
 flow: the step 3c-1 dispatch context (changed-file table and diff
 summaries) and the step 3f prioritized manifest ordering and triage
 summary — triage output derives from PR content and stays untrusted.

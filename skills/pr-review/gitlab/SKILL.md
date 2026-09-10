@@ -49,7 +49,7 @@ jq -r '.changes[].new_path' /sandbox/workspace/mr-changes.json
 # Per-file diffs from the changes payload, written to disk for the sub-agents
 # to Read; generated files dropped. An empty file is a tool failure.
 jq -r '.changes[] | select(.new_path | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
-  | "### File: \(.new_path)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
+  | "### File: \(.new_path | @json)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
 test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```
 
