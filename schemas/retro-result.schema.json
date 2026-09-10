@@ -17,7 +17,7 @@
       "type": "array",
       "maxItems": 3,
       "items": { "$ref": "#/$defs/proposal" },
-      "description": "List of improvement proposals. Each becomes a GitHub issue."
+      "description": "List of improvement proposals. Each becomes an issue on the source forge."
     }
   },
   "$defs": {
@@ -28,7 +28,7 @@
       "properties": {
         "target_repo": {
           "type": "string",
-          "pattern": "^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$",
+          "pattern": "^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$",
           "description": "Full owner/repo where the issue should be filed."
         },
         "title": {

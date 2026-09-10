@@ -1,31 +1,33 @@
 #!/usr/bin/env bash
-# post-prioritize.src.sh — Write RICE scores to the project board and post a reasoning comment.
+# post-prioritize.sh — Write RICE scores to the project board and post a reasoning comment.
 #
 # Runs on the host after sandbox cleanup. Working directory is the fullsend
 # run output directory (e.g., /tmp/fullsend/agent-prioritize-<id>/).
 #
 # Required env vars:
-#   GITHUB_ISSUE_URL  — HTML URL of the issue
-#   GH_TOKEN          — GitHub token with project write + issues write scope
-#   ORG               — GitHub organization
-#   PROJECT_NUMBER    — Project board number
+#   ISSUE_URL      — HTML URL of the issue
+#   FULLSEND_FORGE — "github" or "gitlab"
+#
+# GitHub-specific env vars (consumed inside github-prioritize-ops.lib.sh):
+#   GH_TOKEN       — GitHub token with project write + issues write scope
+#   ORG            — GitHub organization
+#   PROJECT_NUMBER — Project board number
+#
+# GitLab-specific env vars (consumed inside gitlab-prioritize-ops.lib.sh):
+#   GITLAB_TOKEN   — GitLab personal/project access token
 
 set -euo pipefail
 
+: "${ISSUE_URL:?ISSUE_URL must be set}"
+: "${FULLSEND_FORGE:?FULLSEND_FORGE must be set}"
+
 # shellcheck disable=SC2034
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/github-api-csma.lib.sh
-source "${SCRIPT_DIR}/lib/github-api-csma.lib.sh"
-: "${GITHUB_ISSUE_URL:?GITHUB_ISSUE_URL must be set}"
-: "${GH_TOKEN:?GH_TOKEN must be set}"
-: "${ORG:?ORG must be set}"
-: "${PROJECT_NUMBER:?PROJECT_NUMBER must be set}"
+# shellcheck source=lib/prioritize-ops.lib.sh
+source "${SCRIPT_DIR}/lib/prioritize-ops.lib.sh"
 
-# Validate URL format early, before any parsing or API calls.
-if [[ ! "${GITHUB_ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
-  echo "ERROR: GITHUB_ISSUE_URL does not match expected pattern: ${GITHUB_ISSUE_URL}" >&2
-  exit 1
-fi
+forge_validate_issue_url
+forge_parse_issue_url
 
 # Find the result JSON — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -103,84 +105,7 @@ REASONING_EFFORT=$(jq -r '.reasoning.effort' "${RESULT_FILE}" | sed 's/<[^>]*>//
 
 # --- Write scores to the project board ---
 
-# Resolve project and item IDs.
-PROJECT_ID=$(github_csma_run graphql project view "${PROJECT_NUMBER}" --owner "${ORG}" --format json | jq -r '.id')
-
-# Parse repo and issue number from URL.
-REPO=$(echo "${GITHUB_ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
-ISSUE_NUMBER=$(basename "${GITHUB_ISSUE_URL}")
-ISSUE_NODE_ID=$(github_csma_run core api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.node_id')
-
-# Find the project item ID for this issue via the issue's projectItems connection.
-# This is a single API call regardless of project size, avoiding pagination and timeouts.
-ITEM_RESPONSE=$(github_csma_run graphql api graphql -f query='
-  query($issueId: ID!) {
-    node(id: $issueId) {
-      ... on Issue {
-        projectItems(first: 10) {
-          nodes {
-            id
-            project { id }
-          }
-        }
-      }
-    }
-  }
-' -f issueId="${ISSUE_NODE_ID}")
-
-ITEM_ID=$(echo "${ITEM_RESPONSE}" | jq -r --arg pid "${PROJECT_ID}" \
-  '(.data.node.projectItems.nodes // [])[] | select(.project.id == $pid) | .id')
-
-if [[ -z "${ITEM_ID}" || "${ITEM_ID}" == "null" ]]; then
-  echo "ERROR: issue ${GITHUB_ISSUE_URL} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG})" >&2
-  exit 1
-fi
-
-# Get field IDs for all RICE fields.
-FIELDS_JSON=$(github_csma_run graphql project field-list "${PROJECT_NUMBER}" --owner "${ORG}" --format json)
-
-get_field_id() {
-  echo "${FIELDS_JSON}" | jq -r --arg name "$1" '.fields[] | select(.name == $name) | .id'
-}
-
-REACH_FIELD_ID=$(get_field_id "RICE Reach")
-IMPACT_FIELD_ID=$(get_field_id "RICE Impact")
-CONFIDENCE_FIELD_ID=$(get_field_id "RICE Confidence")
-EFFORT_FIELD_ID=$(get_field_id "RICE Effort")
-SCORE_FIELD_ID=$(get_field_id "RICE Score")
-
-for fid_var in REACH_FIELD_ID IMPACT_FIELD_ID CONFIDENCE_FIELD_ID EFFORT_FIELD_ID SCORE_FIELD_ID; do
-  if [[ -z "${!fid_var}" ]]; then
-    echo "ERROR: ${fid_var} not found on project board (project: ${PROJECT_NUMBER}, org: ${ORG}). Run scripts/setup-prioritize.sh first." >&2
-    exit 1
-  fi
-done
-
-# Update each field on the project item.
-# Uses --input - with jq-built JSON variables to ensure proper Float coercion.
-# The gh CLI's -F flag does not reliably coerce strings to GraphQL Float.
-# The entire JSON body is built with jq to avoid unquoted heredoc expansion.
-update_field() {
-  local field_id="$1"
-  local value="$2"
-  jq -n \
-    --arg pid "${PROJECT_ID}" \
-    --arg iid "${ITEM_ID}" \
-    --arg fid "${field_id}" \
-    --argjson val "${value}" \
-    '{
-      query: "mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: Float!) { updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { number: $value } }) { projectV2Item { id } } }",
-      variables: {projectId: $pid, itemId: $iid, fieldId: $fid, value: $val}
-    }' | github_csma_run_pipe graphql api graphql --input -
-}
-
-echo "Writing scores to project board (CSMA-aware)..."
-update_field "${REACH_FIELD_ID}" "${REACH}"
-update_field "${IMPACT_FIELD_ID}" "${IMPACT}"
-update_field "${CONFIDENCE_FIELD_ID}" "${CONFIDENCE}"
-update_field "${EFFORT_FIELD_ID}" "${EFFORT}"
-update_field "${SCORE_FIELD_ID}" "${SCORE}"
-echo "Project fields updated."
+forge_update_project_scores "${REACH}" "${IMPACT}" "${CONFIDENCE}" "${EFFORT}" "${SCORE}"
 
 # Board reranking by RICE Score is deferred — the Projects V2 board supports
 # sorting by custom fields natively, avoiding N sequential API mutations and
@@ -201,8 +126,7 @@ COMMENT=$(jq -n \
   --arg r_impact "${REASONING_IMPACT}" \
   --arg r_confidence "${REASONING_CONFIDENCE}" \
   --arg r_effort "${REASONING_EFFORT}" \
-  -r '"<!-- fullsend:prioritize-agent -->
-**RICE Priority Score: \($score)**
+  -r '"**RICE Priority Score: \($score)**
 
 <details>
 <summary>Score breakdown</summary>
@@ -219,10 +143,5 @@ COMMENT=$(jq -n \
 </details>"')
 
 echo "Posting RICE comment..."
-printf '%s' "${COMMENT}" | github_csma_run_cmd core fullsend post-comment \
-  --repo "${REPO}" \
-  --number "${ISSUE_NUMBER}" \
-  --marker "<!-- fullsend:prioritize-agent -->" \
-  --token "${GH_TOKEN}" \
-  --result - >/dev/null
+forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:prioritize-agent -->"
 echo "Post-prioritize complete."

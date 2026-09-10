@@ -2,7 +2,14 @@
 agent: agents/triage.md
 doc: docs/triage.md
 model: opus
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:eaf365ad038d762954d8fd5f41618cd6766a8a6a6f76d944aaf160819666734d
+# Reasoning effort (low|medium|high|xhigh|max), pinned to what the fleet
+# already ran at implicitly: Claude Code's default effort is high on every
+# effort-capable model except Opus 4.7 (xhigh) — code.claude.com/docs/en/
+# model-config — and the fullsend pi runtime passes --thinking high when
+# effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
+# when the model: above moves to a generation with a different default.
+effort: high
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea321353552fdefd3a6a55e8b5c260998dfc5a622ed143e41a429995a
 policy: policies/base.yaml
 openshell:
   profiles:
@@ -38,15 +45,13 @@ env:
     TRIAGE_AUTO_CODE: "on"
     TRIAGE_AUTO_CODE_CATEGORIES: "bug,documentation,performance"
 
-forge:
-  github:
+overlays:
+  - when: '(has(event.source) && event.source.system == "github") || (!has(event.source) && runtime.forge == "github")'
     providers:
       - providers/github-ro.yaml
     openshell:
       profiles:
         - profiles/fullsend-github-ro.yaml
-    pre_script: scripts/pre-triage.sh
-    post_script: scripts/post-triage.sh
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -63,10 +68,12 @@ forge:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
-  gitlab:
-    policy: policies/gitlab/triage.yaml
-    pre_script: scripts/pre-triage.sh
-    post_script: scripts/post-triage.sh
+  - when: '(has(event.source) && event.source.system == "gitlab") || (!has(event.source) && runtime.forge == "gitlab")'
+    providers:
+      - providers/gitlab-rw.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-rw.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab
@@ -83,3 +90,32 @@ forge:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
+  - when: '(has(event.source) && event.source.system == "jira") || (!has(event.source) && runtime.forge == "jira")'
+    providers:
+      - providers/jira-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-jira-ro.yaml
+    skills:
+      - skills/jira-forge
+      - skills/issue-labels/jira
+      - skills/jira-components
+    host_files:
+      - src: env/jira/triage.env
+        dest: /sandbox/workspace/.env.d/triage.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${FULLSEND_WORK_ITEM_URL}
+        JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+        JIRA_TOKEN: ${JIRA_TOKEN}
+        JIRA_BASE_URL: ${JIRA_BASE_URL}
+        JIRA_DUPLICATE_TRANSITION: "Duplicate"
+        JIRA_NOT_PLANNED_TRANSITION: "Won't Do"
+        JIRA_SPLIT_TRANSITION: "Obsolete"
+        FULLSEND_FORGE: jira
+      sandbox:
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        FULLSEND_FORGE: jira

@@ -1,8 +1,9 @@
 # Eval Harness
 
 Functional tests for fullsend agents. Each agent has its own eval
-directory (`triage/`, `review/`, `code/`) containing an `eval.yaml`
-config and a `cases/` directory with test case definitions.
+directory (`triage/`, `review/`, `code/`, `fix/`, `retro/`) containing
+an `eval.yaml` config and a `cases/` directory with test case
+definitions.
 
 ## Running evals
 
@@ -29,6 +30,7 @@ running:
 
 ```bash
 bash eval/lint-cases.sh <agent>
+bash eval/lint-measurements.sh
 ```
 
 ## Prerequisites
@@ -68,6 +70,9 @@ calls during both execution and scoring.
 |----------|-------------|
 | `FULLSEND_DIR` | Path to the fullsend scaffold directory. Defaults to the repo root. |
 | `EVAL_TIMEOUT` | Runner timeout in seconds. Defaults to `1800` (30 min). |
+| `EVAL_RUNTIME` | Run every case under this runtime (`claude` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
+| `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |
+| `EVAL_EFFORT` | Effort override via `fullsend run --effort`. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account key file for Vertex AI. |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project ID for Anthropic Vertex. |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID. |
@@ -136,3 +141,16 @@ Each test case follows this lifecycle:
 - **`checkStatus` drops string errors.** fullsend's `checkStatus` does
   not handle string-typed error responses from the GitHub API, causing
   silent failures.
+
+## Measurement manifests (online scoring)
+
+Per-agent manifests under [`eval/measurements/`](./measurements/) are the
+**default online-scoring policy** for stock agents (which scorers run after
+managed jobs via `fullsend eval-measure`). They are **not** functional PR-gate
+scenarios under `eval/<agent>/`.
+
+Scorer *implementations* live in `fullsend-ai/fullsend`; this repo only
+declares defaults. Jobs fetch these files from `agents@v0` unless a consumer
+overrides under `FULLSEND_DIR`. See [`eval/measurements/README.md`](./measurements/README.md)
+and [fullsend#6036](https://github.com/fullsend-ai/fullsend/pull/6036) (ADR 0087
+lands with that PR).

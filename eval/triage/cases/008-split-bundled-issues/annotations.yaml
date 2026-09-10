@@ -10,7 +10,7 @@ labels:
     - triaged
     - blocked
 
-max_turns: 30
+max_turns: 35
 max_cost_usd: 2.00
 
 triage_expectations: |

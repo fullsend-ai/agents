@@ -23,7 +23,8 @@
 #                       GitHub: contents:write + issues:write + pull-requests:write
 #                       GitLab: api scope (project or personal access token)
 #   REPO_FULL_NAME    — owner/repo or group/project path
-#   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab)
+#   ISSUE_NUMBER      — issue number (GitHub) or IID (GitLab); not required
+#                       when the source tracker differs from FULLSEND_FORGE
 #   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
@@ -55,6 +56,8 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 # shellcheck source=lib/gitleaks-install.lib.sh
 source "${SCRIPT_DIR_POST}/lib/gitleaks-install.lib.sh"
+# shellcheck source=lib/precommit-gate.lib.sh
+source "${SCRIPT_DIR_POST}/lib/precommit-gate.lib.sh"
 # shellcheck source=lib/pr-assignee.lib.sh
 source "${SCRIPT_DIR_POST}/lib/pr-assignee.lib.sh"
 # shellcheck source=lib/branch-guard.lib.sh
@@ -66,6 +69,8 @@ source "${SCRIPT_DIR_POST}/lib/branch-guard.lib.sh"
 SCRIPT_DIR="${SCRIPT_DIR_POST}"
 # shellcheck source=lib/code-ops.lib.sh
 source "${SCRIPT_DIR_POST}/lib/code-ops.lib.sh"
+# shellcheck source=lib/labels.lib.sh
+source "${SCRIPT_DIR_POST}/lib/labels.lib.sh"
 
 # ---------------------------------------------------------------------------
 # enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
@@ -190,11 +195,27 @@ RUN_DIR="$(pwd)"
 
 : "${PUSH_TOKEN:?PUSH_TOKEN is required}"
 : "${REPO_FULL_NAME:?REPO_FULL_NAME is required}"
-: "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
-trap 'report_post_failure_to_issue' ERR
+ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+WORK_ITEM_URL="${FULLSEND_WORK_ITEM_URL:-${ISSUE_URL:-}}"
+EXTERNAL_WORK_ITEM=false
 
-[[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
-  post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
+if [ -n "${FULLSEND_TRACKER:-}" ] \
+   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_FORGE}" ]; then
+  EXTERNAL_WORK_ITEM=true
+  : "${WORK_ITEM_URL:?FULLSEND_WORK_ITEM_URL is required for external-tracker runs}"
+  WORK_ITEM_KEY="${FULLSEND_WORK_ITEM_KEY:-${WORK_ITEM_URL%/}}"
+  WORK_ITEM_KEY="${WORK_ITEM_KEY##*/}"
+  if [[ ! "${WORK_ITEM_KEY}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+    gha_echo error "FULLSEND_WORK_ITEM_URL does not contain a valid work-item key"
+    exit 1
+  fi
+else
+  : "${ISSUE_NUMBER:?ISSUE_NUMBER is required}"
+  [[ "${ISSUE_NUMBER}" =~ ^[1-9][0-9]*$ ]] || \
+    post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
+  WORK_ITEM_KEY="${ISSUE_NUMBER}"
+fi
+trap 'report_post_failure_to_issue' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
   if [ ! -d "${REPO_DIR}" ]; then
@@ -218,7 +239,7 @@ if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
   # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
   # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
   # to the mismatched host.
-  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')"
+  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
     gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
     exit 1
@@ -318,6 +339,12 @@ fi
 # ---------------------------------------------------------------------------
 post_noop_comment() {
   local reason="$1"
+
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    gha_echo notice "No PR created for ${WORK_ITEM_KEY}: ${reason}"
+    return 0
+  fi
+
   local safe_issue_number
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
 
@@ -374,14 +401,13 @@ if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ];
 fi
 
 # ---------------------------------------------------------------------------
-# 1b. Enforce agent/<ISSUE_NUMBER>-* branch namespace
+# 1b. Enforce agent/<WORK_ITEM_KEY>-* branch namespace
 #
 # The agent chooses its own branch name inside the sandbox. Rename it
-# deterministically using the trusted ISSUE_NUMBER (sourced from the
-# CI event, not from agent output) so agent-authored pushes are
+# deterministically using the trusted work-item identifier so agent-authored pushes are
 # confined to this issue's namespace.
 # ---------------------------------------------------------------------------
-SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${ISSUE_NUMBER}")"
+SAFE_BRANCH="$(enforce_branch_namespace "${BRANCH}" "${WORK_ITEM_KEY}")"
 if [ "${BRANCH}" != "${SAFE_BRANCH}" ]; then
   gha_echo warning "Renaming agent branch '${BRANCH}' to '${SAFE_BRANCH}'"
   git branch -M "${SAFE_BRANCH}"
@@ -488,163 +514,62 @@ fi
 echo "Secret scan passed — no leaks in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
-# 3b. Reject Signed-off-by trailers
+# 3b. Strip Signed-off-by trailers
 #
-# Agents must never produce Signed-off-by trailers. DCO is a human
-# attestation — the DCO app already waives the check for bot authors.
-# The bot noreply email makes the trailer ~90 characters, which causes
-# gitlint body-max-line-length failures in repos with a 72-char limit.
+# Agents must not sign off: DCO waives bot authors, and the bot noreply
+# address makes the trailer ~90 chars, failing gitlint body-max-line-length.
+# Strip it and continue; fail only if one survives the rewrite.
 # ---------------------------------------------------------------------------
 echo "Checking for Signed-off-by trailers in agent's commit(s)..."
-if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-  post_fail_to_issue signed-off-by \
-    "Agent commit contains a Signed-off-by trailer. Agents must not use 'git commit -s' or append Signed-off-by trailers."
+SIGNOFF_STRIPPED=false
+SIGNOFF_STRIPPED_COUNT=0
+_signoff_count="$(signoff_count_range "${SCAN_RANGE}")"
+if [ "${_signoff_count}" -gt 0 ]; then
+  gha_echo warning "Found Signed-off-by trailer(s) in ${_signoff_count} agent commit(s) — stripping"
+
+  if ! SIGNOFF_STRIP_ERROR="$(signoff_strip_range "${SCAN_RANGE}" 2>&1 >/dev/null)"; then
+    post_fail_to_issue signoff-rewrite-failed \
+      "Failed to strip Signed-off-by trailer(s) from agent commit(s): ${SIGNOFF_STRIP_ERROR}"
+  fi
+
+  # Re-scan: fail only if a trailer survives a rewrite that reported success
+  if signoff_present_in_range "${SCAN_RANGE}"; then
+    post_fail_to_issue signed-off-by \
+      "Signed-off-by trailer persists after rewrite attempt. Manual intervention required."
+  fi
+  SIGNOFF_STRIPPED=true
+  SIGNOFF_STRIPPED_COUNT="${_signoff_count}"
+  echo "Signed-off-by trailer(s) removed from ${_signoff_count} agent commit(s)"
+else
+  echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 fi
-echo "Signed-off-by scan passed — no trailers in agent's commit(s)"
 
 # ---------------------------------------------------------------------------
 # 4. Auto-install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
-SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESOLVE_SCRIPT="${SCRIPT_DIR_POST}/resolve-precommit-tools.py"
-INSTALL_SCRIPT="${SCRIPT_DIR_POST}/install-precommit-tools.sh"
-
-# Fallback: these companion scripts were never migrated into this repo
-# during the ADR 0058 extraction, so the BASH_SOURCE-relative lookup above
-# always misses. In current fullsend reusable-workflow layouts, the
-# "Prepare workspace" step typically materializes scripts/ at
-# ${GITHUB_WORKSPACE}/scripts/ (per-org) or ${GITHUB_WORKSPACE}/.fullsend/scripts/
-# (per-repo) — see fullsend-ai/.fullsend reusable workflows. Try those paths
-# when the BASH_SOURCE-relative lookup misses.
-WORKSPACE_DIR="$(forge_get_workspace_dir)"
-if [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; then
-  if [ -n "${WORKSPACE_DIR}" ]; then
-    for _ws_candidate in "${WORKSPACE_DIR}/scripts" "${WORKSPACE_DIR}/.fullsend/scripts"; do
-      if [ -f "${_ws_candidate}/resolve-precommit-tools.py" ] \
-         && [ -f "${_ws_candidate}/install-precommit-tools.sh" ]; then
-        RESOLVE_SCRIPT="${_ws_candidate}/resolve-precommit-tools.py"
-        INSTALL_SCRIPT="${_ws_candidate}/install-precommit-tools.sh"
-        break
-      fi
-    done
-  fi
-fi
-
-# Warn instead of silently skipping when the repo needs the auto-install but
-# the companions are missing everywhere — a silent skip here surfaces later
-# as a confusing "Executable X not found" pre-commit failure.
-if [ -f .pre-commit-config.yaml ] \
-   && { [ ! -f "${RESOLVE_SCRIPT}" ] || [ ! -f "${INSTALL_SCRIPT}" ]; }; then
-  gha_echo warning "Pre-commit tool auto-install skipped: companion scripts not found"
-  gha_echo warning "Expected ${RESOLVE_SCRIPT} and ${INSTALL_SCRIPT}"
-  gha_echo warning "Pre-commit hooks requiring system tools (e.g. lychee) may fail"
-fi
-
-if [ -f .pre-commit-config.yaml ] \
-   && [ -f "${RESOLVE_SCRIPT}" ] \
-   && [ -f "${INSTALL_SCRIPT}" ]; then
-  MANIFEST="$(mktemp)"
-  LOCAL_REG="$(mktemp)"
-  RESOLVE_ARGS=(".")
-  if git show "origin/${TARGET_BRANCH}:.pre-commit-tools.yaml" > "${LOCAL_REG}" 2>/dev/null; then
-    RESOLVE_ARGS+=("--local-registry" "${LOCAL_REG}")
-  fi
-  if python3 "${RESOLVE_SCRIPT}" "${RESOLVE_ARGS[@]}" > "${MANIFEST}"; then
-    if [ -s "${MANIFEST}" ] && jq -e '.tools | length > 0' "${MANIFEST}" >/dev/null 2>&1; then
-      bash "${INSTALL_SCRIPT}" "${MANIFEST}"
-    fi
-  else
-    gha_echo warning "Pre-commit tool resolution failed — continuing without auto-install"
-  fi
-  rm -f "${MANIFEST}" "${LOCAL_REG}"
-fi
+precommit_install_deps "${TARGET_BRANCH}"
 export PATH="${HOME}/.local/bin:${PATH}"
 
 # ---------------------------------------------------------------------------
 # 5. Authoritative pre-commit check
 # ---------------------------------------------------------------------------
-if [ -f .pre-commit-config.yaml ]; then
-  echo "Running authoritative pre-commit on agent's changed files..."
+echo "Running authoritative pre-commit on agent's changed files..."
 
-  if ! command -v pre-commit >/dev/null 2>&1; then
-    echo "Installing pre-commit..."
-    pip install "pre-commit==4.5.1" 2>/dev/null \
-      || pip3 install "pre-commit==4.5.1" 2>/dev/null \
-      || pipx install "pre-commit==4.5.1" 2>/dev/null \
-      || gha_echo warning "Failed to install pre-commit"
-  fi
+changed_array=()
+while IFS= read -r _changed_line; do
+  changed_array+=("${_changed_line}")
+done <<< "${CHANGED_FILES}"
 
-  if command -v pre-commit >/dev/null 2>&1; then
-    changed_array=()
-    while IFS= read -r _changed_line; do
-      changed_array+=("${_changed_line}")
-    done <<< "${CHANGED_FILES}"
-    # SYNC: parallel retry block in post-fix.sh section 3 — keep structure
-    #       in sync (variable names differ: CHANGED_FILES here vs
-    #       BRANCH_CHANGED_FILES there; SCAN_RANGE scopes differ by design).
-    PRECOMMIT_OUTPUT=""
-    if PRECOMMIT_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
-      print_sanitized_gha_log "${PRECOMMIT_OUTPUT}"
-      echo "Pre-commit passed — all hooks clean"
-    else
-      print_sanitized_gha_log "${PRECOMMIT_OUTPUT}"
-      # Single retry only — do not convert to a loop without adding a cap.
-      # Scope detection/staging to changed_array so hooks can't inject files
-      # outside the pre-commit scope into the commit.
-      if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
-        gha_echo warning "Pre-commit hooks auto-fixed files — re-staging and retrying"
-        echo "Auto-fixed files:"
-        git diff --name-only -- "${changed_array[@]}" | sed 's/^/  /'
-        git diff --name-only -z -- "${changed_array[@]}" | xargs -0 -r git add --
-        git commit --amend --no-edit
+precommit_run_gate changed_array "${SCAN_RANGE}" "${TARGET_BRANCH}" "${MERGE_BASE}"
 
-        echo "Re-running secret scan on amended commit..."
-        GITLEAKS_OUTPUT=""
-        if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE}" --redact 2>&1)"; then
-          print_sanitized_gha_log "${GITLEAKS_OUTPUT}" stderr
-          post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
-        fi
-        if git log --format='%b' "${SCAN_RANGE}" | grep -q '^Signed-off-by:'; then
-          post_fail_to_issue signed-off-by \
-            "Amended commit contains a Signed-off-by trailer after pre-commit auto-fix."
-        fi
-
-        if [ -n "${MERGE_BASE}" ]; then
-          CHANGED_FILES="$(git diff --name-only "${MERGE_BASE}..HEAD")"
-        else
-          CHANGED_FILES="$(git diff --name-only "origin/${TARGET_BRANCH}..HEAD" 2>/dev/null \
-            || git diff --name-only HEAD~1..HEAD 2>/dev/null || true)"
-        fi
-        if [ -z "${CHANGED_FILES}" ]; then
-          post_fail_to_issue pre-commit-blocked \
-            "Pre-commit hooks removed all changes; commit is now empty."
-        fi
-        changed_array=()
-        while IFS= read -r _changed_line; do
-          changed_array+=("${_changed_line}")
-        done <<< "${CHANGED_FILES}"
-        PRECOMMIT_RETRY_OUTPUT=""
-        if PRECOMMIT_RETRY_OUTPUT="$(pre-commit run --files "${changed_array[@]}" 2>&1)"; then
-          print_sanitized_gha_log "${PRECOMMIT_RETRY_OUTPUT}"
-          if git diff --name-only -- "${changed_array[@]}" | grep -q .; then
-            post_fail_to_issue pre-commit-blocked \
-              "Retry pre-commit left additional unstaged changes; committed content would diverge from what pre-commit validated."
-          fi
-          echo "Pre-commit passed after auto-fix re-stage"
-        else
-          print_sanitized_gha_log "${PRECOMMIT_RETRY_OUTPUT}"
-          post_fail_to_issue pre-commit-blocked "${PRECOMMIT_RETRY_OUTPUT}"
-        fi
-      else
-        post_fail_to_issue pre-commit-blocked "${PRECOMMIT_OUTPUT}"
-      fi
-    fi
-  else
-    gha_echo warning "pre-commit not available on runner — skipping authoritative check"
-    gha_echo warning "CI pre-commit will still run on the PR"
-  fi
-else
-  echo "No .pre-commit-config.yaml — skipping pre-commit check"
+if [ "${PRECOMMIT_GATE_SECRET_FAIL}" = "true" ]; then
+  post_fail_to_issue secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
+fi
+if [ "${PRECOMMIT_GATE_SIGNOFF_FAIL}" = "true" ]; then
+  post_fail_to_issue "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
+fi
+if [ "${PRECOMMIT_GATE_RESULT}" = "fail" ]; then
+  post_fail_to_issue "${PRECOMMIT_GATE_CATEGORY}" "${PRECOMMIT_GATE_DETAIL}"
 fi
 
 # ---------------------------------------------------------------------------
@@ -677,26 +602,30 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
       "Could not query open PRs for branch '${BRANCH}' — refusing to push."
   fi
   if [ -z "${OPEN_PR}" ]; then
-    if [[ "${BRANCH}" != agent/${ISSUE_NUMBER}-* ]]; then
+    if [[ "${BRANCH}" != agent/${WORK_ITEM_KEY}-* ]]; then
       post_fail_to_issue branch-namespace-violation \
-        "Branch '${BRANCH}' is outside agent/${ISSUE_NUMBER}-* namespace — refusing to delete."
+        "Branch '${BRANCH}' is outside agent/${WORK_ITEM_KEY}-* namespace — refusing to delete."
     fi
     echo "No open PR uses ${BRANCH} — deleting stale remote branch"
     forge_delete_remote_branch "${BRANCH}"
   else
     # Verify the open PR belongs to this issue. With deterministic branch
-    # naming (agent/<ISSUE_NUMBER>-*) this should always hold, but check
+    # naming (agent/<WORK_ITEM_KEY>-*) this should always hold, but check
     # anyway as defense-in-depth against cross-issue commit injection.
     PR_BODY_TEXT="$(forge_get_pr_details "${OPEN_PR}" "body" | jq -r '.body // .description // empty' 2>/dev/null || true)"
     PR_CLOSES_THIS_ISSUE=false
-    if pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
+    if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+      if printf '%s\n' "${PR_BODY_TEXT}" | grep -qwF -- "${WORK_ITEM_URL}"; then
+        PR_CLOSES_THIS_ISSUE=true
+      fi
+    elif pr_body_refs_issue "${PR_BODY_TEXT}" "${ISSUE_NUMBER}"; then
       PR_CLOSES_THIS_ISSUE=true
     fi
     if [ "${PR_CLOSES_THIS_ISSUE}" = "false" ]; then
       post_fail_to_issue branch-collision \
-        "Remote branch '${BRANCH}' backs open PR #${OPEN_PR}, which does not reference issue #${ISSUE_NUMBER}. Refusing to push to avoid cross-issue commit injection."
+        "Remote branch '${BRANCH}' backs open PR #${OPEN_PR}, which does not reference work item ${WORK_ITEM_KEY}. Refusing to push to avoid cross-work-item commit injection."
     fi
-    echo "Open PR #${OPEN_PR} uses ${BRANCH} and references issue #${ISSUE_NUMBER} — keeping remote branch"
+    echo "Open PR #${OPEN_PR} uses ${BRANCH} and references ${WORK_ITEM_KEY} — keeping remote branch"
   fi
 fi
 
@@ -737,14 +666,35 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   echo "PR: ${EXISTING_PR_URL}"
   forge_write_output "pr_url" "${EXISTING_PR_URL}"
 
+  # This path exits before the PR body is assembled, so the note goes here.
+  if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
+    forge_post_pr_comment "${EXISTING_PR_NUM}" \
+      "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
+      || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
+  fi
+
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
-  maybe_assign_pr "${EXISTING_PR_NUM}"
+  if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
+    maybe_assign_pr "${EXISTING_PR_NUM}"
+  fi
   exit 0
 fi
 
 echo "Creating PR..."
 
-COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
+# When the agent made multiple commits, the first commit is typically the
+# primary work and the last may be a minor follow-up (e.g. lint fix). Use
+# the first commit's subject for the PR title in that case.
+if [ -n "${MERGE_BASE}" ]; then
+  COMMIT_COUNT="$(git rev-list --count "${MERGE_BASE}..HEAD")"
+else
+  COMMIT_COUNT=1
+fi
+if [ "${COMMIT_COUNT}" -gt 1 ]; then
+  COMMIT_SUBJECT="$(git log --format='%s' --reverse "${MERGE_BASE}..HEAD" | head -1)"
+else
+  COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
+fi
 
 # Read pr_body from agent output. Fall back to commit body if absent.
 PR_BODY_FROM_RESULT=""
@@ -839,7 +789,11 @@ if echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+\('; then
   PR_TITLE="${COMMIT_SUBJECT}"
 elif echo "${COMMIT_SUBJECT}" | grep -qE '^[a-z]+: '; then
   # Conventional commit without scope — inject issue reference
-  PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(${WORK_ITEM_KEY}): /")"
+  else
+    PR_TITLE="$(echo "${COMMIT_SUBJECT}" | sed "s/^\([a-z]*\): /\1(#${ISSUE_NUMBER}): /")"
+  fi
 else
   # Non-conventional title — leave as-is
   PR_TITLE="${COMMIT_SUBJECT}"
@@ -850,7 +804,11 @@ if [ -z "${COMMIT_BODY}" ]; then
 fi
 
 if [ -z "${COMMIT_BODY}" ]; then
-  DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    DESCRIPTION="Automated implementation for ${WORK_ITEM_KEY}."
+  else
+    DESCRIPTION="Automated implementation for issue #${ISSUE_NUMBER}."
+  fi
 else
   DESCRIPTION="${COMMIT_BODY}"
 fi
@@ -862,23 +820,31 @@ case "${PR_BODY_SCAN_STATUS}" in
   *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
 esac
 
-if [ "${CLOSES_ISSUE}" = "false" ]; then
-  ISSUE_REF_KEYWORD="Related to"
+SIGNOFF_STRIPPED_LINE=""
+if [ "${SIGNOFF_STRIPPED:-false}" = "true" ]; then
+  SIGNOFF_STRIPPED_LINE="
+- [x] Removed Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)"
+fi
+
+if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+  ISSUE_REFERENCE="Related to ${WORK_ITEM_URL}"
+elif [ "${CLOSES_ISSUE}" = "false" ]; then
+  ISSUE_REFERENCE="Related to #${ISSUE_NUMBER}"
 else
-  ISSUE_REF_KEYWORD="Closes"
+  ISSUE_REFERENCE="Closes #${ISSUE_NUMBER}"
 fi
 
 PR_BODY="${DESCRIPTION}
 
 ---
 
-${ISSUE_REF_KEYWORD} #${ISSUE_NUMBER}
+${ISSUE_REFERENCE}
 
 ### Post-script verification
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}"
+${PR_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(forge_create_pr \
@@ -902,6 +868,7 @@ forge_write_output "pr_url" "${PR_URL}"
 # .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
 # Note: variable name is PR_NUMBER_FROM_URL (not PR_NUMBER) to avoid SC2153.
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
+forge_ensure_label "ready-for-review"
 forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 
 # ---------------------------------------------------------------------------
@@ -909,4 +876,6 @@ forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 # ---------------------------------------------------------------------------
 enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
-maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
+  maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+fi

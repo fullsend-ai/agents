@@ -2,7 +2,14 @@
 agent: agents/scribe.md
 doc: docs/scribe.md
 model: opus
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:eaf365ad038d762954d8fd5f41618cd6766a8a6a6f76d944aaf160819666734d
+# Reasoning effort (low|medium|high|xhigh|max), pinned to what the fleet
+# already ran at implicitly: Claude Code's default effort is high on every
+# effort-capable model except Opus 4.7 (xhigh) — code.claude.com/docs/en/
+# model-config — and the fullsend pi runtime passes --thinking high when
+# effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
+# when the model: above moves to a generation with a different default.
+effort: high
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea321353552fdefd3a6a55e8b5c260998dfc5a622ed143e41a429995a
 policy: policies/base.yaml
 openshell:
   profiles:
@@ -54,8 +61,6 @@ env:
     SCRIBE_MIN_CONFIDENCE: ${SCRIBE_MIN_CONFIDENCE}
     SCRIBE_MODE: ${SCRIBE_MODE}
     SCRIBE_SLACK_WEBHOOK_URL: ${SCRIBE_SLACK_WEBHOOK_URL}
-    GH_TOKEN: ${GH_TOKEN}
-    CONTENTS_TOKEN: ${CONTENTS_TOKEN}
   sandbox:
     SCRIBE_REPO: "${SCRIBE_REPO}"
     SCRIBE_SEARCH_QUERY: "${SCRIBE_SEARCH_QUERY}"
@@ -65,3 +70,16 @@ env:
     SCRIBE_MODE: "${SCRIBE_MODE}"
 
 timeout_minutes: 15
+
+forge:
+  github:
+    env:
+      runner:
+        GH_TOKEN: "${GH_TOKEN}"
+        CONTENTS_TOKEN: "${CONTENTS_TOKEN}"
+        FULLSEND_FORGE: github
+  gitlab:
+    env:
+      runner:
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab

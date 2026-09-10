@@ -2,7 +2,14 @@
 agent: agents/retro.md
 doc: docs/retro.md
 model: opus
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:eaf365ad038d762954d8fd5f41618cd6766a8a6a6f76d944aaf160819666734d
+# Reasoning effort (low|medium|high|xhigh|max), pinned to what the fleet
+# already ran at implicitly: Claude Code's default effort is high on every
+# effort-capable model except Opus 4.7 (xhigh) — code.claude.com/docs/en/
+# model-config — and the fullsend pi runtime passes --thinking high when
+# effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
+# when the model: above moves to a generation with a different default.
+effort: high
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea321353552fdefd3a6a55e8b5c260998dfc5a622ed143e41a429995a
 policy: policies/base.yaml
 openshell:
   profiles:
@@ -32,6 +39,15 @@ skills:
 pre_script: scripts/pre-retro.sh
 post_script: scripts/post-retro.sh
 
+env:
+  runner:
+    ORIGINATING_URL: "${ORIGINATING_URL}"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+  sandbox:
+    ORIGINATING_URL: "${ORIGINATING_URL}"
+    RETRO_COMMENT: "${RETRO_COMMENT}"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+
 validation_loop:
   script: scripts/validate-output-schema.sh
   schema: schemas/retro-result.schema.json
@@ -48,15 +64,39 @@ forge:
       profiles:
         - profiles/fullsend-github-ro.yaml
         - profiles/fullsend-github-artifacts.yaml
-    pre_script: scripts/pre-retro.sh
-    post_script: scripts/post-retro.sh
+    skills:
+      - skills/github-forge
+      - skills/retro-analysis/github
+      - skills/finding-agent-runs/github
+    host_files:
+      - src: env/github/retro.env
+        dest: /sandbox/workspace/.env.d/retro.env
+        expand: true
     env:
       runner:
-        ORIGINATING_URL: "${ORIGINATING_URL}"
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
       sandbox:
-        ORIGINATING_URL: "${ORIGINATING_URL}"
-        RETRO_COMMENT: "${RETRO_COMMENT}"
-        REPO_FULL_NAME: "${REPO_FULL_NAME}"
         GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
+  gitlab:
+    providers:
+      - providers/gitlab-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-gitlab-ro.yaml
+    skills:
+      - skills/gitlab-forge
+      - skills/retro-analysis/gitlab
+      - skills/finding-agent-runs/gitlab
+    host_files:
+      - src: env/gitlab/retro.env
+        dest: /sandbox/workspace/.env.d/retro.env
+        expand: true
+    env:
+      runner:
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab
+      sandbox:
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab

@@ -1,17 +1,20 @@
 # fullsend agents
 
-First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) platform. These agents automate the software development lifecycle on GitHub and GitLab — from issue triage through code implementation, review, fix, prioritization, and retrospective analysis.
+First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) platform. These agents automate the software development lifecycle on GitHub, GitLab, and Jira Cloud — from issue triage through code implementation, review, fix, prioritization, and retrospective analysis.
 
 ## Agents
 
-| Agent | Description | Trigger |
-|-------|-------------|---------|
-| **Triage** | Assesses issue sufficiency, searches for duplicates, applies control labels | New issues, `/fs-triage` |
-| **Code** | Implements fixes and features following repo conventions | `ready-to-code` label, `/fs-code` |
-| **Review** | Dispatches parallel sub-agents across six review dimensions | PR events, `/fs-review` |
-| **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` |
-| **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` |
-| **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` |
+| Agent | Description | Trigger | Runtimes |
+|-------|-------------|---------|----------|
+| **Triage** | Assesses issue sufficiency, searches for duplicates, applies control labels | New issues, `/fs-triage` | claude, pi |
+| **Code** | Implements fixes and features following repo conventions | `ready-to-code` label, `/fs-code` | claude, pi |
+| **Review** | Dispatches parallel sub-agents across six review dimensions | PR events, `/fs-review` | claude, pi |
+| **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` | claude, pi |
+| **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` | claude, pi |
+| **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` | claude, pi |
+| **Scribe** | Maps meeting notes to issue backlog updates and new issues | Schedule | claude, pi |
+
+Claude Code (`claude`) is the stable default every repo gets; `pi` is in its enablement (experimental) phase and is selected per repo with `runtime: pi` — see fullsend's [Runtimes](https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md). Every harness sets `effort: high` explicitly.
 
 See [`docs/`](docs/) for detailed documentation on each agent.
 
@@ -29,6 +32,7 @@ schemas/     JSON Schema for validating agent structured output
 scripts/     Pre-scripts (input validation) and post-scripts (forge mutations)
 skills/      Reusable skill definitions loaded by agents at runtime
 plugins/     Sandbox plugins (e.g. gopls LSP for the code agent)
+eval/        Functional eval harness and default online-scoring manifests
 ```
 
 ## Architecture
@@ -50,6 +54,13 @@ make test
 ```
 
 This is an alias for `make script-test`, which runs the `scripts/*-test.sh` suites. CI also runs `make check-bundle` and executes `make script-test` twice (source and bundled modes) via `.github/workflows/script-test.yml`.
+
+Lint skills, agents, and instructions with [skillsaw](https://github.com/stbenjam/skillsaw):
+
+```bash
+make lint       # check for issues (strict: warnings fail)
+make lint-fix   # apply automatic fixes
+```
 
 ## Script bundling
 
@@ -89,4 +100,6 @@ This repository is versioned in lockstep with [fullsend](https://github.com/full
 |------|-----------|---------|
 | `fullsend.yaml` | fullsend (centrally managed) | Routes GitHub events to agent dispatch workflows |
 | `release.yml` | This repo | Creates GitHub Releases and moves the `v0` tag on version tag push |
+| `notify-agent-sync.yml` | This repo | Dispatches `agents-updated` event to `.fullsend` for cross-repo digest sync |
+| `lint.yml` | This repo | Runs pre-commit checks, commit-message linting, and skillsaw on PRs and main branch pushes |
 | `script-test.yml` | This repo | Runs agent shell script tests on PRs and main branch pushes |

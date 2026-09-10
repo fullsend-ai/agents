@@ -2,7 +2,7 @@
 
 ![Retro agent icon](icons/retro.png)
 
-Performs retrospectives on agent workflows — analyzes what happened, identifies improvement opportunities, and proposes changes as GitHub issues.
+Performs retrospectives on agent workflows — analyzes what happened, identifies improvement opportunities, and proposes changes as issues.
 
 ## Setup
 
@@ -49,7 +49,9 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 ### Variables
 
-None.
+| Variable | Description | Default | Valid values |
+|----------|-------------|---------|--------------|
+| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
 
 ### Issue filing allowlist
 
@@ -62,6 +64,26 @@ can be filed manually.
 The originating repo (where the PR that triggered the retro lives) is
 always implicitly allowed.
 
+## Multi-forge support
+
+The retro agent supports both GitHub and GitLab. The harness
+`forge.<platform>` sections configure platform-specific policies,
+skills, env vars, and providers. Key differences from single-forge
+setup:
+
+- **`FULLSEND_FORGE`** is required. Set automatically by the harness
+  `forge.<platform>.env` section (`"github"` or `"gitlab"`).
+- **Policy** is `policies/base.yaml` for all forges. Network access is
+  provided by profiles (`fullsend-gitlab-ro` for GitLab).
+- **GitLab uses `curl`** instead of `gh` for API access. The GitLab
+  profile (`fullsend-gitlab-ro`) allows `curl` for GitLab API
+  endpoints only.
+- **GitLab host validation** — `forge_validate_originating_url`
+  validates the host against `CI_SERVER_HOST`, a GitLab CI predefined
+  variable set automatically by the runner. Validation fails closed
+  when `CI_SERVER_HOST` is not set. The GitLab profile in
+  `profiles/fullsend-gitlab-ro.yaml` must also be updated.
+
 ## How the agent works
 
 The retro agent reconstructs the full workflow graph — [triage](triage.md), [code](code.md), [review](review.md), [fix](fix.md), and human interactions — by fetching issue and PR timelines, agent run logs, and review threads.
@@ -69,7 +91,7 @@ The retro agent reconstructs the full workflow graph — [triage](triage.md), [c
 1. **Pre-script** gathers metadata about the originating PR or issue.
 2. **Sandbox** — the agent reads the full workflow history, identifies patterns (wasted cycles, missed context, repeated failures), and writes structured proposals. It uses the retro-analysis and finding-agent-runs skills. The agent cannot write files or edit code in the target repo.
 3. **Validation loop** — output is checked against a schema, with up to 2 retries.
-4. **Post-script** creates GitHub issues from the agent's proposals. Proposals whose titles match evidence-for patterns (e.g. "Evidence for #1234: ...") are filtered out and folded into the summary comment as evidence notes instead of being filed as issues.
+4. **Post-script** creates issues from the agent's proposals. Proposals whose titles match evidence-for patterns (e.g. "Evidence for #1234: ...") are filtered out and folded into the summary comment as evidence notes instead of being filed as issues.
 
 When triggered via `/fs-retro`, the human's comment is passed to the agent as high-signal direction about what to focus on.
 
@@ -77,6 +99,12 @@ When triggered via `/fs-retro`, the human's comment is passed to the agent as hi
 
 If this agent needs to reach hosts beyond the defaults, see the
 [custom network policy guide](network-policy.md).
+
+## Runtime support
+
+Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
+
+Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 
 ## Source
 

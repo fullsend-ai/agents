@@ -1,0 +1,5 @@
+---
+name: gitlab-ro
+type: fullsend-gitlab-ro
+credentials:
+  GITLAB_TOKEN: "${GITLAB_TOKEN}"

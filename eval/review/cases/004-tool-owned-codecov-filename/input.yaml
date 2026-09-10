@@ -1,0 +1,18 @@
+forge: github
+
+fixture:
+  type: pull_request
+  title: "ci: add Codecov configuration"
+  body: |
+    Add repository-level Codecov thresholds.
+  files:
+    - path: .codecov.yml
+      content: |
+        coverage:
+          status:
+            project:
+              default:
+                target: auto
+            patch:
+              default:
+                target: 80%

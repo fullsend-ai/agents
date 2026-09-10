@@ -10,7 +10,7 @@ description: >
 
 ## Tracing the workflow graph
 
-Given the originating PR or issue, reconstruct what agents ran and in what order.
+Given the originating PR or issue, reconstruct what agents ran and in what order. Use the forge-specific retro-analysis skill for CLI recipes (GitHub or GitLab).
 
 ### Setup
 
@@ -21,60 +21,15 @@ DISPATCH_REPO="${ORG}/.fullsend"
 
 ### From an issue
 
-1. Find triage dispatches (triggered by `/fs-triage` command or `needs-info` label responses):
-
-```bash
-gh run list --repo "$REPO_FULL_NAME" --workflow=fullsend.yaml \
-  --json databaseId,status,conclusion,event,createdAt \
-  -q '.[] | select(.event == "issue_comment" or .event == "issues")'
-```
-
-2. Find the corresponding agent runs in the dispatch repo:
-
-```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=triage.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
-```
-
-3. If the issue reached `ready-to-code`, find code dispatches:
-
-```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=code.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
-```
+1. Find triage dispatches triggered by commands or label responses.
+2. Find the corresponding agent runs in the dispatch repo.
+3. If the issue reached `ready-to-code`, find code dispatches.
 
 ### From a PR
 
 1. The PR branch follows `agent/{issue}-{slug}`. Extract the issue number to trace the full history.
-
-2. Find review dispatches:
-
-```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=review.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
-```
-
-3. Find fix dispatches (if review requested changes):
-
-```bash
-gh run list --repo "$DISPATCH_REPO" --workflow=fix.yml --limit 10 \
-  --json databaseId,status,conclusion,createdAt
-```
-
-### Reading agent logs and artifacts
-
-```bash
-# View job outcomes
-gh run view <RUN_ID> --repo "$DISPATCH_REPO" --json jobs \
-  -q '.jobs[] | "\(.name) \(.status)/\(.conclusion)"'
-
-# Search logs for errors
-gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
-  | grep -i "error\|fail\|exit code"
-
-# Download session artifacts (JSONL traces)
-gh run download <RUN_ID> --repo "$DISPATCH_REPO"
-```
+2. Find review dispatches.
+3. Find fix dispatches (if review requested changes).
 
 ## Exploration strategy
 
@@ -84,14 +39,8 @@ You have a large amount of context to cover. Use subagents to avoid overflowing 
 
 Agent definitions, skills, harness configs, and scripts are resolved at
 runtime from a separate repo — not from `fullsend-ai/fullsend`. The
-workflow run log identifies this repo. Extract it during exploration:
-
-```bash
-# From an agent workflow run log, extract the agents repo
-gh run view <RUN_ID> --repo "$DISPATCH_REPO" --log 2>&1 \
-  | grep -oP 'Fetching agent \S+ from \K[^@]+' \
-  | head -1
-```
+workflow run log identifies this repo. Extract it during exploration
+using your forge-specific skill's CLI recipes.
 
 Look for log lines matching these patterns:
 - `Fetching agent <name> from <owner>/<repo>@<ref>`
@@ -108,7 +57,7 @@ could not be discovered.
 ### Dispatch subagents for each investigation thread
 
 - **Workflow tracer:** "Find all agent workflow runs related to issue/PR #N. List each run with its stage, status, conclusion, and timestamp."
-- **Trace reader:** "Download and read the JSONL reasoning trace for run <RUN_ID>. Summarize what decisions the agent made and why."
+- **Trace reader:** "Download and read the reasoning trace for run <RUN_ID>. Summarize what decisions the agent made and why."
 - **Comment analyzer:** "Read all comments on PR #N. Categorize them: agent review comments, human review comments, CI results, human interventions."
 - **Pattern searcher:** "Search the last 10 retro agent issues in <REPO>. List any recurring themes or prior proposals related to <TOPIC>."
 - **Harness inspector:** "Read the harness config at harness/<AGENT>.yaml and the agent definition at agents/<AGENT>.md in the agents repo. Summarize the agent's configuration and constraints."
@@ -174,20 +123,7 @@ applying either fix category.
 
 **This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
 
-For each candidate proposal, dispatch a subagent:
-
-> "Search `<target_repo>` for open GitHub issues related to `<topic keywords>`. Return the title, number, URL, and a one-sentence description of each result. I need to know whether any of them already propose the same change I'm considering: `<proposed_change_summary>`."
-
-The subagent should run:
-
-```bash
-# Broad keyword search across title and body
-gh api \
-  "search/issues?q=<topic+keywords>+repo:<target_repo>+is:issue+is:open&per_page=20" \
-  --jq '.items[] | {number: .number, title: .title, url: .html_url, body: .body}'
-```
-
-Use multiple searches with different keyword combinations if the first returns no results — the same idea can be filed under different titles.
+For each candidate proposal, dispatch a subagent to search for existing issues using your forge-specific skill's search commands.
 
 **Evaluation criteria** (apply these yourself, not the subagent):
 

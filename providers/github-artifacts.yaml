@@ -1,5 +1,13 @@
 ---
+# Credential-less provider: only network policy rules are needed here.
+# The initial API call to api.github.com is authenticated by the companion
+# github-ro provider (which injects GH_TOKEN). The 302 redirect targets
+# (Azure Blob Storage) use pre-signed SAS URLs — no Authorization header
+# required. The gh CLI (and OpenShell's proxy) drops the Authorization
+# header on cross-domain redirects, so GH_TOKEN must NOT be declared here
+# or it will conflict with github-ro's GH_TOKEN key and OpenShell will
+# reject the sandbox.
 name: github-artifacts
 type: fullsend-github-artifacts
 credentials:
-  GH_TOKEN: "${GH_TOKEN}"
+  _NOOP_GITHUB_ARTIFACTS: ""

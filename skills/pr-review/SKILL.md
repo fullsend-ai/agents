@@ -1,7 +1,9 @@
 ---
 name: pr-review
 description: >-
-  PR review orchestrator. Triages the change, dispatches specialized
+  Use when a pull request needs end-to-end review encompassing
+  triage, code quality, security, and documentation. PR review
+  orchestrator. Triages the change, dispatches specialized
   sub-agents in parallel across review dimensions, synthesizes their
   findings, runs PR-specific checks, and produces a structured review
   result. Sub-agent definitions live in sub-agents/ relative to this
@@ -27,8 +29,8 @@ directly — the `docs-currency` sub-agent follows the `docs-review`
 skill inline.
 
 In pipeline mode (`$FULLSEND_OUTPUT_DIR` set), it writes JSON for the
-post-script to post. In interactive mode, it posts directly via
-`gh pr review`. The orchestrator is the sole producer of
+post-script to post. In interactive mode, it posts directly via the
+forge-specific review skill. The orchestrator is the sole producer of
 `agent-result.json`.
 
 ## Sub-agent roster
@@ -44,14 +46,14 @@ relative to this file.
 | `style-conventions`    | parallel   | Repo-specific naming, error-handling idioms, API shape, code organization                                               |
 | `docs-currency`        | parallel   | Documentation staleness (follows docs-review skill inline)                                                              |
 | `cross-repo-contracts` | parallel   | API contract breakage affecting other repos (conditional)                                                               |
+| `risk-assessment`      | parallel   | Composite risk score (metadata, git history, linked issue)                                                              |
 | `challenger`           | sequential | Adversarial challenge of findings, false-positive removal, deduplication                                                |
 
-**Non-standard dispatch types:** `security-triage` (pre-pass) and
-`challenger` (sequential) are not dimension sub-agents and are NOT
-dispatched in step 4's parallel loop. `security-triage` runs as a
-preprocessing classifier in step 3c-1; `challenger` runs as a
-post-processing adversarial pass in step 6d. Both produce different
-output formats from the standard findings array.
+**Non-standard dispatch types:** `security-triage` (preprocessing
+classifier, step 3c-1), `risk-assessment` (composed in 3c-2, gated by
+`REVIEW_RISK_ASSESSMENT_ENABLED`, dispatched in step 4's batch) and
+`challenger` (adversarial pass, step 6d) are not dimension sub-agents
+and produce different output formats from the findings array.
 
 ## Findings vs inline comments
 
@@ -63,9 +65,9 @@ comment-only.
 
 Inline comments are a **delivery mechanism** for findings, not the
 findings themselves. When findings have file and line locations, the
-CLI attempts to attach them as inline diff comments on the GitHub PR
+CLI attempts to attach them as inline diff comments on the PR
 review so reviewers see feedback on the relevant code lines. However,
-the GitHub API rejects review comments on lines that are not part of
+the forge API rejects review comments on lines that are not part of
 the PR diff. This means:
 
 - **Findings whose file is not in the PR diff** cannot be posted as
@@ -83,6 +85,36 @@ log messages from `post-review` say "inline comment(s) omitted" (not
 
 Follow these steps in order. Do not skip steps.
 
+### Time budget
+
+The runner kills the sandbox at the harness `timeout_minutes` with no
+wrap-up: a review that has not written `agent-result.json` by then
+posts nothing. The harness mirrors that value into `TIMEOUT_SECONDS`;
+skip every time check when it is unset.
+
+Before anything else in step 1: `date +%s > /sandbox/workspace/agent-start`
+(a file: shell variables do not survive between Bash calls). The
+runner's clock starts 1–2 minutes before yours, so:
+
+```bash
+if test -n "${TIMEOUT_SECONDS:-}" && test -s /sandbox/workspace/agent-start; then
+  NOW=$(date +%s); AGENT_START=$(cat /sandbox/workspace/agent-start)
+  REMAINING=$(( TIMEOUT_SECONDS - 120 - NOW + AGENT_START ))
+fi
+```
+
+(`test`, not `[ ]`; no nested `$( )` — the sandbox scanner blocks both.)
+
+Checkpoints:
+
+- **Before 6d:** under 600 s remaining, skip the challenger (2.5–6
+  minutes on any PR) as described there; a review without it is still
+  a review.
+- **When a sub-agent returns after step 4** under 240 s remaining with
+  others still outstanding: stop waiting; write a `failure` result
+  (step 7) with `reason` `time-budget` and no `body` (the post-script's
+  own notice says the PR was not reviewed). A kill posts nothing.
+
 ### 1. Identify the PR
 
 Determine which PR to review:
@@ -92,13 +124,10 @@ Determine which PR to review:
 - If a PR URL was provided, extract the number and repo from the URL.
 - If none was provided, stop and report the failure rather than guessing.
 
-Fetch the PR head SHA:
-
-```bash
-PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
-HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
-IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
-```
+Fetch the PR head SHA using the forge-specific review skill
+(`pr-review/github` or `pr-review/gitlab`, selected by the harness
+based on `FULLSEND_FORGE`). The forge skill provides the exact CLI
+commands for fetching PR/MR data.
 
 Record the **PR head SHA** and **draft status**. You will include the
 head SHA in the review comment and in the result JSON. This SHA pins
@@ -110,107 +139,50 @@ guessing.
 
 ### 2. Fetch PR context
 
-Retrieve PR metadata and the full diff:
+Retrieve PR metadata and the full diff using the forge-specific review
+skill commands:
 
-```bash
-# PR metadata: title, body, author, labels
-PR_META=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
-
-# PR files list (paginated — loop if needed)
-PR_FILES=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/files?per_page=100")
-FILE_COUNT=$(echo "$PR_FILES" | jq 'length')
-LINE_COUNT=$(echo "$PR_FILES" | jq '[.[].additions + .[].deletions] | add')
-```
+- Fetch PR/MR metadata (title, body, author, labels)
+- Fetch the changed files list with per-file stats (additions,
+  deletions) — paginate if the forge API requires it
+- Compute `FILE_COUNT` and `LINE_COUNT` from the response
 
 From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 
-1. FILE_COUNT<50, LINE_COUNT<3000: small PR — proceed as-is with `gh pr diff`
+1. FILE_COUNT<50, LINE_COUNT<3000: small PR — fetch the full unified diff
+   into `/sandbox/workspace/pr-diff.txt` (the forge skill's command
+   writes it there)
 2. FILE_COUNT~=50-200, LINE_COUNT~=3000-10000: large PR — switch to per-file
    mode
 
-   - Extract file paths from PR_STATS
-   - Filter out generated files (lockfiles, vendor/, protobuf, etc.)
-   - Produce per-file diffs via `git diff <merge-base>..HEAD -- <file>`
-   - Concatenate per-file diffs into a single blob per sub-agent (see
-     step 3d for the format)
+   - Write the forge's per-file patches, generated files dropped, into
+     `/sandbox/workspace/pr-diff.txt` (forge skill "Per-file diffs");
+     the checkout is the base branch, so `git diff` there is wrong
 
 3. FILE_COUNT>200 after filtering, LINE_COUNT>10K: emit failure with reason
    `token-limit` and list the file count. Genuine "too big to review" case
 
-### 2b. Fetch source file contents (PR head)
+### 2b. Materialise the PR head
 
-After fetching the diff, read the full contents of each changed file at
-the PR head revision. These will be passed to sub-agents so they do not
-need to re-read files from disk (which would read base-branch code, not
-PR-head code, and waste tokens on redundant I/O).
+The repository checkout (`target-repo/`) is the BASE branch. Before
+dispatching anything, fetch every changed file at `HEAD_SHA` into
+`/sandbox/workspace/pr-head/<path>` (outside the checkout) with the
+forge-specific review skill's "Materialise PR head files" command —
+one Bash call with a 600 s tool timeout, parallel fetches (GitLab:
+then scrub the token file in its own call). Run it as written, even
+for a one-file PR: a hand-rolled fetch with `[ ]` or a one-line
+`if …; then x=$(( … )); fi` is blocked by the sandbox's Bash scanner.
 
-Use `HEAD_SHA` from step 1 (already extracted from `PR_DATA`). Filter
-out removed files (they do not exist at the PR head and the contents API
-will return 404) and binary files (images, compiled artifacts — they
-waste tokens). Skip files that exceed the GitHub contents API's 1 MB
-limit (the API returns a 200 with an empty `content` field for files
-between 1–100 MB); log a warning so the orchestrator knows which files
-were omitted.
+It writes `/sandbox/workspace/pr-head.manifest` (beside the tree, out
+of the PR's reach), one `<status> <path>` per line: `ok`, `too-large`
+(over 2 MB), `binary`, `failed`, `removed`, `unsafe` (JSON-quoted: a
+path with a newline, a leading `/` or a `..` component — never
+fetched). Only `ok` files are verifiable at the PR head; context
+packages (3d) carry the manifest lines. Never inline file contents into
+a prompt; sub-agents Read from the tree.
 
-```bash
-# Filter to non-removed, non-binary/generated files
-FETCH_FILES=$(echo "$PR_FILES" \
-  | jq -r '.[] | select(.status != "removed") | .filename' \
-  | grep -v -E '\.(png|jpg|jpeg|gif|ico|svg|woff2?|ttf|eot|pdf|zip|tar|gz|bin|exe|dll|so|dylib|wasm|pb\.go|lock)$')
-
-# For small PRs (≤20 files and ≤5000 lines), fetch all; for large PRs,
-# select a subset per dimension in step 3d.
-echo "$FETCH_FILES" | while IFS= read -r FILE; do
-  [ -z "$FILE" ] && continue
-  CONTENT=$(gh api "repos/${REPO_FULL_NAME}/contents/${FILE}?ref=${HEAD_SHA}" \
-    --jq '.content // empty' 2>/dev/null) || {
-    SAFE_FILE=$(printf '%s' "$FILE" | tr -d '\n\r' | sed 's/:://g')
-    echo "::warning::Skipping ${SAFE_FILE}: contents API error" >&2
-    continue
-  }
-  [ -z "$CONTENT" ] && {
-    SAFE_FILE=$(printf '%s' "$FILE" | tr -d '\n\r' | sed 's/:://g')
-    echo "::warning::Skipping ${SAFE_FILE}: empty content (file may exceed 1 MB)" >&2
-    continue
-  }
-  # Emit with per-file header and fenced code block
-  EXT="${FILE##*.}"
-  echo "#### ${FILE}"
-  echo "\`\`\`${EXT}"
-  echo "$CONTENT" | base64 --decode
-  echo ""
-  echo "\`\`\`"
-  echo ""
-done
-```
-
-**Size guard for large PRs:** If the PR exceeds 20 changed files or
-5000 total changed lines, do not fetch all files upfront. Instead,
-defer file selection to step 3d (context package assembly), where the
-orchestrator selects dimension-relevant files for each sub-agent:
-
-- **correctness:** files with the most changes, test files, and files
-  they import
-- **security:** files touching auth, permissions, secrets, config, and
-  data handling paths
-- **style-conventions:** files with the most changes
-- **other dimensions:** files most relevant to their review scope
-
-For omitted changed files in large PRs, sub-agents should treat those
-files as unavailable for PR-head verification. Any findings about
-omitted files should note that the file contents could not be verified
-against the PR head. Sub-agents must not read omitted changed files
-from disk, since disk contains base-branch code, not the PR head.
-
-If the PR body references linked issues, fetch them for intent context:
-
-```bash
-# Fetch issue metadata
-gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
-
-# Fetch issue comments
-gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
-```
+If the PR body references linked issues, fetch them for intent context
+using the forge-specific review skill's "Issue context" commands.
 
 The PR description is a starting point, not a source of truth. Do not
 treat its claims about the change as verified facts — confirm them
@@ -230,25 +202,15 @@ review file is empty and this run should proceed as a first review.
 Note the provenance failure as an info-level finding (see step 7).
 
 If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
-changed since the prior review:
-
-```bash
-# REPO_FULL_NAME and PR_NUMBER are set in forge.github.env.sandbox in harness/review.yaml
-head_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" --jq '.head.sha')
-COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${head_SHA}")
-TOTAL_COMMITS=$(echo "$COMPARE" | jq '.total_commits')
-FILE_COUNT=$(echo "$COMPARE" | jq '.files | length')
-if [ "$TOTAL_COMMITS" -gt 250 ] || [ "$FILE_COUNT" -ge 300 ]; then
-  CHANGED_FILES="all"
-else
-  CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
-fi
-```
+changed since the prior review using the forge-specific review skill's
+"Prior review comparison" commands. Extract the list of changed file
+paths from the response.
 
 If the compare API fails (e.g., 404 from force-push or history
-rewrite), or if `total_commits` exceeds 250 (the compare API
-silently truncates file lists at 300 files), treat all files as
-changed — no anchoring for this run.
+rewrite), or if the response indicates a truncated result (e.g.,
+GitHub's compare API silently truncates file lists at 300 files when
+`total_commits` exceeds 250), treat all files as changed — no
+anchoring for this run.
 
 ### 3. Triage
 
@@ -322,8 +284,9 @@ dimensions are relevant:
 #### 3c. Select sub-agents
 
 Based on the domain classification, select sub-agents for dispatch.
-All selected sub-agents run in parallel (with the exception of the
-challenger, which runs by itself after all other sub-agents have finished).
+All selected sub-agents run in parallel — `risk-assessment` (composed
+in step 3c-2) among them — except `challenger`, which runs by itself
+after all other sub-agents have finished.
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -434,7 +397,7 @@ incident.
 
 **Procedure:**
 
-1. Read `sub-agents/security-triage.md` for the sub-agent definition.
+1. Read [`sub-agents/security-triage.md`](sub-agents/security-triage.md) for the sub-agent definition.
 2. Resolve the active governance paths list, matching
    `post-review.sh`'s resolution: if `REVIEW_PROTECTED_PATHS` is
    non-empty, split on commas and trim whitespace; if it's explicitly
@@ -454,6 +417,7 @@ incident.
    ```markdown
    ## Active governance paths
    - .claude/
+   - .pi/
    - .github/
    - scripts/
    ...
@@ -484,10 +448,17 @@ incident.
    ...
    ```
 
-4. Spawn via Agent tool with:
-   - `model`: `haiku` (from the sub-agent frontmatter)
-   - `subagent_type`: `Explore` (read-only)
-   - `prompt`: composed from parts 1–3
+4. Spawn via Agent tool with `prompt` composed from parts 1–3 and:
+   - **Persona listed in the runtime note (pi):** `subagent_type`:
+     `security-triage`, no `model` — the runner resolves both the model
+     and the read-only tool set.
+   - **No runtime note (Claude Code):** `model`: `haiku`,
+     `subagent_type`: `Explore` (read-only).
+   - **Runtime note present, persona not listed (pi):**
+     `subagent_type`: `Explore`, no `model`. Only the model follows
+     step 4 item 2 case 3; `subagent_type` stays `Explore` (a built-in
+     read-only type the runner always accepts) because this pre-pass
+     must stay read-only.
 
    This agent runs **synchronously** (not in the background) because
    its output feeds into step 3d's context package assembly. It uses
@@ -538,7 +509,7 @@ incident.
    **Empty-classification guard:** If `security_critical_files` is
    empty after the path-pattern override but any changed files
    match the path patterns from the classification criteria (e.g.,
-   `**/auth/**`, `**/mint/**`, `**/token/**`, `.claude/**`,
+   `**/auth/**`, `**/mint/**`, `**/token/**`, `.claude/**`, `.pi/**`,
    `.github/**`, `agents/**`, `scripts/**`), treat this as a
    triage failure and apply the fallback. An empty classification
    when path-pattern matches exist indicates the classifier missed
@@ -555,25 +526,115 @@ incident.
   files treated as security-critical). Log an info-level note in the
   review output.
 
+#### 3c-2. Compose the risk assessment
+
+When `REVIEW_RISK_ASSESSMENT_ENABLED` is set to `true` (the
+default), compose a risk-assessment sub-agent prompt here and dispatch
+it with the step 4 batch. If the env var is `false`
+or empty, skip this step entirely — the `risk_assessment` field will
+be absent from the result JSON.
+
+**Procedure:**
+
+1. Read `sub-agents/risk-assessment.md` for the sub-agent definition.
+2. Read the linked skill from the skill-loading table (Part 3):
+   `../pr-risk-assessment/SKILL.md`.
+3. **Fetch prior risk assessment (re-reviews only).** If this is a
+   re-review (step 2a found a non-empty `prior-review.txt` and
+   `PRIOR_REVIEW_PROVENANCE` is `app-verified`), fetch the prior risk
+   assessment from the PR's sticky comment using the forge API:
+
+   ```bash
+   # GitHub:
+   PRIOR_RISK_COMMENT=$(gh api --paginate \
+     "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" \
+     --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->"))] | last // empty')
+   ```
+
+   If found, extract the prior score, level, and rationale from the
+   comment body. The comment format is:
+
+   ```
+   <!-- fullsend:risk-assessment -->
+   **Risk Assessment: <level> (<score>/5)**
+
+   <details>
+   <summary>Details</summary>
+
+   <rationale>
+
+   </details>
+   ```
+
+   Parse these into `prior_risk_score`, `prior_risk_level`, and
+   `prior_risk_rationale`. If no prior risk comment exists (first
+   review or comment was deleted), skip — the sub-agent will operate
+   without anchoring.
+
+4. Compose a spawn prompt containing:
+
+   **Part 1 — Sub-agent definition:** the full markdown body of the
+   risk-assessment sub-agent file (everything after the frontmatter)
+
+   **Part 2 — Linked skill:** the full contents of
+   `skills/pr-risk-assessment/SKILL.md` (everything after the
+   frontmatter)
+
+   **Part 3 — Context:** the PR's changed file list with per-file
+   diff stats (additions, deletions), PR metadata (title, body,
+   author, labels), linked issue context (if any), and prior risk
+   assessment (if available from step 3). Format as:
+
+   ```markdown
+   ## Context
+
+   ### Changed files
+   | File | Additions | Deletions |
+   |------|-----------|-----------|
+   | <path> | <n> | <n> |
+
+   ### PR metadata
+   <title, body, author, labels>
+
+   ### Issue context
+   <linked issue content or "no linked issue">
+
+   ### Prior risk assessment
+   <prior score, level, and rationale — or "none (first review)">
+   ```
+
+5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
+   the same message as the step 4 dimension sub-agents, with the step 4
+   item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
+   consumes its output
+   (it only goes into `agent-result.json`, step 7); running it first
+   serialised a 2–3 minute sub-agent for nothing.
+
+6. Parse the risk assessment output. The sub-agent returns a JSON
+   object with `score`, `level`, `rationale`, and optional signal
+   arrays.
+
+7. Store the `risk_assessment` object for inclusion in
+   `agent-result.json` (step 7).
+
+**Failure fallback:** If the risk-assessment sub-agent fails
+(timeout, parse error, empty response), log an info-level note and
+proceed without a risk score. The `risk_assessment` field is
+optional in the schema — its absence is not an error. Do not record
+a finding for this failure (risk assessment is informational, not
+safety-critical).
+
 #### 3d. Prepare context packages
 
 For each selected sub-agent, assemble a context package containing:
 
-- `diff`: For small PRs (< 50 files, < 3000 lines), the full unified PR
-  diff from `gh pr diff`. For large PRs (step 2 criteria), a concatenation
-  of per-file diffs, each produced by
-  `git diff <merge-base>..HEAD -- <file>`. Each per-file diff is preceded
-  by a `### File: <relative-path>` header so sub-agents can identify file
-  boundaries. Generated files (lockfiles, vendor/, protobuf output) are
-  excluded from the concatenation.
-- `source_files`: full contents of changed files at the PR head revision,
-  fetched by the orchestrator in step 2b. Each file is preceded by a
-  `#### <relative-path>` header and wrapped in a fenced code block with
-  the appropriate language identifier. For large PRs (>20 files or >5000
-  lines), include only the files most relevant to the sub-agent's
-  dimension; omitted changed files should be treated as unavailable for
-  PR-head verification (sub-agents do not have Bash access to fetch them
-  via the GitHub API).
+- `diff`: the path `/sandbox/workspace/pr-diff.txt` written in step 2.
+  Sub-agents Read it; never paste the diff into a prompt — seven copies
+  of a large diff are minutes of output tokens before any review starts.
+- `pr_head`: the MANIFEST lines (step 2b) for the files this sub-agent
+  should look at — all changed files for `correctness`, `security` and
+  `style-conventions`, the dimension-relevant subset otherwise. Paths
+  only; sub-agents Read from `/sandbox/workspace/pr-head/`.
 - `head_sha`: the PR head commit SHA (from step 1), included for
   reference in sub-agent findings and review anchoring
 - `repo_full_name`: the full `owner/repo` string, included for reference
@@ -629,20 +690,16 @@ selected per-file mode and the triage pass succeeded), modify the
 context packages for the `security` and `correctness` sub-agents as
 follows:
 
-1. **Security sub-agent:** Provide the full per-file diffs for all
-   `security_critical_files` first, clearly marked with a
-   `### Security-critical file: <path>` header and the triage reason.
-   Include standard files' diffs after, under a
-   `### Standard files` header. This ordering ensures
-   security-critical files receive primary attention within the
-   sub-agent's context window.
+1. **Security sub-agent:** Order its `pr_head` manifest lines with the
+   `security_critical_files` first, each tagged with the triage reason,
+   under `### Security-critical files`; standard files follow under
+   `### Standard files`. Content still comes from `pr-diff.txt` and the
+   tree — the ordering tells the sub-agent where to start.
 
-2. **Correctness sub-agent:** Same prioritized ordering — security-
-   critical files first with their triage classification, then
-   standard files. Correctness and security findings often overlap on
-   the same code (e.g., a fail-open bug is both a logic error and a
-   security vulnerability), so the correctness sub-agent also benefits
-   from knowing which files the triage pass flagged.
+2. **Correctness sub-agent:** Same prioritized ordering. Correctness
+   and security findings often overlap on the same code (a fail-open
+   bug is both), so the correctness sub-agent also benefits from
+   knowing which files the triage pass flagged.
 
 3. **Other sub-agents** (`intent-coherence`, `style-conventions`,
    `docs-currency`, `cross-repo-contracts`): Receive the standard
@@ -666,8 +723,9 @@ prioritization.
 ### 4. Dispatch sub-agents
 
 For each selected **dimension** sub-agent (from step 3c — excludes
-`security-triage` which runs in step 3c-1, and `challenger` which
-runs in step 6d):
+`security-triage`, which runs in step 3c-1, and `challenger`, which
+runs in step 6d; `risk-assessment`, composed in 3c-2, is dispatched
+here):
 
 1. Compose the spawn prompt from:
 
@@ -689,9 +747,17 @@ runs in step 6d):
    **Part 2 — Meta-prompt:** Read `meta-prompt.md`, fill in the "You are
    reviewing PR" template, and include everything else verbatim
 
-   **Part 3 — Doc review skill:** *If and only if* the roster key is
-   "docs-currency", read "../docs-review/SKILL.md" and include its
-   contents verbatim
+   **Part 3 — Linked skill (conditional):** Check the skill-loading
+   table below. If the sub-agent has a linked skill, read the skill
+   file and include its contents verbatim after the sub-agent
+   definition. (This table is also referenced by step 3c-2, whose
+   composed risk-assessment prompt is dispatched in this step's batch
+   when risk assessment is enabled.)
+
+   | Sub-agent          | Linked skill                         |
+   |--------------------|--------------------------------------|
+   | docs-currency      | ../docs-review/SKILL.md              |
+   | risk-assessment    | ../pr-risk-assessment/SKILL.md       |
 
    **Part 4 — Context package:** the assembled context from step 3d,
    formatted as clearly labeled sections:
@@ -700,31 +766,13 @@ runs in step 6d):
    ## Context
 
    ### Diff
-   <diff content>
+   Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
 
-   ### Source files (PR head)
-   The following are the full contents of changed files at the PR head
-   commit. Use these instead of reading files from disk — they reflect
-   the PR head, not the base branch. Only read additional files from
-   disk if you need context beyond the changed files listed here.
-
-   #### path/to/file1.go
-   ```go
-   <full file contents at PR head>
-   ```
-
-   #### path/to/file2.go
-   ```go
-   <full file contents at PR head>
-   ```
-
-   (For large PRs where not all files are included:)
-   **Note:** Not all changed files are included above due to PR size.
-   Changed files not listed here should be treated as unavailable for
-   PR-head verification. If you produce findings about files not included
-   above, note that the file contents could not be verified against the
-   PR head. Do not read changed files from disk — disk contains
-   base-branch code, not the PR head.
+   ### PR head files
+   Read changed files from `/sandbox/workspace/pr-head/` (PR head);
+   `target-repo/` is the BASE branch. A file whose status below is not
+   `ok` is not verifiable from the tree: say so in any finding about it.
+   <MANIFEST lines for this sub-agent's files>
 
    ### Changed files
    <file list>
@@ -755,13 +803,33 @@ runs in step 6d):
    ```
 
 2. Spawn the subagents with their `prompt` argument composed from parts
-   1–5 above
+   1–5 above. The model argument depends on the runtime: a "Runtime
+   note" at the end of your system prompt, when present, lists the
+   sub-agent personas this run registered.
+
+   - **Persona listed in the runtime note (pi):** `subagent_type` = the
+     persona name exactly as listed (the sub-agent file's `name:`), no
+     `model`. The runner resolves the model from the repository's
+     `agents[].subagents` and the frontmatter; a `model` argument is
+     ignored and an unlisted `subagent_type` is rejected.
+   - **No runtime note (Claude Code):** `model` from the sub-agent
+     frontmatter (`opus` for `correctness`, `security` and `challenger`,
+     `sonnet` for the rest), no `subagent_type` — the persona comes from
+     the prompt.
+   - **Runtime note present, persona not listed (pi):** usually the run
+     cannot serve its model, so the frontmatter alias would be rejected
+     too. Omit **both** `subagent_type` and `model`; the child runs on
+     this run's sub-agent default, which is always servable.
 
 **All sub-agents MUST be dispatched simultaneously** — include all
-Agent calls in a single message so they run concurrently. This is the
-core parallelism benefit of the architecture.
+Agent calls in a single message so they run concurrently, and include
+the risk-assessment call composed in step 3c-2 in that same message
+when risk assessment is enabled. Leave `run_in_background` unset: the
+default delivers completions as notifications (when the Time budget
+checkpoint runs); `false` blocks until all have returned.
 
-Wait for all sub-agents to complete.
+Wait for all sub-agents to complete; apply the Time budget checkpoint
+as each returns.
 
 ### 5. Collect findings
 
@@ -817,8 +885,8 @@ call outputs and conclusions are authoritative evidence. During
 synthesis, the orchestrator MUST:
 
 1. **Consume subagent evidence as-is.** Do not re-execute commands
-   that a subagent already ran (e.g., `npm view`, `gh api` for tags,
-   releases, or commits, `curl` to registries). The subagent's output
+   that a subagent already ran (e.g., `npm view`, forge API calls for
+   tags, releases, or commits). The subagent's output
    is the evidence — re-running the same command wastes tool calls and
    adds latency without producing new information.
 2. **Re-investigate only on conflict.** The only justification for
@@ -871,6 +939,12 @@ fresh context. The challenger has not seen the orchestrator's synthesis
 — it receives only the raw findings and the diff, preserving context
 isolation.
 
+**Time check first — as a Bash call, not an estimate from the runner's
+ticker.** With `TIMEOUT_SECONDS` set and `REMAINING` under 600 (Time
+budget section), skip the challenger: keep the merged finding set from
+6a–6c, record the item-4 `low` finding with the reason `time budget:
+<n>s remaining`, and continue to 6e.
+
 1. Compose the spawn prompt from:
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
@@ -890,11 +964,10 @@ isolation.
    <JSON array of all findings from steps 6a–6c>
 
    ### Diff
-   <diff content>
+   Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
 
-   ### Source files (PR head)
-   <same source files section as step 4 — full contents of changed
-   files at PR head, with #### headers and fenced code blocks>
+   ### PR head files
+   <same section as step 4, with the full MANIFEST>
 
    ### Changed files
    <file list>
@@ -910,14 +983,13 @@ isolation.
    ```
 
 2. Spawn the subagents with their `prompt` argument composed from parts
-   1–4 above
+   1–4 above, with the step 4 item 2 dispatch shape (persona
+   `challenger`).
 
-   **Prompt size guard:** If the combined context package (findings
-   JSON + diff + file list + PR metadata) exceeds 80 000 tokens,
-   truncate the diff to the files referenced by findings only. If it
-   still exceeds the limit, omit the full diff and include only the
-   hunks that correspond to finding line ranges. The challenger can
-   read full files via the `Read` tool if it needs broader context.
+   **Prompt size guard:** If the findings JSON alone exceeds 80 000
+   tokens, withhold `low` and `info` findings from the challenger's
+   input and re-append them, unchallenged, after step 3. The diff and
+   files are read from disk, not pasted.
 
    The challenger runs **after** dimension sub-agents complete (it
    needs their findings as input), so it is dispatched sequentially,
@@ -933,23 +1005,24 @@ isolation.
      (`challenger_action`, `challenger_reason`) before merging into the
      review finding set — these are logged for transparency but are not
      part of the standard finding schema.
-   - If `adjudicated_findings` is empty but the pre-challenger finding
-     set was non-empty, treat this as a challenger failure (fall back
+   - If `adjudicated_findings` is empty but the set sent to the
+     challenger was non-empty, treat this as a challenger failure (fall back
      per the immediate next step below). A legitimate challenger pass
      that removes all findings is unlikely — an empty result more likely
      indicates a parsing error or context truncation.
-   - Otherwise, replace the merged finding set with the challenger's
-     `adjudicated_findings`.
+   - Otherwise, replace the challenged subset with the challenger's
+     `adjudicated_findings` (then re-append anything withheld).
    - Log any `removed_findings` for transparency but do not include
      them in the final review.
 
 4. If the challenger sub-agent fails (timeout, error, empty
-   response), fall back to using the pre-challenger merged finding
-   set from steps 6a–6c. Record an **info**-level finding:
+   response) or was skipped on the time check, fall back to using the
+   pre-challenger merged finding set from steps 6a–6c. Record a
+   **low**-level finding (`info` is below the posting threshold):
 
    ```json
    {
-     "severity": "info",
+     "severity": "low",
      "category": "sub-agent-failure",
      "file": "N/A",
      "description": "The challenger sub-agent did not return findings: <reason>. Using pre-challenger finding set.",
@@ -981,7 +1054,7 @@ scanning step is required.
 
 Before including any finding that makes a claim about PR state —
 draft status, label presence, merge state, or review status — verify
-the claim against the PR metadata fetched via the GitHub API in step 1
+the claim against the PR metadata fetched via the forge API in step 1
 (`PR_DATA`). Specifically:
 
 - **Draft status:** Use the `draft` field from `PR_DATA` (extracted as
@@ -1035,14 +1108,14 @@ the finding.
 1. **Insufficient context** — the PR has no linked issue, or the PR
    description does not explain why the protected files are being
    changed: raise a **high** finding with category `protected-path`.
-   The description MUST list the affected protected files and note
+   The description MUST list the affected protected files and state
    that the PR lacks justification for modifying governance or
    infrastructure files.
 
 2. **Sufficient context** — the PR links to an issue and the
    description explains the rationale for the change: raise a
    **medium** finding with category `protected-path`. The description
-   MUST list the affected protected files and note that human
+   MUST list the affected protected files and state that human
    approval is always required for protected-path changes, regardless
    of context.
 
@@ -1128,13 +1201,16 @@ challenger-adjudicated finding set and evaluate:
 - One or more **medium** findings identifying a functional bug
   (incorrect behavior, permission error, schema violation, or silent
   failure) → `request-changes`
+- Any finding (regardless of severity) with `actionable: true` and a
+  non-empty `remediation` → `request-changes` (these have concrete
+  remediations the fix agent can address automatically)
 - One or more **medium** findings that are all
   stylistic/advisory/process-related (no functional bugs) →
   `comment-only` (attach findings as comments so the author sees them,
   but do not block the PR)
-- **Low** or **info** findings only (no medium+) → `approve` (attach
-  findings as comments; preserve concrete follow-up work with
-  `actionable: true` so the post-script can create follow-up issues)
+- **Low** or **info** findings only, none with `actionable: true` and
+  a non-empty `remediation` → `approve` (observations, confirmations,
+  and analysis notes at any severity level)
 - No findings → `approve`
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought → `reject`.
@@ -1193,9 +1269,9 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   It is not shown to reviewers but is required for re-review anchoring
   (the `pre-fetch-prior-review.sh` script extracts it).
 - **No visible SHA, timestamp, or outcome lines.** These are implicit
-  in the GitHub PR review process (the SHA is pinned via the formal
+  in the PR review process (the SHA is pinned via the formal
   review API, the timestamp is on the comment, and the outcome is
-  conveyed via GitHub's approve/request-changes mechanism).
+  conveyed via the forge's approve/request-changes mechanism).
 - **No summary section.** The PR description already explains the
   change; the review should focus on findings.
 - **Only include finding severity sections that have findings.** If
@@ -1206,7 +1282,8 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   — omit the `## Review` header and `### Findings` section entirely.
 - **No footer.** Do not append any footer, action-hints block, or
   boilerplate after findings. The post-review pipeline appends
-  action hints deterministically when appropriate.
+  action hints deterministically for the `request-changes` action
+  (not for `reject`, `approve`, or `comment`).
 
 If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
 info-level finding in the review output:
@@ -1221,8 +1298,8 @@ The table below lists the **additional** required fields per action:
 
 | Outcome         | Action            | Required fields                                                                               |
 |-----------------|-------------------|-----------------------------------------------------------------------------------------------|
-| approve         | `approve`         | `body`, `head_sha`; set `body` to "Looks good to me" (preceded by the hidden SHA comment) when there are no findings; include `findings[]` when low/info findings are actionable follow-up work |
-| request-changes | `request-changes` | `body`, `head_sha`, `findings[]`                                                              |
+| approve         | `approve`         | `body`, `head_sha`; set `body` to "Looks good to me" (preceded by the hidden SHA comment) when there are no findings |
+| request-changes | `request-changes` | `body`, `head_sha`, `findings[]` (also used for actionable findings with non-empty `remediation`) |
 | comment-only    | `comment`         | `body`, `head_sha`                                                                            |
 | failure         | `failure`         | `reason` (body optional)                                                                      |
 | reject          | `reject`          | `body`, `head_sha`, `findings[]`                                                              |
@@ -1231,7 +1308,7 @@ The table below lists the **additional** required fields per action:
 
 Write the result to `$FULLSEND_OUTPUT_DIR/agent-result.json` following
 the output schema in the agent definition (`agents/review.md`). Do NOT
-call `gh pr review` — the post-script handles all GitHub mutations.
+post the review directly — the post-script handles all forge mutations.
 
 After writing the file, validate it before exiting:
 
@@ -1245,35 +1322,15 @@ JSON you have and exit.
 
 #### Interactive mode (`$FULLSEND_OUTPUT_DIR` is not set)
 
-Post the review directly using the appropriate flag:
+Post the review directly using the forge-specific review skill's
+interactive-mode commands (e.g., `gh pr review` on GitHub). Use the
+appropriate action flag for the verdict:
 
-```bash
-# Approve
-gh pr review <number> --approve --body "$(cat <<'EOF'
-<review comment>
-EOF
-)"
+- **approve** — approve the PR/MR
+- **request-changes** — request changes (also used for reject)
+- **comment** — comment only, no approve/reject decision
 
-# Request changes
-gh pr review <number> --request-changes --body "$(cat <<'EOF'
-<review comment>
-EOF
-)"
-
-# Comment only (no approve/reject decision)
-gh pr review <number> --comment --body "$(cat <<'EOF'
-<review comment>
-EOF
-)"
-
-# Reject
-gh pr review <number> --request-changes --body "$(cat <<'EOF'
-<rejection comment>
-EOF
-)"
-```
-
-Use `--comment` when findings are medium/low/info and you are not
+Use comment when findings are medium/low/info and you are not
 prepared to give a definitive approve or request-changes verdict.
 
 ## Constraints
@@ -1301,16 +1358,19 @@ wins.
   complete the review (tool failure, missing context, all sub-agents
   failed), produce a failure result (see step 7) rather than posting
   an incomplete result.
+- **Write a result before the budget runs out.** A kill at
+  `timeout_minutes` posts nothing; a `failure` result with `reason`
+  `time-budget` written in time is posted as a notice (Time budget).
 - **Always include the PR head SHA in a hidden HTML comment.** The
   SHA must appear in the format described in step 7 so the re-review
   anchoring script can extract it, but it must not be visible to
   reviewers.
-- **In pipeline mode, `gh pr review` is reserved for the post-script.**
+- **In pipeline mode, review posting is reserved for the post-script.**
   The sandbox token is read-only. Write JSON to
   `$FULLSEND_OUTPUT_DIR/agent-result.json` and exit.
 - **Do not re-execute subagent investigation commands during
   synthesis.** Subagent tool call outputs are authoritative evidence.
   The orchestrator must not re-run the same external commands (npm
-  view, gh api, curl, etc.) that a subagent already executed unless
+  view, forge API calls, etc.) that a subagent already executed unless
   resolving a specific conflict between subagent findings. See step 6
   for details.

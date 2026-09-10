@@ -33,6 +33,41 @@ else
   echo "PASS: bundled-script-has-gitleaks-install"
 fi
 
+# Fetch + rebase must run after forge_set_push_remote and before the push
+# so reconstructed GitLab history becomes a fast-forward (issue #1228).
+if ! grep -q 'git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-fetches-remote-branch-before-push"
+  echo "  ${POST_SCRIPT} missing force-update fetch of origin/\${BRANCH}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-fetches-remote-branch-before-push"
+fi
+
+if ! grep -q 'git rebase "origin/${BRANCH}"' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-rebases-onto-remote-before-push"
+  echo "  ${POST_SCRIPT} missing rebase onto origin/\${BRANCH}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-rebases-onto-remote-before-push"
+fi
+
+# A conflicted rebase must fail closed, not be swallowed with || true.
+if ! grep -q 'git rebase --abort' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-aborts-conflicted-rebase"
+  echo "  ${POST_SCRIPT} missing git rebase --abort on conflict"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-aborts-conflicted-rebase"
+fi
+
+if grep -E 'git rebase "origin/\$\{BRANCH\}".*\|\| true' "${POST_SCRIPT}" >/dev/null; then
+  echo "FAIL: bundled-script-does-not-ignore-rebase-failure"
+  echo "  ${POST_SCRIPT} swallows rebase failure with || true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-does-not-ignore-rebase-failure"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the push retry logic from post-fix.sh section 5.
 # Given a push exit code and output, returns the action.
@@ -348,7 +383,7 @@ run_postfix_integration_test() {
   git -C "${repo_dir}" commit --allow-empty -m "init" -q
 
   local exit_code=0
-  # shellcheck disable=SC2030
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${MOCK_BIN}:${PATH}"
@@ -357,6 +392,7 @@ run_postfix_integration_test() {
     export PR_NUMBER="99"
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
   ) > "${INTEGRATION_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -481,6 +517,208 @@ run_numeric_validation_test "pr-number-decimal" "1.5" "false"
 run_numeric_validation_test "pr-number-shell-injection" "1;echo pwned" "false"
 
 # ---------------------------------------------------------------------------
+# REPO_FULL_NAME format validation (matches pre-fix.src.sh regex)
+# ---------------------------------------------------------------------------
+
+run_repo_name_validation_test() {
+  local test_name="$1"
+  local input="$2"
+  local should_pass="$3"
+
+  local valid=true
+  if [[ ! "${input}" =~ ^[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+$ ]]; then
+    valid=false
+  elif [[ "${input}" =~ (^|/)\.\.?(/|$) ]]; then
+    valid=false
+  fi
+  if [ "${valid}" = "true" ]; then
+    if [ "${should_pass}" = "true" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been rejected"
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    if [ "${should_pass}" = "false" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name} — '${input}' should have been accepted"
+      FAILURES=$((FAILURES + 1))
+    fi
+  fi
+}
+
+run_repo_name_validation_test "repo-name-github-style" "owner/repo" "true"
+run_repo_name_validation_test "repo-name-gitlab-nested" "group/subgroup/project" "true"
+run_repo_name_validation_test "repo-name-gitlab-deep-nested" "a/b/c/d" "true"
+run_repo_name_validation_test "repo-name-dots-dashes" "my.org/my-repo" "true"
+run_repo_name_validation_test "repo-name-no-slash" "noslash" "false"
+run_repo_name_validation_test "repo-name-empty" "" "false"
+run_repo_name_validation_test "repo-name-trailing-slash" "owner/" "false"
+run_repo_name_validation_test "repo-name-leading-slash" "/repo" "false"
+run_repo_name_validation_test "repo-name-special-chars" "owner/repo;echo" "false"
+run_repo_name_validation_test "repo-name-dotdot-segment" "owner/.." "false"
+run_repo_name_validation_test "repo-name-dot-segment" "owner/." "false"
+run_repo_name_validation_test "repo-name-leading-dotdot" "../repo" "false"
+run_repo_name_validation_test "repo-name-middle-dotdot" "group/../evil" "false"
+run_repo_name_validation_test "repo-name-middle-dot" "group/./project" "false"
+
+# ---------------------------------------------------------------------------
+# DIFF_BASE ancestry check tests — verify that DIFF_BASE is recalculated
+# using merge-base when PRE_AGENT_HEAD is not an ancestor of HEAD (rebase).
+# This prevents false positives in the Signed-off-by and gitleaks checks
+# when upstream commits contain trailers or flagged content. (Issue #318)
+# ---------------------------------------------------------------------------
+
+REBASE_TMPDIR="$(mktemp -d)"
+REBASE_MOCK_BIN="${REBASE_TMPDIR}/bin"
+mkdir -p "${REBASE_MOCK_BIN}"
+
+cat > "${REBASE_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${REBASE_MOCK_BIN}/sleep"
+
+# Mock gh: return the expected branch name for pr view (gh --jq outputs the
+# extracted value, not JSON), accept everything else.
+cat > "${REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view")
+    # gh --jq '.headRefName' outputs just the string value
+    echo 'agent/99-test-fix'
+    exit 0
+    ;;
+  "pr comment"|"issue comment")
+    # Echo --body value so test assertions can grep for failure details.
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --body) echo "$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  "api "*) exit 0 ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${REBASE_MOCK_BIN}/gh"
+
+# Mock gitleaks: always pass (the test targets DIFF_BASE logic, not gitleaks)
+cat > "${REBASE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${REBASE_MOCK_BIN}/gitleaks"
+
+# Mock pre-commit: not installed (skip pre-commit gate)
+# No mock needed — command -v will fail naturally.
+
+run_rebase_diffbase_test() {
+  local test_name="$1"
+
+  local run_dir="${REBASE_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  mkdir -p "${repo_dir}"
+
+  # Build a repo that simulates a rebase scenario:
+  #   main:   init -- upstream (with Signed-off-by trailer)
+  #   branch: init -- upstream -- agent-commit (rebased onto main)
+  #
+  # PRE_AGENT_HEAD is set to the pre-rebase branch tip, which is NOT
+  # an ancestor of HEAD after the rebase.
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+
+  # Create a feature branch BEFORE the upstream commit with Signed-off-by
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "branch work" -q
+  local pre_rebase_head
+  pre_rebase_head="$(git -C "${repo_dir}" rev-parse HEAD)"
+
+  # Go back to main, add a commit with Signed-off-by trailer
+  git -C "${repo_dir}" checkout -q main
+  git -C "${repo_dir}" commit --allow-empty \
+    -m "upstream change
+
+Signed-off-by: Human User <human@example.com>" -q
+
+  # Simulate a rebase: recreate the branch on top of main
+  git -C "${repo_dir}" checkout -q agent/99-test-fix
+  git -C "${repo_dir}" rebase -q main
+
+  # Add the "agent" commit with a real file change (no Signed-off-by).
+  # The commit must touch a file so CHANGED_FILES is non-empty and NO_PUSH
+  # stays false — otherwise the Signed-off-by check is skipped entirely.
+  echo "agent fix" > "${repo_dir}/agent-fix.txt"
+  git -C "${repo_dir}" add agent-fix.txt
+  git -C "${repo_dir}" commit -m "fix: agent change" -q
+
+  # Set up a fake origin so merge-base works
+  git -C "${repo_dir}" remote add origin "${repo_dir}" 2>/dev/null || true
+  git -C "${repo_dir}" fetch -q origin main 2>/dev/null || true
+
+  local exit_code=0
+  local stdout_log="${REBASE_TMPDIR}/stdout-${test_name}.log"
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${REBASE_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export TARGET_BRANCH="main"
+    export PRE_AGENT_HEAD="${pre_rebase_head}"
+    bash "${POST_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+
+  # With the fix, the script must NOT reject with a Signed-off-by false
+  # positive. The upstream commit has a legitimate Signed-off-by trailer
+  # that would be in SCAN_RANGE if DIFF_BASE were not recalculated.
+  # Match the specific rejection message — not progress lines like
+  # "Checking for Signed-off-by trailers" or "no trailers".
+  if grep -q "Agent commit contains a Signed-off-by trailer" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — false positive Signed-off-by rejection after rebase"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Verify the Signed-off-by scan ran and passed (not just skipped).
+  if grep -q "Signed-off-by scan passed" "${stdout_log}"; then
+    echo "PASS: ${test_name}"
+  else
+    # The Signed-off-by check must actually execute — a pass without
+    # the scan running means NO_PUSH is true (CHANGED_FILES was empty),
+    # which would mask the bug this test exists to catch.
+    echo "FAIL: ${test_name} — Signed-off-by check did not execute (NO_PUSH=true?)"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+}
+
+# After rebase, PRE_AGENT_HEAD is not an ancestor — the fix should detect
+# this and use merge-base, preventing a false positive on the upstream
+# Signed-off-by trailer.
+run_rebase_diffbase_test "rebase-diffbase-no-false-positive"
+
+rm -rf "${REBASE_TMPDIR}"
+
+# Signed-off-by trailer stripping is covered by scripts/signoff-strip-test.sh,
+# which exercises the real rewrite (git filter-branch / git commit --amend)
+# against real repositories: identity and date preservation, commit counts,
+# authorship scoping, the folded-subject case, and the failure paths.
+
+# ---------------------------------------------------------------------------
 # Security integration tests — verify that security controls fail closed.
 # These run the REAL post-fix.sh against a minimal repo with mock binaries.
 # ---------------------------------------------------------------------------
@@ -512,7 +750,7 @@ run_sec_postfix_test() {
   git -C "${repo_dir}" commit --allow-empty -m "test change" -q
 
   local exit_code=0
-  # shellcheck disable=SC2031
+  # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
     export PATH="${SEC_MOCK_BIN}:${PATH}"
@@ -521,6 +759,7 @@ run_sec_postfix_test() {
     export PR_NUMBER="${pr_number}"
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
     bash "${POST_SCRIPT}"
   ) > "${SEC_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -554,6 +793,841 @@ chmod +x "${SEC_MOCK_BIN}/gh"
 run_sec_postfix_test "security-api-failure-fails-closed" "Could not resolve"
 
 rm -rf "${SEC_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# GitLab forge tests — verify that the fix agent post-script works with
+# FULLSEND_FORGE=gitlab (curl-based operations, no gh calls).
+# ---------------------------------------------------------------------------
+
+GL_TMPDIR="$(mktemp -d)"
+GL_MOCK_BIN="${GL_TMPDIR}/bin"
+mkdir -p "${GL_MOCK_BIN}"
+
+cat > "${GL_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/sleep"
+
+# Mock curl — tracks calls and returns MR head ref for merge request queries
+cat > "${GL_MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+MOCK_DIR="${GL_MOCK_DIR:-/tmp}"
+echo "$@" >> "${MOCK_DIR}/curl-calls.log"
+# Respond to merge_requests/:iid GET with source_branch
+if echo "$@" | grep -q "merge_requests/"; then
+  if echo "$@" | grep -q "notes"; then
+    # POST note — just succeed
+    exit 0
+  fi
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99}'
+  exit 0
+fi
+# Respond to labels POST — succeed silently
+if echo "$@" | grep -q "/labels"; then
+  exit 0
+fi
+exit 0
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/curl"
+
+# Ensure gh is NOT available on PATH for GitLab tests
+cat > "${GL_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "ERROR: gh should not be called in GitLab mode" >&2
+exit 1
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/gh"
+
+run_gitlab_postfix_test() {
+  local test_name="$1"
+  local expect_failure="${2:-false}"
+  local check_no_gh="${3:-false}"
+
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  mkdir -p "${repo_dir}" "${mock_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export REPO_ENCODED="test-group%2Ftest-project"
+    export GITLAB_HOST="gitlab.com"
+    export CI_SERVER_HOST="gitlab.com"
+    export PR_NUMBER="99"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+      cat "${GL_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+  else
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "FAIL: ${test_name} — exit code ${exit_code}"
+      cat "${GL_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+  fi
+
+  # Verify no gh calls were made in GitLab mode
+  if [[ "${check_no_gh}" == "true" ]]; then
+    if grep -q "gh should not be called" "${GL_TMPDIR}/stdout-${test_name}.log" 2>/dev/null; then
+      echo "FAIL: ${test_name} — gh was called in GitLab mode"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}-no-gh-calls"
+  fi
+}
+
+# GitLab: happy-path — successful push flow
+run_gitlab_postfix_test "gitlab-happy-path" "false" "true"
+
+# GitLab: missing PR_URL → fail closed (unbound variable)
+run_gitlab_postfix_pr_url_test() {
+  local test_name="$1"
+  local expect_failure="${2:-true}"
+
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  mkdir -p "${repo_dir}" "${mock_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export REPO_ENCODED="test-group%2Ftest-project"
+    export GITLAB_HOST="gitlab.com"
+    export CI_SERVER_HOST="gitlab.com"
+    export PR_NUMBER="99"
+    # PR_URL intentionally NOT set
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+      cat "${GL_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+  else
+    if [[ ${exit_code} -ne 0 ]]; then
+      echo "FAIL: ${test_name} — exit code ${exit_code}"
+      cat "${GL_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+  fi
+}
+
+run_gitlab_postfix_pr_url_test "gitlab-missing-pr-url-fails-closed" "true"
+
+# GitLab: GITLAB_HOST mismatch with PR_URL host → fail closed
+run_gitlab_postfix_host_mismatch_test() {
+  local test_name="$1"
+
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  mkdir -p "${repo_dir}" "${mock_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export REPO_ENCODED="test-group%2Ftest-project"
+    export GITLAB_HOST="evil.example.com"
+    export CI_SERVER_HOST="gitlab.com"
+    export PR_NUMBER="99"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "does not match PR URL host" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected GITLAB_HOST mismatch error"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+run_gitlab_postfix_host_mismatch_test "gitlab-host-mismatch-fails-closed"
+
+# GitLab: API failure on MR head ref → fail closed
+cat > "${GL_MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+MOCK_DIR="${GL_MOCK_DIR:-/tmp}"
+echo "$@" >> "${MOCK_DIR}/curl-calls.log"
+# Fail on merge_requests queries (simulates API failure)
+if echo "$@" | grep -q "merge_requests/" && ! echo "$@" | grep -q "notes"; then
+  exit 1
+fi
+# POST note — succeed (for failure reporting)
+if echo "$@" | grep -q "notes"; then
+  exit 0
+fi
+exit 0
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/curl"
+
+run_gitlab_postfix_test "gitlab-api-failure-fails-closed" "true" "true"
+
+# GitLab: PR_URL with host not in dynamic trust sources → fail closed
+# Validates forge_validate_pr_url rejects hosts outside the allowlist.
+run_gitlab_postfix_invalid_host_test() {
+  local test_name="$1"
+
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  mkdir -p "${repo_dir}" "${mock_dir}"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "test change" -q
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="evil-org/evil-project"
+    export PR_NUMBER="1"
+    export PR_URL="https://evil.com/evil-org/evil-project/-/merge_requests/1"
+    export CI_SERVER_HOST="gitlab.com"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "does not match CI_SERVER_HOST" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected CI_SERVER_HOST mismatch error"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+# Restore the working curl mock before running this test
+cat > "${GL_MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+MOCK_DIR="${GL_MOCK_DIR:-/tmp}"
+echo "$@" >> "${MOCK_DIR}/curl-calls.log"
+if echo "$@" | grep -q "merge_requests/"; then
+  if echo "$@" | grep -q "notes"; then
+    exit 0
+  fi
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99}'
+  exit 0
+fi
+if echo "$@" | grep -q "/labels"; then
+  exit 0
+fi
+exit 0
+MOCKEOF
+chmod +x "${GL_MOCK_BIN}/curl"
+
+run_gitlab_postfix_invalid_host_test "gitlab-invalid-host-rejected"
+
+rm -rf "${GL_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Pre-fix validation tests — verify pre-fix.src.sh rejects mismatched
+# REPO_FULL_NAME / PR_URL and PR_NUMBER / PR_URL combinations.
+# ---------------------------------------------------------------------------
+
+PRE_SCRIPT="$(resolve_agent_script pre-fix "${SCRIPT_DIR}")"
+PRE_TMPDIR="$(mktemp -d)"
+
+run_prefix_validation_test() {
+  local test_name="$1"
+  local expected_marker="$2"
+  local repo_full_name="$3"
+  local pr_number="$4"
+  local pr_url="$5"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export FULLSEND_FORGE="gitlab"
+    export CI_SERVER_HOST="gitlab.com"
+    export REPO_FULL_NAME="${repo_full_name}"
+    export PR_NUMBER="${pr_number}"
+    export PR_URL="${pr_url}"
+    export TRIGGER_SOURCE="test-user"
+    export FIX_ITERATION="1"
+    bash "${PRE_SCRIPT}"
+  ) > "${PRE_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${PRE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${expected_marker}" ]] \
+     && ! grep -q "${expected_marker}" "${PRE_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — exited ${exit_code} but missing: ${expected_marker}"
+    cat "${PRE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+# REPO_FULL_NAME does not match the repo in PR_URL
+run_prefix_validation_test "prefix-repo-mismatch" \
+  "does not match PR URL repo" \
+  "foo/bar" "99" \
+  "https://gitlab.com/baz/qux/-/merge_requests/99"
+
+# PR_NUMBER does not match the MR IID in PR_URL
+run_prefix_validation_test "prefix-pr-number-mismatch" \
+  "does not match PR URL number" \
+  "test-group/test-project" "42" \
+  "https://gitlab.com/test-group/test-project/-/merge_requests/99"
+
+# GitHub pre-fix: nested REPO_FULL_NAME must be rejected
+run_prefix_github_validation_test() {
+  local test_name="$1"
+  local expected_marker="$2"
+  local repo_full_name="$3"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export FULLSEND_FORGE="github"
+    export REPO_FULL_NAME="${repo_full_name}"
+    export PR_NUMBER="42"
+    export TRIGGER_SOURCE="test-user"
+    export FIX_ITERATION="1"
+    bash "${PRE_SCRIPT}"
+  ) > "${PRE_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected non-zero exit but got 0"
+    cat "${PRE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${expected_marker}" ]] \
+     && ! grep -q "${expected_marker}" "${PRE_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — exited ${exit_code} but missing: ${expected_marker}"
+    cat "${PRE_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (expected failure, got exit ${exit_code})"
+}
+
+# GitHub rejects nested paths (3+ segments)
+run_prefix_github_validation_test "prefix-github-nested-repo" \
+  "must be owner/repo format" \
+  "group/subgroup/project"
+
+# GitHub rejects path traversal
+run_prefix_github_validation_test "prefix-github-dotdot" \
+  "must not contain" \
+  "owner/.."
+
+rm -rf "${PRE_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Fetch + rebase before push (issue #1228).
+#
+# On GitLab the sandbox reconstructs the MR source branch from API content,
+# so local history diverges from the remote. post-fix.sh must fetch the real
+# remote tip and rebase onto it so the push is a fast-forward. A git wrapper
+# no-ops `remote set-url` so origin stays the local bare remote (the real
+# script rewrites origin to a forge URL after forge_set_push_remote).
+# ---------------------------------------------------------------------------
+
+PUSH_REBASE_TMPDIR="$(mktemp -d)"
+PUSH_REBASE_MOCK_BIN="${PUSH_REBASE_TMPDIR}/bin"
+mkdir -p "${PUSH_REBASE_MOCK_BIN}"
+
+cat > "${PUSH_REBASE_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${PUSH_REBASE_MOCK_BIN}/sleep"
+
+cat > "${PUSH_REBASE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${PUSH_REBASE_MOCK_BIN}/gitleaks"
+
+cat > "${PUSH_REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view")
+    echo 'agent/99-test-fix'
+    exit 0
+    ;;
+  "pr comment"|"issue comment")
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --body) echo "$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${PUSH_REBASE_MOCK_BIN}/gh"
+
+PUSH_REBASE_REAL_GIT="$(which git)"
+cat > "${PUSH_REBASE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
+  exit 0
+fi
+exec ${PUSH_REBASE_REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${PUSH_REBASE_MOCK_BIN}/git"
+
+push_rebase_ident() {
+  git -C "$1" config user.email "test@example.com"
+  git -C "$1" config user.name "Test"
+}
+
+run_push_rebase_postfix() {
+  local run_dir="$1"
+  local stdout_log="$2"
+  local mock_bin="${3:-${PUSH_REBASE_MOCK_BIN}}"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${mock_bin}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export TARGET_BRANCH="main"
+    bash "${POST_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+  return "${exit_code}"
+}
+
+# Reconstructed local history (different SHAs, same tree as the real remote
+# tip) plus an agent fix. Fetch+rebase must replay the fix onto the real
+# remote tip so the push is a fast-forward of that tip.
+run_push_rebase_reconstructed_test() {
+  local test_name="push-rebase-reconstructed-history-fast-forward"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  # Reconstruct from main: same tree as A, different SHA, then the agent fix.
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Branch agent/99-test-fix pushed successfully" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — push did not report success"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_a}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — remote tip is not a fast-forward of real A"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_content
+  remote_content="$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-test-fix:file.txt)"
+  if [ "${remote_content}" != "fixed" ]; then
+    echo "FAIL: ${test_name} — remote file.txt is '${remote_content}', want 'fixed'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Local already matches remote (GitHub-style fetch in the sandbox). Rebase
+# is a no-op; the agent's commit SHA is unchanged and the push fast-forwards.
+run_push_rebase_matching_history_test() {
+  local test_name="push-rebase-matching-history-noop"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+  local local_f
+  local_f="$(git -C "${base}/repo" rev-parse HEAD)"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local pushed_f
+  pushed_f="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${pushed_f}" != "${local_f}" ]; then
+    echo "FAIL: ${test_name} — agent commit SHA changed (rebase was not a no-op)"
+    echo "  before: ${local_f}"
+    echo "  after:  ${pushed_f}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Remote feature branch does not exist yet. Fetch fails, rebase is skipped,
+# and the push creates the branch.
+run_push_rebase_fresh_branch_test() {
+  local test_name="push-rebase-fresh-branch-skips-rebase"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -b agent/99-test-fix
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skipping rebase" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected fetch miss to skip rebase"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" show-ref --verify --quiet \
+       refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — remote branch was not created"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Remote has a new commit that textually conflicts with the agent's fix.
+# Rebase must fail closed with an actionable message; nothing is pushed.
+run_push_rebase_conflict_test() {
+  local test_name="push-rebase-conflict-fails-closed"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "aaa" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  echo "bbb" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real B"
+  git -C "${base}/seed" push -q origin agent/99-test-fix
+  local real_b
+  real_b="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" reset -q --hard "${real_a}"
+  echo "fff" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit on rebase conflict"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "conflict with the agent's changes" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing actionable rebase-conflict message"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tip
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_tip}" != "${real_b}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved on conflict (pushed anyway)"
+    echo "  want ${real_b}, got ${remote_tip}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Remote feature branch exists (reconstructed/divergent history), but the
+# fetch itself fails transiently (network blip, auth hiccup) rather than
+# reporting a missing ref. This must fail closed — not be treated the same
+# as a genuinely missing branch and fall through to a non-fast-forward push.
+run_push_rebase_fetch_failure_test() {
+  local test_name="push-rebase-transient-fetch-failure-fails-closed"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local fetch_fail_bin="${base}/bin"
+  mkdir -p "${fetch_fail_bin}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${fetch_fail_bin}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gitleaks" "${fetch_fail_bin}/gitleaks"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${fetch_fail_bin}/gh"
+  local fetch_fail_real_git="${PUSH_REBASE_REAL_GIT}"
+  cat > "${fetch_fail_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
+  exit 0
+fi
+if [ "\$1" = "fetch" ]; then
+  echo "fatal: unable to access remote: Could not resolve host" >&2
+  exit 128
+fi
+exec ${fetch_fail_real_git} "\$@"
+MOCKEOF
+  chmod +x "${fetch_fail_bin}/git"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${fetch_fail_bin}" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit on transient fetch failure"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "skipping rebase" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — transient fetch failure was treated as a missing branch"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Could not fetch remote branch" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing actionable fetch-failure message"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tip
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_tip}" != "${real_a}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved on transient fetch failure (pushed anyway)"
+    echo "  want ${real_a}, got ${remote_tip}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_push_rebase_reconstructed_test
+run_push_rebase_matching_history_test
+run_push_rebase_fresh_branch_test
+run_push_rebase_conflict_test
+run_push_rebase_fetch_failure_test
+
+rm -rf "${PUSH_REBASE_TMPDIR}"
 
 # --- Summary ---
 
