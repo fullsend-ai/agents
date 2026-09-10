@@ -627,7 +627,10 @@ be absent from the result JSON.
    (first review)"
    ```
 
-5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
+   **Part 4 — Trust boundary:** the declaration from step 3c-1 Part 4
+   (identical text; step 4 Part 5 and step 6d Part 4 carry it too).
+
+5. Do not spawn it here. Dispatch the composed prompt (parts 1–4) in
    the same message as the step 4 dimension sub-agents, with the step 4
    item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
    consumes its output
