@@ -203,16 +203,46 @@ against the diff.
 
 Filter `/sandbox/workspace/pr-diff.txt` before it enters any context
 package (step 3d). The script is a stdin-to-stdout filter, so it writes
-a new file and that file replaces the diff. Run it as written:
+a new file and that file replaces the diff only when the script
+succeeded. Run it as written:
 
 ```bash
 # Scanner dialect (fullsend-ai/agents#1190): `test` not `[ ]`, no rm.
-skills/pr-review/scripts/filter-review-diff.sh /sandbox/workspace/pr-excluded.txt \
-  /sandbox/workspace/pr-head \
-  < /sandbox/workspace/pr-diff.txt > /sandbox/workspace/pr-diff.filtered
-mv /sandbox/workspace/pr-diff.filtered /sandbox/workspace/pr-diff.txt
-test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF after filtering — produce a failure result (reason tool-failure)"
+# Absolute path: cwd is /sandbox/workspace, not the skills checkout.
+if bash "${CLAUDE_CONFIG_DIR}/skills/pr-review/scripts/filter-review-diff.sh" \
+     /sandbox/workspace/pr-excluded.txt /sandbox/workspace/pr-head \
+     < /sandbox/workspace/pr-diff.txt > /sandbox/workspace/pr-diff.filtered; then
+  mv /sandbox/workspace/pr-diff.filtered /sandbox/workspace/pr-diff.txt
+else
+  : > /sandbox/workspace/pr-excluded.txt
+  echo "FILTER FAILED — pr-diff.txt left as fetched; review it unfiltered"
+fi
+if ! test -s /sandbox/workspace/pr-diff.txt; then
+  if test -s /sandbox/workspace/pr-excluded.txt; then
+    echo "ALL EXCLUDED — nothing left to review; go to step 7 with the excluded-content disclosures"
+  else
+    echo "EMPTY DIFF after filtering — produce a failure result (reason tool-failure)"
+  fi
+fi
 ```
+
+The script exits non-zero only when it could not run at all — its own
+parser fails open (exit 0) on input it cannot classify. Then the
+fetched diff stays in place, the summary is emptied so step 7 discloses
+nothing that was not actually stripped, and the review proceeds
+unfiltered: the failure mode is an unfiltered review, never a lost
+diff. A bare relative path here would exit 127 after the redirect had
+already created an empty `pr-diff.filtered`, and the `mv` would then
+replace a good diff with nothing — which is why the `mv` is gated.
+
+An empty diff after filtering means one of two things, and the summary
+tells them apart. A non-empty `pr-excluded.txt` is a PR made only of
+excluded content (a lockfile-only dependency bump): the filter did
+exactly its job, so this is not a failure — skip steps 3–6 (the
+sub-agents would have nothing to read) and go to step 7, where the
+disclosures are the review's findings. An empty summary next to an
+empty diff means nothing was fetched: produce a failure result (reason
+`tool-failure`).
 
 `$1` is the exclusion summary, read below; `$2` is the tree
 materialised in step 2b — with it the script can read a file's own
