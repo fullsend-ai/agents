@@ -957,13 +957,16 @@ records a `sub-agent-failure` finding for it (high for Opus-tier,
 info for Sonnet-tier), so a failed dimension keeps the set non-empty
 and the challenger still runs. An empty set means every dispatched
 dimension came back clean, and the challenger's job is to adjudicate
-findings it is given, not manufacture them from nothing.
+findings it is given, not manufacture them from nothing. This rule
+exists for determinism: it codifies the skip the orchestrator already
+makes on clean runs, so the choice is no longer a per-run judgment
+call. Whether a set holding only `info` findings should skip as well is
+an open question; as written it does not.
 (This does forfeit the challenger's secondary, not-owned allowance —
 see `sub-agents/challenger.md`'s "Do not own" section — to flag a
 genuine issue it happens to notice while checking an empty set against
-the diff. Accepted: exercising that allowance would mean re-reading the
-whole diff on every clean PR, which is exactly the cost this skip
-exists to avoid.) Note `challenger: skipped (no findings to adjudicate)`
+the diff. Accepted: on a clean run the orchestrator was already
+forfeiting it.) Note `challenger: skipped (no findings to adjudicate)`
 in your own reasoning for auditability — there is no field for it in
 `agent-result.json` (`schemas/review-result.schema.json` is
 `additionalProperties: false`), and it does not belong in the posted
