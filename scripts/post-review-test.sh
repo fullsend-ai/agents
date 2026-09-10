@@ -310,7 +310,7 @@ run_downgrade_test "approve-all-filtered-removes-findings" \
 # next to them is still dropped
 DISCLOSURES_PLUS_INFO='{"action":"comment","findings":[
   {"severity":"info","category":"excluded-content","file":"package-lock.json","description":"not reviewed"},
-  {"severity":"info","category":"provenance-warning","file":"a.go","description":"prior review discarded"},
+  {"severity":"info","category":"provenance-warning","file":"<pr>","description":"prior review discarded"},
   {"severity":"info","category":"style","file":"b.go","description":"y"}
 ]}'
 
@@ -330,7 +330,7 @@ run_downgrade_test "disclosure-only-request-changes-downgrades-keeps-findings" \
   "$DISCLOSURE_ONLY_RC" "low" "comment" "true"
 
 DISCLOSURE_ONLY_REJECT='{"action":"reject","findings":[
-  {"severity":"info","category":"provenance-warning","file":"a.go","description":"prior review discarded"}
+  {"severity":"info","category":"provenance-warning","file":"<pr>","description":"prior review discarded"}
 ]}'
 
 run_downgrade_test "disclosure-only-reject-downgrades-keeps-findings" \

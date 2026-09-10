@@ -1384,9 +1384,11 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, include an
 info-level finding in the review output:
 
-- **[provenance-warning]** — Prior review context discarded:
+- **[provenance-warning]** — `file`: `<pr>` (the finding is PR-wide;
+  the agent definition names this sentinel for findings that name no
+  file); omit `line`; `description`: "Prior review context discarded:
   provenance validation failed (`PRIOR_REVIEW_PROVENANCE` value).
-  This review treats all findings as first-time assessments.
+  This review treats all findings as first-time assessments."
 
 If step 2c left a non-empty `/sandbox/workspace/pr-excluded.txt`,
 include an info-level finding in the review output (this is a
