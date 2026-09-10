@@ -287,6 +287,9 @@ Based on the domain classification, select sub-agents for dispatch.
 All selected sub-agents run in parallel — `risk-assessment` (composed
 in step 3c-2) among them — except `challenger`, which, when step 6d
 dispatches it, runs by itself after all other sub-agents have finished.
+With `REVIEW_RISK_ROUTING_ENABLED` set to `true`, `risk-assessment`
+runs first instead and its score may narrow this selection (3c-2,
+items 5 and 6).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -606,16 +609,27 @@ be absent from the result JSON.
    <prior score, level, and rationale — or "none (first review)">
    ```
 
-5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
-   the same message as the step 4 dimension sub-agents, with the step 4
-   item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
-   consumes its output; running it first serialised a 2–3 minute
-   sub-agent for nothing.
+5. If `REVIEW_RISK_ROUTING_ENABLED` is not `true`: do not spawn it
+   here. Dispatch the composed prompt (parts 1–3) in the same message
+   as the step 4 dimension sub-agents, with the step 4 item 2 dispatch
+   shape (persona `risk-assessment`). Nothing in step 4 consumes its
+   output; running it first serialised a 2–3 minute sub-agent for
+   nothing. If it is `true`: spawn it now, alone, with that same shape,
+   and wait — item 6 narrows the step 4 batch on its score.
 
 6. Store the sub-agent's JSON (`score`, `level`, `rationale`,
    `tier1_score`, `risk_floor`, optional signal arrays, `degraded`) as
    `risk_assessment` for `agent-result.json` (step 7). Anything that
    routes or gates on the score treats `degraded` as no score.
+   **Risk routing:** when `REVIEW_RISK_ROUTING_ENABLED` is `true`, the
+   integer `score` is exactly 1, and `degraded` is absent, keep only
+   `correctness` and `security` from the 3c selection (`security-triage`
+   and `challenger` untouched) and log
+   `risk routing: score 1 → correctness, security`. Change no model.
+   Otherwise run the full 3c selection (fail open). Key on the
+   composite, not `tier1_score`: over 246 production PRs, composite 1
+   had 0/53 with a major or critical finding; tier 1 alone would have
+   narrowed 6/104 that had one.
 
 **Failure fallback:** If the sub-agent fails (timeout, parse error,
 empty response, `score` not 1–5), run
@@ -826,7 +840,8 @@ here):
 **All sub-agents MUST be dispatched simultaneously** — include all
 Agent calls in a single message so they run concurrently, and include
 the risk-assessment call composed in step 3c-2 in that same message
-when risk assessment is enabled. Leave `run_in_background` unset: the
+when risk assessment is enabled and risk routing is not (with routing
+on it already returned in 3c-2). Leave `run_in_background` unset: the
 default delivers completions as notifications (when the Time budget
 checkpoint runs); `false` blocks until all have returned.
 
