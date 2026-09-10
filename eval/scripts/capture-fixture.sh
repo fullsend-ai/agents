@@ -109,9 +109,11 @@ case_wants_pr_diff() {
 }
 
 # Build/test gate for removed_symbols cases. The judge is diff-scoped, so a
-# usage site commented out in place (one real deletion line plus an exempt
-# comment addition) satisfies the diff inspection while the tree no longer
-# compiles — only building and testing the actual PR head catches that.
+# reference outside every hunk (a second site in the same file, or a file
+# the PR never touched) satisfies the diff inspection while the tree no
+# longer compiles — only building and testing the actual PR head catches
+# that. (An in-place comment-out is caught by the diff judge instead: the
+# added comment line is a survivor.)
 # Pure half: given a checkout, emit {"build_exit":N,"test_exit":N}, or a
 # recorded {"skipped":reason} when there is nothing to build (no go.mod) or
 # nothing to build WITH (no go toolchain) — recorded rather than silent so

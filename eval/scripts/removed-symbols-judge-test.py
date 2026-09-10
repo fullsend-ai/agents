@@ -161,12 +161,46 @@ CASES = [
          COMPLETE,
          hunk("config/other.go", "+\tVerboseLoggingEnabled bool", "+\tverbose_logging_v2 := 1"),
      ])), True),
-    ("line comments in source may still mention the symbol",
+    # Only a pre-existing comment is exempt: a doc comment the fix leaves
+    # alone shows up as a context line and is fine.
+    ("unchanged line comments in source may still mention the symbol",
+     outputs_for("\n".join([
+         COMPLETE,
+         hunk("runner/runner.go", " \t// VerboseLogging is not read here", "+\tx := 1"),
+         hunk("config/gen.mk", " # verbose_logging is gone", "+all:"),
+     ])), True),
+    # An added comment naming the symbol is what a site commented out in
+    # place looks like, so it is a survivor even though it is a comment.
+    # (A new explanatory note belongs in a doc file, which stays exempt.)
+    ("added line comment naming the symbol is a survivor",
      outputs_for("\n".join([
          COMPLETE,
          hunk("runner/runner.go", "+\t// VerboseLogging was removed in #7"),
-         hunk("config/gen.mk", "+# verbose_logging is gone"),
-     ])), True),
+     ])), False),
+    # The self-consistent comment-out: every declared site (field, Defaults,
+    # SetField case, assertions, YAML literal) is commented out together.
+    # Each site yields one real deletion line, the tree still builds and
+    # the muted assertions still pass, so fixture_checks sees nothing —
+    # this judge must fail it on the added comment lines alone.
+    ("commenting out every site together is not a removal",
+     outputs_for("\n".join([
+         hunk("config/config.go",
+              '-\tVerboseLogging bool `yaml:"verbose_logging"`',
+              '+\t// VerboseLogging bool `yaml:"verbose_logging"`',
+              " \tName string"),
+         hunk("config/fields.go",
+              '-\tcase "verbose_logging":',
+              "-\t\tc.VerboseLogging = v",
+              '+\t// case "verbose_logging":',
+              "+\t// \tc.VerboseLogging = v",
+              '-\tcase "name":'),
+         hunk("config/config_test.go",
+              "-verbose_logging: true",
+              "-\tif cfg.VerboseLogging != true {",
+              "+// verbose_logging: true",
+              "+\t// if cfg.VerboseLogging != true {",
+              ' \tif cfg.Name != "x" {'),
+     ])), False),
     # A bare "*" is a pointer deref in Go, not a comment marker: this line is
     # executable code and must read as a survivor.
     ("pointer deref is not a comment",

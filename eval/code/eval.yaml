@@ -8,8 +8,8 @@ description: >
   lines required per file; the removed_symbols judge then checks those
   counts in the captured PR diff and fails if the symbol survives anywhere
   in it, while the fixture_checks judge builds and tests the checked-out PR
-  head so a change that satisfies the diff but does not compile (a site
-  commented out in place) still fails. Cases with no removed_symbols get
+  head so a change that satisfies the diff but does not compile (a usage
+  site commented out while its declaration stays) still fails. Cases with no removed_symbols get
   file-touch only — no diff inspection, no build/test gate
   (see annotations.yaml: "Primary signal is pr_created").
   Acts as a regression guard for the pipeline when sandbox GitHub access is
@@ -251,9 +251,16 @@ judges:
       documentation files (*.md, *.rst, *.txt, *.adoc, and files under a
       docs/ directory whose extension is not a known source type) are exempt
       wholesale so a README or changelog note may mention the symbol, while
-      pkg/docs/gen.go is still source. Inside source files only line
-      comments are exempt, keyed by extension (// for .go, # for
-      .py/.sh/.yaml/...). Unknown extensions get no comment exemption, and a
+      pkg/docs/gen.go is still source. Inside source files only pre-existing
+      (context) line comments are exempt, keyed by extension (// for .go, #
+      for .py/.sh/.yaml/...): a doc comment a fix leaves alone is fine, but
+      an added comment naming the symbol is a survivor, because that is what
+      a site commented out in place looks like — and when every site goes
+      that way together the tree still builds and every silenced assertion
+      still "passes", so fixture_checks alone cannot tell it from a real
+      removal. The cost is that a new `// VerboseLogging removed` note in a
+      touched source file fails too; put it in a doc file, which stays
+      exempt. Unknown extensions get no comment exemption, and a
       Go block-comment continuation (" * text") is not recognised either — a
       bare "*" prefix is a pointer deref — so both fail closed. Hunk ranges
       from the @@ header are honoured, so content whose own text begins with
@@ -268,10 +275,13 @@ judges:
       should leave it out of removed_symbols and rely on expected_files.
       Diff-scoped: a symbol surviving in a file the PR never
       touched is invisible here (naming the file makes its absence a failure
-      instead), and a site commented out in place is invisible too — one
-      real deletion line plus an exempt comment addition — which is why the
-      fixture_checks judge below builds and tests the actual PR head for
-      these cases. Reads
+      instead). A site commented out in place is caught here as an added
+      comment line, but a usage site commented out while its declaration
+      is left behind is one real deletion line plus a survivor this scan
+      does see — and a fix that merely stops compiling in some other way
+      (a dangling reference outside every hunk) is not visible in the
+      diff at all, which is why the fixture_checks judge below builds and
+      tests the actual PR head for these cases. Reads
       state["pull_requests"], which only capture-fixture.sh's issue-fixture
       branch writes — reusing this judge in a pull_request-type suite needs
       that branch to emit an equivalent diff artifact first.
@@ -423,7 +433,12 @@ judges:
               for line in lines:
                   if line.startswith("-") or not mentions(sym, line):
                       continue
-                  if is_comment(path, line):
+                  # Only a context line gets the comment exemption: an
+                  # added comment naming the symbol is a site commented
+                  # out in place, which fixture_checks cannot catch when
+                  # every site (declaration, consumers, assertions) goes
+                  # the same way — the tree builds and the muted tests pass.
+                  if is_comment(path, line) and not line.startswith("+"):
                       continue
                   survivors.append(path or "<unknown file>")
                   break
@@ -450,9 +465,12 @@ judges:
   - name: fixture_checks
     description: >
       Build/test gate for removed_symbols cases, closing the hole diff
-      inspection cannot see: a usage site commented out in place produces
-      one real deletion line (satisfying the count) plus a comment addition
-      (exempt as a survivor), yet the tree no longer compiles.
+      inspection cannot see: a diff can satisfy every deletion count and
+      show no survivor while the PR head no longer compiles — a second site
+      in the same file outside every hunk, or a reference in a file the PR
+      never touched. (An in-place comment-out is the removed_symbols judge's
+      job: the added comment line is a survivor there, since a comment-out
+      of every site together still builds and passes tests.)
       capture-fixture.sh clones each PR head and runs `go build ./...` and
       `go test ./...`, recording exit codes under pull_requests[].checks;
       this judge requires both to be 0. Passes trivially when the case
