@@ -2486,9 +2486,14 @@ is_agent_artifact_path() {
 # an empty (clean) porcelain string.
 uncommitted_work_status() {
   local rc_file="$1" err_file="$2"
-  git update-index -q --refresh >/dev/null 2>&1 || true
+  # Pin trusted git config: the extracted tree is untrusted, and both
+  # invocations below are index/status commands that would otherwise honor
+  # repo-local config from that tree (fsmonitor hooks, hidden untracked
+  # files) while PUSH_TOKEN is present in the environment.
+  local trust_cfg=(-c core.fsmonitor=false -c core.useBuiltinFSMonitor=false -c core.hooksPath=/dev/null -c status.showUntrackedFiles=all)
+  git "${trust_cfg[@]}" update-index -q --refresh >/dev/null 2>&1 || true
   local porcelain rc=0
-  porcelain="$(git status --porcelain 2>"${err_file}")" || rc=$?
+  porcelain="$(git "${trust_cfg[@]}" status --porcelain --untracked-files=all 2>"${err_file}")" || rc=$?
   printf '%s' "${rc}" > "${rc_file}"
   if [ "${rc}" -ne 0 ]; then
     printf ''

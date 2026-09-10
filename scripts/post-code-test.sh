@@ -2172,11 +2172,18 @@ fi
 # itself fails, the script must fail closed, not report a genuine no-op.
 cat > "${SEC_CODE_MOCK_BIN}/git" <<MOCKEOF
 #!/usr/bin/env bash
-if [[ "\$1" == "status" ]]; then
+# Skip leading "-c NAME=VALUE" pairs (uncommitted_work_status pins trusted
+# git config ahead of the subcommand) before matching on the subcommand.
+_args=("\$@")
+_i=0
+while [[ "\${_args[\$_i]:-}" == "-c" ]]; do
+  _i=\$((_i + 2))
+done
+if [[ "\${_args[\$_i]:-}" == "status" ]]; then
   echo "fatal: index file smaller than expected" >&2
   exit 128
 fi
-if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+if [[ "\${_args[\$_i]:-}" == "remote" && "\${_args[\$((_i + 1))]:-}" == "set-url" ]]; then
   exit 0
 fi
 exec ${REAL_GIT} "\$@"
