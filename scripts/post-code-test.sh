@@ -948,8 +948,7 @@ filter_uncommitted_work() {
       continue
     fi
     if [ -n "${filtered}" ]; then
-      filtered="${filtered}"$'
-'"${line}"
+      filtered="${filtered}"$'\n'"${line}"
     else
       filtered="${line}"
     fi
