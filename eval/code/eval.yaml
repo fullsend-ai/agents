@@ -27,8 +27,10 @@ execution:
   # inside this CI job's 45-minute cap
   # (.github/workflows/functional-tests.yml) alongside before_each (120s),
   # after_each (180s), and the job's own setup overhead (checkout, python/uv,
-  # harness install, fullsend download, OpenShell + podman install — podman
-  # alone routinely takes ~190s).
+  # harness install, fullsend download, OpenShell + podman install). Measured
+  # setup from run 33968109425: job start to "Run functional tests" is ~96s
+  # total (podman install+configure+start is ~13s of it, not the ~190s an
+  # earlier revision of this comment assumed).
   #
   # Sized for the JOB, not one case: this value is applied per case, and
   # parallelism: 1 runs the suite's cases back to back inside one matrix
@@ -36,20 +38,19 @@ execution:
   # because a third is already in flight (#1058 adds
   # 002-needs-input-uninterpretable to this same leg) and whichever of the
   # two PRs merges second would otherwise land a budget that no longer
-  # holds: 3 x (120 + 420 + 180 + 30) = 2250s, leaving 450s for job setup
-  # — a deliberate margin, not an exact fit: podman alone routinely takes
-  # ~190s of it and the rest (checkout, python/uv, harness install,
-  # fullsend download) varies, so the allowance must absorb a bad day
-  # without handing the whole leg to the GitHub Actions hard timeout,
-  # which produces no artifacts for any case. Two cases at this value are
-  # 1500s, so merging before #1058 is safe too. Note the setup margin is
-  # what fixes the ceiling, not the case count: 800 fitted two cases with
-  # 440s to spare and three with none, and 500 (the arithmetic that
-  # reaches 2490s) leaves 210s — inside podman's own ~190s alone. A fourth
-  # case does not fit at any useful per-case value; the cases would need
-  # their own matrix legs. 003 still has no observed CI runtime, so
-  # re-derive from its first real run.
-  timeout: 420
+  # holds: 3 x (120 + 500 + 180 + 30) = 2490s, leaving 210s for job setup
+  # — a deliberate margin over the ~96s measured above, not an exact fit:
+  # the setup steps (checkout, python/uv, harness install, fullsend
+  # download, podman) vary, so the allowance must absorb a bad day without
+  # handing the whole leg to the GitHub Actions hard timeout, which
+  # produces no artifacts for any case. Two cases at this value are 1660s,
+  # so merging before #1058 is safe too. The setup margin is what fixes the
+  # ceiling, not the case count: 500 is the largest per-case value that
+  # still leaves that margin for three cases (T <= (2700 - 150)/3 - 330 =
+  # ~520), and a fourth case does not fit at any useful per-case value —
+  # those cases would need their own matrix legs. 003 still has no observed
+  # CI runtime; size from its first real run if it needs more than 500.
+  timeout: 500
   parallelism: 1
   # Advisory only — the opaque-CLI-runner contract does not enforce this for
   # our runner type; a runaway run still spends what it spends and only
@@ -96,29 +97,31 @@ execution:
     #
     # Every case in this suite shares this window, run back to back
     # (parallelism: 1) inside one 45-minute matrix leg: today 001-fix-add
-    # (a 2-line arithmetic bug that completes in well under a minute) and
-    # 003-dead-config-field (a cross-file dead-config removal with a larger
-    # 60-turn / $4.00 budget), with #1058's 002-needs-input-uninterpretable
-    # in flight — three is what execution.timeout above is derived for.
-    # 320s here, 100s under execution.timeout (420) so this inner `timeout`
+    # (a 2-line arithmetic bug) and 003-dead-config-field (a cross-file
+    # dead-config removal with a larger 60-turn / $4.00 budget), with
+    # #1058's 002-needs-input-uninterpretable in flight — three is what
+    # execution.timeout above is derived for.
+    # 420s here, 80s under execution.timeout (500) so this inner `timeout`
     # fires first and fullsend still writes a partial metrics.json before
     # returning (see writeMetricsJSON in run.go's error path), giving an
     # inconclusive but readable "metrics.json not found"-adjacent judge
-    # failure rather than a harness SIGKILL. The 420s outer value is what
+    # failure rather than a harness SIGKILL. The 500s outer value is what
     # makes the job budget add up with real setup margin — see
     # execution.timeout above — so a hang in one case still leaves the
     # others their full window and their artifacts; at the old 1700/1800 a
     # first-case hang left the rest to the GitHub Actions job timeout,
-    # which produces no artifacts. 001 is not expected to approach 320s (it
-    # observed 12 and 35 turns in well under a minute); 003 has no observed
-    # CI runtime at all, and 320s is a job-budget quotient, not a measured
-    # fit — if its first real run needs more, the code cases need their own
-    # matrix legs rather than a larger share of this one.
+    # which produces no artifacts. 001 is NOT sub-minute: it observed 44
+    # turns / 236.8s (run 33968109425) and 37 turns / 195.8s (run
+    # 34268404969), so 420s clears its measured max by ~183s (well over the
+    # ~41s run-to-run swing between those two). 003 has no observed CI
+    # runtime yet; if its first real run needs more than 420s, the code
+    # cases need their own matrix legs rather than a larger share of this
+    # one.
     # Separately, pr_created can also fail when the agent finishes
     # in-budget but never emits a schema-valid code-result.json —
     # validation_loop then skips post_script (ADR 0022), so no PR is
     # created despite a clean timeout path.
-    EVAL_TIMEOUT: "320"
+    EVAL_TIMEOUT: "420"
 
 hooks:
   before_each:
