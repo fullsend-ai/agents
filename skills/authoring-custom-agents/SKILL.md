@@ -6,7 +6,7 @@ description: >-
   the post-script in agreement, and validating the result before committing.
 ---
 
-# Authoring custom agents
+# Authoring Custom Agents
 
 `fullsend agent new <name>` writes a valid, registered agent. Everything is
 complete except the prompt. Your job is to finish `agents/<name>.md` without

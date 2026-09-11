@@ -31,7 +31,13 @@ write, which is the fastest way to get an agent's comments ignored.
 
    ```bash
    # ISSUE_URL looks like https://github.com/OWNER/REPO/pull/NUMBER
-   read -r OWNER REPO NUMBER < <(sed -E 's#^https://github[.]com/([^/]+)/([^/]+)/(pull|issues)/([0-9]+)$#\1 \2 \4#' <<<"$ISSUE_URL")
+   [[ "$ISSUE_URL" =~ ^https://github[.]com/([^/]+)/([^/]+)/(pull|issues)/([0-9]+)$ ]]
+   OWNER="${BASH_REMATCH[1]}" REPO="${BASH_REMATCH[2]}" NUMBER="${BASH_REMATCH[4]}"
+   HEAD_SHA=$(gh api "repos/${OWNER}/${REPO}/pulls/${NUMBER}" --jq .head.sha)
+   # Every changed file, with its status — step 5 needs the full set.
+   gh api --paginate "repos/${OWNER}/${REPO}/pulls/${NUMBER}/files" \
+     --jq '.[] | {filename, status, previous_filename, has_patch: (.patch != null)}'
+   # The Markdown files to scan, with their diffs.
    gh api --paginate "repos/${OWNER}/${REPO}/pulls/${NUMBER}/files" \
      --jq '.[] | select(.status != "removed")
            | select(.filename | endswith(".md"))
@@ -39,17 +45,23 @@ write, which is the fastest way to get an agent's comments ignored.
            | {filename, patch}'
    ```
 
-   Interpolate those three values yourself, as above. Do not write
+   Interpolate those values yourself, as above. Do not write
    `{owner}`/`{repo}` literally: those are `gh`'s own placeholders for the
    *current checkout's* remote, there is no `{number}` placeholder at all,
    and a literal `{number}` is sent through unsubstituted and returns 404.
+   The URL match uses bash's own `[[ =~ ]]` so no extra command is needed;
+   `gh` and `jq` are the only commands this agent runs.
 
-   `select(.status != "removed")` drops files the pull request deletes.
-   `select(.patch != null)` drops files GitHub returned without a diff — a
-   pure rename, or one it considered too large. If any `.md` file was dropped
-   for that reason, or the response reached the endpoint's 3,000-file cap,
-   say so and use `status: "error"`: reporting `ok` would claim links were
-   checked when they were not.
+   Keep the first list: the set of paths whose `status` is `added` or
+   `renamed` (including non-Markdown files) is what step 5 uses to decide a
+   link target will exist once the pull request merges.
+
+   In the second list, `select(.status != "removed")` drops files the pull
+   request deletes and `select(.patch != null)` drops files GitHub returned
+   without a diff — a pure rename, or one it considered too large. If any
+   `.md` file has `has_patch: false` in the first list, or the response reached
+   the endpoint's 3,000-file cap, say so and use `status: "error"`: reporting
+   `ok` would claim links were checked when they were not.
 
    If the command fails, write a result with `status: "error"`, a `summary`
    naming the command that failed, and stop.
@@ -65,7 +77,12 @@ write, which is the fastest way to get an agent's comments ignored.
    so there are no file headers to skip.
 
 4. From those added lines, extract every Markdown link target: the target in
-   `[text](target)` and in `[ref]: target` definitions. Classify each:
+   `[text](target)`, the destination in an image `![alt](target)`, and the
+   target in a `[ref]: target` definition. A reference-style usage —
+   `[text][ref]` or a bare `[ref]` — resolves to the target of the matching
+   `[ref]: target` definition anywhere in the file (the definition may be on
+   a line the pull request did not touch, so search the whole file at head, as
+   fetched below). Classify each:
 
    - **Relative path** (`../guides/x.md`, `./y.md#anchor`) — resolve it against
      the directory of the file that contains it. Strip any `#anchor` and any
@@ -85,17 +102,29 @@ write, which is the fastest way to get an agent's comments ignored.
 
    Skip any candidate inside a backtick code span or a fenced code block — a
    documentation change that shows Markdown syntax is not adding a link. The
-   patch alone cannot tell you the fence state, so read the file at head when
-   a candidate looks like it may be inside one.
+   patch alone cannot tell you the fence state, and the checkout on disk is
+   not at the pull request's head, so fetch the file as it is at head:
+
+   ```bash
+   gh api -H "Accept: application/vnd.github.raw+json" \
+     "repos/${OWNER}/${REPO}/contents/${FILE}?ref=${HEAD_SHA}"
+   ```
+
+   That is a read-only REST call to `api.github.com`, which this agent's
+   profile allows. Count the fence markers (```` ``` ```` or `~~~`) above the
+   candidate's line to decide whether it is inside a block.
    - A `[ref]: target` definition that nothing references — skip it. An unused
      definition renders nothing, so it cannot be broken for a reader.
 
 5. A link is broken when its resolved path does not exist. Decide that from
-   two sources, in this order: if the path is one of the files this pull
-   request adds or renames — you have that list from step 1 — it will exist
-   once merged, so treat it as resolving even though it is absent from the
-   checkout. Otherwise check the checkout on disk. Do not assume a path
-   exists merely because it appears in the diff as a link target.
+   two sources, in this order: if the path is in the first list from step 1
+   with `status` `added` or `renamed` (any file type, not only `.md`), it
+   will exist once merged, so treat it as resolving even though it is absent
+   from the checkout. Otherwise check the checkout on disk, remembering that
+   a file the pull request deletes is still there: a target in that list with
+   `status` `removed` is broken even though the path exists on disk. Do not
+   assume a path exists merely because it appears in the diff as a link
+   target.
    Report it as `<file>:<line> -> <target>`, using the line number at head
    from step 3.
 
