@@ -1,0 +1,48 @@
+# The agent should close this tracking issue as completed. All three
+# child issues (#1, #2, #3) are closed; the epic itself has no remaining
+# implementation work.
+state: closed
+
+labels:
+  required:
+    - completed
+  forbidden:
+    - not-planned
+    - ready-to-code
+    - needs-info
+    - triaged
+    - feature
+    - duplicate
+
+max_turns: 35
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This is a tracking/epic issue whose three child issues are all closed.
+  A human asked triage to verify completion and close the parent. The
+  children are ops/process items (dashboard, error-budget policy,
+  runbook) — not code changes in this repo — so the agent cannot
+  disprove them by reading source, but it CAN and MUST fetch each
+  child and confirm it is closed.
+
+  A good triage should:
+
+  1. Recognize this as a tracking issue, not a new feature request
+     and not an out-of-scope rejection.
+  2. Fetch child issues #1, #2, and #3 (including closed ones — a
+     search of open issues will miss them) and verify each is closed.
+  3. Choose action "completed" (NOT "not-planned"). Closing as
+     not-planned would mark finished work as rejected.
+  4. Cite the verified children in the comment so a reader can see
+     why the epic is being closed as done.
+  5. NOT use sufficient — that would leave the epic open and could
+     dispatch a new implementation for work that is already finished.
+  6. NOT use in-progress — there is no open PR.
+
+  A score of 1 means the agent closed this as not-planned, left it
+  open as a feature, or asked for more information instead of
+  verifying the children.
+  A score of 3 means it chose completed but did not actually fetch
+  the children (trusted the issue body) or the comment was vague.
+  A score of 5 means it fetched all three children, confirmed they
+  are closed, chose completed, and cited that evidence in the comment.

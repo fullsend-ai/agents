@@ -21,6 +21,21 @@ gh issue list --repo OWNER/REPO --state open --json number,title,body --limit 10
 
 # Search issues by keyword
 gh issue list --repo OWNER/REPO --state open --search "keyword" --json number,title,body --limit 30
+
+# Include closed issues when verifying finished children of a tracking issue
+gh issue list --repo OWNER/REPO --state all --json number,title,state --limit 100
+
+# List GitHub native sub-issues (child issues), including closed ones
+gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query='
+  query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        subIssues(first: 50) {
+          nodes { number title state url }
+        }
+      }
+    }
+  }' --jq '.data.repository.issue.subIssues.nodes'
 ```
 
 ## Pull Requests

@@ -49,6 +49,7 @@ These labels are managed by the triage agent based on its assessment of the issu
 | `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
 | `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
 | `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
+| `completed` | The work described in the issue is done (all child issues closed, addressing PRs/MRs merged, acceptance criteria met). The issue is closed with reason "completed". Distinct from `not-planned` (rejected) and from `in-progress` (open PR/MR still in flight). |
 | `pr-open` | An open PR or merge request already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR/MR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR/MR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR/MR is closed without merging: nothing re-triages on PR/MR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
 The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `create_issues.allow_targets` in config.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
@@ -101,7 +102,7 @@ invent labels or apply labels not listed here.
 ## Control labels (never recommend these)
 
 These are managed by the triage pipeline. Never include them in `label_actions`:
-`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `pr-open`.
+`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `completed`, `pr-open`.
 
 ## Area labels
 
@@ -211,7 +212,7 @@ GitHub/GitLab auth vars:
 | `JIRA_TOKEN` | API token for that account. Available to the runner for post-script mutations; the sandbox receives the `jira-ro` provider's opaque placeholder instead of the real token. |
 | `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). |
 
-Closing an issue (`duplicate`, `not-planned`, `split` actions) performs a
+Closing an issue (`duplicate`, `not-planned`, `completed`, `split` actions) performs a
 Jira workflow transition rather than a status field write, since Jira has no
 universal "closed" state. The transition name for each action is configured
 independently:
@@ -220,7 +221,7 @@ independently:
 |----------|----------|
 | `JIRA_DUPLICATE_TRANSITION` | The `duplicate` action. |
 | `JIRA_NOT_PLANNED_TRANSITION` | The `not-planned` action. |
-| `JIRA_SPLIT_TRANSITION` | Closing the original issue after a `split` action. |
+| `JIRA_SPLIT_TRANSITION` | The `split` action, and the `completed` action (both close with GitHub reason `completed`). |
 
 If the relevant variable is unset when that action fires, the post-script
 fails loudly rather than silently skipping the close — set all three to the

@@ -122,6 +122,10 @@ run_test "jira-valid-url-resets-pr-open-label" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
   '"remove":"pr-open"'
 
+run_test "jira-valid-url-resets-completed-label" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  '"remove":"completed"'
+
 # Malformed Jira issue URL: fails validation, performs no mutation.
 run_test "jira-malformed-url-fails" \
   "https://test.atlassian.net/not-an-issue-url" \

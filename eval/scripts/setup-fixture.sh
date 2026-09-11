@@ -89,6 +89,12 @@ if [[ "$SEED_COUNT" -gt 0 ]]; then
       --title "$seed_title" \
       --body "$seed_body")
     echo "Created seed issue: $seed_url"
+    seed_state=$(yq -r ".seed_issues[$i].state // \"open\"" "$INPUT")
+    if [[ "$seed_state" == "closed" ]]; then
+      seed_number="${seed_url##*/}"
+      gh issue close "$seed_number" --repo "$EPHEMERAL_REPO" --reason completed
+      echo "Closed seed issue: $seed_url"
+    fi
   done
 fi
 

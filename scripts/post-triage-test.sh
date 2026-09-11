@@ -469,6 +469,35 @@ run_test "not-planned-missing-comment-fails" \
   "" \
   "true"
 
+run_test "completed-posts-comment" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done. Child issues #1, #2, and #3 are closed."}' \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -"
+
+run_test "completed-applies-label" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=completed --silent"
+
+run_test "completed-removes-blocked-label" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
+
+run_test "completed-removes-needs-info-label" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
+
+run_test "completed-removes-pr-open-label" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
+
+run_test "completed-closes-issue" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "gh issue close 42 --repo test-org/test-repo --reason completed"
+
+run_test "completed-missing-comment-fails" \
+  '{"action":"completed","reasoning":"all child issues are closed"}' \
+  "" \
+  "true"
+
 run_test_stdout "question-control-label-refused" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Answer here.","label_actions":{"reason":"Tried to set question label.","actions":[{"action":"add","label":"question"}]}}' \
   "::warning::Refused to add control label 'question' -- control labels are managed by the triage pipeline"
@@ -503,6 +532,10 @@ run_test_stdout "label-actions-feature-control-label-refused" \
 run_test_stdout "label-actions-not-planned-control-label-refused" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set not-planned label.","actions":[{"action":"add","label":"not-planned"}]}}' \
   "::warning::Refused to add control label 'not-planned' -- control labels are managed by the triage pipeline"
+
+run_test_stdout "label-actions-completed-control-label-refused" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Tried to set completed label.","actions":[{"action":"add","label":"completed"}]}}' \
+  "::warning::Refused to add control label 'completed' -- control labels are managed by the triage pipeline"
 
 run_test "label-actions-absent-still-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
@@ -1563,6 +1596,11 @@ run_gitlab_test "gitlab-not-planned-closes-issue" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
   "state_event=close"
 
+# GitLab completed action closes the issue.
+run_gitlab_test "gitlab-completed-closes-issue" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "state_event=close"
+
 # GitLab label_actions are processed.
 run_gitlab_test "gitlab-label-actions-applied" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Area label applies.","actions":[{"action":"add","label":"area/api"}]}}' \
@@ -1830,6 +1868,11 @@ run_jira_test "jira-duplicate-transitions" \
 run_jira_test "jira-not-planned-transitions" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
   '{"transition":{"id":"41"}}'
+
+# Jira completed action reuses JIRA_SPLIT_TRANSITION (close reason "completed").
+run_jira_test "jira-completed-transitions" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"51"}}'
 
 # Jira split action closes the original issue via JIRA_SPLIT_TRANSITION
 # after creating both sub-issues (defaulting to the source project).
