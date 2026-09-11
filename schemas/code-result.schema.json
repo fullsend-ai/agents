@@ -4,12 +4,11 @@
   "title": "Code Agent Result",
   "description": "Structured output from the code agent documenting the target branch and PR body for PR creation.",
   "type": "object",
-  "required": ["target_branch"],
   "additionalProperties": false,
   "properties": {
     "target_branch": {
       "type": "string",
-      "description": "Branch the PR should target. Determined by the agent from issue context.",
+      "description": "Branch the PR should target. Determined by the agent from issue context. Required for normal runs; optional when needs_input is true.",
       "pattern": "^[a-zA-Z0-9._/-]+$"
     },
     "pr_body": {
@@ -21,6 +20,31 @@
       "type": "boolean",
       "default": true,
       "description": "Whether the PR should close the linked issue on merge. Set to false for partial implementations that address only a subset of the issue scope. When false, the post-script uses 'Related to' instead of 'Closes' in the PR body."
+    },
+    "needs_input": {
+      "type": "boolean",
+      "default": false,
+      "description": "When true, the agent is signaling that it cannot proceed without human input. The post-script applies the fs-code-needs-input label to the issue, posts a comment with the reason, and skips PR creation. The agent should not commit code changes before signaling needs_input, but the post-script does not enforce this."
+    },
+    "needs_input_reason": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Human-readable explanation of why the agent needs input. Required when needs_input is true. Describes the specific blocker (broken tooling, uninterpretable issue, missing scan-secrets, etc.)."
     }
-  }
+  },
+  "allOf": [
+    {
+      "$comment": "required: [needs_input] guards against vacuous truth — without it, objects lacking needs_input would match the if, triggering then (requiring needs_input_reason) instead of else (requiring target_branch).",
+      "if": {
+        "properties": { "needs_input": { "const": true } },
+        "required": ["needs_input"]
+      },
+      "then": {
+        "required": ["needs_input_reason"]
+      },
+      "else": {
+        "required": ["target_branch"]
+      }
+    }
+  ]
 }

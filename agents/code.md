@@ -83,11 +83,15 @@ the review agent — if the triage was wrong, your code will fail review.
 ## Structured output
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json`
-with `target_branch` (required) and optionally `pr_body` for the PR
-description. The `code-implementation` skill describes the schema and
-the exact steps where you write each field. The post-script reads this
-file to determine the PR target branch and description. Without this
-file, the validation loop rejects the run and retries.
+with `target_branch` and optionally `pr_body` for the PR description.
+`target_branch` is required for normal runs; when `needs_input` is
+`true`, `needs_input_reason` is required instead (and `target_branch`
+is optional). The `code-implementation` skill describes the
+schema and the exact steps where you write each field. The post-script
+reads this file to determine the PR target branch and description, or
+to apply the `fs-code-needs-input` label when the agent signals it
+needs help. Without this file, the validation loop rejects the run and
+retries.
 
 After writing the file, validate it before exiting:
 
@@ -99,16 +103,26 @@ If validation fails, read the error output, fix the JSON file, and
 re-run the check. If it still fails after 3 attempts, write the best
 JSON you have and exit.
 
+If you cannot proceed because `scan-secrets` is unavailable, the issue is
+uninterpretable, or setup cannot make tests/linters run, set `needs_input` to
+`true` and add a concise `needs_input_reason` with `jq`. Validate the file,
+then stop without committing; the post-script labels the issue, posts the
+reason, and exits without creating a PR.
+
 ## Failure handling
 
 Secret scanning is **non-negotiable**. The `scan-secrets` helper runs before
-tests on every verification pass. If secrets are detected — or if the helper
-script is missing — hard stop. Do not improvise a replacement or skip the scan.
+tests on every verification pass. If secrets are detected, hard stop. If the
+helper is missing, use the `needs_input` path above; do not improvise or skip.
 
 Your exit state is the handoff contract:
 - **Clean commit on the feature branch + valid structured output** → the
   post-script pushes and creates the PR (after its own authoritative secret
   scan).
+- **`needs_input: true` in structured output** → the post-script applies the
+  `fs-code-needs-input` label to the issue, posts a comment with the reason,
+  and exits without creating a PR. The agent should not commit code changes
+  before signaling `needs_input`, but the post-script does not enforce this.
 - **No commit** → the post-script reads your transcript and exit code to
   report the failure. Structured output should still be written when possible
   so the post-script knows which branch was targeted.

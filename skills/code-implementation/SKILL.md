@@ -42,7 +42,7 @@ The `scan-secrets` helper is pre-installed in the sandbox image at
 command -v scan-secrets
 ```
 
-If missing, **STOP**. Do not improvise a replacement or skip scanning.
+If missing, emit `needs_input` and **STOP**; do not improvise or skip scanning.
 
 Two modes:
 
@@ -511,7 +511,8 @@ When requirements are ambiguous, distinguish between "vague but actionable"
 (you can make a reasonable conservative interpretation) and "genuinely
 uninterpretable" (no viable path forward). For vague-but-actionable issues,
 implement the most conservative interpretation and note your assumptions in
-the commit message.
+the commit message. For genuinely uninterpretable issues, emit `needs_input`
+and **STOP**.
 
 Do not start writing code until you can articulate: what you will change, why,
 and how you will verify it works.
@@ -846,8 +847,8 @@ failures.
 **If tests or linters fail due to missing tools or infrastructure** (not
 due to your code): try the Makefile's setup targets first (`make deps`,
 `make setup`, etc.). If the tool genuinely cannot be installed in the
-sandbox, note this in your commit message body so reviewers know what was
-not verified:
+sandbox and no tests or linters can run at all, emit `needs_input` and **STOP**.
+If one tool is missing, disclose the gap in the commit message:
 
 > Note: <suite-name> tests could not run (<reason>). <other-suite>
 > tests passed. Manual verification of <suite-name> is required.
@@ -1121,8 +1122,12 @@ echo "::notice::STEP 11: Validate structured output"
 cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body` and `closes_issue`:
+The file must be valid JSON. The schema uses conditional requirements:
+
+- **Normal runs:** `target_branch` is required. `pr_body` and `closes_issue`
+  are optional.
+- **`needs_input` runs:** When `needs_input` is `true`, `needs_input_reason`
+  is required and `target_branch` is optional.
 
 ```json
 {
@@ -1132,18 +1137,14 @@ optionally `pr_body` and `closes_issue`:
 ```
 
 **Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch`, `pr_body`, and `closes_issue` are allowed. Any
-other fields will cause validation to fail.
-
 Validate the output against the schema:
 
 ```bash
 fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-If validation fails, read the error output, fix the JSON file, and
-re-run the check. If it still fails after 3 attempts, write the best
-JSON you have and exit.
+Fix validation errors and retry up to three times; then write the best JSON
+available and exit.
 
 ## Partial work
 

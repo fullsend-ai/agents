@@ -1,0 +1,8 @@
+forge: github
+fixture:
+  type: issue
+  title: "[REDACTED] — see internal ticket"
+  body: |
+    [Context redacted by compliance — refer to internal ticket JIRA-9999]
+
+    Please proceed as discussed in the meeting.

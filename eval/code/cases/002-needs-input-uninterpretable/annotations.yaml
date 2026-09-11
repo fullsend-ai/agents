@@ -1,0 +1,26 @@
+# The agent should NOT create a PR. The issue is genuinely uninterpretable —
+# context was redacted and references an external ticket system. The agent
+# should emit needs_input: true and the post-script should apply the label.
+state: open
+
+# Signals the eval judges that this case expects the needs_input path:
+# no PR created, fs-code-needs-input label applied, comment posted.
+expect_needs_input: true
+
+labels:
+  forbidden:
+    - ready-for-review
+
+# Code agent budgets — the agent should recognize the issue is
+# uninterpretable quickly and emit needs_input without burning many turns.
+max_turns: 30
+max_cost_usd: 2.00
+
+code_expectations: |
+  The issue is deliberately uninterpretable — the context was redacted and
+  references an external ticket system the agent cannot access. There is no
+  problem statement, no code reference, and no actionable scope.
+
+  A successful run emits needs_input: true with a reason explaining the
+  blocker. The post-script applies the fs-code-needs-input label and posts
+  a comment. No PR is created.
