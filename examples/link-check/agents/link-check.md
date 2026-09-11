@@ -69,10 +69,11 @@ contract requires.
    request deletes and `select(.patch != null)` drops files GitHub returned
    without a diff. Decide what a missing diff means from the first list:
    a `renamed` file with `changes` `0` is a pure rename with nothing to scan —
-   skip it. A `modified` file, or a `renamed` file with `changes` above `0`,
-   that still has `has_patch: false` had its diff omitted because GitHub
-   considered it too large; that hides links you were asked to check, so say
-   so and use `status: "error"`. Do the same if the response reached the
+   skip it. Any other `.md` file with `has_patch: false` — `added`,
+   `modified`, `copied`, or `renamed` with `changes` above `0` — had its diff
+   omitted because GitHub considered it too large; that hides links you were
+   asked to check, so say so and use `status: "error"`, even if it was the
+   only documentation change. Do the same if the response reached the
    endpoint's 3,000-file cap. Reporting `ok` in either case would claim links
    were checked when they were not.
 
@@ -124,8 +125,14 @@ contract requires.
    ```
 
    That is a read-only REST call to `api.github.com`, which this agent's
-   profile allows. Count the fence markers (```` ``` ```` or `~~~`) above the
-   candidate's line to decide whether it is inside a block.
+   profile allows. Walk the file from the top and apply the CommonMark fence
+   rule: a line starting with three or more backticks or tildes opens a
+   block, and only a later line of the **same character** with **at least as
+   many** of them closes it — a shorter or different-character fence inside
+   the block is content. That is how documentation shows Markdown examples
+   (a four-backtick fence wrapping a three-backtick one), so do not treat
+   every marker as a toggle. The candidate is inside a block if a fence is
+   open at its line.
    - A `[ref]: target` definition that nothing references — skip it. An unused
      definition renders nothing, so it cannot be broken for a reader.
 
