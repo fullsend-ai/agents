@@ -49,6 +49,7 @@ env:
     GOOGLE_APPLICATION_CREDENTIALS: /tmp/.gcp-credentials.json
     ISSUE_URL: ${GITHUB_ISSUE_URL}
 timeout_minutes: 15
+readonly_repo: true
 trigger: |
   event.entity.kind == "change_proposal"
     && (event.transition.kind == "opened"

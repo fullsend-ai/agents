@@ -80,7 +80,16 @@ comment=$(jq -r 'if (.comment | type) == "string" then .comment else empty end' 
 
 case "${status}" in
   ok|findings|error) ;;
-  *) echo "post-link-check: status must be ok, findings or error (got '${status}')" >&2; exit 1 ;;
+  *)
+    # status is model output: never echo it raw. A value carrying CR/LF would
+    # split the runner's log line (a workflow-command injection vector), so
+    # flatten it and cap it before it reaches stderr.
+    shown="${status//[$'\r\n']/ }"
+    # printf '%s' never interprets backslash escapes; echo does under xpg_echo,
+    # so a literal "\n" in the value could still forge a log line through echo.
+    printf '%s\n' "post-link-check: status must be ok, findings or error (got '${shown:0:40}')" >&2
+    exit 1
+    ;;
 esac
 [[ -n "${summary}" ]] || { echo "post-link-check: summary is required" >&2; exit 1; }
 if [[ "${summary}" == *$'\n'* || "${summary}" == *$'\r'* ]]; then

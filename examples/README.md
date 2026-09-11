@@ -69,7 +69,10 @@ while you fill in `agents/my-agent.md`.
   as it sits here, unregistered.
 - **The shared assets are what the generator produces.** `policies/`,
   `providers/`, `profiles/` and `scripts/validate-output-schema.sh` are
-  byte-identical to `fullsend agent new` output, and are not hand-edited here:
+  byte-identical to `fullsend agent new` output (as of
+  [fullsend-ai/fullsend#7243](https://github.com/fullsend-ai/fullsend/pull/7243),
+  which this example was regenerated from — merge that first), and are not
+  hand-edited here:
   they are vendored copies of files that live in fullsend, so a change to one
   belongs there, not in this copy. Two of them currently differ from what
   fullsend's own scaffold ships, which is tracked as
