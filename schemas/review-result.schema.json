@@ -49,7 +49,10 @@
           "type": "array",
           "items": { "$ref": "#/$defs/risk_signal" }
         },
-        "rationale": { "type": "string", "minLength": 1 }
+        "rationale": { "type": "string", "minLength": 1 },
+        "tier1_score": { "type": "number", "minimum": 1, "maximum": 5 },
+        "risk_floor": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "degraded": { "type": "string", "enum": ["tier1-only"] }
       },
       "additionalProperties": false,
       "allOf": [
