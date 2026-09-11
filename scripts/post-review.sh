@@ -760,11 +760,21 @@ case "${FULLSEND_FORGE}:$(jq -r '.action' "${RESULT_FILE}")" in
     REVIEW_USER=$(forge_get_review_user)
     PR_AUTHOR=$(forge_get_pr_author)
     if [ -z "${REVIEW_USER}" ] || [ -z "${PR_AUTHOR}" ]; then
-      # Both lookups fail open by design, so leave a trail: a 422 after this
-      # line is the self-review collision going undetected. Empty is expected
-      # for a GitHub App installation token (it cannot read /user, and its
-      # <slug>[bot] identity never collides); for a PAT it is a failed call.
-      echo "::warning::Self-review check skipped — identity lookup returned empty (review user: '${REVIEW_USER}', PR author: '${PR_AUTHOR}'). If the review token is a PAT that owns this PR, expect a 422 on submit (#245)" >&2
+      # Both lookups fail open to empty by design. A warning here trains
+      # operators to ignore it if it fires on the normal path, so classify:
+      # an App installation token (the recommended setup, #245/README) gets
+      # 403 "Resource not accessible by integration" on GET /user and its
+      # <slug>[bot] identity can never collide with the author — a notice,
+      # not a warning. Re-probe stderr only on the already-empty path; keep
+      # the warning for a genuinely failed lookup or an empty PR author,
+      # where a subsequent 422 is actually diagnosable.
+      review_user_err=$(GH_TOKEN="${REVIEW_TOKEN}" gh api user 2>&1 >/dev/null || true)
+      if [ -z "${REVIEW_USER}" ] && [ -n "${PR_AUTHOR}" ] && \
+         printf '%s' "${review_user_err}" | grep -qiE 'Resource not accessible by integration|HTTP 403'; then
+        echo "::notice::Self-review check skipped — review token is a GitHub App installation token (GET /user is 403 for an App token, and its <slug>[bot] identity cannot collide with the PR author) (#245)"
+      else
+        echo "::warning::Self-review check skipped — identity lookup returned empty (review user: '${REVIEW_USER}', PR author: '${PR_AUTHOR}'). If the review token is a PAT that owns this PR, expect a 422 on submit (#245)" >&2
+      fi
     elif [ "${REVIEW_USER}" = "${PR_AUTHOR}" ]; then
       echo "Review token is the PR author — posting the review as a comment (#245)"
 
