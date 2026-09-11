@@ -603,6 +603,13 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
     if [ "${original_action}" = "request-changes" ] || [ "${original_action}" = "reject" ]; then
       echo "No blocking findings after severity filter — downgrading '${original_action}' to 'comment'"
       jq 'if (.findings | length) == 0 then del(.findings) else . end | .action = "comment"' "${RESULT_FILE}" > "${DOWNGRADE_RESULT}"
+    elif [ "${original_action}" = "approve" ] && [ "$(jq '.findings | length' "${RESULT_FILE}")" -gt 0 ]; then
+      # Disclosure-only approve: nothing was actually reviewed (an
+      # all-excluded PR whose only findings are exempt info-level
+      # disclosures). Downgrade to comment so it gets
+      # requires-manual-review, not ready-for-merge.
+      echo "Approve with only disclosure findings — downgrading 'approve' to 'comment'"
+      jq '.action = "comment"' "${RESULT_FILE}" > "${DOWNGRADE_RESULT}"
     else
       jq 'if (.findings | length) == 0 then del(.findings) else . end' "${RESULT_FILE}" > "${DOWNGRADE_RESULT}"
     fi

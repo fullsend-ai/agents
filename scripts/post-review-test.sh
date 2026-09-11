@@ -234,6 +234,11 @@ filter_and_downgrade() {
       echo "$filtered" | jq 'if (.findings | length) == 0 then del(.findings) else . end | .action = "comment"'
       return
     fi
+    if [ "$action" = "approve" ] && [ "$(echo "$filtered" | jq '.findings | length')" -gt 0 ]; then
+      # Disclosure-only approve (nothing reviewed) → comment, disclosures kept.
+      echo "$filtered" | jq '.action = "comment"'
+      return
+    fi
     # For approve/comment, just remove an empty findings array;
     # disclosure-only arrays are kept.
     echo "$filtered" | jq 'if (.findings | length) == 0 then del(.findings) else . end'
@@ -335,6 +340,16 @@ DISCLOSURE_ONLY_REJECT='{"action":"reject","findings":[
 
 run_downgrade_test "disclosure-only-reject-downgrades-keeps-findings" \
   "$DISCLOSURE_ONLY_REJECT" "low" "comment" "true"
+
+# An all-excluded PR whose only findings are disclosures must NOT approve
+# straight to ready-for-merge: approve is downgraded to comment (which the
+# label logic maps to requires-manual-review), disclosures KEPT.
+DISCLOSURE_ONLY_APPROVE='{"action":"approve","findings":[
+  {"severity":"info","category":"excluded-content","file":"package-lock.json","description":"not reviewed"}
+]}'
+
+run_downgrade_test "disclosure-only-approve-downgrades-keeps-findings" \
+  "$DISCLOSURE_ONLY_APPROVE" "low" "comment" "true"
 
 # A disclosure plus a real above-threshold finding → no downgrade
 DISCLOSURE_PLUS_BLOCKING='{"action":"request-changes","findings":[
