@@ -120,10 +120,13 @@ is a separate, server-side namespace. Porcelain commands consult
   `core.sshCommand` and `remote.<name>.uploadpack` /
   `remote.<name>.receivepack` are additional, independent keys
   consulted by client-side fetch/pull/push. `uploadpack.*` (e.g.
-  `uploadpack.packObjectsHook`) is a distinct, server-side namespace
-  consulted only when this repo serves `git-upload-pack`/
-  `git-receive-pack` to a remote client — do not treat pinning it as
-  covering outbound fetch/push.
+  `uploadpack.packObjectsHook`) is consulted by `git-upload-pack` when
+  this tree is the source of a fetch/clone — over SSH/git daemon, or
+  locally via a `file://` URL or `git clone --no-local` — so do not
+  treat pinning it as covering outbound fetch/push. It is not
+  consulted by `git-receive-pack`: receive-pack execution runs through
+  `core.hooksPath` hooks (`pre-receive`/`update`/`post-receive`) and
+  `receive.*`, not `uploadpack.*`.
 - Where the command(s) in the diff make them relevant, also check:
   `core.gitProxy` / `core.askPass`, `submodule.<name>.update` (may run
   an arbitrary `!command`), `gpg.program` / `gpg.ssh.*` (signature
