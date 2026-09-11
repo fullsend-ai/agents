@@ -61,8 +61,8 @@ contract requires.
    `gh` and `jq` are the only commands this agent runs.
 
    Keep the first list. Step 5 uses it twice: paths whose `status` is
-   `added` or `renamed` (any file type) will exist once the pull request
-   merges, and paths that are `removed`, or that appear as
+   `added`, `renamed` or `copied` (any file type) will exist once the pull
+   request merges, and paths that are `removed`, or that appear as
    `previous_filename` on a `renamed` entry, will not.
 
    In the second list, `select(.status != "removed")` drops files the pull
@@ -120,12 +120,18 @@ contract requires.
    not at the pull request's head, so fetch the file as it is at head:
 
    ```bash
+   # FILE comes from the pull request and is untrusted: a git path may contain
+   # $, backticks or parentheses. Use it only after this check; skip any other
+   # name and report the file as unchecked.
+   [[ "$FILE" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "skipping unsafe path"; exit 0; }
    gh api -H "Accept: application/vnd.github.raw+json" \
      "repos/${OWNER}/${REPO}/contents/${FILE}?ref=${HEAD_SHA}"
    ```
 
-   That is a read-only REST call to `api.github.com`, which this agent's
-   profile allows. Walk the file from the top and apply the CommonMark fence
+   Never paste a filename into a command without that check — bash would
+   expand `$(...)` or backticks inside it before `gh` ever ran. That is a
+   read-only REST call to `api.github.com`, which this agent's profile
+   allows. Walk the file from the top and apply the CommonMark fence
    rule: a line starting with three or more backticks or tildes opens a
    block, and only a later line of the **same character** with **at least as
    many** of them closes it — a shorter or different-character fence inside
@@ -138,8 +144,8 @@ contract requires.
 
 5. A link is broken when its resolved path does not exist once the pull
    request merges. Decide that from the first list in step 1 before looking at
-   the checkout: a path with `status` `added` or `renamed` (any file type, not
-   only `.md`) will exist, so treat it as resolving even though it is absent
+   the checkout: a path with `status` `added`, `renamed` or `copied` (any
+   file type, not only `.md`) will exist, so treat it as resolving even though it is absent
    from the checkout; a path with `status` `removed`, or one that appears as
    `previous_filename` on a `renamed` entry, will not exist, so treat it as
    broken even though it is still on disk in this default-branch checkout.
