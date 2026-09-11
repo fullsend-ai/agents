@@ -17,7 +17,7 @@ execution:
   # Harness hard-kill for the whole run-fullsend.sh invocation (git clone +
   # `fullsend run` + metrics copy). Deliberately NOT sized to the code
   # agent's real production budget — see EVAL_TIMEOUT below for why that
-  # budget (up to ~4200s across validation_loop's 2 iterations) cannot fit
+  # budget (up to ~7200s across validation_loop's 2 iterations) cannot fit
   # inside this CI job's 45-minute cap
   # (.github/workflows/functional-tests.yml) alongside before_each (120s),
   # after_each (90s), and the job's own setup overhead (checkout, python/uv,
@@ -54,8 +54,8 @@ execution:
     # the intended ordering.
     #
     # Deliberately far below the code agent's real production budget: each
-    # validation_loop iteration is re-armed with its own fresh 2100s
-    # (harness/code.yaml timeout_minutes: 35, mirrored as TIMEOUT_SECONDS
+    # validation_loop iteration is re-armed with its own fresh 3600s
+    # (harness/code.yaml timeout_minutes: 60, mirrored as TIMEOUT_SECONDS
     # in harness/code.yaml env.sandbox for the agent's self-monitoring). internal/cli/run.go
     # computes that duration once before the iteration loop begins and
     # passes it into rt.Run() on each iteration; the fresh
@@ -63,7 +63,7 @@ execution:
     # internal/sandbox/sandbox.go's ExecStreamReader, invoked per-iteration
     # via internal/runtime/claude.go's Run method. harness/code.yaml allows
     # up to 2 iterations (validation_loop.max_iterations: 2) — worst case
-    # ~4200s of agent time, on top of sandbox creation/image pull/
+    # ~7200s of agent time, on top of sandbox creation/image pull/
     # pre_script/post_script, none of which timeout_minutes bounds. None of
     # that fits inside this CI job's 45-minute cap with any safety margin,
     # so this eval does not attempt to reproduce the full production
