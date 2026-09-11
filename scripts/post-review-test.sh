@@ -1790,6 +1790,7 @@ run_risk_comment_test() {
   local test_name="$1"
   local json_content="$2"
   local expected_pattern="$3"
+  local match_mode="${4:-substring}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
@@ -1817,12 +1818,30 @@ run_risk_comment_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if [[ ! -f "${TMPDIR}/last-comment.md" ]] || ! grep -qF "${expected_pattern}" "${TMPDIR}/last-comment.md"; then
-    echo "FAIL: ${test_name} — expected '${expected_pattern}' in risk comment"
-    cat "${TMPDIR}/last-comment.md" 2>/dev/null
+  if [[ ! -f "${TMPDIR}/last-comment.md" ]]; then
+    echo "FAIL: ${test_name} — no risk comment written"
     FAILURES=$((FAILURES + 1))
     return
   fi
+  # substring: pattern appears anywhere. line: pattern is an entire line
+  # (so appended meta fails the check). absent: pattern must NOT appear.
+  case "${match_mode}" in
+    line)
+      if ! grep -qxF "${expected_pattern}" "${TMPDIR}/last-comment.md"; then
+        echo "FAIL: ${test_name} — expected exact line '${expected_pattern}'"
+        cat "${TMPDIR}/last-comment.md"; FAILURES=$((FAILURES + 1)); return
+      fi ;;
+    absent)
+      if grep -qF "${expected_pattern}" "${TMPDIR}/last-comment.md"; then
+        echo "FAIL: ${test_name} — did not expect '${expected_pattern}'"
+        cat "${TMPDIR}/last-comment.md"; FAILURES=$((FAILURES + 1)); return
+      fi ;;
+    *)
+      if ! grep -qF "${expected_pattern}" "${TMPDIR}/last-comment.md"; then
+        echo "FAIL: ${test_name} — expected '${expected_pattern}' in risk comment"
+        cat "${TMPDIR}/last-comment.md"; FAILURES=$((FAILURES + 1)); return
+      fi ;;
+  esac
   echo "PASS: ${test_name}"
 }
 
@@ -1858,21 +1877,47 @@ run_risk_comment_test "risk-history-row" \
   "${RISK_DEGRADED_RESULT}" \
   "| \`abc1234\` | $(date -u +%Y-%m-%d) | 2/5 moderate | 1.62 | tier1-only |"
 
+# A degraded score carries a risk/degraded marker label so consumers that
+# gate on risk can treat it as "no score"; a computed score does not.
+run_label_test "risk-degraded-marker-label" \
+  "${RISK_DEGRADED_RESULT}" \
+  "gh label create risk/degraded"
+run_label_test_no_pattern "risk-computed-no-degraded-marker" \
+  "${RISK_FLOORED_RESULT}" \
+  "gh label create risk/degraded"
+
 # Provenance fields are validated, not trusted: garbage is dropped, no floor applied
 RISK_BAD_PROVENANCE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo.","tier1_score":"9;rm -rf","risk_floor":"5x","degraded":"<b>x</b>"}}'
 run_label_test "risk-bad-provenance-ignored" \
   "${RISK_BAD_PROVENANCE}" \
   "gh label create risk/low"
-run_risk_comment_test "risk-bad-provenance-not-rendered" \
+run_risk_comment_test "risk-bad-provenance-header-line" \
   "${RISK_BAD_PROVENANCE}" \
-  "**Risk Assessment: low (1/5)**
-"
+  "**Risk Assessment: low (1/5)**" \
+  "line"
+run_risk_comment_test "risk-bad-provenance-no-tier1" \
+  "${RISK_BAD_PROVENANCE}" \
+  "· tier 1:" \
+  "absent"
+run_risk_comment_test "risk-bad-provenance-no-degraded" \
+  "${RISK_BAD_PROVENANCE}" \
+  "· degraded:" \
+  "absent"
 
-# Results without the new fields render exactly as before
-run_risk_comment_test "risk-legacy-result-unchanged-header" \
+# A legacy result (no tier1_score/degraded) keeps the same header line —
+# no meta appended — but still gets a per-head-SHA history row, with the
+# tier-1 cell as "-" and the degraded cell empty.
+run_risk_comment_test "risk-legacy-result-header-line" \
   "${RISK_LOW_RESULT}" \
-  "**Risk Assessment: low (1/5)**
-"
+  "**Risk Assessment: low (1/5)**" \
+  "line"
+run_risk_comment_test "risk-legacy-result-no-meta" \
+  "${RISK_LOW_RESULT}" \
+  "· tier 1:" \
+  "absent"
+run_risk_comment_test "risk-legacy-history-row" \
+  "${RISK_LOW_RESULT}" \
+  "| \`abc123\` | $(date -u +%Y-%m-%d) | 1/5 low | - |  |"
 
 # --- Summary ---
 

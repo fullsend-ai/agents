@@ -611,8 +611,9 @@ be absent from the result JSON.
    serialised a 2–3 minute sub-agent for nothing.
 
 6. Parse the risk assessment output. The sub-agent returns a JSON
-   object with `score`, `level`, `rationale`, and optional signal
-   arrays.
+   object with `score`, `level`, `rationale`, `tier1_score` and
+   `risk_floor` (the last two present unless the score is `UNKNOWN`),
+   plus optional signal arrays and a `degraded` marker.
 
 7. Store the `risk_assessment` object for inclusion in
    `agent-result.json` (step 7).
