@@ -86,9 +86,12 @@ contract requires.
 3. Each `patch` is a unified diff. Walk it and keep only the **added** lines —
    those beginning with a single `+`. Track
    the line number in the file at head: each hunk header `@@ -a,b +c,d @@`
-   restarts the counter at `c`, an added line advances it by one, and a
-   context line advances it by one. A REST `patch` starts at its first `@@`,
-   so there are no file headers to skip.
+   restarts the counter at `c`; either count is optional (git omits `,1`),
+   so `@@ -47 +47,2 @@`, `@@ -47 +47 @@` and `@@ -0,0 +1 @@` all restart
+   at their `c` too. An added line advances the counter by one, a context
+   line advances it by one, and a deleted line (`-`) does not change it. A
+   REST `patch` starts at its first `@@`, so there are no file headers to
+   skip.
 
 4. From those added lines, extract every Markdown link target: the target in
    `[text](target)`, the destination in an image `![alt](target)`, and the
@@ -194,9 +197,11 @@ Write exactly one JSON object to `$FULLSEND_OUTPUT_DIR/agent-result.json`:
 - `summary` — one line, at most 200 characters. Used as the comment heading.
 - `comment` — Markdown body posted on the pull request, at most 16384
   characters. List one broken link per bullet as `` `<file>:<line>` -> `<target>` ``.
-  When `status` is `ok` the post-script posts nothing, but `comment` is still
-  required — a single line such as `All added documentation links resolve.` is
-  fine.
+  When `status` is `ok` the post-script posts nothing unless an earlier run
+  left a findings comment on this pull request, in which case it replaces
+  that comment with `comment` so a fixed problem is no longer reported. So
+  `comment` is still required — a single line such as
+  `All added documentation links resolve.` is fine.
 
 Do not push commits, open issues, apply labels, edit files, or call any
 mutating API. The post-script performs every side effect; your only output is
