@@ -107,8 +107,12 @@ def sticky(bullets, heading="Critical", author="review-bot"):
     they will actually meet.
     """
     body = f"## Review\n\n### Findings\n\n#### {heading}\n\n"
-    for category, path, description in bullets:
+    for bullet in bullets:
+        category, path, description = bullet[:3]
         body += f"- **[{category}]** `{path}` \u2014 {description}\n"
+        # SKILL.md puts the remediation on an indented continuation line.
+        if len(bullet) > 3 and bullet[3]:
+            body += f"  Remediation: {bullet[3]}\n"
     return {"author": author, "body": body}
 
 
@@ -153,8 +157,12 @@ REQUIRED_THREE = [
 
 
 def state_with(comments, reviews, issue_comments=None):
+    # gh serialises reviewDecision as an empty STRING (never null) on an
+    # unprotected repo, which every ephemeral fixture is — so model "",
+    # not an omitted key, or the delivery guard is tested against a shape
+    # capture never produces. Cases override via dict(..., review_decision=).
     state = {"review_comments": comments, "review_comments_fetch_failed": False,
-             "reviews": reviews}
+             "reviews": reviews, "review_decision": ""}
     if issue_comments is not None:
         state["comments"] = issue_comments
     return state
@@ -347,6 +355,17 @@ CASES = [
           state=state_with([], [sticky_review([
               ("weak-hash", "src/orders/receipts.py",
                "MD5 used for the cache key is insecure.")])])), False),
+    # The matching phrase lives only on the bullet's Remediation
+    # continuation line — it must still be seen, or a forbidden finding
+    # slips through as a clean pass.
+    ("forbidden: a sticky finding matched only on its remediation fails closed",
+     "forbidden_findings",
+     forb([{"file": "src/auth/session.py", "category": "timing"}], [],
+          state=state_with([], [LANDED_REVIEW], issue_comments=[
+              sticky([("weak-cmp", "src/auth/session.py",
+                       "== compares the MAC.",
+                       "use a constant-time compare to close the timing side "
+                       "channel.")])])), False),
 
     # The reviewer's scenario for the short-circuit: one legally-posted
     # low note beside a bait promoted to critical with no line. The low
@@ -399,12 +418,22 @@ CASES = [
                      heading="Medium / Low / Info")]}), True),
 
     # --- forbidden_findings: the review must have landed --------------------
-    # reviews: [] with review_decision: null is a submission that never
+    # reviews: [] with no review decision is a submission that never
     # happened (the self-review 422), not a clean review. It used to report
     # 1.0 precision on a pipeline that posted and evaluated nothing.
     ("forbidden: a review that never landed fails closed", "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
           state=state_with([], [])), False),
+    # gh emits reviewDecision as "" (not null) on the unprotected fixture
+    # repo — the guard must fail closed on that real shape, not just null.
+    ("forbidden: reviewDecision \"\" with no review fails closed",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=dict(state_with([], []), review_decision="")), False),
+    ("forbidden: reviewDecision null with no review fails closed",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
+          state=dict(state_with([], []), review_decision=None)), False),
     ("forbidden: a landed review with no findings is a clean pass",
      "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],
@@ -541,6 +570,17 @@ CASES = [
              sticky([("injection-vuln", "src/orders/repository.py",
                       "order_id is interpolated into the query — SQL injection.")],
                     heading="Medium / Low / Info")]}), False),
+    # The distinguishing phrase lives only on the bullet's Remediation
+    # continuation line; the matching contract promises to match it there.
+    ("required: a dropped finding matched only on its remediation is credited",
+     "required_findings",
+     req([{"file": "src/orders/repository.py", "category": "injection",
+           "min_severity": "high"}], [],
+         state_extra={"reviews": [LANDED_REVIEW], "comments": [
+             sticky([("sqli", "src/orders/repository.py",
+                      "order_id flows into the query string.",
+                      "parameterise the query to remove the SQL injection.")],
+                    heading="High")]}), True),
     ("forbidden: a chatty sticky without finding headers still passes",
      "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}], [],

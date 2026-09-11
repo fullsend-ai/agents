@@ -327,7 +327,11 @@ case "${FIXTURE_TYPE}" in
         assignees: [($pr.assignees // [])[] | .login],
         milestone: ($pr.milestone.title // null),
         mergeable: $pr.mergeable,
-        review_decision: $pr.reviewDecision,
+        # gh serialises a GraphQL-null reviewDecision as an empty STRING,
+        # not null (its PullRequest.reviewDecision is a Go string), so an
+        # unprotected repo — every ephemeral fixture — captures "". Fold it
+        # to null so the delivery guard sees one no-decision shape.
+        review_decision: (if $pr.reviewDecision == "" then null else $pr.reviewDecision end),
         comments: [($pr.comments // [])[] | {author: .author.login, body: .body, created_at: .createdAt}],
         reviews: [($pr.reviews // [])[] | {author: .author.login, state: .state, body: .body}],
         review_comments: $review_comments,

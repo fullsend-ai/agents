@@ -436,9 +436,17 @@ judges:
           # the conservative end for crediting, sev_hi the fail-closed end
           # for forbidding, so an unheaded bullet is strict in both judges.
           sev_lo, sev_hi = 0, MAX_SEVERITY
+          # cur tracks the bullet being built so its continuation lines
+          # (SKILL.md puts the remediation on an indented follow-on line)
+          # fold into that bullet's text — the matching contract promises
+          # the category is matched against description AND remediation, not
+          # the first line alone. Reset on a heading, a new bullet, a dedup,
+          # or an unindented line, so a continuation never crosses a bullet.
+          cur = None
           for line in (it.get("body") or "").splitlines():
               head = HEADING_RE.match(line)
               if head:
+                  cur = None
                   named = [
                       SEVERITY_ORDER[w]
                       for w in re.split(r"[^a-z]+", head.group(1).lower())
@@ -449,19 +457,26 @@ judges:
                   continue
               mk = STICKY_BULLET_RE.match(line)
               if not mk:
+                  stripped = line.strip()
+                  if cur is not None and stripped and line[0] in " \t":
+                      cur["text"] += "\n" + stripped
+                  elif stripped:
+                      cur = None
                   continue
               cat = mk.group(1).strip()
               # Strip only a trailing ":<line>", never a colon inside a path.
               path = norm_path(re.sub(r":\d+$", "", mk.group(2)))
               if any(sev_lo <= r <= sev_hi for r in seen.get((path, cat.lower()), ())):
+                  cur = None
                   continue
-              dropped.append({
+              cur = {
                   "file": path,
                   "category": cat,
                   "sev_lo": sev_lo,
                   "sev_hi": sev_hi,
                   "text": line,
-              })
+              }
+              dropped.append(cur)
       # Diagnostics without the full bodies.
       summary = [{k: p[k] for k in ("file", "severity", "category")} for p in posted]
 
@@ -707,9 +722,17 @@ judges:
           # the conservative end for crediting, sev_hi the fail-closed end
           # for forbidding, so an unheaded bullet is strict in both judges.
           sev_lo, sev_hi = 0, MAX_SEVERITY
+          # cur tracks the bullet being built so its continuation lines
+          # (SKILL.md puts the remediation on an indented follow-on line)
+          # fold into that bullet's text — the matching contract promises
+          # the category is matched against description AND remediation, not
+          # the first line alone. Reset on a heading, a new bullet, a dedup,
+          # or an unindented line, so a continuation never crosses a bullet.
+          cur = None
           for line in (it.get("body") or "").splitlines():
               head = HEADING_RE.match(line)
               if head:
+                  cur = None
                   named = [
                       SEVERITY_ORDER[w]
                       for w in re.split(r"[^a-z]+", head.group(1).lower())
@@ -720,19 +743,26 @@ judges:
                   continue
               mk = STICKY_BULLET_RE.match(line)
               if not mk:
+                  stripped = line.strip()
+                  if cur is not None and stripped and line[0] in " \t":
+                      cur["text"] += "\n" + stripped
+                  elif stripped:
+                      cur = None
                   continue
               cat = mk.group(1).strip()
               # Strip only a trailing ":<line>", never a colon inside a path.
               path = norm_path(re.sub(r":\d+$", "", mk.group(2)))
               if any(sev_lo <= r <= sev_hi for r in seen.get((path, cat.lower()), ())):
+                  cur = None
                   continue
-              dropped.append({
+              cur = {
                   "file": path,
                   "category": cat,
                   "sev_lo": sev_lo,
                   "sev_hi": sev_hi,
                   "text": line,
-              })
+              }
+              dropped.append(cur)
 
       def cat_matches(want, got):
           if not want:
@@ -796,17 +826,21 @@ judges:
               "review body, or posted without a file/line)"
           )
       # Delivery check. A submission that never landed leaves reviews: []
-      # and review_decision: null — the GET succeeded and legitimately
+      # and no review decision — the GET succeeded and legitimately
       # returned zero rows, so review_comments_fetch_failed is not set and
       # every check above passes vacuously. A pipeline that posted and
       # evaluated nothing would then report 1.0 precision on a review it
-      # never saw. Two things legitimately leave no review object, so the
-      # sticky is what tells them apart: postreview.go skips a formal
-      # COMMENT review that has no inline findings to attach, and a review
-      # that ran and found nothing still posts its write-up. A write-up
-      # carrying finding bullets with no review behind it is a delivery
-      # failure (the self-review 422), not a clean pass.
-      if not (state.get("reviews") or []) and state.get("review_decision") is None:
+      # never saw. "No decision" has two shapes: gh emits reviewDecision as
+      # an empty STRING on an unprotected repo (every ephemeral fixture)
+      # and as null only on a fetch failure, so test falsiness, not `is
+      # None`, or the guard is dead against a real capture. Two things
+      # legitimately leave no review object, so the sticky is what tells
+      # them apart: postreview.go skips a formal COMMENT review that has no
+      # inline findings to attach, and a review that ran and found nothing
+      # still posts its write-up. A write-up carrying finding bullets with
+      # no review behind it is a delivery failure (the self-review 422),
+      # not a clean pass.
+      if not (state.get("reviews") or []) and not state.get("review_decision"):
           if not (state.get("comments") or []):
               return False, (
                   "nothing was posted — no review, no review decision and no comment, so "
