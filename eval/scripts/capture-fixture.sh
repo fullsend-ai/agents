@@ -119,7 +119,12 @@ case_wants_pr_diff() {
 # nothing to build WITH (no go toolchain) — recorded rather than silent so
 # the fixture_checks judge message shows why nothing was graded.
 run_go_checks() {
-  local dir="$1" build_exit=0 test_exit=0
+  # log_prefix (optional): when set, build/test output is written to
+  # <prefix>-build.log / <prefix>-test.log instead of /dev/null, so a
+  # non-zero exit is diagnosable from the run artifacts rather than being a
+  # bare integer. Callers pass a path under output/ (scrubbed + uploaded);
+  # the unit test leaves it unset and keeps asserting on the JSON alone.
+  local dir="$1" log_prefix="${2:-}" build_exit=0 test_exit=0
   if [[ ! -f "${dir}/go.mod" ]]; then
     printf '{"skipped":"no go.mod"}'
     return 0
@@ -171,11 +176,20 @@ run_go_checks() {
     GOTOOLCHAIN=local GOPROXY=off GOFLAGS=-mod=readonly CGO_ENABLED=0
     "GOCACHE=${scratch}/gocache" "GOPATH=${scratch}/gopath")
   # `runner` is never an empty array: expanding one under `set -u` is an
-  # unbound-variable error on bash 3.2 (macOS's /bin/bash).
-  local runner=(go)
-  command -v timeout >/dev/null 2>&1 && runner=(timeout --kill-after 5 45 go)
-  (cd "$dir" && "${scrub[@]}" "${runner[@]}" build ./...) >/dev/null 2>&1 || build_exit=$?
-  (cd "$dir" && "${scrub[@]}" "${runner[@]}" test ./...) >/dev/null 2>&1 || test_exit=$?
+  # unbound-variable error on bash 3.2 (macOS's /bin/bash). Resolve
+  # timeout to an absolute path — the scrub replaces PATH with env -i, so a
+  # bare `timeout` would be looked up under the stripped PATH, not the one
+  # detection ran against (Homebrew gnubin would detect but fail exit 127).
+  local runner=(go) tmo
+  tmo="$(command -v timeout || true)"
+  [[ -n "$tmo" ]] && runner=("$tmo" --kill-after 5 45 go)
+  local build_log=/dev/null test_log=/dev/null
+  if [[ -n "$log_prefix" ]]; then
+    build_log="${log_prefix}-build.log"
+    test_log="${log_prefix}-test.log"
+  fi
+  (cd "$dir" && "${scrub[@]}" "${runner[@]}" build ./...) >"$build_log" 2>&1 || build_exit=$?
+  (cd "$dir" && "${scrub[@]}" "${runner[@]}" test ./...) >"$test_log" 2>&1 || test_exit=$?
   rm -rf "$scratch"
   printf '{"build_exit":%d,"test_exit":%d}' "$build_exit" "$test_exit"
 }
@@ -187,7 +201,7 @@ run_go_checks() {
 # fixture_checks judge fails on it — same evidence-must-exist stance as
 # diff_fetch_failed, since this too runs at min_pass_rate 1.0.
 run_pr_checks() {
-  local repo="$1" head_ref="$2" tmp attempt out
+  local repo="$1" head_ref="$2" log_prefix="${3:-}" tmp attempt out
   if [[ -z "$head_ref" ]]; then
     printf '{"clone_failed":true}'
     return 0
@@ -202,7 +216,7 @@ run_pr_checks() {
   for attempt in 1 2 3 4 5 6; do
     rm -rf "${tmp}/co"
     if gh repo clone "$repo" "${tmp}/co" -- --depth 1 --branch "$head_ref" >/dev/null 2>&1; then
-      out=$(run_go_checks "${tmp}/co")
+      out=$(run_go_checks "${tmp}/co" "$log_prefix")
       break
     fi
     if [[ $attempt -eq 1 ]]; then
@@ -367,7 +381,7 @@ case "${FIXTURE_TYPE}" in
           echo "WARNING: gh pr diff failed for PR #${num}; marking diff_fetch_failed" >&2
           diff_failed=true
         fi
-        checks_json=$(run_pr_checks "$EPHEMERAL_REPO" "$(printf '%s' "$pr" | jq -r '.headRefName // empty')")
+        checks_json=$(run_pr_checks "$EPHEMERAL_REPO" "$(printf '%s' "$pr" | jq -r '.headRefName // empty')" "${OUTPUT_DIR}/go-pr-${num}")
         jq --argjson num "$num" --argjson diff_failed "$diff_failed" --argjson checks "$checks_json" \
           '.pull_requests |= map(if .number == $num
              then .diff_fetch_failed = $diff_failed | .checks = $checks
