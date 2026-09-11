@@ -91,22 +91,44 @@ not pin `diff.<name>.textconv`. A fix that covers a subset is
 incomplete coverage — raise a finding for every unpinned namespace the
 git command(s) in the diff consult, in the same review round.
 
-Enumerate every namespace below that is relevant to the specific git
-commands in the diff. `status` / `update-index` consult filters,
-fsmonitor, hooksPath, and `status.showUntrackedFiles`. `diff` consults
-textconv. `merge` consults merge drivers. Network commands consult
-credential, http, and uploadpack helpers. Porcelain commands consult
-`core.pager`.
+The list below is a non-exhaustive starting point, not a closed
+enumeration — the open-ended "enumerate ALL inputs" rule above remains
+the source of truth. Enumerate every namespace relevant to the
+specific git commands in the diff, including namespaces not listed
+here. `status` / `update-index` consult filters, fsmonitor, hooksPath,
+and `status.showUntrackedFiles`. `diff` consults textconv, the custom
+diff driver command, and `diff.external`. `merge` consults merge
+drivers. Network commands consult credential and http helpers, plus
+`core.sshCommand` and `remote.<name>.uploadpack` /
+`remote.<name>.receivepack` for client-side transport; `uploadpack.*`
+is a separate, server-side namespace. Porcelain commands consult
+`core.pager`, which a per-command `pager.<cmd>` entry can override.
 
 - `core.fsmonitor` / `core.hooksPath` — helper and hook execution.
   `status.showUntrackedFiles=no` hides untracked files from `git status`.
 - `filter.<name>.clean` / `smudge` / `process` — content filter
   drivers. Distinct from hooks; `core.hooksPath` does not disable them.
-- `diff.<name>.textconv` — diff textconv helpers.
+- `diff.<name>.textconv`, `diff.<name>.command` (the custom diff
+  driver invoked via `diff=<name>` in gitattributes), and
+  `diff.external` (replaces the diff command for all `git diff`
+  invocations, e.g. via `GIT_EXTERNAL_DIFF`) — three independent
+  execution keys; pinning one does not neutralize the others.
 - `merge.<name>.driver` — merge drivers.
-- `core.pager` — pager command.
-- `credential.*` / `http.*` / `uploadpack.*` helpers — network and
-  pack helpers.
+- `core.pager` / `pager.<cmd>` — pager command; the per-command form
+  overrides `core.pager` and must be checked separately.
+- `credential.*` / `http.*` helpers — network and credential helpers.
+  `core.sshCommand` and `remote.<name>.uploadpack` /
+  `remote.<name>.receivepack` are additional, independent keys
+  consulted by client-side fetch/pull/push. `uploadpack.*` (e.g.
+  `uploadpack.packObjectsHook`) is a distinct, server-side namespace
+  consulted only when this repo serves `git-upload-pack`/
+  `git-receive-pack` to a remote client — do not treat pinning it as
+  covering outbound fetch/push.
+- Where the command(s) in the diff make them relevant, also check:
+  `core.gitProxy` / `core.askPass`, `submodule.<name>.update` (may run
+  an arbitrary `!command`), `gpg.program` / `gpg.ssh.*` (signature
+  verification helpers), `interactive.diffFilter`, and `!`-prefixed
+  `alias.*` entries.
 
 In the finding, list which namespaces you verified as pinned or
 neutralized and which you could not confirm. A finding that claims the
