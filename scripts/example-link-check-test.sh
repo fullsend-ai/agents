@@ -44,17 +44,24 @@ run_post() {
   return "${rc}"
 }
 
-# run_post_live <result-json>
+# run_post_live <result-json> [old-cli]
 # Like run_post but WITHOUT dry run, with a stub `fullsend` first on PATH that
 # records its arguments instead of talking to a forge. This is the only way to
-# see what the script does on the path that actually posts.
+# see what the script does on the path that actually posts. The stub answers
+# `--help` the way the real CLI does, listing --only-if-exists — or, with the
+# optional "old-cli" argument, NOT listing it and failing on any post, which
+# is what a runner pinned to a fullsend release older than the generator does.
 run_post_live() {
-  local result_json="$1"
+  local result_json="$1"; local cli="${2:-new-cli}"
   local workdir stubdir
   workdir="$(mktemp -d)"; stubdir="$(mktemp -d)"
   mkdir -p "${workdir}/iteration-1/output"
   printf '%s' "${result_json}" > "${workdir}/iteration-1/output/agent-result.json"
-  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s/args"\ncat > "%s/stdin"\n' "${stubdir}" "${stubdir}" > "${stubdir}/fullsend"
+  if [[ "${cli}" == "old-cli" ]]; then
+    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --dry-run   print what would be posted"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\necho "Error: unknown flag: --only-if-exists" >&2; exit 1\n' "${stubdir}" > "${stubdir}/fullsend"
+  else
+    printf '#!/usr/bin/env bash\nif [[ "$*" == *--help* ]]; then echo "  --only-if-exists   update an existing comment but never create one"; exit 0; fi\nprintf "%%s\\n" "$@" > "%s/args"\ncat > "%s/stdin"\n' "${stubdir}" "${stubdir}" > "${stubdir}/fullsend"
+  fi
   chmod +x "${stubdir}/fullsend"
   local rc=0
   ( cd "${workdir}" \
@@ -136,6 +143,22 @@ if run_post_live '{"status":"ok","summary":"all good","comment":"All documentati
   fi
 else
   fail "ok-status-live-delegates-only-if-exists" "script exited non-zero: ${LAST_STDERR}"
+fi
+
+# --- status ok on a runner whose fullsend predates --only-if-exists ---
+#
+# The runner's fullsend is pinned by the repository, not by the CLI that
+# generated this script. On an older CLI the ok path must fall back to the
+# previous behaviour — post nothing — and never call a flag it does not have.
+
+if run_post_live '{"status":"ok","summary":"all good","comment":"All documentation links resolve."}' old-cli; then
+  if [[ "${LAST_STDERR}" == *"nothing to post"* && -z "${LAST_FULLSEND_ARGS}" ]]; then
+    pass "ok-status-live-older-fullsend-posts-nothing"
+  else
+    fail "ok-status-live-older-fullsend-posts-nothing" "expected a nothing-to-post notice and no post call; stderr: ${LAST_STDERR}; args: ${LAST_FULLSEND_ARGS}"
+  fi
+else
+  fail "ok-status-live-older-fullsend-posts-nothing" "script exited non-zero on an older fullsend: ${LAST_STDERR}"
 fi
 
 # --- status findings on the live path posts unconditionally ---
