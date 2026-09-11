@@ -356,7 +356,13 @@ function finalize_section() {
 function is_gl_candidate(line) {
   if (line !~ /^--- (a\/|"a\/)/ && line != "--- /dev/null") return 0
   if (!in_diff) return 1
-  return gitlab_mode && phase != "header"
+  if (gitlab_mode && phase != "header") return 1
+  # Header-only section (rename/mode-only/empty — no @@ yet) whose ---/+++
+  # are both already captured: the next `--- a/` opens a new section, so
+  # it is still a boundary. Without this the line is swallowed as another
+  # header line, set_old_path overwrites the path, and the accumulated
+  # section is misattributed and its kept lines lost.
+  return gitlab_mode && phase == "header" && old_path != "" && new_path != ""
 }
 
 # One input line through the full state machine. Factored into a

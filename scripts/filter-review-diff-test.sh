@@ -545,6 +545,27 @@ run_test "gitlab-kept-section-byte-identical" "${GITLAB_KEPT_SECTION}" "${GITLAB
 run_test_contains "gitlab-lockfile-in-summary" "package-lock.json" "$(/bin/cat "${TMPDIR}/gitlab.summary")"
 run_test_contains "gitlab-lockfile-reason" "lockfile" "$(/bin/cat "${TMPDIR}/gitlab.summary")"
 
+# --- 21b. GitLab header-only section (rename/mode-only — no @@ hunk)
+#          immediately followed by a stripped section: the header-only
+#          section's kept lines must survive byte-identical, not be
+#          swallowed into the next section and misattributed. ---
+
+GITLAB_HEADERONLY='--- a/src/keep.js
++++ b/src/keep.js
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1 +1 @@
+-a
++b'
+
+printf '%s\n' "${GITLAB_HEADERONLY}" > "${TMPDIR}/gitlab-headeronly.in"
+GITLAB_HO_OUT=$("${FILTER}" "${TMPDIR}/gitlab-headeronly.summary" < "${TMPDIR}/gitlab-headeronly.in")
+run_test "gitlab-headeronly-kept-lines-survive" \
+  '--- a/src/keep.js
++++ b/src/keep.js' "${GITLAB_HO_OUT}"
+run_test_contains "gitlab-headeronly-lockfile-in-summary" "package-lock.json" \
+  "$(/bin/cat "${TMPDIR}/gitlab-headeronly.summary")"
+
 # --- 22. A REMOVED content line whose original text begins "-- a/..."
 #         renders as `--- a/...` — it must NOT be taken for a GitLab
 #         section boundary (a real boundary is `--- ` immediately
