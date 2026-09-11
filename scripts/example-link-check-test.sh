@@ -44,6 +44,32 @@ run_post() {
   return "${rc}"
 }
 
+# run_post_live <result-json>
+# Like run_post but WITHOUT dry run, with a stub `fullsend` first on PATH that
+# records its arguments instead of talking to a forge. This is the only way to
+# see what the script does on the path that actually posts.
+run_post_live() {
+  local result_json="$1"
+  local workdir stubdir
+  workdir="$(mktemp -d)"; stubdir="$(mktemp -d)"
+  mkdir -p "${workdir}/iteration-1/output"
+  printf '%s' "${result_json}" > "${workdir}/iteration-1/output/agent-result.json"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$@" > "%s/args"\ncat > "%s/stdin"\n' "${stubdir}" "${stubdir}" > "${stubdir}/fullsend"
+  chmod +x "${stubdir}/fullsend"
+  local rc=0
+  ( cd "${workdir}" \
+      && PATH="${stubdir}:${PATH}" \
+         ISSUE_URL="https://github.com/fullsend-ai/demo/pull/99" \
+         GH_TOKEN="test..." \
+         bash "${POST_SCRIPT}" ) > "${workdir}/stdout" 2> "${workdir}/stderr" || rc=$?
+  LAST_STDOUT="$(cat "${workdir}/stdout")"
+  LAST_STDERR="$(cat "${workdir}/stderr")"
+  LAST_FULLSEND_ARGS="$(cat "${stubdir}/args" 2>/dev/null || true)"
+  LAST_FULLSEND_STDIN="$(cat "${stubdir}/stdin" 2>/dev/null || true)"
+  rm -rf "${workdir}" "${stubdir}"
+  return "${rc}"
+}
+
 # --- No unfilled generator markers anywhere under examples/ ---
 #
 # skillsaw's content-placeholder-text rule catches TODO and bracket
@@ -79,16 +105,49 @@ else
   fail "findings-are-rendered" "script exited non-zero"
 fi
 
-# --- status ok posts nothing ---
+# --- status ok under dry run posts nothing ---
 
 if run_post '{"status":"ok","summary":"all good","comment":"All documentation links resolve."}'; then
   if [[ "${LAST_STDERR}" == *"nothing to post"* ]]; then
-    pass "ok-status-posts-nothing"
+    pass "ok-status-dry-run-posts-nothing"
   else
-    fail "ok-status-posts-nothing" "expected a 'nothing to post' notice, got: ${LAST_STDERR}"
+    fail "ok-status-dry-run-posts-nothing" "expected a 'nothing to post' notice, got: ${LAST_STDERR}"
   fi
 else
-  fail "ok-status-posts-nothing" "script exited non-zero"
+  fail "ok-status-dry-run-posts-nothing" "script exited non-zero"
+fi
+
+# --- status ok on the live path replaces an earlier findings comment ---
+#
+# The decision "is there an earlier comment to replace" belongs to
+# `fullsend issues post-comment --only-if-exists`, which finds the marked
+# comment through the forge client. The script must delegate, not reimplement.
+
+if run_post_live '{"status":"ok","summary":"all good","comment":"All documentation links resolve."}'; then
+  if [[ "${LAST_FULLSEND_ARGS}" == *$'issues\npost-comment\n'* && "${LAST_FULLSEND_ARGS}" == *$'--only-if-exists\n'* && "${LAST_FULLSEND_ARGS}" == *$'--marker\n'* ]]; then
+    pass "ok-status-live-delegates-only-if-exists"
+  else
+    fail "ok-status-live-delegates-only-if-exists" "expected fullsend issues post-comment --only-if-exists, got args: ${LAST_FULLSEND_ARGS}"
+  fi
+  if [[ "${LAST_FULLSEND_STDIN}" == *"All documentation links resolve."* ]]; then
+    pass "ok-status-live-sends-the-all-clear-body"
+  else
+    fail "ok-status-live-sends-the-all-clear-body" "all-clear body not piped to fullsend: ${LAST_FULLSEND_STDIN}"
+  fi
+else
+  fail "ok-status-live-delegates-only-if-exists" "script exited non-zero: ${LAST_STDERR}"
+fi
+
+# --- status findings on the live path posts unconditionally ---
+
+if run_post_live '{"status":"findings","summary":"1 broken link","comment":"- `docs/a.md:3` -> `../x.md`"}'; then
+  if [[ "${LAST_FULLSEND_ARGS}" == *$'issues\npost-comment\n'* && "${LAST_FULLSEND_ARGS}" != *"--only-if-exists"* ]]; then
+    pass "findings-live-posts-without-only-if-exists"
+  else
+    fail "findings-live-posts-without-only-if-exists" "got args: ${LAST_FULLSEND_ARGS}"
+  fi
+else
+  fail "findings-live-posts-without-only-if-exists" "script exited non-zero: ${LAST_STDERR}"
 fi
 
 # --- Rejected inputs: each must fail rather than post ---
