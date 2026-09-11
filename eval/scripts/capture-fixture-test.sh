@@ -103,18 +103,22 @@ if command -v go >/dev/null 2>&1; then
   assert_checks '{"build_exit":0,"test_exit":0}' "$clean" "compiling module with passing tests"
 
   # The commented-out-site shape fixture_checks exists for: does not compile.
+  # Assert build_exit != 0 specifically (not just "not all-zero"), so a
+  # test-only failure could not masquerade as the broken-build case.
   broken="${TMP_ROOT}/broken"
   mkdir -p "$broken"
   printf 'module broken\n\ngo 1.21\n' > "${broken}/go.mod"
   printf 'package broken\n\nfunc Two() int { return undefinedSymbol }\n' > "${broken}/broken.go"
   build_json="$(run_go_checks "$broken")"
-  if [[ "$build_json" == '{"build_exit":0'* ]]; then
+  if [[ "$(jq -r '.build_exit' <<<"$build_json")" != 0 ]]; then
+    echo "ok: non-compiling module reports nonzero build_exit → ${build_json}"
+  else
     echo "FAIL: non-compiling module reported build_exit 0: ${build_json}" >&2
     failures=$((failures + 1))
-  else
-    echo "ok: non-compiling module reports nonzero build_exit → ${build_json}"
   fi
 
+  # A failing test must be build_exit 0 AND test_exit != 0 — not merely
+  # "not the all-zero literal", which a build error would also satisfy.
   failing="${TMP_ROOT}/failing"
   mkdir -p "$failing"
   printf 'module failing\n\ngo 1.21\n' > "${failing}/go.mod"
@@ -122,11 +126,64 @@ if command -v go >/dev/null 2>&1; then
   printf 'package failing\n\nimport "testing"\n\nfunc TestTwo(t *testing.T) {\n\tif Two() != 2 {\n\t\tt.Fatal("nope")\n\t}\n}\n' \
     > "${failing}/failing_test.go"
   test_json="$(run_go_checks "$failing")"
-  if [[ "$test_json" == '{"build_exit":0,"test_exit":0}' ]]; then
-    echo "FAIL: failing tests reported test_exit 0: ${test_json}" >&2
-    failures=$((failures + 1))
+  if [[ "$(jq -r '.build_exit' <<<"$test_json")" == 0 && "$(jq -r '.test_exit' <<<"$test_json")" != 0 ]]; then
+    echo "ok: failing tests report build_exit 0, nonzero test_exit → ${test_json}"
   else
-    echo "ok: failing tests report nonzero test_exit → ${test_json}"
+    echo "FAIL: failing tests not reported as build 0 / test nonzero: ${test_json}" >&2
+    failures=$((failures + 1))
+  fi
+
+  # Containment: the env -i scrub must strip runner credentials so agent-
+  # authored `go test` cannot read them. This is the property the commit
+  # message claims and the accepted mitigation for running that code on the
+  # privileged runner — prove it. A test that t.Fatals when any credential
+  # var is visible must still pass (test_exit 0) even with all of them
+  # exported into the parent shell here.
+  scrub_mod="${TMP_ROOT}/scrub"
+  mkdir -p "$scrub_mod"
+  printf 'module scrub\n\ngo 1.21\n' > "${scrub_mod}/go.mod"
+  printf 'package scrub\n' > "${scrub_mod}/scrub.go"
+  cat > "${scrub_mod}/scrub_test.go" <<'GO'
+package scrub
+
+import (
+	"os"
+	"testing"
+)
+
+func TestNoRunnerSecrets(t *testing.T) {
+	for _, k := range []string{
+		"EVAL_GH_TOKEN", "GH_TOKEN", "GOOGLE_APPLICATION_CREDENTIALS",
+		"ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL",
+	} {
+		if os.Getenv(k) != "" {
+			t.Fatalf("runner secret %s leaked into the go test env", k)
+		}
+	}
+}
+GO
+  scrub_json="$(EVAL_GH_TOKEN=x GH_TOKEN=x GOOGLE_APPLICATION_CREDENTIALS=/x \
+    ACTIONS_ID_TOKEN_REQUEST_TOKEN=x ACTIONS_ID_TOKEN_REQUEST_URL=https://x \
+    run_go_checks "$scrub_mod")"
+  if [[ "$scrub_json" == '{"build_exit":0,"test_exit":0}' ]]; then
+    echo "ok: env -i scrub hides all five runner secrets from go test → ${scrub_json}"
+  else
+    echo "FAIL: credential vars survived the scrub into go test: ${scrub_json}" >&2
+    failures=$((failures + 1))
+  fi
+
+  # Containment: GOPROXY=off + -mod=readonly must stop a module fetch, so a
+  # test needing a network dependency cannot build (let alone reach out).
+  net_mod="${TMP_ROOT}/net"
+  mkdir -p "$net_mod"
+  printf 'module net\n\ngo 1.21\n\nrequire rsc.io/quote v1.5.2\n' > "${net_mod}/go.mod"
+  printf 'package net\n\nimport _ "rsc.io/quote"\n' > "${net_mod}/net.go"
+  net_json="$(run_go_checks "$net_mod")"
+  if [[ "$(jq -r '.build_exit' <<<"$net_json")" != 0 ]]; then
+    echo "ok: module needing a network fetch cannot build under the scrub → ${net_json}"
+  else
+    echo "FAIL: network-dependent module built despite GOPROXY=off: ${net_json}" >&2
+    failures=$((failures + 1))
   fi
 else
   echo "ok: go toolchain not installed here; skipping build/test-path cases (gate + no-go.mod still covered)"
