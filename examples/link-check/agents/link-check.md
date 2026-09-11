@@ -123,7 +123,8 @@ contract requires.
    # FILE comes from the pull request and is untrusted: a git path may contain
    # $, backticks or parentheses. Use it only after this check. A name that
    # fails it is NOT checked — record it; step 6 turns that into status: "error".
-   [[ "$FILE" =~ ^[A-Za-z0-9._/ +()-]+$ ]] || { echo "unchecked: $FILE"; continue; }
+   safe_path='^[A-Za-z0-9._/ +()-]+$'   # in a variable: a bare space would split the [[ ]] expression
+   [[ "$FILE" =~ $safe_path ]] || { echo "unchecked: $FILE"; continue; }
    gh api -H "Accept: application/vnd.github.raw+json" \
      "repos/${OWNER}/${REPO}/contents/${FILE}?ref=${HEAD_SHA}"
    ```
@@ -152,13 +153,20 @@ contract requires.
    `previous_filename` on a `renamed` entry, will not exist, so treat it as
    broken even though it is still on disk in this default-branch checkout.
    A target may be a directory (`./new-guide/`, or `docs/guide` with no
-   extension): the files API lists files only and git does not track empty
-   directories, so a directory exists once merged if any `added`, `renamed`
-   or `copied` path starts with the target plus `/`; it stops existing if
-   every path under it in the list is `removed` (or a rename's
-   `previous_filename`) and nothing surviving remains under it. For every
-   other path, check the checkout. Do not assume a path exists merely
-   because it appears in the diff as a link target.
+   extension). Strip any trailing `/` from the normalised target first, so
+   `new-guide/` and `new-guide` resolve identically. The files API lists
+   files only and git does not track empty directories, so decide a
+   directory this way: it exists once merged if any `added`, `renamed` or
+   `copied` path starts with the target plus `/`. Otherwise start from the
+   checkout — does the directory exist on disk? — and adjust that answer
+   with the list: the files it will lose are those under it that are
+   `removed` or a rename's `previous_filename`; if the directory exists on
+   disk only because of files that are all being removed, and nothing
+   else under it survives, it is gone once merged. A file under the
+   directory that the pull request did not touch keeps it alive, and only
+   the checkout can show you those, so never conclude "gone" from the list
+   alone. For every other path, check the checkout. Do not assume a path
+   exists merely because it appears in the diff as a link target.
    Report it as `<file>:<line> -> <target>`, using the line number at head
    from step 3.
 
