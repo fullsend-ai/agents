@@ -17,27 +17,15 @@ No additional setup is required beyond the standard fullsend configuration.
 
 The review agent runs automatically when:
 
-- A PR/MR is opened (drafts excluded — see below)
+- A PR/MR is opened
 - New commits are pushed to a PR/MR (synchronized)
 - A PR/MR is moved out of draft
 
 In per-repo installs, it also triggers when the `ready-for-review` label is applied to a PR/MR.
 
-All automatic triggers require the actor to have write-level repository permission (admin, maintain, or write).
+All automatic triggers require the actor to have triage-level repository permission or higher (triage, write, maintain, or admin).
 
 It can also be triggered manually with the `/fs-review` command.
-
-### Automatic skips
-
-The review agent does not run automatically — `/fs-review` still works — when:
-
-- **The PR/MR is a draft.** It runs once the PR/MR is marked ready for review. (In per-repo installs, applying `ready-for-review` to a draft still dispatches — the label is an explicit request.)
-- **The PR carries the `fullsend-no-review` label.** See [Control labels](#control-labels) below.
-- **The diff is documentation prose only** (per-repo installs). A PR whose changed files are all markdown under `docs/guides/`, `docs/problems/`, `docs/agents/` or `docs/glossary.md`, with no executable markup outside code (`<script>`/`<style>` blocks, `head:` frontmatter, `{{ }}` interpolation, bound attributes or directives on raw HTML), is skipped with a notice in the job summary. Markdown anywhere else — every other `docs/` directory, `skills/*/SKILL.md`, `AGENTS.md`, `CLAUDE.md` — and lockfiles are still reviewed. A page that cannot be read, or a truncated file listing, never skips.
-
-A push skipped for any of these reasons still clears `ready-for-merge` and `ready-for-review`, so the labels never describe commits nobody reviewed.
-
-See [fullsend ADR 0096](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0096-skip-provably-unnecessary-review-dispatch.md) for the rationale.
 
 ## Commands
 
@@ -45,13 +33,13 @@ See [fullsend ADR 0096](https://github.com/fullsend-ai/fullsend/blob/main/docs/A
 |---------|-------|--------|
 | `/fs-review` | PR comment | Triggers a review on the PR (per-repo installs only; standalone issues are ignored) |
 
-Requires write-level repository permission (admin, maintain, or write).
+Requires triage-level repository permission or higher (triage, write, maintain, or admin).
 
 The `/fs-review` command does not accept arguments.
 
 ## Control labels
 
-These labels reflect the review outcome and are updated after each review; `fullsend-no-review` is the exception — it is an input, applied by a human.
+These labels reflect the review outcome and are updated after each review.
 
 | Label | Meaning |
 |-------|---------|
@@ -59,7 +47,6 @@ These labels reflect the review outcome and are updated after each review; `full
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
 | `rejected` | The review agent rejected the PR and closed it. |
-| `fullsend-no-review` | Prevents automatic review runs on this PR. Mirrors the [fix agent](fix.md)'s `fullsend-no-fix` label. Applied manually; explicit `/fs-review` commands are unaffected. |
 
 When the review agent requests changes (without rejecting), no outcome label is
 applied — the `pull_request_review` event triggers the [fix agent](fix.md) directly.
