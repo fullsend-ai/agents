@@ -139,6 +139,26 @@ run_failure_comment_test "failure-comment-has-retry-hint" \
   "pr-creation-failed" "GraphQL error" "my-org/my-repo" "12345" \
   "/fs-code" "yes"
 
+run_failure_comment_test "failure-comment-uncommitted-work-heading" \
+  "uncommitted-work" "M  src/foo.go" "my-org/my-repo" "12345" \
+  "killed before committing" "yes"
+
+run_failure_comment_test "failure-comment-uncommitted-work-lists-files" \
+  "uncommitted-work" "M  src/foo.go" "my-org/my-repo" "12345" \
+  "src/foo.go" "yes"
+
+run_failure_comment_test "failure-comment-uncommitted-work-not-noop" \
+  "uncommitted-work" "M  src/foo.go" "my-org/my-repo" "12345" \
+  "agent determined no changes needed" "no"
+
+run_failure_comment_test "failure-comment-uncommitted-work-not-generic-completed" \
+  "uncommitted-work" "M  src/foo.go" "my-org/my-repo" "12345" \
+  "The code agent completed, but the post-code script failed" "no"
+
+run_failure_comment_test "failure-comment-uncommitted-work-retry" \
+  "uncommitted-work" "A  scripts/bar.sh" "my-org/my-repo" "12345" \
+  "/fs-code" "yes"
+
 run_fix_failure_comment_test "fix-failure-comment-push-rejected" \
   "push-rejected" "permission denied" "Push rejected" "yes"
 

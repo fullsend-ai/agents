@@ -228,6 +228,7 @@ post_failure_category_label() {
     branch-validation) echo "Branch validation failed" ;;
     setup-error) echo "Setup error" ;;
     process-output-failed) echo "Structured output processing failed" ;;
+    uncommitted-work) echo "Killed before committing" ;;
     *) echo "Post-script failed" ;;
   esac
 }
@@ -294,6 +295,21 @@ EOF
     env_note="${env_note}
 
 "
+  fi
+
+  if [ "${category}" = "uncommitted-work" ]; then
+    cat <<EOF
+⚠️ **${agent_kind} agent killed before committing** — uncommitted work discarded (exit code ${exit_code})
+
+The ${agent_kind} agent left uncommitted changes in the extracted repo and produced no commit to push. The run was likely killed (timeout) before \`git commit\` executed, so this work was discarded and no PR was opened.
+
+This is not a successful no-op: staged or untracked files were present when the sandbox was extracted.
+
+${env_note}**Workflow run:** ${run_url}
+${detail_block}
+Retry with \`${retry_command}\` if appropriate.
+EOF
+    return 0
   fi
 
   cat <<EOF
