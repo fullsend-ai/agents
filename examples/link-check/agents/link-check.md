@@ -121,15 +121,17 @@ contract requires.
 
    ```bash
    # FILE comes from the pull request and is untrusted: a git path may contain
-   # $, backticks or parentheses. Use it only after this check; skip any other
-   # name and report the file as unchecked.
-   [[ "$FILE" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo "skipping unsafe path"; exit 0; }
+   # $, backticks or parentheses. Use it only after this check. A name that
+   # fails it is NOT checked — record it; step 6 turns that into status: "error".
+   [[ "$FILE" =~ ^[A-Za-z0-9._/ +()-]+$ ]] || { echo "unchecked: $FILE"; continue; }
    gh api -H "Accept: application/vnd.github.raw+json" \
      "repos/${OWNER}/${REPO}/contents/${FILE}?ref=${HEAD_SHA}"
    ```
 
    Never paste a filename into a command without that check — bash would
-   expand `$(...)` or backticks inside it before `gh` ever ran. That is a
+   expand `$(...)` or backticks inside it before `gh` ever ran. The class
+   admits spaces, `+` and parentheses (all valid git paths; quoted, they are
+   harmless) and rejects `$`, backticks, newlines and everything else. That is a
    read-only REST call to `api.github.com`, which this agent's profile
    allows. Walk the file from the top and apply the CommonMark fence
    rule: a line starting with three or more backticks or tildes opens a
@@ -149,15 +151,24 @@ contract requires.
    from the checkout; a path with `status` `removed`, or one that appears as
    `previous_filename` on a `renamed` entry, will not exist, so treat it as
    broken even though it is still on disk in this default-branch checkout.
-   For every other path, check the checkout. Do not assume a path exists
-   merely because it appears in the diff as a link target.
+   A target may be a directory (`./new-guide/`, or `docs/guide` with no
+   extension): the files API lists files only and git does not track empty
+   directories, so a directory exists once merged if any `added`, `renamed`
+   or `copied` path starts with the target plus `/`; it stops existing if
+   every path under it in the list is `removed` (or a rename's
+   `previous_filename`) and nothing surviving remains under it. For every
+   other path, check the checkout. Do not assume a path exists merely
+   because it appears in the diff as a link target.
    Report it as `<file>:<line> -> <target>`, using the line number at head
    from step 3.
 
 6. Decide:
    - No added links, or none broken: `status: "ok"`.
    - One or more broken added links: `status: "findings"`.
-   - A step could not be completed at all: `status: "error"`.
+   - A step could not be completed at all, or any changed `.md` file went
+     unchecked (an omitted diff, the 3,000-file cap, or a path that failed
+     the character check): `status: "error"`, naming the files. Never report
+     `ok` for links that were not looked at.
 
 ## Output contract
 
