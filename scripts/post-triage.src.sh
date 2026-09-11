@@ -719,6 +719,23 @@ fi
 
 # --- Apply deferred label (must be last label mutation) ---
 
+if [[ "${DEFERRED_LABEL}" == "ready-to-code" ]]; then
+  # Best-effort producer-side guard: don't route a closed issue to the code
+  # agent. tracker_issue_state normalizes each tracker's state to open/closed
+  # and returns non-zero when it cannot be determined, so we fail closed for
+  # both a verified-closed issue and an unverifiable one. The authoritative
+  # guard against the close-between-check-and-label race lives in the dispatch
+  # workflow (fullsend-ai/fullsend#6876), which reads the triggering event's
+  # issue state.
+  if ! ISSUE_STATE=$(tracker_issue_state); then
+    echo "::warning::Unable to verify issue #$(_gha_sanitize "${ISSUE_NUMBER}") state; skipping ready-to-code label"
+    DEFERRED_LABEL=""
+  elif [[ "${ISSUE_STATE}" != "open" ]]; then
+    echo "Issue #${ISSUE_NUMBER} is ${ISSUE_STATE}; skipping ready-to-code label"
+    DEFERRED_LABEL=""
+  fi
+fi
+
 if [[ -n "${DEFERRED_LABEL}" ]]; then
   echo "Applying deferred label '${DEFERRED_LABEL}'..."
   # forge_ensure_label creates the label via `gh` against REPO. On Jira, REPO
