@@ -289,181 +289,189 @@ judges:
       branch writes — reusing this judge in a pull_request-type suite needs
       that branch to emit an equivalent diff artifact first.
     check: |
-      import json
-      import re
-      symbols = outputs.get("annotations", {}).get("removed_symbols") or {}
-      if not symbols:
-          return True, "No removed_symbols declared"
-      if not isinstance(symbols, dict):
-          return False, (
-              "removed_symbols must map each symbol to {file: deletion_count}, "
-              f"got {type(symbols).__name__}"
-          )
-      # Validate every entry before reading the diff: a null/empty/list
-      # value would otherwise iterate nothing and silently degrade to a
-      # survivor-only check, which is the gap the per-file schema closes.
-      for sym, sites in symbols.items():
-          if not isinstance(sites, dict) or not sites or not all(
-              isinstance(f, str) and f and isinstance(n, int)
-              and not isinstance(n, bool) and n >= 1
-              for f, n in sites.items()
-          ):
+      try:
+          import json
+          import re
+          symbols = outputs.get("annotations", {}).get("removed_symbols") or {}
+          if not symbols:
+              return True, "No removed_symbols declared"
+          if not isinstance(symbols, dict):
               return False, (
-                  f"{sym}: removed_symbols entry must map each file to the number "
-                  "of deletion lines required (>= 1), "
-                  f"got {type(sites).__name__}"
+                  "removed_symbols must map each symbol to {file: deletion_count}, "
+                  f"got {type(symbols).__name__}"
               )
-      raw = outputs["files"].get("output/fixture-state.json")
-      if not raw:
-          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
-      state = json.loads(raw)
-      prs = [p for p in (state.get("pull_requests") or [])
-             if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
-      if not prs:
-          return False, "No open/merged PR to inspect"
-      failed = [p.get("number") for p in prs if p.get("diff_fetch_failed")]
-      if failed:
-          return False, f"Could not fetch diff for PR(s): {failed}"
-      # Bucket diff lines by the file they belong to. Inside a hunk every
-      # line is content until the "@@ -a,b +c,d @@" counts are spent, so a
-      # content line whose text starts with "--"/"++" (which serialises as
-      # "--- "/"+++ ") cannot be taken for a header. Outside a hunk only
-      # headers and metadata appear (diff/index, rename from|to, old|new
-      # mode, similarity index, Binary files ...), none of which counts as
-      # content. A file is identified by its "+++ b/" path, or by its
-      # "--- a/" path when the "+++" side is /dev/null (whole-file deletion:
-      # every line is a deletion line and must count toward that path).
-      # "diff --git" resets the identity so a header-less block (mode-only
-      # change) cannot inherit the previous file's. Those deleted paths are
-      # also remembered: a declared file deleted wholesale is a failure, not
-      # a way to satisfy its deletion count (see the description).
-      HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
-      per_file = {}
-      deleted_files = set()
-      current = old_path = None
-      old_left = new_left = 0
-      for pr in prs:
-          chunk = outputs["files"].get(f"output/pr-{pr.get('number')}.diff")
-          if chunk is None:
-              return False, f"output/pr-{pr.get('number')}.diff not captured"
-          for line in chunk.splitlines():
-              if old_left > 0 or new_left > 0:
-                  if line.startswith("\\"):  # "\ No newline at end of file"
+          # Validate every entry before reading the diff: a null/empty/list
+          # value would otherwise iterate nothing and silently degrade to a
+          # survivor-only check, which is the gap the per-file schema closes.
+          for sym, sites in symbols.items():
+              if not isinstance(sites, dict) or not sites or not all(
+                  isinstance(f, str) and f and isinstance(n, int)
+                  and not isinstance(n, bool) and n >= 1
+                  for f, n in sites.items()
+              ):
+                  return False, (
+                      f"{sym}: removed_symbols entry must map each file to the number "
+                      "of deletion lines required (>= 1), "
+                      f"got {type(sites).__name__}"
+                  )
+          raw = outputs["files"].get("output/fixture-state.json")
+          if not raw:
+              return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+          state = json.loads(raw)
+          prs = [p for p in (state.get("pull_requests") or [])
+                 if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
+          if not prs:
+              return False, "No open/merged PR to inspect"
+          failed = [p.get("number") for p in prs if p.get("diff_fetch_failed")]
+          if failed:
+              return False, f"Could not fetch diff for PR(s): {failed}"
+          # Bucket diff lines by the file they belong to. Inside a hunk every
+          # line is content until the "@@ -a,b +c,d @@" counts are spent, so a
+          # content line whose text starts with "--"/"++" (which serialises as
+          # "--- "/"+++ ") cannot be taken for a header. Outside a hunk only
+          # headers and metadata appear (diff/index, rename from|to, old|new
+          # mode, similarity index, Binary files ...), none of which counts as
+          # content. A file is identified by its "+++ b/" path, or by its
+          # "--- a/" path when the "+++" side is /dev/null (whole-file deletion:
+          # every line is a deletion line and must count toward that path).
+          # "diff --git" resets the identity so a header-less block (mode-only
+          # change) cannot inherit the previous file's. Those deleted paths are
+          # also remembered: a declared file deleted wholesale is a failure, not
+          # a way to satisfy its deletion count (see the description).
+          HUNK = re.compile(r"@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@")
+          per_file = {}
+          deleted_files = set()
+          current = old_path = None
+          old_left = new_left = 0
+          for pr in prs:
+              chunk = outputs["files"].get(f"output/pr-{pr.get('number')}.diff")
+              if chunk is None:
+                  return False, f"output/pr-{pr.get('number')}.diff not captured"
+              # score.py stores a non-UTF-8 artifact as a {"_binary": ...} dict,
+              # which is not None: guard the type before .splitlines() so a
+              # binary diff fails closed here instead of raising (see the wrap).
+              if not isinstance(chunk, str):
+                  return False, f"output/pr-{pr.get('number')}.diff is not text (binary artifact)"
+              for line in chunk.splitlines():
+                  if old_left > 0 or new_left > 0:
+                      if line.startswith("\\"):  # "\ No newline at end of file"
+                          continue
+                      tag = line[:1] or " "
+                      if tag == " ":
+                          old_left -= 1
+                          new_left -= 1
+                      elif tag == "-":
+                          old_left -= 1
+                      elif tag == "+":
+                          new_left -= 1
+                      else:  # malformed hunk: stop trusting its counts
+                          old_left = new_left = 0
+                          continue
+                      per_file.setdefault(current, []).append(line)
                       continue
-                  tag = line[:1] or " "
-                  if tag == " ":
-                      old_left -= 1
-                      new_left -= 1
-                  elif tag == "-":
-                      old_left -= 1
-                  elif tag == "+":
-                      new_left -= 1
-                  else:  # malformed hunk: stop trusting its counts
-                      old_left = new_left = 0
+                  if line.startswith("diff --git "):
+                      current = old_path = None
                       continue
-                  per_file.setdefault(current, []).append(line)
-                  continue
-              if line.startswith("diff --git "):
-                  current = old_path = None
-                  continue
-              if line.startswith("--- "):
-                  path = line[4:].strip().split("\t")[0]
-                  old_path = None if path == "/dev/null" else re.sub(r"^a/", "", path)
-                  continue
-              if line.startswith("+++ "):
-                  path = line[4:].strip().split("\t")[0]
-                  if path == "/dev/null":
-                      current = old_path
-                      if current:
-                          deleted_files.add(current)
-                  else:
-                      current = re.sub(r"^b/", "", path)
-                  continue
-              m = HUNK.match(line)
-              if m:
-                  old_left = int(m.group(1) or 1)
-                  new_left = int(m.group(2) or 1)
-
-      def mentions(sym, line):
-          # Word-boundary: VerboseLoggingEnabled must not match VerboseLogging.
-          return re.search(r"\b" + re.escape(sym) + r"\b", line) is not None
-
-      def ext_of(path):
-          name = (path or "").rsplit("/", 1)[-1]
-          return "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
-
-      # Line-comment prefixes by extension. A bare "*" is deliberately NOT a
-      # marker: in Go it is a pointer deref (`*VerboseLogging = true`), so a
-      # block-comment continuation line is indistinguishable by prefix and
-      # fails closed. Unknown extensions get no exemption at all.
-      COMMENT_PREFIXES = {
-          ".go": ("//",), ".js": ("//",), ".ts": ("//",), ".java": ("//",),
-          ".c": ("//",), ".h": ("//",), ".rs": ("//",),
-          ".py": ("#",), ".sh": ("#",), ".bash": ("#",), ".yaml": ("#",),
-          ".yml": ("#",), ".toml": ("#",), ".mk": ("#",), ".rb": ("#",),
-      }
-      def is_comment(path, line):
-          prefixes = COMMENT_PREFIXES.get(ext_of(path), ())
-          return bool(prefixes) and line[1:].strip().startswith(prefixes)
-
-      # Documentation is exempt from the survivor scan wholesale: prose and
-      # markdown list markers (-, >, |, ...) have no reliable comment prefix,
-      # and a note explaining the removal is a feature, not a survivor. A
-      # known source extension is never documentation, wherever it lives
-      # (pkg/docs/gen.go is Go); "docs" must be a real directory segment.
-      DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
-      def is_doc(path):
-          p = (path or "").lower()
-          if ext_of(p) in COMMENT_PREFIXES:
-              return False
-          return p.endswith(DOC_SUFFIXES) or "docs" in p.split("/")[:-1]
-
-      problems = []
-      for sym, sites in sorted(symbols.items()):
-          # Checked before the counts: a wholesale deletion supplies as many
-          # "-" lines as the file has, so the count loop below would read it
-          # as an over-satisfied requirement instead of a skipped edit.
-          gone = sorted(f for f in sites if f in deleted_files)
-          if gone:
-              problems.append(
-                  f"{sym}: declared file(s) deleted wholesale instead of edited: {gone}"
-              )
-              continue
-          survivors = []
-          for path, lines in per_file.items():
-              if is_doc(path):
-                  continue
-              for line in lines:
-                  if line.startswith("-") or not mentions(sym, line):
+                  if line.startswith("--- "):
+                      path = line[4:].strip().split("\t")[0]
+                      old_path = None if path == "/dev/null" else re.sub(r"^a/", "", path)
                       continue
-                  # Only a context line gets the comment exemption: an
-                  # added comment naming the symbol is a site commented
-                  # out in place, which fixture_checks cannot catch when
-                  # every site (declaration, consumers, assertions) goes
-                  # the same way — the tree builds and the muted tests pass.
-                  if is_comment(path, line) and not line.startswith("+"):
+                  if line.startswith("+++ "):
+                      path = line[4:].strip().split("\t")[0]
+                      if path == "/dev/null":
+                          current = old_path
+                          if current:
+                              deleted_files.add(current)
+                      else:
+                          current = re.sub(r"^b/", "", path)
                       continue
-                  survivors.append(path or "<unknown file>")
-                  break
-          if survivors:
-              problems.append(f"{sym}: survives in {sorted(set(survivors))}")
-              continue
-          short = []
-          for path, need in sorted(sites.items()):
-              # Comment lines are excluded from the count exactly as the
-              # survivor scan exempts them: a deleted doc comment must not
-              # stand in for a real site (comment + struct field would
-              # otherwise satisfy config.go: 2 with Defaults() untouched).
-              got = sum(1 for l in per_file.get(path, [])
-                        if l.startswith("-") and mentions(sym, l)
-                        and not is_comment(path, l))
-              if got < need:
-                  short.append(f"{path} ({got}/{need} deletion lines)")
-          if short:
-              problems.append(f"{sym}: too few deletion lines in {short}")
-      if problems:
-          return False, "Symbols not fully removed: " + "; ".join(problems)
-      return True, f"All declared symbols removed cleanly from their declared files: {sorted(symbols)}"
+                  m = HUNK.match(line)
+                  if m:
+                      old_left = int(m.group(1) or 1)
+                      new_left = int(m.group(2) or 1)
+
+          def mentions(sym, line):
+              # Word-boundary: VerboseLoggingEnabled must not match VerboseLogging.
+              return re.search(r"\b" + re.escape(sym) + r"\b", line) is not None
+
+          def ext_of(path):
+              name = (path or "").rsplit("/", 1)[-1]
+              return "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""
+
+          # Line-comment prefixes by extension. A bare "*" is deliberately NOT a
+          # marker: in Go it is a pointer deref (`*VerboseLogging = true`), so a
+          # block-comment continuation line is indistinguishable by prefix and
+          # fails closed. Unknown extensions get no exemption at all.
+          COMMENT_PREFIXES = {
+              ".go": ("//",), ".js": ("//",), ".ts": ("//",), ".java": ("//",),
+              ".c": ("//",), ".h": ("//",), ".rs": ("//",),
+              ".py": ("#",), ".sh": ("#",), ".bash": ("#",), ".yaml": ("#",),
+              ".yml": ("#",), ".toml": ("#",), ".mk": ("#",), ".rb": ("#",),
+          }
+          def is_comment(path, line):
+              prefixes = COMMENT_PREFIXES.get(ext_of(path), ())
+              return bool(prefixes) and line[1:].strip().startswith(prefixes)
+
+          # Documentation is exempt from the survivor scan wholesale: prose and
+          # markdown list markers (-, >, |, ...) have no reliable comment prefix,
+          # and a note explaining the removal is a feature, not a survivor. A
+          # known source extension is never documentation, wherever it lives
+          # (pkg/docs/gen.go is Go); "docs" must be a real directory segment.
+          DOC_SUFFIXES = (".md", ".markdown", ".rst", ".txt", ".adoc")
+          def is_doc(path):
+              p = (path or "").lower()
+              if ext_of(p) in COMMENT_PREFIXES:
+                  return False
+              return p.endswith(DOC_SUFFIXES) or "docs" in p.split("/")[:-1]
+
+          problems = []
+          for sym, sites in sorted(symbols.items()):
+              # Checked before the counts: a wholesale deletion supplies as many
+              # "-" lines as the file has, so the count loop below would read it
+              # as an over-satisfied requirement instead of a skipped edit.
+              gone = sorted(f for f in sites if f in deleted_files)
+              if gone:
+                  problems.append(
+                      f"{sym}: declared file(s) deleted wholesale instead of edited: {gone}"
+                  )
+                  continue
+              survivors = []
+              for path, lines in per_file.items():
+                  if is_doc(path):
+                      continue
+                  for line in lines:
+                      if line.startswith("-") or not mentions(sym, line):
+                          continue
+                      # Only a context line gets the comment exemption: an
+                      # added comment naming the symbol is a site commented
+                      # out in place, which fixture_checks cannot catch when
+                      # every site (declaration, consumers, assertions) goes
+                      # the same way — the tree builds and the muted tests pass.
+                      if is_comment(path, line) and not line.startswith("+"):
+                          continue
+                      survivors.append(path or "<unknown file>")
+                      break
+              if survivors:
+                  problems.append(f"{sym}: survives in {sorted(set(survivors))}")
+                  continue
+              short = []
+              for path, need in sorted(sites.items()):
+                  # Comment lines are excluded from the count exactly as the
+                  # survivor scan exempts them: a deleted doc comment must not
+                  # stand in for a real site (comment + struct field would
+                  # otherwise satisfy config.go: 2 with Defaults() untouched).
+                  got = sum(1 for l in per_file.get(path, [])
+                            if l.startswith("-") and mentions(sym, l)
+                            and not is_comment(path, l))
+                  if got < need:
+                      short.append(f"{path} ({got}/{need} deletion lines)")
+              if short:
+                  problems.append(f"{sym}: too few deletion lines in {short}")
+          if problems:
+              return False, "Symbols not fully removed: " + "; ".join(problems)
+          return True, f"All declared symbols removed cleanly from their declared files: {sorted(symbols)}"
+      except Exception as _e:
+          return False, f"removed_symbols judge crashed: {_e!r}"
 
   - name: fixture_checks
     description: >
@@ -488,54 +496,57 @@ judges:
       fail the case: evidence must exist, the same stance as
       diff_fetch_failed, since this runs at min_pass_rate 1.0.
     check: |
-      import json
-      symbols = outputs.get("annotations", {}).get("removed_symbols") or {}
-      if not symbols:
-          return True, "No removed_symbols declared"
-      raw = outputs["files"].get("output/fixture-state.json")
-      if not raw:
-          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
-      state = json.loads(raw)
-      prs = [p for p in (state.get("pull_requests") or [])
-             if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
-      if not prs:
-          return False, "No open/merged PR to inspect"
-      # A Go case cannot legitimately end with no go.mod on the PR head, so
-      # that skip must not be the way past the gate the whole judge exists
-      # to enforce. The shape check fails closed here in its own right
-      # rather than leaning on removed_symbols to reject the annotation,
-      # so this judge stays correct wherever it is reused.
-      if not isinstance(symbols, dict):
-          return False, "removed_symbols is malformed; see the removed_symbols judge for the schema"
-      go_case = any(f.endswith(".go") for sites in symbols.values()
-                    if isinstance(sites, dict) for f in sites)
-      skips = []
-      problems = []
-      for p in prs:
-          num = p.get("number")
-          checks = p.get("checks")
-          if not isinstance(checks, dict):
-              problems.append(f"PR #{num}: no build/test checks captured")
-          elif checks.get("clone_failed"):
-              problems.append(f"PR #{num}: could not clone head for build/test")
-          elif "skipped" in checks:
-              if go_case and checks["skipped"] == "no go.mod":
+      try:
+          import json
+          symbols = outputs.get("annotations", {}).get("removed_symbols") or {}
+          if not symbols:
+              return True, "No removed_symbols declared"
+          raw = outputs["files"].get("output/fixture-state.json")
+          if not raw:
+              return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+          state = json.loads(raw)
+          prs = [p for p in (state.get("pull_requests") or [])
+                 if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
+          if not prs:
+              return False, "No open/merged PR to inspect"
+          # A Go case cannot legitimately end with no go.mod on the PR head, so
+          # that skip must not be the way past the gate the whole judge exists
+          # to enforce. The shape check fails closed here in its own right
+          # rather than leaning on removed_symbols to reject the annotation,
+          # so this judge stays correct wherever it is reused.
+          if not isinstance(symbols, dict):
+              return False, "removed_symbols is malformed; see the removed_symbols judge for the schema"
+          go_case = any(f.endswith(".go") for sites in symbols.values()
+                        if isinstance(sites, dict) for f in sites)
+          skips = []
+          problems = []
+          for p in prs:
+              num = p.get("number")
+              checks = p.get("checks")
+              if not isinstance(checks, dict):
+                  problems.append(f"PR #{num}: no build/test checks captured")
+              elif checks.get("clone_failed"):
+                  problems.append(f"PR #{num}: could not clone head for build/test")
+              elif "skipped" in checks:
+                  if go_case and checks["skipped"] == "no go.mod":
+                      problems.append(
+                          f"PR #{num}: no go.mod on the PR head — the build/test gate "
+                          "cannot be skipped by a case whose removed_symbols name .go files"
+                      )
+                  else:
+                      skips.append(f"PR #{num}: checks skipped ({checks['skipped']})")
+              elif checks.get("build_exit") != 0 or checks.get("test_exit") != 0:
                   problems.append(
-                      f"PR #{num}: no go.mod on the PR head — the build/test gate "
-                      "cannot be skipped by a case whose removed_symbols name .go files"
+                      f"PR #{num}: go build exit {checks.get('build_exit')}, "
+                      f"go test exit {checks.get('test_exit')}"
                   )
-              else:
-                  skips.append(f"PR #{num}: checks skipped ({checks['skipped']})")
-          elif checks.get("build_exit") != 0 or checks.get("test_exit") != 0:
-              problems.append(
-                  f"PR #{num}: go build exit {checks.get('build_exit')}, "
-                  f"go test exit {checks.get('test_exit')}"
-              )
-      if problems:
-          return False, "; ".join(problems + skips)
-      if skips:
-          return True, "; ".join(skips)
-      return True, "go build and go test pass on every PR head"
+          if problems:
+              return False, "; ".join(problems + skips)
+          if skips:
+              return True, "; ".join(skips)
+          return True, "go build and go test pass on every PR head"
+      except Exception as _e:
+          return False, f"fixture_checks judge crashed: {_e!r}"
 
   # forbidden_labels / max_turns / max_cost below are shared verbatim with
   # eval/fix/eval.yaml and eval/review/eval.yaml — update all three if changing.

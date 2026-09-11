@@ -345,6 +345,16 @@ CASES = [
      False),
     ("no open or merged PR to inspect",
      outputs_for(COMPLETE, pr_state={"number": 7, "state": "CLOSED"}), False),
+    # score.py stores a non-UTF-8 diff artifact as a dict, which is not None:
+    # the judge must fail closed on it, not raise .splitlines() on a dict.
+    ("binary diff artifact fails closed",
+     outputs_for({"_binary": True, "path": "/x", "name": "pr-7.diff"}), False),
+    # Any unexpected exception in the body must fail closed, not propagate:
+    # a raise becomes value=None in score.py and is dropped from the pass
+    # rate, so a crash would silently pass min_pass_rate 1.0. Missing "files"
+    # stands in for that class of bug.
+    ("unexpected judge exception fails closed",
+     {"annotations": {"removed_symbols": SYMBOLS}}, False),
 ]
 
 
@@ -385,6 +395,10 @@ FIXTURE_CHECKS_CASES = [
     ("legacy list schema fails closed",
      outputs_for(COMPLETE, symbols=["VerboseLogging"],
                  pr_state=pr_with_checks({"build_exit": 0, "test_exit": 0})), False),
+    # Same fail-closed-on-crash guarantee as removed_symbols: a raise here
+    # would be dropped from the pass rate and pass min_pass_rate 1.0.
+    ("unexpected judge exception fails closed",
+     {"annotations": {"removed_symbols": SYMBOLS}}, False),
 ]
 
 
