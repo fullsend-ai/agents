@@ -303,7 +303,7 @@ is_control_label() {
 
 remove_stale_risk_labels() {
   local keep="${1:-}"
-  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
+  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical" "risk/degraded"; do
     [[ -n "${keep}" && "risk/${keep}" == "${stale_risk}" ]] && continue
     forge_remove_label_edit "${stale_risk}"
   done
@@ -463,6 +463,16 @@ if [[ "${HAS_RISK}" == "true" ]]; then
     echo "Applying risk/${RISK_LEVEL} label"
     forge_create_label "risk/${RISK_LEVEL}" "PR risk: ${RISK_LEVEL}" "${RISK_COLOR}"
     forge_add_label_edit "risk/${RISK_LEVEL}"
+
+    # A degraded (tier-1-only fallback) score is not a computed score.
+    # Mark it so consumers that route or gate on risk can treat it as
+    # "no score" — the level label alone is byte-identical to a fully
+    # computed one.
+    if [[ -n "${RISK_DEGRADED}" ]]; then
+      echo "Applying risk/degraded marker (${RISK_DEGRADED})"
+      forge_create_label "risk/degraded" "PR risk score is degraded (fallback)" "EDEDED"
+      forge_add_label_edit "risk/degraded"
+    fi
 
     # Post sticky risk comment
     RISK_RATIONALE=$(jq -r '(.risk_assessment.rationale // "No rationale provided.")[0:2000]' "${RESULT_FILE}" \

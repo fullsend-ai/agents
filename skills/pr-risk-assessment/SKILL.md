@@ -48,10 +48,14 @@ the weighted sum, rounded to the nearest integer.
 
 ## Tier 1: Metadata Signals
 
-The `risk-tier1.sh` script outputs these KEY=VALUE signals. Evaluate
-each dimension and assign a 1-5 sub-score. Then average the dimension
-sub-scores for the Tier 1 composite (8 dimensions, not 10 — see the
-"Change size" composite below).
+The `risk-tier1.sh` script outputs these KEY=VALUE signals and emits
+the Tier 1 composite as `TIER1_SCORE`. The table below documents the
+rubric the script applies (a 1-5 sub-score per dimension, averaged over
+8 dimensions, not 10 — see the "Change size" composite below); use it
+directly only when `TIER1_SCORE` is `UNKNOWN`. Otherwise take
+`TIER1_SCORE` as given and do not re-derive it — re-deriving these
+deterministic signals in the LLM is what made the same PR flip between
+1 and 2 across re-reviews.
 
 | Signal | Meaning | Scoring Guidance (1-5) |
 |--------|---------|------------------------|
