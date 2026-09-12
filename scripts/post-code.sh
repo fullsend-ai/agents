@@ -3034,15 +3034,16 @@ rm -f "${PR_CREATE_STDERR}"
 echo "PR created: ${PR_URL}"
 forge_write_output "pr_url" "${PR_URL}"
 
-# Apply ready-for-review label so the review agent is dispatched via the
-# issues.labeled path. pull_request_target.opened requires the PR author to
-# pass authorization checks that often exclude bot accounts; the label path
-# is used instead (label application requires repo write access). See
-# .github/scripts/check-e2e-authorization-test.sh for trusted-actor rules.
 # Note: variable name is PR_NUMBER_FROM_URL (not PR_NUMBER) to avoid SC2153.
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
+# Ensure ready-for-review exists for human draft-to-ready transitions.
+# Do not apply it to this PR: bot-authored pull_request_target.opened
+# already dispatches review, and a follow-up labeled event starts a
+# second run that concurrency-cancels the first. gh pr create --label is
+# not atomic either — GitHub's createPullRequest mutation cannot set
+# labels, so gh follows up with updatePullRequest, which still fires
+# labeled.
 forge_ensure_label "ready-for-review"
-forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
 
 # ---------------------------------------------------------------------------
 # 9. Auto-merge

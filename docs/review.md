@@ -43,7 +43,7 @@ These labels reflect the review outcome and are updated after each review.
 
 | Label | Meaning |
 |-------|---------|
-| `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) after pushing. In per-repo installs, triggers review when applied to a PR. |
+| `ready-for-review` | Workflow state marker on the PR. In per-repo installs, triggers review when applied to a PR. Used by humans to mark a draft PR ready; bot-authored PRs dispatch review on open instead. |
 | `ready-for-merge` | The review agent approved the PR. No blocking findings. |
 | `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
 | `rejected` | The review agent rejected the PR and closed it. |
