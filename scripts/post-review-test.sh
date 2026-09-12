@@ -520,7 +520,14 @@ PREV=""
 for arg in "\$@"; do
   if [[ "\${PREV}" == "--result" ]]; then
     if [[ "\${arg}" == "-" ]]; then
-      cat > "${TMPDIR}/last-result.json"
+      # post-comment streams a markdown body, not JSON — keep a copy so
+      # tests can inspect the sticky risk comment after the review post
+      # overwrites last-result.json.
+      if [[ "\$1" == "post-comment" ]]; then
+        tee "${TMPDIR}/last-comment.md" > "${TMPDIR}/last-result.json"
+      else
+        cat > "${TMPDIR}/last-result.json"
+      fi
     elif [[ -f "\${arg}" ]]; then
       cp "\${arg}" "${TMPDIR}/last-result.json"
     fi
@@ -2003,6 +2010,97 @@ run_label_test "risk-invalid-score-label-still-applied" \
 run_label_test "risk-stale-label-removal" \
   "${RISK_HIGH_RESULT}" \
   "--remove-label risk/low"
+
+# --- Floor, provenance, history (risk-tier1.sh TIER1_SCORE / RISK_FLOOR) ---
+
+# Runs post-review.sh and greps the captured sticky risk comment body.
+run_risk_comment_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-comment.md"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ ! -f "${TMPDIR}/last-comment.md" ]] || ! grep -qF "${expected_pattern}" "${TMPDIR}/last-comment.md"; then
+    echo "FAIL: ${test_name} — expected '${expected_pattern}' in risk comment"
+    cat "${TMPDIR}/last-comment.md" 2>/dev/null
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Sub-agent said low (1) but the script floored at 2 (security path) →
+# label and comment say moderate, and the log says why.
+RISK_FLOORED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak.","tier1_score":1.38,"risk_floor":2}}'
+
+run_label_test "risk-floor-raises-label" \
+  "${RISK_FLOORED_RESULT}" \
+  "gh label create risk/moderate"
+run_label_test_no_pattern "risk-floor-no-low-label" \
+  "${RISK_FLOORED_RESULT}" \
+  "gh label create risk/low"
+run_label_test_stdout "risk-floor-logged" \
+  "${RISK_FLOORED_RESULT}" \
+  "Risk score 1 floored to 2"
+run_risk_comment_test "risk-floor-comment-header" \
+  "${RISK_FLOORED_RESULT}" \
+  "**Risk Assessment: moderate (2/5)** · tier 1: 1.38"
+
+# Floor never lowers a score
+RISK_ABOVE_FLOOR='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":3,"level":"elevated","rationale":"Bigger.","tier1_score":2.50,"risk_floor":2}}'
+run_label_test "risk-floor-does-not-lower" \
+  "${RISK_ABOVE_FLOOR}" \
+  "gh label create risk/elevated"
+
+# Degraded (tier-1-only fallback) is visible in the header and history row
+RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","rationale":"Risk sub-agent unavailable; tier-1 metadata only.","tier1_score":1.62,"risk_floor":1,"degraded":"tier1-only"}}'
+run_risk_comment_test "risk-degraded-header" \
+  "${RISK_DEGRADED_RESULT}" \
+  "· degraded: tier1-only"
+run_risk_comment_test "risk-history-row" \
+  "${RISK_DEGRADED_RESULT}" \
+  "| \`abc1234\` | $(date -u +%Y-%m-%d) | 2/5 moderate | 1.62 | tier1-only |"
+
+# Provenance fields are validated, not trusted: garbage is dropped, no floor applied
+RISK_BAD_PROVENANCE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo.","tier1_score":"9;rm -rf","risk_floor":"5x","degraded":"<b>x</b>"}}'
+run_label_test "risk-bad-provenance-ignored" \
+  "${RISK_BAD_PROVENANCE}" \
+  "gh label create risk/low"
+run_risk_comment_test "risk-bad-provenance-not-rendered" \
+  "${RISK_BAD_PROVENANCE}" \
+  "**Risk Assessment: low (1/5)**
+"
+
+# Results without the new fields render exactly as before
+run_risk_comment_test "risk-legacy-result-unchanged-header" \
+  "${RISK_LOW_RESULT}" \
+  "**Risk Assessment: low (1/5)**
+"
 
 # --- Summary ---
 

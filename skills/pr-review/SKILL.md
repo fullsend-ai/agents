@@ -286,7 +286,10 @@ dimensions are relevant:
 Based on the domain classification, select sub-agents for dispatch.
 All selected sub-agents run in parallel — `risk-assessment` (composed
 in step 3c-2) among them — except `challenger`, which runs by itself
-after all other sub-agents have finished.
+after all other sub-agents have finished. With
+`REVIEW_RISK_ROUTING_ENABLED` set to `true`, `risk-assessment` runs
+first instead and its score may narrow this selection (3c-2, items 5
+and 7).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -603,26 +606,52 @@ be absent from the result JSON.
    <prior score, level, and rationale — or "none (first review)">
    ```
 
-5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
-   the same message as the step 4 dimension sub-agents, with the step 4
-   item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
-   consumes its output
-   (it only goes into `agent-result.json`, step 7); running it first
-   serialised a 2–3 minute sub-agent for nothing.
+5. If `REVIEW_RISK_ROUTING_ENABLED` is not `true`: do not spawn it
+   here. Dispatch the composed prompt (parts 1–3) in the same message
+   as the step 4 dimension sub-agents, with the step 4 item 2 dispatch
+   shape (persona `risk-assessment`). Nothing in step 4 consumes its
+   output (it only goes into `agent-result.json`, step 7); running it
+   first serialised a 2–3 minute sub-agent for nothing.
+
+   If it is `true`: spawn it now, alone, with that same shape, and
+   wait — item 7 narrows the step 4 batch on its score.
 
 6. Parse the risk assessment output. The sub-agent returns a JSON
    object with `score`, `level`, `rationale`, and optional signal
    arrays.
 
 7. Store the `risk_assessment` object for inclusion in
-   `agent-result.json` (step 7).
+   `agent-result.json` (step 7). **Risk routing:** when
+   `REVIEW_RISK_ROUTING_ENABLED` is `true`, the JSON parsed with an
+   integer `score` of exactly 1, and `degraded` is absent, keep only
+   `correctness` and `security` from the 3c selection (drop
+   `intent-coherence`, `docs-currency`, `style-conventions`,
+   `cross-repo-contracts`; `security-triage` and `challenger` are
+   untouched) and log `risk routing: score 1 → correctness, security`.
+   Change no model. Any other score, no score, or `degraded` present →
+   the full 3c selection (fail open). The key is the composite, not
+   `tier1_score`: over 246 production PRs, composite 1 had 0/53 with a
+   major or critical finding; tier 1 alone would have narrowed 6/104
+   that had one.
 
 **Failure fallback:** If the risk-assessment sub-agent fails
-(timeout, parse error, empty response), log an info-level note and
-proceed without a risk score. The `risk_assessment` field is
-optional in the schema — its absence is not an error. Do not record
-a finding for this failure (risk assessment is informational, not
-safety-critical).
+(timeout, parse error, empty response, or `score` not an integer
+1–5), degrade the score rather than drop it. Run the Tier 1 script
+yourself:
+
+```bash
+bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"
+```
+
+If its `TIER1_SCORE` is `UNKNOWN`, log an info-level note and proceed
+without a risk score — the field is optional in the schema and its
+absence is not an error. Otherwise emit `risk_assessment` from the
+script alone: `score = max(round(TIER1_SCORE), RISK_FLOOR)`, `level`
+per the mapping, `tier1_score`, `risk_floor`, `degraded: "tier1-only"`,
+and the rationale "Risk sub-agent unavailable; tier-1 metadata only."
+Do not record a finding for this failure (risk assessment is
+informational, not safety-critical). Anything that routes or gates on
+the score must treat `degraded` as "no score".
 
 #### 3d. Prepare context packages
 
@@ -824,7 +853,8 @@ here):
 **All sub-agents MUST be dispatched simultaneously** — include all
 Agent calls in a single message so they run concurrently, and include
 the risk-assessment call composed in step 3c-2 in that same message
-when risk assessment is enabled. Leave `run_in_background` unset: the
+when risk assessment is enabled and risk routing is not (with routing
+on it already returned in 3c-2). Leave `run_in_background` unset: the
 default delivers completions as notifications (when the Time budget
 checkpoint runs); `false` blocks until all have returned.
 
