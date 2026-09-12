@@ -65,11 +65,14 @@ rewrite_title() {
   local commit_subject="$1"
   local issue_number="$2"
   local identity_mode="${3:-forge-native}"
+  local inject_issue_scope="${4:-true}"
 
   if echo "${commit_subject}" | grep -qE '^[a-z]+\('; then
     echo "${commit_subject}"
   elif echo "${commit_subject}" | grep -qE '^[a-z]+: '; then
-    if [ "${identity_mode}" = "external" ]; then
+    if [ "${inject_issue_scope}" = "false" ]; then
+      echo "${commit_subject}"
+    elif [ "${identity_mode}" = "external" ]; then
       echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(${issue_number}): /"
     else
       echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
@@ -177,6 +180,96 @@ if [ "${actual_external_title}" != "fix(FSENDAI-4804): handle cross-forge work" 
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: external-tracker-title-uses-work-item-key"
+fi
+
+# inject_issue_scope=false — leave a conventional-commit subject unchanged
+actual_no_inject="$(rewrite_title "feat: add copy buttons" "2854" forge-native false)"
+if [ "${actual_no_inject}" != "feat: add copy buttons" ]; then
+  echo "FAIL: inject-issue-scope-false-skips-injection"
+  echo "  expected: 'feat: add copy buttons'"
+  echo "  actual:   '${actual_no_inject}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-skips-injection"
+fi
+
+actual_no_inject_area="$(rewrite_title "feat(ui): add copy buttons" "2854" forge-native false)"
+if [ "${actual_no_inject_area}" != "feat(ui): add copy buttons" ]; then
+  echo "FAIL: inject-issue-scope-false-preserves-area-scope"
+  echo "  expected: 'feat(ui): add copy buttons'"
+  echo "  actual:   '${actual_no_inject_area}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-preserves-area-scope"
+fi
+
+actual_no_inject_external="$(rewrite_title "fix: handle cross-forge work" "FSENDAI-4804" external false)"
+if [ "${actual_no_inject_external}" != "fix: handle cross-forge work" ]; then
+  echo "FAIL: inject-issue-scope-false-skips-external-injection"
+  echo "  expected: 'fix: handle cross-forge work'"
+  echo "  actual:   '${actual_no_inject_external}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-skips-external-injection"
+fi
+
+# Default (unset / true) still injects — covered by fix-without-scope above.
+# Reading the flag from agent-result.json mirrors post-code.src.sh.
+resolve_inject_issue_scope() {
+  local result_json="$1"
+  local value
+  value="$(printf '%s' "${result_json}" | jq -r '.inject_issue_scope')"
+  if [ "${value}" = "false" ]; then
+    echo "false"
+  else
+    echo "true"
+  fi
+}
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main"}')" != "true" ]; then
+  echo "FAIL: inject-issue-scope-absent-defaults-true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-absent-defaults-true"
+fi
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main","inject_issue_scope":true}')" != "true" ]; then
+  echo "FAIL: inject-issue-scope-true-stays-true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-true-stays-true"
+fi
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main","inject_issue_scope":false}')" != "false" ]; then
+  echo "FAIL: inject-issue-scope-false-reads-false"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-reads-false"
+fi
+
+if ! grep -q 'inject_issue_scope' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-inject-issue-scope"
+  echo "  ${POST_SCRIPT} missing inject_issue_scope"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-inject-issue-scope"
+fi
+
+SKILL_FILE="${SCRIPT_DIR}/../skills/code-implementation/SKILL.md"
+if grep -q 'Always include the issue number as a scope' "${SKILL_FILE}"; then
+  echo "FAIL: skill-no-longer-always-injects-issue-scope"
+  echo "  ${SKILL_FILE} still always injects the issue number as scope"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-no-longer-always-injects-issue-scope"
+fi
+
+if ! grep -q 'inject_issue_scope: false' "${SKILL_FILE}"; then
+  echo "FAIL: skill-documents-inject-issue-scope-opt-out"
+  echo "  ${SKILL_FILE} missing inject_issue_scope: false guidance"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-documents-inject-issue-scope-opt-out"
 fi
 
 # ---------------------------------------------------------------------------
