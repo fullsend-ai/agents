@@ -611,18 +611,31 @@ be absent from the result JSON.
    serialised a 2–3 minute sub-agent for nothing.
 
 6. Parse the risk assessment output. The sub-agent returns a JSON
-   object with `score`, `level`, `rationale`, and optional signal
-   arrays.
+   object with `score`, `level`, `rationale`, `tier1_score` and
+   `risk_floor` (the last two present unless the score is `UNKNOWN`),
+   plus optional signal arrays and a `degraded` marker.
 
 7. Store the `risk_assessment` object for inclusion in
    `agent-result.json` (step 7).
 
 **Failure fallback:** If the risk-assessment sub-agent fails
-(timeout, parse error, empty response), log an info-level note and
-proceed without a risk score. The `risk_assessment` field is
-optional in the schema — its absence is not an error. Do not record
-a finding for this failure (risk assessment is informational, not
-safety-critical).
+(timeout, parse error, empty response, or `score` not an integer
+1–5), degrade the score rather than drop it. Run the Tier 1 script
+yourself:
+
+```bash
+bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"
+```
+
+If its `TIER1_SCORE` is `UNKNOWN`, log an info-level note and proceed
+without a risk score — the field is optional in the schema and its
+absence is not an error. Otherwise emit `risk_assessment` from the
+script alone: `score = max(round(TIER1_SCORE), RISK_FLOOR)`, `level`
+per the mapping, `tier1_score`, `risk_floor`, `degraded: "tier1-only"`,
+and the rationale "Risk sub-agent unavailable; tier-1 metadata only."
+Do not record a finding for this failure (risk assessment is
+informational, not safety-critical). Anything that routes or gates on
+the score must treat `degraded` as "no score".
 
 #### 3d. Prepare context packages
 

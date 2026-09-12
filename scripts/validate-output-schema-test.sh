@@ -265,6 +265,27 @@ run_test_custom_filename "review-finding-additional-property-rejected" \
   "${REVIEW_SCHEMA}" \
   "false"
 
+# Risk-hardening fields (tier1_score/risk_floor/degraded) must be accepted by the
+# review-result schema — same fixtures post-review-test.sh uses — so the two
+# suites cannot drift (schema strict, post-review lenient) and drop live reviews.
+run_test_custom_filename "review-risk-floored-valid" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak.","tier1_score":1.38,"risk_floor":2}}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-risk-degraded-valid" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","rationale":"Risk sub-agent unavailable; tier-1 metadata only.","tier1_score":1.62,"risk_floor":1,"degraded":"tier1-only"}}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-risk-bad-provenance-rejected" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo.","tier1_score":"9;rm -rf","risk_floor":"5x","degraded":"nope"}}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false"
+
 # Helper for custom-filename tests that also assert output content.
 run_test_custom_filename_output() {
   local test_name="$1"
