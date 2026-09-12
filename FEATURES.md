@@ -17,7 +17,7 @@ A new configuration option often falls into one of three categories:
    the post-script needs to consume it. This usually also requires a
    schema update (`schemas/<agent>-result.schema.json`) to accommodate
    whatever new field the agent uses to expose its conclusions to the
-   post-script. Example: the `requires_workflow_changes` flag in triage.
+   post-script. Example: the `block_auto_promotion` field in triage.
 
 ## 1. Decide what changes and what stays the same
 

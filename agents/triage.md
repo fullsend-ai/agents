@@ -130,7 +130,7 @@ Before forming any clarifying question, classify it:
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
 - **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
-- **Would resolving this issue require modifying CI/workflow files?** Scan the issue title, body, referenced files, and labels for signals that the fix involves changes under CI/pipeline configuration (e.g., `.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows). Prefer deterministic signals — explicit path references, CI/workflow-scoped labels, mentions of CI pipeline configuration — over vague mentions of "workflow" in non-CI contexts (e.g., "user onboarding workflow"). If the fix likely requires workflow file changes, set `requires_workflow_changes: true` in `triage_summary` and include a warning in the triage comment that the code agent cannot modify workflow files under current permissions and that manual intervention (human PR/MR or maintainer action) is required.
+- **Would resolving this issue require modifying CI/workflow files?** Scan the issue title, body, referenced files, and labels for signals that the fix involves changes under CI/pipeline configuration (e.g., `.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows). Prefer deterministic signals — explicit path references, CI/workflow-scoped labels, mentions of CI pipeline configuration — over vague mentions of "workflow" in non-CI contexts (e.g., "user onboarding workflow"). If the fix likely requires workflow file changes, set `block_auto_promotion` with `blocked: true` and a reason explaining that the code agent cannot modify workflow files under current permissions and that manual intervention is required.
 - **Does this issue bundle multiple independent concerns?** An issue bundles independent concerns when it lists several distinct problems, tasks, or gaps that share no blocking relationship — each could be filed, triaged, and resolved independently. Use `action: "split"` to decompose the issue into separate sub-issues. Signs of a bundled issue:
   - A numbered or bulleted list of distinct items (e.g., "1. fix X, 2. add Y, 3. update Z")
   - Multiple unrelated components, files, or subsystems mentioned with no dependency between them
@@ -364,7 +364,10 @@ Information is sufficient for a developer to investigate and fix.
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
-    "requires_workflow_changes": false
+    "block_auto_promotion": {
+      "blocked": false,
+      "reason": "No CI/workflow file changes required"
+    }
   },
   "comment": "A triage summary comment formatted in markdown. Focus on information not already present in the issue body — omit sections that merely restate what the reporter wrote. Include the proposed test case as a fenced code block.",
   "label_actions": {
@@ -383,7 +386,13 @@ Information is sufficient for a developer to investigate and fix.
 }
 ```
 
-**Workflow change detection (optional):** If the issue likely requires modifying CI/pipeline configuration files (`.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows), set `requires_workflow_changes: true` in `triage_summary`. When set, the post-triage script skips auto-triggering the code agent because the code agent cannot modify workflow files under current permissions. The triage comment should warn about this limitation and note that manual intervention is required. When `requires_workflow_changes` is not set or is `false`, auto-triggering proceeds normally.
+**Blocking auto-promotion:** Use the `block_auto_promotion` field in `triage_summary` to prevent the post-triage script from auto-promoting the issue to the code agent. Set `blocked: true` with a `reason` when:
+- The fix requires modifying CI/pipeline configuration files (`.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows) that the code agent cannot modify under current permissions.
+- Any other condition where auto-dispatch would be premature.
+
+These conditions are OR-combined: if any one applies, set `blocked: true`.
+
+When `blocked` is `true`, the post-script appends the reason to the triage comment for every category. The label change (`triaged` instead of `ready-to-code`) only applies to categories that would otherwise auto-promote (bug, documentation, performance). Categories that already route to `triaged` (feature, security, other) keep that label. When `blocked` is `false` (or omitted), auto-promotion proceeds normally for bug/documentation/performance categories.
 
 **Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
 
