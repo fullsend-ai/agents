@@ -36,15 +36,6 @@
 #                       branch is allowed. (default: auto-detected)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
-#   CODE_AUTO_MERGE    — "true" to enable auto-merge on the PR/MR after
-#                        creation. (default: "" — disabled)
-#   CODE_AUTO_MERGE_METHOD
-#                      — merge method for auto-merge: "squash", "rebase", or
-#                        "merge". When unset, auto-detected from the repo's
-#                        allowed merge methods (prefers squash). Ignored
-#                        unless CODE_AUTO_MERGE is "true". Omitted
-#                        automatically when target branch uses a merge queue.
-#                        (default: auto-detected)
 #
 # Exit codes:
 #   0  — branch pushed and PR/MR created, OR agent determined nothing to do
@@ -72,121 +63,6 @@ SCRIPT_DIR="${SCRIPT_DIR_POST}"
 source "${SCRIPT_DIR_POST}/lib/code-ops.lib.sh"
 # shellcheck source=lib/labels.lib.sh
 source "${SCRIPT_DIR_POST}/lib/labels.lib.sh"
-
-# ---------------------------------------------------------------------------
-# enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
-#
-# Guards:
-#   - GitHub: PR must be in BLOCKED state (requires branch protection)
-#   - GitHub: For existing PRs: skips if auto-merge is already enabled
-#   - GitLab: Uses merge_when_pipeline_succeeds
-#
-# Merge method resolution (GitHub-specific):
-#   1. If target branch has a merge queue → omit method flag (gh negotiates)
-#   2. If CODE_AUTO_MERGE_METHOD is set → use it (warn on unknown values)
-#   3. Otherwise → auto-detect from repo's allowed merge methods (prefer squash)
-#
-# Usage: enable_auto_merge <target_pr> <repo> [existing]
-# Note: parameter is target_pr (not pr_number) to avoid SC2153 against PR_NUMBER.
-# ---------------------------------------------------------------------------
-enable_auto_merge() {
-  local target_pr="$1"
-  local _repo="$2"  # accepted for interface parity; forge ops use REPO_FULL_NAME
-  local is_existing="${3:-}"
-
-  if [ "${CODE_AUTO_MERGE:-}" != "true" ]; then
-    return 0
-  fi
-
-  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
-    echo "Auto-merge: enabling merge_when_pipeline_succeeds on MR !${target_pr}..."
-    forge_enable_auto_merge "${target_pr}" ""
-    return 0
-  fi
-
-  # GitHub-specific merge state checks
-  local pr_json merge_state
-  local _am_attempt
-  for _am_attempt in 1 2 3; do
-    pr_json="$(forge_get_pr_details "${target_pr}" "mergeStateStatus,autoMergeRequest,baseRefName")" || true
-    if [ -z "${pr_json}" ]; then
-      gha_echo warning "Auto-merge: could not query PR #${target_pr} — skipping"
-      return 0
-    fi
-
-    merge_state="$(echo "${pr_json}" | jq -r '.mergeStateStatus // "UNKNOWN"')"
-    if [ "${merge_state}" != "UNKNOWN" ]; then
-      break
-    fi
-    if [ "${_am_attempt}" -lt 3 ]; then
-      echo "Auto-merge: merge state is UNKNOWN (attempt ${_am_attempt}/3) — retrying in 5s..."
-      sleep 5
-    fi
-  done
-
-  case "${merge_state}" in
-    BLOCKED) ;;
-    UNKNOWN)
-      gha_echo warning "Auto-merge: could not determine PR merge state after 3 attempts — skipping"
-      return 0
-      ;;
-    *)
-      gha_echo warning "Auto-merge: PR #${target_pr} is immediately mergeable (state: ${merge_state}) — skipping. Requires branch protection with required reviews or status checks."
-      return 0
-      ;;
-  esac
-
-  # Guard: for existing PRs, don't re-arm if auto-merge is already set.
-  if [ "${is_existing}" = "existing" ]; then
-    local am_request
-    am_request="$(echo "${pr_json}" | jq -r '.autoMergeRequest // empty')"
-    if [ -n "${am_request}" ]; then
-      echo "Auto-merge already enabled on PR #${target_pr} — skipping"
-      return 0
-    fi
-  fi
-
-  # Resolve merge method flag.
-  local method_flag=""
-  local base_branch
-  base_branch="$(echo "${pr_json}" | jq -r '.baseRefName // "main"')"
-
-  # Check for merge queue on the target branch — omit method flag if present.
-  local mq_id
-  mq_id="$(forge_check_merge_queue "${base_branch}")"
-
-  if [ -n "${mq_id}" ]; then
-    echo "Auto-merge: merge queue detected on ${base_branch} — omitting method flag"
-  else
-    local method="${CODE_AUTO_MERGE_METHOD:-}"
-    if [ -z "${method}" ]; then
-      local repo_info
-      repo_info="$(forge_get_repo_merge_methods)"
-      if [ -n "${repo_info}" ]; then
-        if [ "$(echo "${repo_info}" | jq -r '.s')" = "true" ]; then method="squash"
-        elif [ "$(echo "${repo_info}" | jq -r '.m')" = "true" ]; then method="merge"
-        elif [ "$(echo "${repo_info}" | jq -r '.r')" = "true" ]; then method="rebase"
-        else method="merge"
-        fi
-      else
-        method="merge"
-      fi
-    fi
-
-    case "${method}" in
-      squash) method_flag="--squash" ;;
-      rebase) method_flag="--rebase" ;;
-      merge)  method_flag="--merge"  ;;
-      *)
-        gha_echo warning "Unknown CODE_AUTO_MERGE_METHOD='${method}' — defaulting to --merge"
-        method_flag="--merge"
-        ;;
-    esac
-  fi
-
-  echo "Auto-merge: enabling on PR #${target_pr}${method_flag:+ (${method_flag})}..."
-  forge_enable_auto_merge "${target_pr}" "${method_flag}"
-}
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -785,7 +661,6 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
       || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
   fi
 
-  enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
     maybe_assign_pr "${EXISTING_PR_NUM}"
   fi
@@ -982,11 +857,6 @@ forge_write_output "pr_url" "${PR_URL}"
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
 forge_ensure_label "ready-for-review"
 forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
-
-# ---------------------------------------------------------------------------
-# 9. Auto-merge
-# ---------------------------------------------------------------------------
-enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
 if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
   maybe_assign_pr "${PR_NUMBER_FROM_URL}"

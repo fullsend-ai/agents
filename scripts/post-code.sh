@@ -37,15 +37,6 @@
 #                       branch is allowed. (default: auto-detected)
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
-#   CODE_AUTO_MERGE    — "true" to enable auto-merge on the PR/MR after
-#                        creation. (default: "" — disabled)
-#   CODE_AUTO_MERGE_METHOD
-#                      — merge method for auto-merge: "squash", "rebase", or
-#                        "merge". When unset, auto-detected from the repo's
-#                        allowed merge methods (prefers squash). Ignored
-#                        unless CODE_AUTO_MERGE is "true". Omitted
-#                        automatically when target branch uses a merge queue.
-#                        (default: auto-detected)
 #
 # Exit codes:
 #   0  — branch pushed and PR/MR created, OR agent determined nothing to do
@@ -1452,37 +1443,6 @@ forge_delete_remote_branch() {
   }
 }
 
-# --- Merge queue / auto-merge ---
-
-forge_check_merge_queue() {
-  local base_branch="$1"
-  local owner="${REPO_FULL_NAME%%/*}"
-  local name="${REPO_FULL_NAME##*/}"
-  gh api graphql -f query="
-    query { repository(owner: \"${owner}\", name: \"${name}\") {
-      mergeQueue(branch: \"${base_branch}\") { id }
-    }}" --jq '.data.repository.mergeQueue.id // empty' 2>/dev/null || true
-}
-
-forge_get_repo_merge_methods() {
-  gh api "repos/${REPO_FULL_NAME}" \
-    --jq '{s:.allow_squash_merge,m:.allow_merge_commit,r:.allow_rebase_merge}' 2>/dev/null || true
-}
-
-forge_enable_auto_merge() {
-  local target_pr="$1"
-  local method_flag="$2"
-  local merge_output
-  # shellcheck disable=SC2086
-  if ! merge_output="$(gh pr merge "${target_pr}" --auto ${method_flag} \
-    --repo "${REPO_FULL_NAME}" 2>&1)"; then
-    print_sanitized_gha_log "${merge_output}"
-    gha_echo warning "Failed to enable auto-merge on PR #${target_pr} — continuing"
-  else
-    print_sanitized_gha_log "${merge_output}"
-  fi
-}
-
 # --- Issue operations ---
 
 forge_get_issue_comments() {
@@ -1893,106 +1853,6 @@ forge_delete_remote_branch() {
   }
 }
 
-# --- Auto-merge ---
-
-forge_check_merge_queue() {
-  # GitLab does not have a merge queue equivalent; merge trains are configured
-  # per-project but have no API query like GitHub's mergeQueue.
-  echo ""
-}
-
-forge_get_repo_merge_methods() {
-  local project_json
-  project_json=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}" 2>/dev/null) || {
-    echo ""
-    return 0
-  }
-  local method
-  method=$(echo "${project_json}" | jq -r '.merge_method // "merge"' 2>/dev/null)
-  # Map GitLab merge_method to the same JSON shape as GitHub for compat
-  case "${method}" in
-    merge) echo '{"s":false,"m":true,"r":false}' ;;
-    rebase_merge) echo '{"s":false,"m":false,"r":true}' ;;
-    ff)    echo '{"s":false,"m":false,"r":true}' ;;
-    *)     echo '{"s":false,"m":true,"r":false}' ;;
-  esac
-}
-
-forge_enable_auto_merge() {
-  local mr_iid="$1"
-  local _method_flag="$2"
-
-  # Safety guard: merge_when_pipeline_succeeds merges immediately when the
-  # pipeline has already passed or no pipeline exists.  Match the GitHub path's
-  # BLOCKED-state guard by requiring that the MR is not immediately mergeable.
-  # Retry up to 3 times — new MRs may report "none" briefly.
-  local mr_json pipeline_status _am_attempt
-  for _am_attempt in 1 2 3; do
-    mr_json=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}" 2>/dev/null) || {
-      gha_echo warning "Auto-merge: could not query MR !${mr_iid} — skipping"
-      return 0
-    }
-    pipeline_status=$(echo "${mr_json}" | jq -r '.head_pipeline.status // "none"')
-
-    case "${pipeline_status}" in
-      running|pending|created|preparing|waiting_for_resource|scheduled)
-        break
-        ;;
-      none)
-        if [ "${_am_attempt}" -lt 3 ]; then
-          echo "Auto-merge: MR !${mr_iid} pipeline status is 'none' (attempt ${_am_attempt}/3) — retrying in 5s..."
-          sleep 5
-          continue
-        fi
-        gha_echo warning "Auto-merge: MR !${mr_iid} has no pipeline after 3 attempts — skipping (would merge immediately)"
-        return 0
-        ;;
-      success)
-        break
-        ;;
-      failed|canceled)
-        gha_echo warning "Auto-merge: MR !${mr_iid} pipeline status '${pipeline_status}' — skipping"
-        return 0
-        ;;
-      *)
-        gha_echo warning "Auto-merge: MR !${mr_iid} unrecognized pipeline status '${pipeline_status}' — skipping"
-        return 0
-        ;;
-    esac
-  done
-
-  # BLOCKED guard (parity with GitHub's mergeStateStatus check)
-  local merge_status
-  merge_status=$(echo "${mr_json}" | jq -r '.detailed_merge_status // .merge_status // "unknown"')
-  case "${merge_status}" in
-    mergeable|can_be_merged)
-      gha_echo warning "Auto-merge: MR !${mr_iid} is immediately mergeable — skipping. Requires merge request approvals or pipeline checks."
-      return 0
-      ;;
-    not_approved|ci_must_pass|ci_still_running|discussions_not_resolved|blocked_status|need_rebase)
-      ;;
-    checking|unchecked|preparing)
-      if [ "${pipeline_status}" = "success" ]; then
-        gha_echo warning "Auto-merge: MR !${mr_iid} merge status '${merge_status}' not settled but pipeline passed — skipping (could merge immediately)"
-        return 0
-      fi
-      ;;
-    *)
-      gha_echo warning "Auto-merge: MR !${mr_iid} unrecognized merge status '${merge_status}' — skipping"
-      return 0
-      ;;
-  esac
-
-  if [ "${pipeline_status}" = "success" ]; then
-    echo "Auto-merge: MR !${mr_iid} pipeline passed but MR is blocked (${merge_status}) — arming auto-merge"
-  fi
-
-  if ! _gitlab_code_api PUT "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/merge" \
-    --data-urlencode "merge_when_pipeline_succeeds=true" > /dev/null 2>/dev/null; then
-    gha_echo warning "Failed to enable auto-merge on MR !${mr_iid} — continuing"
-  fi
-}
-
 # --- Issue operations ---
 
 forge_get_issue_comments() {
@@ -2133,121 +1993,6 @@ forge_ensure_label() {
   forge_create_label "${name}" "${description}" "${color}"
 }
 # END bundled: lib/labels.lib.sh
-
-# ---------------------------------------------------------------------------
-# enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
-#
-# Guards:
-#   - GitHub: PR must be in BLOCKED state (requires branch protection)
-#   - GitHub: For existing PRs: skips if auto-merge is already enabled
-#   - GitLab: Uses merge_when_pipeline_succeeds
-#
-# Merge method resolution (GitHub-specific):
-#   1. If target branch has a merge queue → omit method flag (gh negotiates)
-#   2. If CODE_AUTO_MERGE_METHOD is set → use it (warn on unknown values)
-#   3. Otherwise → auto-detect from repo's allowed merge methods (prefer squash)
-#
-# Usage: enable_auto_merge <target_pr> <repo> [existing]
-# Note: parameter is target_pr (not pr_number) to avoid SC2153 against PR_NUMBER.
-# ---------------------------------------------------------------------------
-enable_auto_merge() {
-  local target_pr="$1"
-  local _repo="$2"  # accepted for interface parity; forge ops use REPO_FULL_NAME
-  local is_existing="${3:-}"
-
-  if [ "${CODE_AUTO_MERGE:-}" != "true" ]; then
-    return 0
-  fi
-
-  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
-    echo "Auto-merge: enabling merge_when_pipeline_succeeds on MR !${target_pr}..."
-    forge_enable_auto_merge "${target_pr}" ""
-    return 0
-  fi
-
-  # GitHub-specific merge state checks
-  local pr_json merge_state
-  local _am_attempt
-  for _am_attempt in 1 2 3; do
-    pr_json="$(forge_get_pr_details "${target_pr}" "mergeStateStatus,autoMergeRequest,baseRefName")" || true
-    if [ -z "${pr_json}" ]; then
-      gha_echo warning "Auto-merge: could not query PR #${target_pr} — skipping"
-      return 0
-    fi
-
-    merge_state="$(echo "${pr_json}" | jq -r '.mergeStateStatus // "UNKNOWN"')"
-    if [ "${merge_state}" != "UNKNOWN" ]; then
-      break
-    fi
-    if [ "${_am_attempt}" -lt 3 ]; then
-      echo "Auto-merge: merge state is UNKNOWN (attempt ${_am_attempt}/3) — retrying in 5s..."
-      sleep 5
-    fi
-  done
-
-  case "${merge_state}" in
-    BLOCKED) ;;
-    UNKNOWN)
-      gha_echo warning "Auto-merge: could not determine PR merge state after 3 attempts — skipping"
-      return 0
-      ;;
-    *)
-      gha_echo warning "Auto-merge: PR #${target_pr} is immediately mergeable (state: ${merge_state}) — skipping. Requires branch protection with required reviews or status checks."
-      return 0
-      ;;
-  esac
-
-  # Guard: for existing PRs, don't re-arm if auto-merge is already set.
-  if [ "${is_existing}" = "existing" ]; then
-    local am_request
-    am_request="$(echo "${pr_json}" | jq -r '.autoMergeRequest // empty')"
-    if [ -n "${am_request}" ]; then
-      echo "Auto-merge already enabled on PR #${target_pr} — skipping"
-      return 0
-    fi
-  fi
-
-  # Resolve merge method flag.
-  local method_flag=""
-  local base_branch
-  base_branch="$(echo "${pr_json}" | jq -r '.baseRefName // "main"')"
-
-  # Check for merge queue on the target branch — omit method flag if present.
-  local mq_id
-  mq_id="$(forge_check_merge_queue "${base_branch}")"
-
-  if [ -n "${mq_id}" ]; then
-    echo "Auto-merge: merge queue detected on ${base_branch} — omitting method flag"
-  else
-    local method="${CODE_AUTO_MERGE_METHOD:-}"
-    if [ -z "${method}" ]; then
-      local repo_info
-      repo_info="$(forge_get_repo_merge_methods)"
-      if [ -n "${repo_info}" ]; then
-        if [ "$(echo "${repo_info}" | jq -r '.s')" = "true" ]; then method="squash"
-        elif [ "$(echo "${repo_info}" | jq -r '.m')" = "true" ]; then method="merge"
-        elif [ "$(echo "${repo_info}" | jq -r '.r')" = "true" ]; then method="rebase"
-        else method="merge"
-        fi
-      else
-        method="merge"
-      fi
-    fi
-
-    case "${method}" in
-      squash) method_flag="--squash" ;;
-      rebase) method_flag="--rebase" ;;
-      merge)  method_flag="--merge"  ;;
-      *)
-        gha_echo warning "Unknown CODE_AUTO_MERGE_METHOD='${method}' — defaulting to --merge"
-        method_flag="--merge"
-        ;;
-    esac
-  fi
-
-  echo "Auto-merge: enabling on PR #${target_pr}${method_flag:+ (${method_flag})}..."
-  forge_enable_auto_merge "${target_pr}" "${method_flag}"
-}
 
 # ---------------------------------------------------------------------------
 # Setup
@@ -2846,7 +2591,6 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
       || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
   fi
 
-  enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
     maybe_assign_pr "${EXISTING_PR_NUM}"
   fi
@@ -3043,11 +2787,6 @@ forge_write_output "pr_url" "${PR_URL}"
 PR_NUMBER_FROM_URL="${PR_URL##*/}"
 forge_ensure_label "ready-for-review"
 forge_add_label "ready-for-review" "pr" "${PR_NUMBER_FROM_URL}"
-
-# ---------------------------------------------------------------------------
-# 9. Auto-merge
-# ---------------------------------------------------------------------------
-enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
 if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
   maybe_assign_pr "${PR_NUMBER_FROM_URL}"
