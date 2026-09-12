@@ -74,6 +74,10 @@ run_test "valid-not-planned" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This is out of scope."}' \
   "true"
 
+run_test "valid-completed" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done. Closing as completed."}' \
+  "true"
+
 run_test "valid-prerequisites-existing" \
   '{"action":"prerequisites","reasoning":"upstream dependency","prerequisites":{"existing":[{"url":"https://github.com/org/repo/issues/99"}],"create":[]},"comment":"Blocked on upstream."}' \
   "true"

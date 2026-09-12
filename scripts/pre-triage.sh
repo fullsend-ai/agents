@@ -550,7 +550,9 @@ tracker_create_issue() {
 # Optional env vars:
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
 #   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
-#   JIRA_SPLIT_TRANSITION       — transition name for the "split" action
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" and
+#                                 "completed" actions (both close with
+#                                 GitHub reason "completed")
 #   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
 #                                 creation (default: "Task")
 
@@ -931,7 +933,7 @@ tracker_parse_issue_url
 
 echo "Resetting triage labels on ${REPO}#${ISSUE_NUMBER}"
 
-TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned pr-open)
+TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned completed pr-open)
 
 tracker_strip_labels "${TRIAGE_LABELS[@]}"
 tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"
