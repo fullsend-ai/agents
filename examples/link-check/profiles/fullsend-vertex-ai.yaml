@@ -1,0 +1,25 @@
+---
+id: fullsend-vertex-ai
+display_name: Fullsend Vertex AI
+description: Anthropic API and Google Cloud APIs for inference
+category: inference
+endpoints:
+  - host: api.anthropic.com
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+    # See fullsend-openai.yaml: model request bodies that mention the
+    # placeholder prefix would otherwise be reset (NVIDIA/OpenShell#2904).
+    allow_uninspected_credentials: true
+  - host: "*.googleapis.com"
+    port: 443
+    protocol: rest
+    access: read-write
+    enforcement: enforce
+    allow_uninspected_credentials: true
+binaries:
+  - "**/claude"
+  - "**/claude.exe"
+  - "**/node"
+  - "**/pi"
