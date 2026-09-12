@@ -35,6 +35,16 @@ For each finding:
    - "Missing error handling" when the error is handled by a caller
    - "Race condition" when access is serialized by design
    - "Missing test" when the test exists in a different file
+   - "Regex pattern misread" when a character class boundary is
+     confused with adjacent literals (e.g., `[Cc]lose` read as
+     having a double `c` instead of character class `[Cc]` followed
+     by literal `lose`)
+
+   When a finding cites a regex pattern as incorrect, independently
+   decompose the pattern element by element — identify character
+   classes (`[...]`), quantifiers, anchors, alternations, escape
+   sequences, and literals — before confirming or removing the
+   finding.
 2. **Assess severity calibration.** Is the severity proportionate to
    the actual risk? Downgrade findings whose severity is inflated
    relative to the codebase context.
