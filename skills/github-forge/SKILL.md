@@ -38,7 +38,7 @@ gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query=
     repository(owner: $owner, name: $name) {
       issue(number: $number) {
         closedByPullRequestsReferences(first: 50) {
-          nodes { number url author { login } state }
+          nodes { number url author { login } state updatedAt }
         }
       }
     }

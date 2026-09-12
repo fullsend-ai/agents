@@ -45,6 +45,78 @@ gh run list --repo "$DISPATCH_REPO" --workflow=fix.yml --limit 10 \
   --json databaseId,status,conclusion,createdAt
 ```
 
+## Flapping detection
+
+Recipes for the shared retro-analysis flapping section. Name `fix.yml`
+explicitly — `finding-agent-runs` does not list it. Use `--limit 10`
+(not 5).
+
+### Bound run discovery
+
+Read `PR_CREATED_AT` / `PR_UPDATED_AT` from
+`gh pr view PR_NUMBER --repo PR_REPO --json createdAt,updatedAt`.
+
+Fix and review runs live in the PR lifetime:
+
+```bash
+gh run list --repo "$DISPATCH_REPO" --workflow=fix.yml --limit 10 \
+  --created "${PR_CREATED_AT}..${PR_UPDATED_AT}" \
+  --json databaseId,status,conclusion,createdAt,updatedAt,event
+
+gh run list --repo "$DISPATCH_REPO" --workflow=review.yml --limit 10 \
+  --created "${PR_CREATED_AT}..${PR_UPDATED_AT}" \
+  --json databaseId,status,conclusion,createdAt,updatedAt,event
+```
+
+Code runs create the PR, so their `createdAt` is earlier than
+`PR.createdAt`. Do not use the PR-lifetime window for `code.yml` — it
+drops the first file-changing run.
+
+```bash
+gh run list --repo "$DISPATCH_REPO" --workflow=code.yml --limit 10 \
+  --created "<=${PR_CREATED_AT}" \
+  --json databaseId,status,conclusion,createdAt,updatedAt,event
+```
+
+Match a code run by parsing `event_payload`: `issue.number` from the
+`agent/{issue}-{slug}` branch, then confirm the run log prints
+`PR_REPO/pull/PR_NUMBER`.
+
+### Compare patches
+
+For each file-changing run except the code run:
+
+- start = that run's `pull_request.head.sha` (dispatch-time, pre-run)
+- end = the next review run's `pull_request.head.sha` (the output commit)
+
+For the code run (no `pull_request` object):
+
+- start = `gh pr view PR_NUMBER --repo PR_REPO --json baseRefOid --jq .baseRefOid`
+  (or the merge-base of that base and the first review run's `head.sha`)
+- end = the first review run's `pull_request.head.sha`
+
+```bash
+gh api "repos/${PR_REPO}/compare/${START}...${END}" \
+  --jq '.files[] | {filename, patch}'
+```
+
+### Check results at an output-anchor SHA
+
+Pattern 2 needs the named check at each run's *output* anchor (the
+following review run's `head.sha`), not at dispatch-time `head.sha` and
+not `gh pr checks` (that is the current PR head only).
+
+```bash
+gh api "repos/${PR_REPO}/commits/${SHA}/check-runs" \
+  --jq '.check_runs[] | {name, conclusion}'
+```
+
+For the last file-changing run, use the PR head at retro time. Checks
+are keyed to the commit, so they remain queryable after rebase.
+
+Also paginate the PR's review comments and findings. Pattern 3
+correlates finding text across cycles.
+
 ## Reading agent logs and artifacts
 
 ```bash

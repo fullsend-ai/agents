@@ -62,7 +62,9 @@ curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
 curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/related_merge_requests"
 
-# Find MRs that would close a specific issue
+# Find MRs that would close a specific issue. Each element is a merge
+# request object and includes `updated_at` — use that for the
+# most-recently-updated tie-break in retro flapping detection.
 curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/closed_by"
 ```
