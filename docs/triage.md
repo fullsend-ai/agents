@@ -40,14 +40,14 @@ These labels are managed by the triage agent based on its assessment of the issu
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
-| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: when `requires_workflow_changes` is set in the triage result, `triaged` is applied instead because the code agent cannot modify workflow files. |
-| `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
+| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: `triaged` is applied instead when `requires_workflow_changes` is set, when `TRIAGE_AUTO_CODE` is `off`/`never`, or when `TRIAGE_AUTO_CODE` is `discretionary` and the agent withholds promotion. |
+| `triaged` | The issue is fully specified but requires human prioritization before coding — a feature or other category, auto-promotion disabled, or a discretionary withhold. |
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |
-| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
-| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
+| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` or `triaged` (see the `ready-to-code` exceptions above) to categorize the issue. |
+| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` or `triaged` (see the `ready-to-code` exceptions above) to categorize the issue. |
 | `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
 | `pr-open` | An open PR or merge request already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR/MR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR/MR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR/MR is closed without merging: nothing re-triages on PR/MR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
@@ -165,14 +165,36 @@ post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote categories listed in `TRIAGE_AUTO_CODE_CATEGORIES`. `off` — never auto-promote; always apply `triaged`. | `on` | `on`, `off` |
-| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=on`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
+| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. See [Ready-to-code promotion](#ready-to-code-promotion). | `on` | `on`/`always`, `off`/`never`, `discretionary` |
+| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories eligible for auto-promotion when `TRIAGE_AUTO_CODE` is `on`/`always` or `discretionary`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
 
 To override these defaults per repo or org, create a custom harness for the
 triage agent the same way the [code agent](code.md#how-to-configure) does —
 a `.fullsend/triage.yaml` with a `base:` pointing at
 [`harness/triage.yaml`](../harness/triage.yaml) and your own `env.runner`
-values, referenced from `.fullsend/config.yaml`.
+and `env.sandbox` values, referenced from `.fullsend/config.yaml`.
+
+#### Ready-to-code promotion
+
+`TRIAGE_AUTO_CODE` has three modes:
+
+- `on` / `always` — auto-apply `ready-to-code` for categories listed in
+  `TRIAGE_AUTO_CODE_CATEGORIES`. This is the default. `on` is the supported
+  alias for `always`.
+- `off` / `never` — never auto-apply `ready-to-code`; always apply `triaged`.
+  A human must run `/fs-code` or apply the label. `off` is the supported
+  alias for `never`.
+- `discretionary` — the triage agent decides per issue. On a `sufficient`
+  result it sets `triage_summary.promote_to_ready_to_code` to `true` (promote)
+  or `false` (leave `triaged` for human prioritization). The post-script
+  honors that field only in this mode, and only when the category is in
+  `TRIAGE_AUTO_CODE_CATEGORIES` and `requires_workflow_changes` is not set.
+  If the field is omitted, the post-script withholds promotion.
+
+The `promote_to_ready_to_code` field is ignored when `TRIAGE_AUTO_CODE` is
+`on`/`always` or `off`/`never`, so existing harnesses keep their mechanical
+behavior. Use `discretionary` for workflows such as backlog grooming, where
+triage should still classify issues but must not flood the coding queue.
 
 ### Issue filing allowlist
 

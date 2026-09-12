@@ -15,6 +15,8 @@ You are a triage agent. Your job is to inspect a single issue — including all 
 ## Inputs
 
 - `ISSUE_URL` — the HTML URL of the issue.
+- `TRIAGE_AUTO_CODE` — ready-to-code promotion mode. Set by the harness. Values: `on`/`always` (post-script always promotes listed categories), `off`/`never` (never auto-promote), `discretionary` (you decide per issue via `promote_to_ready_to_code`).
+- `TRIAGE_AUTO_CODE_CATEGORIES` — comma-separated categories eligible for auto-promotion (default `bug,documentation,performance`).
 
 ## Step 1: Fetch the issue
 
@@ -364,7 +366,8 @@ Information is sufficient for a developer to investigate and fix.
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
-    "requires_workflow_changes": false
+    "requires_workflow_changes": false,
+    "promote_to_ready_to_code": "true | false — required when TRIAGE_AUTO_CODE is discretionary, omit otherwise"
   },
   "comment": "A triage summary comment formatted in markdown. Focus on information not already present in the issue body — omit sections that merely restate what the reporter wrote. Include the proposed test case as a fenced code block.",
   "label_actions": {
@@ -384,6 +387,8 @@ Information is sufficient for a developer to investigate and fix.
 ```
 
 **Workflow change detection (optional):** If the issue likely requires modifying CI/pipeline configuration files (`.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows), set `requires_workflow_changes: true` in `triage_summary`. When set, the post-triage script skips auto-triggering the code agent because the code agent cannot modify workflow files under current permissions. The triage comment should warn about this limitation and note that manual intervention is required. When `requires_workflow_changes` is not set or is `false`, auto-triggering proceeds normally.
+
+**Discretionary promotion:** If `$TRIAGE_AUTO_CODE` is `discretionary`, you MUST set `promote_to_ready_to_code` in `triage_summary` on `sufficient` results. The post-script honors this field only in discretionary mode, and only for categories listed in `$TRIAGE_AUTO_CODE_CATEGORIES` that are not blocked by `requires_workflow_changes`. Set `true` when the issue should be implemented now. Set `false` — and briefly note the withhold in `comment` — when the issue is low-priority, stale, exploratory, better reviewed by a human first, or when the `/fs-triage` invocation or a human comment asks not to auto-promote (for example during backlog grooming). When uncertain, withhold (`false`). If `$TRIAGE_AUTO_CODE` is `on`/`always` or `off`/`never`, omit the field; the post-script promotes mechanically and ignores it.
 
 **Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
 
