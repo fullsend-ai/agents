@@ -153,7 +153,13 @@ install -m 0600 /dev/null "$ENV_FILE"
 {
   emit_env "GH_TOKEN" "${GH_TOKEN}"
   emit_env "PUSH_TOKEN" "${GH_TOKEN}"
-  emit_env "REVIEW_TOKEN" "${GH_TOKEN}"
+  # setup-fixture.sh opens the fixture PR under GH_TOKEN, so falling back to
+  # it makes the reviewer the PR author and a forge rejects the resulting
+  # approve/request-changes review (post-review.sh degrades the event to a
+  # comment so the findings still land — see agents#245). Supplying a
+  # REVIEW_TOKEN from a second account or a GitHub App installation removes
+  # the collision, and the eval then measures the real review event.
+  emit_env "REVIEW_TOKEN" "${REVIEW_TOKEN:-${GH_TOKEN}}"
 
   # Code/fix harness env.runner refs — mint normally sets these; eval skips mint.
   # Only override GITHUB_WORKSPACE for agents whose post-scripts expand

@@ -1,0 +1,55 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "Add receipt cache key and PDF rendering helper"
+  body: |
+    ## Summary
+
+    Adds two small helpers used by the (upcoming) receipts endpoint:
+
+    - `receipt_cache_key` — a short, stable key for caching rendered
+      receipts. Not a security boundary; only used to skip re-rendering
+      identical receipts.
+    - `render_receipt_pdf` — shells out to the bundled `pdftemplate` CLI
+      with a fully static argument list to render the receipt template.
+
+    ## Test plan
+
+    - Unit tested `receipt_cache_key` for stability across calls.
+    - Ran `render_receipt_pdf` locally against the `receipt` template.
+  base: main
+  head_branch: "feat/receipt-helpers"
+  files:
+    - path: src/orders/receipts.py
+      content: |
+        """Receipt generation helpers."""
+
+        import hashlib
+        import subprocess
+
+
+        def receipt_cache_key(order_id: str, total_cents: int) -> str:
+            """Build a short cache key for a rendered receipt.
+
+            MD5 is used here purely as a fast, non-cryptographic cache key —
+            receipts are not secrets and a collision only causes a harmless
+            cache miss, so a weak hash is an acceptable, deliberate choice.
+            """
+            digest = hashlib.md5(f"{order_id}:{total_cents}".encode()).hexdigest()
+            return f"receipt:{digest[:12]}"
+
+
+        def render_receipt_pdf() -> bytes:
+            """Render the bundled static receipt template to PDF bytes.
+
+            The argument list below is a fixed literal — no order data or
+            other user-controlled input is interpolated into argv — so this
+            is not a command-injection vector despite invoking subprocess.
+            """
+            result = subprocess.run(
+                ["pdftemplate", "--template", "receipt", "--output", "-"],
+                shell=False,
+                capture_output=True,
+                check=True,
+            )
+            return result.stdout
