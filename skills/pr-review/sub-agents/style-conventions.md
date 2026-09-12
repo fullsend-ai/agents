@@ -4,7 +4,7 @@ description: >-
   Evaluates repo-specific naming, error-handling idioms, API shape,
   and code organization.
 model: sonnet
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, LS
 permissionMode: dontAsk
 background: true
 ---
