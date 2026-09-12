@@ -15,8 +15,11 @@ fetching to these commands when `FULLSEND_FORGE=github`.
 ## PR data fetching
 
 ```bash
-# PR metadata: title, body, author, labels, draft status, head SHA
+# PR metadata: title, body, author, labels, draft status, head SHA.
+# Persist to a file too (shell vars do not survive between calls): the
+# fencing producer in pr-review step 3d reads title/body/labels from it.
 PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
+echo "$PR_DATA" > /sandbox/workspace/pr.json
 HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
 IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
 
@@ -42,7 +45,7 @@ test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure
 # From the files API — the checkout is the base branch, so never `git diff` it.
 # Generated files are dropped here.
 jq -r '.[] | select(.filename | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
-  | "### File: \(.filename)\n\(.patch // "(no patch from the API: binary or oversized)")"' \
+  | "### File: \(.filename | @json | .[1:-1])\n\(.patch // "(no patch from the API: binary or oversized)")"' \
   /sandbox/workspace/pr-files.json > /sandbox/workspace/pr-diff.txt
 test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```
@@ -86,8 +89,10 @@ echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata
-gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
+# Fetch linked issue metadata (persisted so step 3d can fence its
+# title/body the same way as pr.json)
+gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}' \
+  > /sandbox/workspace/issue.json
 
 # Fetch issue comments
 gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
