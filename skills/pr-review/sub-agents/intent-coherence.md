@@ -22,6 +22,24 @@ whether naming/abstraction choices align with existing project trajectory.
 
 **Do not own:** Code correctness, security vulnerabilities, style details.
 
+## Re-review remediation rule
+
+When the context package includes `Prior-finding remediation candidates`,
+verify each candidate against the prior finding and the incremental diff. Do
+not report a matched remediation candidate as scope creep when it directly
+addresses that verified prior finding. Check that the remediation addresses
+the cited finding completely; this is scope verification, not a second
+correctness pass. Correctness remains the correctness sub-agent's dimension.
+
+Evaluate changes not covered by a prior finding normally against the linked
+issue's authorization. Report scope creep only when a change is authorized by
+neither a prior finding nor the linked issue. Extra edits within a candidate
+file are not automatically exempt.
+
+Never apply this exemption when prior-review provenance is missing or
+unverifiable. A prior finding authorizes only the specific remediation it
+describes, not unrelated work in the same push.
+
 ## Early exit criteria
 
 If the diff is a mechanical, generated, or value-only change — such as

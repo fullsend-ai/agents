@@ -41,10 +41,14 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   the prior review comment. Values:
   - `none` — first review, no prior comment found
   - `app-verified` — prior comment created by the expected app
+  - `bot-verified` — GitLab prior comment created by the verified token owner;
+    this author-ID check is weaker than GitHub's app-provenance check
   - `unverifiable-no-app` — prior comment has no app metadata
     (cannot verify authorship); prior review discarded, file is empty
   - `unverifiable-wrong-app` — prior comment created by a different
     app than expected; prior review discarded, file is empty
+  - `unverifiable-wrong-user` — GitLab prior comment author does not match the
+    verified token owner; prior review discarded, file is empty
 - Prior review body at `/sandbox/workspace/prior-review.txt` when this
   is a re-review. Contains the prior run's findings with assessed
   severities. Absent on first review or when provenance validation
