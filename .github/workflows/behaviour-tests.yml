@@ -1,0 +1,179 @@
+name: Behaviour Tests
+
+# Live behaviour tests use pull_request_target so authorized PRs can receive
+# the dev-environment secrets. The gate runs on the base checkout before this
+# job checks out and executes the PR head.
+
+permissions: {}
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'agents/**'
+      - 'behaviour/**'
+      - 'config.yaml'
+      - 'env/**'
+      - 'harness/**'
+      - 'policies/**'
+      - 'schemas/**'
+      - 'scripts/**'
+      - 'go.mod'
+      - 'go.sum'
+      - 'Makefile'
+      - '.github/workflows/behaviour-tests.yml'
+      - '.github/actions/check-e2e-authorization/**'
+      - '.github/scripts/check-e2e-authorization.sh'
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+  merge_group:
+  workflow_dispatch:
+
+concurrency:
+  group: >-
+    ${{ github.event_name == 'pull_request_target'
+        && format('behaviour-{0}', github.event.pull_request.number)
+        || format('{0}-{1}', github.workflow, github.ref) }}
+  cancel-in-progress: >-
+    ${{ github.event_name == 'pull_request_target'
+        || github.ref != 'refs/heads/main' }}
+
+jobs:
+  gate:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Check PR authorization
+        id: auth
+        uses: ./.github/actions/check-e2e-authorization
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          repository: ${{ github.repository }}
+          pr_updated_at: ${{ github.event.pull_request.updated_at }}
+          event_action: ${{ github.event.action }}
+          pr_author_association: ${{ github.event.pull_request.author_association }}
+          pr_author_login: ${{ github.event.pull_request.user.login }}
+
+  behaviour:
+    needs: gate
+    if: >-
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        github.event_name == 'merge_group' ||
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request_target' &&
+         needs.gate.outputs.authorized == 'true')
+      )
+    environment: dev
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ENVIRONMENT: dev
+      BEHAVIOUR_SCM: github
+      BEHAVIOUR_CI: githubactions
+      BEHAVIOUR_INSTALL_MODE: per-repo
+      BEHAVIOUR_APP_SET: fullsend-test
+      BEHAVIOUR_SUITE_NAME: agents-bt-${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.AGENTS_BT_E2E_GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.AGENTS_BT_E2E_GCP_SERVICE_ACCOUNT }}
+
+      - name: Resolve pinned fullsend source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          version="$(go list -m -f '{{.Version}}' github.com/fullsend-ai/fullsend)"
+          if [[ "$version" =~ -0\.[0-9]{14}-([0-9a-f]+)$ ]]; then
+            ref="${BASH_REMATCH[1]}"
+          else
+            ref="$version"
+          fi
+          sha="$(gh api "repos/fullsend-ai/fullsend/commits/${ref}" --jq .sha)"
+          checkout="${RUNNER_TEMP}/fullsend"
+          git clone --filter=blob:none --no-checkout \
+            https://github.com/fullsend-ai/fullsend.git "$checkout"
+          git -C "$checkout" \
+            -c "http.extraheader=AUTHORIZATION: bearer ${GH_TOKEN}" \
+            fetch --depth=1 origin "$sha"
+          git -C "$checkout" checkout --detach "$sha"
+          test "$(git -C "$checkout" rev-parse HEAD)" = "$sha"
+          grep -qx 'module github.com/fullsend-ai/fullsend' "$checkout/go.mod"
+          test -d "$checkout/cmd/fullsend"
+          modfile="${RUNNER_TEMP}/agents.mod"
+          cp go.mod "$modfile"
+          : > "${RUNNER_TEMP}/agents.sum"
+          go mod edit -modfile="$modfile" \
+            -replace="github.com/fullsend-ai/fullsend=${checkout}"
+          go mod edit -modfile="$modfile" \
+            -replace="github.com/fullsend-ai/fullsend/internal/mintcore=${checkout}/internal/mintcore"
+          go mod tidy -modfile="$modfile"
+          {
+            echo "FULLSEND_CHECKOUT=$checkout"
+            echo "FULLSEND_SHA=$sha"
+            echo "BEHAVIOUR_GOFLAGS=-modfile=$modfile"
+          } >> "$GITHUB_ENV"
+          echo "Using fullsend source ${sha} for ${version}"
+
+      - name: Run behaviour tests
+        env:
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.AGENTS_BT_E2E_GCP_WIF_PROVIDER }}
+          E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.AGENTS_BT_E2E_GCP_SERVICE_ACCOUNT }}
+          E2E_GCP_PROJECT_ID: ${{ secrets.AGENTS_BT_E2E_GCP_PROJECT_ID }}
+          TEST_FULLSEND_PEM: ${{ secrets.AGENTS_BT_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.AGENTS_BT_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.AGENTS_BT_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.AGENTS_BT_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.AGENTS_BT_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.AGENTS_BT_PRIORITIZE_PEM }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.AGENTS_BT_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.AGENTS_BT_CLOUDFLARE_API_TOKEN }}
+          TEST_ACTOR_WRITE_PAT: ${{ secrets.AGENTS_BT_ACTOR_WRITE_PAT }}
+          TEST_ACTOR_TRIAGE_PAT: ${{ secrets.AGENTS_BT_ACTOR_TRIAGE_PAT }}
+          TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.AGENTS_BT_ACTOR_OUTSIDER_PAT }}
+        shell: bash
+        run: |
+          required=(
+            E2E_GCP_WIF_PROVIDER E2E_GCP_SERVICE_ACCOUNT E2E_GCP_PROJECT_ID
+            TEST_FULLSEND_PEM TEST_TRIAGE_PEM TEST_CODER_PEM TEST_REVIEW_PEM
+            TEST_RETRO_PEM TEST_PRIORITIZE_PEM CLOUDFLARE_ACCOUNT_ID
+            CLOUDFLARE_API_TOKEN TEST_ACTOR_WRITE_PAT TEST_ACTOR_TRIAGE_PAT
+            TEST_ACTOR_OUTSIDER_PAT
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "missing behaviour credential: ${name}" >&2
+              exit 1
+            fi
+          done
+          make behaviour-test

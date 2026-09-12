@@ -1,5 +1,5 @@
 .DEFAULT_GOAL := help
-.PHONY: help script-build check-bundle script-test test lint lint-fix lint-baseline
+.PHONY: help script-build check-bundle script-test behaviour-test test lint lint-fix lint-baseline
 
 BUNDLE_SRCS := scripts/pre-code.src.sh scripts/pre-code-jira.src.sh scripts/post-code.src.sh scripts/pre-fix.src.sh scripts/post-fix.src.sh scripts/pre-prioritize.src.sh scripts/post-prioritize.src.sh scripts/pre-retro.src.sh scripts/post-retro.src.sh scripts/pre-review.src.sh scripts/post-review.src.sh scripts/pre-scribe.src.sh scripts/post-scribe.src.sh scripts/pre-triage.src.sh scripts/post-triage.src.sh scripts/validate-code-output.src.sh
 BUNDLE_OUTS := $(BUNDLE_SRCS:.src.sh=.sh)
@@ -14,6 +14,7 @@ help:
 	@echo "  script-build  - Bundle .src.sh scripts into committed .sh artifacts"
 	@echo "  check-bundle  - Verify committed bundles match script-build output"
 	@echo "  script-test   - Run agent shell script unit tests"
+	@echo "  behaviour-test - Run live behaviour tests"
 	@echo "  test          - Alias for script-test"
 	@echo "  lint          - Lint skills/agents/instructions with skillsaw"
 	@echo "  lint-fix      - Apply skillsaw's automatic lint fixes"
@@ -55,6 +56,10 @@ check-bundle:
 SCRIPT_TEST_TARGET ?= source
 export SCRIPT_TEST_TARGET
 
+BEHAVIOUR_TEST_EXEC ?= $(CURDIR)/scripts/run-behaviour-test-exec.sh
+BEHAVIOUR_TEST_TAGS ?= behaviour
+BEHAVIOUR_GOFLAGS ?=
+
 script-test:
 	$(call run-timed,bash scripts/bundle-sh-test.sh)
 	$(call run-timed,bash scripts/gitleaks-install-test.sh)
@@ -90,3 +95,6 @@ script-test:
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
 
 test: script-test
+
+behaviour-test:
+	go test -count=1 -timeout 40m -tags "$(BEHAVIOUR_TEST_TAGS)" $(BEHAVIOUR_GOFLAGS) -exec "$(BEHAVIOUR_TEST_EXEC)" ./behaviour
