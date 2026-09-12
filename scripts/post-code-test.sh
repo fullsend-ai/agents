@@ -1715,7 +1715,7 @@ run_branch_validation_test "explicit-list-accepts-match" \
 run_branch_validation_test "explicit-list-includes-default" \
   "main" "main" "main,develop" "accept:main"
 
-# No agent target with explicit list still uses default
+# No agent target with explicit list still uses default.
 run_branch_validation_test "no-agent-target-ignores-allowed-list" \
   "" "main" "release-1,release-2" "default:main"
 

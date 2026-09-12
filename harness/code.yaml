@@ -66,7 +66,6 @@ validation_loop:
 # Environment variables for runner pre/post scripts and sandbox sessions.
 env:
   runner:
-    CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
     TARGET_REPO_DIR: "${TARGET_REPO_DIR}"
     PUSH_TOKEN: "${PUSH_TOKEN}"
     PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
