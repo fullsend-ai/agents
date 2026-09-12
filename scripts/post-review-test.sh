@@ -1375,6 +1375,102 @@ run_body_test "label-actions-plus-action-hints-has-labels-section" \
 run_body_test "label-actions-plus-action-hints-has-next-steps" \
   "${LABEL_PLUS_HINTS_JSON}" "**Next steps:**"
 
+# confidence present → body gets a "**Confidence:** <value>" annotation
+CONFIDENCE_JSON='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Some notes","confidence":"high"}'
+
+run_body_test "confidence-present-appends-annotation" \
+  "${CONFIDENCE_JSON}" "**Confidence:** high"
+
+# confidence absent → no annotation appended
+NO_CONFIDENCE_JSON='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Some notes"}'
+
+run_body_count_test "confidence-absent-no-annotation" \
+  "${NO_CONFIDENCE_JSON}" "**Confidence:**" "0"
+
+# Confidence after a post-script verdict override: the posted value must
+# name the agent's original action, not look like confidence in `comment`.
+run_body_test_with_env() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_body_pattern="$3"
+  local extra_env="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    eval "${extra_env}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ ! -f "${TMPDIR}/last-result.json" ]]; then
+    echo "FAIL: ${test_name} — no result file captured"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local body
+  body="$(jq -r '.body' "${TMPDIR}/last-result.json")"
+  if ! echo "${body}" | grep -qF "${expected_body_pattern}"; then
+    echo "FAIL: ${test_name} — expected body pattern '${expected_body_pattern}' not found"
+    echo "Actual body:"
+    echo "${body}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+APPROVE_CONFIDENCE_JSON='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good to me","confidence":"high"}'
+
+run_body_test_with_env "confidence-protected-path-scopes-original-verdict" \
+  "${APPROVE_CONFIDENCE_JSON}" \
+  "**Confidence:** high (agent verdict: approve — downgraded by protected-path check)" \
+  'export MOCK_PR_FILES="skills/pr-review/SKILL.md"; export REVIEW_PROTECTED_PATHS="skills/"'
+
+FILTERED_CONFIDENCE_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Please fix nits","confidence":"medium","findings":[{"severity":"low","category":"style","file":"a.go","description":"nit"}]}'
+
+run_body_test_with_env "confidence-severity-filter-scopes-original-verdict" \
+  "${FILTERED_CONFIDENCE_JSON}" \
+  "**Confidence:** medium (agent verdict: request-changes — downgraded by severity filter)" \
+  'export REVIEW_FINDING_SEVERITY_THRESHOLD="high"; export MOCK_PR_FILES="src/main.go"'
+
+# A leaked env var must not invent a downgrade the script did not perform.
+run_body_test_with_env "confidence-stale-env-downgrade-ignored" \
+  "${CONFIDENCE_JSON}" \
+  "**Confidence:** high" \
+  'export CONFIDENCE_DOWNGRADE_REASON=stale-env CONFIDENCE_AGENT_ACTION=reject'
+
+if [[ -f "${TMPDIR}/last-result.json" ]]; then
+  stale_body="$(jq -r '.body' "${TMPDIR}/last-result.json")"
+  if echo "${stale_body}" | grep -qF "downgraded by stale-env"; then
+    echo "FAIL: confidence-stale-env-downgrade-ignored — leaked env produced a fake downgrade"
+    echo "${stale_body}"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # REVIEW_PROTECTED_PATHS override tests
 # Verify that setting REVIEW_PROTECTED_PATHS overrides the default list.

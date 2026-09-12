@@ -555,6 +555,13 @@ severity_rank() {
 
 threshold_rank=$(severity_rank "$REVIEW_FINDING_SEVERITY_THRESHOLD")
 
+# Unconditional — do not use ${var:-}. A pre-set environment variable
+# would otherwise survive into the confidence annotation and claim a
+# downgrade that this run never performed. The severity-filter and
+# protected-path blocks below are the only writers.
+CONFIDENCE_AGENT_ACTION=""
+CONFIDENCE_DOWNGRADE_REASON=""
+
 if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
   FILTERED_RESULT=$(mktemp)
@@ -588,6 +595,8 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
       if [ "${original_action}" = "request-changes" ] || [ "${original_action}" = "reject" ]; then
         echo "All findings removed by severity filter — downgrading '${original_action}' to 'comment'"
         jq 'del(.findings) | .action = "comment"' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
+        CONFIDENCE_AGENT_ACTION="${original_action}"
+        CONFIDENCE_DOWNGRADE_REASON="severity filter"
       else
         jq 'del(.findings)' "${FILTERED_RESULT}" > "${DOWNGRADE_RESULT}"
       fi
@@ -600,6 +609,9 @@ fi
 
 ACTION=$(jq -r '.action' "${RESULT_FILE}")
 # ACTION retains the original value for the entire script — not re-read after protected-path downgrade.
+# CONFIDENCE_AGENT_ACTION / CONFIDENCE_DOWNGRADE_REASON were cleared above
+# the severity-filter block; that block and the protected-path check are
+# the only writers.
 
 # ---------------------------------------------------------------------------
 # Protected-path check: the review agent must not approve PRs that touch
@@ -713,6 +725,8 @@ if [ "${ACTION}" = "approve" ]; then
         "${RESULT_FILE}" > "${MODIFIED_RESULT}"
       RESULT_FILE="${MODIFIED_RESULT}"
       DOWNGRADED=true
+      CONFIDENCE_AGENT_ACTION="${ACTION}"
+      CONFIDENCE_DOWNGRADE_REASON="protected-path check"
     fi
   fi
 fi
@@ -820,6 +834,25 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
       "${RESULT_FILE}" > "${LABEL_MODIFIED_RESULT}"
     RESULT_FILE="${LABEL_MODIFIED_RESULT}"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Append confidence annotation to body (skips failure, which has no body)
+# ---------------------------------------------------------------------------
+
+CONFIDENCE=$(jq -r '.confidence // empty' "${RESULT_FILE}")
+if [ -n "${CONFIDENCE}" ] && [ "${ACTION}" != "failure" ]; then
+  if [ -n "${CONFIDENCE_DOWNGRADE_REASON}" ]; then
+    CONFIDENCE_NOTICE=$'\n\n---\n'"**Confidence:** ${CONFIDENCE} (agent verdict: ${CONFIDENCE_AGENT_ACTION} — downgraded by ${CONFIDENCE_DOWNGRADE_REASON})"
+  else
+    CONFIDENCE_NOTICE=$'\n\n---\n'"**Confidence:** ${CONFIDENCE}"
+  fi
+  CONFIDENCE_RESULT=$(mktemp)
+  CLEANUP_FILES+=("${CONFIDENCE_RESULT}")
+  jq --arg notice "${CONFIDENCE_NOTICE}" \
+    '.body = (.body + $notice)' \
+    "${RESULT_FILE}" > "${CONFIDENCE_RESULT}"
+  RESULT_FILE="${CONFIDENCE_RESULT}"
 fi
 
 # ---------------------------------------------------------------------------
