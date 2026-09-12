@@ -8,4 +8,4 @@ line-length=100
 
 # Conventional commit types allowed in this repo.
 [contrib-title-conventional-commits]
-types=feat,fix,refactor,docs,test,chore,ci,perf,build
+types=feat,fix,refactor,docs,test,chore,ci,perf,build,revert
