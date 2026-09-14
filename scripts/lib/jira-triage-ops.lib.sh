@@ -336,6 +336,21 @@ tracker_close_issue() {
   fi
 }
 
+# Echo the normalized issue state ("open" or "closed") and return 0 on success.
+# Jira has no open/closed flag; its status category "done" is the terminal state,
+# so map "done" to "closed" and every other category to "open". Returns non-zero
+# if the state cannot be determined (caller fails closed).
+tracker_issue_state() {
+  local raw category
+  raw=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status" 2>/dev/null) || return 1
+  category=$(printf '%s' "${raw}" | jq -r '.fields.status.statusCategory.key // empty' 2>/dev/null) || return 1
+  case "${category}" in
+    done) printf 'closed\n' ;;
+    "") return 1 ;;
+    *) printf 'open\n' ;;
+  esac
+}
+
 _text_to_adf() {
   # Convert plain text to Atlassian Document Format (ADF) JSON.
   # Splits on blank lines into separate paragraphs; within a paragraph,
