@@ -285,8 +285,7 @@ dimensions are relevant:
 
 Based on the domain classification, select sub-agents for dispatch.
 All selected sub-agents run in parallel — `risk-assessment` (composed
-in step 3c-2) among them — except `challenger`, which runs by itself
-after all other sub-agents have finished.
+in step 3c-2) among them — except `challenger` (step 6d).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -352,7 +351,7 @@ complex PR that triggers all conditions legitimately needs all 6.
    `style-conventions` dispatches with a `trivial` scope constraint (≤5
    tool calls) regardless of change size. Both assignments override the
    classification-based constraint from step 3e.
-4. **Challenger** — always dispatch (unchanged).
+4. **Challenger** — follow step 6d, including its skip conditions.
 
 This reuses the existing scope constraint mechanism from step 3e — no
 new infrastructure needed. When `PRIOR_REVIEW_PROVENANCE` is not
@@ -933,13 +932,16 @@ and an auth bypass on the same line are two distinct findings.
 
 #### 6d. Challenger pass (dedicated sub-agent)
 
-After steps 6a–6c produce a merged finding set, dispatch the
-`challenger` sub-agent to adversarially challenge the findings with
-fresh context. The challenger has not seen the orchestrator's synthesis
-— it receives only the raw findings and the diff, preserving context
-isolation.
+After steps 6a–6c, withhold findings below
+`REVIEW_FINDING_SEVERITY_THRESHOLD` (order: `info < low < medium <
+high < critical`; default `low`) and re-append them unchallenged after
+step 3. If none remain, skip the challenger: keep the 6a–6c set, log
+`no findings to challenge` (do not add a finding), continue to 6e (no
+sub-agent-failure finding). Otherwise dispatch `challenger` on the
+remaining set with fresh context — it has not seen the synthesis; it
+gets those findings and the diff.
 
-**Time check first — as a Bash call, not an estimate from the runner's
+**Time check — as a Bash call, not an estimate from the runner's
 ticker.** With `TIMEOUT_SECONDS` set and `REMAINING` under 600 (Time
 budget section), skip the challenger: keep the merged finding set from
 6a–6c, record the item-4 `low` finding with the reason `time budget:
@@ -953,15 +955,14 @@ budget section), skip the challenger: keep the merged finding set from
    **Part 2 — Meta-prompt:** Read `meta-prompt.md`, fill in the "You
    are reviewing PR" template, and include everything else verbatim
 
-   **Part 3 — Context package:** the merged finding set from steps
-   6a–6c (as a JSON array), plus the full PR diff and changed files
-   list. Format as:
+   **Part 3 — Context package:** the to-be-challenged set (as a JSON
+   array), plus the full PR diff and changed files list. Format as:
 
    ```markdown
    ## Context
 
    ### Findings to challenge
-   <JSON array of all findings from steps 6a–6c>
+   <JSON array of the to-be-challenged set>
 
    ### Diff
    Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
@@ -987,13 +988,9 @@ budget section), skip the challenger: keep the merged finding set from
    `challenger`).
 
    **Prompt size guard:** If the findings JSON alone exceeds 80 000
-   tokens, withhold `low` and `info` findings from the challenger's
-   input and re-append them, unchallenged, after step 3. The diff and
-   files are read from disk, not pasted.
-
-   The challenger runs **after** dimension sub-agents complete (it
-   needs their findings as input), so it is dispatched sequentially,
-   not in the parallel batch from step 4.
+   tokens, withhold remaining `low` and `info` findings from the
+   challenger's input and re-append them, unchallenged, after step 3.
+   The diff and files are read from disk, not pasted.
 
 3. Consume the challenger's output. The challenger returns a **different
    format** from dimension sub-agents: an object with

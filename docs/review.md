@@ -127,7 +127,7 @@ fails closed when `CI_SERVER_HOST` is not set.
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata.
-2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
+2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs a challenger pass on findings at or above `REVIEW_FINDING_SEVERITY_THRESHOLD` (skipped when none remain), runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)).
 4. **Post-script** posts the review on the PR.
 
@@ -151,11 +151,15 @@ A review is six phases, and only one of them scales with the PR:
 | dispatch | prompts composed; risk assessment + dimension sub-agents in one message | 3 min |
 | dimensions | sub-agents review in parallel; `correctness` is the long pole | 4–13 min (grows with the diff) |
 | synthesis | merge, de-duplicate | ~1 min |
-| challenger | one sub-agent re-checks every finding | 2.5–6 min |
+| challenger | one sub-agent re-checks findings at or above `REVIEW_FINDING_SEVERITY_THRESHOLD`; skipped when that set is empty | 2.5–6 min |
 | assembly | `agent-result.json`, schema check | ~1 min |
 
+The challenger phase is skipped when the merged finding set has no
+findings at or above `REVIEW_FINDING_SEVERITY_THRESHOLD`, so reviews
+whose findings would all be filtered skip the 2.5–6 min pass.
+
 A 51-line PR and a 5 700-line PR both spend 13–18 minutes on the fixed
-part (every row above except the size-dependent share of `dimensions`), which is why the former 20-minute budget killed small PRs as
+part when the challenger runs (every row above except the size-dependent share of `dimensions`), which is why the former 20-minute budget killed small PRs as
 readily as large ones. A local run of this harness on a 29-file,
 2 475-line PR (`fullsend run review --fullsend-dir <agents checkout>
 --target-repo <clone at main> --env-file <env> --forge github
