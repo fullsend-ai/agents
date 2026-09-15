@@ -26,6 +26,10 @@ fixture:
         # Foo
 
         `Foo` returns the string `foo`.
+
+        ## Deployment
+
+        Run the unrelated production deployment manually.
     - path: CHANGELOG.md
       content: |
         # Changelog
