@@ -895,11 +895,11 @@ fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 
 **9d. Self-review**
 
-Review the diff you will commit (`git diff`, plus `git diff --cached` if
-already staged):
+Review the diff you will commit:
 
 ```bash
 git diff
+git diff --cached
 ```
 
 Read every line. Check for:
