@@ -79,7 +79,17 @@ If the issue already has a `blocked` label, check whether the previously identif
 
 Review the prerequisite's state, recent comments, and labels to determine whether the dependency has been resolved, is making progress, or remains stalled. If the prerequisite has been closed or merged, the dependency may be resolved — proceed with a fresh assessment.
 
-### 2d. Review prior triage analysis
+### 2d. Check whether tracked work is already complete
+
+Some issues are tracking issues or epics: they exist to collect child work rather than to describe a new implementation. Others have already been fully resolved by merged PRs/MRs. Before choosing `sufficient` (which can dispatch a new implementation) or `not-planned` (which closes as rejected), check whether the described work is already done.
+
+- Fetch every issue referenced in the body or comments (`#N` / URL), including **closed** ones — a search of open issues will miss finished children. On GitHub, also query native sub-issues.
+- Check PRs/MRs that close this issue (merged as well as open). A merged closing PR/MR is evidence of completion, not of work in flight.
+- Treat the issue body's checklist ticks and "please close this" comments as claims, not proof. Confirm each child/PR/MR independently.
+
+If every child is closed and every addressing PR/MR is merged, use `completed`. If an addressing PR/MR is still open, use `in-progress`. If some children remain open, do not close the parent.
+
+### 2e. Review prior triage analysis
 
 Check whether this issue has already been triaged. Look through the comments you fetched in Step 1 for a prior triage comment — it will contain `<!-- fullsend:triage-agent -->` or `<!-- fullsend:triage-in-progress -->` in its body, or be posted by a user whose login ends in `-triage[bot]`.
 
@@ -168,6 +178,8 @@ Calculate overall clarity: `symptom*0.35 + cause*0.30 + reproduction*0.20 + impa
 
 **Anti-premature-closure rule (HARD CONSTRAINT):** Do NOT emit `action: "not-planned"` unless the issue is unambiguously out of scope, invalid, or spam. When scope status is uncertain — e.g., an ambitious feature request that might conflict with project direction but has no clear architectural prohibition — prefer `insufficient` (ask the reporter to clarify intent) or `sufficient` (let a maintainer decide) over closing the issue. When you do use `not-planned`, cite the specific scope boundary, documented decision, or project constraint that makes the issue out of scope — vague appeals to "project goals" are not sufficient. Ambitious or unconventional requests are not inherently out of scope; only close what is clearly excluded.
 
+**Anti-premature-completion rule (HARD CONSTRAINT):** Do NOT emit `action: "completed"` unless evidence of completion is unambiguous. Verify — do not trust the issue body or a comment claiming the work is done. Fetch every child/sub-issue, linked issue, and closing PR/MR and inspect its current state. Use `completed` only when all of the described work is finished: every child issue is closed, every linked PR/MR that addresses the issue is merged, and any stated acceptance criteria are met. Partial completion is not completion. If any child is still open, any addressing PR/MR is still open, or you cannot verify the remaining work is done, leave the issue open — prefer `in-progress` (open PR/MR), `prerequisites` (open child/blocker), or `sufficient` (remaining work is ready to implement). When an open PR/MR already addresses this issue, the Existing PR/MR gate still wins: use `in-progress`, not `completed`.
+
 ## Step 4: Decide and write result
 
 Based on your assessment, choose exactly one action and write the result as JSON to `$FULLSEND_OUTPUT_DIR/agent-result.json`.
@@ -205,12 +217,39 @@ Use this action for:
 - Issues that lack information (use `insufficient` instead)
 - Issues that are duplicates of existing ones (use `duplicate` instead)
 - Issues blocked on other work (use `prerequisites` instead)
+- Issues whose described work is already finished (use `completed` instead — `not-planned` means rejected, not done)
 
 ```json
 {
   "action": "not-planned",
   "reasoning": "Brief explanation of why this issue is being closed as not planned",
   "comment": "A professional comment explaining why the issue is out of scope or invalid. Be respectful — the reporter may not have understood project boundaries. Link to relevant documentation or related discussions when applicable."
+}
+```
+
+### Action: `completed`
+
+The work described in this issue is done. This action closes the issue with reason `completed`. Use it for tracking issues, epics, and issues whose linked work has actually finished — not for rejecting the request.
+
+Use this action when you can verify all of the following that apply:
+- Every child issue / sub-issue is closed
+- Every PR/MR that addresses this issue is merged (not merely opened)
+- Stated acceptance criteria or checklist items are met
+
+**Do NOT use this action for:**
+- Out-of-scope, invalid, or spam issues (use `not-planned` instead)
+- Duplicates of an existing issue (use `duplicate` instead)
+- An open PR/MR that still addresses this issue (use `in-progress` instead)
+- Partial completion — any child still open, any addressing PR/MR still open, or unmet acceptance criteria. Leave the issue open.
+- "The codebase already behaves this way" without tracked, finished work (merged PRs/MRs, closed children, or met acceptance criteria). That is not `completed`; leave the issue open (`sufficient` or `insufficient`) rather than closing it as done.
+
+When you use `completed`, the comment must explain what you verified (which children are closed, which PRs/MRs are merged) so a reader can see why the issue is being closed as done.
+
+```json
+{
+  "action": "completed",
+  "reasoning": "Brief explanation of the evidence that all described work is finished",
+  "comment": "A professional comment explaining that the tracked work is done. Cite the child issues and merged PRs/MRs you verified. Do not close as rejected — this is completion, not a scope refusal."
 }
 ```
 
@@ -322,7 +361,7 @@ Each sub-issue must have a clear, self-contained title and body. Write sub-issue
 
 ### Action: `in-progress`
 
-An open PR already addresses this issue. The work is in flight — the issue is not blocked, it is being resolved. Use this instead of `prerequisites` when the PR directly fixes the reported problem.
+An open PR already addresses this issue. The work is in flight — the issue is not blocked, it is being resolved. Use this instead of `prerequisites` when the PR directly fixes the reported problem. If every addressing PR/MR is already merged and the described work is finished, use `completed` instead.
 
 ```json
 {

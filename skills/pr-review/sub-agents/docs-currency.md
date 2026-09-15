@@ -3,7 +3,7 @@ name: docs-currency
 description: >-
   Evaluates documentation staleness against code changes.
 model: sonnet
-tools: Read, Grep, Glob
+tools: Read, Grep, Glob, LS
 permissionMode: dontAsk
 background: true
 ---

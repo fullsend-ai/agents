@@ -16,8 +16,9 @@ max_cost_usd: 5.00
 review_expectations: |
   This is a trusted GitHub re-review. The prior review requested documentation
   for internal/foo.go and explicitly named docs/foo.md as the remediation
-  target. The follow-up adds that documentation plus an unrelated CHANGELOG.md.
-  A good review must not report docs/foo.md as scope creep: it directly
-  remediates the prior finding. It must still assess CHANGELOG.md against the
-  linked issue and report it as scope creep because the issue authorizes Foo and
-  its documentation, not an unrelated release-note placeholder.
+  target. The follow-up adds that documentation, an unrelated CHANGELOG.md, and
+  an unrelated function inside the matched internal/foo.go file. A good review
+  must not report docs/foo.md as scope creep: it directly remediates the prior
+  finding. It must still assess both unrelated edits against the linked issue
+  and report them as scope creep because the issue authorizes Foo and its
+  documentation, not an unrelated API or release-note placeholder.

@@ -14,6 +14,13 @@ fixture:
 
         func Foo() string { return "foo" }
   followup_files:
+    - path: internal/foo.go
+      content: |
+        package internal
+
+        func Foo() string { return "foo" }
+
+        func Unrelated() string { return "unrelated" }
     - path: docs/foo.md
       content: |
         # Foo
