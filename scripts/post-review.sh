@@ -101,8 +101,18 @@ forge_get_pr_info() {
 }
 
 forge_get_pr_files() {
-  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
-    --repo "${REPO}" --json files --jq '.files[].path'
+  # Use the paginated /pulls/{n}/files REST endpoint rather than the
+  # `gh pr view --json files` summary field: issue #2093 found empty
+  # results correlated with recent merge-commit updates and hypothesized
+  # asynchronous diff computation, but GitHub does not document that as
+  # an API contract. The files endpoint reflects the computed diff more
+  # directly.
+  local files
+  if ! files=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/files" --paginate --jq '.[].filename' 2>/dev/null); then
+    return 1
+  fi
+  [[ -n "${files}" ]] && printf '%s\n' "${files}"
 }
 
 # --- PR mutations ---
@@ -642,8 +652,28 @@ if [ "${ACTION}" = "approve" ]; then
   # run regardless of whether protected-path enforcement itself is
   # enabled — only the pattern-matching loop below is gated on a
   # non-empty REVIEW_ACTIVE_PROTECTED_PATHS.
-  PR_FILES=$(forge_get_pr_files)
-  if [ -z "${PR_FILES}" ]; then
+  if PR_FILES=$(forge_get_pr_files); then
+    PR_FILES_FETCH_FAILED=false
+  else
+    PR_FILES_FETCH_FAILED=true
+    PR_FILES=""
+  fi
+  if [ "${PR_FILES_FETCH_FAILED}" = true ] || [ -z "${PR_FILES}" ]; then
+    # An empty file list may be a transient forge data race. Issue #2093
+    # found empty results correlated with recent merge-commit updates and
+    # hypothesized asynchronous diff computation, but the exact mechanism
+    # is not an established forge API contract. Retry once before refusing
+    # to approve, so we don't fail a genuinely non-empty PR.
+    echo "::notice::PR files came back empty; retrying once in case of a transient forge data race (forge_get_pr_files)" >&2
+    sleep 10
+    if PR_FILES=$(forge_get_pr_files); then
+      PR_FILES_FETCH_FAILED=false
+    else
+      PR_FILES_FETCH_FAILED=true
+      PR_FILES=""
+    fi
+  fi
+  if [ "${PR_FILES_FETCH_FAILED}" = true ] || [ -z "${PR_FILES}" ]; then
     echo "::error::Failed to fetch PR files or PR has no changed files — refusing to approve (forge_get_pr_files)" >&2
     exit 1
   fi

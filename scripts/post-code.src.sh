@@ -48,7 +48,8 @@
 #
 # Exit codes:
 #   0  — branch pushed and PR/MR created, OR agent determined nothing to do
-#   1  — validation failure or error (nothing pushed)
+#   1  — validation failure or error (nothing pushed), including a
+#        timeout-killed run that left uncommitted work and no commit
 set -euo pipefail
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -390,11 +391,129 @@ Retry with \`/fs-code\` if appropriate."
 }
 
 # ---------------------------------------------------------------------------
+# Uncommitted-work detection (timeout-kill / incomplete commit)
+#
+# A timeout-killed sandbox can leave staged or untracked files in the
+# extracted repo with no commit. The no-op paths below would otherwise
+# treat that as "agent determined no changes needed" and exit 0, which
+# makes the CLI status badge report Success. Fail closed instead so the
+# badge is Failure and the issue comment lists the discarded files.
+# ---------------------------------------------------------------------------
+AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
+
+is_agent_artifact_path() {
+  local file="$1"
+  local pattern dir
+  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
+    dir="${pattern%/}"
+    case "${file}" in
+      "${dir}"/*|"${dir}") return 0 ;;
+      */"${dir}"/*|*/"${dir}") return 0 ;;
+    esac
+  done
+  return 1
+}
+
+# git status --porcelain for the extracted repo, excluding agent working
+# directory artifacts. Empty stdout means a clean tree (or only artifacts).
+#
+# This runs inside a caller-side command substitution ($(...)), which is a
+# subshell — variables set here can't reach the caller. If `git status`
+# itself fails (e.g. a leftover .git/index.lock, or a corrupted extracted
+# repo), its exit code and stderr are written to $1/$2 instead, so the
+# caller can fail closed rather than silently treating a swallowed error as
+# an empty (clean) porcelain string.
+uncommitted_work_status() {
+  local rc_file="$1" err_file="$2"
+  # Pin trusted git config: the extracted tree is untrusted, and both
+  # invocations below are index/status commands that would otherwise honor
+  # repo-local config from that tree (fsmonitor hooks, hidden untracked
+  # files) while PUSH_TOKEN is present in the environment.
+  local trust_cfg=(-c core.fsmonitor=false -c core.useBuiltinFSMonitor=false -c core.hooksPath=/dev/null -c status.showUntrackedFiles=all)
+  # filter.<name>.clean/smudge/process drivers are a separate config
+  # namespace from hooks — core.hooksPath does not neutralize them. If
+  # .gitattributes in the untrusted tree maps a tracked file to a filter
+  # defined in the tree's own .git/config, update-index/status can invoke
+  # that filter's arbitrary command when the file's cached stat looks stale
+  # (routine after extraction, and certain for dirty files on the
+  # timeout-kill path this function exists to detect). Discover any
+  # repo-local filter drivers and neutralize each one with its own -c
+  # override; reading config values doesn't execute them, only invoking the
+  # filter does.
+  local filter_line filter_key filter_overrides=()
+  while IFS= read -r filter_line; do
+    [ -z "${filter_line}" ] && continue
+    filter_key="${filter_line%% *}"
+    filter_overrides+=(-c "${filter_key}=")
+  done < <(git config --local --get-regexp '^filter\..*\.(clean|smudge|process)$' 2>/dev/null || true)
+  trust_cfg+=("${filter_overrides[@]}")
+  git "${trust_cfg[@]}" update-index -q --refresh >/dev/null 2>&1 || true
+  local porcelain rc=0
+  porcelain="$(git "${trust_cfg[@]}" status --porcelain --untracked-files=all 2>"${err_file}")" || rc=$?
+  printf '%s' "${rc}" > "${rc_file}"
+  if [ "${rc}" -ne 0 ]; then
+    printf ''
+    return 0
+  fi
+  if [ -z "${porcelain}" ]; then
+    printf ''
+    return 0
+  fi
+
+  local filtered="" line path
+  while IFS= read -r line || [ -n "${line}" ]; do
+    [ -z "${line}" ] && continue
+    path="${line#???}"
+    case "${path}" in
+      *" -> "*) path="${path##* -> }" ;;
+    esac
+    path="${path#\"}"
+    path="${path%\"}"
+    if is_agent_artifact_path "${path}"; then
+      continue
+    fi
+    if [ -n "${filtered}" ]; then
+      filtered="${filtered}"$'\n'"${line}"
+    else
+      filtered="${line}"
+    fi
+  done <<< "${porcelain}"
+  printf '%s' "${filtered}"
+}
+
+fail_if_uncommitted_work() {
+  local context="$1"
+  local dirty rc err rc_file err_file
+  rc_file="$(mktemp)"
+  err_file="$(mktemp)"
+  dirty="$(uncommitted_work_status "${rc_file}" "${err_file}")"
+  rc="$(cat "${rc_file}")"
+  err="$(cat "${err_file}")"
+  rm -f "${rc_file}" "${err_file}"
+  if [ "${rc}" -ne 0 ]; then
+    gha_echo error "git status failed while checking for uncommitted work (${context}, exit ${rc})"
+    echo "${err}" | sed 's/^/  /'
+    post_fail_to_issue uncommitted-work-status-error \
+      "git status failed while checking for uncommitted work (${context}, exit ${rc}):
+${err}"
+  fi
+  if [ -z "${dirty}" ]; then
+    return 0
+  fi
+  gha_echo error "Agent left uncommitted changes — not a no-op (${context})"
+  echo "${dirty}" | sed 's/^/  /'
+  post_fail_to_issue uncommitted-work \
+    "Uncommitted files:
+${dirty}"
+}
+
+# ---------------------------------------------------------------------------
 # 1. Verify feature branch
 # ---------------------------------------------------------------------------
 BRANCH="$(git branch --show-current)"
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
+  fail_if_uncommitted_work "no feature branch (current: '${BRANCH:-detached HEAD}')"
   gha_echo notice "Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}') — nothing to do"
   post_noop_comment "Agent did not create a feature branch (current: '${BRANCH:-detached HEAD}')"
   exit 0
@@ -430,6 +549,7 @@ else
 fi
 
 if [ -z "${CHANGED_FILES}" ]; then
+  fail_if_uncommitted_work "no changed files in agent's commit(s)"
   gha_echo notice "No changed files in agent's commit(s) — nothing to do"
   post_noop_comment "No changed files in agent's commit(s)"
   exit 0
@@ -445,18 +565,9 @@ echo "${CHANGED_FILES}" | sed 's/^/  /'
 # appear in commits. The harness excludes them via .git/info/exclude, but
 # if an agent manages to stage them anyway, strip them here before push.
 # ---------------------------------------------------------------------------
-AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
 STRIPPED_FILES=""
 for file in ${CHANGED_FILES}; do
-  is_artifact=false
-  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
-    dir="${pattern%/}"  # strip trailing slash for prefix matching
-    case "${file}" in
-      "${dir}"/*|"${dir}") is_artifact=true; break ;;
-      */"${dir}"/*|*/"${dir}") is_artifact=true; break ;;
-    esac
-  done
-  if [ "${is_artifact}" = "true" ]; then
+  if is_agent_artifact_path "${file}"; then
     gha_echo warning "Stripping agent artifact from commit: ${file}"
     STRIPPED_FILES="${STRIPPED_FILES} ${file}"
   fi
@@ -486,6 +597,7 @@ if [ -n "${STRIPPED_FILES}" ]; then
   CHANGED_FILES="${CLEAN_FILES}"
 
   if [ -z "${CHANGED_FILES}" ]; then
+    fail_if_uncommitted_work "all committed files were agent artifacts"
     gha_echo notice "All changed files were agent artifacts — nothing to push"
     post_noop_comment "All changed files were agent artifacts — only working directory files were present"
     exit 0
