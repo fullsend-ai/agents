@@ -42,7 +42,9 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   - `none` — first review, no prior comment found
   - `app-verified` — prior comment created by the expected app
   - `bot-verified` — GitLab prior comment created by the verified token owner;
-    this author-ID check is weaker than GitHub's app-provenance check
+    this author-ID check is weaker than GitHub's app-provenance check, may be
+    used for severity anchoring, and does not authorize remediation exemptions,
+    dispatch narrowing, or prior-risk continuity
   - `unverifiable-no-app` — prior comment has no app metadata
     (cannot verify authorship); prior review discarded, file is empty
   - `unverifiable-wrong-app` — prior comment created by a different

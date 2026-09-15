@@ -98,9 +98,16 @@ gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
 ```bash
 # Compare commits between prior review and current HEAD
 COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${HEAD_SHA}")
-CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
-echo "$COMPARE" | jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch // "")"' \
-  > /sandbox/workspace/pr-incremental-diff.txt
+if echo "$COMPARE" | jq -e 'any(.files[]; .patch == null)' >/dev/null; then
+  INCOMPLETE_COMPARE=true
+  CHANGED_FILES=all
+  cp /sandbox/workspace/pr-diff.txt /sandbox/workspace/pr-incremental-diff.txt
+else
+  INCOMPLETE_COMPARE=false
+  CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
+  echo "$COMPARE" | jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' \
+    > /sandbox/workspace/pr-incremental-diff.txt
+fi
 ```
 
 ## Interactive mode (non-pipeline)

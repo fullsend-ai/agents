@@ -104,6 +104,8 @@ fi
 # --- Create fixture ---
 FIXTURE_URL=""
 FIXTURE_NUMBER=""
+FIXTURE_INITIAL_SHA=""
+PRIOR_REVIEW_SHA=""
 
 case "${FORGE}:${FIXTURE_TYPE}" in
   github:issue)
@@ -125,7 +127,7 @@ case "${FORGE}:${FIXTURE_TYPE}" in
     done
     git -C "$TARGET_DIR" add -A
     git -C "$TARGET_DIR" commit -m "eval: fixture changes"
-    PRIOR_REVIEW_SHA=$(git -C "$TARGET_DIR" rev-parse HEAD)
+    FIXTURE_INITIAL_SHA=$(git -C "$TARGET_DIR" rev-parse HEAD)
     git -C "$TARGET_DIR" push origin "$PR_BRANCH"
     followup_count=$(echo "$FOLLOWUP_FILES" | yq -r 'length')
     if [[ "$followup_count" -gt 0 ]]; then
@@ -158,7 +160,8 @@ rm -rf "$TARGET_DIR"
 
 PRIOR_REVIEW_FILE=""
 if [[ -n "$PRIOR_REVIEW_BODY" ]]; then
-  if [[ -z "${PRIOR_REVIEW_SHA:-}" ]]; then
+  PRIOR_REVIEW_SHA="${FIXTURE_INITIAL_SHA:-}"
+  if [[ -z "$PRIOR_REVIEW_SHA" ]]; then
     echo "ERROR: prior_review requires a pull_request fixture" >&2
     exit 1
   fi

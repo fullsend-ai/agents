@@ -14,23 +14,11 @@ fixture:
 
         func Foo() string { return "foo" }
   followup_files:
-    - path: internal/foo.go
-      content: |
-        package internal
-
-        func Foo() string { return "foo" }
-
-        func Unrelated() string { return "unrelated" }
     - path: docs/foo.md
       content: |
         # Foo
 
         `Foo` returns the string `foo`.
-    - path: CHANGELOG.md
-      content: |
-        # Changelog
-
-        Unrelated release-note placeholder.
 prior_review:
   provenance: app-verified
   body: |
