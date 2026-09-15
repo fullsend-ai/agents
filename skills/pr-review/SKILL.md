@@ -413,8 +413,9 @@ for severity anchoring.
 | Large refactor across packages                           | correctness, style-conventions, intent-coherence, docs-currency                  |
 | CI/CD pipeline change                                    | correctness, security, style-conventions, intent-coherence                       |
 | DB migration + API change                                | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
-| Re-review after fix (prior findings in correctness only) | correctness (full scope), intent-coherence (trivial scope), style-conventions (trivial scope), challenger\* |
-| Re-review after fix (prior findings in security only)    | correctness (full scope), security (normal scope), intent-coherence (trivial scope), style-conventions (trivial scope), challenger\* |
+| GitHub app-verified re-review (correctness finding)      | correctness (full scope), intent-coherence (trivial scope), style-conventions (trivial scope), challenger\* |
+| GitHub app-verified re-review (security finding)         | correctness (full scope), security (normal scope), intent-coherence (trivial scope), style-conventions (trivial scope), challenger\* |
+| GitLab bot-verified re-review                            | Base step 3b selection at normal first-review scope; no prior-finding narrowing |
 
 \*Conditional — step 6d dispatches the challenger only when the
 **current** review's steps 6a–6c produce findings; a re-review whose

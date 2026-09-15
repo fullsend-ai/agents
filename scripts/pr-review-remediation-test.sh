@@ -91,6 +91,10 @@ assert_order "remediation candidates precede budget allocation" "${SKILL}" \
   "#### 3a-2. Budget allocation priority"
 assert_contains "re-review examples dispatch intent" "${SKILL}" \
   "intent-coherence (trivial scope)"
+assert_contains "GitHub re-review example names app provenance" "${SKILL}" \
+  "GitHub app-verified re-review"
+assert_contains "GitLab re-review example keeps base dispatch" "${SKILL}" \
+  "GitLab bot-verified re-review"
 assert_not_contains "obsolete unconditional dispatch removed" "${SKILL}" \
   'always re-qualifies when `changed_since_prior` is non-empty'
 assert_contains "intent exempts direct remediation" "${INTENT}" \
