@@ -871,14 +871,40 @@ if [[ "${HAS_RISK}" == "true" ]]; then
   esac
 
   # Provenance fields from risk-tier1.sh via the sub-agent — optional,
-  # validated, never interpolated raw. The floor is enforced here, not
-  # trusted from the LLM: a security-sensitive path never labels low.
+  # validated, never interpolated raw.
   RISK_FLOOR=$(jq -r '.risk_assessment.risk_floor // empty' "${RESULT_FILE}")
   [[ "${RISK_FLOOR}" =~ ^[1-5]$ ]] || RISK_FLOOR=""
   TIER1_SCORE=$(jq -r '.risk_assessment.tier1_score // empty' "${RESULT_FILE}")
   [[ "${TIER1_SCORE}" =~ ^[1-5](\.[0-9]{1,2})?$ ]] || TIER1_SCORE=""
   RISK_DEGRADED=$(jq -r '.risk_assessment.degraded // empty' "${RESULT_FILE}")
   [[ "${RISK_DEGRADED}" =~ ^[a-z0-9-]{1,32}$ ]] || RISK_DEGRADED=""
+
+  # The floor is recomputed here from the changed files, so a sub-agent
+  # that omits or lowers risk_floor cannot disable it: a security-sensitive
+  # path never labels low. Same list and match as risk-tier1.sh
+  # (post-review-test.sh pins the two lists equal). PR_FILES is already
+  # fetched on the approve path; other actions fetch it here.
+  SECURITY_PATTERNS=(
+    "mint/" "auth/" "oidc/" "rbac/" "permissions/"
+    "secrets/" "crypto/" "token/" "tokens/" "trust/"
+    "policies/"
+  )
+  if [ -z "${PR_FILES:-}" ]; then
+    PR_FILES=$(forge_get_pr_files) || PR_FILES=""
+  fi
+  if [ -z "${PR_FILES}" ]; then
+    echo "::warning::Could not fetch PR files — security floor uses the sub-agent's risk_floor only"
+  else
+    while IFS= read -r file; do
+      [ -z "${file}" ] && continue
+      for pattern in "${SECURITY_PATTERNS[@]}"; do
+        if [[ "/${file}" == *"/${pattern}"* ]]; then
+          [[ "${RISK_FLOOR:-1}" -ge 2 ]] || RISK_FLOOR=2
+          break 2
+        fi
+      done
+    done <<< "${PR_FILES}"
+  fi
   if [[ -n "${RISK_FLOOR}" && "${RISK_SCORE}" =~ ^[1-5]$ && "${RISK_SCORE}" -lt "${RISK_FLOOR}" ]]; then
     echo "Risk score ${RISK_SCORE} floored to ${RISK_FLOOR} (security-sensitive path)"
     RISK_SCORE="${RISK_FLOOR}"

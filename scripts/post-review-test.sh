@@ -2090,6 +2090,42 @@ run_risk_comment_test "risk-floor-comment-header" \
   "${RISK_FLOORED_RESULT}" \
   "**Risk Assessment: moderate (2/5)** · tier 1: 1.38"
 
+# The floor is recomputed from the changed files in post-review, so a
+# sub-agent that echoes risk_floor=1 or omits the field cannot disable it.
+# shellcheck disable=SC2031 # set here for the helpers' subshells, unset below
+export MOCK_PR_FILES="internal/auth/token.go"
+RISK_FLOOR_ECHOED_LOW='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak.","tier1_score":1.38,"risk_floor":1}}'
+run_label_test "risk-floor-recomputed-echoed-low" \
+  "${RISK_FLOOR_ECHOED_LOW}" \
+  "gh label create risk/moderate"
+run_label_test_stdout "risk-floor-recomputed-logged" \
+  "${RISK_FLOOR_ECHOED_LOW}" \
+  "Risk score 1 floored to 2"
+RISK_FLOOR_OMITTED='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test "risk-floor-recomputed-field-omitted" \
+  "${RISK_FLOOR_OMITTED}" \
+  "gh label create risk/moderate"
+# A non-approve action has no PR_FILES yet; the floor block fetches them.
+RISK_FLOOR_OMITTED_COMMENT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Looks fine.","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test "risk-floor-recomputed-on-comment-action" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/moderate"
+unset MOCK_PR_FILES
+# Default mock files (src/main.go) touch no security path: no floor.
+run_label_test "risk-floor-no-security-path-stays-low" \
+  "${RISK_FLOOR_OMITTED}" \
+  "gh label create risk/low"
+# post-review.src.sh and risk-tier1.sh must carry the same pattern list.
+if diff \
+  <(sed -n '/^ *SECURITY_PATTERNS=(/,/^ *)/p' "${SCRIPT_DIR}/post-review.src.sh" | sed 's/^ *//') \
+  <(sed -n '/^ *SECURITY_PATTERNS=(/,/^ *)/p' "${SCRIPT_DIR}/../skills/pr-risk-assessment/scripts/risk-tier1.sh" | sed 's/^ *//') \
+  >/dev/null; then
+  echo "PASS: security-patterns-match-risk-tier1"
+else
+  echo "FAIL: security-patterns-match-risk-tier1 — SECURITY_PATTERNS differ between post-review.src.sh and risk-tier1.sh"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # Floor never lowers a score
 RISK_ABOVE_FLOOR='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":3,"level":"elevated","rationale":"Bigger.","tier1_score":2.50,"risk_floor":2}}'
 run_label_test "risk-floor-does-not-lower" \

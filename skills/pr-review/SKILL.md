@@ -573,9 +573,8 @@ be absent from the result JSON.
    ```
 
    Parse these into `prior_risk_score`, `prior_risk_level`, and
-   `prior_risk_rationale`. If no prior risk comment exists (first
-   review or comment was deleted), skip — the sub-agent will operate
-   without anchoring.
+   `prior_risk_rationale`. If no prior risk comment exists, skip — the
+   sub-agent operates without anchoring.
 
 4. Compose a spawn prompt containing:
 
@@ -586,10 +585,8 @@ be absent from the result JSON.
    `skills/pr-risk-assessment/SKILL.md` (everything after the
    frontmatter)
 
-   **Part 3 — Context:** the PR's changed file list with per-file
-   diff stats (additions, deletions), PR metadata (title, body,
-   author, labels), linked issue context (if any), and prior risk
-   assessment (if available from step 3). Format as:
+   **Part 3 — Context:** changed files with diff stats, PR metadata,
+   linked issue context, and the prior assessment from step 3:
 
    ```markdown
    ## Context
@@ -612,12 +609,13 @@ be absent from the result JSON.
 5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
    the same message as the step 4 dimension sub-agents, with the step 4
    item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
-   consumes its output
-   (it only goes into `agent-result.json`, step 7); running it first
-   serialised a 2–3 minute sub-agent for nothing.
+   consumes its output; running it first serialised a 2–3 minute
+   sub-agent for nothing.
 
-6. Store the sub-agent's JSON output as `risk_assessment` for
-   `agent-result.json` (step 7).
+6. Store the sub-agent's JSON (`score`, `level`, `rationale`,
+   `tier1_score`, `risk_floor`, optional signal arrays, `degraded`) as
+   `risk_assessment` for `agent-result.json` (step 7). Anything that
+   routes or gates on the score treats `degraded` as no score.
 
 **Failure fallback:** If the sub-agent fails (timeout, parse error,
 empty response, `score` not 1–5), run
