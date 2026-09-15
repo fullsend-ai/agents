@@ -1257,6 +1257,14 @@ adjudicated set (step 6d) and evaluate:
   Use `reject` only when no amount of code-level iteration will make
   the PR mergeable.
 
+**Re-review: new low findings do not reopen the loop.** On a re-review
+(step 2a found prior findings), a **low** or **info** finding that
+matches no prior finding (same category, file, and logical issue — see
+the code-review skill's matching procedure) counts as non-actionable in
+the rules above. Keep it in `findings` and call it a suggestion in the
+summary, so the self-consistency check does not escalate it. Medium+
+findings and matched low/info findings are unaffected.
+
 **Self-consistency check.** Before emitting the final verdict, verify
 that the verdict action is consistent with the language used in the
 summary paragraph of the review body. If the summary states that
