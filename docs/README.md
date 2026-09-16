@@ -19,4 +19,8 @@ Reference documentation for the default agents shipped by fullsend.
 | [Custom network policy](network-policy.md) | Configure sandbox network access for hosts beyond the default allowlist |
 
 For configuration, customization, and building your own agents, see the
-[fullsend docs](https://fullsend.sh/docs).
+[fullsend docs](https://fullsend.sh/docs). To build one, run
+[`fullsend agent new`](https://github.com/fullsend-ai/fullsend/blob/main/docs/cli/agent.md#agent-new)
+and then follow the [`authoring-custom-agents`](../skills/authoring-custom-agents/SKILL.md)
+skill to complete the generated prompt; [`examples/link-check/`](../examples/link-check/)
+is a finished one.
