@@ -1,0 +1,16 @@
+## Review
+
+### Findings
+
+#### High
+
+- **[missing-validation]** `scripts/example.sh:12` — Input is used without checking
+  that it is non-empty. Reject empty values before processing so later steps
+  cannot run on an unset path.
+
+#### Medium
+
+- **[test-gap]** `scripts/example-test.sh` — There is no coverage for the empty
+  input case. Add a regression test that asserts the script exits non-zero.
+
+Please address these findings before merge.

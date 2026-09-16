@@ -133,7 +133,11 @@ asks for it.
   Use the `Write` tool for all file edits.
 - You cannot modify protected-path files (see "Protected paths" above) unless
   a human `/fs-fix` instruction explicitly asks you to.
-- Always create a **new commit**. Never amend an existing commit.
+- Always create a **new commit** for ordinary fixes. Do not amend an
+  existing commit. The only allowed history rewrite is a rebase onto the
+  PR's target branch when a human `/fs-fix` instruction requests it — see
+  "Rebase onto the target branch" below. That rewrite is not a license to
+  `git commit --amend` or to replace the branch for other reasons.
 - You MUST NOT use `git commit -s` or add `Signed-off-by` trailers. Autonomous
   agent commits are exempt from DCO sign-off. The post-script strips this
   trailer from agent commits before pushing.
@@ -143,6 +147,77 @@ asks for it.
   post-script will include your reasoning in the summary comment.
 - If the retry limit is exceeded and tests still fail, do not commit broken
   code. Stop. The post-script reports the failure.
+
+## Rebase onto the target branch
+
+A human `/fs-fix` instruction is a **rebase request** when it asks you to
+rebase, replay the branch onto its base, or resolve merge conflicts with
+the target branch. Examples: `rebase`, `rebase onto main`, `fix merge
+conflicts`. Honor a rebase request. Bot-triggered runs are not rebase
+requests — leave history as-is and address the review findings.
+
+Do not rebase because the branch is behind. Rebase only for a human
+rebase request.
+
+### How to rebase
+
+1. Read the PR/MR base branch from forge metadata (GitHub: `baseRefName`,
+   GitLab: `target_branch`). Call it `BASE`.
+2. If `origin/${BASE}` is not a local ref, do not `git fetch` (sandbox
+   network policy blocks it). Record in structured output that the rebase
+   could not run because the base ref is missing, and stop the rebase.
+3. If `origin/${BASE}` is already an ancestor of `HEAD`, the branch is up
+   to date. Do not rebase. If rebase was the only instruction, produce
+   structured output and stop with no new commit.
+4. Run `git rebase origin/${BASE}` (non-interactive; do not use `-i`).
+5. On conflicts: resolve them, `git add` the resolved files, then
+   `GIT_EDITOR=true git rebase --continue`. Repeat until the rebase
+   finishes. If the rebase cannot be resolved, `git rebase --abort`,
+   record the failure in structured output, and stop.
+6. Do not push. The post-script force-pushes with `--force-with-lease`.
+7. After a successful rebase, further code fixes land as **new commits**
+   on the rebased history. Do not amend rebased commits. A rebase-only
+   run needs no extra commit — the rewritten commits are the result.
+8. Set the top-level `rebased_onto_target: true` field in `agent-result.json`
+   whenever this run's HEAD reflects a human-requested rebase onto the
+   target that still needs to be published on the remote PR — not only in
+   the same iteration that `git rebase` executes. This is the only signal
+   the post-script trusts to skip replaying local commits onto the stale
+   remote PR tip — ancestry alone can't tell a real rebase apart from a
+   GitLab MR reconstruction against a target that has since moved on.
+   Concretely:
+   - Set it once step 4 (or the conflict resolution in step 5) finishes
+     successfully.
+   - Set it on the step-3 no-op too, unconditionally, for a human rebase
+     request — the rebase's effect still needs publishing even though no
+     `git rebase` command ran this iteration (this happens when the sandbox
+     reconstructed the branch from the target, e.g. GitLab). Do not try to
+     decide this by comparing local HEAD to the real remote PR tip: step 2
+     forbids `git fetch`, and on GitLab the local `origin/${BASE}` (and
+     `origin/${BRANCH}`) tracking refs are reconstructed, not the real
+     remote tip, so that comparison can't be evaluated from inside the
+     sandbox. The post-script's own ancestry checks already treat the skip
+     as a no-op when the remote PR is already based on the current target,
+     so setting `true` here unconditionally never overrides an up-to-date
+     remote.
+   - On a validation-loop retry that rewrites `agent-result.json` without
+     re-running `git rebase` (see "Validation retry behavior" below), carry
+     this field forward from the iteration that performed (or no-op'd) the
+     rebase if its result still needs publishing.
+   - Never set this field for a failed/aborted rebase or a bot-triggered
+     run — bot-triggered runs never rebase, and the post-script now also
+     independently verifies that the triggering `/fs-fix` instruction text
+     itself asked for a rebase (not just that `TRIGGER_SOURCE` is human)
+     before trusting a `true` value. A wrong `true` here makes the
+     post-script force-push over real remote commits.
+
+A rebase rewrites commit SHAs. That rewrite is the only allowed exception
+to "create a new commit; do not amend." It does not authorize
+`git commit --amend` or replacing the branch for a change of strategy.
+
+Every rebase run (success, no-op, or failure) still writes structured output
+with ≥1 `actions` item — a `fix` action whose `finding` records the rebase
+and whose `description` records the outcome.
 
 ## Structured output
 
@@ -218,6 +293,14 @@ On a validation retry:
   changes. The `fix-review` skill's "follow these steps in order" applies to a
   first iteration; on a validation retry, correcting the reported failure is
   the whole job.
+- If a prior iteration in this run set `rebased_onto_target: true` (see "How
+  to rebase" step 8) and that rebase's result still needs publishing, carry
+  the field forward into this iteration's `agent-result.json` even though
+  you are not re-running `git rebase`. The runner clears the output
+  directory between iterations, so a rewritten `agent-result.json` that
+  drops the field is indistinguishable from a run that never rebased — the
+  post-script fails closed and replays local commits onto the stale remote
+  PR tip, silently undoing the rebase.
 
 ## Detailed fix procedure
 

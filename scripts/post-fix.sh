@@ -44,6 +44,9 @@
 #   FIX_ITERATION     — current iteration count
 #   ITERATION_CAP     — max iterations (default: 5)
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging)
+#   HUMAN_INSTRUCTION — the harness-captured /fs-fix comment text (only for
+#                       human-triggered runs); used to confirm a rebase was
+#                       actually requested before trusting rebased_onto_target
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
 #
@@ -406,6 +409,21 @@ is_bot_user() {
   else
     [[ "${1:-}" =~ \[bot\]$ ]]
   fi
+}
+
+# is_human_rebase_request INSTRUCTION — true if a harness-captured human
+# /fs-fix instruction asked for a rebase or merge-conflict resolution (see
+# agents/fix.md's "Rebase onto the target branch" and docs/fix.md's
+# "Rebasing a stale PR"). The instruction text is HUMAN_INSTRUCTION, which
+# the triggering workflow sets from the literal PR/MR comment before the
+# sandbox is created — the fix agent cannot alter it during its own run,
+# unlike agent-result.json (PR #1296 auth-bypass finding: a non-bot
+# TRIGGER_SOURCE alone does not prove the run's instruction was a rebase
+# request, so callers must check this in addition to TRIGGER_SOURCE).
+is_human_rebase_request() {
+  local instruction
+  instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${instruction}" == *"rebase"* || "${instruction}" == *"merge conflict"* ]]
 }
 # END bundled: lib/fix-ops.lib.sh
 # shellcheck source=lib/post-failure-report.lib.sh
@@ -1644,6 +1662,66 @@ if [ "${NO_PUSH}" = "false" ]; then
   fi
 fi
 
+# Find agent-result.json — prefer the validated iteration when set.
+# RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
+# before we cd'd into REPO_DIR. The agent writes its structured output to
+# iteration-<N>/output/agent-result.json within runDir.
+#
+# Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
+# on the runner — not by the sandbox or the agent. No containment check
+# (realpath / prefix guard) is applied here; the value is trusted from the
+# external harness. If the trust model changes, add a realpath prefix check.
+#
+# Located here (before the push section) rather than down in "5. Process
+# structured output" because the rebase-skip check below needs
+# rebased_onto_target from this same file — see issue #565.
+if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
+  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+  else
+    gha_echo error "FULLSEND_VALIDATED_ITERATION_DIR is set but does not contain agent-result.json"
+    exit 1
+  fi
+else
+  # Backward compatibility: scan iteration-N/ subdirectories for the last
+  # iteration's output (glob order = naturally ascending iteration numbers).
+  RESULT_FILE=""
+  for dir in "${RUN_DIR}"/iteration-*/output; do
+    if [ -f "${dir}/agent-result.json" ]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
+
+# Did this run's fix agent actually execute `git rebase origin/<target>` to
+# completion (agents/fix.md's "How to rebase" step 4/5, human-requested only)?
+# Read straight from agent-result.json rather than inferring from branch
+# topology: a GitLab MR reconstruction produces the exact same ancestry
+# (target branch reachable from HEAD, HEAD diverged from the real remote PR
+# tip) whenever the target has moved past the commit the remote branch was
+# built from — the ordinary "stale PR" case — with no rebase ever requested.
+# jq failures (missing file, invalid JSON, field absent) all fall through to
+# "false", the fail-closed default — see issue #565.
+AGENT_REBASED_ONTO_TARGET=false
+if [ -n "${RESULT_FILE}" ] && [ -f "${RESULT_FILE}" ]; then
+  AGENT_REBASED_ONTO_TARGET="$(jq -r 'if .rebased_onto_target == true then "true" else "false" end' "${RESULT_FILE}" 2>/dev/null || echo false)"
+  [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ] || AGENT_REBASED_ONTO_TARGET=false
+fi
+
+# A non-bot TRIGGER_SOURCE only proves a human triggered *this run* — it
+# says nothing about whether that run's /fs-fix instruction actually asked
+# for a rebase. Any other human instruction (or a bot/no-instruction run)
+# must not be able to authorize the origin/BRANCH rebase skip below, even
+# if rebased_onto_target:true was set (by a confused agent or prompt
+# injection) — see the medium-severity auth-bypass finding on PR #1296.
+# HUMAN_INSTRUCTION is set by the triggering workflow from the literal PR/MR
+# comment before the sandbox exists, so — unlike agent-result.json — the
+# sandboxed fix agent cannot influence it during its own run.
+HUMAN_REBASE_REQUESTED=false
+if ! is_bot_user "${TRIGGER_SOURCE}" && is_human_rebase_request "${HUMAN_INSTRUCTION:-}"; then
+  HUMAN_REBASE_REQUESTED=true
+fi
+
 # ---------------------------------------------------------------------------
 # 4. Push branch (only if we have commits)
 # ---------------------------------------------------------------------------
@@ -1665,16 +1743,51 @@ if [ "${NO_PUSH}" = "false" ]; then
   FETCH_OUTPUT="$(git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && FETCH_RC=0 || FETCH_RC=$?
   if [ "${FETCH_RC}" -eq 0 ]; then
     print_sanitized_gha_log "${FETCH_OUTPUT}"
-    echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."
-    REBASE_OUTPUT="$(git rebase "origin/${BRANCH}" 2>&1)" && REBASE_RC=0 || REBASE_RC=$?
-    if [ "${REBASE_RC}" -ne 0 ]; then
-      print_sanitized_gha_log "${REBASE_OUTPUT}"
-      git rebase --abort 2>/dev/null || true
-      post_fail_to_pr push-rejected \
-        "Could not rebase local '${BRANCH}' onto origin/${BRANCH}: the remote branch has commits that conflict with the agent's changes. Resolve the conflict on the PR/MR and re-run /fs-fix.
-${REBASE_OUTPUT}"
+    # If the agent already rebased onto the PR target (issue #565), replaying
+    # local commits onto the stale remote PR tip would undo that rebase.
+    # Require the agent's own record of having run the rebase
+    # (AGENT_REBASED_ONTO_TARGET, computed above from agent-result.json) —
+    # ancestry alone cannot be trusted here; a GitLab MR reconstruction built
+    # against a target that has since moved on produces this same topology
+    # (HEAD based on origin/TARGET_BRANCH, diverged from origin/BRANCH, target
+    # ahead of the remote PR tip) with no rebase ever requested. The ancestry
+    # checks stay as a secondary guard: GitLab reconstruction of an
+    # up-to-date PR does not match (target is still an ancestor of
+    # origin/BRANCH), so issue #1228 is unchanged.
+    #
+    # AGENT_REBASED_ONTO_TARGET alone is not sufficient: agent-result.json is
+    # written inside the sandbox, which is influenceable by prompt injection
+    # in PR/issue text or a confused agent. agents/fix.md only prompt-instructs
+    # the agent never to set this field on a bot-triggered run — that is not
+    # an enforced control. HUMAN_REBASE_REQUESTED (computed above), by
+    # contrast, is derived from TRIGGER_SOURCE and HUMAN_INSTRUCTION — both
+    # harness-set env vars the sandbox does not control — and is true only
+    # when a human's own /fs-fix text actually asked for a rebase. A merely
+    # non-bot trigger is not enough: an unrelated human /fs-fix instruction
+    # must not authorize this skip (see "Rebase onto the target branch" in
+    # agents/fix.md).
+    SKIP_REMOTE_REBASE=false
+    if [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ] \
+      && [ "${HUMAN_REBASE_REQUESTED}" = "true" ] \
+      && git rev-parse --verify "origin/${TARGET_BRANCH}" >/dev/null 2>&1 \
+      && git merge-base --is-ancestor "origin/${TARGET_BRANCH}" HEAD 2>/dev/null \
+      && ! git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null \
+      && ! git merge-base --is-ancestor "origin/${TARGET_BRANCH}" "origin/${BRANCH}" 2>/dev/null; then
+      SKIP_REMOTE_REBASE=true
+      echo "Local HEAD is already based on origin/${TARGET_BRANCH} and has diverged from origin/${BRANCH} (target is ahead of the remote PR tip) — skipping rebase onto origin/${BRANCH} to preserve the agent rebase onto the target"
     fi
-    print_sanitized_gha_log "${REBASE_OUTPUT}"
+    if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
+      echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."
+      REBASE_OUTPUT="$(git rebase "origin/${BRANCH}" 2>&1)" && REBASE_RC=0 || REBASE_RC=$?
+      if [ "${REBASE_RC}" -ne 0 ]; then
+        print_sanitized_gha_log "${REBASE_OUTPUT}"
+        git rebase --abort 2>/dev/null || true
+        post_fail_to_pr push-rejected \
+          "Could not rebase local '${BRANCH}' onto origin/${BRANCH}: the remote branch has commits that conflict with the agent's changes. Resolve the conflict on the PR/MR and re-run /fs-fix.
+${REBASE_OUTPUT}"
+      fi
+      print_sanitized_gha_log "${REBASE_OUTPUT}"
+    fi
   elif echo "${FETCH_OUTPUT}" | grep -qi "couldn't find remote ref"; then
     echo "Remote branch ${BRANCH} not found — skipping rebase"
     print_sanitized_gha_log "${FETCH_OUTPUT}"
@@ -1733,32 +1846,8 @@ if [ ! -f "${PROCESS_SCRIPT}" ]; then
   fi
 fi
 
-# Find agent-result.json — prefer the validated iteration when set.
-# RUN_DIR is the original cwd (runDir = <outputBase>/<sandboxName>), saved
-# before we cd'd into REPO_DIR. The agent writes its structured output to
-# iteration-<N>/output/agent-result.json within runDir.
-#
-# Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
-# on the runner — not by the sandbox or the agent. No containment check
-# (realpath / prefix guard) is applied here; the value is trusted from the
-# external harness. If the trust model changes, add a realpath prefix check.
-if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
-  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
-    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
-  else
-    gha_echo error "FULLSEND_VALIDATED_ITERATION_DIR is set but does not contain agent-result.json"
-    exit 1
-  fi
-else
-  # Backward compatibility: scan iteration-N/ subdirectories for the last
-  # iteration's output (glob order = naturally ascending iteration numbers).
-  RESULT_FILE=""
-  for dir in "${RUN_DIR}"/iteration-*/output; do
-    if [ -f "${dir}/agent-result.json" ]; then
-      RESULT_FILE="${dir}/agent-result.json"
-    fi
-  done
-fi
+# RESULT_FILE was already located above (before section 4) so the rebase-skip
+# check could consult rebased_onto_target — see issue #565.
 
 # The summary comment normally carries the strip note; when it is skipped, post
 # the note on its own so the rewrite still leaves a trace on the PR.

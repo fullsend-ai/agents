@@ -38,6 +38,9 @@ command. The text gives you direct control over what to fix:
 - `/fs-fix the error handling in processItem needs to distinguish between retryable and fatal errors`
 - `/fs-fix address the concern raised in #42` — same-repo references work
   ([details](#links-and-urls-in-instructions))
+- `/fs-fix rebase` / `/fs-fix rebase onto main` — rebase the PR onto its
+  target branch ([details](#rebasing-a-stale-pr))
+- `/fs-fix fix merge conflicts` — rebase onto the target and resolve conflicts
 
 `/fs-fix-stop` adds the `fullsend-no-fix` label to the PR, preventing any
 further automatic fix runs. Manual `/fs-fix` commands still work.
@@ -88,6 +91,20 @@ The strip is recorded on the PR summary comment:
 ```text
 _Removed a Signed-off-by trailer from 1 agent commit._
 ```
+
+### Rebasing a stale PR
+
+When a PR falls behind its target branch, comment `/fs-fix rebase` (or
+`/fs-fix rebase onto main`, `/fs-fix fix merge conflicts`). The agent
+rebases the PR branch onto the target; the post-script force-pushes with
+`--force-with-lease`.
+
+The agent rebases only when a human `/fs-fix` instruction asks for a rebase
+or for resolving merge conflicts with the target. Automatic review-triggered
+fixes do not rebase. An already-up-to-date branch is a no-op.
+
+The agent does not push. History rewrite is local; the post-script is what
+updates the remote PR branch.
 
 ### Input details
 
