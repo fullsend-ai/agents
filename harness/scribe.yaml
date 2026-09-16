@@ -73,6 +73,10 @@ env:
 
 timeout_minutes: 15
 
+# Scheduled, with no work item for a follow-up event to update.
+steer:
+  enabled: false
+
 forge:
   github:
     env:
