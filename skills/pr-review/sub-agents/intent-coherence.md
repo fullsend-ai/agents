@@ -25,11 +25,15 @@ whether naming/abstraction choices align with existing project trajectory.
 ## Re-review remediation rule
 
 When the context package includes `Prior-finding remediation candidates`,
-verify each candidate against the prior finding and the incremental diff. Do
-not report a matched remediation candidate as scope creep when it directly
-addresses that verified prior finding. Check that the remediation addresses
-the cited finding completely; this is scope verification, not a second
-correctness pass. Correctness remains the correctness sub-agent's dimension.
+use only its structured category and paths plus the incremental diff. Do not
+report a matched remediation candidate as scope creep only when those inputs
+unambiguously show a direct remediation of the cited finding.
+When the structured metadata is insufficient to establish directness, treat
+the change as unanchored and evaluate it against the linked issue normally.
+Determining whether the match establishes authorized scope is scope
+verification; it is not a second correctness pass. Correctness and remediation
+completeness remain the owning
+dimensions' responsibility.
 
 Evaluate changes not covered by a prior finding normally against the linked
 issue's authorization. Report scope creep only when a change is authorized by

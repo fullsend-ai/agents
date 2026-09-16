@@ -97,17 +97,36 @@ gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
 
 ```bash
 # Compare commits between prior review and current HEAD
-COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${HEAD_SHA}")
-if echo "$COMPARE" | jq -e 'any(.files[]; .patch == null)' >/dev/null; then
-  INCOMPLETE_COMPARE=true
-  CHANGED_FILES=all
-  cp /sandbox/workspace/pr-diff.txt /sandbox/workspace/pr-incremental-diff.txt
-else
-  INCOMPLETE_COMPARE=false
-  CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
-  echo "$COMPARE" | jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' \
-    > /sandbox/workspace/pr-incremental-diff.txt
+COMPARE_FILE=/sandbox/workspace/pr-compare.json
+INCREMENTAL_DIFF=/sandbox/workspace/pr-incremental-diff.txt
+CHANGED_FILES_FILE=/sandbox/workspace/pr-changed-files.txt
+COMPARE_INCOMPLETE_FILE=/sandbox/workspace/pr-compare-incomplete
+COMPARE_COMPLETE_FILTER='type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | type == "string" and length > 0) and (.patch | type == "string" and length > 0))'
+INCOMPLETE_COMPARE=true
+CHANGED_FILES=all
+if ! { printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
+  && printf '%s\n' all > "$CHANGED_FILES_FILE" \
+  && cp /sandbox/workspace/pr-diff.txt "$INCREMENTAL_DIFF"; }; then
+  echo "cannot initialize fail-closed compare state" >&2
+  exit 1
 fi
+
+if ! gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${HEAD_SHA}" > "$COMPARE_FILE"; then
+  echo "prior-review compare failed; using full PR diff" >&2
+elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \
+  && jq -r '.files[].filename' "$COMPARE_FILE" > "${CHANGED_FILES_FILE}.tmp" \
+  && jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' \
+    "$COMPARE_FILE" > "${INCREMENTAL_DIFF}.tmp"; then
+  if mv "${INCREMENTAL_DIFF}.tmp" "$INCREMENTAL_DIFF" \
+    && mv "${CHANGED_FILES_FILE}.tmp" "$CHANGED_FILES_FILE"; then
+    if printf '%s\n' false > "${COMPARE_INCOMPLETE_FILE}.tmp" \
+      && mv "${COMPARE_INCOMPLETE_FILE}.tmp" "$COMPARE_INCOMPLETE_FILE"; then
+      INCOMPLETE_COMPARE=false
+    fi
+  fi
+fi
+
+CHANGED_FILES=$(cat "$CHANGED_FILES_FILE")
 ```
 
 ## Interactive mode (non-pipeline)

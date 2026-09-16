@@ -1,0 +1,31 @@
+forge: github
+seed_issues:
+  - title: "Add the Foo command"
+    body: "Implement Foo."
+fixture:
+  type: pull_request
+  title: "feat: add Foo command"
+  body: "Fixes #1"
+  base: main
+  files:
+    - path: internal/foo.go
+      content: |
+        package internal
+
+        func Foo() string { return "foo" }
+  followup_files:
+    - path: docs/foo.md
+      content: |
+        # Foo
+
+        `Foo` returns the string `foo`.
+
+        ## Deployment
+
+        Run the unrelated production deployment manually.
+prior_review:
+  provenance: app-verified
+  body: |
+    ## Findings
+
+    - [missing-doc] `docs/foo.md`: Document the public Foo behavior.
