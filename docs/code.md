@@ -126,8 +126,8 @@ need a custom image.
 ### Image requirements
 
 A custom image must work within the constraints enforced by the sandbox
-policy ([`policies/base.yaml`](../policies/base.yaml)) and network
-profiles ([`profiles/`](../profiles/)):
+policy ([`policies/base.yaml`](https://github.com/fullsend-ai/agents/blob/main/policies/base.yaml)) and network
+profiles ([`profiles/`](https://github.com/fullsend-ai/agents/tree/main/profiles)):
 
 | Requirement | Detail |
 |-------------|--------|
@@ -210,7 +210,7 @@ The precedence is as follows:
 3. Issue author.
 
 **Note**: bots are filtered (`*[bot]`, `app/*`, `dependabot`). The resolution logic lives in
-[`scripts/lib/pr-assignee.lib.sh`](../scripts/lib/pr-assignee.lib.sh).
+[`scripts/lib/pr-assignee.lib.sh`](https://github.com/fullsend-ai/agents/blob/main/scripts/lib/pr-assignee.lib.sh).
 
 ## Multi-forge support
 
@@ -266,4 +266,4 @@ Effort: `high` (explicit in the harness; override per run with `fullsend run --e
 
 ## Source
 
-[`harness/code.yaml`](../harness/code.yaml)
+[`harness/code.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/code.yaml)

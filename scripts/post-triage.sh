@@ -554,7 +554,9 @@ tracker_create_issue() {
 # Optional env vars:
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
 #   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
-#   JIRA_SPLIT_TRANSITION       — transition name for the "split" action
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" and
+#                                 "completed" actions (both close with
+#                                 GitHub reason "completed")
 #   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
 #                                 creation (default: "Task")
 
@@ -1029,11 +1031,11 @@ echo "Issue: #${ISSUE_NUMBER}"
 
 # Control labels managed by the triage pipeline. The post script refuses to
 # add or remove these via label_actions. pre-triage.sh resets needs-info,
-# ready-to-code, duplicate, feature, question, not-planned, and pr-open
-# before each run; the action handlers below apply the rest. pr-open is
-# also created and applied independently by the code agent's pre-check
-# (scripts/pre-code.sh) when it finds a human PR before dispatching.
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "pr-open")
+# ready-to-code, duplicate, feature, question, not-planned, completed,
+# and pr-open before each run; the action handlers below apply the rest.
+# pr-open is also created and applied independently by the code agent's
+# pre-check (scripts/pre-code.sh) when it finds a human PR before dispatching.
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "completed" "pr-open")
 
 is_control_label() {
   local label="$1"
@@ -1533,6 +1535,17 @@ ${FAILED_CREATES}"
     tracker_add_label "not-planned"
     ;;
 
+  completed)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'completed' but no comment provided" >&2
+      exit 1
+    fi
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "completed"
+    ;;
+
   *)
     echo "ERROR: unknown action '${ACTION}' — this may be a newer action that post-triage.sh does not handle yet" >&2
     exit 1
@@ -1710,6 +1723,10 @@ fi
 
 if [[ "${ACTION}" == "not-planned" ]]; then
   tracker_close_issue "not planned"
+fi
+
+if [[ "${ACTION}" == "completed" ]]; then
+  tracker_close_issue "completed"
 fi
 
 if [[ "${ACTION}" == "split" ]]; then

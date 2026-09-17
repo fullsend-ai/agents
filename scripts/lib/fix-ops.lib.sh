@@ -28,3 +28,18 @@ is_bot_user() {
     [[ "${1:-}" =~ \[bot\]$ ]]
   fi
 }
+
+# is_human_rebase_request INSTRUCTION — true if a harness-captured human
+# /fs-fix instruction asked for a rebase or merge-conflict resolution (see
+# agents/fix.md's "Rebase onto the target branch" and docs/fix.md's
+# "Rebasing a stale PR"). The instruction text is HUMAN_INSTRUCTION, which
+# the triggering workflow sets from the literal PR/MR comment before the
+# sandbox is created — the fix agent cannot alter it during its own run,
+# unlike agent-result.json (PR #1296 auth-bypass finding: a non-bot
+# TRIGGER_SOURCE alone does not prove the run's instruction was a rebase
+# request, so callers must check this in addition to TRIGGER_SOURCE).
+is_human_rebase_request() {
+  local instruction
+  instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${instruction}" == *"rebase"* || "${instruction}" == *"merge conflict"* ]]
+}

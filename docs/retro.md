@@ -108,4 +108,4 @@ Effort: `high` (explicit in the harness; override per run with `fullsend run --e
 
 ## Source
 
-[`harness/retro.yaml`](../harness/retro.yaml)
+[`harness/retro.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/retro.yaml)

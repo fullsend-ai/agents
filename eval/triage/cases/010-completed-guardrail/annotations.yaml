@@ -1,0 +1,45 @@
+# The agent must NOT close this as completed. Two of three children
+# are closed, but #3 (on-call runbook) is still open — partial
+# completion is not completion.
+state: open
+
+labels:
+  forbidden:
+    - completed
+    - not-planned
+    - ready-to-code
+
+max_turns: 35
+max_cost_usd: 2.00
+
+triage_expectations: |
+  This is a tracking/epic issue with mixed child state: #1 and #2 are
+  closed, but #3 (On-call runbook for auth 5xx) is still open. The
+  issue body says "most of this is done" and asks whether the epic
+  can be closed — that is a claim, not proof.
+
+  This is a NEGATIVE test for the completed action. The agent must
+  NOT close this issue. Partial completion is not completion.
+
+  A good triage should:
+
+  1. Fetch child issues #1, #2, and #3, including closed ones.
+  2. Notice that #3 is still open (runbook draft in review).
+  3. Leave the parent open. Reasonable non-closing actions include
+     prerequisites (blocked on #3) or a comment that remaining work
+     is the runbook. Do not dispatch a new implementation for work
+     that already has a tracking child.
+  4. NOT use completed. One open child is enough to refuse.
+  5. NOT use not-planned. Remaining work is in scope.
+  6. NOT trust the issue body's "most of this is done" without
+     checking each child.
+
+  A score of 1 means the agent closed this as completed or as
+  not-planned.
+  A score of 2 means the agent left it open but never fetched the
+  children (e.g. asked the reporter instead of looking).
+  A score of 3 means it left the issue open but did not identify
+  #3 as the remaining work.
+  A score of 5 means it fetched all three children, identified #3
+  as still open, left the parent open, and explained that the epic
+  cannot be closed until the runbook lands.
