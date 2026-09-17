@@ -801,6 +801,15 @@ git_push_with_transient_retry() {
 
 # ---------------------------------------------------------------------------
 # 7b. Push, with transient-error backoff then --force-with-lease fallback.
+#
+# --force-with-lease is deliberately a single attempt, not wrapped in
+# git_push_with_transient_retry: the lease compares against the locally
+# cached remote-tracking ref, which git only advances on a push this
+# client observed succeed. If a force-with-lease attempt lands on the
+# remote but the client sees a transient error and retries, the retry's
+# lease check would use the same stale expected value and get rejected
+# as non-transient "stale info" — reporting failure even though the
+# branch update already succeeded.
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT=""
@@ -809,14 +818,21 @@ git_push_with_transient_retry -u origin -- "${BRANCH}" && PUSH_RC=0 || PUSH_RC=$
 print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
-  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+  if is_transient_push_error "${PUSH_OUTPUT}"; then
+    # git_push_with_transient_retry already exhausted its attempts on a
+    # transient error. Fail closed here instead of falling through to the
+    # non-fast-forward check below: GitHub's 5xx payload for a push can
+    # itself contain "rejected" phrasing (e.g. "! [remote rejected]
+    # <branch> -> <branch> (Internal Server Error)"), which would
+    # otherwise be misclassified as non-fast-forward and trigger a
+    # --force-with-lease retry instead of failing closed.
+    PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}")"
+    post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}"
+  elif echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     PLAIN_PUSH_OUTPUT="${PUSH_OUTPUT}"
     FORCE_PUSH_OUTPUT=""
-    FORCE_PUSH_RC=0
-    git_push_with_transient_retry --force-with-lease -u origin -- "${BRANCH}" && FORCE_PUSH_RC=0 || FORCE_PUSH_RC=$?
-    FORCE_PUSH_OUTPUT="${PUSH_OUTPUT}"
-    if [ "${FORCE_PUSH_RC}" -ne 0 ]; then
+    if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
       PUSH_CATEGORY="$(categorize_push_failure "${PLAIN_PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"

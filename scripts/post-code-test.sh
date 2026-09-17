@@ -2613,7 +2613,10 @@ else
   echo "PASS: push-nff-still-force-with-lease"
 fi
 
-# Non-fast-forward fallback is itself wrapped in the backoff loop.
+# --force-with-lease is a single attempt, not wrapped in the backoff loop:
+# a transient error on the force push fails closed immediately rather than
+# retrying (a retry could misreport failure if the first attempt actually
+# landed on the remote — see scripts/post-code.src.sh section 7b).
 mkdir -p "${PUSH_TX_TMPDIR}/nff-tx"
 : > "${PUSH_TX_TMPDIR}/nff-tx/nff_plain"
 printf '2\n' > "${PUSH_TX_TMPDIR}/nff-tx/fail_remaining"
@@ -2622,24 +2625,73 @@ run_push_tx_script "nff-tx"
 _tx_nfftx_rc="$(cat "${PUSH_TX_TMPDIR}/nff-tx/rc")"
 _tx_nfftx_log="${PUSH_TX_TMPDIR}/nff-tx/stdout.log"
 _tx_nfftx_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/nff-tx/sleep.log" | sed 's/ *$//')"
-if [ "${_tx_nfftx_rc}" -ne 0 ]; then
-  echo "FAIL: push-nff-force-transient-recovers — expected exit 0, got ${_tx_nfftx_rc}"
+_tx_nfftx_force_count="$(grep -c 'force=true' "${PUSH_TX_TMPDIR}/nff-tx/push.log" || true)"
+if [ "${_tx_nfftx_rc}" -eq 0 ]; then
+  echo "FAIL: push-nff-force-transient-fails-closed — expected non-zero exit"
   cat "${_tx_nfftx_log}"
   FAILURES=$((FAILURES + 1))
-elif [ "${_tx_nfftx_sleep}" != "2 4" ]; then
-  echo "FAIL: push-nff-force-transient-recovers — expected sleep 2 4, got '${_tx_nfftx_sleep}'"
+elif [ -n "${_tx_nfftx_sleep}" ]; then
+  echo "FAIL: push-nff-force-transient-fails-closed — retried --force-with-lease ('${_tx_nfftx_sleep}')"
   cat "${_tx_nfftx_log}"
   FAILURES=$((FAILURES + 1))
-elif ! grep -q 'force=true' "${PUSH_TX_TMPDIR}/nff-tx/push.log"; then
-  echo "FAIL: push-nff-force-transient-recovers — did not use --force-with-lease"
+elif [ "${_tx_nfftx_force_count}" != "1" ]; then
+  echo "FAIL: push-nff-force-transient-fails-closed — expected exactly one --force-with-lease attempt, got ${_tx_nfftx_force_count}"
   cat "${PUSH_TX_TMPDIR}/nff-tx/push.log"
   FAILURES=$((FAILURES + 1))
-elif grep -q 'Posting failure comment' "${_tx_nfftx_log}"; then
-  echo "FAIL: push-nff-force-transient-recovers — posted a failure comment"
+elif ! grep -q 'retrying with --force-with-lease' "${_tx_nfftx_log}"; then
+  echo "FAIL: push-nff-force-transient-fails-closed — missing force-with-lease warning"
+  cat "${_tx_nfftx_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'Posting failure comment' "${_tx_nfftx_log}"; then
+  echo "FAIL: push-nff-force-transient-fails-closed — expected failure comment"
   cat "${_tx_nfftx_log}"
   FAILURES=$((FAILURES + 1))
 else
-  echo "PASS: push-nff-force-transient-recovers"
+  echo "PASS: push-nff-force-transient-fails-closed"
+fi
+
+# A plain-push failure whose 5xx body also contains rejection phrasing
+# (GitHub's actual Internal Server Error payload can include both, e.g.
+# "remote: Internal Server Error" plus "! [remote rejected] <branch> ->
+# <branch> (Internal Server Error)") must still fail closed as transient,
+# not be misclassified as non-fast-forward and sent through
+# --force-with-lease.
+mkdir -p "${PUSH_TX_TMPDIR}/transient-rejected"
+printf '9\n' > "${PUSH_TX_TMPDIR}/transient-rejected/fail_remaining"
+printf '%s\n' \
+  'remote: Internal Server Error' \
+  '! [remote rejected] agent/99-tx-push -> agent/99-tx-push (Internal Server Error)' \
+  > "${PUSH_TX_TMPDIR}/transient-rejected/fail_message"
+run_push_tx_script "transient-rejected"
+_tx_tr_rc="$(cat "${PUSH_TX_TMPDIR}/transient-rejected/rc")"
+_tx_tr_log="${PUSH_TX_TMPDIR}/transient-rejected/stdout.log"
+_tx_tr_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/transient-rejected/sleep.log" | sed 's/ *$//')"
+if [ "${_tx_tr_rc}" -eq 0 ]; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — expected non-zero exit"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_tx_tr_sleep}" != "2 4" ]; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — expected sleep 2 4, got '${_tx_tr_sleep}'"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'force=true' "${PUSH_TX_TMPDIR}/transient-rejected/push.log"; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — used --force-with-lease on a transient error"
+  cat "${PUSH_TX_TMPDIR}/transient-rejected/push.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'retrying with --force-with-lease' "${_tx_tr_log}"; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — took the non-fast-forward path"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'failed with a transient error after 3 attempts' "${_tx_tr_log}"; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — missing exhaustion warning"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'Posting failure comment' "${_tx_tr_log}"; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — expected failure comment"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: push-transient-rejected-phrasing-fails-closed"
 fi
 
 rm -rf "${PUSH_TX_TMPDIR}"
