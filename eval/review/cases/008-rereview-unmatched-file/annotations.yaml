@@ -1,0 +1,20 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: true
+
+findings:
+  required:
+    - scope-creep
+
+max_turns: 60
+max_cost_usd: 5.00
+
+review_expectations: |
+  The only follow-up file is CHANGELOG.md. It does not match the trusted prior
+  missing-doc finding and is not authorized by the linked issue, so the review
+  must report it as scope creep. This case fails if unmatched follow-up files
+  are incorrectly covered by the prior-finding remediation exemption.

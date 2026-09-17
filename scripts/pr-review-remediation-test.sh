@@ -15,6 +15,8 @@ GITHUB_FORGE="${REPO_ROOT}/skills/pr-review/github/SKILL.md"
 GITLAB_FORGE="${REPO_ROOT}/skills/pr-review/gitlab/SKILL.md"
 EVAL_SETUP="${REPO_ROOT}/eval/scripts/setup-fixture.sh"
 EVAL_RUNNER="${REPO_ROOT}/eval/scripts/run-fullsend.sh"
+EVAL_UNMATCHED="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/input.yaml"
+EVAL_UNMATCHED_EXPECTATIONS="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/annotations.yaml"
 FAILURES=0
 
 assert_contains() {
@@ -309,6 +311,12 @@ assert_contains "eval runner forwards prior review input" "${EVAL_RUNNER}" \
   "PRIOR_REVIEW_FILE"
 assert_contains "re-review fixed-scope heading covers conditional intent" "${SKILL}" \
   "Fixed-scope sub-agent assignments WITHOUT prior findings"
+assert_contains "isolated unmatched-file eval changes only changelog" "${EVAL_UNMATCHED}" \
+  "path: CHANGELOG.md"
+assert_contains "isolated unmatched-file eval requires scope creep" "${EVAL_UNMATCHED_EXPECTATIONS}" \
+  "- scope-creep"
+assert_contains "isolated unmatched-file eval documents its isolation" "${EVAL_UNMATCHED_EXPECTATIONS}" \
+  "only follow-up file is CHANGELOG.md"
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
