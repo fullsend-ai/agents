@@ -17,6 +17,12 @@ EVAL_SETUP="${REPO_ROOT}/eval/scripts/setup-fixture.sh"
 EVAL_RUNNER="${REPO_ROOT}/eval/scripts/run-fullsend.sh"
 EVAL_UNMATCHED="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/input.yaml"
 EVAL_UNMATCHED_EXPECTATIONS="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/annotations.yaml"
+REREVIEW_FIXTURES=(
+  "${REPO_ROOT}/eval/review/cases/005-rereview-remediation/input.yaml"
+  "${REPO_ROOT}/eval/review/cases/006-rereview-direct-remediation/input.yaml"
+  "${REPO_ROOT}/eval/review/cases/007-rereview-mixed-remediation-file/input.yaml"
+  "${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/input.yaml"
+)
 FAILURES=0
 
 assert_contains() {
@@ -351,6 +357,11 @@ assert_contains "isolated unmatched-file eval requires scope creep" "${EVAL_UNMA
   "- scope-creep"
 assert_contains "isolated unmatched-file eval documents its isolation" "${EVAL_UNMATCHED_EXPECTATIONS}" \
   "only follow-up file is CHANGELOG.md"
+
+for fixture in "${REREVIEW_FIXTURES[@]}"; do
+  assert_contains "re-review fixture carries a validated projection" "${fixture}" \
+    "<!-- fullsend:review-findings-v1:"
+done
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

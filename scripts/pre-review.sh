@@ -483,7 +483,9 @@ validate_prior_review_projection() {
       type == "string" and length > 0 and . != "N/A" and
       (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
     if (
-      type == "object" and .version == 1 and
+      type == "object" and
+      ((keys - ["version", "findings"]) | length == 0) and
+      .version == 1 and
       (.findings | type == "array") and
       all(.findings[];
         type == "object" and
@@ -493,7 +495,15 @@ validate_prior_review_projection() {
         (.file | safe_path) and
         (.line == null or (.line | type == "number" and . > 0 and floor == .))
       )
-    ) then . else error("invalid prior review projection") end
+    ) then {
+      version: 1,
+      findings: [.findings[] | {
+        severity: .severity,
+        category: .category,
+        file: .file,
+        line: .line
+      }]
+    } else error("invalid prior review projection") end
   ' > "${tmp_file}"; then
     mv "${tmp_file}" "${prior_file}"
     echo "Prior review projection validated"

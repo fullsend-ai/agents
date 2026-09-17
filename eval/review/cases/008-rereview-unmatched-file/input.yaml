@@ -27,3 +27,5 @@ prior_review:
     #### Medium
 
     - **[missing-doc]** `docs/foo.md` — Document the public Foo behavior.
+
+    <!-- fullsend:review-findings-v1:eyJ2ZXJzaW9uIjoxLCJmaW5kaW5ncyI6W3sic2V2ZXJpdHkiOiJtZWRpdW0iLCJjYXRlZ29yeSI6Im1pc3NpbmctZG9jIiwiZmlsZSI6ImRvY3MvZm9vLm1kIn1dfQ== -->
