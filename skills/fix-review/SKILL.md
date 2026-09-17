@@ -142,7 +142,7 @@ echo "::notice::STEP 4: Plan fixes"
 
 Start from the whole-review theme, not individual findings. Plan a single coherent fix for related findings; individual fixes for standalone findings. For each, determine: (1) Is feedback valid? (2) What's the minimal fix? (3) Should I disagree?
 
-**Strategy escalation:** If `FIX_ITERATION` > `STRATEGY_ESCALATION_THRESHOLD` (default: 3), read `git log --oneline "${BASE_BRANCH}..HEAD"` (local ref only — sandbox network policy may block `origin/${BASE_BRANCH}`), try a different approach, and note the change in structured output.
+**Strategy escalation:** If `FIX_ITERATION` > `STRATEGY_ESCALATION_THRESHOLD` (default: 3), read commit history (`git log --oneline "${BASE_BRANCH}..HEAD"` — use the local `${BASE_BRANCH}` ref, not `origin/${BASE_BRANCH}`; sandbox network policy may block git protocol access), try a fundamentally different approach, and note the change in structured output.
 
 ### 5. Read affected code
 
