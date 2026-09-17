@@ -127,7 +127,7 @@
     "ci_inspections": {
       "type": "array",
       "maxItems": 50,
-      "description": "Project CI jobs inspected during context gathering. Omit Fullsend agent/dispatch workflows. Include every inspected project job and its diagnosis.",
+      "description": "Project CI jobs inspected during context gathering. Omit Fullsend agent/dispatch workflows. Include up to 50 entries, prioritizing failed and pending jobs over passing ones.",
       "items": {
         "type": "object",
         "required": ["job", "classification"],

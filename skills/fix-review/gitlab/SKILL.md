@@ -71,17 +71,22 @@ MR_SHA=$(echo "${MR_JSON}" | jq -r '.sha')
 HEAD_PIPELINE_ID=$(echo "${MR_JSON}" | jq -r '.head_pipeline.id // empty')
 HEAD_PIPELINE_SHA=$(echo "${MR_JSON}" | jq -r '.head_pipeline.sha // empty')
 
-# Pipelines for this MR, filtered to the MR's current head pipeline — the
-# unfiltered endpoint returns every pipeline ever run against the MR,
-# including stale ones from earlier pushes. Match by head_pipeline.id first
-# (the authoritative "current pipeline" GitLab uses), falling back to a sha
-# match against either head_pipeline.sha or the MR's top-level sha, since
-# head_pipeline.sha is not always the source-branch sha.
-curl --silent --config - \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/pipelines" \
-  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\"" \
-  | jq --arg sha "${MR_SHA}" --arg hsha "${HEAD_PIPELINE_SHA}" --arg hid "${HEAD_PIPELINE_ID}" \
-    '[.[] | select(if $hid != "" then (.id | tostring) == $hid else (.sha == $sha or ($hsha != "" and .sha == $hsha)) end)]'
+# Current pipeline's jobs. head_pipeline.id is GitLab's authoritative
+# current-pipeline id, so fetch its jobs directly instead of round-tripping
+# through the MR pipelines list — that list has no per_page here and
+# defaults to 20, so on a long-lived MR with more pipelines than that, the
+# current one can be off page 1 and get missed. Fall back to the MR
+# pipelines list (paginated, matched by sha) only when head_pipeline is
+# absent.
+if [ -n "${HEAD_PIPELINE_ID}" ]; then
+  PIPELINE_ID="${HEAD_PIPELINE_ID}"
+else
+  PIPELINE_ID=$(curl --silent --config - \
+    "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/pipelines?per_page=100" \
+    <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\"" \
+    | jq -r --arg sha "${MR_SHA}" --arg hsha "${HEAD_PIPELINE_SHA}" \
+      '[.[] | select(.sha == $sha or ($hsha != "" and .sha == $hsha))] | (.[0].id // empty)')
+fi
 
 # Jobs in a pipeline
 curl --silent --config - \
