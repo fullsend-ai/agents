@@ -97,6 +97,33 @@ run_test "schema-invalid-json" \
   'not json' \
   "false"
 
+# needs_input schema cases
+run_test "schema-valid-needs-input-true-with-reason" \
+  '{"target_branch":"main","needs_input":true,"needs_input_reason":"scan-secrets is not installed"}' \
+  "true"
+
+run_test "schema-valid-needs-input-false" \
+  '{"target_branch":"main","needs_input":false}' \
+  "true"
+
+run_test "schema-valid-needs-input-absent" \
+  '{"target_branch":"main"}' \
+  "true"
+
+run_test "schema-fail-needs-input-true-without-reason" \
+  '{"target_branch":"main","needs_input":true}' \
+  "false"
+
+run_test "schema-valid-needs-input-reason-without-flag" \
+  '{"target_branch":"main","needs_input_reason":"some reason"}' \
+  "true"
+
+# needs_input=true with reason but without target_branch → valid
+# (target_branch is only required when needs_input is not true)
+run_test "schema-valid-needs-input-without-target-branch" \
+  '{"needs_input":true,"needs_input_reason":"Issue is uninterpretable"}' \
+  "true"
+
 # The run_test helper always creates output/agent-result.json, so testing a
 # missing output directory requires a separate helper.
 run_test_no_output_dir() {
