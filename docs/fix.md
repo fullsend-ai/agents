@@ -12,6 +12,7 @@ No additional setup is required beyond the standard fullsend configuration.
 
 - Review feedback is addressed quickly — often before the reviewer checks back.
 - Fixes are scoped to exactly what the review requested, reducing churn.
+- Project CI failures caused by the PR are diagnosed and, when in scope, fixed in the same run.
 - The iteration cap prevents the fix and [review](review.md) agents from looping indefinitely.
 
 ## Triggers
@@ -70,12 +71,18 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 |----------|---------|--------|
 | `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
 
+### Skill: `fix-review`
+
+The fix agent uses the `fix-review` skill for its procedure, including project-CI inspection. Forge-specific recipes live in `skills/fix-review/github` and `skills/fix-review/gitlab`.
+
+To cover a CI system other than GitHub Actions or GitLab CI, add a skill in `.agents/skills/` whose description names that system (or log inspection) and include it in your harness `skills:` array via `base:` composition. During CI inspection the agent only uses skills already injected for the run through that harness `skills:`/`base:` composition — it does not scan or load `SKILL.md` files from the PR's own working-tree checkout.
+
 ## How the agent works
 
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
-2. **Sandbox** — the agent reads each review finding, implements targeted fixes, and verifies them against tests and linters.
+2. **Sandbox** — the agent reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
 
@@ -159,6 +166,7 @@ updates the remote PR branch.
 |-------|--------|-------------------|
 | Review body | Latest `CHANGES_REQUESTED` review from the review bot | Pre-fetched on the runner before the sandbox starts, injected as `review-body.txt` |
 | PR diff | Forge-specific skill (GitHub: `gh pr diff`, GitLab: MR changes API) | Agent calls this to understand what code changed |
+| Project CI | Forge-specific skill (GitHub: `gh pr checks` / `gh run view`, GitLab: MR pipelines API) | Agent inspects project jobs, excluding Fullsend dispatch |
 | Repository checkout | Full repo at PR HEAD | Checked out on the runner, mounted into the sandbox |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Read from the checkout inside the sandbox |
 
@@ -168,6 +176,7 @@ updates the remote PR branch.
 |-------|--------|-------------------|
 | Human instruction | Free text after `/fs-fix` in the comment | Extracted by the workflow, passed as `HUMAN_INSTRUCTION` env var (up to 10,000 bytes) |
 | PR diff | Forge-specific skill | Same as bot-triggered |
+| Project CI | Forge-specific skill | Same as bot-triggered |
 | Repository checkout | Full repo at PR HEAD | Same as bot-triggered |
 | Repo conventions | `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md` | Same as bot-triggered |
 | Review body (if any) | Prior review bot `CHANGES_REQUESTED` review | Still injected as `review-body.txt`, but human instruction takes precedence |
@@ -181,11 +190,29 @@ If your project uses a custom image, update the `image:` field in both
 ## What the agent acts on
 
 **When triggered by a review:** the agent reads the review body, the PR diff,
-and the full repository checkout.
+project CI, and the full repository checkout.
 
 **When triggered by `/fs-fix`:** the agent reads your instruction text, the PR
-diff, the full repository checkout, and any prior review. When a human
-instruction is present, it takes precedence over the review body.
+diff, project CI, the full repository checkout, and any prior review. When a
+human instruction is present, it takes precedence over the review body.
+
+### Project CI
+
+The agent inspects the PR's project CI jobs during context gathering. It reads
+available job logs and artifacts, classifies each failure, and reports the
+diagnosis in the PR summary.
+
+- **PR-caused failures** that fall within authorized scope are fixed in the
+  same run. A narrow `/fs-fix` instruction (for example `rebase` or a single
+  file edit) does not authorize extra CI-driven edits; the diagnosis is still
+  reported.
+- **Flaky or transient infrastructure failures** produce a recommendation that
+  you rerun the affected jobs. The agent does not rerun jobs itself.
+- **Unrelated failures** produce guidance to file an issue with the responsible
+  owner. The agent does not change unrelated code to make those jobs pass.
+- **Fullsend agent/dispatch workflows** (the `fullsend` shim, `notify-agent-sync`,
+  and their `dispatch-*` jobs) are excluded. They are orchestration
+  infrastructure, not project CI.
 
 ### What the agent does not read
 
@@ -198,12 +225,8 @@ than you might expect:
 - **Other PR comments.** General discussion comments on the PR are not part of
   the agent's input. Only the review body and the `/fs-fix` instruction are
   read.
-- **CI logs and check status.** The fix agent does not read CI logs,
-  check run output, or merge readiness indicators. It addresses review
-  feedback, not CI failures. (The [code agent](code.md) handles CI failures
-  during implementation.)
 - **Issue body.** The fix agent does not read the linked issue. It operates
-  purely on the PR and review context.
+  purely on the PR, review, and project-CI context.
 
 ### Links and URLs in instructions
 
