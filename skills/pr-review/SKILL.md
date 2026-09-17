@@ -1258,12 +1258,12 @@ adjudicated set (step 6d) and evaluate:
   the PR mergeable.
 
 **Re-review: new low findings do not reopen the loop.** On a re-review
-(step 2a found prior findings), a **low** or **info** finding that
-matches no prior finding (same category, file, and logical issue — see
-the code-review skill's matching procedure) counts as non-actionable in
-the rules above. Keep it in `findings` and call it a suggestion in the
-summary, so the self-consistency check does not escalate it. Medium+
-findings and matched low/info findings are unaffected.
+(step 2a found prior findings), before applying the rules above, take
+each **low** or **info** finding that fails the code-review skill's
+finding matching procedure against every prior finding. Keep it in
+`findings`, set `actionable: false`, and start its description with
+"Suggestion:". Medium+ findings and matched low/info findings are
+unaffected.
 
 **Self-consistency check.** Before emitting the final verdict, verify
 that the verdict action is consistent with the language used in the
