@@ -287,6 +287,9 @@ Based on the domain classification, select sub-agents for dispatch.
 All selected sub-agents run in parallel — `risk-assessment` (composed
 in step 3c-2) among them — except `challenger`, which, when step 6d
 dispatches it, runs by itself after all other sub-agents have finished.
+With `REVIEW_RISK_ROUTING_ENABLED` set to `true`, `risk-assessment`
+runs first instead and its score may narrow this selection (3c-2,
+items 5 and 6).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -573,9 +576,8 @@ be absent from the result JSON.
    ```
 
    Parse these into `prior_risk_score`, `prior_risk_level`, and
-   `prior_risk_rationale`. If no prior risk comment exists (first
-   review or comment was deleted), skip — the sub-agent will operate
-   without anchoring.
+   `prior_risk_rationale`. If no prior risk comment exists, skip — the
+   sub-agent operates without anchoring.
 
 4. Compose a spawn prompt containing:
 
@@ -586,10 +588,8 @@ be absent from the result JSON.
    `skills/pr-risk-assessment/SKILL.md` (everything after the
    frontmatter)
 
-   **Part 3 — Context:** the PR's changed file list with per-file
-   diff stats (additions, deletions), PR metadata (title, body,
-   author, labels), linked issue context (if any), and prior risk
-   assessment (if available from step 3). Format as:
+   **Part 3 — Context:** changed files with diff stats, PR metadata,
+   linked issue context, and the prior assessment from step 3:
 
    ```markdown
    ## Context
@@ -609,26 +609,36 @@ be absent from the result JSON.
    <prior score, level, and rationale — or "none (first review)">
    ```
 
-5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
-   the same message as the step 4 dimension sub-agents, with the step 4
-   item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
-   consumes its output
-   (it only goes into `agent-result.json`, step 7); running it first
-   serialised a 2–3 minute sub-agent for nothing.
+5. If `REVIEW_RISK_ROUTING_ENABLED` is not `true`: do not spawn it
+   here. Dispatch the composed prompt (parts 1–3) in the same message
+   as the step 4 dimension sub-agents, with the step 4 item 2 dispatch
+   shape (persona `risk-assessment`). Nothing in step 4 consumes its
+   output; running it first serialised a 2–3 minute sub-agent for
+   nothing. If it is `true`: spawn it now, alone, with that same shape,
+   and wait — item 6 narrows the step 4 batch on its score.
 
-6. Parse the risk assessment output. The sub-agent returns a JSON
-   object with `score`, `level`, `rationale`, and optional signal
-   arrays.
+6. Store the sub-agent's JSON (`score`, `level`, `rationale`,
+   `tier1_score`, `risk_floor`, optional signal arrays, `degraded`) as
+   `risk_assessment` for `agent-result.json` (step 7). Anything that
+   routes or gates on the score treats `degraded` as no score.
+   **Risk routing:** when `REVIEW_RISK_ROUTING_ENABLED` is `true`, the
+   integer `score` is exactly 1, and `degraded` is absent, keep only
+   `correctness` and `security` from the 3c selection (`security-triage`
+   and `challenger` untouched) and log
+   `risk routing: score 1 → correctness, security`. Change no model.
+   Otherwise run the full 3c selection (fail open). Key on the
+   composite, not `tier1_score`: over 246 production PRs, composite 1
+   had 0/53 with a major or critical finding; tier 1 alone would have
+   narrowed 6/104 that had one.
 
-7. Store the `risk_assessment` object for inclusion in
-   `agent-result.json` (step 7).
-
-**Failure fallback:** If the risk-assessment sub-agent fails
-(timeout, parse error, empty response), log an info-level note and
-proceed without a risk score. The `risk_assessment` field is
-optional in the schema — its absence is not an error. Do not record
-a finding for this failure (risk assessment is informational, not
-safety-critical).
+**Failure fallback:** If the sub-agent fails (timeout, parse error,
+empty response, `score` not 1–5), run
+`bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"`.
+If `TIER1_SCORE` is numeric, set `score` = max(round(`TIER1_SCORE`),
+`RISK_FLOOR`), its `level`, `tier1_score`, `risk_floor`,
+`degraded: "tier1-only"`, rationale "Risk sub-agent unavailable;
+tier-1 metadata only."; else omit `risk_assessment`. Log an info
+note; record no finding.
 
 #### 3d. Prepare context packages
 
@@ -830,7 +840,8 @@ here):
 **All sub-agents MUST be dispatched simultaneously** — include all
 Agent calls in a single message so they run concurrently, and include
 the risk-assessment call composed in step 3c-2 in that same message
-when risk assessment is enabled. Leave `run_in_background` unset: the
+when risk assessment is enabled and risk routing is not (with routing
+on it already returned in 3c-2). Leave `run_in_background` unset: the
 default delivers completions as notifications (when the Time budget
 checkpoint runs); `false` blocks until all have returned.
 
