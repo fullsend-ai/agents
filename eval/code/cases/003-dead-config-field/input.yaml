@@ -1,0 +1,25 @@
+forge: github
+fixture:
+  type: issue
+  title: "config: VerboseLogging field appears unused"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    We have a `VerboseLogging` field in the config that I can't find being used anywhere
+    in the actual runner logic. I added it a while back thinking we'd need it for debug
+    output, but I'm not sure we ever wired it up to anything.
+
+    **Expected behavior:**
+    If it's truly unused, we should remove it to keep the config clean. But I want to
+    make sure I'm not missing something — maybe there's some code path that reads it
+    that I didn't spot?
+
+    **Additional context:**
+    - The field exists in `config/config.go`
+    - YAML key is `verbose_logging`
+    - I see tests for it, but those might just be testing the config parsing itself
+    - Haven't found where the runner actually checks this value, but I might be wrong
+
+    Can someone verify whether this is actually used? If not, please clean it up.
+    Make sure tests still pass after any changes.
