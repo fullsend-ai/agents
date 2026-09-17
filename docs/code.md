@@ -34,7 +34,24 @@ on issues (not PRs).
 | Label | Meaning |
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. |
-| `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
+| `ready-for-review` | In per-repo installs, applying this label to a PR triggers the [review agent](review.md). Bot-authored PRs already dispatch review on open, so the code agent does not apply it (a separate `labeled` event would double-dispatch). It remains available for explicit review requests. |
+
+## Review handoff compatibility
+
+The code post-script relies on review dispatch when a PR/MR is opened;
+it does not apply `ready-for-review` automatically. GitHub installations
+need the bot-author exemption for PR-open events introduced in
+[fullsend#5782](https://github.com/fullsend-ai/fullsend/pull/5782).
+GitLab installations need the poller-based MR-open review dispatch from
+[fullsend#7322](https://github.com/fullsend-ai/fullsend/issues/7322), including
+retention of bot-authored MR-open events.
+
+Upgrade the dispatcher/poller before using this post-script with an older
+pinned Fullsend version that depended on the label handoff. Merely updating
+the agents reference does not upgrade a separately pinned dispatcher.
+Manual `ready-for-review` requests and `/fs-review` remain available;
+GitHub pushes to existing PRs, including fix-agent pushes, still trigger
+review through `synchronize`.
 
 ## Configuration
 

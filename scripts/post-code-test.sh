@@ -57,6 +57,25 @@ else
   echo "PASS: bundled-script-has-ensure-label"
 fi
 
+# Applying ready-for-review after PR creation fires pull_request_target.labeled
+# and double-dispatches review against the bot-authored opened event (#1239).
+# gh pr create --label is also not atomic (createPullRequest cannot set labels).
+if grep -q 'forge_add_label "ready-for-review"' "${POST_SCRIPT}"; then
+  echo "FAIL: post-create-does-not-add-ready-for-review"
+  echo "  ${POST_SCRIPT} still applies ready-for-review after PR creation"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-create-does-not-add-ready-for-review"
+fi
+
+if grep -A 15 '^forge_create_pr()' "${POST_SCRIPT}" | grep -q -- '--label'; then
+  echo "FAIL: forge-create-pr-does-not-pass-label"
+  echo "  ${POST_SCRIPT} forge_create_pr passes --label (not atomic on GitHub)"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: forge-create-pr-does-not-pass-label"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -2036,6 +2055,141 @@ else
   cat "${SEC_CODE_TMPDIR}/stdout-namespace.log"
   FAILURES=$((FAILURES + 1))
 fi
+
+# --- PR create must not apply ready-for-review (separate labeled event) ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "$0 $*" >> "${GH_CALLS_FILE:-/dev/null}"
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_label_dir="${SEC_CODE_TMPDIR}/run-no-review-label"
+_sec_label_calls="${SEC_CODE_TMPDIR}/gh-calls-no-review-label.log"
+: > "${_sec_label_calls}"
+setup_sec_code_repo "${_sec_label_dir}" "agent/99-no-label"
+
+_sec_label_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_label_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  export GH_CALLS_FILE="${_sec_label_calls}"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-no-review-label.log" 2>&1 || _sec_label_rc=$?
+
+if [ "${_sec_label_rc}" -ne 0 ]; then
+  echo "FAIL: post-create-skips-ready-for-review — post-code exited ${_sec_label_rc}"
+  cat "${SEC_CODE_TMPDIR}/stdout-no-review-label.log"
+  echo "  gh calls:"
+  cat "${_sec_label_calls}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q ' pr create ' "${_sec_label_calls}"; then
+  echo "FAIL: post-create-skips-ready-for-review — gh pr create was not called"
+  cat "${_sec_label_calls}"
+  cat "${SEC_CODE_TMPDIR}/stdout-no-review-label.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -e '--label' -e '--add-label' "${_sec_label_calls}" | grep -q 'ready-for-review'; then
+  echo "FAIL: post-create-skips-ready-for-review — ready-for-review passed to gh"
+  cat "${_sec_label_calls}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'issue edit' "${_sec_label_calls}"; then
+  echo "FAIL: post-create-skips-ready-for-review — gh issue edit still called"
+  cat "${_sec_label_calls}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-create-skips-ready-for-review"
+fi
+
+# --- GitLab MR creation uses the open event, preserving merge/assignment ---
+# Exercise the real bundled post-script and forge implementation. Only the
+# HTTP boundary is mocked; unexpected requests fail rather than reach GitLab.
+cat > "${SEC_CODE_MOCK_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GL_CALLS_FILE}"
+method=GET
+url=""
+with_status=false
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --request) method="$2"; shift ;;
+    --write-out) with_status=true; shift ;;
+    https://*) url="$1" ;;
+  esac
+  shift
+done
+case "${method} ${url}" in
+  'GET https://gitlab.com/api/v4/projects/test-org%2Ftest-repo')
+    echo '{"id":42,"default_branch":"main"}' ;;
+  'GET https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/merge_requests?'*)
+    echo '[]' ;;
+  'POST https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/merge_requests')
+    echo '{"iid":7,"web_url":"https://gitlab.com/test-org/test-repo/-/merge_requests/7"}' ;;
+  'POST https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/labels')
+    echo '{}' ;;
+  'GET https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/merge_requests/7')
+    echo '{"head_pipeline":{"status":"running"},"detailed_merge_status":"ci_still_running"}' ;;
+  'PUT https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/merge_requests/7/merge')
+    echo '{}' ;;
+  'GET https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/issues/99/notes?'*)
+    echo '[]' ;;
+  'GET https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/issues/99')
+    echo '{"assignees":[{"username":"alice"}]}' ;;
+  'GET https://gitlab.com/api/v4/users?username=alice')
+    echo '[{"id":21,"username":"alice"}]' ;;
+  'PUT https://gitlab.com/api/v4/projects/test-org%2Ftest-repo/merge_requests/7')
+    echo '{}' ;;
+  *) echo "Unexpected request: ${method} ${url}" >&2; exit 1 ;;
+esac
+if [ "${with_status}" = true ]; then
+  printf '\n201'
+fi
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/curl"
+
+_sec_gl_dir="${SEC_CODE_TMPDIR}/run-gitlab-no-review-label"
+_sec_gl_calls="${SEC_CODE_TMPDIR}/gitlab-calls-no-review-label.log"
+: > "${_sec_gl_calls}"
+setup_sec_code_repo "${_sec_gl_dir}" "agent/99-no-label"
+_sec_gl_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_gl_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token" GITLAB_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo" ISSUE_NUMBER="99" REPO_DIR="repo"
+  export FULLSEND_FORGE="gitlab" GITLAB_HOST="gitlab.com" CI_SERVER_HOST="gitlab.com"
+  export ISSUE_URL="https://gitlab.com/test-org/test-repo/-/issues/99"
+  export CODE_AUTO_MERGE="true" GL_CALLS_FILE="${_sec_gl_calls}"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-gitlab-no-review-label.log" 2>&1 || _sec_gl_rc=$?
+
+if [ "${_sec_gl_rc}" -ne 0 ] \
+  || ! grep -q -- '--request POST .*merge_requests --data-urlencode source_branch=' "${_sec_gl_calls}" \
+  || ! grep -q -- '/labels --data-urlencode name=ready-for-review' "${_sec_gl_calls}" \
+  || grep -Eq -- '(add_labels|labels)=ready-for-review' "${_sec_gl_calls}" \
+  || ! grep -q -- '/merge_requests/7/merge --data-urlencode merge_when_pipeline_succeeds=true' "${_sec_gl_calls}" \
+  || ! grep -q -- '/merge_requests/7 --data-urlencode assignee_ids\[\]=21' "${_sec_gl_calls}"; then
+  echo "FAIL: gitlab-post-create-review-handoff"
+  cat "${SEC_CODE_TMPDIR}/stdout-gitlab-no-review-label.log" "${_sec_gl_calls}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gitlab-post-create-review-handoff"
+fi
+rm -f "${SEC_CODE_MOCK_BIN}/curl"
 
 # --- gh pr list API failure → fail closed (not delete branch and proceed) ---
 cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
