@@ -47,9 +47,10 @@ jq -r '.changes[].new_path' /sandbox/workspace/mr-changes.json
 
 ```bash
 # Per-file diffs from the changes payload, written to disk for the sub-agents
-# to Read; generated files dropped. An empty file is a tool failure.
-jq -r '.changes[] | select(.new_path | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
-  | "### File: \(.new_path)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
+# to Read. Nothing is dropped here: pr-review step 2c filters unreviewable
+# content (with the migrations exemption and the per-file disclosure).
+# An empty file is a tool failure.
+jq -r '.changes[] | "### File: \(.new_path)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
 test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```
 
