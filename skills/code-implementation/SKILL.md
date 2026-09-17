@@ -80,9 +80,10 @@ inside 9b, before each retry iteration (9c), and before commit (10),
 check remaining time **only if `TIMEOUT_SECONDS` is set**:
 
 ```bash
-if [ -n "${TIMEOUT_SECONDS:-}" ]; then
-  ELAPSED=$(( $(date +%s) - AGENT_START ))
-  REMAINING=$(( TIMEOUT_SECONDS - ELAPSED ))
+if test -n "${TIMEOUT_SECONDS:-}"; then
+  NOW=$(date +%s)
+  ELAPSED=$((NOW - AGENT_START))
+  REMAINING=$((TIMEOUT_SECONDS - ELAPSED))
   echo "::notice::Time check: ${ELAPSED}s elapsed, ${REMAINING}s remaining"
 fi
 ```
@@ -227,7 +228,7 @@ The sandbox's `JIRA_TOKEN` is the `jira-ro` provider's opaque placeholder,
 not the real token. Extract the issue key from `ISSUE_URL`:
 
 ```bash
-if [ "${FULLSEND_TRACKER:-}" = "jira" ]; then
+if test "${FULLSEND_TRACKER:-}" = "jira"; then
   ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
   curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
@@ -319,15 +320,15 @@ these commands in order until one succeeds:
 ```bash
 # Try each discovery method; use the first that returns a non-empty value.
 DEFAULT_BRANCH=""
-if [ "${FULLSEND_FORGE:-github}" = "github" ]; then
+if test "${FULLSEND_FORGE:-github}" = "github"; then
   DEFAULT_BRANCH="$(gh repo view --json defaultBranchRef \
     --jq '.defaultBranchRef.name' 2>/dev/null)" || true
 fi
-if [ -z "${DEFAULT_BRANCH}" ]; then
+if test -z "${DEFAULT_BRANCH}"; then
   DEFAULT_BRANCH="$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null \
     | sed 's|^origin/||')" || true
 fi
-if [ -z "${DEFAULT_BRANCH}" ] || [ "${DEFAULT_BRANCH}" = "HEAD" ]; then
+if test -z "${DEFAULT_BRANCH}" || test "${DEFAULT_BRANCH}" = "HEAD"; then
   DEFAULT_BRANCH="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
     | sed 's|^refs/remotes/origin/||')" || true
 fi
@@ -665,9 +666,10 @@ The first run may be slow (installs hook environments). This is normal.
 
   ```bash
   RUN_FALLBACK=1
-  if [ -n "${TIMEOUT_SECONDS:-}" ] && [ -n "${AGENT_START:-}" ]; then
-    REMAINING=$(( TIMEOUT_SECONDS - ($(date +%s) - AGENT_START) ))
-    if [ "$REMAINING" -lt 300 ]; then
+  if test -n "${TIMEOUT_SECONDS:-}" && test -n "${AGENT_START:-}"; then
+    NOW=$(date +%s)
+    REMAINING=$((TIMEOUT_SECONDS - (NOW - AGENT_START)))
+    if test "$REMAINING" -lt 300; then
       RUN_FALLBACK=0; echo "::warning::Direct-execution fallback skipped: ${REMAINING}s remaining < 300s floor"
     else
       echo "::notice::Fallback time check: ${REMAINING}s remaining >= 300s floor — proceeding"

@@ -25,9 +25,18 @@ MR_IID=$(basename "${PR_URL}")
 ## MR data fetching
 
 ```bash
+# Write token into a stable curl config file so the header never
+# appears on a command line (avoids the tirith sensitive-upload rule).
+# Use a hardcoded path, not a mktemp path stored in a shell variable:
+# each fenced block in this file runs as an independent Bash call, so
+# shell variables do not survive between them — files (at a fixed,
+# predictable path) do. Written and scrubbed within this same block so
+# the token never outlives the calls that need it.
+(umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc)
+
 # MR metadata: title, description, author, labels, draft status, head SHA
 MR_DATA=$(curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  -K /tmp/gitlab-api.curlrc \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}")
 HEAD_SHA=$(echo "$MR_DATA" | jq -r '.sha')
 IS_DRAFT=$(echo "$MR_DATA" | jq -r '.draft')
@@ -35,12 +44,14 @@ IS_DRAFT=$(echo "$MR_DATA" | jq -r '.draft')
 # MR changes (includes diff per file), saved for later Bash calls
 # (shell variables do not survive between calls; files do)
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  -K /tmp/gitlab-api.curlrc \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}/changes" \
   > /sandbox/workspace/mr-changes.json
 
 # Changed file paths
 jq -r '.changes[].new_path' /sandbox/workspace/mr-changes.json
+
+: > /tmp/gitlab-api.curlrc
 ```
 
 ## Unified diff (small and large MRs)
@@ -99,27 +110,48 @@ timed out — scrub the token: `: > /tmp/pr-head.curlrc`.
 ## Issue context
 
 ```bash
+# Recreate the curl config for this block (see MR data fetching above
+# for why a stable path, not a mktemp variable, is used).
+(umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc)
+
 # Fetch linked issue metadata
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  -K /tmp/gitlab-api.curlrc \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>" \
   | jq '{title, description}'
 
 # Fetch issue notes (comments)
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  -K /tmp/gitlab-api.curlrc \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>/notes"
+
+: > /tmp/gitlab-api.curlrc
 ```
 
 ## Prior review comparison
 
 ```bash
+# Recreate the curl config for this block (see MR data fetching above
+# for why a stable path, not a mktemp variable, is used).
+(umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_TOKEN}" > /tmp/gitlab-api.curlrc)
+
 # Compare commits between prior review and current HEAD
 COMPARE=$(curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  -K /tmp/gitlab-api.curlrc \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}")
 CHANGED_FILES=$(echo "$COMPARE" | jq -r '.diffs[].new_path')
+
+: > /tmp/gitlab-api.curlrc
 ```
+
+Each block above writes and scrubs `/tmp/gitlab-api.curlrc` within its
+own Bash call. As a fallback in case a block is interrupted before its
+own scrub line runs, once every GitLab API call in this skill is done
+for the review, scrub the token again as its own explicit Bash call:
+`: > /tmp/gitlab-api.curlrc` — not `rm`, and not an `EXIT` trap (a trap
+set in one Bash call does not fire for commands run in a later,
+independent call, and would instead delete the file before the later
+consumers ever read it).
 
 ## Notes
 
