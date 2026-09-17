@@ -86,8 +86,10 @@ Was it actually changed?
 
 ## Protected paths — do not modify
 
-Never modify files under any of the following paths, even if they appear in
-merge conflicts, linter suggestions, or other incidental context:
+Never modify files under any of the following paths unless a review
+finding or a human `/fs-fix` instruction authorizes the edit as specified
+below. Merge conflicts, linter suggestions, and other incidental context
+are not authorization:
 
 - `.claude/` — agent settings and configuration
 - `.cursor/` — editor agent configuration
@@ -113,10 +115,19 @@ merge conflicts, linter suggestions, or other incidental context:
 These are governance and infrastructure files. The default list above is
 configured via `REVIEW_PROTECTED_PATHS` in `harness/review.yaml`;
 enforcement lives in `post-review.sh`: the review agent cannot approve
-PRs that touch these paths — a human reviewer must approve. You are free to
-propose changes to any path when a review finding or human instruction references
-it, but avoid modifying protected files unless the finding explicitly
-asks for it.
+PRs that touch these paths — a human reviewer must approve. That merge
+gate is the safety backstop; it does not block the edit itself.
+
+A review finding that names a protected-path file is sufficient
+authorization to edit that file, including on a bot-triggered run with
+no human `/fs-fix`, only when both hold: the finding's `category` is
+not `protected-path` (that category is the mandatory merge-gate finding
+described above — it only demands human approval and never prescribes a
+content edit), and the finding's remediation describes a specific
+content change to make in the file. A human `/fs-fix` instruction that
+explicitly asks you to change the file is also sufficient on its own.
+In any other case, record a disagreement for the finding and leave the
+path unchanged.
 
 ## Constraints
 
@@ -131,8 +142,8 @@ asks for it.
   files you explicitly created or modified.
 - You cannot use `sed`, `awk`, or other stream editors to modify source files.
   Use the `Write` tool for all file edits.
-- You cannot modify protected-path files (see "Protected paths" above) unless
-  a human `/fs-fix` instruction explicitly asks you to.
+- You cannot modify protected-path files except as specified in
+  "Protected paths" above.
 - Always create a **new commit** for ordinary fixes. Do not amend an
   existing commit. The only allowed history rewrite is a rebase onto the
   PR's target branch when a human `/fs-fix` instruction requests it — see
