@@ -135,7 +135,8 @@ if ! curl --fail --silent --show-error \
   > "$COMPARE_FILE"; then
   echo "prior-review compare failed; using full MR diff" >&2
 elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \
-  && jq -r '.diffs[].new_path' "$COMPARE_FILE" > "${CHANGED_FILES_FILE}.tmp" \
+  && jq -r '[.diffs[] | .new_path, .old_path] | unique[]' \
+    "$COMPARE_FILE" > "${CHANGED_FILES_FILE}.tmp" \
   && jq -r '.diffs[] | "diff --git a/\(.old_path) b/\(.new_path)\n\(.diff)"' \
     "$COMPARE_FILE" > "${INCREMENTAL_DIFF}.tmp"; then
   if mv "${INCREMENTAL_DIFF}.tmp" "$INCREMENTAL_DIFF" \

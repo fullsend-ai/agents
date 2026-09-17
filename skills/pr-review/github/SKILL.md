@@ -114,7 +114,8 @@ fi
 if ! gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${HEAD_SHA}" > "$COMPARE_FILE"; then
   echo "prior-review compare failed; using full PR diff" >&2
 elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \
-  && jq -r '.files[].filename' "$COMPARE_FILE" > "${CHANGED_FILES_FILE}.tmp" \
+  && jq -r '[.files[] | .filename, (.previous_filename // empty)] | unique[]' \
+    "$COMPARE_FILE" > "${CHANGED_FILES_FILE}.tmp" \
   && jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' \
     "$COMPARE_FILE" > "${INCREMENTAL_DIFF}.tmp"; then
   if mv "${INCREMENTAL_DIFF}.tmp" "$INCREMENTAL_DIFF" \

@@ -78,10 +78,11 @@ extract_compare_snippet() {
 
 assert_compare_snippet() {
   local name="$1" forge_file="$2" payload="$3" command_exit="$4"
-  local expected_incomplete="$5" expected_files="$6" fail_mv="${7:-false}"
-  local omit_full_diff="${8:-false}" expected_exit="${9:-0}"
-  local fail_final_marker="${10:-false}"
-  local case_dir snippet snippet_exit actual_incomplete actual_files precall_state
+  local expected_incomplete="$5" expected_files="$6" expected_incremental="$7"
+  local fail_mv="${8:-false}" omit_full_diff="${9:-false}"
+  local expected_exit="${10:-0}" fail_final_marker="${11:-false}"
+  local case_dir snippet snippet_exit actual_incomplete actual_files
+  local actual_incremental precall_state
   case_dir=$(mktemp -d)
   mkdir -p "${case_dir}/bin" "${case_dir}/workspace"
   printf '%s\n' "${payload}" > "${case_dir}/payload.json"
@@ -151,12 +152,16 @@ EOF
 
   actual_incomplete=$(cat "${case_dir}/workspace/pr-compare-incomplete")
   actual_files=$(cat "${case_dir}/workspace/pr-changed-files.txt")
+  actual_incremental=$(cat "${case_dir}/workspace/pr-incremental-diff.txt")
   if [[ "${actual_incomplete}" == "${expected_incomplete}" \
     && "${actual_files}" == "${expected_files}" \
+    && "${actual_incremental}" == "${expected_incremental}" \
     && "${precall_state}" == safe ]]; then
     echo "PASS: ${name}"
   else
-    echo "FAIL: ${name} — incomplete=${actual_incomplete}, files=${actual_files}, pre-call=${precall_state}"
+    printf 'FAIL: %s — incomplete=%s, files=%s, incremental=%q, pre-call=%s\n' \
+      "${name}" "${actual_incomplete}" "${actual_files}" "${actual_incremental}" \
+      "${precall_state}"
     FAILURES=$((FAILURES + 1))
   fi
 }
@@ -251,25 +256,40 @@ assert_jq_result "GitLab rejects absolute current path" "${GITLAB_COMPARE_COMPLE
 assert_jq_result "GitLab rejects newline in old path" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt\nb.md","new_path":"a.txt","diff":"@@"}]}' false
 assert_compare_snippet "GitHub complete compare installs precise artifacts" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 false a.txt
+  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 false a.txt \
+  $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@'
+assert_compare_snippet "GitHub rename qualifies old and current paths" "${GITHUB_FORGE}" \
+  '{"total_commits":1,"files":[{"previous_filename":"pkg/auth/token.go","filename":"pkg/util/helpers.go","patch":"@@ -1 +1 @@"}]}' \
+  0 false $'pkg/auth/token.go\npkg/util/helpers.go' \
+  $'diff --git a/pkg/auth/token.go b/pkg/util/helpers.go\n@@ -1 +1 @@'
 assert_compare_snippet "GitHub command failure preserves fail-closed state" "${GITHUB_FORGE}" \
-  '{"message":"Not Found"}' 1 true all
+  '{"message":"Not Found"}' 1 true all "base diff fallback"
 assert_compare_snippet "GitHub unsafe path preserves fail-closed state" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt\nb.md","patch":"@@"}]}' 0 true all
+  '{"total_commits":1,"files":[{"filename":"a.txt\nb.md","patch":"@@"}]}' 0 true all "base diff fallback"
 assert_compare_snippet "GitHub malformed payload preserves fail-closed state" "${GITHUB_FORGE}" \
-  '{"message":"Not Found"}' 0 true all
+  '{"message":"Not Found"}' 0 true all "base diff fallback"
 assert_compare_snippet "GitHub artifact install failure preserves fail-closed state" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true all true
+  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true all \
+  "base diff fallback" true
 assert_compare_snippet "GitHub conservative initialization failure aborts before API" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true all false true 1
+  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true all \
+  "base diff fallback" false true 1
 assert_compare_snippet "GitHub final marker failure cannot publish stale false" "${GITHUB_FORGE}" \
-  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true a.txt false false 0 true
+  '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 true a.txt \
+  $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@' false false 0 true
 assert_compare_snippet "GitLab complete compare installs precise artifacts" "${GITLAB_FORGE}" \
-  '{"compare_timeout":false,"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@ -1 +1 @@"}]}' 0 false a.txt
+  '{"compare_timeout":false,"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@ -1 +1 @@"}]}' 0 false a.txt \
+  $'diff --git a/a.txt b/a.txt\n@@ -1 +1 @@'
+assert_compare_snippet "GitLab rename qualifies old and current paths" "${GITLAB_FORGE}" \
+  '{"compare_timeout":false,"diffs":[{"old_path":"pkg/auth/token.go","new_path":"pkg/util/helpers.go","diff":"@@ -1 +1 @@"}]}' \
+  0 false $'pkg/auth/token.go\npkg/util/helpers.go' \
+  $'diff --git a/pkg/auth/token.go b/pkg/util/helpers.go\n@@ -1 +1 @@'
 assert_compare_snippet "GitLab timeout preserves fail-closed state" "${GITLAB_FORGE}" \
-  '{"compare_timeout":true,"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@"}]}' 0 true all
+  '{"compare_timeout":true,"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@"}]}' 0 true all \
+  "base diff fallback"
 assert_compare_snippet "GitLab unsafe path preserves fail-closed state" "${GITLAB_FORGE}" \
-  '{"diffs":[{"old_path":"../a.txt","new_path":"a.txt","diff":"@@"}]}' 0 true all
+  '{"diffs":[{"old_path":"../a.txt","new_path":"a.txt","diff":"@@"}]}' 0 true all \
+  "base diff fallback"
 assert_contains "skill falls back on incomplete patch bodies" "${SKILL}" \
   "incomplete patch bodies"
 assert_order "remediation candidates precede budget allocation" "${SKILL}" \
