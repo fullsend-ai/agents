@@ -230,6 +230,11 @@ When the change is safe and no findings have `actionable: true` with a
 non-empty `remediation`, approve the PR. Observations, confirmations,
 and analysis notes at any severity level do not block.
 
+On a re-review, a new low or info finding — one that matches no prior
+finding — gets `actionable: false` before the outcome is chosen, so it
+cannot send the PR back to the fix agent on its own. It stays in the
+findings as a suggestion. See the `pr-review` skill, step 6f.
+
 The `code-review` skill defines the finding structure. The `pr-review`
 skill defines the review comment format and procedure.
 

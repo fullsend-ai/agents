@@ -308,6 +308,9 @@ Then determine the overall outcome:
   the PR mergeable. This is distinct from `request-changes`, which
   implies fixable issues.
 
+On a re-review, first set `actionable: false` on any low or info finding
+with no prior match (`pr-review` step 6f).
+
 ## Constraints
 
 The agent definition (`agents/review.md`) is the authoritative list of
