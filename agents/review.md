@@ -51,10 +51,12 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
     app than expected; prior review discarded, file is empty
   - `unverifiable-wrong-user` — GitLab prior comment author does not match the
     verified token owner; prior review discarded, file is empty
-- Prior review body at `/sandbox/workspace/prior-review.txt` when this
-  is a re-review. Contains the prior run's findings with assessed
-  severities. Absent on first review or when provenance validation
-  fails.
+- Canonical prior-finding JSON at `/sandbox/workspace/prior-review.txt` when
+  this is a verified re-review. The host pre-script extracts a versioned,
+  machine-readable projection from the prior run's schema-validated findings
+  and rejects the human-readable review body before sandbox ingress. The file
+  is empty on first review or when provenance, projection, category, or safe
+  path validation fails.
 
 ## Severity filtering
 

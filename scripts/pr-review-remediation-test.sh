@@ -166,8 +166,8 @@ EOF
   fi
 }
 
-GITHUB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (startswith("/") | not) and (test("(^|/)\\.\\.(/|$)|[\\r\\n<>]") | not); type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (.patch | type == "string" and length > 0))'
-GITLAB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (startswith("/") | not) and (test("(^|/)\\.\\.(/|$)|[\\r\\n<>]") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path) and (.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false))'
+GITHUB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (.patch | type == "string" and length > 0))'
+GITLAB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path) and (.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false))'
 
 assert_contains "skill materializes incremental diff" "${SKILL}" \
   "/sandbox/workspace/pr-incremental-diff.txt"
@@ -196,9 +196,9 @@ assert_contains "context assembly supplies incremental diff" "${SKILL}" \
 assert_contains "prior review data is fenced as untrusted" "${SKILL}" \
   "UNTRUSTED PRIOR-REVIEW DATA"
 assert_contains "unsafe structured metadata is rejected" "${SKILL}" \
-  'contains `<`, `>`, a carriage return, or a newline'
+  'leading slash, backslash, repeated or trailing slash, `.` or `..` component'
 assert_contains "optional prior finding fields remain optional" "${SKILL}" \
-  'When present, severity'
+  'an optional positive integer line'
 assert_contains "prior findings use a structured projection" "${SKILL}" \
   "structured projection"
 assert_not_contains "raw prior finding JSON is not prompted" "${SKILL}" \
@@ -221,6 +221,12 @@ assert_contains "GitLab comparison persists completeness" "${GITLAB_FORGE}" \
   'pr-compare-incomplete'
 assert_contains "GitLab comparison persists changed files" "${GITLAB_FORGE}" \
   'pr-changed-files.txt'
+assert_contains "Prior identity is machine-readable" "${SKILL}" \
+  'finding identity from review Markdown.'
+assert_contains "Prior paths are rejected, never rewritten" "${SKILL}" \
+  'rewrites or normalizes paths.'
+assert_contains "Missing-test counterpart is exact" "${SKILL}" \
+  'suffix with `_test.go` and accept only that exact safe path'
 assert_jq_result "GitHub accepts complete compare" "${GITHUB_COMPARE_COMPLETE}" \
   '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' true
 assert_jq_result "GitHub rejects API error JSON" "${GITHUB_COMPARE_COMPLETE}" \
@@ -239,6 +245,10 @@ assert_jq_result "GitHub rejects newline in current path" "${GITHUB_COMPARE_COMP
   '{"total_commits":1,"files":[{"filename":"a.txt\nb.md","patch":"@@"}]}' false
 assert_jq_result "GitHub rejects traversal in previous path" "${GITHUB_COMPARE_COMPLETE}" \
   '{"total_commits":1,"files":[{"filename":"a.txt","previous_filename":"../old.txt","patch":"@@"}]}' false
+assert_jq_result "GitHub rejects dot path component" "${GITHUB_COMPARE_COMPLETE}" \
+  '{"total_commits":1,"files":[{"filename":"docs/./a.txt","patch":"@@"}]}' false
+assert_jq_result "GitHub rejects backslash path" "${GITHUB_COMPARE_COMPLETE}" \
+  '{"total_commits":1,"files":[{"filename":"docs\\a.txt","patch":"@@"}]}' false
 assert_jq_result "GitHub rejects prompt delimiter in previous path" "${GITHUB_COMPARE_COMPLETE}" \
   '{"total_commits":1,"files":[{"filename":"a.txt","previous_filename":"<old>.txt","patch":"@@"}]}' false
 assert_jq_result "GitLab accepts complete compare" "${GITLAB_COMPARE_COMPLETE}" \
@@ -253,6 +263,10 @@ assert_jq_result "GitLab rejects oversized diff" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@","too_large":true}]}' false
 assert_jq_result "GitLab rejects absolute current path" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt","new_path":"/a.txt","diff":"@@"}]}' false
+assert_jq_result "GitLab rejects repeated slash" "${GITLAB_COMPARE_COMPLETE}" \
+  '{"diffs":[{"old_path":"a.txt","new_path":"docs//a.txt","diff":"@@"}]}' false
+assert_jq_result "GitLab rejects trailing slash" "${GITLAB_COMPARE_COMPLETE}" \
+  '{"diffs":[{"old_path":"a.txt","new_path":"docs/","diff":"@@"}]}' false
 assert_jq_result "GitLab rejects newline in old path" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt\nb.md","new_path":"a.txt","diff":"@@"}]}' false
 assert_compare_snippet "GitHub complete compare installs precise artifacts" "${GITHUB_FORGE}" \
