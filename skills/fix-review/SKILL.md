@@ -174,17 +174,19 @@ echo "::notice::STEP 7b: Pre-commit hooks"
 
 Same rules as the code agent (see step 9b of the code-implementation
 skill for the full text):
-- Max 2 pre-commit/hook-execution runs per validation-loop iteration
-  (not per sandbox). An infra failure before any hook ran doesn't
-  count — the direct-execution fallback takes its place. A
-  validation-loop retry is a new iteration with a fresh budget; 7c's
-  own retries don't reopen 7b.
+- Maximum 2 pre-commit/hook-execution runs per validation-loop
+  iteration (not per sandbox). A `pre-commit run` that failed on
+  infrastructure before executing any hook does not count — the
+  direct-execution fallback takes its place. A validation-loop retry
+  is a new iteration with a fresh budget; 7c's own retries do not
+  reopen 7b.
 - Pre-format your code before running pre-commit.
-- If `pre-commit` can't run (typically it can't fetch remote hook
-  repos), don't skip verification unless the fallback floor below
-  forbids it — otherwise run the configured hooks directly, honoring
-  each hook's `entry`, `args`, `rev`, `stages`,
-  `additional_dependencies`, and file filters.
+- If `pre-commit` itself cannot run — typically because it cannot
+  fetch remote hook repositories — do not skip verification, unless
+  the fallback floor below says you cannot afford it. Otherwise fall
+  back to running the configured hooks directly, honoring each hook's
+  `entry`, `args`, `rev`, `stages`, `additional_dependencies`, and
+  file filters.
 - If the second run still fails, log the exact hook, file, and error
   in the commit message and move on. Never claim hooks passed when
   they did not.
@@ -194,12 +196,12 @@ test -f .pre-commit-config.yaml && pre-commit run --files <all-changed-files>
 ```
 
 **Time recheck before the fallback.** Run this **only** when the
-`pre-commit run` above failed on infrastructure (couldn't fetch hook
-repos, or died before executing any hook) — not after a pass, not
-after real hook errors. The 10% gate measured the fast path; the
+`pre-commit run` above failed on infrastructure (could not fetch hook
+repositories, or died before executing any hook) — not after a pass,
+not after real hook errors. The 10% gate measured the fast path; the
 fallback `pip install`s each hook at its pinned `rev` and can outrun a
 thin margin, timing out with no commit at all. Re-check against a flat
-300s floor (absolute — the cost doesn't scale with the budget):
+300s floor (absolute, because the cost does not scale with the budget):
 
 ```bash
 RUN_FALLBACK=1
@@ -218,9 +220,9 @@ fi
 Guard both variables (an unset `AGENT_START` reads as 0 and would
 always skip) and print on every path.
 
-If `RUN_FALLBACK` is `0`: skip the fallback (`repo: local` hooks too —
-a local `entry` can fetch too, and 7c's lint still runs), treat 7b as
-finished, and put this in the commit message:
+If `RUN_FALLBACK` is `0`: skip the fallback — `repo: local` hooks
+included, since a local `entry` can fetch too and 7c's lint still runs —
+treat 7b as finished, and put this in the commit message:
 
 > Note: pre-commit hooks were not run. `pre-commit` could not
 > complete (infrastructure failure), and the remaining time budget
@@ -236,7 +238,7 @@ If `1`, run the fallback as described above.
 echo "::notice::STEP 7c: Tests and linters"
 ```
 
-Discover build/test commands (Makefile, package.json, pyproject.toml, etc). Run the test command (`make test`, `npm test`, `go test ./...`, `pytest`), then the lint command (`make lint`, `golangci-lint run`, `eslint`, `ruff`) as separate invocations, not `&&`-chained — lint runs even if tests fail.
+Discover build/test commands: Read Makefile, package.json, pyproject.toml, or equivalent. Run test command (e.g., `make test`, `npm test`, `go test ./...`, `pytest`), then lint command (e.g., `make lint`, `golangci-lint run`, `eslint`, `ruff`) as separate invocations (not `&&`-chained; lint runs even if tests fail).
 
 If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit — 7b is closed for this iteration whether you spent the budget or skipped it. Retry limit: `MAX_RETRIES` (default: 1).
 
