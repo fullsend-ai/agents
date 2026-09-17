@@ -121,13 +121,13 @@ applying either fix category.
 
 ## Before proposing: check for existing issues
 
-**This step is mandatory.** Before including any proposal, verify that no open issue already covers the same improvement. Dispatch a subagent to search using your forge-specific skill's search commands.
+**This step is mandatory.** Before including any proposal, verify that no open issue already covers the same improvement. Dispatch a subagent to search per your forge-specific skill's commands.
 
 **Evaluation criteria** (apply these yourself, not the subagent):
 
 - **Skip the proposal** if an open issue proposes the same or a substantially overlapping change. Reference it in `summary` instead.
 - **Skip the proposal** if a recently closed issue addressed the same problem (closed in the last 90 days) — the fix may already be in flight.
-- **Include the proposal** only if no existing issue covers it, or if your proposal meaningfully refines one in a way that warrants a new issue.
+- **Include the proposal** only if you are confident no existing issue covers it, or if it meaningfully refines one enough to warrant a new issue.
 
 **Do not file "evidence for" issues.** Put corroborating evidence in `summary`. Do not title proposals "Evidence for #XXXX".
 

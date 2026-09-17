@@ -83,31 +83,44 @@ Use multiple searches with different keyword combinations if the first returns n
 
 ## Existing-practice search
 
-Before proposing a governance rule about a pattern, search `target_repo` for it using the project blob search endpoint. The endpoint defaults to 20 results per page and returns raw blob hits, not deduplicated paths, so count **unique matching paths across all pages**, not raw hits on a single page — otherwise the count can look low even when many more files contradict the rule:
+Before proposing a governance rule about a pattern, search `target_repo` for it using the project blob search endpoint. The endpoint defaults to 20 results per page and returns raw blob hits, not deduplicated paths, so count **unique matching paths across all pages**, not raw hits on a single page — otherwise the count can look low even when many more files contradict the rule. Set `PATTERN` to the token the proposed rule prohibits or mandates, and `PATH_SUFFIX` to the file-path suffix the rule governs; leave `PATH_SUFFIX` empty for a rule that isn't scoped to a particular file type:
 
 ```bash
+# Example: before prohibiting exact gh CLI commands in SKILL.md
+PATTERN='gh'
+PATH_SUFFIX='SKILL.md'
 TARGET_ENCODED=$(printf '%s' "<target_repo>" | jq -sRr @uri)
+PATTERN_ENCODED=$(printf '%s' "$PATTERN" | jq -sRr @uri)
 PAGE=1
 MATCHED_PATHS='[]'
-AMBIGUOUS=0
+FAILED=0
 while :; do
   RESPONSE=$(curl --fail --silent --show-error \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-    "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/search?scope=blobs&search=gh&per_page=100&page=${PAGE}")
+    "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/search?scope=blobs&search=${PATTERN_ENCODED}&per_page=100&page=${PAGE}")
+  if [ "$?" -ne 0 ]; then
+    FAILED=1
+    break
+  fi
   RAW_COUNT=$(echo "$RESPONSE" | jq 'length')
-  MATCHED_PATHS=$(jq -n --argjson acc "$MATCHED_PATHS" --argjson page "$RESPONSE" \
-    '($acc + [$page[] | select(.path | endswith("SKILL.md")) | .path]) | unique')
+  MATCHED_PATHS=$(jq -n --argjson acc "$MATCHED_PATHS" --argjson page "$RESPONSE" --arg suffix "$PATH_SUFFIX" \
+    '($acc + [$page[] | select(.path | endswith($suffix)) | .path]) | unique')
   if [ "$RAW_COUNT" -lt 100 ]; then
     break
   fi
   PAGE=$((PAGE + 1))
   if [ "$PAGE" -gt 10 ]; then
-    AMBIGUOUS=1
+    FAILED=1
     break
   fi
 done
 UNIQUE_COUNT=$(echo "$MATCHED_PATHS" | jq 'length')
+if [ "$FAILED" -eq 1 ] || [ "$UNIQUE_COUNT" -eq 100 ]; then
+  echo "SEARCH FAILED OR AMBIGUOUS: a curl error, pagination cut off before a partial page, or a full final page means the true count could extend beyond what was collected — treat as failed and drop the proposal per the shared skill's fail-closed rule" >&2
+  exit 1
+fi
+echo "UNIQUE_COUNT=${UNIQUE_COUNT}"
 echo "$MATCHED_PATHS" | jq '.'
 ```
 
-Apply the `SKILL.md`/path filter and the uniqueness count together, in the same `jq` expression that builds `MATCHED_PATHS` — filtering `path` only after a later, separate step re-introduces the undercount this recipe exists to avoid. Treat the result as ambiguous and fail closed per the shared skill's rule (the same way an API error is handled) if `AMBIGUOUS` was set (pagination was cut off before reaching a partial page) or if `UNIQUE_COUNT` equals `per_page` (100) — either case means the true count could extend beyond what was collected. This is a heuristic for the pattern token, not a parser of exact CLI invocations — review hits before counting them. If the request errors or the results look ambiguous, treat the check as failed rather than guessing at a count.
+Apply the `PATH_SUFFIX` filter and the uniqueness count together, in the same `jq` expression that builds `MATCHED_PATHS` — filtering `path` only after a later, separate step re-introduces the undercount this recipe exists to avoid. The final `if` makes the fail-closed signal observable in the recipe's own output: a `curl` failure inside the loop, pagination cut off before a partial page, or a full final page (`UNIQUE_COUNT` equal to `per_page`, 100) all print a failure to stderr and exit non-zero instead of printing a path list, so the parent skill's fail-closed rule can't be missed by reading a short-looking but truncated result. This is a heuristic for the pattern token, not a parser of exact CLI invocations — review hits before counting them.
