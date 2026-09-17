@@ -101,6 +101,116 @@ COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${HEAD_S
 CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
 ```
 
+## Review thread dismissals
+
+Used by step 2a-1. One query carries all three dismissal signals —
+replies, thread resolution, and 👎 reactions. GraphQL rather than REST:
+resolution state is GraphQL-only (`pulls/.../comments` does not expose it
+at all), reactions over REST cost an extra request per comment, and
+GraphQL returns comments already grouped into threads, so there is no
+`in_reply_to_id` chain to reconstruct. This is a read-only query — see
+"GraphQL access" below.
+
+```bash
+DISMISSALS=$(gh api graphql \
+  -f owner="${REPO_FULL_NAME%%/*}" -f name="${REPO_FULL_NAME##*/}" \
+  -F pr="${PR_NUMBER}" -f query='
+query($owner:String!,$name:String!,$pr:Int!){
+ repository(owner:$owner,name:$name){ pullRequest(number:$pr){
+  author{ login }
+  comments(last:100){ nodes{ author{ login } body createdAt } }
+  reviews(last:100){ nodes{ author{ login } body createdAt } }
+  reviewThreads(last:100){
+   pageInfo{ hasPreviousPage }
+   nodes{
+    isResolved
+    resolvedBy{ login }
+    comments(first:50){ pageInfo{ hasNextPage } nodes{
+     author{ __typename login }
+     body createdAt path diffHunk
+     line originalLine startLine originalStartLine
+     reactionGroups{ content reactors(first:10){ totalCount nodes{ ... on User { login } } } }
+    }}
+   }
+  }}
+ }
+}')
+```
+
+Reading the response:
+
+- `pullRequest.author.login` is the PR author, who can never dismiss a
+  finding (their refutations are still heard — see step 2a-1).
+- `comments` and `reviews` carry the text of PR-level comments and
+  review bodies, because a dismissal or a refutation is as often written
+  there as in the thread it belongs to. `last: 100` keeps the newest of
+  each and truncates once a PR has more: an older PR-level dismissal may
+  go unread, and its absence from these nodes is not evidence that it was
+  never written. They carry no thread anchor either, so step 2a-1 applies
+  one only when it names a single finding unambiguously.
+- Within a thread, `comments.nodes[0]` is the root comment and every later
+  node is a reply — hence `first: 50` there, which must not become `last`.
+  When a thread's own `comments.pageInfo.hasNextPage` is true its newest
+  replies were not read, and "most recent qualifying reply wins" cannot be
+  evaluated. Treat that thread as **undetermined** and dismiss nothing from
+  it, rather than acting on a truncated view that may predate a reversal.
+- `reviewThreads` returns **oldest-first**, so the query uses `last: 100`
+  to keep the most recent threads, which are the ones a re-review needs.
+  `pageInfo.hasPreviousPage` true means older threads were not read;
+  continue rather than paginating, but do not read a thread's absence as
+  the absence of a dismissal.
+- `line` comes back null with `originalLine` set once a comment's diff
+  position goes stale. On a re-review that is the common case, not the
+  edge — always fall back to `originalLine`/`originalStartLine`.
+- `reactionGroups` returns all eight reaction contents even at zero, so
+  select `content == "THUMBS_DOWN"` and check `totalCount` before reading
+  `reactors.nodes`. `first: 10` truncates the list when `totalCount`
+  exceeds it: a login's absence from `nodes` is then not evidence that
+  they did not react, and nothing may be concluded from it either way.
+
+**Bot logins have two spellings and this query returns both.** GraphQL
+reports a `Bot`-typed `author.login` **without** the `[bot]` suffix —
+`fullsend-ai-review`, which is the form `FULLSEND_SLUG` holds, so it
+compares directly. REST reports that same comment's `user.login` **with**
+the suffix, and a bot that resolved a thread appears under `resolvedBy`
+typed `User` — also with the suffix. Compare each login against its own
+source, or strip a trailing `[bot]` from both sides first.
+[fullsend#6456](https://github.com/fullsend-ai/fullsend/issues/6456)
+corrected this same mismatch in another skill.
+
+**Authorization to dismiss is the effective repository role, and
+nothing else.** The query deliberately does not select
+`authorAssociation`: `OWNER`/`MEMBER`/`COLLABORATOR` describe a
+relationship, not a permission, and fullsend
+[ADR 0054](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)
+rejected `author_association` as authorization evidence for the same
+reason. There is no association fallback to reach for. Resolve the role
+per login, cache it, and accept only `admin`, `maintain`, or `write`:
+
+```bash
+# Effective repository role — the only dismissal gate. Cache per login.
+# Requires push access; expect 403 under the review agent's read-only
+# token and treat any error as unverified (step 2a-1 fails closed).
+gh api "repos/${REPO_FULL_NAME}/collaborators/${LOGIN}/permission" \
+  --jq '.role_name'
+```
+
+The sandbox proxy permits it (a GET on `api.github.com`, `access:
+read-only` in `policies/github/review.yaml`), but GitHub itself rejects
+the call without push access — "Must have push access to view collaborator
+permission." The review harness is `readonly_repo: true` with
+`providers/github-ro.yaml`, so this is the expected result here, not a
+misconfiguration: under it most dismissals stay unverified and their
+findings stay actionable, which step 2a-1 requires the review to state
+in one line. The mechanism is therefore **interactive-mode only for
+now**: a token with push access answers this call, so the gate verifies
+there today. Closing it for the pipeline is a fullsend change — the
+runner-side `pre-review.sh` resolving roles and writing a review-context
+snapshot next to `prior-review.txt` (step 2a-1 describes the contract)
+— not tracked yet;
+[fullsend#6860](https://github.com/fullsend-ai/fullsend/issues/6860)
+documents the authorization model this gate follows, not the transport.
+
 ## Interactive mode (non-pipeline)
 
 ```bash
