@@ -36,6 +36,14 @@ curl --silent --config - \
   | jq -r '.changes[] | "--- a/\(.old_path)\n+++ b/\(.new_path)\n\(.diff)"'
 ```
 
+## Review findings fallback
+
+This recovery path is GitHub-only. On GitLab, if
+`/sandbox/workspace/review-body.txt` is empty, whitespace-only,
+pointer-only, or under 200 bytes, log `::error::No review body found`
+and continue from a human instruction or exit with disagree. Do not
+re-fetch MR discussions as a substitute.
+
 ## MR Notes
 
 ```bash

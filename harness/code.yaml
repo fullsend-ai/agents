@@ -74,7 +74,9 @@ env:
     ISSUE_NUMBER: "${ISSUE_NUMBER}"
   sandbox:
     MAX_RETRIES: "1"
-    TIMEOUT_SECONDS: "2100"
+    # Mirror of timeout_minutes. The code-implementation skill budgets
+    # its tail from it. Keep the two in sync.
+    TIMEOUT_SECONDS: "3600"
     GOPATH: "/sandbox/go"
     GOMODCACHE: "/sandbox/go/pkg/mod"
     GIT_AUTHOR_NAME: "fullsend-code"
@@ -82,7 +84,8 @@ env:
     GIT_COMMITTER_NAME: "fullsend-code"
     GIT_COMMITTER_EMAIL: "${GIT_BOT_EMAIL}"
 
-timeout_minutes: 35
+# Per iteration. Mirrored as TIMEOUT_SECONDS in env.sandbox.
+timeout_minutes: 60
 
 overlays:
   - when: 'runtime.forge == "github"'
@@ -136,7 +139,10 @@ overlays:
   # Jira overlay and a forge overlay match.
   # pre_script overrides the top-level default.  Post-script selection
   # stays with the target forge (GitHub/GitLab).
-  - when: 'event.source.system == "jira"'
+  # has(event.source) guards the field access: on non-Jira runs event is
+  # present but has no source, and unguarded event.source throws CEL
+  # "no such key: source" instead of skipping the overlay.
+  - when: 'has(event.source) && event.source.system == "jira"'
     providers:
       - providers/jira-ro.yaml
     openshell:

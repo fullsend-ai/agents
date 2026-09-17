@@ -145,4 +145,4 @@ Effort: `high` (explicit in the harness; override per run with `fullsend run --e
 
 ## Source
 
-[`harness/scribe.yaml`](../harness/scribe.yaml)
+[`harness/scribe.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/scribe.yaml)
