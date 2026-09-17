@@ -80,3 +80,17 @@ curl --fail --silent --show-error \
 ```
 
 Use multiple searches with different keyword combinations if the first returns no results — the same idea can be filed under different titles.
+
+## Existing-practice search
+
+Before proposing a governance rule about a pattern, search `target_repo` for it using the project blob search endpoint:
+
+```bash
+TARGET_ENCODED=$(printf '%s' "<target_repo>" | jq -sRr @uri)
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/search?scope=blobs&search=gh" \
+  | jq '.[] | {path: .path, ref: .ref}'
+```
+
+The blobs search endpoint does not support a filename filter — if you need to scope to a specific file (e.g. `SKILL.md`), filter the `path` field client-side in the `jq` expression. This is a heuristic for the pattern token, not a parser of exact CLI invocations — review hits before counting them. If the request errors or the results look ambiguous, treat the check as failed rather than guessing at a count.

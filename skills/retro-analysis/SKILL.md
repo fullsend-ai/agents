@@ -135,14 +135,9 @@ When skipping, note the issue number and new evidence in `summary` (one sentence
 
 ## Before proposing: check existing practice
 
-**This step is mandatory for governance-rule proposals.** When a proposal would add a new rule, prohibition, or mandate to a governance file (`AGENTS.md`, `CONTRIBUTING.md`, `COMMITS.md`, `CLAUDE.md`), search `target_repo` for that pattern before including it. Run `grep -r` locally, or `gh search code` / GitLab code search when remote. For a prohibition, count files that contain the pattern; for a mandate, count governed files that lack it.
+**This step is mandatory for governance-rule proposals.** When a proposal would add a new rule, prohibition, or mandate to a governance file (`AGENTS.md`, `CONTRIBUTING.md`, `COMMITS.md`, `CLAUDE.md`), search `target_repo` for that pattern first — the retro sandbox has no checkout, so use your forge skill's repo-scoped search ("Existing-practice search"), not `grep -r`. For a prohibition, count files that contain the pattern; for a mandate, count governed files that lack it.
 
-```bash
-# Example: before prohibiting exact gh CLI commands in SKILL.md
-grep -rl --include='SKILL.md' -e 'gh ' skills/
-```
-
-If more than 2 existing files contradict the rule, drop the proposal, revise it to match existing practice, or include a migration plan that names the files that must change. Record the pattern, file count, and example paths in `summary`. Skip this check for bug fixes, tests, and skill edits that do not add a repo-wide rule.
+If more than 2 existing files contradict the rule, drop the proposal, revise it to match existing practice, or include a migration plan naming the files that must change. If the search cannot be run (API error, rate limit, ambiguous scope), fail closed and drop the proposal. Record the pattern, file count (or failure), and example paths in `summary`. Skip this check for bug fixes, tests, and skill edits that don't add a repo-wide rule.
 
 ## Localization guidance
 
