@@ -83,14 +83,31 @@ Use multiple searches with different keyword combinations if the first returns n
 
 ## Existing-practice search
 
-Before proposing a governance rule about a pattern, search `target_repo` for it using the project blob search endpoint:
+Before proposing a governance rule about a pattern, search `target_repo` for it using the project blob search endpoint. The endpoint defaults to 20 results per page and returns raw blob hits, not deduplicated paths, so count **unique matching paths across all pages**, not raw hits on a single page — otherwise the count can look low even when many more files contradict the rule:
 
 ```bash
 TARGET_ENCODED=$(printf '%s' "<target_repo>" | jq -sRr @uri)
-curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/search?scope=blobs&search=gh" \
-  | jq '.[] | {path: .path, ref: .ref}'
+PAGE=1
+MATCHED_PATHS='[]'
+AMBIGUOUS=0
+while :; do
+  RESPONSE=$(curl --fail --silent --show-error \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/search?scope=blobs&search=gh&per_page=100&page=${PAGE}")
+  RAW_COUNT=$(echo "$RESPONSE" | jq 'length')
+  MATCHED_PATHS=$(jq -n --argjson acc "$MATCHED_PATHS" --argjson page "$RESPONSE" \
+    '($acc + [$page[] | select(.path | endswith("SKILL.md")) | .path]) | unique')
+  if [ "$RAW_COUNT" -lt 100 ]; then
+    break
+  fi
+  PAGE=$((PAGE + 1))
+  if [ "$PAGE" -gt 10 ]; then
+    AMBIGUOUS=1
+    break
+  fi
+done
+UNIQUE_COUNT=$(echo "$MATCHED_PATHS" | jq 'length')
+echo "$MATCHED_PATHS" | jq '.'
 ```
 
-The blobs search endpoint does not support a filename filter — if you need to scope to a specific file (e.g. `SKILL.md`), filter the `path` field client-side in the `jq` expression. This is a heuristic for the pattern token, not a parser of exact CLI invocations — review hits before counting them. If the request errors or the results look ambiguous, treat the check as failed rather than guessing at a count.
+Apply the `SKILL.md`/path filter and the uniqueness count together, in the same `jq` expression that builds `MATCHED_PATHS` — filtering `path` only after a later, separate step re-introduces the undercount this recipe exists to avoid. Treat the result as ambiguous and fail closed per the shared skill's rule (the same way an API error is handled) if `AMBIGUOUS` was set (pagination was cut off before reaching a partial page) or if `UNIQUE_COUNT` equals `per_page` (100) — either case means the true count could extend beyond what was collected. This is a heuristic for the pattern token, not a parser of exact CLI invocations — review hits before counting them. If the request errors or the results look ambiguous, treat the check as failed rather than guessing at a count.
