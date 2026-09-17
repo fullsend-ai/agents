@@ -121,19 +121,28 @@ applying either fix category.
 
 ## Before proposing: check for existing issues
 
-**This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
-
-For each candidate proposal, dispatch a subagent to search for existing issues using your forge-specific skill's search commands.
+**This step is mandatory.** Before including any proposal, verify that no open issue already covers the same improvement. Dispatch a subagent to search using your forge-specific skill's search commands.
 
 **Evaluation criteria** (apply these yourself, not the subagent):
 
-- **Skip the proposal** if an existing open issue proposes the same or a substantially overlapping change. Reference the existing issue in your summary instead.
+- **Skip the proposal** if an open issue proposes the same or a substantially overlapping change. Reference it in `summary` instead.
 - **Skip the proposal** if a recently closed issue addressed the same problem (closed in the last 90 days) — the fix may already be in flight.
-- **Include the proposal** only if you are confident no existing issue covers it, or if your proposal meaningfully refines an existing one in a way that warrants a new issue.
+- **Include the proposal** only if no existing issue covers it, or if your proposal meaningfully refines one in a way that warrants a new issue.
 
-**Do not file "evidence for" issues.** When your analysis produces evidence that supports or corroborates an existing open issue, put it in your `summary` field — not in a new proposal. Do not title proposals "Evidence for #XXXX" or use any other framing that makes a duplicate look like a new issue. The summary is posted as a comment on the originating PR or issue, which preserves the data point. Filing evidence as a separate proposal creates noise that compounds across retro runs.
+**Do not file "evidence for" issues.** Put corroborating evidence in `summary`. Do not title proposals "Evidence for #XXXX".
 
-When skipping, note the duplicate in your `summary` field — include the issue number and what specific evidence this retro found, so the human understands what was filtered and why. Keep evidence notes concise — one sentence per existing issue with the issue number and a brief description of the new evidence. The summary field has a schema length limit; prioritize the most impactful evidence if space is constrained.
+When skipping, note the issue number and new evidence in `summary` (one sentence per issue). The summary field has a schema length limit; prioritize the most impactful evidence.
+
+## Before proposing: check existing practice
+
+**This step is mandatory for governance-rule proposals.** When a proposal would add a new rule, prohibition, or mandate to a governance file (`AGENTS.md`, `CONTRIBUTING.md`, `COMMITS.md`, `CLAUDE.md`), search `target_repo` for that pattern before including it. Run `grep -r` locally, or `gh search code` / GitLab code search when remote. For a prohibition, count files that contain the pattern; for a mandate, count governed files that lack it.
+
+```bash
+# Example: before prohibiting exact gh CLI commands in SKILL.md
+grep -rl --include='SKILL.md' -e 'gh ' skills/
+```
+
+If more than 2 existing files contradict the rule, drop the proposal, revise it to match existing practice, or include a migration plan that names the files that must change. Record the pattern, file count, and example paths in `summary`. Skip this check for bug fixes, tests, and skill edits that do not add a repo-wide rule.
 
 ## Localization guidance
 
