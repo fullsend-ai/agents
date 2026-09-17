@@ -101,7 +101,7 @@ COMPARE_FILE=/sandbox/workspace/pr-compare.json
 INCREMENTAL_DIFF=/sandbox/workspace/pr-incremental-diff.txt
 CHANGED_FILES_FILE=/sandbox/workspace/pr-changed-files.txt
 COMPARE_INCOMPLETE_FILE=/sandbox/workspace/pr-compare-incomplete
-COMPARE_COMPLETE_FILTER='type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | type == "string" and length > 0) and (.patch | type == "string" and length > 0))'
+COMPARE_COMPLETE_FILTER='def safe_path: type == "string" and length > 0 and (startswith("/") | not) and (test("(^|/)\\.\\.(/|$)|[\\r\\n<>]") | not); type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (.patch | type == "string" and length > 0))'
 INCOMPLETE_COMPARE=true
 CHANGED_FILES=all
 if ! { printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \

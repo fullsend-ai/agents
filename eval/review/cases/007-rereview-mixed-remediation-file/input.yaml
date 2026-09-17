@@ -28,4 +28,6 @@ prior_review:
   body: |
     ## Findings
 
-    - [missing-doc] `docs/foo.md`: Document the public Foo behavior.
+    #### Medium
+
+    - **[missing-doc]** `docs/foo.md` — Document the public Foo behavior.

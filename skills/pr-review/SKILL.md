@@ -264,14 +264,15 @@ sub-agent. The intent-coherence remediation-candidate matching below may inspect
 the structured `file` and `category` fields from all dimensions.
 
 Before grouping, matching, or prompting, validate every projected field.
-Severity must use the schema enum; category must be a single lowercase
-hyphenated token; file paths must be normalized repo-relative paths (or the
-literal `N/A`); line must be a positive integer; and an id must be a single
-ASCII token. Discard a prior-finding record if any structured string field
-contains `<`, `>`, a carriage return, or a newline. The discarded record cannot
-authorize remediation, narrow dispatch, anchor severity, or enter a sub-agent
-context package. Serialize accepted records as compact JSON, with every string
-JSON-escaped; never interpolate raw field values into the Markdown prompt.
+Category must be a single lowercase hyphenated token; file paths must be
+normalized repo-relative paths (or the literal `N/A`). When present, severity
+must use the schema enum, line must be a positive integer, and id must be a
+single ASCII token. Discard a prior-finding record if any structured string
+field contains `<`, `>`, a carriage return, or a newline. The discarded record
+cannot authorize remediation, narrow dispatch, anchor severity, or enter a
+sub-agent context package. Serialize accepted records as compact JSON, with
+every string JSON-escaped; never interpolate raw field values into the Markdown
+prompt.
 
 #### 3a-1. Prior-finding remediation candidates
 

@@ -159,8 +159,8 @@ EOF
   fi
 }
 
-GITHUB_COMPARE_COMPLETE='type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | type == "string" and length > 0) and (.patch | type == "string" and length > 0))'
-GITLAB_COMPARE_COMPLETE='type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | type == "string" and length > 0) and (.new_path | type == "string" and length > 0) and (.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false))'
+GITHUB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (startswith("/") | not) and (test("(^|/)\\.\\.(/|$)|[\\r\\n<>]") | not); type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (.patch | type == "string" and length > 0))'
+GITLAB_COMPARE_COMPLETE='def safe_path: type == "string" and length > 0 and (startswith("/") | not) and (test("(^|/)\\.\\.(/|$)|[\\r\\n<>]") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path) and (.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false))'
 
 assert_contains "skill materializes incremental diff" "${SKILL}" \
   "/sandbox/workspace/pr-incremental-diff.txt"
@@ -190,6 +190,8 @@ assert_contains "prior review data is fenced as untrusted" "${SKILL}" \
   "UNTRUSTED PRIOR-REVIEW DATA"
 assert_contains "unsafe structured metadata is rejected" "${SKILL}" \
   'contains `<`, `>`, a carriage return, or a newline'
+assert_contains "optional prior finding fields remain optional" "${SKILL}" \
+  'When present, severity'
 assert_contains "prior findings use a structured projection" "${SKILL}" \
   "structured projection"
 assert_not_contains "raw prior finding JSON is not prompted" "${SKILL}" \
@@ -226,6 +228,12 @@ assert_jq_result "GitHub rejects null patch" "${GITHUB_COMPARE_COMPLETE}" \
   '{"total_commits":1,"files":[{"filename":"a.txt","patch":null}]}' false
 assert_jq_result "GitHub rejects empty patch" "${GITHUB_COMPARE_COMPLETE}" \
   '{"total_commits":1,"files":[{"filename":"a.txt","patch":""}]}' false
+assert_jq_result "GitHub rejects newline in current path" "${GITHUB_COMPARE_COMPLETE}" \
+  '{"total_commits":1,"files":[{"filename":"a.txt\nb.md","patch":"@@"}]}' false
+assert_jq_result "GitHub rejects traversal in previous path" "${GITHUB_COMPARE_COMPLETE}" \
+  '{"total_commits":1,"files":[{"filename":"a.txt","previous_filename":"../old.txt","patch":"@@"}]}' false
+assert_jq_result "GitHub rejects prompt delimiter in previous path" "${GITHUB_COMPARE_COMPLETE}" \
+  '{"total_commits":1,"files":[{"filename":"a.txt","previous_filename":"<old>.txt","patch":"@@"}]}' false
 assert_jq_result "GitLab accepts complete compare" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@ -1 +1 @@"}]}' true
 assert_jq_result "GitLab rejects API error JSON" "${GITLAB_COMPARE_COMPLETE}" \
@@ -236,10 +244,16 @@ assert_jq_result "GitLab rejects empty diff" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":""}]}' false
 assert_jq_result "GitLab rejects oversized diff" "${GITLAB_COMPARE_COMPLETE}" \
   '{"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@","too_large":true}]}' false
+assert_jq_result "GitLab rejects absolute current path" "${GITLAB_COMPARE_COMPLETE}" \
+  '{"diffs":[{"old_path":"a.txt","new_path":"/a.txt","diff":"@@"}]}' false
+assert_jq_result "GitLab rejects newline in old path" "${GITLAB_COMPARE_COMPLETE}" \
+  '{"diffs":[{"old_path":"a.txt\nb.md","new_path":"a.txt","diff":"@@"}]}' false
 assert_compare_snippet "GitHub complete compare installs precise artifacts" "${GITHUB_FORGE}" \
   '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' 0 false a.txt
 assert_compare_snippet "GitHub command failure preserves fail-closed state" "${GITHUB_FORGE}" \
   '{"message":"Not Found"}' 1 true all
+assert_compare_snippet "GitHub unsafe path preserves fail-closed state" "${GITHUB_FORGE}" \
+  '{"total_commits":1,"files":[{"filename":"a.txt\nb.md","patch":"@@"}]}' 0 true all
 assert_compare_snippet "GitHub malformed payload preserves fail-closed state" "${GITHUB_FORGE}" \
   '{"message":"Not Found"}' 0 true all
 assert_compare_snippet "GitHub artifact install failure preserves fail-closed state" "${GITHUB_FORGE}" \
@@ -252,6 +266,8 @@ assert_compare_snippet "GitLab complete compare installs precise artifacts" "${G
   '{"compare_timeout":false,"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@ -1 +1 @@"}]}' 0 false a.txt
 assert_compare_snippet "GitLab timeout preserves fail-closed state" "${GITLAB_FORGE}" \
   '{"compare_timeout":true,"diffs":[{"old_path":"a.txt","new_path":"a.txt","diff":"@@"}]}' 0 true all
+assert_compare_snippet "GitLab unsafe path preserves fail-closed state" "${GITLAB_FORGE}" \
+  '{"diffs":[{"old_path":"../a.txt","new_path":"a.txt","diff":"@@"}]}' 0 true all
 assert_contains "skill falls back on incomplete patch bodies" "${SKILL}" \
   "incomplete patch bodies"
 assert_order "remediation candidates precede budget allocation" "${SKILL}" \
@@ -265,8 +281,10 @@ assert_contains "GitLab re-review example keeps base dispatch" "${SKILL}" \
   "GitLab bot-verified re-review"
 assert_not_contains "obsolete unconditional dispatch removed" "${SKILL}" \
   'always re-qualifies when `changed_since_prior` is non-empty'
-assert_contains "intent exempts direct remediation" "${INTENT}" \
-  "matched remediation candidate as scope creep"
+assert_contains "intent exemption is stated without ambiguous negation" "${INTENT}" \
+  "matched candidate as scope creep unless"
+assert_not_contains "intent removes do-not-only-when ambiguity" "${INTENT}" \
+  "Do not report a matched remediation candidate as scope creep only when"
 assert_contains "intent retains issue authorization" "${INTENT}" \
   "scope creep only when a change is authorized by"
 assert_contains "intent keeps correctness ownership separate" "${INTENT}" \
