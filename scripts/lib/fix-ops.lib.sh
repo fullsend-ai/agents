@@ -43,3 +43,34 @@ is_human_rebase_request() {
   instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
   [[ "${instruction}" == *"rebase"* || "${instruction}" == *"merge conflict"* ]]
 }
+
+# is_human_squash_request INSTRUCTION — true if a harness-captured human
+# /fs-fix instruction asked to squash fix-agent commits (see
+# agents/fix.md's "Rewrite fix-agent history" and docs/fix.md's
+# "Squashing or redoing fix-agent commits"). Same trust boundary as
+# is_human_rebase_request: HUMAN_INSTRUCTION is set from the literal
+# PR/MR comment before the sandbox exists.
+is_human_squash_request() {
+  local instruction
+  instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${instruction}" == *"squash"* ]]
+}
+
+# is_human_reset_request INSTRUCTION — true if a harness-captured human
+# /fs-fix instruction asked to redo the fix-agent work from scratch or
+# start over. Matches the phrases in agents/fix.md; bare "reset" is not
+# enough (too generic).
+is_human_reset_request() {
+  local instruction
+  instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${instruction}" == *"from scratch"* \
+    || "${instruction}" == *"start over"* \
+    || "${instruction}" == *"redo"* ]]
+}
+
+# is_human_history_rewrite_request INSTRUCTION — squash or redo/reset.
+# Used by the post-script to authorize skipping replay onto origin/BRANCH
+# after the agent rewrote the authorized fix-agent range.
+is_human_history_rewrite_request() {
+  is_human_squash_request "${1:-}" || is_human_reset_request "${1:-}"
+}

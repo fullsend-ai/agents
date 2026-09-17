@@ -431,6 +431,12 @@ run_test_custom_filename "empty-actions-rejected" \
   "${FIX_SCHEMA}" \
   "false"
 
+run_test_custom_filename "fix-history-rewritten-valid" \
+  '{"pr_number":42,"summary":"s","trigger_source":"human","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"squash","description":"Squashed 3 commits"}],"files_changed":["f.go"],"history_rewritten":true}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
+
 # --- FULLSEND_OUTPUT_FILE path traversal guard ---
 run_test_custom_filename "path-traversal-stripped" \
   '{"pr_number":42,"summary":"Fixed 1 issue.","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check","path":"pkg/handler.go"}],"files_changed":["pkg/handler.go"]}' \
