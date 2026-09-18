@@ -196,37 +196,6 @@ forge_delete_remote_branch() {
   }
 }
 
-# --- Merge queue / auto-merge ---
-
-forge_check_merge_queue() {
-  local base_branch="$1"
-  local owner="${REPO_FULL_NAME%%/*}"
-  local name="${REPO_FULL_NAME##*/}"
-  gh api graphql -f query="
-    query { repository(owner: \"${owner}\", name: \"${name}\") {
-      mergeQueue(branch: \"${base_branch}\") { id }
-    }}" --jq '.data.repository.mergeQueue.id // empty' 2>/dev/null || true
-}
-
-forge_get_repo_merge_methods() {
-  gh api "repos/${REPO_FULL_NAME}" \
-    --jq '{s:.allow_squash_merge,m:.allow_merge_commit,r:.allow_rebase_merge}' 2>/dev/null || true
-}
-
-forge_enable_auto_merge() {
-  local target_pr="$1"
-  local method_flag="$2"
-  local merge_output
-  # shellcheck disable=SC2086
-  if ! merge_output="$(gh pr merge "${target_pr}" --auto ${method_flag} \
-    --repo "${REPO_FULL_NAME}" 2>&1)"; then
-    print_sanitized_gha_log "${merge_output}"
-    gha_echo warning "Failed to enable auto-merge on PR #${target_pr} — continuing"
-  else
-    print_sanitized_gha_log "${merge_output}"
-  fi
-}
-
 # --- Issue operations ---
 
 forge_get_issue_comments() {
