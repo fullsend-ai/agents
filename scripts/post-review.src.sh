@@ -8,6 +8,10 @@
 # if the PR touches sensitive paths, an "approve" action is downgraded
 # to "comment" so only a human can grant approval.
 #
+# It also degrades a blocking review event to "comment" when the review
+# token is the PR author, because a forge rejects a self-approval or a
+# self-requested change (see #245).
+#
 # Required environment variables:
 #   REVIEW_TOKEN                      — token with pull-requests:write on the target repo
 #   PR_URL                            — HTML URL of the PR/MR
@@ -296,6 +300,69 @@ if [ "${ACTION}" = "approve" ]; then
     fi
   fi
 fi
+
+# ---------------------------------------------------------------------------
+# Self-review: a forge rejects an approve or a request-changes review on your
+# own pull request (GitHub returns 422). fullsend's post-review retries a 422
+# with the same event, so the whole submission fails and neither the verdict
+# nor the inline findings reach the PR. When the review token owns the PR,
+# degrade the review EVENT to "comment": the sticky write-up and the findings
+# still land, and only the blocking verdict is dropped.
+#
+# ACTION is deliberately not re-read, so the outcome label still follows the
+# agent's real verdict — this changes delivery, not judgement. DOWNGRADED is
+# left alone for the same reason: this is not the protected-path policy
+# downgrade, which is a decision about who may approve.
+#
+# This is a workaround, not the fix. A review-posting identity distinct from
+# the PR author (a second account, or a GitHub App installation token in
+# REVIEW_TOKEN) removes the collision outright — see
+# https://github.com/fullsend-ai/agents/issues/245.
+# ---------------------------------------------------------------------------
+# Read the action from the result file, not from ACTION: a protected-path
+# downgrade has already rewritten it to "comment", which a forge accepts.
+#
+# GitHub only. GitLab's "prevent approval by author" is a per-project
+# setting that many instances leave off, so a self-approval there is often
+# a real, accepted approval and must not be rewritten into a note.
+case "${FULLSEND_FORGE}:$(jq -r '.action' "${RESULT_FILE}")" in
+  github:approve|github:request-changes|github:reject)
+    REVIEW_USER=$(forge_get_review_user)
+    PR_AUTHOR=$(forge_get_pr_author)
+    if [ -z "${REVIEW_USER}" ] || [ -z "${PR_AUTHOR}" ]; then
+      # Both lookups fail open to empty by design. A warning here trains
+      # operators to ignore it if it fires on the normal path, so classify:
+      # an App installation token (the recommended setup, #245/README) gets
+      # 403 "Resource not accessible by integration" on GET /user and its
+      # <slug>[bot] identity can never collide with the author — a notice,
+      # not a warning. Re-probe stderr only on the already-empty path; keep
+      # the warning for a genuinely failed lookup or an empty PR author,
+      # where a subsequent 422 is actually diagnosable.
+      review_user_err=$(GH_TOKEN="${REVIEW_TOKEN}" gh api user 2>&1 >/dev/null || true)
+      if [ -z "${REVIEW_USER}" ] && [ -n "${PR_AUTHOR}" ] && \
+         printf '%s' "${review_user_err}" | grep -qiE 'Resource not accessible by integration|HTTP 403'; then
+        echo "::notice::Self-review check skipped — review token is a GitHub App installation token (GET /user is 403 for an App token, and its <slug>[bot] identity cannot collide with the PR author) (#245)"
+      else
+        echo "::warning::Self-review check skipped — identity lookup returned empty (review user: '${REVIEW_USER}', PR author: '${PR_AUTHOR}'). If the review token is a PAT that owns this PR, expect a 422 on submit (#245)" >&2
+      fi
+    elif [ "${REVIEW_USER}" = "${PR_AUTHOR}" ]; then
+      echo "Review token is the PR author — posting the review as a comment (#245)"
+
+      SELF_REVIEW_NOTICE=$'\n\n---\n\n'
+      SELF_REVIEW_NOTICE+=$'> **Posted as a comment review** — the review token is the author of\n'
+      SELF_REVIEW_NOTICE+=$'> this pull request, and a forge does not accept an approval or a\n'
+      SELF_REVIEW_NOTICE+=$'> change request on your own PR. The findings below are the review; the\n'
+      SELF_REVIEW_NOTICE+=$'> verdict is on the outcome label.\n'
+
+      SELF_REVIEW_RESULT=$(mktemp)
+      CLEANUP_FILES+=("${SELF_REVIEW_RESULT}")
+      jq --arg notice "${SELF_REVIEW_NOTICE}" \
+        '.action = "comment" | .body = (.body + $notice)' \
+        "${RESULT_FILE}" > "${SELF_REVIEW_RESULT}"
+      RESULT_FILE="${SELF_REVIEW_RESULT}"
+    fi
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Label-actions validation: the review agent may recommend contextual labels
