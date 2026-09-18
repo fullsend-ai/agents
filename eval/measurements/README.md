@@ -58,7 +58,9 @@ Companion platform PR: [fullsend-ai/fullsend#6036](https://github.com/fullsend-a
 ## First ship
 
 Six agents enable `trace_fitness` (em-001): code, fix, prioritize, retro,
-review, and triage. Omit a file to leave an agent without defaults (e.g.
+review, and triage. The same six also enable `run_health` (em-002), which
+scores tool-call integrity from the always-on `execute_tool` spans and skips
+runs with no tool calls. Omit a file to leave an agent without defaults (e.g.
 scribe has no forge work-item identity today). A file under this directory
 only takes effect for agents in fullsend's first-party fetch allow-list
 (`defaultAgentsRepoKnownAgents` in `internal/cli/run.go` — currently those
@@ -70,5 +72,8 @@ agent: code
 measurements:
   - id: em-001
     scorer: trace_fitness
+    version: 1
+  - id: em-002
+    scorer: run_health
     version: 1
 ```
