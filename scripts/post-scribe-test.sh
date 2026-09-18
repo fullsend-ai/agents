@@ -52,6 +52,19 @@ for arg in "\$@"; do
   fi
 done
 
+# Slack incoming webhook — success unless fail/timeout markers are set.
+# Exit 28 matches curl's timeout status (connection or --max-time).
+if [[ "\${URL}" == *"hooks.slack.com"* ]]; then
+  if [[ -f "${TMPDIR}/slack-timeout" ]]; then
+    exit 28
+  fi
+  if [[ -f "${TMPDIR}/slack-fail" ]]; then
+    exit 1
+  fi
+  echo "ok"
+  exit 0
+fi
+
 # Note listing (comments) — return empty array
 if [[ "\${URL}" == *"/notes"* ]] && [[ " \$* " == *" GET "* ]]; then
   echo "[]"
@@ -73,6 +86,14 @@ fi
 exit 0
 MOCKEOF
 chmod +x "${MOCK_BIN}/curl"
+
+# Fail if the post-script still shells out to bc (not in the runner image).
+cat > "${MOCK_BIN}/bc" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "bc was invoked" >&2
+exit 127
+MOCKEOF
+chmod +x "${MOCK_BIN}/bc"
 
 export PATH="${MOCK_BIN}:${PATH}"
 export SCRIBE_REPO="mock-org/mock-repo"
@@ -200,6 +221,25 @@ run_test_stdout "github/dry-run-comment" \
 run_test_stdout "github/low-confidence-rejected" \
   '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.2,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
   "GATE REJECTED"
+
+run_test_stdout "github/confidence-at-threshold-passes" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.6,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "[DRY RUN] Would post comment"
+
+run_test_stdout "github/confidence-decimal-just-below-rejected" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.59,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "GATE REJECTED"
+
+run_test_stdout "github/confidence-equal-decimal-passes" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.60,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "[DRY RUN] Would post comment"
+
+export SCRIBE_MIN_CONFIDENCE="1.5"
+run_test_stdout "github/min-confidence-above-one-fails" \
+  '{"topics":[],"new_issues":[],"stats":{"notes_processed":0,"topics_extracted":0,"existing_matched":0,"new_proposed":0,"omitted":0}}' \
+  "" \
+  "true"
+unset SCRIBE_MIN_CONFIDENCE
 
 run_test_stdout "github/public-safe-false-rejected" \
   '{"topics":[{"topic":"Comp review","summary":"**Meeting update — 2026-04-28**\n\nSalary discussion.","existing_issue":42,"confidence":0.9,"public_safe":false,"public_safe_category":"hr","omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
@@ -359,6 +399,20 @@ run_test "gitlab/live-mode-posts-comment" \
 run_test "gitlab/live-mode-creates-issue" \
   '{"topics":[],"new_issues":[{"title":"Add dark mode","summary":"Users want dark mode.","body":"## Problem\nNo dark mode.\n\n## Options considered\nTheme toggle.\n\n## Acceptance criteria\n- [ ] Toggle works\n\n## Related\nSource: [Meeting notes](https://docs.google.com/document/d/abc123)","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
   "mock-group%2Fmock-project/issues"
+
+# Live GitLab writes must succeed even when Slack cannot be notified.
+touch "${TMPDIR}/slack-fail"
+export SCRIBE_SLACK_WEBHOOK_URL="https://hooks.slack.com/test-webhook"
+run_test_stdout "gitlab/live-write-succeeds-when-slack-fails" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "WARNING: Slack notification failed (non-fatal)"
+if ! grep -qF "mock-group%2Fmock-project/issues/42/notes" "${CURL_LOG}"; then
+  echo "FAIL: gitlab/live-write-succeeds-when-slack-fails — GitLab write missing from curl log"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset SCRIBE_SLACK_WEBHOOK_URL
+rm -f "${TMPDIR}/slack-fail"
 export SCRIBE_DRY_RUN="true"
 
 # Restore GitHub defaults for any subsequent test additions
@@ -366,6 +420,82 @@ export FULLSEND_FORGE="github"
 export SCRIBE_REPO="mock-org/mock-repo"
 unset GITLAB_TOKEN
 unset CI_SERVER_HOST
+
+# ---------------------------------------------------------------------------
+# Slack notification: best-effort, bounded timeouts, never fails the job
+# ---------------------------------------------------------------------------
+SLACK_OK_JSON='{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}'
+SLACK_WEBHOOK_FAKE="https://hooks.slack.com/test-webhook"
+
+run_slack_test() {
+  local test_name="$1"
+  local slack_result="$2"
+  local expected_stdout="$3"
+  local expected_curl="${4:-}"
+
+  rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
+  case "${slack_result}" in
+    fail) touch "${TMPDIR}/slack-fail" ;;
+    timeout) touch "${TMPDIR}/slack-timeout" ;;
+  esac
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${SLACK_OK_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  : > "${CURL_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export SCRIBE_SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_FAKE}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code} (Slack must be non-fatal)"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "bc was invoked" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — post-script invoked bc"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_curl}" ]] && ! grep -qF -- "${expected_curl}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected curl pattern '${expected_curl}' not found"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_slack_test "github/slack-reachable-webhook" "ok" \
+  "Slack notification sent" \
+  "--connect-timeout 10 --max-time 30"
+
+run_slack_test "github/slack-unreachable-webhook" "fail" \
+  "WARNING: Slack notification failed (non-fatal)" \
+  "--connect-timeout 10 --max-time 30"
+
+run_slack_test "github/slack-stalled-webhook" "timeout" \
+  "WARNING: Slack notification failed (non-fatal)" \
+  "--max-time 30"
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
