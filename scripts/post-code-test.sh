@@ -57,6 +57,15 @@ else
   echo "PASS: bundled-script-has-ensure-label"
 fi
 
+if ! grep -q 'is_transient_push_error' "${POST_SCRIPT}" \
+   || ! grep -q 'git_push_with_transient_retry' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-transient-push-retry"
+  echo "  ${POST_SCRIPT} missing is_transient_push_error or git_push_with_transient_retry"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-transient-push-retry"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -1243,15 +1252,27 @@ run_stale_branch_test "branch-with-open-pr" \
   "abc123 refs/heads/agent/42-fix-widget" "99" "keep:open-pr"
 
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the push retry logic from post-code.sh
+# Test helpers — reimplement the push retry logic from post-code.sh
 # section 7b. Given a push exit code and output, returns the action.
+# is_transient_push_error must stay in lockstep with post-code.src.sh.
 # ---------------------------------------------------------------------------
+is_transient_push_error() {
+  local output="$1"
+  echo "${output}" | grep -qiE \
+    'internal server error|HTTP[[:space:]]*50[0-4]|returned error:[[:space:]]*50[0-4]|connection reset'
+}
+
 decide_push_retry() {
   local push_rc="$1"
   local push_output="$2"
 
   if [ "${push_rc}" -eq 0 ]; then
     echo "success"
+    return 0
+  fi
+
+  if is_transient_push_error "${push_output}"; then
+    echo "retry:transient"
     return 0
   fi
 
@@ -1303,6 +1324,35 @@ run_push_retry_test "push-rejected" \
 # Unknown error → fail
 run_push_retry_test "push-unexpected-error" \
   "1" "fatal: repository not found" "fail:unexpected-error"
+
+# Transient GitHub 5xx phrasing → backoff retry, not force-with-lease
+run_push_retry_test "push-internal-server-error" \
+  "1" "remote: Internal Server Error" "retry:transient"
+
+run_push_retry_test "push-http-500" \
+  "1" "fatal: unable to access 'https://github.com/org/repo.git/': The requested URL returned error: 500" \
+  "retry:transient"
+
+run_push_retry_test "push-http-502" \
+  "1" "error: RPC failed; HTTP 502 curl 22 The requested URL returned error: 502" \
+  "retry:transient"
+
+run_push_retry_test "push-http-503" \
+  "1" "fatal: unable to access 'https://github.com/org/repo.git/': The requested URL returned error: 503" \
+  "retry:transient"
+
+run_push_retry_test "push-http-504" \
+  "1" "error: RPC failed; HTTP 504" \
+  "retry:transient"
+
+run_push_retry_test "push-connection-reset" \
+  "1" "error: RPC failed; curl 56 Recv failure: Connection reset by peer" \
+  "retry:transient"
+
+# HTTP 404 is not in the 500-504 window — fail closed, no backoff
+run_push_retry_test "push-http-404-not-transient" \
+  "1" "The requested URL returned error: 404" \
+  "fail:unexpected-error"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the agent artifact stripping logic from
@@ -2349,6 +2399,285 @@ else
 fi
 
 rm -rf "${SEC_CODE_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Transient git-push retry integration tests.
+# Run the real post-code script against a mock git that fails with 5xx.
+# ---------------------------------------------------------------------------
+
+PUSH_TX_TMPDIR="$(mktemp -d)"
+
+install_push_tx_git_mock() {
+  local mock_bin="$1"
+  local state_dir="$2"
+  cat > "${mock_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+_args=("\$@")
+_i=0
+while [[ "\${_args[\$_i]:-}" == "-c" ]]; do
+  _i=\$((_i + 2))
+done
+_cmd="\${_args[\$_i]:-}"
+_has_u=false
+_has_force=false
+_has_delete=false
+for _a in "\${_args[@]}"; do
+  case "\${_a}" in
+    -u) _has_u=true ;;
+    --force-with-lease) _has_force=true ;;
+    --delete) _has_delete=true ;;
+  esac
+done
+if [[ "\${_cmd}" == "push" && "\${_has_delete}" != "true" && "\${_has_u}" == "true" ]]; then
+  echo "force=\${_has_force} args=\$*" >> "${state_dir}/push.log"
+  if [[ "\${_has_force}" != "true" && -f "${state_dir}/nff_plain" ]]; then
+    echo "error: failed to push some refs: non-fast-forward" >&2
+    echo "! [rejected] (non-fast-forward)" >&2
+    exit 1
+  fi
+  _remaining=0
+  if [[ -f "${state_dir}/fail_remaining" ]]; then
+    _remaining="\$(cat "${state_dir}/fail_remaining")"
+  fi
+  if [[ "\${_remaining}" -gt 0 ]]; then
+    echo "\$((_remaining - 1))" > "${state_dir}/fail_remaining"
+    if [[ -f "${state_dir}/fail_message" ]]; then
+      cat "${state_dir}/fail_message" >&2
+    else
+      echo "remote: Internal Server Error" >&2
+    fi
+    exit 1
+  fi
+fi
+if [[ "\${_cmd}" == "remote" && "\${_args[\$((_i + 1))]:-}" == "set-url" ]]; then
+  exit 0
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+  chmod +x "${mock_bin}/git"
+}
+
+run_push_tx_script() {
+  local run_name="$1"
+  local run_dir="${PUSH_TX_TMPDIR}/${run_name}"
+  mkdir -p "${run_dir}/bin"
+  : > "${run_dir}/push.log"
+  : > "${run_dir}/sleep.log"
+
+  cat > "${run_dir}/bin/sleep" <<MOCKEOF
+#!/usr/bin/env bash
+echo "\$*" >> "${run_dir}/sleep.log"
+exit 0
+MOCKEOF
+  chmod +x "${run_dir}/bin/sleep"
+
+  cat > "${run_dir}/bin/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+  chmod +x "${run_dir}/bin/gitleaks"
+
+  cat > "${run_dir}/bin/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; cat 2>/dev/null || true; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+  chmod +x "${run_dir}/bin/gh"
+
+  install_push_tx_git_mock "${run_dir}/bin" "${run_dir}"
+  setup_sec_code_repo "${run_dir}" "agent/99-tx-push"
+
+  local rc=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${PUSH_TX_TMPDIR}"
+    export PATH="${run_dir}/bin:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    bash "${POST_SCRIPT}"
+  ) > "${run_dir}/stdout.log" 2>&1 || rc=$?
+  echo "${rc}" > "${run_dir}/rc"
+}
+
+# Recover: two Internal Server Error responses, then success. Backoff 2s/4s,
+# no force-with-lease, no failure comment.
+mkdir -p "${PUSH_TX_TMPDIR}/recover"
+printf '2\n' > "${PUSH_TX_TMPDIR}/recover/fail_remaining"
+printf '%s\n' 'remote: Internal Server Error' > "${PUSH_TX_TMPDIR}/recover/fail_message"
+run_push_tx_script "recover"
+_tx_recover_rc="$(cat "${PUSH_TX_TMPDIR}/recover/rc")"
+_tx_recover_log="${PUSH_TX_TMPDIR}/recover/stdout.log"
+_tx_recover_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/recover/sleep.log" | sed 's/ *$//')"
+if [ "${_tx_recover_rc}" -ne 0 ]; then
+  echo "FAIL: push-transient-recovers-within-budget — expected exit 0, got ${_tx_recover_rc}"
+  cat "${_tx_recover_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'force=true' "${PUSH_TX_TMPDIR}/recover/push.log"; then
+  echo "FAIL: push-transient-recovers-within-budget — used --force-with-lease on 5xx"
+  cat "${PUSH_TX_TMPDIR}/recover/push.log"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_tx_recover_sleep}" != "2 4" ]; then
+  echo "FAIL: push-transient-recovers-within-budget — expected sleep 2 4, got '${_tx_recover_sleep}'"
+  cat "${_tx_recover_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'Posting failure comment' "${_tx_recover_log}"; then
+  echo "FAIL: push-transient-recovers-within-budget — posted a failure comment"
+  cat "${_tx_recover_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'retrying in 2s' "${_tx_recover_log}" || ! grep -q 'retrying in 4s' "${_tx_recover_log}"; then
+  echo "FAIL: push-transient-recovers-within-budget — missing backoff warnings"
+  cat "${_tx_recover_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: push-transient-recovers-within-budget"
+fi
+
+# Persistent 5xx: exhaust 3 attempts, then fail closed with a failure comment.
+mkdir -p "${PUSH_TX_TMPDIR}/persistent"
+printf '9\n' > "${PUSH_TX_TMPDIR}/persistent/fail_remaining"
+printf '%s\n' 'remote: Internal Server Error' > "${PUSH_TX_TMPDIR}/persistent/fail_message"
+run_push_tx_script "persistent"
+_tx_persist_rc="$(cat "${PUSH_TX_TMPDIR}/persistent/rc")"
+_tx_persist_log="${PUSH_TX_TMPDIR}/persistent/stdout.log"
+_tx_persist_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/persistent/sleep.log" | sed 's/ *$//')"
+if [ "${_tx_persist_rc}" -eq 0 ]; then
+  echo "FAIL: push-transient-exhausted-fails-closed — expected non-zero exit"
+  cat "${_tx_persist_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_tx_persist_sleep}" != "2 4" ]; then
+  echo "FAIL: push-transient-exhausted-fails-closed — expected sleep 2 4, got '${_tx_persist_sleep}'"
+  cat "${_tx_persist_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'failed with a transient error after 3 attempts' "${_tx_persist_log}"; then
+  echo "FAIL: push-transient-exhausted-fails-closed — missing exhaustion warning"
+  cat "${_tx_persist_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'Posting failure comment' "${_tx_persist_log}"; then
+  echo "FAIL: push-transient-exhausted-fails-closed — expected failure comment"
+  cat "${_tx_persist_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: push-transient-exhausted-fails-closed (exit ${_tx_persist_rc})"
+fi
+
+# Genuine non-fast-forward still takes the --force-with-lease path with no backoff.
+mkdir -p "${PUSH_TX_TMPDIR}/nff"
+: > "${PUSH_TX_TMPDIR}/nff/nff_plain"
+run_push_tx_script "nff"
+_tx_nff_rc="$(cat "${PUSH_TX_TMPDIR}/nff/rc")"
+_tx_nff_log="${PUSH_TX_TMPDIR}/nff/stdout.log"
+_tx_nff_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/nff/sleep.log" | sed 's/ *$//')"
+if [ "${_tx_nff_rc}" -ne 0 ]; then
+  echo "FAIL: push-nff-still-force-with-lease — expected exit 0, got ${_tx_nff_rc}"
+  cat "${_tx_nff_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ -n "${_tx_nff_sleep}" ]; then
+  echo "FAIL: push-nff-still-force-with-lease — slept on non-fast-forward ('${_tx_nff_sleep}')"
+  cat "${_tx_nff_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'force=true' "${PUSH_TX_TMPDIR}/nff/push.log"; then
+  echo "FAIL: push-nff-still-force-with-lease — did not use --force-with-lease"
+  cat "${PUSH_TX_TMPDIR}/nff/push.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'retrying with --force-with-lease' "${_tx_nff_log}"; then
+  echo "FAIL: push-nff-still-force-with-lease — missing force-with-lease warning"
+  cat "${_tx_nff_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: push-nff-still-force-with-lease"
+fi
+
+# --force-with-lease is a single attempt, not wrapped in the backoff loop:
+# a transient error on the force push fails closed immediately rather than
+# retrying (a retry could misreport failure if the first attempt actually
+# landed on the remote — see scripts/post-code.src.sh section 7b).
+mkdir -p "${PUSH_TX_TMPDIR}/nff-tx"
+: > "${PUSH_TX_TMPDIR}/nff-tx/nff_plain"
+printf '2\n' > "${PUSH_TX_TMPDIR}/nff-tx/fail_remaining"
+printf '%s\n' 'remote: Internal Server Error' > "${PUSH_TX_TMPDIR}/nff-tx/fail_message"
+run_push_tx_script "nff-tx"
+_tx_nfftx_rc="$(cat "${PUSH_TX_TMPDIR}/nff-tx/rc")"
+_tx_nfftx_log="${PUSH_TX_TMPDIR}/nff-tx/stdout.log"
+_tx_nfftx_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/nff-tx/sleep.log" | sed 's/ *$//')"
+_tx_nfftx_force_count="$(grep -c 'force=true' "${PUSH_TX_TMPDIR}/nff-tx/push.log" || true)"
+if [ "${_tx_nfftx_rc}" -eq 0 ]; then
+  echo "FAIL: push-nff-force-transient-fails-closed — expected non-zero exit"
+  cat "${_tx_nfftx_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ -n "${_tx_nfftx_sleep}" ]; then
+  echo "FAIL: push-nff-force-transient-fails-closed — retried --force-with-lease ('${_tx_nfftx_sleep}')"
+  cat "${_tx_nfftx_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_tx_nfftx_force_count}" != "1" ]; then
+  echo "FAIL: push-nff-force-transient-fails-closed — expected exactly one --force-with-lease attempt, got ${_tx_nfftx_force_count}"
+  cat "${PUSH_TX_TMPDIR}/nff-tx/push.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'retrying with --force-with-lease' "${_tx_nfftx_log}"; then
+  echo "FAIL: push-nff-force-transient-fails-closed — missing force-with-lease warning"
+  cat "${_tx_nfftx_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'Posting failure comment' "${_tx_nfftx_log}"; then
+  echo "FAIL: push-nff-force-transient-fails-closed — expected failure comment"
+  cat "${_tx_nfftx_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: push-nff-force-transient-fails-closed"
+fi
+
+# A plain-push failure whose 5xx body also contains rejection phrasing
+# (GitHub's actual Internal Server Error payload can include both, e.g.
+# "remote: Internal Server Error" plus "! [remote rejected] <branch> ->
+# <branch> (Internal Server Error)") must still fail closed as transient,
+# not be misclassified as non-fast-forward and sent through
+# --force-with-lease.
+mkdir -p "${PUSH_TX_TMPDIR}/transient-rejected"
+printf '9\n' > "${PUSH_TX_TMPDIR}/transient-rejected/fail_remaining"
+printf '%s\n' \
+  'remote: Internal Server Error' \
+  '! [remote rejected] agent/99-tx-push -> agent/99-tx-push (Internal Server Error)' \
+  > "${PUSH_TX_TMPDIR}/transient-rejected/fail_message"
+run_push_tx_script "transient-rejected"
+_tx_tr_rc="$(cat "${PUSH_TX_TMPDIR}/transient-rejected/rc")"
+_tx_tr_log="${PUSH_TX_TMPDIR}/transient-rejected/stdout.log"
+_tx_tr_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/transient-rejected/sleep.log" | sed 's/ *$//')"
+if [ "${_tx_tr_rc}" -eq 0 ]; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — expected non-zero exit"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_tx_tr_sleep}" != "2 4" ]; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — expected sleep 2 4, got '${_tx_tr_sleep}'"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'force=true' "${PUSH_TX_TMPDIR}/transient-rejected/push.log"; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — used --force-with-lease on a transient error"
+  cat "${PUSH_TX_TMPDIR}/transient-rejected/push.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'retrying with --force-with-lease' "${_tx_tr_log}"; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — took the non-fast-forward path"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'failed with a transient error after 3 attempts' "${_tx_tr_log}"; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — missing exhaustion warning"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'Posting failure comment' "${_tx_tr_log}"; then
+  echo "FAIL: push-transient-rejected-phrasing-fails-closed — expected failure comment"
+  cat "${_tx_tr_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: push-transient-rejected-phrasing-fails-closed"
+fi
+
+rm -rf "${PUSH_TX_TMPDIR}"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the auto-merge decision logic from post-code.sh
