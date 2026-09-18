@@ -1,0 +1,34 @@
+forge: github
+
+seed_issues:
+  - title: "Add a Sum helper for score totals"
+    body: |
+      We need a small helper that returns the sum of a slice of
+      scores so callers do not reimplement the loop.
+
+      Acceptance:
+      - Sum([]int{1, 2, 3}) == 6
+      - Sum(nil) and Sum([]int{}) == 0
+
+fixture:
+  type: pull_request
+  title: "feat: add Sum helper for score totals"
+  body: |
+    Closes #1
+
+    Add stats.Sum so callers can total a slice of scores without
+    copying the loop.
+  base: main
+  files:
+    - path: pkg/stats/sum.go
+      content: |
+        package stats
+
+        // Sum returns the sum of xs.
+        func Sum(xs []int) int {
+            s := 0
+            for i := 0; i <= len(xs); i++ {
+                s += xs[i]
+            }
+            return s
+        }

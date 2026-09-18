@@ -1,0 +1,26 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+    - rejected
+  risk_label_required: true
+
+findings:
+  required:
+    - off-by-one
+  forbidden: []
+
+max_turns: 80
+max_cost_usd: 8.00
+
+review_expectations: |
+  The PR adds pkg/stats/sum.go with a textbook off-by-one: the loop
+  uses `i <= len(xs)` and then indexes `xs[i]`, which panics on every
+  non-empty input and is wrong for the empty/nil case as well.
+
+  The correctness sub-agent must report this as [off-by-one]. Approving
+  or omitting that finding would fail the merge-gate bar for this case.
+  ready-for-merge is forbidden because a panic on the happy path is a
+  blocking correctness issue.
