@@ -191,6 +191,76 @@ class TestBuildSummaryBody(unittest.TestCase):
         self.assertIn("Disagreed (1)", body)
         self.assertNotIn("Fixed (", body)
 
+    def test_ci_inspections_rendered(self):
+        data = {
+            "summary": "Fixed lint.",
+            "tests_passed": True,
+            "actions": [
+                {"type": "fix", "finding": "nil check", "description": "Fixed"},
+            ],
+            "ci_inspections": [
+                {
+                    "job": "lint",
+                    "status": "failure",
+                    "classification": "pr-related",
+                    "diagnosis": "ruff failed on src/input.sh.",
+                    "remediation": "Formatted src/input.sh.",
+                },
+                {
+                    "job": "e2e",
+                    "status": "failure",
+                    "classification": "flaky",
+                    "diagnosis": "Timeout talking to staging.",
+                    "remediation": "Rerun the e2e job; this is not caused by the PR.",
+                },
+                {
+                    "job": "coverage",
+                    "status": "failure",
+                    "classification": "unrelated",
+                    "diagnosis": "Coverage gate failed on files this PR did not touch.",
+                    "remediation": "File an issue with the coverage-gate owners.",
+                },
+            ],
+        }
+        body = build_summary_body(data)
+        self.assertIn("CI inspections (3)", body)
+        self.assertIn("**lint** (pr-related, `failure`)", body)
+        self.assertIn("ruff failed on src/input.sh.", body)
+        self.assertIn("Formatted src/input.sh.", body)
+        self.assertIn("**e2e** (flaky, `failure`)", body)
+        self.assertIn("Rerun the e2e job", body)
+        self.assertIn("**coverage** (unrelated, `failure`)", body)
+        self.assertIn("File an issue with the coverage-gate owners.", body)
+
+    def test_ci_inspections_omitted_when_absent(self):
+        data = {"summary": "Done.", "tests_passed": True, "actions": []}
+        body = build_summary_body(data)
+        self.assertNotIn("CI inspections", body)
+
+    def test_ci_inspections_empty_omitted(self):
+        data = {
+            "summary": "Done.",
+            "tests_passed": True,
+            "actions": [],
+            "ci_inspections": [],
+        }
+        body = build_summary_body(data)
+        self.assertNotIn("CI inspections", body)
+
+    def test_ci_inspections_without_optional_fields(self):
+        data = {
+            "summary": "Done.",
+            "tests_passed": True,
+            "actions": [],
+            "ci_inspections": [
+                {"job": "unit-tests", "classification": "passing"},
+            ],
+        }
+        body = build_summary_body(data)
+        self.assertIn("CI inspections (1)", body)
+        self.assertIn("**unit-tests** (passing)", body)
+        self.assertNotIn("`passing`)", body)
+
 
 post_summary = mod.post_summary
 MAX_COMMENT_LENGTH = mod.MAX_COMMENT_LENGTH
@@ -495,6 +565,34 @@ class TestSchemaValidation(unittest.TestCase):
             "summary": "All good.",
             "tests_passed": True,
             "files_changed": ["foo.go"],
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
+            json.dump(data, f)
+            f.flush()
+            try:
+                self.assertEqual(main([f.name, "org/repo", "42", "--dry-run"]), 0)
+            finally:
+                os.unlink(f.name)
+
+    def test_valid_data_with_ci_inspections_passes(self):
+        """Optional ci_inspections is accepted when well-formed."""
+        data = {
+            "pr_number": 42,
+            "trigger_source": "bot",
+            "actions": [
+                {"type": "fix", "finding": "nil check", "description": "Fixed"},
+            ],
+            "summary": "All good.",
+            "tests_passed": True,
+            "files_changed": ["foo.go"],
+            "ci_inspections": [
+                {
+                    "job": "lint",
+                    "status": "success",
+                    "classification": "passing",
+                    "diagnosis": "Lint passed.",
+                }
+            ],
         }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
             json.dump(data, f)

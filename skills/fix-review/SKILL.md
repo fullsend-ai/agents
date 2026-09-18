@@ -128,6 +128,8 @@ For each finding, record: `finding`, `path`, `description`, `related_findings`. 
 
 **If trigger type is `"human"`:** Use `HUMAN_INSTRUCTION` as primary directive. If empty or vague, also follow step 2a.
 
+**Inspect project CI:** Follow the forge-specific skill and `agents/fix.md`. Write `ci_inspections`.
+
 ### 3. Discover repo conventions
 
 Read `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`. Discover test/lint commands from `Makefile`, `package.json`, linter configs. Determine test command, lint command, commit conventions.
@@ -148,7 +150,7 @@ Read full files (not just reviewed lines), related test files, and affected impo
 
 ### 6. Implement fixes
 
-For each finding (top-down in file): make the change, follow existing patterns, avoid new dependencies unless requested, update tests if needed. **Scope guardrail:** Only address review feedback—no unmentioned refactors, features, bug fixes, or doc improvements.
+For each finding (top-down in file): make the change, follow existing patterns, avoid new dependencies unless requested, update tests if needed. **Scope guardrail:** Only address review feedback and authorized project-CI failures—no unmentioned refactors, features, bug fixes, or doc improvements.
 
 ### 7. Verify
 
@@ -293,11 +295,12 @@ which gitlint &>/dev/null && gitlint --commit HEAD
   "summary": "Addressed both review findings",
   "strategy_change": null,
   "tests_passed": true,
-  "files_changed": ["src/input.sh"]
+  "files_changed": ["src/input.sh"],
+  "ci_inspections": [{"job": "lint", "classification": "passing"}]
 }
 ```
 
-**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8). `trigger_source` is `"bot"`/`"human"` (normalized). Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1 item), `summary`, `tests_passed`, `files_changed`.
+**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8) and `ci_inspections`. `trigger_source` is `"bot"`/`"human"`. Action types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required top-level: `pr_number`, `trigger_source`, `actions` (≥1), `summary`, `tests_passed`, `files_changed`.
 
 Validate: `fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"`. If fails after 3 attempts, write best JSON and exit.
 

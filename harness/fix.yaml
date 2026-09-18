@@ -97,9 +97,11 @@ forge:
   github:
     providers:
       - providers/github-code.yaml
+      - providers/github-artifacts.yaml
     openshell:
       profiles:
         - profiles/fullsend-github-code.yaml
+        - profiles/fullsend-github-artifacts.yaml
     skills:
       - skills/github-forge
       - skills/fix-review/github
