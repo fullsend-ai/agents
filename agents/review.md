@@ -256,6 +256,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `reason`    | string  | conditional     | One of: `tool-failure`, `missing-context`, `ambiguous-findings`, `token-limit`, `time-budget` |
 | `label_actions` | object | no | Contextual label recommendations (see `issue-labels` skill) |
 | `risk_assessment` | object | no | Risk assessment from the risk-assessment sub-agent (see `pr-risk-assessment` skill) |
+| `confidence` | string | no | One of: `high`, `medium`, `low`. Verdict confidence from the `pr-review` skill step 6g. Set on any action except `failure` (the schema rejects it on `failure`). |
 
 **Required fields per action:**
 
@@ -280,7 +281,10 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `actionable`  | boolean | no       | When true with a non-empty `remediation`, routes the verdict to `request-changes` so the fix agent can address the finding automatically (follow-up issue creation is temporarily disabled; see #1137) |
 
 Schema validation failures trigger a harness retry iteration. The jq
-examples below show the exact JSON shape for each action.
+examples below show a valid JSON shape for each action, including the
+optional `confidence` field. They are not an exhaustive field list —
+omit `confidence` (or pass an empty string) when you have not determined
+a band, and never set it on `failure`.
 
 For `approve` with no actionable findings, or for `comment`:
 
@@ -291,8 +295,10 @@ jq -n \
   --arg repo "<owner/repo>" \
   --arg head_sha "<sha>" \
   --arg body "<markdown review comment>" \
+  --arg confidence "<high|medium|low>" \
   '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body}' \
+    head_sha: $head_sha, body: $body}
+    + (if $confidence != "" then {confidence: $confidence} else {} end)' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
@@ -306,8 +312,10 @@ jq -n \
   --arg head_sha "<sha>" \
   --arg body "<markdown review comment>" \
   --argjson findings '<findings array>' \
+  --arg confidence "<high|medium|low>" \
   '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, findings: $findings}' \
+    head_sha: $head_sha, body: $body, findings: $findings}
+    + (if $confidence != "" then {confidence: $confidence} else {} end)' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
@@ -334,8 +342,10 @@ jq -n \
   --arg head_sha "<sha>" \
   --arg body "<markdown review comment>" \
   --argjson label_actions '{"reason":"PR modifies API surface","actions":[{"action":"add","label":"area/api"}]}' \
+  --arg confidence "<high|medium|low>" \
   '{action: $action, pr_number: $pr_number, repo: $repo,
-    head_sha: $head_sha, body: $body, label_actions: $label_actions}' \
+    head_sha: $head_sha, body: $body, label_actions: $label_actions}
+    + (if $confidence != "" then {confidence: $confidence} else {} end)' \
   > "$FULLSEND_OUTPUT_DIR/agent-result.json"
 ```
 
