@@ -278,7 +278,8 @@ and `Glob` to inspect project configuration:
    patterns found in existing code, follow AGENTS.md. Existing code
    may predate current rules and should not be treated as authoritative
    for conventions. AGENTS.md represents the repo maintainer's current
-   intent.
+   intent. Follow the documented lint/test command and order, including
+   stage-then-lint; do not reorder around `git add`.
 
 2. **Discover build and test commands.** Use `Read` on `Makefile`,
    `package.json`, `pyproject.toml`, or equivalent build config.
@@ -304,7 +305,7 @@ From these files, determine:
 - **Language and framework** — what the project is built with
 - **Test command** — how to run the test suite (e.g., `make test`, `go test ./...`,
   `npm test`, `pytest`)
-- **Lint command** — how to run linters (e.g., `make lint`, `pre-commit run --files`)
+- **Lint command** — how to run linters (e.g., `make lint`, `pre-commit run --files`, `pnpm lint-staged`)
 - **Commit conventions** — message format
 - **PR title conventions** — ticket-scope/area-scope/unknown (step 4);
   the post-script injects `(#ISSUE_NUMBER)` into the PR title unless
@@ -821,27 +822,28 @@ Determine which packages to test from your changed files:
 git diff --name-only <target-branch>
 ```
 
-Use the local `<target-branch>` ref, not `origin/<target-branch>`, for
-the reasons given in step 4. This shows all files that differ between
-the target branch and the working tree — including previously
-committed changes on the feature branch.
+Use the local `<target-branch>` ref (see step 4).
 
 Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
 a final validation after targeted tests pass, but prefer targeted runs
 first to save time and context budget.
 
-**Run the repo's lint command** — this is the lint command you identified
-in step 3 from `CLAUDE.md`, `CONTRIBUTING.md`, `Makefile`, or CI config.
-You MUST run it now. Linting is separate from pre-commit (9b) — even if
-pre-commit passed or was skipped, you still run the lint command here.
+**Run the repo's lint command** — the command from step 3. Linting is
+separate from pre-commit (9b); run the documented command even if 9b
+passed or was skipped. If it reads the git index (`lint-staged`, or the
+contributing guide says to stage first), `git add` the intended files
+with explicit paths (never `git add -A` / `.` / `--all`) and then run it.
+Do not substitute a full-tree lint (`pnpm lint`, `pnpm lint:fix`).
+Otherwise run it now and stage in 10a.
 
 ```bash
-# Use the exact lint command discovered in step 3. Examples:
-make lint                                         # Go repos with Makefile
-golangci-lint run ./...                           # Go without Makefile
-uv run ruff check src/ tests/                     # Python with ruff
-npm run lint                                      # JS/TS repos
-eslint src/                                       # JS/TS without npm script
+# Exact command from step 3. Examples:
+make lint
+golangci-lint run ./...
+uv run ruff check src/ tests/
+npm run lint
+eslint src/
+pnpm lint-staged   # after git add
 ```
 
 If the repo specifies multiple lint/format commands (e.g.,
@@ -892,10 +894,11 @@ fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 
 **9d. Self-review**
 
-Before staging, review your own changes:
+Review the diff you will commit:
 
 ```bash
 git diff
+git diff --cached
 ```
 
 Read every line. Check for:
@@ -906,7 +909,7 @@ Read every line. Check for:
 - Secret material: `.env`, `*.pem`, `*.key`, `credentials.json`
 - Protected-path files (see agent definition for the authoritative list)
 
-If you added more than necessary, revert the extras before staging.
+If you added more than necessary, revert (and unstage) the extras.
 
 **After verification passes, proceed IMMEDIATELY to Step 10 (Commit).
 Do not produce any text summary, status update, or final response
@@ -926,7 +929,8 @@ Stage **only the files you modified or created** and commit.
 git add path/to/file1 path/to/file2
 ```
 
-Only include files you deliberately created or modified.
+Only include files you deliberately created or modified. If step 9c
+already staged them, re-add the same paths so auto-fixes are included.
 
 **10b. Review and scan what you are committing**
 
