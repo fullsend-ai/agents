@@ -76,6 +76,7 @@ script-test:
 	$(call run-timed,bash scripts/risk-tier1-test.sh)
 	$(call run-timed,bash scripts/post-fix-test.sh)
 	$(call run-timed,bash scripts/review-body-fallback-test.sh)
+	$(call run-timed,bash scripts/pr-review-body-format-test.sh)
 	$(call run-timed,bash scripts/post-retro-test.sh)
 	$(call run-timed,bash scripts/pre-scribe-test.sh)
 	$(call run-timed,bash scripts/post-scribe-test.sh)

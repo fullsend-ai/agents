@@ -1284,6 +1284,9 @@ the HTML comment close delimiter. For example, if the SHA were
 
 where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 
+Use this skeleton for `request-changes`, `comment`, and `reject`
+(findings stay unfolded):
+
 ```markdown
 ## Review
 
@@ -1303,6 +1306,27 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
 ...
 ```
 
+Use this form when `action` is `approve` with findings: `## Review`
+stays outside the `<details>` block, and `### Findings` goes inside it,
+with a blank line after `<summary>Findings</summary>` so GitHub renders
+the nested heading and list instead of literal text:
+
+```markdown
+## Review
+
+<details>
+<summary>Findings</summary>
+
+### Findings
+
+#### Medium
+
+- **[<category>]** `<file>:<line>` — <description>
+  Remediation: <remediation>
+
+</details>
+```
+
 **Formatting rules:**
 
 - **Head SHA** is embedded in a hidden HTML comment on the first line.
@@ -1314,12 +1338,12 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   conveyed via the forge's approve/request-changes mechanism).
 - **No summary section.** The PR description already explains the
   change; the review should focus on findings.
-- **Only include finding severity sections that have findings.** If
-  there are no critical findings, omit the `#### Critical` heading
-  entirely. If the only findings are medium/low/info, only show that
-  section. If there are no findings at all, set the body to
-  the hidden SHA comment followed by a newline and "Looks good to me"
-  — omit the `## Review` header and `### Findings` section entirely.
+- **Only include sections that have content.** Omit empty severity
+  headings and placeholder text such as "None" or "N/A". When
+  `action` is `approve` with findings, wrap `### Findings` in the
+  multiline `<details>` block shown above — do not wrap
+  `request-changes`, `comment`, or `reject`. Zero findings: hidden SHA
+  comment, then "Looks good to me" (no wrapper).
 - **No freeform verification sections.** Do not include sections
   claiming to have verified properties beyond what the diff and source
   files directly show (e.g., "Verified: ✅", "zero X remain",
