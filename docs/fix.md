@@ -58,6 +58,7 @@ Remove the label or use `/fs-fix` to re-engage.
 |-------|---------|
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
+| `fix-agent-failed` | Last-resort fallback applied to the PR when the post-fix script fails and cannot post a failure comment even after retrying transient forge errors. Does not trigger or block the agent — it exists purely so the failure stays discoverable when the forge outage also swallows the comment. |
 
 ## Configuration
 

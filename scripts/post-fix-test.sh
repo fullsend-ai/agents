@@ -33,6 +33,22 @@ else
   echo "PASS: bundled-script-has-gitleaks-install"
 fi
 
+if ! grep -q 'forge_retry_transient' "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"; then
+  echo "FAIL: post-failure-has-transient-retry"
+  echo "  post-failure-report.lib.sh missing forge_retry_transient"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-transient-retry"
+fi
+
+if ! grep -q 'fix-agent-failed' "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"; then
+  echo "FAIL: post-failure-has-last-resort-label"
+  echo "  post-failure-report.lib.sh missing fix-agent-failed last-resort label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-last-resort-label"
+fi
+
 # Fetch + rebase must run after forge_set_push_remote and before the push
 # so reconstructed GitLab history becomes a fast-forward (issue #1228).
 if ! grep -q 'git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"' "${POST_SCRIPT}"; then

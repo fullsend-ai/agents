@@ -148,7 +148,11 @@ To override, comment \`/fs-code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-  forge_post_issue_comment "${SKIP_COMMENT}" || true
+  if declare -F forge_retry_transient >/dev/null 2>&1; then
+    forge_retry_transient forge_post_issue_comment "${SKIP_COMMENT}" || true
+  else
+    forge_post_issue_comment "${SKIP_COMMENT}" || true
+  fi
 
   echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
   prescript_output "skipped" "true"
