@@ -302,7 +302,7 @@ Jira example:
 
 Progress on this issue depends on work that must happen first — either in this repository or another. Use this action when you identify specific blocking dependencies: existing issues/PRs that must be resolved, or upstream work that needs a tracking issue created.
 
-**HARD CONSTRAINT:** Never emit `sufficient` if unresolved prerequisites exist. Use `prerequisites` instead.
+**HARD CONSTRAINT:** Never emit `sufficient` if unresolved prerequisites exist, except as specified in the Anti-premature-prerequisites rule in Step 3.
 
 The `prerequisites` object contains two arrays:
 
