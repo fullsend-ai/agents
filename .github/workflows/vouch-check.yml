@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:
@@ -38,7 +39,8 @@ jobs:
               trusted = ['admin', 'maintain', 'write'].includes(data.role_name);
             } catch (e) {
               if (e.status !== 404) {
-                console.log(`Permission check error (status=${e.status}): ${e.message}`);
+                core.setFailed(`Could not check collaborator permission (status=${e.status}): ${e.message}`);
+                return;
               }
             }
 
@@ -67,7 +69,8 @@ jobs:
                 name => name.toLowerCase() === author.toLowerCase()
               );
             } catch (e) {
-              console.log(`Could not read VOUCHED.td: ${e.message}`);
+              core.setFailed(`Could not read VOUCHED.td: ${e.message}`);
+              return;
             }
 
             if (vouched) {
