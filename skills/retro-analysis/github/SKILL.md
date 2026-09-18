@@ -79,3 +79,14 @@ gh api \
 ```
 
 Use multiple searches with different keyword combinations if the first returns no results — the same idea can be filed under different titles.
+
+## Existing-practice search
+
+Before proposing a governance rule about a pattern, search `target_repo` for it — scope to that repo, not all of GitHub. Authenticated `gh search code` without `--repo` covers every repository the sandbox token can access, not just public GitHub — including other private installation repos — and will inflate the file count. Always pass `--repo` matching the proposal's `target_repo`, and keep `--json path` (paths only, no snippets) so no file content beyond a path is captured in `summary`.
+
+```bash
+# Example: before prohibiting exact gh CLI commands in SKILL.md
+gh search code 'gh' --repo '<target_repo>' --filename SKILL.md --json path --limit 100
+```
+
+Do not fall back to the unscoped `gh api search/code?q=...` form — a missing or mistyped `repo:` qualifier there searches every repository the token can access, the same broadened-scope failure `--repo` prevents above. This is a heuristic for the pattern token, not a parser of exact CLI invocations — review hits before counting them. If the search errors or the results look ambiguous, treat the check as failed rather than guessing at a count.
