@@ -41,10 +41,18 @@ echo "  PR_URL=${PR_URL}"
 validate_prior_review_projection() {
   local prior_file="$1"
   local marker encoded decoded tmp_file
+  local -a markers
 
   tmp_file="$(mktemp "${prior_file}.validated.XXXXXX")"
-  marker="$(grep -E '^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->$' \
-    "${prior_file}" | head -1 || true)"
+  mapfile -t markers < <(grep -E '^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->$' \
+    "${prior_file}" || true)
+  if [[ ${#markers[@]} -ne 1 ]]; then
+    : > "${prior_file}"
+    rm -f "${tmp_file}"
+    echo "::warning::Prior review projection rejected — using full first-review dispatch"
+    return
+  fi
+  marker="${markers[0]}"
   encoded="${marker#<!-- fullsend:review-findings-v1:}"
   encoded="${encoded% -->}"
   decoded="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"

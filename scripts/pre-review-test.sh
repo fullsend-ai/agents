@@ -248,6 +248,12 @@ run_test_no_gh_call() {
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REREVIEW_FIXTURES=(
+  "${SCRIPT_DIR}/../eval/review/cases/005-rereview-remediation/input.yaml"
+  "${SCRIPT_DIR}/../eval/review/cases/006-rereview-direct-remediation/input.yaml"
+  "${SCRIPT_DIR}/../eval/review/cases/007-rereview-mixed-remediation-file/input.yaml"
+  "${SCRIPT_DIR}/../eval/review/cases/008-rereview-unmatched-file/input.yaml"
+)
 
 run_prior_projection_test() {
   local test_name="$1"
@@ -300,15 +306,28 @@ VALID_PROJECTION='{"version":1,"findings":[{"severity":"low","category":"logic-e
 VALID_MARKER="$(projection_marker "${VALID_PROJECTION}")"
 OLD_PROJECTION='{"version":1,"findings":[{"severity":"high","category":"auth-bypass","file":"old.go"}]}'
 OLD_MARKER="$(projection_marker "${OLD_PROJECTION}")"
+FIXTURE_PROJECTION='{"version":1,"findings":[{"severity":"medium","category":"missing-doc","file":"docs/foo.md","line":null}]}'
 
-run_prior_projection_test "valid-current-projection" \
+run_prior_projection_test "valid-single-projection" \
+  "${VALID_MARKER}" \
+  "app-verified" \
+  "${VALID_PROJECTION}"
+
+run_prior_projection_test "multiple-projections-fail-closed" \
   "Review narrative
 ${VALID_MARKER}
 <details>
 <summary>Previous run</summary>
 ${OLD_MARKER}" \
   "app-verified" \
-  "${VALID_PROJECTION}"
+  'EMPTY'
+
+for fixture in "${REREVIEW_FIXTURES[@]}"; do
+  run_prior_projection_test "fixture-$(basename "$(dirname "${fixture}")")-projection" \
+    "$(yq -r '.prior_review.body' "${fixture}")" \
+    "app-verified" \
+    "${FIXTURE_PROJECTION}"
+done
 
 run_prior_projection_test "bot-verified-severity-projection" \
   "${VALID_MARKER}" \
