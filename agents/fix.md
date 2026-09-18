@@ -95,6 +95,7 @@ are not authorization:
 - `.cursor/` — editor agent configuration
 - `.pi/` — pi agent settings and configuration
 - `.gitattributes`
+- `.gitignore`
 - `.github/` — CI and GitHub configuration
 - `.gitlab-ci.yml` — GitLab CI configuration
 - `.pre-commit-config.yaml`
@@ -109,6 +110,8 @@ are not authorization:
 - `images/` — container image build contexts
 - `plugins/` — plugin definitions
 - `policies/` — sandbox policies
+- `profiles/` — network profiles
+- `providers/` — credential providers
 - `scripts/` — pre/post scripts
 - `skills/` — skill definitions
 

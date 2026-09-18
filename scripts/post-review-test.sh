@@ -426,7 +426,7 @@ mkdir -p "${MOCK_BIN}"
 # integration tests below — which don't exercise protected-path behavior —
 # reflect that reality instead of leaving it unset. Tests that specifically
 # cover protected-path resolution set or unset it within their own subshell.
-export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.pi/,.gitattributes,.gitignore,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.pi/,.gitattributes,.gitignore,.github/,.gitlab-ci.yml,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
 # Snapshot of the default for tests that exercise it inside a subshell.
 DEFAULT_PROTECTED_PATHS="${REVIEW_PROTECTED_PATHS}"
 
@@ -1475,6 +1475,11 @@ run_protected_paths_test "default-paths-gitignore-protected" \
   "${APPROVE_JSON}" "PR touches protected paths" "present" \
   "${DEFAULT_PROTECTED_PATHS}" ".gitignore"
 
+# Default list: .gitlab-ci.yml changes require human review (#1362)
+run_protected_paths_test "default-paths-gitlab-ci-yml-protected" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  "${DEFAULT_PROTECTED_PATHS}" ".gitlab-ci.yml"
+
 # Default list: a file merely named like the prefix is not protected
 run_protected_paths_test "default-paths-pi-prefix-not-substring" \
   "${APPROVE_JSON}" "PR touches protected paths" "absent" \
@@ -1935,6 +1940,86 @@ run_protected_paths_default_drift_test() {
   echo "PASS: ${test_name}"
 }
 run_protected_paths_default_drift_test
+
+# agents/fix.md's "Protected paths" bullet list is a third independent copy
+# of the default. Bidirectional set comparison (modulo trailing slashes)
+# so a one-sided edit fails CI instead of merging silently (#1362).
+run_protected_paths_fix_md_sync_test() {
+  local test_name="protected-paths-fix-md-matches-review-default"
+  local fix_md="${SCRIPT_DIR}/../agents/fix.md"
+
+  if [[ ! -f "${fix_md}" ]]; then
+    echo "FAIL: ${test_name} — agents/fix.md not found"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local -a doc_paths=()
+  local in_section=0
+  local line path
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" == "## Protected paths"* ]]; then
+      in_section=1
+      continue
+    fi
+    if [[ ${in_section} -eq 1 && "${line}" == "## "* ]]; then
+      break
+    fi
+    if [[ ${in_section} -eq 1 && "${line}" == "- \`"* ]]; then
+      path="${line#- \`}"
+      path="${path%%\`*}"
+      path="${path%/}"
+      if [[ -n "${path}" ]]; then
+        doc_paths+=("${path}")
+      fi
+    fi
+  done < "${fix_md}"
+
+  if [[ ${#doc_paths[@]} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — no protected-path bullets found in agents/fix.md"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local -a env_normalized=()
+  local entry
+  local -a env_entries=()
+  # shellcheck disable=SC2031
+  IFS=',' read -ra env_entries <<< "${REVIEW_PROTECTED_PATHS}"
+  for entry in "${env_entries[@]}"; do
+    entry="$(echo "${entry}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    entry="${entry%/}"
+    if [[ -n "${entry}" ]]; then
+      env_normalized+=("${entry}")
+    fi
+  done
+
+  local doc_file="${TMPDIR}/fix-md-protected-paths.txt"
+  local env_file="${TMPDIR}/env-protected-paths.txt"
+  printf '%s\n' "${doc_paths[@]}" | sort -u > "${doc_file}"
+  printf '%s\n' "${env_normalized[@]}" | sort -u > "${env_file}"
+
+  local only_doc only_env
+  only_doc="$(comm -23 "${doc_file}" "${env_file}")"
+  only_env="$(comm -13 "${doc_file}" "${env_file}")"
+
+  if [[ -n "${only_doc}" || -n "${only_env}" ]]; then
+    echo "FAIL: ${test_name} — agents/fix.md protected-path bullets and REVIEW_PROTECTED_PATHS have drifted"
+    if [[ -n "${only_doc}" ]]; then
+      echo "  in agents/fix.md but not REVIEW_PROTECTED_PATHS:"
+      echo "${only_doc}" | sed 's/^/    /'
+    fi
+    if [[ -n "${only_env}" ]]; then
+      echo "  in REVIEW_PROTECTED_PATHS but not agents/fix.md:"
+      echo "${only_env}" | sed 's/^/    /'
+    fi
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_protected_paths_fix_md_sync_test
 
 # ---------------------------------------------------------------------------
 # Risk assessment label + comment tests
