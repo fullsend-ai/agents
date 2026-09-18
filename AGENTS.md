@@ -167,3 +167,19 @@ when identical across forges). When reviewing PRs, do not flag a
 static literal default in these blocks as hardcoded, but do flag a
 regression that replaces one of these computed passthrough values
 with a literal.
+
+## 9. Agent definition resolution
+
+Agent definitions (`agents/*.md`) are resolved at dispatch time from
+`fullsend-ai/agents@main` (or the CLI's release tag), not from the PR
+branch being acted on. Per-repo dispatch uses `--fullsend-dir .fullsend`.
+That config's agent entries have no `source:`, so fullsend falls back
+to the published agents repo at `heads/main`. Harness resources
+referenced from that definition (skills, scripts, policies) are not
+pinned the same way — they are fetched from the PR's actual head SHA.
+
+A PR that modifies `agents/fix.md` or `agents/review.md` therefore does
+not change the governing prompt for fix/review runs on itself until
+after merge. In-review wording is not in effect for those runs. To
+exercise in-progress definition changes, run the agent locally with
+`--fullsend-dir .` — see [LOCAL.md](LOCAL.md).
