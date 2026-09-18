@@ -21,7 +21,7 @@ Use `Bash` for verification and committing. Use `Read`/`Write`/`Grep`/`Glob` for
 
 ## Progress markers
 
-At steps 1, 2, and 4: `echo "::notice::STEP <N>: <title>"`. The
+At steps 1, 2, 3, and 4: `echo "::notice::STEP <N>: <title>"`. The
 `fix-verification` skill emits its own markers for steps 7a, 7b, 7c,
 and 8.
 
@@ -112,7 +112,19 @@ For each finding, record: `finding`, `path`, `description`, `related_findings`. 
 
 ### 3. Discover repo conventions
 
-Read `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`. Discover test/lint commands from `Makefile`, `package.json`, linter configs. Determine test command, lint command, commit conventions.
+```bash
+echo "::notice::STEP 3: Discover repo conventions"
+```
+
+Use `Read`/`Glob` on `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`,
+`Makefile`, `package.json`, `pyproject.toml`, and linter configs.
+
+**Precedence rule:** When AGENTS.md conflicts with patterns in existing
+code, follow AGENTS.md. Follow the documented lint/test command and
+order, including stage-then-lint; do not reorder around `git add`.
+
+Determine the exact **test command**, **lint command** (package manager
+included, e.g. `pnpm lint-staged`), and **commit conventions**.
 
 ### 4. Plan fixes
 
