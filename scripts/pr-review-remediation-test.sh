@@ -335,6 +335,10 @@ assert_contains "review agent limits GitLab provenance authority" "${REVIEW_AGEN
   "does not authorize remediation exemptions"
 assert_contains "review agent documents GitLab provenance rejection" "${REVIEW_AGENT}" \
   "unverifiable-wrong-user"
+assert_contains "review agent describes the validated prior projection" "${REVIEW_AGENT}" \
+  "Canonical prior-finding JSON"
+assert_not_contains "review agent does not describe prior-review file as raw body" "${REVIEW_AGENT}" \
+  'The prior review body (`/sandbox/workspace/prior-review.txt`)'
 assert_contains "eval setup creates a re-review follow-up" "${EVAL_SETUP}" \
   "FOLLOWUP_FILES"
 assert_contains "eval setup writes trusted prior review input" "${EVAL_SETUP}" \
