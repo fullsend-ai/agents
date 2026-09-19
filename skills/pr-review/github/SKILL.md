@@ -101,7 +101,7 @@ COMPARE_FILE=/sandbox/workspace/pr-compare.json
 INCREMENTAL_DIFF=/sandbox/workspace/pr-incremental-diff.txt
 CHANGED_FILES_FILE=/sandbox/workspace/pr-changed-files.txt
 COMPARE_INCOMPLETE_FILE=/sandbox/workspace/pr-compare-incomplete
-COMPARE_COMPLETE_FILTER='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)) and (.patch | type == "string" and length > 0))'
+COMPARE_COMPLETE_FILTER='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.total_commits | type == "number") and (.files | type == "array") and ((.files | length) < 300) and ((.truncated // false) == false) and (.total_commits <= 250) and all(.files[]?; (.filename | safe_path) and (.previous_filename == null or (.previous_filename | safe_path)))'
 INCOMPLETE_COMPARE=true
 CHANGED_FILES=all
 if ! { printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
@@ -116,7 +116,7 @@ if ! gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${HEAD_SHA}" 
 elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \
   && jq -r '[.files[] | .filename, (.previous_filename // empty)] | unique[]' \
     "$COMPARE_FILE" > "${CHANGED_FILES_FILE}.tmp" \
-  && jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' \
+  && jq -r '.files[] | select(.patch | type == "string" and length > 0) | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' \
     "$COMPARE_FILE" > "${INCREMENTAL_DIFF}.tmp"; then
   if mv "${INCREMENTAL_DIFF}.tmp" "$INCREMENTAL_DIFF" \
     && mv "${CHANGED_FILES_FILE}.tmp" "$CHANGED_FILES_FILE"; then

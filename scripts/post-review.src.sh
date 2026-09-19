@@ -519,7 +519,9 @@ PROJECTION_MARKER="<!-- fullsend:review-findings-v1:${PRIOR_FINDINGS_ENCODED} --
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
 jq --arg marker "${PROJECTION_MARKER}" '
-  .body |= (
+  .body = (
+    if (.body | type) == "string" then .body else "" end
+    |
     gsub("(?m)^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->\\r?$"; "")
     | gsub("(?m)^<summary>Previous run( \\([0-9]+\\))?</summary>\\r?$"; "")
   )

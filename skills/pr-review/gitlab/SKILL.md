@@ -119,7 +119,7 @@ COMPARE_FILE=/sandbox/workspace/pr-compare.json
 INCREMENTAL_DIFF=/sandbox/workspace/pr-incremental-diff.txt
 CHANGED_FILES_FILE=/sandbox/workspace/pr-changed-files.txt
 COMPARE_INCOMPLETE_FILE=/sandbox/workspace/pr-compare-incomplete
-COMPARE_COMPLETE_FILTER='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path) and (.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false))'
+COMPARE_COMPLETE_FILTER='def safe_path: type == "string" and length > 0 and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not); type == "object" and (.diffs | type == "array") and ((.compare_timeout // false) == false) and all(.diffs[]?; (.old_path | safe_path) and (.new_path | safe_path))'
 INCOMPLETE_COMPARE=true
 CHANGED_FILES=all
 if ! { printf '%s\n' true > "$COMPARE_INCOMPLETE_FILE" \
@@ -137,7 +137,7 @@ if ! curl --fail --silent --show-error \
 elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \
   && jq -r '[.diffs[] | .new_path, .old_path] | unique[]' \
     "$COMPARE_FILE" > "${CHANGED_FILES_FILE}.tmp" \
-  && jq -r '.diffs[] | "diff --git a/\(.old_path) b/\(.new_path)\n\(.diff)"' \
+  && jq -r '.diffs[] | select((.diff | type == "string" and length > 0) and ((.too_large // false) == false) and ((.collapsed // false) == false)) | "diff --git a/\(.old_path) b/\(.new_path)\n\(.diff)"' \
     "$COMPARE_FILE" > "${INCREMENTAL_DIFF}.tmp"; then
   if mv "${INCREMENTAL_DIFF}.tmp" "$INCREMENTAL_DIFF" \
     && mv "${CHANGED_FILES_FILE}.tmp" "$CHANGED_FILES_FILE"; then

@@ -1423,6 +1423,10 @@ run_projection_test "projection-rejects-unsafe-records" \
   "${UNSAFE_PROJECTION_INPUT}" \
   '{"version":1,"findings":[]}'
 
+run_body_test "failure-without-body-posts-projection" \
+  '{"action":"failure","reason":"time-budget"}' \
+  '<!-- fullsend:review-findings-v1:'
+
 # request-changes + label_actions → body has label notice (---) AND action-hints footer (---)
 LABEL_PLUS_HINTS_JSON='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"label_actions":{"reason":"Touches API surface.","actions":[{"action":"add","label":"area/api"}]}}'
 

@@ -227,12 +227,18 @@ with `false` only after installing both precise artifacts.
 If the compare API fails (e.g., 404 from force-push or history rewrite), if the
 response reaches a forge limit (GitHub returns at most 250 commits and 300
 changed files) or reports truncation/timeout, or if the persisted completeness
-flag is `true` because the payload shape is invalid or one or more files have
-incomplete patch bodies, treat all files as changed — no remediation candidates
-or dispatch narrowing for this run. Set
+flag is `true` because the payload shape or a path is invalid, treat all files
+as changed — no remediation candidates or dispatch narrowing for this run. Set
 `changed_since_prior` to `"all"` and `incremental_diff` to
 `/sandbox/workspace/pr-diff.txt` as an explicit conservative fallback; tell the
 sub-agent that it is the full PR diff, not a precise delta.
+
+When an otherwise complete comparison lists a safe path but lacks a usable
+patch body for that file (including an omitted, empty, collapsed, or too-large
+diff), retain the path in `changed_since_prior` for ordinary path-based
+dispatch, but exclude it from `incremental_diff` and remediation candidates.
+Treat that file as unanchored; it cannot receive a remediation exemption
+without patch evidence.
 
 ### 3. Triage
 
@@ -274,7 +280,8 @@ fields into Markdown.
 
 When provenance is `app-verified` and the incremental comparison is complete,
 pass a `Prior-finding remediation candidates` section to the intent-coherence
-sub-agent. Match a changed file only against a prior finding's structured
+sub-agent. Match only a changed file with a non-empty patch in the incremental
+diff against a prior finding's structured
 `file` field, retaining `category` as metadata. The sole derived-path exception
 is mechanical: for a safe `missing-test` path ending in `.go`, replace only that
 suffix with `_test.go` and accept only that exact safe path. Never infer paths
@@ -377,10 +384,12 @@ complex PR that triggers all conditions legitimately needs all 6.
    `docs-currency`, `security`, and `cross-repo-contracts` are
    path/extension checks. `intent-coherence` consults the incremental diff and
    issue context in its context package (step 3d).
-   - `intent-coherence` — re-qualifies when a non-empty delta contains a
+   - `intent-coherence` — re-qualifies when `changed_since_prior` contains a
+     file without an incremental patch, or when a non-empty delta contains a
      remediation candidate or a file not paired with a prior finding. Inspect
-     the complete incremental diff, including unmatched files and extra edits
-     within candidate files. When this is its only qualification, assign a
+     the complete patch-bearing incremental diff, including unmatched files and
+     extra edits within candidate files; files without usable patch bodies remain
+     unanchored. When this is its only qualification, assign a
      `trivial` scope constraint (≤5 tool calls) under step 3e.
    - `docs-currency` — re-qualifies only if `changed_since_prior`
      includes documentation files (not merely because the repository
