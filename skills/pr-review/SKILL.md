@@ -234,11 +234,13 @@ as changed — no remediation candidates or dispatch narrowing for this run. Set
 sub-agent that it is the full PR diff, not a precise delta.
 
 When an otherwise complete comparison lists a safe path but lacks a usable
-patch body for that file (including an omitted, empty, collapsed, or too-large
-diff), retain the path in `changed_since_prior` for ordinary path-based
-dispatch, but exclude it from `incremental_diff` and remediation candidates.
-Treat that file as unanchored; it cannot receive a remediation exemption
-without patch evidence.
+patch body for that file (including an empty, collapsed, or too-large diff),
+retain the path in `changed_since_prior` for ordinary path-based dispatch, but
+exclude it from `incremental_diff` and remediation candidates. Treat that file
+as unanchored; it cannot receive a remediation exemption without patch
+evidence. On GitHub, a missing patch is complete only for a known binary file
+extension or a rename with zero additions and deletions; otherwise treat the
+comparison as incomplete and use the conservative full-diff fallback.
 
 ### 3. Triage
 
