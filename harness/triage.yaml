@@ -35,6 +35,7 @@ post_script: scripts/post-triage.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
+  preflight_check: "python3 -c 'import jsonschema'"
   schema: schemas/triage-result.schema.json
   max_iterations: 2
 

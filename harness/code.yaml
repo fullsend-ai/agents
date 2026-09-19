@@ -59,6 +59,7 @@ plugins:
 
 validation_loop:
   script: scripts/validate-code-output.sh
+  preflight_check: "python3 -c 'import jsonschema'"
   schema: schemas/code-result.schema.json
   max_iterations: 2
   feedback_mode: append
