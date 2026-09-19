@@ -928,7 +928,8 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c '
   def projectable:
     (.category | type == "string" and allowed_category) and (.file | safe_path);
   (.findings // []) as $findings
-  | if ($findings | all(.[]; projectable)) then
+  | if (.action | IN("approve", "request-changes", "comment", "reject"))
+      and ($findings | all(.[]; projectable)) then
       {
         version: 1,
         findings: [
