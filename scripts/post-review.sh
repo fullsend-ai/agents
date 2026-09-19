@@ -909,9 +909,9 @@ else
   remove_stale_risk_labels
 fi
 
-# Append a machine-readable projection derived only from the filtered,
-# schema-validated findings. The next pre-review host script validates this
-# record and replaces the human-readable sticky body before sandbox ingress.
+# Append a machine-readable projection only when every schema-validated finding
+# can be represented safely. A lossy projection could turn a failed sub-agent
+# into an apparently clean dimension on the next re-review.
 PRIOR_FINDINGS_PROJECTION="$(jq -c '
   def allowed_category:
     IN(
@@ -925,17 +925,25 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c '
   def safe_path:
     type == "string" and length > 0 and . != "N/A" and
     (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
-  {
-    version: 1,
-    findings: [
-      (.findings // [])[]
-      | select((.category | type == "string" and allowed_category) and (.file | safe_path))
-      | {severity, category, file} + (if (.line | type) == "number" then {line} else {} end)
-    ]
-  }
+  def projectable:
+    (.category | type == "string" and allowed_category) and (.file | safe_path);
+  (.findings // []) as $findings
+  | if ($findings | all(.[]; projectable)) then
+      {
+        version: 1,
+        findings: [
+          $findings[]
+          | {severity, category, file} + (if (.line | type) == "number" then {line} else {} end)
+        ]
+      }
+    else empty
+    end
 ' "${RESULT_FILE}")"
-PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
-PROJECTION_MARKER="<!-- fullsend:review-findings-v1:${PRIOR_FINDINGS_ENCODED} -->"
+PROJECTION_MARKER=""
+if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
+  PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
+  PROJECTION_MARKER="<!-- fullsend:review-findings-v1:${PRIOR_FINDINGS_ENCODED} -->"
+fi
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
 jq --arg marker "${PROJECTION_MARKER}" '
@@ -945,7 +953,7 @@ jq --arg marker "${PROJECTION_MARKER}" '
     gsub("(?m)^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->\\r?$"; "")
     | gsub("(?m)^<summary>Previous run( \\([0-9]+\\))?</summary>\\r?$"; "")
   )
-  | .body = (.body + "\n\n" + $marker)
+  | if $marker == "" then . else .body = (.body + "\n\n" + $marker) end
 ' \
   "${RESULT_FILE}" > "${TMP_RESULT}"
 mv "${TMP_RESULT}" "${RESULT_FILE}"
