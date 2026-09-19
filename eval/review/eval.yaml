@@ -73,6 +73,8 @@ dataset:
   schema: |
     Each case directory contains:
     - input.yaml: Fixture definition with forge, fixture type, title, body, and PR files.
+      PR fixtures may include followup_files plus prior_review body/provenance
+      to exercise re-review behavior.
     - annotations.yaml: Expected fixture state (labels, reviews, state).
     - repo/: Directory with the base repo contents (pushed to main before the PR).
 

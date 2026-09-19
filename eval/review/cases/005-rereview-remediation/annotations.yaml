@@ -1,0 +1,24 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: true
+
+findings:
+  required:
+    - scope-creep
+
+max_turns: 60
+max_cost_usd: 5.00
+
+review_expectations: |
+  This is a trusted GitHub re-review. The prior review requested documentation
+  in the structured docs/foo.md file field. The linked issue itself authorizes
+  only Foo, not documentation. The follow-up adds that direct remediation, an
+  unrelated deployment section in the same docs/foo.md candidate, an unrelated
+  CHANGELOG.md, and an unrelated function inside internal/foo.go. A good review
+  must not report the Foo documentation as scope creep: it directly remediates
+  the prior finding. It must still report all three unrelated edits as scope
+  creep, including the extra deployment content inside the remediated file.

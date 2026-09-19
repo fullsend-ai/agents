@@ -489,6 +489,55 @@ else
   remove_stale_risk_labels
 fi
 
+# Append a machine-readable projection only when every schema-validated finding
+# can be represented safely. A lossy projection could turn a failed sub-agent
+# into an apparently clean dimension on the next re-review.
+PRIOR_FINDINGS_PROJECTION="$(jq -c '
+  def allowed_category:
+    IN(
+      "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
+      "auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln", "sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection", "unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open", "permission-expansion", "permission-reduction", "role-escalation", "workflow-permission", "secret-exposure",
+      "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering",
+      "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
+      "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
+      "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+    );
+  def safe_path:
+    type == "string" and length > 0 and . != "N/A" and
+    (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+  def projectable:
+    (.category | type == "string" and allowed_category) and (.file | safe_path);
+  (.findings // []) as $findings
+  | if ($findings | all(.[]; projectable)) then
+      {
+        version: 1,
+        findings: [
+          $findings[]
+          | {severity, category, file} + (if (.line | type) == "number" then {line} else {} end)
+        ]
+      }
+    else empty
+    end
+' "${RESULT_FILE}")"
+PROJECTION_MARKER=""
+if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
+  PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
+  PROJECTION_MARKER="<!-- fullsend:review-findings-v1:${PRIOR_FINDINGS_ENCODED} -->"
+fi
+TMP_RESULT="$(mktemp)"
+CLEANUP_FILES+=("${TMP_RESULT}")
+jq --arg marker "${PROJECTION_MARKER}" '
+  .body = (
+    if (.body | type) == "string" then .body else "" end
+    |
+    gsub("(?m)^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->\\r?$"; "")
+    | gsub("(?m)^<summary>Previous run( \\([0-9]+\\))?</summary>\\r?$"; "")
+  )
+  | if $marker == "" then . else .body = (.body + "\n\n" + $marker) end
+' \
+  "${RESULT_FILE}" > "${TMP_RESULT}"
+mv "${TMP_RESULT}" "${RESULT_FILE}"
+
 # ---------------------------------------------------------------------------
 # Post the review. Exit code 10 = stale-head: the PR HEAD moved after the
 # agent reviewed it. When this happens, post a /fs-review comment to

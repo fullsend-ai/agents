@@ -72,6 +72,7 @@ script-test:
 	$(call run-timed,bash scripts/signoff-strip-test.sh)
 	$(call run-timed,bash scripts/post-code-test.sh)
 	$(call run-timed,bash scripts/pre-review-test.sh)
+	$(call run-timed,bash scripts/pr-review-remediation-test.sh)
 	$(call run-timed,bash scripts/post-review-test.sh)
 	$(call run-timed,bash scripts/risk-tier1-test.sh)
 	$(call run-timed,bash scripts/post-fix-test.sh)
