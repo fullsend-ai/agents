@@ -176,7 +176,7 @@ assert_contains "GitHub comparison writes incremental diff" "${GITHUB_FORGE}" \
 assert_contains "GitLab comparison writes incremental diff" "${GITLAB_FORGE}" \
   "pr-incremental-diff.txt"
 assert_contains "candidate matching uses structured file fields" "${SKILL}" \
-  "prior finding's structured"
+  'prior structured `file`'
 assert_not_contains "candidate matching rejects free-text targets" "${SKILL}" \
   "explicit remediation target named by the finding"
 assert_contains "GitHub provenance authorizes remediation" "${SKILL}" \
@@ -198,9 +198,9 @@ assert_not_contains "prior finding context does not claim an id field" "${SKILL}
 assert_contains "prior review data is fenced as untrusted" "${SKILL}" \
   "UNTRUSTED PRIOR-REVIEW DATA"
 assert_contains "unsafe structured metadata is rejected" "${SKILL}" \
-  'leading slash, backslash, repeated or trailing slash, `.` or `..` component'
+  "It rejects, never rewrites, invalid records"
 assert_contains "optional prior finding fields remain optional" "${SKILL}" \
-  'an optional positive integer line'
+  "optional positive"
 assert_contains "prior findings use a structured projection" "${SKILL}" \
   "structured projection"
 assert_not_contains "raw prior finding JSON is not prompted" "${SKILL}" \
@@ -228,9 +228,9 @@ assert_contains "GitLab comparison persists changed files" "${GITLAB_FORGE}" \
 assert_contains "Prior identity is machine-readable" "${SKILL}" \
   'finding identity from review Markdown.'
 assert_contains "Prior paths are rejected, never rewritten" "${SKILL}" \
-  'rewrites or normalizes paths.'
+  "It rejects, never rewrites, invalid records"
 assert_contains "Missing-test counterpart is exact" "${SKILL}" \
-  'suffix with `_test.go` and accept only that exact safe path'
+  'safe `missing-test` `.go` → `_test.go`'
 assert_jq_result "GitHub accepts complete compare" "${GITHUB_COMPARE_COMPLETE}" \
   '{"total_commits":1,"files":[{"filename":"a.txt","patch":"@@ -1 +1 @@"}]}' true
 assert_jq_result "GitHub rejects API error JSON" "${GITHUB_COMPARE_COMPLETE}" \
@@ -323,7 +323,7 @@ assert_compare_snippet "GitLab unsafe path preserves fail-closed state" "${GITLA
   '{"diffs":[{"old_path":"../a.txt","new_path":"a.txt","diff":"@@"}]}' 0 true all \
   "base diff fallback"
 assert_contains "skill keeps incomplete patch bodies unanchored" "${SKILL}" \
-  "lacks a usable"
+  "without a usable patch"
 assert_order "remediation candidates precede budget allocation" "${SKILL}" \
   "#### 3a-1. Prior-finding remediation candidates" \
   "#### 3a-2. Budget allocation priority"
