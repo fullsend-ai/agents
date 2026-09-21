@@ -411,23 +411,21 @@ judges:
       # rather than a point. This scan runs unconditionally: a single
       # legally-posted low note used to short-circuit it, which let a
       # promoted-but-dropped critical finding read as a clean pass.
-      # Bullets that mirror a posted finding are that same finding, not a
-      # dropped one, and are excluded so nothing is graded twice.
+      # Every bullet is kept, including the ones that mirror a posted
+      # finding. This judge used to skip a bullet whose file, category and
+      # severity band matched a posted finding, and since every finding is
+      # mirrored in the sticky, one inline logic-error on another function
+      # absorbed the dropped logic-error on the seeded bug too. Nothing is
+      # lost by keeping the mirrors: `dropped` is consulted only after no
+      # posted finding satisfied the entry, and a mirror is the same finding
+      # at a severity no higher than the posted one, so at most it credits a
+      # finding whose sticky wording names what its inline wording did not.
       for _key in ("comments", "reviews"):
           if not isinstance(state.get(_key) or [], list):
               return False, f"{_key} must be a list in fixture-state.json, got {type(state.get(_key)).__name__}"
       STICKY_BULLET_RE = re.compile(r"^- \*\*\[([^\]\n]+)\]\*\*\s*`([^`\n]+)`(.*)$")
       HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$")
       MAX_SEVERITY = max(SEVERITY_ORDER.values())
-      # A bullet is "the same finding" only when a posted finding on that
-      # file and category also sits inside the bullet's severity range.
-      # Keying on (file, category) alone let a promoted critical be deduped
-      # away by a legal low note that happened to share the category token.
-      seen = {}
-      for p in posted:
-          rank = SEVERITY_ORDER.get(p["severity"])
-          if rank is not None:
-              seen.setdefault((p["file"], p["category"].lower()), []).append(rank)
       dropped = []
       for it in (state.get("comments") or []) + (state.get("reviews") or []):
           if not isinstance(it, dict):
@@ -440,8 +438,8 @@ judges:
           # (SKILL.md puts the remediation on an indented follow-on line)
           # fold into that bullet's text — the matching contract promises
           # the category is matched against description AND remediation, not
-          # the first line alone. Reset on a heading, a new bullet, a dedup,
-          # or an unindented line, so a continuation never crosses a bullet.
+          # the first line alone. Reset on a heading, a new bullet or an
+          # unindented line, so a continuation never crosses a bullet.
           cur = None
           for line in (it.get("body") or "").splitlines():
               head = HEADING_RE.match(line)
@@ -466,9 +464,6 @@ judges:
               cat = mk.group(1).strip()
               # Strip only a trailing ":<line>", never a colon inside a path.
               path = norm_path(re.sub(r":\d+$", "", mk.group(2)))
-              if any(sev_lo <= r <= sev_hi for r in seen.get((path, cat.lower()), ())):
-                  cur = None
-                  continue
               cur = {
                   "file": path,
                   "category": cat,
@@ -527,8 +522,8 @@ judges:
           return False, f"Missing required findings: {missing} (posted: {summary})"
       if credited:
           return True, (
-              f"All {len(entries)} required findings present; {credited} reached only the "
-              "sticky/review body — made, then dropped by the posting path"
+              f"All {len(entries)} required findings present; {credited} matched only in the "
+              "sticky/review body — dropped by the posting path, or worded there and not inline"
           )
       return True, f"All {len(entries)} required findings present"
 
@@ -557,9 +552,12 @@ judges:
       in the sticky comment body alone, so one legally-posted low note is
       no evidence that a promoted bait was not also raised. A sticky
       bullet is skipped as a duplicate only when a posted finding shares
-      its file and category AND sits inside the bullet heading's severity
-      range — matching on the category token alone would let a legal low
-      note swallow a critical promoted from the same category. The rest
+      its file and category, sits inside the bullet heading's severity
+      range AND says the same thing (at least half of the two
+      descriptions' words, in order) — the category token alone would let
+      a legal low note swallow a critical promoted from the same category,
+      and file, category and range alone would let it swallow every other
+      bullet under its heading, a dropped fabrication included. The rest
       are graded on the file the bullet names, at the high end of that
       range. Every use of the scan — the violation check and the delivery
       check below it — is scoped to the files the case names, so a
@@ -571,6 +569,7 @@ judges:
       head SHA is not this run's fails as stale. A bullet with no file to
       attribute it to is graded by neither judge.
     check: |
+      import difflib
       import json
       import re
 
@@ -705,15 +704,51 @@ judges:
       STICKY_BULLET_RE = re.compile(r"^- \*\*\[([^\]\n]+)\]\*\*\s*`([^`\n]+)`(.*)$")
       HEADING_RE = re.compile(r"^#{1,6}\s+(.*?)\s*$")
       MAX_SEVERITY = max(SEVERITY_ORDER.values())
-      # A bullet is "the same finding" only when a posted finding on that
-      # file and category also sits inside the bullet's severity range.
-      # Keying on (file, category) alone let a promoted critical be deduped
-      # away by a legal low note that happened to share the category token.
-      seen = {}
-      for p in posted:
-          rank = SEVERITY_ORDER.get(p["severity"])
-          if rank is not None:
-              seen.setdefault((p["file"], p["category"].lower()), []).append(rank)
+      # A bullet is "the same finding" only when a posted finding shares its
+      # file and category, sits inside its severity range AND says the same
+      # thing. (file, category) alone let a legal low note dedupe a promoted
+      # critical that shared its category token; adding the range still let
+      # it absorb every other bullet under its heading, because every
+      # finding is mirrored in the sticky — so a fabricated finding dropped
+      # for want of a line vanished behind one legal note.
+      # Wording is compared as a ratio, not for equality or containment: the
+      # agent writes the sticky by hand while postreview.go renders the
+      # inline body from the findings JSON, so real pairs differ in
+      # backticks, quotes and dashes and are often reworded. Measured
+      # 2026-09-21 on 111 mirror pairs from fullsend's own reviews (agents
+      # #1232 #1282 #1288 #1318 #1334, fullsend #7074 #7120 #7369 #7428):
+      # normalised equality recognised 53% of them, containment either way
+      # 61%, and the line numbers agreed for 65%, while the ratio was >=
+      # 0.51 for every mirror and <= 0.28 for all 456 pairs of distinct
+      # findings within one review. 0.5 is the top of that gap, so a
+      # doubtful bullet is graded rather than skipped. Unlike a per-key
+      # counter, this does not depend on the order of the bullets.
+      MIRROR_RATIO = 0.5
+
+      def words(s):
+          return re.findall(r"[^\W_]+", s.lower())
+
+      def mirrors_posted(path, cat, lo, hi, desc):
+          want = words(desc)
+          for p in posted:
+              rank = SEVERITY_ORDER.get(p["severity"])
+              if rank is None or not lo <= rank <= hi:
+                  continue
+              if p["file"] != path or p["category"].lower() != cat.lower():
+                  continue
+              # The description sits between the header line and
+              # formatFindingComment's "**Suggested fix:**" tail.
+              rest = p["text"][FINDING_RE.search(p["text"]).end():]
+              got = words(rest.split("**Suggested fix:**", 1)[0])
+              # autojunk=False: past 200 tokens difflib would otherwise
+              # discount every common word and sink a true mirror's ratio.
+              ratio = difflib.SequenceMatcher(None, want, got, autojunk=False).ratio()
+              # `want and`: two empty descriptions have no wording to
+              # compare (their ratio is 1.0), so the bullet is graded.
+              if want and ratio >= MIRROR_RATIO:
+                  return True
+          return False
+
       dropped = []
       for it in (state.get("comments") or []) + (state.get("reviews") or []):
           if not isinstance(it, dict):
@@ -752,7 +787,7 @@ judges:
               cat = mk.group(1).strip()
               # Strip only a trailing ":<line>", never a colon inside a path.
               path = norm_path(re.sub(r":\d+$", "", mk.group(2)))
-              if any(sev_lo <= r <= sev_hi for r in seen.get((path, cat.lower()), ())):
+              if mirrors_posted(path, cat, sev_lo, sev_hi, mk.group(3)):
                   cur = None
                   continue
               cur = {

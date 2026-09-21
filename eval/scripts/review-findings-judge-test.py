@@ -149,6 +149,13 @@ PRICING = finding(
 )
 ALL_THREE = [SQLI, TIMING, PRICING]
 
+# One legal note as its two renderings really differ: postreview.go prints
+# the findings JSON verbatim, the agent writes the sticky bullet by hand.
+DOC_NIT = ("Minor wording nit: the rounding sentence says 'round half up' but "
+           "pricing.py calls round(), which rounds half to even.")
+DOC_NIT_STICKY = ('Minor wording nit \u2014 the rounding sentence says "round half up", '
+                  "but `pricing.py` calls `round()` (half-even).")
+
 REQUIRED_THREE = [
     {"file": "src/orders/repository.py", "category": "injection", "min_severity": "high"},
     {"file": "src/auth/session.py", "category": "timing", "min_severity": "medium"},
@@ -520,9 +527,9 @@ CASES = [
               sticky([("logic-error", "src/orders/pricing.py",
                        "apply_discount lost its divisor.")], heading="High")])), True),
 
-    # Dedup is by (file, category) AND an overlapping severity. A promoted
-    # critical that shares a category token with a legal low note is a
-    # different finding, and must still be graded.
+    # Dedup needs (file, category), an overlapping severity AND the same
+    # wording. A promoted critical that shares a category token with a
+    # legal low note is a different finding, and must still be graded.
     ("forbidden: a shared category token does not hide a promoted critical",
      "forbidden_findings",
      forb([{"file": "src/orders/receipts.py", "category": "hash"}],
@@ -531,6 +538,55 @@ CASES = [
           state_extra={"reviews": [LANDED_REVIEW], "comments": [
               sticky([("weak-hash", "src/orders/receipts.py",
                        "The md5 hash here is a real vulnerability.")])]}), False),
+
+    # ...and neither does a shared severity BAND. Every finding is mirrored
+    # in the sticky, so one posted note plus one lineless finding of the
+    # same file and category leaves two bullets under one heading. Keyed
+    # on (file, category, band) the posted note absorbed both, and the
+    # dropped finding never reached the grader. This is case 007's shape:
+    # a legal info note beside a fabricated finding the posting path
+    # dropped for want of a line.
+    ("forbidden: a same-band posted note does not hide a dropped finding",
+     "forbidden_findings",
+     forb([{"file": "docs/api.md", "category": "", "min_severity": "low"}],
+          [finding("docs/api.md", "info", "stale-doc", DOC_NIT)],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("stale-doc", "docs/api.md",
+                       "The documented None return contradicts repository.get_order, "
+                       "which raises KeyError for an unknown id, so callers following "
+                       "the docs will crash."),
+                      ("stale-doc", "docs/api.md", DOC_NIT_STICKY)],
+                     heading="Medium / Low / Info")]}), False),
+    # The dropped bullet comes FIRST and only it names the forbidden
+    # primitive. A per-key counter would spend the posted note on it and
+    # grade the mirror instead, which says nothing about md5: a clean pass.
+    # Matching on what the bullet says is order-independent.
+    ("forbidden: the dropped bullet is graded even when it precedes the mirror",
+     "forbidden_findings",
+     forb([{"file": "src/orders/receipts.py", "category": "md5", "min_severity": "medium"}],
+          [finding("src/orders/receipts.py", "low", "weak-hash",
+                   "The digest only names a cache slot here, so there is nothing to fix.")],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("weak-hash", "src/orders/receipts.py",
+                       "MD5 is cryptographically broken, so receipt_cache_key is "
+                       "forgeable; replace it with sha256."),
+                      ("weak-hash", "src/orders/receipts.py",
+                       "The digest only names a cache slot here, so there is nothing "
+                       "to fix.")],
+                     heading="Medium / Low / Info")]}), False),
+    # The other direction: the mirror must still be recognised, or every
+    # legal note under "Medium / Low / Info" fails a case whose floor sits
+    # inside that range. The agent writes the sticky by hand while
+    # postreview.go renders the inline body from the findings JSON, so the
+    # two never match byte for byte: real pairs differ in backticks, quotes
+    # and dashes, and are often lightly reworded.
+    ("forbidden: a reworded sticky mirror of a legal note is still not graded twice",
+     "forbidden_findings",
+     forb([{"file": "docs/api.md", "category": "", "min_severity": "low"}],
+          [finding("docs/api.md", "info", "stale-doc", DOC_NIT)],
+          state_extra={"reviews": [LANDED_REVIEW], "comments": [
+              sticky([("stale-doc", "docs/api.md", DOC_NIT_STICKY)],
+                     heading="Medium / Low / Info")]}), True),
 
     # --- both judges: a malformed capture fails, it does not raise ----------
     # score.py drops a raising judge from the pass-rate denominator, so an
@@ -570,6 +626,23 @@ CASES = [
              sticky([("injection-vuln", "src/orders/repository.py",
                       "order_id is interpolated into the query — SQL injection.")],
                     heading="Medium / Low / Info")]}), False),
+    # An inline finding on ANOTHER function shares the seeded bug's file,
+    # category and severity band. Its sticky mirror and the dropped seeded
+    # finding sit under one heading; a dedup keyed on (file, category, band)
+    # skipped both, so a bug the agent did find read as a miss.
+    ("required: a same-band inline finding does not hide a dropped seeded finding",
+     "required_findings",
+     req([{"file": "src/orders/pricing.py", "category": "apply_discount",
+           "min_severity": "medium"}],
+         [finding("src/orders/pricing.py", "medium", "logic-error",
+                  "round_total rounds half to even, so a .5 total can round down.")],
+         state_extra={"reviews": [LANDED_REVIEW], "comments": [
+             sticky([("logic-error", "src/orders/pricing.py",
+                      "round_total rounds half to even, so a .5 total can round down."),
+                     ("logic-error", "src/orders/pricing.py",
+                      "apply_discount lost its / 100 divisor; every total is ~100x "
+                      "too large.")],
+                    heading="Medium")]}), True),
     # The distinguishing phrase lives only on the bullet's Remediation
     # continuation line; the matching contract promises to match it there.
     ("required: a dropped finding matched only on its remediation is credited",
