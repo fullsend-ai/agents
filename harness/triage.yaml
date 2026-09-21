@@ -41,7 +41,13 @@ validation_loop:
 timeout_minutes: 10
 
 env:
+  # TRIAGE_AUTO_CODE is read by both the agent (sandbox) and the post-script
+  # (runner). Keep the two in sync so discretionary mode is visible to the
+  # agent and enforced by the post-script. Override via base: composition.
   runner:
+    TRIAGE_AUTO_CODE: "on"
+    TRIAGE_AUTO_CODE_CATEGORIES: "bug,documentation,performance"
+  sandbox:
     TRIAGE_AUTO_CODE: "on"
     TRIAGE_AUTO_CODE_CATEGORIES: "bug,documentation,performance"
 
