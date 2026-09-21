@@ -379,9 +379,17 @@ ${FAILED_CREATES}"
     # else receives the triaged label and waits for human prioritization
     # (per #561, only feature issues should require human review before coding).
     #
-    # TRIAGE_AUTO_CODE (#1754) controls whether auto-promotion happens:
-    #   on (default) — auto-promote categories listed in TRIAGE_AUTO_CODE_CATEGORIES
-    #   off          — never auto-promote; always apply triaged
+    # TRIAGE_AUTO_CODE (#1754, #1250) controls whether auto-promotion happens:
+    #   on / always (default) — auto-promote categories listed in
+    #                           TRIAGE_AUTO_CODE_CATEGORIES
+    #   off / never           — never auto-promote; always apply triaged
+    #   discretionary         — promote only when the agent sets
+    #                           triage_summary.promote_to_ready_to_code=true
+    #                           AND the category is in TRIAGE_AUTO_CODE_CATEGORIES
+    #
+    # on and off remain supported aliases for always and never. The agent's
+    # promote_to_ready_to_code field is consulted only in discretionary mode;
+    # legacy modes ignore its presence or absence.
     #
     # TRIAGE_AUTO_CODE_CATEGORIES is a comma-separated category list with no
     # default baked into this script -- harness/triage.yaml and docs/triage.md
@@ -395,6 +403,9 @@ ${FAILED_CREATES}"
     REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
+    # jq's // treats JSON false as missing, so omitted and false both become
+    # the string "false" — the intended withhold default for discretionary mode.
+    PROMOTE=$(jq -r '.triage_summary.promote_to_ready_to_code // false' "${RESULT_FILE}")
 
     AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
     AUTO_CODE="$(printf '%s' "${AUTO_CODE}" | tr '[:upper:]' '[:lower:]')"
@@ -410,8 +421,14 @@ ${FAILED_CREATES}"
     # Determine whether this category should auto-promote to ready-to-code.
     auto_code_allowed() {
       case "${AUTO_CODE}" in
-        off) return 1 ;;
-        on) category_in_auto_code_list ;;
+        off|never) return 1 ;;
+        on|always) category_in_auto_code_list ;;
+        discretionary)
+          if ! category_in_auto_code_list; then
+            return 1
+          fi
+          [[ "${PROMOTE}" == "true" ]]
+          ;;
         *)
           echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '$(_gha_sanitize "${AUTO_CODE}")' — falling back to 'on'"
           category_in_auto_code_list

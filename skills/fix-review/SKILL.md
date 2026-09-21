@@ -106,16 +106,17 @@ GitHub, `curl` to fetch MR changes on GitLab).
 
 **Step 2a — Read the pre-fetched review body:**
 
-The workflow pre-fetches the review body to `/sandbox/workspace/review-body.txt`. Read it:
+Read `/sandbox/workspace/review-body.txt`:
 
 ```bash
 REVIEW_BODY_FILE="/sandbox/workspace/review-body.txt"
-[ -s "${REVIEW_BODY_FILE}" ] || echo "::error::No review body found"
+grep -q '[^[:space:]]' "${REVIEW_BODY_FILE}" || echo "::warning::Empty review body, recovering"
 cat "${REVIEW_BODY_FILE}"
 ```
 
-Use this pre-fetched file as the review source. Do not re-fetch the review through
-the forge API; the sandbox token may not have permission to read review details.
+If empty, pointer-only, or under 200 bytes, recover via your forge
+skill's Review findings fallback. Do not re-fetch PR reviews. If still
+unusable, log error or disagree.
 
 **Step 2b — Understand the review before acting:**
 
@@ -125,7 +126,7 @@ Read the entire review carefully. Identify: (1) the reviewer's overall concern, 
 
 For each finding, record: `finding`, `path`, `description`, `related_findings`. Ignore `<details>` blocks (prior iterations). Inline PR comments are not used; humans direct fixes via `/fs-fix`.
 
-**If trigger type is `"human"`:** Use `HUMAN_INSTRUCTION` as primary directive. If vague, infer conservatively from PR diff.
+**If trigger type is `"human"`:** Use `HUMAN_INSTRUCTION` as primary directive. If empty or vague, also follow step 2a.
 
 ### 3. Discover repo conventions
 
@@ -296,7 +297,7 @@ which gitlint &>/dev/null && gitlint --commit HEAD
 }
 ```
 
-**Schema:** `additionalProperties: false`. Use only shown fields. `trigger_source` is `"bot"` or `"human"` (normalized, not raw username). Action types: `fix` (required: `type`, `finding`, `description`) or `disagree` (required: `type`, `finding`, `reason`). Top-level required: `pr_number`, `trigger_source`, `actions`, `summary`, `tests_passed`, `files_changed`. Actions array must have ≥1 item.
+**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8). `trigger_source` is `"bot"`/`"human"` (normalized). Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1 item), `summary`, `tests_passed`, `files_changed`.
 
 Validate: `fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"`. If fails after 3 attempts, write best JSON and exit.
 
