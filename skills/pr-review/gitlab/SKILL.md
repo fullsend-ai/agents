@@ -110,10 +110,17 @@ curl --fail --silent --show-error \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>" \
   | jq '{title, description}' > /sandbox/workspace/issue.json
 
-# Fetch issue notes (comments)
+# Fetch issue notes (comments) — bodies only, oldest first, one JSON
+# array; system notes ("changed the description") dropped, since the
+# `system` flag does not survive the projection. Persisted like
+# issue.json: any commenter writes these, and step 3d fences a value
+# only from a file jq wrote, never from retyped text:
+#   jq -r '.[]' issue-comments.json > value.txt    (all, one block)
+#   jq -r '.[0]' issue-comments.json > value.txt   (one note, 0-based)
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>/notes"
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>/notes?sort=asc&per_page=100" \
+  | jq '[.[] | select(.system | not) | .body]' > /sandbox/workspace/issue-comments.json
 ```
 
 ## Prior review comparison

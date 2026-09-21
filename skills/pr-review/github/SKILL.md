@@ -94,8 +94,13 @@ echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
 gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}' \
   > /sandbox/workspace/issue.json
 
-# Fetch issue comments
-gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
+# Fetch issue comments — bodies only, every page, one JSON array.
+# Persisted like issue.json: any commenter writes these, and step 3d
+# fences a value only from a file jq wrote, never from retyped text:
+#   jq -r '.[]' issue-comments.json > value.txt    (all, one block)
+#   jq -r '.[0]' issue-comments.json > value.txt   (one comment, 0-based)
+gh api --paginate --slurp "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments?per_page=100" \
+  | jq '[.[][] | .body]' > /sandbox/workspace/issue-comments.json
 ```
 
 ## Prior review comparison
