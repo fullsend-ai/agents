@@ -50,7 +50,8 @@
 #      Residual risk: on a path that already looks generated, the marker
 #      is still author-controlled, so a hand-written file parked at e.g.
 #      dist/x.go can be hidden from line-by-line review. Every stripped
-#      section is named in the exclusion summary, and SKILL.md step 7
+#      section is named in the exclusion summary under its own path (the
+#      section framing cannot be forged — see below), and SKILL.md step 7
 #      turns each one into its own disclosure finding, so nothing leaves
 #      the review silently.
 #   4. Otherwise: kept, byte-identical.
@@ -61,6 +62,23 @@
 # at @@), and, with no such headers, where sections start directly at
 # `--- a/X` (a synthesised GitLab MR diff) — see the gitlab_mode
 # transitions below.
+#
+# No PR-controlled byte may forge a `diff --git` or `### File:` boundary:
+# an author could otherwise end their own file's section early and have
+# the rest of its patch stripped, disclosed under a phantom path with a
+# reason of their choosing. Diff content cannot (every content line starts
+# with +, -, space or \). A path cannot either: it reaches this parser
+# quoted whenever it holds a control character, `"` or `\` — by git in
+# `diff --git`/`---`/`+++`/rename lines, and as a JSON string by both forge
+# skills on the `### File:` line — so a newline in a filename never
+# arrives as a line break. dequote() undoes both quotings.
+# The header-less `--- a/X` shape cannot promise this: a removed
+# "-- a/X" line followed by an added "++ b/X" line is byte-identical to
+# its boundary. No pr-review producer writes that shape, and once a
+# `diff --git` or `### File:` header has opened the stream a `---`/`+++`
+# pair is never taken for a boundary.
+# Known limit: its one-line lookahead is a heuristic. Track @@ hunk line
+# counts (or drop the shape) before any producer starts writing it.
 #
 # Bash 3.2 compatible (macOS ships 3.2 — no associative arrays, no
 # ${var,,}). The classifier itself is a single awk program reading stdin
@@ -119,6 +137,9 @@ function quote_end(s,   i, c) {
 # Control escapes (\t \n \r) stay literal backslash sequences — the
 # exclusion summary must remain one physical line per record, so a \n
 # in a filename must never become a real newline.
+# A JSON-quoted `### File:` path (written by the forge skills) decodes
+# the same way: JSON shares \" and \\, writes non-ASCII raw, and its
+# control escapes (\n, \u001b) stay literal here too.
 function dequote(s,   out, i, c, n, j) {
   s = substr(s, 2, length(s) - 2)
   out = ""
@@ -145,14 +166,16 @@ function dequote(s,   out, i, c, n, j) {
   return out
 }
 
-# Rename metadata paths carry no a/ b/ prefix but may be git-quoted.
-# Undecodable quoting returns "" so section_path() falls back to the
-# diff --git header path.
-function rename_path(s,   i) {
+# A path with no a/ b/ prefix that may be quoted: rename metadata
+# (git-quoted) and the `### File:` line (JSON-quoted by the forge
+# skills). A quoted path must be the whole string: an unterminated
+# quote, or bytes after the closing one, returns "" so section_path()
+# falls back to the diff --git header path, or fails the section open
+# without one — never classifies by a quoted prefix.
+function bare_path(s) {
   if (substr(s, 1, 1) != "\"") return s
-  i = quote_end(s)
-  if (i == 0) return ""
-  return dequote(substr(s, 1, i))
+  if (quote_end(s) != length(s)) return ""
+  return dequote(s)
 }
 
 # Path extraction from `--- `/`+++ ` header lines. Git terminates the
@@ -372,13 +395,15 @@ function process(line,   c) {
   # "### File: <path>" is the per-file header both forge skills write
   # (github "Per-file diffs", gitlab "Unified diff"); the API patch that
   # follows it is header-less and starts straight at @@. Diff content
-  # lines begin with +, -, space or \, so a bare "### File: " at column
-  # 0 is always a section boundary, never content.
+  # lines begin with +, -, space or \, and a path that could carry a
+  # newline arrives JSON-quoted on one line, so a bare "### File: " at
+  # column 0 is always a section boundary — never content, never the
+  # tail of a filename.
   if (line ~ /^### File: /) {
     if (in_diff) finalize_section()
     reset_section()
     in_diff = 1
-    new_path = substr(line, 11)
+    new_path = bare_path(substr(line, 11))
     buf[++buf_n] = line
     return
   }
@@ -432,12 +457,12 @@ function process(line,   c) {
       return
     }
     if (line ~ /^rename to /) {
-      if (new_path == "") new_path = rename_path(substr(line, 11))
+      if (new_path == "") new_path = bare_path(substr(line, 11))
       buf[++buf_n] = line
       return
     }
     if (line ~ /^rename from /) {
-      if (old_path == "") old_path = rename_path(substr(line, 13))
+      if (old_path == "") old_path = bare_path(substr(line, 13))
       buf[++buf_n] = line
       return
     }
