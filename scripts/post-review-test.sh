@@ -426,7 +426,7 @@ mkdir -p "${MOCK_BIN}"
 # integration tests below — which don't exercise protected-path behavior —
 # reflect that reality instead of leaving it unset. Tests that specifically
 # cover protected-path resolution set or unset it within their own subshell.
-export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.pi/,.gitattributes,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
+export REVIEW_PROTECTED_PATHS=".claude/,.cursor/,.pi/,.gitattributes,.gitignore,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
 # Snapshot of the default for tests that exercise it inside a subshell.
 DEFAULT_PROTECTED_PATHS="${REVIEW_PROTECTED_PATHS}"
 
@@ -1469,6 +1469,11 @@ run_protected_paths_test "custom-paths-no-match" \
 run_protected_paths_test "default-paths-pi-protected" \
   "${APPROVE_JSON}" "PR touches protected paths" "present" \
   "${DEFAULT_PROTECTED_PATHS}" ".pi/settings.json"
+
+# Default list: .gitignore changes require human review (#850)
+run_protected_paths_test "default-paths-gitignore-protected" \
+  "${APPROVE_JSON}" "PR touches protected paths" "present" \
+  "${DEFAULT_PROTECTED_PATHS}" ".gitignore"
 
 # Default list: a file merely named like the prefix is not protected
 run_protected_paths_test "default-paths-pi-prefix-not-substring" \

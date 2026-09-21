@@ -41,6 +41,12 @@ command. The text gives you direct control over what to fix:
 - `/fs-fix rebase` / `/fs-fix rebase onto main` — rebase the PR onto its
   target branch ([details](#rebasing-a-stale-pr))
 - `/fs-fix fix merge conflicts` — rebase onto the target and resolve conflicts
+- `/fs-fix squash` / `/fs-fix squash these commits` — squash the whole PR
+  into a single commit
+  ([details](#squashing-or-redoing-fix-agent-commits))
+- `/fs-fix redo from scratch` / `/fs-fix start over` — discard the
+  contiguous fix-agent commits at HEAD and redo that work
+  ([details](#squashing-or-redoing-fix-agent-commits))
 
 `/fs-fix-stop` adds the `fullsend-no-fix` label to the PR, preventing any
 further automatic fix runs. Manual `/fs-fix` commands still work.
@@ -102,6 +108,45 @@ rebases the PR branch onto the target; the post-script force-pushes with
 The agent rebases only when a human `/fs-fix` instruction asks for a rebase
 or for resolving merge conflicts with the target. Automatic review-triggered
 fixes do not rebase. An already-up-to-date branch is a no-op.
+
+The agent does not push. History rewrite is local; the post-script is what
+updates the remote PR branch.
+
+### Squashing or redoing fix-agent commits
+
+When a PR is ready to land as one commit, comment `/fs-fix squash` (or
+`/fs-fix squash these commits`) to collapse the **whole PR** — not just
+the fix agent's own commits — into a single commit. Comment
+`/fs-fix redo from scratch` (or `/fs-fix start over`) to discard the
+contiguous fix-agent commits at HEAD and redo that narrower slice of
+work. The post-script force-pushes with `--force-with-lease`.
+
+These two requests have different scopes:
+
+- **Squash** targets the entire PR, from where it forked off the target
+  branch through HEAD, regardless of who authored each commit along the
+  way. The end result is one commit. When a plain `git reset --soft` and
+  recommit isn't practical — most often because a squash was combined
+  with a rebase and replaying several original commits onto the new base
+  produces too many conflicts to resolve cleanly commit-by-commit — the
+  agent may fall back to a "manual squash": reset to the merge base and
+  re-implement the PR's net effect directly as a single commit, then
+  re-verify it with tests and linters like any other fix. The commit
+  message is written to describe everything that ended up in the PR, not
+  just its original goal — including changes made along the way in
+  response to review feedback.
+- **Redo/reset** only discards and re-implements the contiguous suffix of
+  commits the fix agent itself authored. Human-authored commits and the
+  original code-agent commits below that suffix are preserved untouched.
+
+If the redo/reset range cannot be determined — HEAD is not a fix-agent
+commit, or ownership is mixed in a way that is ambiguous — the agent
+fails closed and explains the blocker rather than rewriting. If squash
+and redo are requested together, the agent also fails closed rather than
+guessing which was meant.
+
+Automatic review-triggered fixes do not squash or reset. Without an
+explicit human request, the agent continues to append commits.
 
 The agent does not push. History rewrite is local; the post-script is what
 updates the remote PR branch.

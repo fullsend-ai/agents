@@ -45,8 +45,9 @@
 #   ITERATION_CAP     — max iterations (default: 5)
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging)
 #   HUMAN_INSTRUCTION — the harness-captured /fs-fix comment text (only for
-#                       human-triggered runs); used to confirm a rebase was
-#                       actually requested before trusting rebased_onto_target
+#                       human-triggered runs); used to confirm a rebase or
+#                       squash/redo was actually requested before trusting
+#                       rebased_onto_target / history_rewritten
 #   POST_FAILURE_DETAIL_MAX_LINES
 #                     — max lines of failure detail in issue/PR comments (default: 30)
 #
@@ -424,6 +425,37 @@ is_human_rebase_request() {
   local instruction
   instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
   [[ "${instruction}" == *"rebase"* || "${instruction}" == *"merge conflict"* ]]
+}
+
+# is_human_squash_request INSTRUCTION — true if a harness-captured human
+# /fs-fix instruction asked to squash fix-agent commits (see
+# agents/fix.md's "Rewrite fix-agent history" and docs/fix.md's
+# "Squashing or redoing fix-agent commits"). Same trust boundary as
+# is_human_rebase_request: HUMAN_INSTRUCTION is set from the literal
+# PR/MR comment before the sandbox exists.
+is_human_squash_request() {
+  local instruction
+  instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${instruction}" == *"squash"* ]]
+}
+
+# is_human_reset_request INSTRUCTION — true if a harness-captured human
+# /fs-fix instruction asked to redo the fix-agent work from scratch or
+# start over. Matches the phrases in agents/fix.md; bare "reset" is not
+# enough (too generic).
+is_human_reset_request() {
+  local instruction
+  instruction="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+  [[ "${instruction}" == *"from scratch"* \
+    || "${instruction}" == *"start over"* \
+    || "${instruction}" == *"redo"* ]]
+}
+
+# is_human_history_rewrite_request INSTRUCTION — squash or redo/reset.
+# Used by the post-script to authorize skipping replay onto origin/BRANCH
+# after the agent rewrote the authorized fix-agent range.
+is_human_history_rewrite_request() {
+  is_human_squash_request "${1:-}" || is_human_reset_request "${1:-}"
 }
 # END bundled: lib/fix-ops.lib.sh
 # shellcheck source=lib/post-failure-report.lib.sh
@@ -1524,6 +1556,46 @@ if [ "${NO_PUSH}" = "false" ]; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# 0c. Force-fetch the target branch and pin a trusted SHA (on demand).
+#
+# origin/${TARGET_BRANCH} is a local remote-tracking ref inside the runner's
+# checkout of the sandbox's extracted repo. Unlike origin/${BRANCH} (force-
+# fetched below, right before the push), nothing previously refreshed it
+# before it got used for security-relevant computations: the DIFF_BASE
+# rebase-detection fallback just below (which sizes the gitleaks/pre-commit
+# SCAN_RANGE), the squash fork point, and the squash single-commit publish
+# bound. A locally-moved ref (e.g. via a stray `git update-ref`) could
+# silently shrink the scan range or satisfy the squash bound without the
+# per-commit preservation check ever running (PR #1335). Fetch it fresh —
+# via the same authenticated remote used for the origin/${BRANCH} fetch
+# below (the extracted repo's origin has no working credentials until
+# forge_set_push_remote runs) — and pin the resulting SHA once, then reuse
+# that pinned value everywhere below instead of re-reading the mutable ref.
+# Memoized and called lazily from each use site below: it is only needed
+# on paths that actually consult the target branch (a detected history
+# rewrite, or the squash/redo publish gate), not on every push.
+# ---------------------------------------------------------------------------
+TRUSTED_TARGET_SHA=""
+fetch_trusted_target_sha() {
+  if [ -n "${TRUSTED_TARGET_SHA}" ]; then
+    return 0
+  fi
+  forge_set_push_remote "${PUSH_TOKEN}"
+  echo "Fetching target branch ${TARGET_BRANCH}..."
+  if ! TARGET_FETCH_OUTPUT="$(git fetch origin "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}" 2>&1)"; then
+    print_sanitized_gha_log "${TARGET_FETCH_OUTPUT}" stderr
+    post_fail_to_pr setup-error \
+      "Could not fetch target branch '${TARGET_BRANCH}': ${TARGET_FETCH_OUTPUT}"
+  fi
+  print_sanitized_gha_log "${TARGET_FETCH_OUTPUT}"
+  TRUSTED_TARGET_SHA="$(git rev-parse "refs/remotes/origin/${TARGET_BRANCH}" 2>/dev/null)" || TRUSTED_TARGET_SHA=""
+  if [ -z "${TRUSTED_TARGET_SHA}" ]; then
+    post_fail_to_pr setup-error \
+      "Could not resolve freshly fetched target branch '${TARGET_BRANCH}' to a commit SHA."
+  fi
+}
+
 # Scope to the agent's commit(s) only — not the entire branch. PRE_AGENT_HEAD
 # is set by fix.yml to the HEAD SHA before the harness runs, so this diff
 # captures every commit the agent made (including validation_loop retries).
@@ -1537,9 +1609,12 @@ DIFF_BASE="${PRE_AGENT_HEAD:-$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)}"
 # isolates only the branch's own commits — the same approach used for
 # BRANCH_CHANGED_FILES below and for SCAN_RANGE in post-code.src.sh.
 if ! git merge-base --is-ancestor "${DIFF_BASE}" HEAD 2>/dev/null; then
-  _rebase_mb="$(git merge-base HEAD "origin/${TARGET_BRANCH}" 2>/dev/null)" || _rebase_mb=""
+  if [ "${NO_PUSH}" = "false" ]; then
+    fetch_trusted_target_sha
+  fi
+  _rebase_mb="$(git merge-base HEAD "${TRUSTED_TARGET_SHA}" 2>/dev/null)" || _rebase_mb=""
   if [ -n "${_rebase_mb}" ]; then
-    echo "PRE_AGENT_HEAD is not an ancestor of HEAD (rebase detected) — using merge-base for DIFF_BASE"
+    echo "PRE_AGENT_HEAD is not an ancestor of HEAD (history rewrite detected) — using merge-base for DIFF_BASE"
     DIFF_BASE="${_rebase_mb}"
   else
     post_fail_to_pr setup-error \
@@ -1703,9 +1778,12 @@ fi
 # jq failures (missing file, invalid JSON, field absent) all fall through to
 # "false", the fail-closed default — see issue #565.
 AGENT_REBASED_ONTO_TARGET=false
+AGENT_HISTORY_REWRITTEN=false
 if [ -n "${RESULT_FILE}" ] && [ -f "${RESULT_FILE}" ]; then
   AGENT_REBASED_ONTO_TARGET="$(jq -r 'if .rebased_onto_target == true then "true" else "false" end' "${RESULT_FILE}" 2>/dev/null || echo false)"
   [ "${AGENT_REBASED_ONTO_TARGET}" = "true" ] || AGENT_REBASED_ONTO_TARGET=false
+  AGENT_HISTORY_REWRITTEN="$(jq -r 'if .history_rewritten == true then "true" else "false" end' "${RESULT_FILE}" 2>/dev/null || echo false)"
+  [ "${AGENT_HISTORY_REWRITTEN}" = "true" ] || AGENT_HISTORY_REWRITTEN=false
 fi
 
 # A non-bot TRIGGER_SOURCE only proves a human triggered *this run* — it
@@ -1721,6 +1799,128 @@ HUMAN_REBASE_REQUESTED=false
 if ! is_bot_user "${TRIGGER_SOURCE}" && is_human_rebase_request "${HUMAN_INSTRUCTION:-}"; then
   HUMAN_REBASE_REQUESTED=true
 fi
+
+# Same trust boundary for squash/redo: history_rewritten in agent-result.json
+# is sandbox-written. Only a harness-captured human squash or redo instruction
+# may authorize skipping replay onto origin/BRANCH (issue #1332).
+HUMAN_HISTORY_REWRITE_REQUESTED=false
+if ! is_bot_user "${TRIGGER_SOURCE}" && is_human_history_rewrite_request "${HUMAN_INSTRUCTION:-}"; then
+  HUMAN_HISTORY_REWRITE_REQUESTED=true
+fi
+
+# Squash and redo/reset verify differently below (agents/fix.md "Rewrite
+# fix-agent history"): a squash now targets the whole PR and must land as a
+# single commit, so per-commit preservation no longer applies to it, while
+# redo/reset still only discards the contiguous fix-agent suffix and must
+# still preserve every commit below it. Compute both independently — never
+# both true at once from a real single-phrase instruction, but an agent that
+# misreads an ambiguous combined request as history_rewritten:true must still
+# fall through to the stricter (preservation) path below, not the looser one.
+HUMAN_SQUASH_REQUESTED=false
+HUMAN_RESET_REQUESTED=false
+if ! is_bot_user "${TRIGGER_SOURCE}"; then
+  if is_human_squash_request "${HUMAN_INSTRUCTION:-}"; then
+    HUMAN_SQUASH_REQUESTED=true
+  fi
+  if is_human_reset_request "${HUMAN_INSTRUCTION:-}"; then
+    HUMAN_RESET_REQUESTED=true
+  fi
+fi
+
+# The fix agent's own git identity (harness/fix.yaml sets GIT_AUTHOR_NAME to
+# this literal for the sandbox). GIT_BOT_EMAIL alone is not sufficient to
+# identify fix-agent commits: harness/code.yaml gives the code agent the
+# same ${GIT_BOT_EMAIL}, differing only by name (fullsend-code). This
+# script runs on the runner, which does not inherit the sandbox's
+# GIT_AUTHOR_NAME, so the fix-agent identity is hardcoded here rather than
+# read from the environment.
+FIX_AGENT_GIT_NAME="fullsend-fix"
+
+# history_rewrite_preserves_remote_human_commits — 0 when every commit on
+# origin/BRANCH since it diverged from origin/TARGET_BRANCH that is NOT
+# authored by this fix agent (email + name, not email alone — see
+# FIX_AGENT_GIT_NAME above) is still present in local HEAD, either as an
+# exact-SHA ancestor, or as an equivalent commit recognized by one of two
+# fallbacks:
+#   - same tree + same author identity — tolerates GitLab MR reconstruction,
+#     where local history is rebuilt from API content and gets different
+#     commit SHAs even when the tree/author content is identical.
+#   - same author identity + same patch-id — tolerates a genuine rebase,
+#     which reapplies the commit's patch onto a new base tree. The
+#     resulting commit's full tree then differs from the original whenever
+#     the new base touched other files, even though the author's own change
+#     was preserved intact; patch-id (the diff the commit introduces) is
+#     the quantity a rebase actually preserves, unlike the full tree.
+# Fail closed when the agent identity is unknown (cannot tell humans/code-
+# agent from this fix agent) or when a non-fix-agent commit would be lost
+# by publishing the rewrite.
+history_rewrite_preserves_remote_human_commits() {
+  local bot remote_ref target_ref mb sha author_email author_name tree patch_id candidate candidate_name candidate_email candidate_patch_id candidate_tree
+  bot="$(signoff_bot_email)"
+  if [ -z "${bot}" ]; then
+    echo "history-rewrite: agent git identity unavailable; refusing to publish rewrite" >&2
+    return 1
+  fi
+  remote_ref="origin/${BRANCH}"
+  target_ref="origin/${TARGET_BRANCH}"
+  mb="$(git merge-base "${target_ref}" "${remote_ref}" 2>/dev/null)" || {
+    echo "history-rewrite: could not compute merge-base of ${target_ref} and ${remote_ref}" >&2
+    return 1
+  }
+  for sha in $(git rev-list "${mb}..${remote_ref}" 2>/dev/null || true); do
+    author_email="$(git log -1 --format='%ae' "${sha}" 2>/dev/null)"
+    author_name="$(git log -1 --format='%an' "${sha}" 2>/dev/null)"
+    if [ "${author_email}" != "${bot}" ] || [ "${author_name}" != "${FIX_AGENT_GIT_NAME}" ]; then
+      if git merge-base --is-ancestor "${sha}" HEAD 2>/dev/null; then
+        continue
+      fi
+      tree="$(git log -1 --format='%T' "${sha}" 2>/dev/null)"
+      if [ -n "${tree}" ]; then
+        # Candidates are restricted to the range being published
+        # (target_ref..HEAD), not all of HEAD's ancestry — same rationale
+        # as the patch-id loop below: HEAD also contains target-branch
+        # history up to the fork point (the caller requires that fork
+        # point to be an ancestor of HEAD), and a same-tree-and-author
+        # commit already inherited from the target branch proves nothing
+        # about whether this PR's own commit survived the rewrite.
+        # Matching is done with exact field equality rather than
+        # `grep -qF` against a bare "tree name email" string, which is an
+        # unanchored substring match.
+        while IFS=$'\t' read -r candidate_tree candidate_name candidate_email; do
+          [ -n "${candidate_tree}" ] || continue
+          [ "${candidate_tree}" = "${tree}" ] || continue
+          [ "${candidate_name}" = "${author_name}" ] || continue
+          [ "${candidate_email}" = "${author_email}" ] || continue
+          continue 2
+        done < <(git log --format='%T%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+      fi
+      patch_id="$(git show "${sha}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+      if [ -n "${patch_id}" ]; then
+        # Candidates are restricted to the range being published
+        # (target_ref..HEAD), not all of HEAD's ancestry: HEAD also
+        # contains target-branch history up to the fork point (the
+        # caller requires that fork point to be an ancestor of HEAD),
+        # and a same-author commit already inherited from the target
+        # branch proves nothing about whether this PR's own commit
+        # survived the rewrite. Matching is done with exact string
+        # equality on %an/%ae rather than `git log --author=`, which
+        # treats the name as an unanchored regex.
+        while IFS=$'\t' read -r candidate candidate_name candidate_email; do
+          [ -n "${candidate}" ] || continue
+          [ "${candidate_name}" = "${author_name}" ] || continue
+          [ "${candidate_email}" = "${author_email}" ] || continue
+          candidate_patch_id="$(git show "${candidate}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+          if [ -n "${candidate_patch_id}" ] && [ "${candidate_patch_id}" = "${patch_id}" ]; then
+            continue 2
+          fi
+        done < <(git log --format='%H%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+      fi
+      echo "history-rewrite: commit ${sha} (author ${author_name} <${author_email}>) on ${remote_ref} is not an ancestor of HEAD and has no equivalent (tree+author or patch-id+author) commit in HEAD" >&2
+      return 1
+    fi
+  done
+  return 0
+}
 
 # ---------------------------------------------------------------------------
 # 4. Push branch (only if we have commits)
@@ -1776,6 +1976,110 @@ if [ "${NO_PUSH}" = "false" ]; then
       SKIP_REMOTE_REBASE=true
       echo "Local HEAD is already based on origin/${TARGET_BRANCH} and has diverged from origin/${BRANCH} (target is ahead of the remote PR tip) — skipping rebase onto origin/${BRANCH} to preserve the agent rebase onto the target"
     fi
+    # Squash/redo (issue #1332): the agent rewrote the contiguous fix-agent
+    # suffix, so origin/BRANCH is no longer an ancestor of HEAD. Replaying
+    # onto the pre-rewrite remote tip would restore the discarded commits.
+    # Unlike the rebase skip above, this is valid even when the target has
+    # not moved — a squash of an up-to-date PR still diverges. Fail closed
+    # if a human-authored commit on the remote PR would be lost.
+    #
+    # Unlike the rebase skip's origin/TARGET_BRANCH-is-ancestor-of-HEAD
+    # requirement, a squash/redo does not rebase onto the target — it only
+    # rewrites the fix-agent suffix in place on top of the PR's original
+    # fork point. Requiring the (possibly since-advanced) TARGET_BRANCH to
+    # be an ancestor of HEAD would wrongly fail here whenever the target
+    # has moved on, falling through to a rebase onto the stale remote tip
+    # and silently undoing the requested rewrite. Use the PR's recorded
+    # fork point instead — the merge-base of the two remote refs, which is
+    # unaffected both by the local rewrite and by TARGET_BRANCH's later
+    # advancement.
+    #
+    # This block is NOT gated on SKIP_REMOTE_REBASE = false: when a human
+    # asks for a rebase and a squash together, the rebase-skip block above
+    # can already have set SKIP_REMOTE_REBASE = true (its ancestry
+    # requirement — target has advanced past the remote PR tip — is the
+    # ordinary reason a human asks for a rebase in the first place). Gating
+    # this block on SKIP_REMOTE_REBASE = false would skip
+    # history_rewrite_preserves_remote_human_commits entirely on that
+    # combined path, force-pushing a squash/redo with no preservation check
+    # at all (high-severity finding on PR #1335). The preservation check
+    # must run — and be able to refuse publication — whenever the agent
+    # recorded a history rewrite and a human asked for one, regardless of
+    # what the rebase-skip block already decided.
+    fetch_trusted_target_sha
+    REWRITE_FORK_POINT="$(git merge-base "${TRUSTED_TARGET_SHA}" "origin/${BRANCH}" 2>/dev/null)" || REWRITE_FORK_POINT=""
+    if [ "${AGENT_HISTORY_REWRITTEN}" = "true" ] \
+      && [ "${HUMAN_HISTORY_REWRITE_REQUESTED}" = "true" ] \
+      && [ -n "${REWRITE_FORK_POINT}" ] \
+      && git merge-base --is-ancestor "${REWRITE_FORK_POINT}" HEAD 2>/dev/null \
+      && ! git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null; then
+      # This topology alone (diverged from origin/BRANCH, still contains
+      # the fork point) is also what a GitLab MR reconstruction produces
+      # with no rewrite at all — reconstructed commits get new SHAs even
+      # when nothing actually changed. Copying the rebase skip's "target
+      # moved past the remote tip" check would reject legitimate
+      # up-to-date squashes, so require a rewrite-specific structural
+      # signal instead: either the rewritten range has fewer commits than
+      # the remote range (a squash) or HEAD's final tree differs from
+      # origin/BRANCH's (a redo). If neither holds, local HEAD is
+      # structurally indistinguishable from a reconstruction of
+      # origin/BRANCH — nothing was actually rewritten, so there is
+      # nothing to verify or skip on this path.
+      REWRITE_LOCAL_COUNT="$(git rev-list --count "${REWRITE_FORK_POINT}..HEAD" 2>/dev/null)" || REWRITE_LOCAL_COUNT="0"
+      REWRITE_REMOTE_COUNT="$(git rev-list --count "${REWRITE_FORK_POINT}..origin/${BRANCH}" 2>/dev/null)" || REWRITE_REMOTE_COUNT="0"
+      REWRITE_LOCAL_TREE="$(git rev-parse "HEAD^{tree}" 2>/dev/null)" || REWRITE_LOCAL_TREE=""
+      REWRITE_REMOTE_TREE="$(git rev-parse "origin/${BRANCH}^{tree}" 2>/dev/null)" || REWRITE_REMOTE_TREE=""
+      if [ "${REWRITE_LOCAL_COUNT}" -lt "${REWRITE_REMOTE_COUNT}" ] \
+        || [ "${REWRITE_LOCAL_TREE}" != "${REWRITE_REMOTE_TREE}" ]; then
+        # A genuine rewrite is on HEAD. What "safe" means depends on which
+        # rewrite was requested:
+        #
+        #   - Squash (and not also reset — an ambiguous combined phrase
+        #     falls through to the stricter redo/reset check below) now
+        #     targets the whole PR: fix-agent, code-agent, and human commits
+        #     alike are intentionally combined into one commit (agents/fix.md
+        #     "Rewrite fix-agent history" — "the end result should be a
+        #     single-commit PR"). Per-commit preservation is structurally
+        #     impossible to satisfy for a real squash of more than one
+        #     commit, so it is not the right safety property here. The
+        #     property that matters is that the promised outcome actually
+        #     happened: exactly one commit sits between the target branch
+        #     and HEAD. This also bounds what a "manual squash" (reset to
+        #     the merge base and hand-reimplement, used when squash+rebase
+        #     conflicts make a mechanical `git reset --soft` impractical)
+        #     could smuggle in: whatever it is, it is confined to the one
+        #     commit that already passed the secret scan and pre-commit
+        #     gate above.
+        #   - Redo/reset only discards the contiguous fix-agent suffix, so
+        #     every non-fix-agent commit below it must still be preserved
+        #     intact — same check as before.
+        # Refuse to publish on failure regardless — even if the rebase-skip
+        # above already authorized skipping replay for an unrelated reason
+        # (target-advance rebase).
+        if [ "${HUMAN_SQUASH_REQUESTED}" = "true" ] && [ "${HUMAN_RESET_REQUESTED}" = "false" ]; then
+          REWRITE_TARGET_COUNT="$(git rev-list --count "${TRUSTED_TARGET_SHA}..HEAD" 2>/dev/null)" || REWRITE_TARGET_COUNT="-1"
+          if [ "${REWRITE_TARGET_COUNT}" = "1" ]; then
+            if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
+              SKIP_REMOTE_REBASE=true
+              echo "Local HEAD has rewritten authorized agent history and has diverged from origin/${BRANCH} — skipping rebase onto origin/${BRANCH} to preserve the agent history rewrite"
+            fi
+          else
+            post_fail_to_pr push-rejected \
+              "Refusing to publish squash: a human /fs-fix squash request must produce exactly one commit ahead of origin/${TARGET_BRANCH} (the whole PR as a single commit), but found ${REWRITE_TARGET_COUNT}."
+          fi
+        elif history_rewrite_preserves_remote_human_commits; then
+          if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
+            SKIP_REMOTE_REBASE=true
+            echo "Local HEAD has rewritten authorized agent history and has diverged from origin/${BRANCH} — skipping rebase onto origin/${BRANCH} to preserve the agent history rewrite"
+          fi
+        else
+          post_fail_to_pr push-rejected \
+            "Refusing to publish history rewrite: a human-authored commit on origin/${BRANCH} is not an ancestor of local HEAD, or the agent git identity is unavailable. The authorized range is the contiguous fix-agent suffix at HEAD; human-authored commits must be preserved."
+        fi
+      elif [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
+        echo "history_rewritten is set but local HEAD is structurally indistinguishable from origin/${BRANCH} (same commit count and tree) — treating as a GitLab reconstruction rather than a genuine rewrite, and falling through to rebase onto origin/${BRANCH}"
+      fi
+    fi
     if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
       echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."
       REBASE_OUTPUT="$(git rebase "origin/${BRANCH}" 2>&1)" && REBASE_RC=0 || REBASE_RC=$?
@@ -1798,9 +2102,10 @@ ${REBASE_OUTPUT}"
   fi
 
   # Plain push first. Falls back to --force-with-lease when the push
-  # is rejected (non-fast-forward), which happens after a rebase — the
-  # agent rewrote history so the remote branch diverged. force-with-lease
-  # is safe: it still rejects if someone else pushed in the meantime.
+  # is rejected (non-fast-forward), which happens after a rebase, squash,
+  # or reset — the agent rewrote history so the remote branch diverged.
+  # force-with-lease is safe: it still rejects if someone else pushed in
+  # the meantime.
   echo "Pushing branch ${BRANCH}..."
   PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
   print_sanitized_gha_log "${PUSH_OUTPUT}"

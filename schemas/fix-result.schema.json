@@ -119,6 +119,10 @@
     "rebased_onto_target": {
       "type": "boolean",
       "description": "Set to true whenever this run's HEAD reflects an authorized human rebase onto the PR's target that still needs to be published on the remote PR (see 'How to rebase' step 8 in agents/fix.md) — a completed `git rebase origin/<target>`, a step-3 no-op whose result still needs publishing (e.g. a GitLab MR reconstructed against the target), or a validation-loop retry carrying the field forward from the iteration that performed or no-op'd the rebase. Never set for a failed/aborted rebase or a bot-triggered run. The post-script requires this field together with a harness-verified human rebase request (TRIGGER_SOURCE plus the literal /fs-fix instruction text) before skipping the replay onto the remote PR tip — ancestry alone cannot distinguish an authorized rebase from a GitLab MR reconstruction against a target that has since moved on."
+    },
+    "history_rewritten": {
+      "type": "boolean",
+      "description": "Set to true whenever this run's HEAD reflects an authorized human squash or redo/reset that still needs to be published on the remote PR (see 'Rewrite fix-agent history' in agents/fix.md), or a validation-loop retry carrying the field forward. A squash targets the whole PR range (fix-agent, code-agent, and human commits alike) and must land as exactly one commit ahead of the target branch; a redo/reset only discards and re-implements the contiguous fix-agent commit suffix, preserving every commit below it. Never set for a failed/aborted rewrite, a squash no-op (PR already a single commit), or a bot-triggered run. The post-script requires this field together with a harness-verified human squash/redo request (TRIGGER_SOURCE plus the literal /fs-fix instruction text) before skipping the replay onto the remote PR tip — for a squash it additionally refuses to publish unless exactly one commit results, and for a redo/reset it refuses to publish if a human-authored or code-agent commit below the rewrite base would be lost."
     }
   }
 }
