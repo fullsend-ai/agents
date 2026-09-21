@@ -308,8 +308,8 @@ Then determine the overall outcome:
   the PR mergeable. This is distinct from `request-changes`, which
   implies fixable issues.
 
-On a re-review, first set `actionable: false` on any low or info finding
-with no prior match (`pr-review` step 6f).
+On a re-review where prior findings exist, first set `actionable: false`
+on new low/info findings (`pr-review` 6f).
 
 ## Constraints
 

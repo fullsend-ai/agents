@@ -1257,12 +1257,12 @@ adjudicated set (step 6d) and evaluate:
   Use `reject` only when no amount of code-level iteration will make
   the PR mergeable.
 
-**Re-review: new low findings do not reopen the loop.** On a re-review
-(step 2a found prior findings), before applying the rules above, take
-each **low** or **info** finding that fails the code-review skill's
-finding matching procedure against every prior finding. Keep it in
-`findings`, set `actionable: false`, and start its description with
-"Suggestion:". Medium+ findings and matched low/info findings are
+**Re-review: new low findings do not reopen the loop.**
+On a re-review where prior findings exist (step 2a), before applying the
+rules above, take each **low** or **info** finding that fails the
+code-review skill's finding matching procedure against every prior
+finding. Keep it in `findings`, set `actionable: false`, and start its
+description with "Suggestion:". Medium+ or matched findings are
 unaffected.
 
 **Self-consistency check.** Before emitting the final verdict, verify
