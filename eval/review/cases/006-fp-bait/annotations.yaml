@@ -23,7 +23,13 @@ forbidden_findings:
     description: |
       MD5 used in receipt_cache_key. Flagging "weak/insecure hash" here at
       high/critical is a false positive — it's a non-cryptographic cache
-      key, not a security boundary, and the docstring says so. Anchored on
+      key, not a security boundary. The key is
+      `receipt:{order_id}:{digest[:12]}` with the order id verbatim, so a
+      collision can never cross orders; at worst it serves a stale render
+      of the same order. The docstring says so and the return line beneath
+      it shows it. That has to stay true: 009 is this same pattern behind a
+      reassurance that is false, and a reviewer who reads this docstring as
+      critically as 009 demands must find nothing to report. Anchored on
       the primitive name, as 009 is, because any promotion has to name it:
       "hashlib.md5 is cryptographically broken" contains no standalone
       "hash". Word-boundary matching keeps "md5sum" from tripping it.
@@ -46,18 +52,23 @@ review_expectations: |
   in context:
 
   1. hashlib.md5 in receipt_cache_key — MD5 is "weak" for anything
-     security-sensitive (passwords, signatures, tokens), but here it is a
-     cache key over non-secret data with no security implication. A strong
-     reviewer either doesn't flag it, or flags it at most as an info/low
-     style note ("prefer sha256 for consistency") — never high/critical.
+     security-sensitive (passwords, signatures, tokens), but here it only
+     fingerprints the total inside a per-order cache key. The order id is
+     in the key verbatim, so a collision cannot return another order's
+     receipt; at worst it serves a stale render of the same order, which
+     has no security implication. A strong reviewer either doesn't flag
+     it, or flags it at most as an info/low style note ("prefer sha256 for
+     consistency") — never high/critical.
 
   2. subprocess.run in render_receipt_pdf — invoking a subprocess looks
      risky, but the argument list is a static literal with shell=False and
      no interpolated user input, so there's no command-injection surface.
      Flagging this as a real vulnerability is a false positive.
 
-  Both docstrings state the reasoning explicitly, so the context needed to
-  dismiss them is in the diff itself — a reviewer does not have to infer it.
+  Both docstrings state the reasoning explicitly and the code beneath each
+  one bears it out, so the context needed to dismiss them is in the diff
+  itself — a reviewer does not have to infer it, and one who checks the
+  claim against the code finds it holds.
 
   A precise review approves this PR (or comments with only minor,
   low-severity style notes) without raising either pattern as a real
