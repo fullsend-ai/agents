@@ -26,7 +26,9 @@
 #                   absent file, or an unsafe path (absolute, or with a
 #                   ".." component) falls back to the in-hunk window.
 #
-# Classification (per `diff --git a/X b/X` section), in priority order:
+# Classification (per `diff --git a/X b/X` section), in priority order.
+# Every path rule, the exemption included, matches the lowercased path:
+# Migrations/ is as exempt as migrations/, Vendor/ as vendored as vendor/.
 #   1. EXEMPT (always kept, beats every rule below): path has a
 #      "migrations" or "migrate" directory component.
 #   2. STRIP: path is a well-known dependency lockfile (self-contained
@@ -302,11 +304,14 @@ function head_has_marker(p,   f, line, n, hit) {
 # generated — still need the bounded content-marker check before a
 # final call can be made.
 function classify_path(   lp) {
-  if (path ~ /(^|\/)(migrations|migrate)\//) {
+  # Every rule below matches lp, never the raw path: one rule left
+  # case-sensitive either loses the exemption (Migrations/ stripped and
+  # hidden) or dodges a strip (Vendor/ kept).
+  lp = tolower(path)
+  if (lp ~ /(^|\/)(migrations|migrate)\//) {
     phase = "keep"
     return
   }
-  lp = tolower(path)
   # Well-known dependency lockfiles across ecosystems (npm, yarn, pnpm,
   # Go, Rust, Ruby, Python, PHP).
   if (lp ~ /(^|\/)(package-lock\.json|yarn\.lock|pnpm-lock\.yaml|npm-shrinkwrap\.json|go\.sum|cargo\.lock|gemfile\.lock|poetry\.lock|composer\.lock)$/) {
@@ -318,7 +323,7 @@ function classify_path(   lp) {
   if (lp ~ /\.map$/) {
     phase = "strip"; reason = "sourcemap"; return
   }
-  if (path ~ /(^|\/)(vendor|node_modules|third_party)\//) {
+  if (lp ~ /(^|\/)(vendor|node_modules|third_party)\//) {
     phase = "strip"; reason = "vendored"; return
   }
   # Content-marker stripping is gated on generated-looking paths: an

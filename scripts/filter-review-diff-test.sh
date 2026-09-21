@@ -799,18 +799,28 @@ GITLAB_QUOTED_OUT=$("${FILTER}" "${TMPDIR}/gitlab-quoted.summary" < "${TMPDIR}/g
 run_test "gitlab-quoted-path-stdout-empty" "" "${GITLAB_QUOTED_OUT}"
 run_test "gitlab-quoted-path-summary" "vendor/café.min.js  +1/-1  minified" "$(/bin/cat "${TMPDIR}/gitlab-quoted.summary")"
 
-# --- 29. Path rules are case-insensitive across the board: the lockfile,
-#         minified and sourcemap rules all match on the lowercased path. ---
+# --- 29. Path rules are case-insensitive across the board: the migrations
+#         exemption and the lockfile, minified, sourcemap, vendored and
+#         generated-looking rules all match on the lowercased path.
+#         "kept" is the exemption: EF Core's Migrations/ must keep even a
+#         lockfile name, pass through unchanged, and leave no record. ---
 
-for case in "Cargo.lock:lockfile" "assets/Bundle.MIN.JS:minified" "assets/styles.MAP:sourcemap"; do
+for case in "Cargo.lock:lockfile" "assets/Bundle.MIN.JS:minified" "assets/styles.MAP:sourcemap" \
+    "Vendor/lib.go:vendored" "Api/Service.PB.GO:generated-marker" \
+    "Src/Migrations/package-lock.json:kept"; do
   upper_path="${case%%:*}"
   reason="${case#*:}"
   label="case-${reason}"
-  printf 'diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -1,1 +1,1 @@\n-x\n+y\n' \
+  printf 'diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -1,1 +1,1 @@\n-x\n+// @generated\n' \
     "${upper_path}" "${upper_path}" "${upper_path}" "${upper_path}" > "${TMPDIR}/${label}.in"
   OUT=$("${FILTER}" "${TMPDIR}/${label}.summary" < "${TMPDIR}/${label}.in")
-  run_test "${label}-stdout-empty" "" "${OUT}"
-  run_test "${label}-summary" "${upper_path}  +1/-1  ${reason}" "$(/bin/cat "${TMPDIR}/${label}.summary")"
+  if [[ "${reason}" == kept ]]; then
+    run_test "${label}-passes-through" "$(/bin/cat "${TMPDIR}/${label}.in")" "${OUT}"
+    run_test "${label}-empty-summary" "" "$(/bin/cat "${TMPDIR}/${label}.summary")"
+  else
+    run_test "${label}-stdout-empty" "" "${OUT}"
+    run_test "${label}-summary" "${upper_path}  +1/-1  ${reason}" "$(/bin/cat "${TMPDIR}/${label}.summary")"
+  fi
 done
 
 # --- 30. A forge-supplied path cannot forge a `### File:` boundary. Both
