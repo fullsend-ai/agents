@@ -883,7 +883,8 @@ if [[ "${HAS_RISK}" == "true" ]]; then
   # that omits or lowers risk_floor cannot disable it: a security-sensitive
   # path never labels low. Same list and match as risk-tier1.sh
   # (post-review-test.sh pins the two lists equal). PR_FILES is already
-  # fetched on the approve path; other actions fetch it here.
+  # fetched on the approve path; other actions fetch it here, with the same
+  # single retry for the transient empty list (#2093).
   SECURITY_PATTERNS=(
     "mint/" "auth/" "oidc/" "rbac/" "permissions/"
     "secrets/" "crypto/" "token/" "tokens/" "trust/"
@@ -891,9 +892,18 @@ if [[ "${HAS_RISK}" == "true" ]]; then
   )
   if [ -z "${PR_FILES:-}" ]; then
     PR_FILES=$(forge_get_pr_files) || PR_FILES=""
+    if [ -z "${PR_FILES}" ]; then
+      echo "::notice::PR files came back empty; retrying once in case of a transient forge data race (forge_get_pr_files)" >&2
+      sleep 10
+      PR_FILES=$(forge_get_pr_files) || PR_FILES=""
+    fi
   fi
   if [ -z "${PR_FILES}" ]; then
-    echo "::warning::Could not fetch PR files — security floor uses the sub-agent's risk_floor only"
+    # Fail closed, as risk-tier1.sh does: no file list means nothing was
+    # measured, never a PR with zero risky files. The review is still
+    # posted — only the label is held at the security floor.
+    echo "::warning::Could not fetch PR files — treating the change as security-sensitive (risk floor 2)"
+    [[ "${RISK_FLOOR:-1}" -ge 2 ]] || RISK_FLOOR=2
   else
     while IFS= read -r file; do
       [ -z "${file}" ] && continue
@@ -912,6 +922,13 @@ if [[ "${HAS_RISK}" == "true" ]]; then
       1) RISK_LEVEL="low" ;; 2) RISK_LEVEL="moderate" ;; 3) RISK_LEVEL="elevated" ;;
       4) RISK_LEVEL="high" ;; 5) RISK_LEVEL="critical" ;;
     esac
+  fi
+  # The label follows RISK_LEVEL and the schema does not tie level to score,
+  # so hold the floor on the level too: "low" beside an invalid score, or
+  # beside a score already at the floor, would otherwise still label low.
+  if [[ "${RISK_FLOOR:-1}" -ge 2 && "${RISK_LEVEL}" == "low" ]]; then
+    echo "Risk level low raised to moderate (security floor)"
+    RISK_LEVEL="moderate"
   fi
 
   if [[ -n "${RISK_LEVEL}" ]]; then

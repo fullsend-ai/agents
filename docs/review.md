@@ -70,7 +70,8 @@ Risk labels are informational — they do not gate the review outcome.
 The sticky risk comment also carries the deterministic Tier 1 score
 (`risk-tier1.sh` computes it; the sub-agent copies it rather than
 re-scoring), a floor of `moderate` whenever a security-sensitive path is
-touched, a `degraded: tier1-only` marker when the sub-agent was
+touched (or the changed-file list cannot be fetched, so nothing was
+measured), a `degraded: tier1-only` marker when the sub-agent was
 unavailable and the score came from Tier 1 alone, and a per-head-SHA
 history table so score drift across re-reviews is visible without
 opening run artifacts. Anything that routes or gates on the score must

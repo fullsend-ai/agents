@@ -2115,11 +2115,62 @@ RISK_FLOOR_OMITTED_COMMENT='{"action":"comment","pr_number":99,"repo":"test-org/
 run_label_test "risk-floor-recomputed-on-comment-action" \
   "${RISK_FLOOR_OMITTED_COMMENT}" \
   "gh label create risk/moderate"
+# The label follows level, and the schema does not tie level to score, so
+# the floor must hold on the level too: "low" beside a score already at the
+# floor (schema-valid), or beside an invalid score, still cannot label low.
+RISK_FLOOR_LEVEL_MISMATCH='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Looks fine.","risk_assessment":{"score":2,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test "risk-floor-holds-on-mismatched-level" \
+  "${RISK_FLOOR_LEVEL_MISMATCH}" \
+  "gh label create risk/moderate"
+RISK_FLOOR_INVALID_SCORE='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Looks fine.","risk_assessment":{"score":0,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test_no_pattern "risk-floor-holds-on-invalid-score" \
+  "${RISK_FLOOR_INVALID_SCORE}" \
+  "gh label create risk/low"
 unset MOCK_PR_FILES
 # Default mock files (src/main.go) touch no security path: no floor.
 run_label_test "risk-floor-no-security-path-stays-low" \
   "${RISK_FLOOR_OMITTED}" \
   "gh label create risk/low"
+# The floor's own fetch fails closed. A non-approve action fetches the file
+# list in the floor block; when it is still empty after one retry, nothing
+# was measured, so the change is treated as security-sensitive instead of
+# being labelled on the sub-agent's word (every fixture omits risk_floor).
+# shellcheck disable=SC2031 # set here for the helpers' subshells, unset below
+export MOCK_PR_FILES_FAIL="1"
+run_label_test "risk-floor-fetch-failure-fails-closed-on-comment" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/moderate"
+run_label_test_no_pattern "risk-floor-fetch-failure-no-low-label-on-comment" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/low"
+run_label_test_stdout "risk-floor-fetch-failure-warns" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "treating the change as security-sensitive"
+RISK_FLOOR_OMITTED_REQUEST_CHANGES='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test "risk-floor-fetch-failure-fails-closed-on-request-changes" \
+  "${RISK_FLOOR_OMITTED_REQUEST_CHANGES}" \
+  "gh label create risk/moderate"
+# Unlike the approve path, this one does not abort: the review still posts.
+run_label_test "risk-floor-fetch-failure-still-posts-review" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "fullsend post-review"
+unset MOCK_PR_FILES_FAIL
+# A first-empty-then-populated list (the #2093 transient) recovers on the
+# retry, and the normal path match then decides — in both directions, so a
+# successful retry is neither ignored nor failed closed.
+# shellcheck disable=SC2031 # set here for the helpers' subshells, unset below
+export MOCK_FILES_CALL_MARKER="${TMPDIR}/marker-risk-floor-retry" \
+  MOCK_PR_FILES_ON_RETRY="internal/auth/token.go"
+rm -f "${MOCK_FILES_CALL_MARKER}"
+run_label_test "risk-floor-fetch-retry-recovers-security-path" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/moderate"
+export MOCK_PR_FILES_ON_RETRY="src/main.go"
+rm -f "${MOCK_FILES_CALL_MARKER}"
+run_label_test "risk-floor-fetch-retry-recovers-plain-path-stays-low" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/low"
+unset MOCK_PR_FILES_ON_RETRY MOCK_FILES_CALL_MARKER
 # post-review.src.sh and risk-tier1.sh must carry the same pattern list.
 if diff \
   <(sed -n '/^ *SECURITY_PATTERNS=(/,/^ *)/p' "${SCRIPT_DIR}/post-review.src.sh" | sed 's/^ *//') \
