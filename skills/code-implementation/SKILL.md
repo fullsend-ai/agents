@@ -109,6 +109,13 @@ budget so they scale to any timeout value; the one flat value is the
   gitlint validation and commit immediately. A commit that fails gitlint
   CI is better than no commit at all.
 
+## Critical rule — commit before exit
+
+**CRITICAL RULE: Your final tool calls before any text response MUST
+include `git add` and `git commit`. Working-tree edits are lost when the
+sandbox exits. Commit is the single most important step in this
+workflow — a disclosed partial commit is always better than no commit.**
+
 ## Process
 
 Follow these steps in order. Do not skip steps — with one exception,
@@ -277,11 +284,14 @@ and `Glob` to inspect project configuration:
    `package.json`, `pyproject.toml`, or equivalent build config.
 3. **Check for linter configuration.** Use `Glob` to find files like
    `.golangci.yml`, `.eslintrc*`, `.pre-commit-config.yaml`, `ruff.toml`.
-4. **Check for PR title conventions.** Look for title format requirements
-   in `CLAUDE.md`, `CONTRIBUTING.md`, or `.github/workflows/` (e.g., a
-   `check-pr-title` action with a regex). If the repo requires a specific
-   format like `type(TICKET): description`, note the convention — you will
-   use it when writing the commit subject in step 10.
+4. **Check for PR title conventions** in `CLAUDE.md`, `CONTRIBUTING.md`,
+   `COMMITS.md`, `commitlint.config.*`, or `.github/workflows/`.
+   Conventional Commits v1.0.0 item 4: "A scope MUST consist of a noun
+   describing a section of the codebase surrounded by parenthesis, e.g.,
+   `fix(parser):`". **ticket-scope** if any ticket-id preference exists
+   (docs, commitlint, CI), even with a CC citation (`feat(#1234):` is
+   correct, wrong for area-scope); **area-scope** only if that MUST
+   applies with no ticket-id preference; else **unknown**.
 5. **Check for PR template.** Find the repo's pull request template(s).
    If multiple templates exist, note them — you will select the right
    one in step 10d after classifying the task type. If found, read and
@@ -298,10 +308,8 @@ From these files, determine:
   `npm test`, `pytest`)
 - **Lint command** — how to run linters (e.g., `make lint`, `pre-commit run --files`)
 - **Commit conventions** — message format
-- **PR title conventions** — whether the repo enforces a title format via
-  CI (e.g., `type(TICKET): description`). The post-script uses the commit
-  subject as the PR title and will inject a `(#ISSUE_NUMBER)` scope if
-  missing, but matching the repo's expected format directly is preferred.
+- **PR title conventions** — from step 4; post-script injects
+  `(#ISSUE_NUMBER)` unless `inject_issue_scope` is `false`.
 - **Branch conventions** — naming patterns, target branch
 
 Determine the correct target branch from the issue context. If the issue
@@ -901,6 +909,10 @@ Read every line. Check for:
 
 If you added more than necessary, revert the extras before staging.
 
+**After verification passes, proceed IMMEDIATELY to Step 10 (Commit).
+Do not produce any text summary, status update, or final response
+before committing your changes. The commit step is not optional.**
+
 ### 10. Commit
 
 ```bash
@@ -953,15 +965,10 @@ The commit message must:
   `CONTRIBUTING.md`, `CLAUDE.md`, `.gitlint`, or the existing commit history
   uses a specific format (e.g., Conventional Commits, Angular-style, ticket
   prefixes), follow it.
-- **Include the issue reference in the commit subject.** The post-script
-  uses the commit subject as the PR title. Many repos enforce PR title
-  conventions like `type(TICKET): description`. Always include the issue
-  number as a scope: `<type>(#<number>): <description>`. If the repo uses
-  Jira-style ticket IDs (e.g., `PROJ-123`) and the issue title or body
-  contains one, use that instead: `<type>(PROJ-123): <description>`.
-- **Fall back to `<type>(#<number>): <description>` if no convention was
-  found.** The `(#<number>)` scope ensures the PR title passes most
-  title-check CI jobs.
+- **Scope from step 3** (post-script uses the commit subject as the PR
+  title): ticket-scope/unknown use `<type>(#<number>):` (or a Jira key);
+  area-scope uses a codebase-area noun and sets
+  `inject_issue_scope: false` in the result file (step 10d).
 - **Reference the issue number in the body.** If your implementation
   fully addresses the issue scope, use `Closes #<number>`. If your
   implementation addresses only a subset of the issue (e.g., the triage
@@ -978,8 +985,8 @@ test -f .gitlint && cat .gitlint
 
 Most repos enforce a title length limit (commonly 72 characters). If
 `.gitlint` has `[title-max-length] line-length=72`, keep the title
-(first line) under that limit. Use a concise `<type>: <description>`
-that fits.
+(first line) under that limit: keep the classified scope (ticket or
+area) and shorten only the `<description>`.
 
 **Body line length — comply with the repo's gitlint config:**
 
@@ -1012,7 +1019,7 @@ The commit body should:
 - Note any trade-offs, assumptions, or edge cases
 
 ```bash
-git commit -m "<type>(#<number>): <short-description>
+git commit -m "<type>(<scope>): <short-description>
 
 <What changed and why. Hard-wrap at the limit from
 .gitlint if one is configured. Write substantive
@@ -1093,18 +1100,19 @@ jq --arg pb "$pr_body" '. + {pr_body: $pb}' \
   && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
-**Closing reference:** If your implementation addresses only a subset of
-the issue scope, add `closes_issue: false` to the result file so the
-post-script uses `Related to` instead of `Closes` in the PR body:
+**Opt-out flags** (default `true`):
+
+- `closes_issue: false` for a partial implementation: the post-script
+  writes `Related to` instead of `Closes`.
+- `inject_issue_scope: false` on area-scope repos: no `(#<number>)`
+  title injection.
 
 ```bash
 jq '. + {closes_issue: false}' \
   "${FULLSEND_OUTPUT_DIR}/agent-result.json" > "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" \
   && mv "${FULLSEND_OUTPUT_DIR}/agent-result.json.tmp" "${FULLSEND_OUTPUT_DIR}/agent-result.json"
+# same pattern for inject_issue_scope: jq '. + {inject_issue_scope: false}' ...
 ```
-
-If your implementation fully addresses the issue, omit this field — the
-default is `true` (the post-script appends `Closes`).
 
 ### 11. Validate structured output
 
@@ -1122,18 +1130,19 @@ cat "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 ```
 
 The file must be valid JSON with `target_branch` (required) and
-optionally `pr_body` and `closes_issue`:
+optionally `pr_body`, `closes_issue`, and `inject_issue_scope`:
 
 ```json
 {
   "target_branch": "main",
-  "pr_body": "## Summary\n\nWhat changed and why.\n\n## Testing\n\nHow it was tested."
+  "pr_body": "## Summary\n\nWhat changed and why.\n\n## Testing\n\nHow it was tested.",
+  "inject_issue_scope": false
 }
 ```
 
 **Schema compliance:** The schema uses `additionalProperties: false`.
-Only `target_branch`, `pr_body`, and `closes_issue` are allowed. Any
-other fields will cause validation to fail.
+Only `target_branch`, `pr_body`, `closes_issue`, and `inject_issue_scope`
+are allowed. Any other fields will cause validation to fail.
 
 Validate the output against the schema:
 
