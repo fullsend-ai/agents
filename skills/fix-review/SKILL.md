@@ -17,7 +17,11 @@ produces fixes that introduce new issues or miss the reviewer's point.
 
 ## Tools reminder
 
-Use `Bash` for verification and committing. Use `Read`/`Write`/`Grep`/`Glob` for file operations. The `scan-secrets` helper is at `/usr/local/bin/scan-secrets` — verify with `command -v scan-secrets`. If missing, **STOP**.
+Use `Bash` for verification and committing — the exact step 3
+lint/test command, not a generic substitute. Use
+`Read`/`Write`/`Grep`/`Glob` for file operations. The `scan-secrets`
+helper is at `/usr/local/bin/scan-secrets` — verify with
+`command -v scan-secrets`. If missing, **STOP**.
 
 ## Progress markers
 
@@ -119,12 +123,10 @@ echo "::notice::STEP 3: Discover repo conventions"
 Use `Read`/`Glob` on `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`,
 `Makefile`, `package.json`, `pyproject.toml`, and linter configs.
 
-**Precedence rule:** When AGENTS.md conflicts with patterns in existing
-code, follow AGENTS.md. Follow the documented lint/test command and
-order, including stage-then-lint; do not reorder around `git add`.
-
-Determine the exact **test command**, **lint command** (package manager
-included, e.g. `pnpm lint-staged`), and **commit conventions**.
+AGENTS.md takes precedence over patterns in existing code. Determine
+the exact **test command** and **lint command** (package manager
+included, e.g. `pnpm lint-staged`), including stage-then-lint order —
+do not reorder around `git add` — and the **commit conventions**.
 
 ### 4. Plan fixes
 
