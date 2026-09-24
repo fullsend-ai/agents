@@ -32,6 +32,8 @@ FAILURES=0
 DENYLIST=(
   JIRA_TOKEN
   OPENAI_API_KEY
+  GH_TOKEN
+  GITLAB_TOKEN
 )
 
 # ---------------------------------------------------------------------------
@@ -44,13 +46,17 @@ assert_fail() {
   FAILURES=$((FAILURES + 1))
 }
 
-# check_env_sandbox — scan env.sandbox values (top-level + overlays) for
-# a denylisted variable reference.  Catches both KEY matches and VALUE
-# expansion patterns like ${VAR}.
+# check_env_sandbox — scan env.sandbox values (top-level, overlays, and
+# forge blocks) for a denylisted variable reference.  Catches both KEY
+# matches and VALUE expansion patterns like ${VAR}.
 check_env_sandbox() {
   local harness_file="$1" denied_var="$2"
   local pattern="\${${denied_var}}"
-  yq -r '[.env.sandbox // {}, .overlays[]?.env.sandbox // {}] | .[] | to_entries[] | [.key, .value] | @tsv' "${harness_file}" |
+  yq -r '[
+      (.env.sandbox // {}),
+      (.overlays[]? | .env.sandbox // {}),
+      (.forge[]? | .env.sandbox // {})
+    ] | .[] | to_entries[] | [.key, .value] | @tsv' "${harness_file}" |
     while IFS=$'\t' read -r key value; do
       if [[ "${key}" == "${denied_var}" || "${value}" == *"${pattern}"* ]]; then
         echo "${key}=${value}"
@@ -58,8 +64,9 @@ check_env_sandbox() {
     done
 }
 
-# check_host_files — scan host_files with expand: true for denylisted
-# variable references in their source files.
+# check_host_files — scan host_files with expand: true (top-level,
+# overlays, and forge blocks) for denylisted variable references in
+# their source files.
 check_host_files() {
   local harness_file="$1" denied_var="$2"
   local src src_path
@@ -69,7 +76,11 @@ check_host_files() {
     if [[ -f "${src_path}" ]] && grep -qF "${denied_var}" "${src_path}"; then
       echo "${src}"
     fi
-  done < <(yq -r '[.host_files // [], .overlays[]?.host_files // []] | flatten | .[] | select(.expand == true) | .src' "${harness_file}")
+  done < <(yq -r '[
+      (.host_files // []),
+      (.overlays[]? | .host_files // []),
+      (.forge[]? | .host_files // [])
+    ] | flatten | .[] | select(.expand == true) | .src' "${harness_file}")
 }
 
 # ---------------------------------------------------------------------------

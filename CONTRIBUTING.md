@@ -58,9 +58,9 @@ Small adjustments in response to review feedback are normal iteration — this g
 
 ### Functional tests for external contributors
 
-Functional tests (the `Functional Tests` workflow) run automatically for
-org/repo members and collaborators. For other contributors, a maintainer
-must add the `ok-to-test` label **after** the latest push.
+Functional tests (the `Functional Tests` and `Behaviour Tests` workflows) run
+automatically for org/repo members and collaborators. For other contributors,
+a maintainer must add the `ok-to-test` label **after** the latest push.
 
 This is a separate gate from GitHub's own first-time-contributor
 workflow-approval prompt (the "Approve and run workflows" button). Approving

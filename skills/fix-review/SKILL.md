@@ -25,34 +25,13 @@ At steps 1, 2, 4, 7a, 7b, 7c, and 8: `echo "::notice::STEP <N>: <title>"`
 
 ## Time budget
 
-If the `TIMEOUT_SECONDS` environment variable is set, use it to manage time.
-
-Capture the start time at the very beginning:
-
-```bash
-AGENT_START=$(date +%s)
-```
-
-Before starting pre-commit (7b), before the direct-execution fallback
-inside 7b, before each retry iteration (7c), and before commit (8),
-check remaining time **only if `TIMEOUT_SECONDS` is set**:
-
-```bash
-if [ -n "${TIMEOUT_SECONDS:-}" ]; then
-  ELAPSED=$(( $(date +%s) - AGENT_START ))
-  REMAINING=$(( TIMEOUT_SECONDS - ELAPSED ))
-  echo "::notice::Time check: ${ELAPSED}s elapsed, ${REMAINING}s remaining"
-fi
-```
-
-Thresholds (fractions of budget, except the fallback floor, which is
-a flat 300s — what it guards costs the same whatever the budget is):
-- **Before 7b (pre-commit):** < 10% remaining → skip pre-commit
-- **Before the direct-execution fallback in 7b:** < 300s remaining →
-  skip the fallback (its `pip install` steps risk a hard timeout),
-  proceed to 7c and disclose the skip in the commit message
-- **Before retry in 7c:** < 20% remaining → commit with disclosure
-- **Before 8 (commit):** < 8% remaining → skip gitlint validation
+If `TIMEOUT_SECONDS` is set, capture `AGENT_START=$(date +%s)` at the
+very beginning, then check remaining time before 7b, before 7b's
+direct-execution fallback, before each 7c retry, and before 8 — skip
+the check when `TIMEOUT_SECONDS` is unset. Exact commands and the
+per-step thresholds (10% before 7b, a flat 300s floor before the 7b
+fallback, 20% before a 7c retry, 8% before 8): see
+[references/timing.md](references/timing.md).
 
 ## Process
 
@@ -100,7 +79,11 @@ echo "::notice::STEP 2: Gather review feedback"
 
 First, fetch the current PR diff so you know exactly what code is on the branch.
 Use the forge-specific commands from your forge skill (e.g., `gh pr diff` on
-GitHub, `curl` to fetch MR changes on GitLab).
+GitHub, `curl` to fetch MR changes on GitLab). Also inspect the PR's project
+CI using the forge-specific `fix-review` skill's CI recipes: read job
+logs/artifacts, classify each job (`passing`, `pending`, `pr-related`,
+`unrelated`, `flaky`, `transient-infra`), and record up to 50 inspected jobs
+in `ci_inspections` (see step 9).
 
 **If trigger type is `"bot"` (bot-triggered):**
 
@@ -148,7 +131,7 @@ Read full files (not just reviewed lines), related test files, and affected impo
 
 ### 6. Implement fixes
 
-For each finding (top-down in file): make the change, follow existing patterns, avoid new dependencies unless requested, update tests if needed. **Scope guardrail:** Only address review feedback—no unmentioned refactors, features, bug fixes, or doc improvements.
+For each finding (top-down in file): make the change, follow existing patterns, avoid new dependencies unless requested, update tests if needed. **Scope guardrail:** Only address review feedback and project-CI failures classified `pr-related` that fall within authorized scope (a bot-triggered run, or a human instruction that does not already limit the work to a specific change — a narrow instruction such as `rebase` does not authorize extra CI-driven edits). For `flaky`/`transient-infra` failures, recommend a rerun instead of editing code. For `unrelated` failures, point the user to the responsible owner instead of editing code. No unmentioned refactors, features, bug fixes, or doc improvements.
 
 ### 7. Verify
 
@@ -196,39 +179,18 @@ test -f .pre-commit-config.yaml && pre-commit run --files <all-changed-files>
 **Time recheck before the fallback.** Run this **only** when the
 `pre-commit run` above failed on infrastructure (could not fetch hook
 repositories, or died before executing any hook) — not after a pass,
-not after real hook errors. The 10% gate measured the fast path; the
-fallback `pip install`s each hook at its pinned `rev` and can outrun a
-thin margin, timing out with no commit at all. Re-check against a flat
-300s floor (absolute, because the cost does not scale with the budget):
-
-```bash
-RUN_FALLBACK=1
-if [ -n "${TIMEOUT_SECONDS:-}" ] && [ -n "${AGENT_START:-}" ]; then
-  REMAINING=$(( TIMEOUT_SECONDS - ($(date +%s) - AGENT_START) ))
-  if [ "$REMAINING" -lt 300 ]; then
-    RUN_FALLBACK=0; echo "::warning::Direct-execution fallback skipped: ${REMAINING}s remaining < 300s floor"
-  else
-    echo "::notice::Fallback time check: ${REMAINING}s remaining >= 300s floor — proceeding"
-  fi
-else
-  echo "::notice::Fallback time check skipped: TIMEOUT_SECONDS or AGENT_START unset — no floor applied"
-fi
-```
-
-Guard both variables (an unset `AGENT_START` reads as 0 and would
-always skip) and print on every path.
-
-If `RUN_FALLBACK` is `0`: skip the fallback — `repo: local` hooks
-included, since a local `entry` can fetch too and 7c's lint still runs —
-treat 7b as finished, and put this in the commit message:
+not after real hook errors. Re-check remaining time against a flat
+300s floor; see [references/timing.md](references/timing.md) for the
+exact commands. If below the floor, skip the fallback — `repo: local`
+hooks included, since a local `entry` can fetch too and 7c's lint
+still runs — treat 7b as finished, and put this in the commit message:
 
 > Note: pre-commit hooks were not run. `pre-commit` could not
 > complete (infrastructure failure), and the remaining time budget
 > was below the floor for running the hooks directly.
 
-Skipping consumes no run but closes 7b for this iteration.
-
-If `1`, run the fallback as described above.
+Skipping consumes no run but closes 7b for this iteration. Otherwise,
+run the fallback as described above.
 
 **7c. Tests and linters — MANDATORY**
 
@@ -293,11 +255,15 @@ which gitlint &>/dev/null && gitlint --commit HEAD
   "summary": "Addressed both review findings",
   "strategy_change": null,
   "tests_passed": true,
-  "files_changed": ["src/input.sh"]
+  "files_changed": ["src/input.sh"],
+  "ci_inspections": [
+    {"job": "lint", "status": "success", "classification": "passing", "diagnosis": "Lint passed."},
+    {"job": "unit-tests", "status": "failure", "classification": "pr-related", "diagnosis": "Failing test matches this diff.", "remediation": "Fixed the test."}
+  ]
 }
 ```
 
-**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8). `trigger_source` is `"bot"`/`"human"` (normalized). Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1 item), `summary`, `tests_passed`, `files_changed`.
+**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8) and `ci_inspections` (project CI jobs inspected per step 2 and `agents/fix.md`'s Project CI inspection section; each entry requires `job` and `classification`, with `status`/`diagnosis`/`remediation` optional — see the forge-specific `fix-review` skill for the recipes that gather these). `trigger_source` is `"bot"`/`"human"`. Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1), `summary`, `tests_passed`, `files_changed`.
 
 Validate: `fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"`. If fails after 3 attempts, write best JSON and exit.
 

@@ -449,6 +449,36 @@ run_test_custom_filename "fix-history-rewritten-valid" \
   "${FIX_SCHEMA}" \
   "true"
 
+run_test_custom_filename "fix-ci-inspections-valid" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"job":"lint","status":"success","classification":"passing","diagnosis":"Lint passed."},{"job":"unit-tests","status":"failure","classification":"pr-related","diagnosis":"Failing test matches the diff.","remediation":"Fixed the test."}]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "fix-ci-inspections-invalid-classification" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"job":"lint","classification":"excluded"}]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "fix-ci-inspections-missing-job" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"classification":"passing"}]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "fix-ci-inspections-additional-property-rejected" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"job":"lint","classification":"passing","unexpected":true}]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "fix-ci-inspections-empty-array-valid" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
+
 # --- FULLSEND_OUTPUT_FILE path traversal guard ---
 run_test_custom_filename "path-traversal-stripped" \
   '{"pr_number":42,"summary":"Fixed 1 issue.","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check","path":"pkg/handler.go"}],"files_changed":["pkg/handler.go"]}' \

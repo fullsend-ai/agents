@@ -6,10 +6,8 @@
 #   agent       : reads the issue, implements, tests, scans, commits locally
 #   post_script : secret scan, pre-commit, push branch, create PR/MR, assign human
 #
-# The agent NEVER pushes or creates PRs/MRs. Enforcement: the sandbox
-# GH_TOKEN/GITLAB_TOKEN is read-only scoped, PUSH_TOKEN never enters the
-# sandbox, and network policy restricts binary access per forge.
-# Only the post-script, running on the runner with PUSH_TOKEN, can write.
+# The agent NEVER pushes or creates PRs/MRs as the sandbox policy does not allow
+# it.
 agent: agents/code.md
 doc: docs/code.md
 model: opus
@@ -107,7 +105,6 @@ overlays:
       sandbox:
         ISSUE_NUMBER: "${ISSUE_NUMBER}"
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
-        GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   - when: 'runtime.forge == "gitlab"'
     providers:
@@ -129,7 +126,6 @@ overlays:
       sandbox:
         ISSUE_NUMBER: "${ISSUE_NUMBER}"
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
-        GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
   # Jira-source overlay — provides provider-backed Jira API access so
   # the sandbox can read work items directly through the credential

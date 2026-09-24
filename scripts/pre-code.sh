@@ -112,8 +112,8 @@ forge_add_label() {
   local target="${2:-issue}"
   local number="${3:-${ISSUE_NUMBER}}"
   if [ "${target}" = "pr" ]; then
-    gh issue edit "${number}" --repo "${REPO_FULL_NAME}" \
-      --add-label "${label}" 2>/dev/null || \
+    gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels" \
+      -f "labels[]=${label}" --silent 2>/dev/null || \
       gha_echo warning "Failed to apply ${label} label to PR #${number}"
   else
     gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels" \

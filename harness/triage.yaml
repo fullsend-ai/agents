@@ -72,7 +72,6 @@ overlays:
         FULLSEND_FORGE: github
       sandbox:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
-        GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   - when: '(has(event.source) && event.source.system == "gitlab") || (!has(event.source) && runtime.forge == "gitlab")'
     providers:
@@ -94,7 +93,6 @@ overlays:
         FULLSEND_FORGE: gitlab
       sandbox:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
-        GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
   - when: '(has(event.source) && event.source.system == "jira") || (!has(event.source) && runtime.forge == "jira")'
     providers:

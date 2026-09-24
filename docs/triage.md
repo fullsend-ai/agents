@@ -311,6 +311,14 @@ If you use `base:` composition to override `harness/triage.yaml`:
   Do not switch to bearer auth — the Jira Cloud tenant URL
   (`*.atlassian.net/rest/api/3/...`) requires Basic auth with
   `email:api_token`.
+- **GitHub and GitLab credentials use provider-backed delivery**:
+  `GH_TOKEN` and `GITLAB_TOKEN` are not expanded into `env.sandbox` or
+  host env files. The sandbox receives the `github-ro` / `gitlab-rw`
+  provider's opaque placeholder; OpenShell substitutes the real token
+  at the proxy. Runner-side pre/post scripts retain the real token via
+  `env.runner`. Do not re-add these keys to `env.sandbox` or to
+  `expand: true` host files — that overwrites the placeholder and
+  leaks the real credential into the sandbox.
 - **GitLab and Jira functional eval coverage is deferred**: The eval cases
   under `eval/triage/cases/` currently cover GitHub only. GitLab and Jira
   behavior is covered by unit-level bash tests in

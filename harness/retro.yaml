@@ -77,7 +77,6 @@ forge:
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
       sandbox:
-        GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   gitlab:
     providers:
@@ -98,5 +97,4 @@ forge:
         GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
       sandbox:
-        GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab

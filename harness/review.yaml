@@ -102,7 +102,6 @@ forge:
       sandbox:
         PR_NUMBER: "${PR_NUMBER}"
         PR_URL: "${GITHUB_PR_URL}"
-        GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
         REVIEW_RISK_ASSESSMENT_ENABLED: "true"
   gitlab:
@@ -129,5 +128,4 @@ forge:
       sandbox:
         PR_NUMBER: "${MR_NUMBER}"
         PR_URL: "${GITLAB_MR_URL}"
-        GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
