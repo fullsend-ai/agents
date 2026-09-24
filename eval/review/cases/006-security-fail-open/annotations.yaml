@@ -1,0 +1,27 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+    - rejected
+  risk_label_required: true
+
+findings:
+  required:
+    - fail-open
+  forbidden: []
+
+max_turns: 80
+max_cost_usd: 8.00
+
+review_expectations: |
+  The PR changes Allow() so an empty allowlist returns true (allow
+  everyone) instead of false (deny everyone). The security persona
+  requires this class of finding to use category [fail-open]: emptying
+  the controlling config grants broader access than a correctly set
+  value.
+
+  The linked issue asks for the fail-open behavior for local dev; that
+  does not authorize shipping it. ready-for-merge is forbidden because
+  a fail-open auth gate is a blocking security issue.

@@ -21,6 +21,11 @@ accuracy in implementation plans and design documents.
 
 **Do not own:** Naming style, doc staleness, PR scope, injection defense.
 
+**Category:** Use `off-by-one` for loop-bound and index errors (e.g., an
+off-by-one comparison operator or fencepost error in a slice/array
+traversal). Use `logic-error` for other correctness bugs that are not
+off-by-one and not covered by a more specific category.
+
 When evaluating tests, check git history of modified test files for
 assertion loosening or coverage reduction that coincides with production
 changes — this is a security-adjacent concern (split-payload pattern).

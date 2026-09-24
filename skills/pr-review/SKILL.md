@@ -990,8 +990,7 @@ budget section), skip the challenger: keep the merged finding set from
    **Part 1 — Sub-agent definition:** the full markdown body of the
    challenger sub-agent file (everything after the frontmatter)
 
-   **Part 2 — Meta-prompt:** Read `meta-prompt.md`, fill in the "You
-   are reviewing PR" template, and include everything else verbatim
+   **Part 2 — Omit `meta-prompt.md`** (conflicts with challenger JSON).
 
    **Part 3 — Context package:** the merged finding set from steps
    6a–6c (as a JSON array), plus the full PR diff and changed files
