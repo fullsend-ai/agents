@@ -554,7 +554,9 @@ tracker_create_issue() {
 # Optional env vars:
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
 #   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
-#   JIRA_SPLIT_TRANSITION       — transition name for the "split" action
+#   JIRA_SPLIT_TRANSITION       — transition name for the "split" and
+#                                 "completed" actions (both close with
+#                                 GitHub reason "completed")
 #   JIRA_CREATE_ISSUE_TYPE      — issue type name for cross-project issue
 #                                 creation (default: "Task")
 
@@ -1029,11 +1031,11 @@ echo "Issue: #${ISSUE_NUMBER}"
 
 # Control labels managed by the triage pipeline. The post script refuses to
 # add or remove these via label_actions. pre-triage.sh resets needs-info,
-# ready-to-code, duplicate, feature, question, not-planned, and pr-open
-# before each run; the action handlers below apply the rest. pr-open is
-# also created and applied independently by the code agent's pre-check
-# (scripts/pre-code.sh) when it finds a human PR before dispatching.
-CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "pr-open")
+# ready-to-code, duplicate, feature, question, not-planned, completed,
+# and pr-open before each run; the action handlers below apply the rest.
+# pr-open is also created and applied independently by the code agent's
+# pre-check (scripts/pre-code.sh) when it finds a human PR before dispatching.
+CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "completed" "pr-open")
 
 is_control_label() {
   local label="$1"
@@ -1329,9 +1331,17 @@ ${FAILED_CREATES}"
     # else receives the triaged label and waits for human prioritization
     # (per #561, only feature issues should require human review before coding).
     #
-    # TRIAGE_AUTO_CODE (#1754) controls whether auto-promotion happens:
-    #   on (default) — auto-promote categories listed in TRIAGE_AUTO_CODE_CATEGORIES
-    #   off          — never auto-promote; always apply triaged
+    # TRIAGE_AUTO_CODE (#1754, #1250) controls whether auto-promotion happens:
+    #   on / always (default) — auto-promote categories listed in
+    #                           TRIAGE_AUTO_CODE_CATEGORIES
+    #   off / never           — never auto-promote; always apply triaged
+    #   discretionary         — promote only when the agent sets
+    #                           triage_summary.promote_to_ready_to_code=true
+    #                           AND the category is in TRIAGE_AUTO_CODE_CATEGORIES
+    #
+    # on and off remain supported aliases for always and never. The agent's
+    # promote_to_ready_to_code field is consulted only in discretionary mode;
+    # legacy modes ignore its presence or absence.
     #
     # TRIAGE_AUTO_CODE_CATEGORIES is a comma-separated category list with no
     # default baked into this script -- harness/triage.yaml and docs/triage.md
@@ -1345,6 +1355,9 @@ ${FAILED_CREATES}"
     REQUIRES_WORKFLOW=$(jq -r '.triage_summary.requires_workflow_changes // false' "${RESULT_FILE}")
     CATEGORY=$(jq -r '.triage_summary.category // "unknown"' "${RESULT_FILE}")
     echo "Category: ${CATEGORY}"
+    # jq's // treats JSON false as missing, so omitted and false both become
+    # the string "false" — the intended withhold default for discretionary mode.
+    PROMOTE=$(jq -r '.triage_summary.promote_to_ready_to_code // false' "${RESULT_FILE}")
 
     AUTO_CODE="${TRIAGE_AUTO_CODE:-on}"
     AUTO_CODE="$(printf '%s' "${AUTO_CODE}" | tr '[:upper:]' '[:lower:]')"
@@ -1360,8 +1373,14 @@ ${FAILED_CREATES}"
     # Determine whether this category should auto-promote to ready-to-code.
     auto_code_allowed() {
       case "${AUTO_CODE}" in
-        off) return 1 ;;
-        on) category_in_auto_code_list ;;
+        off|never) return 1 ;;
+        on|always) category_in_auto_code_list ;;
+        discretionary)
+          if ! category_in_auto_code_list; then
+            return 1
+          fi
+          [[ "${PROMOTE}" == "true" ]]
+          ;;
         *)
           echo "::warning::Unrecognized TRIAGE_AUTO_CODE value '$(_gha_sanitize "${AUTO_CODE}")' — falling back to 'on'"
           category_in_auto_code_list
@@ -1531,6 +1550,17 @@ ${FAILED_CREATES}"
     tracker_remove_label "needs-info"
     tracker_remove_label "pr-open"
     tracker_add_label "not-planned"
+    ;;
+
+  completed)
+    if [[ -z "${COMMENT}" ]]; then
+      echo "ERROR: action is 'completed' but no comment provided" >&2
+      exit 1
+    fi
+    tracker_remove_label "blocked"
+    tracker_remove_label "needs-info"
+    tracker_remove_label "pr-open"
+    tracker_add_label "completed"
     ;;
 
   *)
@@ -1710,6 +1740,10 @@ fi
 
 if [[ "${ACTION}" == "not-planned" ]]; then
   tracker_close_issue "not planned"
+fi
+
+if [[ "${ACTION}" == "completed" ]]; then
+  tracker_close_issue "completed"
 fi
 
 if [[ "${ACTION}" == "split" ]]; then

@@ -65,11 +65,14 @@ rewrite_title() {
   local commit_subject="$1"
   local issue_number="$2"
   local identity_mode="${3:-forge-native}"
+  local inject_issue_scope="${4:-true}"
 
   if echo "${commit_subject}" | grep -qE '^[a-z]+\('; then
     echo "${commit_subject}"
   elif echo "${commit_subject}" | grep -qE '^[a-z]+: '; then
-    if [ "${identity_mode}" = "external" ]; then
+    if [ "${inject_issue_scope}" = "false" ]; then
+      echo "${commit_subject}"
+    elif [ "${identity_mode}" = "external" ]; then
       echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(${issue_number}): /"
     else
       echo "${commit_subject}" | sed "s/^\([a-z]*\): /\1(#${issue_number}): /"
@@ -177,6 +180,143 @@ if [ "${actual_external_title}" != "fix(FSENDAI-4804): handle cross-forge work" 
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: external-tracker-title-uses-work-item-key"
+fi
+
+# inject_issue_scope=false — leave a conventional-commit subject unchanged
+actual_no_inject="$(rewrite_title "feat: add copy buttons" "2854" forge-native false)"
+if [ "${actual_no_inject}" != "feat: add copy buttons" ]; then
+  echo "FAIL: inject-issue-scope-false-skips-injection"
+  echo "  expected: 'feat: add copy buttons'"
+  echo "  actual:   '${actual_no_inject}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-skips-injection"
+fi
+
+actual_no_inject_area="$(rewrite_title "feat(ui): add copy buttons" "2854" forge-native false)"
+if [ "${actual_no_inject_area}" != "feat(ui): add copy buttons" ]; then
+  echo "FAIL: inject-issue-scope-false-preserves-area-scope"
+  echo "  expected: 'feat(ui): add copy buttons'"
+  echo "  actual:   '${actual_no_inject_area}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-preserves-area-scope"
+fi
+
+actual_no_inject_external="$(rewrite_title "fix: handle cross-forge work" "FSENDAI-4804" external false)"
+if [ "${actual_no_inject_external}" != "fix: handle cross-forge work" ]; then
+  echo "FAIL: inject-issue-scope-false-skips-external-injection"
+  echo "  expected: 'fix: handle cross-forge work'"
+  echo "  actual:   '${actual_no_inject_external}'"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-skips-external-injection"
+fi
+
+# Default (unset / true) still injects — covered by fix-without-scope above.
+# Reading the flag from agent-result.json mirrors post-code.src.sh.
+resolve_inject_issue_scope() {
+  local result_json="$1"
+  local value
+  value="$(printf '%s' "${result_json}" | jq -r '.inject_issue_scope')"
+  if [ "${value}" = "false" ]; then
+    echo "false"
+  else
+    echo "true"
+  fi
+}
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main"}')" != "true" ]; then
+  echo "FAIL: inject-issue-scope-absent-defaults-true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-absent-defaults-true"
+fi
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main","inject_issue_scope":true}')" != "true" ]; then
+  echo "FAIL: inject-issue-scope-true-stays-true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-true-stays-true"
+fi
+
+if [ "$(resolve_inject_issue_scope '{"target_branch":"main","inject_issue_scope":false}')" != "false" ]; then
+  echo "FAIL: inject-issue-scope-false-reads-false"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: inject-issue-scope-false-reads-false"
+fi
+
+# closes_issue is read the same way: jq `//` would turn JSON false into
+# "empty", so a partial implementation's opt-out would be lost.
+resolve_closes_issue() {
+  local value
+  value="$(printf '%s' "$1" | jq -r '.closes_issue')"
+  if [ "${value}" = "false" ]; then echo "false"; else echo "true"; fi
+}
+
+if [ "$(resolve_closes_issue '{"target_branch":"main"}')" != "true" ]; then
+  echo "FAIL: closes-issue-absent-defaults-true"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: closes-issue-absent-defaults-true"
+fi
+
+if [ "$(resolve_closes_issue '{"target_branch":"main","closes_issue":false}')" != "false" ]; then
+  echo "FAIL: closes-issue-false-reads-false"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: closes-issue-false-reads-false"
+fi
+
+if grep -q "closes_issue // empty" "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-reads-closes-issue-without-jq-alternative"
+  echo "  ${POST_SCRIPT} still parses closes_issue with jq //, which drops JSON false"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-reads-closes-issue-without-jq-alternative"
+fi
+
+if ! grep -q 'inject_issue_scope' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-inject-issue-scope"
+  echo "  ${POST_SCRIPT} missing inject_issue_scope"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-inject-issue-scope"
+fi
+
+SKILL_FILE="${SCRIPT_DIR}/../skills/code-implementation/SKILL.md"
+if grep -q 'Always include the issue number as a scope' "${SKILL_FILE}"; then
+  echo "FAIL: skill-no-longer-always-injects-issue-scope"
+  echo "  ${SKILL_FILE} still always injects the issue number as scope"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-no-longer-always-injects-issue-scope"
+fi
+
+if ! grep -q 'inject_issue_scope: false' "${SKILL_FILE}"; then
+  echo "FAIL: skill-documents-inject-issue-scope-opt-out"
+  echo "  ${SKILL_FILE} missing inject_issue_scope: false guidance"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-documents-inject-issue-scope-opt-out"
+fi
+
+if ! grep -q 'A scope MUST consist of a noun' "${SKILL_FILE}" \
+  || ! grep -q 'describing a section of the codebase' "${SKILL_FILE}"; then
+  echo "FAIL: skill-quotes-cc-v1-item-4-scope"
+  echo "  ${SKILL_FILE} missing Conventional Commits v1.0.0 item 4 quote"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-quotes-cc-v1-item-4-scope"
+fi
+
+if ! grep -q 'fix(parser):' "${SKILL_FILE}" || ! grep -q 'feat(#1234):' "${SKILL_FILE}"; then
+  echo "FAIL: skill-has-cc-scope-examples"
+  echo "  ${SKILL_FILE} missing area-scope/ticket-scope examples"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: skill-has-cc-scope-examples"
 fi
 
 # ---------------------------------------------------------------------------
@@ -910,6 +1050,157 @@ run_noop_test "noop-on-main-with-changes" \
   "main" "src/widget.go" "noop:branch"
 
 # ---------------------------------------------------------------------------
+# Test helper — reimplements uncommitted-work detection from post-code.src.sh
+# so we can test porcelain filtering without a git repo.
+# ---------------------------------------------------------------------------
+AGENT_ARTIFACT_PATTERNS=".agentready/ .fullsend-workspace/"
+
+is_agent_artifact_path() {
+  local file="$1"
+  local pattern dir
+  for pattern in ${AGENT_ARTIFACT_PATTERNS}; do
+    dir="${pattern%/}"
+    case "${file}" in
+      "${dir}"/*|"${dir}") return 0 ;;
+      */"${dir}"/*|*/"${dir}") return 0 ;;
+    esac
+  done
+  return 1
+}
+
+filter_uncommitted_work() {
+  local porcelain="$1"
+  if [ -z "${porcelain}" ]; then
+    printf ''
+    return 0
+  fi
+
+  local filtered="" line path
+  while IFS= read -r line || [ -n "${line}" ]; do
+    [ -z "${line}" ] && continue
+    path="${line#???}"
+    case "${path}" in
+      *" -> "*) path="${path##* -> }" ;;
+    esac
+    path="${path#\"}"
+    path="${path%\"}"
+    if is_agent_artifact_path "${path}"; then
+      continue
+    fi
+    if [ -n "${filtered}" ]; then
+      filtered="${filtered}"$'\n'"${line}"
+    else
+      filtered="${line}"
+    fi
+  done <<< "${porcelain}"
+  printf '%s' "${filtered}"
+}
+
+decide_uncommitted_work() {
+  local branch="$1"
+  local changed_files="$2"
+  local porcelain="$3"
+
+  local dirty
+  dirty="$(filter_uncommitted_work "${porcelain}")"
+
+  if [ -z "${branch}" ] || [ "${branch}" = "main" ] || [ "${branch}" = "master" ]; then
+    if [ -n "${dirty}" ]; then
+      echo "fail:uncommitted:${dirty}"
+      return 1
+    fi
+    echo "noop:branch"
+    return 0
+  fi
+
+  if [ -z "${changed_files}" ]; then
+    if [ -n "${dirty}" ]; then
+      echo "fail:uncommitted:${dirty}"
+      return 1
+    fi
+    echo "noop:files"
+    return 0
+  fi
+
+  echo "proceed"
+  return 0
+}
+
+run_uncommitted_work_test() {
+  local test_name="$1"
+  local branch="$2"
+  local changed_files="$3"
+  local porcelain="$4"
+  local expected_prefix="$5"
+  local expect_rc="$6"
+
+  local actual rc=0
+  actual="$(decide_uncommitted_work "${branch}" "${changed_files}" "${porcelain}")" || rc=$?
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc: ${expect_rc}"
+    echo "  actual rc:   ${rc}"
+    echo "  actual:      ${actual}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${actual}" != ${expected_prefix}* ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected prefix: '${expected_prefix}'"
+    echo "  actual:          '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Staged files on a feature branch with no commits → fail, not no-op
+run_uncommitted_work_test "uncommitted-staged-on-feature-fails" \
+  "agent/42-fix-widget" "" $'M  src/widget.go' \
+  "fail:uncommitted" 1
+
+# Untracked files on a feature branch with no commits → fail
+run_uncommitted_work_test "uncommitted-untracked-on-feature-fails" \
+  "agent/42-fix-widget" "" $'?? scripts/openshell_job.sh' \
+  "fail:uncommitted" 1
+
+# Staged files on main (no feature branch) → fail, not no-op
+run_uncommitted_work_test "uncommitted-staged-on-main-fails" \
+  "main" "" $'A  src/widget.go' \
+  "fail:uncommitted" 1
+
+# Clean tree on a feature branch with no commits → still a genuine no-op
+run_uncommitted_work_test "clean-feature-branch-still-noop" \
+  "agent/42-fix-widget" "" "" \
+  "noop:files" 0
+
+# Agent working-dir artifacts only → still a genuine no-op
+run_uncommitted_work_test "agent-artifact-untracked-still-noop" \
+  "agent/42-fix-widget" "" $'?? .agentready/scratch.txt' \
+  "noop:files" 0
+
+# Mixed real files + artifacts → fail and keep the real file in the listing
+run_uncommitted_work_test "mixed-real-and-artifact-fails" \
+  "agent/42-fix-widget" "" $'M  src/widget.go\n?? .fullsend-workspace/tmp' \
+  "fail:uncommitted:M  src/widget.go" 1
+
+# Renames in porcelain use "old -> new"; the destination must be checked
+run_uncommitted_work_test "rename-to-real-file-fails" \
+  "agent/42-fix-widget" "" $'R  old.go -> src/new.go' \
+  "fail:uncommitted" 1
+
+run_uncommitted_work_test "rename-to-artifact-still-noop" \
+  "agent/42-fix-widget" "" $'R  scratch.txt -> .agentready/scratch.txt' \
+  "noop:files" 0
+
+# Feature branch WITH commits proceeds even if the tree is also dirty
+run_uncommitted_work_test "committed-changes-proceed" \
+  "agent/42-fix-widget" "src/widget.go" $' M src/widget.go' \
+  "proceed" 0
+
+# ---------------------------------------------------------------------------
 # Test helper — reimplements the stale branch cleanup decision logic from
 # post-code.sh section 7a. Given whether a remote branch exists and whether
 # an open PR references it, returns the action the script would take.
@@ -1517,6 +1808,23 @@ else
   echo "PASS: script-has-noop-comment"
 fi
 
+# Verify timeout-kill / uncommitted-work detection is present
+if ! grep -q 'fail_if_uncommitted_work' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-uncommitted-work-guard"
+  echo "  ${POST_SCRIPT} missing fail_if_uncommitted_work"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-uncommitted-work-guard"
+fi
+
+if ! grep -q 'uncommitted-work' "${POST_SCRIPT}"; then
+  echo "FAIL: script-has-uncommitted-work-category"
+  echo "  ${POST_SCRIPT} missing uncommitted-work category"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: script-has-uncommitted-work-category"
+fi
+
 # --- Branch validation test cases ---
 
 # Auto-correct: agent writes main, default is master, no allowed list → corrected
@@ -1547,7 +1855,7 @@ run_branch_validation_test "explicit-list-accepts-match" \
 run_branch_validation_test "explicit-list-includes-default" \
   "main" "main" "main,develop" "accept:main"
 
-# No agent target with explicit list still uses default
+# No agent target with explicit list still uses default.
 run_branch_validation_test "no-agent-target-ignores-allowed-list" \
   "" "main" "release-1,release-2" "default:main"
 
@@ -1909,6 +2217,152 @@ else
   echo "FAIL: security-api-failure-pr-list-fails-closed — rejected but wrong reason"
   cat "${SEC_CODE_TMPDIR}/stdout-api-failure.log"
   FAILURES=$((FAILURES + 1))
+fi
+
+# --- Timeout-kill: staged files, no commit → fail (not Success / no-op) ---
+cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "issue comment"|"pr comment")
+    printf '%s\n' "$@"
+    cat 2>/dev/null || true
+    exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/gh"
+
+_sec_kill_dir="${SEC_CODE_TMPDIR}/run-killed-before-commit"
+setup_sec_code_repo "${_sec_kill_dir}" "agent/99-timeout-kill"
+# Drop the committed change and leave it staged instead — the timeout-kill
+# fingerprint from #1256 (git add, then killed before git commit).
+${REAL_GIT} -C "${_sec_kill_dir}/repo" reset --soft HEAD~1
+
+_sec_kill_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_kill_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-killed.log" 2>&1 || _sec_kill_rc=$?
+
+_sec_kill_log="${SEC_CODE_TMPDIR}/stdout-killed.log"
+if [ "${_sec_kill_rc}" -eq 0 ]; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — expected non-zero exit"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "killed before committing" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — missing failure heading"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "agent determined no changes needed" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — posted no-op comment"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "file.txt" "${_sec_kill_log}"; then
+  echo "FAIL: killed-before-commit-staged-exits-nonzero — staged file not listed"
+  cat "${_sec_kill_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: killed-before-commit-staged-exits-nonzero (exit ${_sec_kill_rc})"
+fi
+
+# --- Genuine no-op: feature branch, no commits, clean tree → exit 0 ---
+_sec_noop_dir="${SEC_CODE_TMPDIR}/run-genuine-noop"
+setup_sec_code_repo "${_sec_noop_dir}" "agent/99-already-fixed"
+${REAL_GIT} -C "${_sec_noop_dir}/repo" reset --hard HEAD~1
+
+_sec_noop_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_noop_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-genuine-noop.log" 2>&1 || _sec_noop_rc=$?
+
+_sec_noop_log="${SEC_CODE_TMPDIR}/stdout-genuine-noop.log"
+if [ "${_sec_noop_rc}" -ne 0 ]; then
+  echo "FAIL: genuine-noop-clean-tree-exits-zero — expected exit 0, got ${_sec_noop_rc}"
+  cat "${_sec_noop_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q "agent determined no changes needed" "${_sec_noop_log}"; then
+  echo "FAIL: genuine-noop-clean-tree-exits-zero — missing no-op comment"
+  cat "${_sec_noop_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: genuine-noop-clean-tree-exits-zero"
+fi
+
+# --- git status failure: swallowed error must not look like a clean tree ---
+# Regression for the false "Success"/no-op this PR closes: if `git status`
+# itself fails, the script must fail closed, not report a genuine no-op.
+cat > "${SEC_CODE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+# Skip leading "-c NAME=VALUE" pairs (uncommitted_work_status pins trusted
+# git config ahead of the subcommand) before matching on the subcommand.
+_args=("\$@")
+_i=0
+while [[ "\${_args[\$_i]:-}" == "-c" ]]; do
+  _i=\$((_i + 2))
+done
+if [[ "\${_args[\$_i]:-}" == "status" ]]; then
+  echo "fatal: index file smaller than expected" >&2
+  exit 128
+fi
+if [[ "\${_args[\$_i]:-}" == "remote" && "\${_args[\$((_i + 1))]:-}" == "set-url" ]]; then
+  exit 0
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${SEC_CODE_MOCK_BIN}/git"
+
+_sec_gitstatus_dir="${SEC_CODE_TMPDIR}/run-git-status-fails"
+setup_sec_code_repo "${_sec_gitstatus_dir}" "agent/99-status-fails"
+${REAL_GIT} -C "${_sec_gitstatus_dir}/repo" reset --hard HEAD~1
+
+_sec_gitstatus_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_sec_gitstatus_dir}"
+  export HOME="${SEC_CODE_TMPDIR}"
+  export PATH="${SEC_CODE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  bash "${POST_SCRIPT}"
+) > "${SEC_CODE_TMPDIR}/stdout-git-status-fails.log" 2>&1 || _sec_gitstatus_rc=$?
+
+_sec_gitstatus_log="${SEC_CODE_TMPDIR}/stdout-git-status-fails.log"
+if [ "${_sec_gitstatus_rc}" -eq 0 ]; then
+  echo "FAIL: git-status-failure-exits-nonzero — expected non-zero exit"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q "agent determined no changes needed" "${_sec_gitstatus_log}"; then
+  echo "FAIL: git-status-failure-exits-nonzero — posted no-op comment despite git status failure"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qi "git status failed" "${_sec_gitstatus_log}"; then
+  echo "FAIL: git-status-failure-exits-nonzero — missing git-status-failure diagnostic"
+  cat "${_sec_gitstatus_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: git-status-failure-exits-nonzero (exit ${_sec_gitstatus_rc})"
 fi
 
 rm -rf "${SEC_CODE_TMPDIR}"

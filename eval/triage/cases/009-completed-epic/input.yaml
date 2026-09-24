@@ -1,0 +1,44 @@
+forge: github
+fixture:
+  type: issue
+  title: "Q1 auth reliability tracking"
+  body: |
+    ## Tracking issue
+
+    This epic tracks the Q1 auth reliability work for the login service.
+    It is not itself an implementation task — the work lives in the
+    child issues listed below.
+
+    ### Children
+    - #1 Login latency SLO dashboard
+    - #2 Auth error-budget policy
+    - #3 On-call runbook for auth 5xx
+
+    All three children are done. Please verify and close this tracking
+    issue as completed.
+
+# Child issues created (and closed) before the fixture. Numbers are
+# assigned in order, so they are #1, #2, and #3 when the epic is filed.
+seed_issues:
+  - title: "Login latency SLO dashboard"
+    state: closed
+    body: |
+      Stand up a Grafana dashboard for login p99 latency and error rate.
+
+      Done: dashboard is in the auth folder, SLO is 200ms p99, and the
+      on-call rotation was notified.
+  - title: "Auth error-budget policy"
+    state: closed
+    body: |
+      Write the error-budget policy for the login service (burn-rate
+      alerts, freeze rules).
+
+      Done: policy merged into the ops handbook; 2% monthly error
+      budget with a 1-hour fast-burn page.
+  - title: "On-call runbook for auth 5xx"
+    state: closed
+    body: |
+      Write the on-call runbook for auth 5xx, covering common causes
+      (validator panics, upstream IdP outages) and rollback steps.
+
+      Done: runbook published and linked from the service catalog.

@@ -112,4 +112,4 @@ docs: add agent definition authoring guide
 When reviewing PRs, check that commit messages and PR titles use the correct type prefix. Flag violations as a required change — they are not cosmetic. Pay particular attention to:
 
 - **`feat` misuse** — challenge it if the change is not user-facing.
-- **Missing `!` on breaking changes** — if the diff removes a field, renames a flag, adds a required input, tightens validation, or otherwise breaks existing usage, the PR title and commit messages **must** carry the `!` suffix. Flag a missing `!` as an important-severity finding.
+- **Missing `!` on breaking changes** — if the diff removes a field, renames a flag, adds a required input, tightens validation, or otherwise breaks existing usage, the PR title and commit messages **must** carry the `!` suffix. Flag a missing `!` as a high-severity finding.

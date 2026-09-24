@@ -40,15 +40,16 @@ These labels are managed by the triage agent based on its assessment of the issu
 | Label | Meaning |
 |-------|---------|
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
-| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: when `requires_workflow_changes` is set in the triage result, `triaged` is applied instead because the code agent cannot modify workflow files. |
-| `triaged` | The issue is fully specified but is a feature or other category that requires human prioritization before coding. |
+| `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: `triaged` is applied instead when `requires_workflow_changes` is set, when `TRIAGE_AUTO_CODE` is `off`/`never`, or when `TRIAGE_AUTO_CODE` is `discretionary` and the agent withholds promotion. |
+| `triaged` | The issue is fully specified but requires human prioritization before coding — a feature or other category, auto-promotion disabled, or a discretionary withhold. |
 | `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |
-| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` to categorize the issue. |
-| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` to categorize the issue. |
+| `bug` | The issue is a confirmed bug. Applied alongside `ready-to-code` or `triaged` (see the `ready-to-code` exceptions above) to categorize the issue. |
+| `documentation` | The issue concerns documentation improvements or additions. Applied alongside `ready-to-code` or `triaged` (see the `ready-to-code` exceptions above) to categorize the issue. |
 | `not-planned` | The issue is out of scope, invalid, or spam. The issue is closed with reason "not planned". |
+| `completed` | The work described in the issue is done (all child issues closed, addressing PRs/MRs merged, acceptance criteria met). The issue is closed with reason "completed". Distinct from `not-planned` (rejected) and from `in-progress` (open PR/MR still in flight). |
 | `pr-open` | An open PR or merge request already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR/MR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR/MR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR/MR is closed without merging: nothing re-triages on PR/MR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
 The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `create_issues.allow_targets` in config.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
@@ -101,7 +102,7 @@ invent labels or apply labels not listed here.
 ## Control labels (never recommend these)
 
 These are managed by the triage pipeline. Never include them in `label_actions`:
-`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `pr-open`.
+`needs-info`, `ready-to-code`, `duplicate`, `feature`, `blocked`, `triaged`, `question`, `bug`, `documentation`, `not-planned`, `completed`, `pr-open`.
 
 ## Area labels
 
@@ -165,14 +166,34 @@ post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. `on` — auto-promote categories listed in `TRIAGE_AUTO_CODE_CATEGORIES`. `off` — never auto-promote; always apply `triaged`. | `on` | `on`, `off` |
-| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories to auto-promote when `TRIAGE_AUTO_CODE=on`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
+| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. See [Ready-to-code promotion](#ready-to-code-promotion). | `on` | `on`/`always`, `off`/`never`, `discretionary` |
+| `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories eligible for auto-promotion when `TRIAGE_AUTO_CODE` is `on`/`always` or `discretionary`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
 
 To override these defaults per repo or org, create a custom harness for the
 triage agent the same way the [code agent](code.md#how-to-configure) does —
 a `.fullsend/triage.yaml` with a `base:` pointing at
-[`harness/triage.yaml`](../harness/triage.yaml) and your own `env.runner`
-values, referenced from `.fullsend/config.yaml`.
+[`harness/triage.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml) and your own `env.runner`
+and `env.sandbox` values, referenced from `.fullsend/config.yaml`.
+
+#### Ready-to-code promotion
+
+`TRIAGE_AUTO_CODE` has three modes:
+
+- `on` / `always` — auto-apply `ready-to-code` for categories listed in
+  `TRIAGE_AUTO_CODE_CATEGORIES`. This is the default. `on` is the supported
+  alias for `always`.
+- `off` / `never` — never auto-apply `ready-to-code`; always apply `triaged`.
+  A human must run `/fs-code` or apply the label. `off` is the supported
+  alias for `never`.
+- `discretionary` — the triage agent decides per issue. On a `sufficient`
+  result it sets `triage_summary.promote_to_ready_to_code` to `true` (promote)
+  or `false` (leave `triaged` for human prioritization). The post-script
+  honors that field only in this mode, and only when the category is in
+  `TRIAGE_AUTO_CODE_CATEGORIES` and `requires_workflow_changes` is not set.
+  If the field is omitted, the post-script withholds promotion.
+
+Use `discretionary` for workflows such as backlog grooming, where
+triage should still classify issues but must not flood the coding queue.
 
 ### Issue filing allowlist
 
@@ -211,7 +232,7 @@ GitHub/GitLab auth vars:
 | `JIRA_TOKEN` | API token for that account. Available to the runner for post-script mutations; the sandbox receives the `jira-ro` provider's opaque placeholder instead of the real token. |
 | `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). |
 
-Closing an issue (`duplicate`, `not-planned`, `split` actions) performs a
+Closing an issue (`duplicate`, `not-planned`, `completed`, `split` actions) performs a
 Jira workflow transition rather than a status field write, since Jira has no
 universal "closed" state. The transition name for each action is configured
 independently:
@@ -220,7 +241,7 @@ independently:
 |----------|----------|
 | `JIRA_DUPLICATE_TRANSITION` | The `duplicate` action. |
 | `JIRA_NOT_PLANNED_TRANSITION` | The `not-planned` action. |
-| `JIRA_SPLIT_TRANSITION` | Closing the original issue after a `split` action. |
+| `JIRA_SPLIT_TRANSITION` | The `split` action, and the `completed` action (both close with GitHub reason `completed`). |
 
 If the relevant variable is unset when that action fires, the post-script
 fails loudly rather than silently skipping the close — set all three to the
@@ -290,6 +311,14 @@ If you use `base:` composition to override `harness/triage.yaml`:
   Do not switch to bearer auth — the Jira Cloud tenant URL
   (`*.atlassian.net/rest/api/3/...`) requires Basic auth with
   `email:api_token`.
+- **GitHub and GitLab credentials use provider-backed delivery**:
+  `GH_TOKEN` and `GITLAB_TOKEN` are not expanded into `env.sandbox` or
+  host env files. The sandbox receives the `github-ro` / `gitlab-rw`
+  provider's opaque placeholder; OpenShell substitutes the real token
+  at the proxy. Runner-side pre/post scripts retain the real token via
+  `env.runner`. Do not re-add these keys to `env.sandbox` or to
+  `expand: true` host files — that overwrites the placeholder and
+  leaks the real credential into the sandbox.
 - **GitLab and Jira functional eval coverage is deferred**: The eval cases
   under `eval/triage/cases/` currently cover GitHub only. GitLab and Jira
   behavior is covered by unit-level bash tests in
@@ -317,4 +346,4 @@ Effort: `high` (explicit in the harness; override per run with `fullsend run --e
 
 ## Source
 
-[`harness/triage.yaml`](../harness/triage.yaml)
+[`harness/triage.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/triage.yaml)

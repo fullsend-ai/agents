@@ -62,7 +62,6 @@ forge:
         FULLSEND_FORGE: github
       sandbox:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
-        GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   gitlab:
     providers:
@@ -83,5 +82,4 @@ forge:
         FULLSEND_FORGE: gitlab
       sandbox:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
-        GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab

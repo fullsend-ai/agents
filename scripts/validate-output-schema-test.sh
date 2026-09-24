@@ -62,6 +62,18 @@ run_test "valid-sufficient" \
   '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix"},"comment":"Triage complete."}' \
   "true"
 
+run_test "valid-sufficient-promote-true" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":true},"comment":"Triage complete."}' \
+  "true"
+
+run_test "valid-sufficient-promote-false" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":false},"comment":"Triage complete."}' \
+  "true"
+
+run_test "invalid-promote-not-boolean" \
+  '{"action":"sufficient","reasoning":"clear","clarity_scores":{"symptom":0.9,"cause":0.8,"reproduction":0.9,"impact":0.7,"overall":0.85},"triage_summary":{"title":"Bug","severity":"high","category":"bug","problem":"crash","root_cause_hypothesis":"null ptr","reproduction_steps":["step 1"],"impact":"all users","recommended_fix":"fix ptr","proposed_test_case":"test_fix","promote_to_ready_to_code":"yes"},"comment":"Triage complete."}' \
+  "false"
+
 run_test "valid-duplicate" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"Duplicate of #10."}' \
   "true"
@@ -72,6 +84,10 @@ run_test "valid-question" \
 
 run_test "valid-not-planned" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This is out of scope."}' \
+  "true"
+
+run_test "valid-completed" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done. Closing as completed."}' \
   "true"
 
 run_test "valid-prerequisites-existing" \
@@ -426,6 +442,42 @@ run_test_custom_filename "empty-actions-rejected" \
   "fix-result.json" \
   "${FIX_SCHEMA}" \
   "false"
+
+run_test_custom_filename "fix-history-rewritten-valid" \
+  '{"pr_number":42,"summary":"s","trigger_source":"human","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"squash","description":"Squashed 3 commits"}],"files_changed":["f.go"],"history_rewritten":true}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "fix-ci-inspections-valid" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"job":"lint","status":"success","classification":"passing","diagnosis":"Lint passed."},{"job":"unit-tests","status":"failure","classification":"pr-related","diagnosis":"Failing test matches the diff.","remediation":"Fixed the test."}]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "fix-ci-inspections-invalid-classification" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"job":"lint","classification":"excluded"}]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "fix-ci-inspections-missing-job" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"classification":"passing"}]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "fix-ci-inspections-additional-property-rejected" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[{"job":"lint","classification":"passing","unexpected":true}]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "fix-ci-inspections-empty-array-valid" \
+  '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[{"type":"fix","finding":"nil check","description":"Added nil check"}],"files_changed":["f.go"],"ci_inspections":[]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
 
 # --- FULLSEND_OUTPUT_FILE path traversal guard ---
 run_test_custom_filename "path-traversal-stripped" \

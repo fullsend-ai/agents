@@ -6,10 +6,8 @@
 #   agent       : reads pre-fetched review body, fixes code, tests, scans, commits
 #   post_script : push commit, post summary comment on PR
 #
-# The agent NEVER pushes or creates PRs/MRs. Enforcement: the sandbox
-# GH_TOKEN/GITLAB_TOKEN is read-only scoped, PUSH_TOKEN never enters the
-# sandbox, and network policy restricts binary access per forge.
-# Only the post-script, running on the runner with PUSH_TOKEN, can write.
+# The agent NEVER pushes or creates PRs/MRs as the sandbox policy does not allow
+# it.
 agent: agents/fix.md
 doc: docs/fix.md
 model: opus
@@ -97,9 +95,11 @@ forge:
   github:
     providers:
       - providers/github-code.yaml
+      - providers/github-artifacts.yaml
     openshell:
       profiles:
         - profiles/fullsend-github-code.yaml
+        - profiles/fullsend-github-artifacts.yaml
     skills:
       - skills/github-forge
       - skills/fix-review/github
@@ -113,7 +113,6 @@ forge:
         FULLSEND_FORGE: github
       sandbox:
         PR_NUMBER: "${PR_NUMBER}"
-        GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   gitlab:
     providers:
@@ -137,5 +136,4 @@ forge:
       sandbox:
         PR_NUMBER: "${MR_NUMBER}"
         PR_URL: "${GITLAB_MR_URL}"
-        GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab

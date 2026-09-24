@@ -33,7 +33,7 @@ on issues (not PRs).
 
 | Label | Meaning |
 |-------|---------|
-| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. |
+| `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. Auto-promotion is also subject to `TRIAGE_AUTO_CODE` — see [Ready-to-code promotion](triage.md#ready-to-code-promotion). |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
 
 ## Configuration
@@ -126,8 +126,8 @@ need a custom image.
 ### Image requirements
 
 A custom image must work within the constraints enforced by the sandbox
-policy ([`policies/base.yaml`](../policies/base.yaml)) and network
-profiles ([`profiles/`](../profiles/)):
+policy ([`policies/base.yaml`](https://github.com/fullsend-ai/agents/blob/main/policies/base.yaml)) and network
+profiles ([`profiles/`](https://github.com/fullsend-ai/agents/tree/main/profiles)):
 
 | Requirement | Detail |
 |-------------|--------|
@@ -210,7 +210,7 @@ The precedence is as follows:
 3. Issue author.
 
 **Note**: bots are filtered (`*[bot]`, `app/*`, `dependabot`). The resolution logic lives in
-[`scripts/lib/pr-assignee.lib.sh`](../scripts/lib/pr-assignee.lib.sh).
+[`scripts/lib/pr-assignee.lib.sh`](https://github.com/fullsend-ai/agents/blob/main/scripts/lib/pr-assignee.lib.sh).
 
 ## Multi-forge support
 
@@ -266,4 +266,4 @@ Effort: `high` (explicit in the harness; override per run with `fullsend run --e
 
 ## Source
 
-[`harness/code.yaml`](../harness/code.yaml)
+[`harness/code.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/code.yaml)

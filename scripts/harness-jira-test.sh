@@ -34,48 +34,60 @@ jira_overlay_field() {
   yq -r ".overlays[] | select(.when | contains(\"jira\")) | ${yq_expr}" "${harness_file}"
 }
 
+# Search an overlay field's output for a literal string without a pipe.
+# `jira_overlay_field ... | grep -qF` races: grep exits at the first match, yq
+# takes SIGPIPE while it is still writing, and `set -o pipefail` turns that
+# into exit 141 — a passing assertion reported as a failure. The race only
+# shows when the match is early in multi-line output, which is why the
+# negative and single-line checks never flaked.
+jira_overlay_has() {
+  local out
+  out="$(jira_overlay_field "$1" "$2")"
+  grep -qF "$3" <<< "${out}"
+}
+
 # ---------------------------------------------------------------------------
 # Triage harness tests
 # ---------------------------------------------------------------------------
 TRIAGE_HARNESS="${REPO_ROOT}/harness/triage.yaml"
 
 # Provider present
-if jira_overlay_field "${TRIAGE_HARNESS}" ".providers[]" | grep -qF "providers/jira-ro.yaml"; then
+if jira_overlay_has "${TRIAGE_HARNESS}" ".providers[]" "providers/jira-ro.yaml"; then
   assert_pass "triage-jira-provider-present"
 else
   assert_fail "triage-jira-provider-present" "providers/jira-ro.yaml not in Jira overlay"
 fi
 
 # Profile present
-if jira_overlay_field "${TRIAGE_HARNESS}" ".openshell.profiles[]" | grep -qF "profiles/fullsend-jira-ro.yaml"; then
+if jira_overlay_has "${TRIAGE_HARNESS}" ".openshell.profiles[]" "profiles/fullsend-jira-ro.yaml"; then
   assert_pass "triage-jira-profile-present"
 else
   assert_fail "triage-jira-profile-present" "profiles/fullsend-jira-ro.yaml not in Jira overlay"
 fi
 
 # JIRA_TOKEN not in sandbox env
-if jira_overlay_field "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_TOKEN"; then
+if jira_overlay_has "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_TOKEN"; then
   assert_fail "triage-jira-token-not-in-sandbox" "JIRA_TOKEN found in sandbox env"
 else
   assert_pass "triage-jira-token-not-in-sandbox"
 fi
 
 # JIRA_TOKEN still in runner env (needed for post-script mutations)
-if jira_overlay_field "${TRIAGE_HARNESS}" "(.env.runner // {}) | keys | .[]" | grep -qF "JIRA_TOKEN"; then
+if jira_overlay_has "${TRIAGE_HARNESS}" "(.env.runner // {}) | keys | .[]" "JIRA_TOKEN"; then
   assert_pass "triage-jira-token-in-runner"
 else
   assert_fail "triage-jira-token-in-runner" "JIRA_TOKEN missing from runner env (needed for post-script)"
 fi
 
 # JIRA_USER_EMAIL in sandbox env (non-secret, needed for Basic auth)
-if jira_overlay_field "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_USER_EMAIL"; then
+if jira_overlay_has "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_USER_EMAIL"; then
   assert_pass "triage-jira-email-in-sandbox"
 else
   assert_fail "triage-jira-email-in-sandbox" "JIRA_USER_EMAIL missing from sandbox env"
 fi
 
 # JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
-if jira_overlay_field "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_BASE_URL"; then
+if jira_overlay_has "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_BASE_URL"; then
   assert_pass "triage-jira-base-url-in-sandbox"
 else
   assert_fail "triage-jira-base-url-in-sandbox" "JIRA_BASE_URL missing from sandbox env"
@@ -98,57 +110,75 @@ fi
 # ---------------------------------------------------------------------------
 CODE_HARNESS="${REPO_ROOT}/harness/code.yaml"
 
+# CODE_ALLOWED_TARGET_BRANCHES is optional. Mapping it through env.runner
+# makes fullsend reject runs where the host does not define it, before the
+# post-script can safely fall back to the repository default branch.
+if yq -e '.env.runner | has("CODE_ALLOWED_TARGET_BRANCHES")' "${CODE_HARNESS}" >/dev/null; then
+  assert_fail "code-optional-target-branches-not-required" "CODE_ALLOWED_TARGET_BRANCHES must not be mapped through env.runner"
+else
+  assert_pass "code-optional-target-branches-not-required"
+fi
+
+# when: must guard event.source so non-Jira runs skip instead of CEL-erroring
+code_jira_when="$(jira_overlay_field "${CODE_HARNESS}" ".when")"
+if echo "${code_jira_when}" | grep -qF 'has(event.source)'; then
+  assert_pass "code-jira-when-guards-source"
+else
+  assert_fail "code-jira-when-guards-source" \
+    "when expression lacks has(event.source) guard: ${code_jira_when}"
+fi
+
 # Provider present
-if jira_overlay_field "${CODE_HARNESS}" ".providers[]" | grep -qF "providers/jira-ro.yaml"; then
+if jira_overlay_has "${CODE_HARNESS}" ".providers[]" "providers/jira-ro.yaml"; then
   assert_pass "code-jira-provider-present"
 else
   assert_fail "code-jira-provider-present" "providers/jira-ro.yaml not in Jira overlay"
 fi
 
 # Profile present
-if jira_overlay_field "${CODE_HARNESS}" ".openshell.profiles[]" | grep -qF "profiles/fullsend-jira-ro.yaml"; then
+if jira_overlay_has "${CODE_HARNESS}" ".openshell.profiles[]" "profiles/fullsend-jira-ro.yaml"; then
   assert_pass "code-jira-profile-present"
 else
   assert_fail "code-jira-profile-present" "profiles/fullsend-jira-ro.yaml not in Jira overlay"
 fi
 
 # JIRA_TOKEN not in sandbox env
-if jira_overlay_field "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_TOKEN"; then
+if jira_overlay_has "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_TOKEN"; then
   assert_fail "code-jira-token-not-in-sandbox" "JIRA_TOKEN found in sandbox env"
 else
   assert_pass "code-jira-token-not-in-sandbox"
 fi
 
 # JIRA_TOKEN not in runner env (code agent runner doesn't need Jira creds)
-if jira_overlay_field "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" | grep -qF "JIRA_TOKEN"; then
+if jira_overlay_has "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" "JIRA_TOKEN"; then
   assert_fail "code-jira-token-not-in-runner" "JIRA_TOKEN found in runner env (no longer needed)"
 else
   assert_pass "code-jira-token-not-in-runner"
 fi
 
 # JIRA_USER_EMAIL in sandbox env (non-secret, needed for Basic auth)
-if jira_overlay_field "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_USER_EMAIL"; then
+if jira_overlay_has "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_USER_EMAIL"; then
   assert_pass "code-jira-email-in-sandbox"
 else
   assert_fail "code-jira-email-in-sandbox" "JIRA_USER_EMAIL missing from sandbox env"
 fi
 
 # JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
-if jira_overlay_field "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" | grep -qF "JIRA_BASE_URL"; then
+if jira_overlay_has "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_BASE_URL"; then
   assert_pass "code-jira-base-url-in-sandbox"
 else
   assert_fail "code-jira-base-url-in-sandbox" "JIRA_BASE_URL missing from sandbox env"
 fi
 
 # No .issue-context.json host_file (prefetch removed)
-if jira_overlay_field "${CODE_HARNESS}" ".host_files[]?.dest" | grep -qF ".issue-context.json"; then
+if jira_overlay_has "${CODE_HARNESS}" ".host_files[]?.dest" ".issue-context.json"; then
   assert_fail "code-no-issue-context-host-file" ".issue-context.json still in host_files"
 else
   assert_pass "code-no-issue-context-host-file"
 fi
 
 # JIRA_ISSUE_CONTEXT_FILE not in runner env (prefetch removed)
-if jira_overlay_field "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" | grep -qF "JIRA_ISSUE_CONTEXT_FILE"; then
+if jira_overlay_has "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" "JIRA_ISSUE_CONTEXT_FILE"; then
   assert_fail "code-no-issue-context-file-env" "JIRA_ISSUE_CONTEXT_FILE still in runner env"
 else
   assert_pass "code-no-issue-context-file-env"

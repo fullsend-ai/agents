@@ -6,10 +6,8 @@
 #   agent       : reads the issue, implements, tests, scans, commits locally
 #   post_script : secret scan, pre-commit, push branch, create PR/MR, assign human
 #
-# The agent NEVER pushes or creates PRs/MRs. Enforcement: the sandbox
-# GH_TOKEN/GITLAB_TOKEN is read-only scoped, PUSH_TOKEN never enters the
-# sandbox, and network policy restricts binary access per forge.
-# Only the post-script, running on the runner with PUSH_TOKEN, can write.
+# The agent NEVER pushes or creates PRs/MRs as the sandbox policy does not allow
+# it.
 agent: agents/code.md
 doc: docs/code.md
 model: opus
@@ -66,7 +64,6 @@ validation_loop:
 # Environment variables for runner pre/post scripts and sandbox sessions.
 env:
   runner:
-    CODE_ALLOWED_TARGET_BRANCHES: "${CODE_ALLOWED_TARGET_BRANCHES}"
     TARGET_REPO_DIR: "${TARGET_REPO_DIR}"
     PUSH_TOKEN: "${PUSH_TOKEN}"
     PUSH_TOKEN_SOURCE: "${PUSH_TOKEN_SOURCE}"
@@ -74,7 +71,9 @@ env:
     ISSUE_NUMBER: "${ISSUE_NUMBER}"
   sandbox:
     MAX_RETRIES: "1"
-    TIMEOUT_SECONDS: "2100"
+    # Mirror of timeout_minutes. The code-implementation skill budgets
+    # its tail from it. Keep the two in sync.
+    TIMEOUT_SECONDS: "3600"
     GOPATH: "/sandbox/go"
     GOMODCACHE: "/sandbox/go/pkg/mod"
     GIT_AUTHOR_NAME: "fullsend-code"
@@ -82,7 +81,8 @@ env:
     GIT_COMMITTER_NAME: "fullsend-code"
     GIT_COMMITTER_EMAIL: "${GIT_BOT_EMAIL}"
 
-timeout_minutes: 35
+# Per iteration. Mirrored as TIMEOUT_SECONDS in env.sandbox.
+timeout_minutes: 60
 
 overlays:
   - when: 'runtime.forge == "github"'
@@ -105,7 +105,6 @@ overlays:
       sandbox:
         ISSUE_NUMBER: "${ISSUE_NUMBER}"
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
-        GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   - when: 'runtime.forge == "gitlab"'
     providers:
@@ -127,7 +126,6 @@ overlays:
       sandbox:
         ISSUE_NUMBER: "${ISSUE_NUMBER}"
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
-        GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab
   # Jira-source overlay — provides provider-backed Jira API access so
   # the sandbox can read work items directly through the credential
@@ -136,7 +134,10 @@ overlays:
   # Jira overlay and a forge overlay match.
   # pre_script overrides the top-level default.  Post-script selection
   # stays with the target forge (GitHub/GitLab).
-  - when: 'event.source.system == "jira"'
+  # has(event.source) guards the field access: on non-Jira runs event is
+  # present but has no source, and unguarded event.source throws CEL
+  # "no such key: source" instead of skipping the overlay.
+  - when: 'has(event.source) && event.source.system == "jira"'
     providers:
       - providers/jira-ro.yaml
     openshell:
