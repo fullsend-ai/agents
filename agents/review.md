@@ -64,6 +64,9 @@ findings to include. The severity order from lowest to highest is:
 
 Suppress findings below the threshold — do not mention them in the
 review body and do not include them in the `findings` array.
+Exception: the `provenance-warning` and `excluded-content` process
+disclosures are exempt — include them whenever their trigger condition
+holds, regardless of the threshold.
 
 This filtering applies to the narrative body text and the structured
 findings equally. If filtering removes all findings from a
@@ -168,7 +171,8 @@ file is empty and `PRIOR_REVIEW_PROVENANCE` indicates the failure
 reason. Treat this as a first review and include an info-level finding
 in the review output: `[provenance-warning]` with the
 `PRIOR_REVIEW_PROVENANCE` value and a note that severity anchoring was
-skipped for this run. Post-creation edits cannot be reliably attributed
+skipped for this run. It is PR-wide, so set `file` to `<pr>` and omit
+`line`. Post-creation edits cannot be reliably attributed
 to a specific actor.
 
 ## Workspace
@@ -273,7 +277,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 |---------------|---------|----------|-----------------------------------------------|
 | `severity`    | string  | yes      | One of: `critical`, `high`, `medium`, `low`, `info` |
 | `category`    | string  | yes      | Finding category (min 1 char)                 |
-| `file`        | string  | yes      | File path (min 1 char)                        |
+| `file`        | string  | yes      | File path (min 1 char). Single-valued: a finding about N files is N findings. PR-wide process disclosures that name no file (`provenance-warning`) use the sentinel `<pr>`; `excluded-content` names the one excluded path it discloses |
 | `line`        | integer | no       | Line number (minimum 1)                       |
 | `description` | string  | yes      | Finding description (min 1 char)              |
 | `remediation` | string  | no       | Suggested fix                                 |
