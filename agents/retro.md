@@ -56,7 +56,31 @@ Extract it from the workflow run log — see the `retro-analysis` skill's
 "Discovering the agents repo" section. Use the discovered repo when
 localizing agent-layer proposals.
 
-**Dispatch subagents for every read-heavy operation.** Your main context window is for synthesis, not data gathering. Examples:
+**Dispatch subagents for every read-heavy operation.** Your main
+context window is for synthesis, not data gathering. Investigation
+tasks are unnamed and have no persona roster — do not invent
+`sub-agents/*.md` files for retro. Each child prompt is self-contained:
+the child starts with no memory of this conversation, so include the
+paths, run IDs, and questions it needs. Keep synthesis, proposal
+writing, and `$FULLSEND_OUTPUT_DIR/agent-result.json` in the root.
+
+Follow the runtime note when one is present. Do not invent an `Agent`
+tool on Codex, and do not pass Claude aliases (`opus`, `sonnet`,
+`haiku`) as a Codex `model`. Model selection on Codex is owned by the
+runtime (`agents[].subagents.default` and the runner's Codex sub-agent
+default).
+
+- **Claude Code / pi:** Agent tool, omit `subagent_type` (generic child
+  with the current tool set). Omit `model` unless the runtime note says
+  otherwise. Several Agent calls in one message run in parallel.
+- **Codex:** `spawn_agent` with the runtime note's generic/default
+  child — not a named review persona. Pass the task as `message`, set
+  `fork_turns`: `"none"` so the child does not inherit unrelated root
+  context, omit `model`, collect with `wait` (`wait_agent` on the
+  pinned Codex CLI), and `close_agent` to release the slot. Start at
+  most four open children, then collect, close, and continue.
+
+Examples:
 
 - "Read the JSONL trace for workflow run <ID> and summarize the agent's key decisions"
 - "Gather all review comments on PR #N and categorize them by source (agent vs human) and type (approval, change request, comment)"

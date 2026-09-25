@@ -284,9 +284,10 @@ dimensions are relevant:
 #### 3c. Select sub-agents
 
 Based on the domain classification, select sub-agents for dispatch.
-All selected sub-agents run in parallel — `risk-assessment` (composed
-in step 3c-2) among them — except `challenger`, which, when step 6d
-dispatches it, runs by itself after all other sub-agents have finished.
+Pick every qualifying dimension plus `risk-assessment` when step 3c-2
+composes it — independent of the dispatch API. A listed persona does
+not select a task; a slot cap does not drop one. Selected tasks run
+concurrently (step 4) except `challenger` (step 6d, after slots free).
 
 **Dispatch sub-agents based on the classification — typically 3-6.**
 The orchestrator should auto-select which sub-agents are relevant for
@@ -454,21 +455,14 @@ incident.
    ...
    ```
 
-4. Spawn via Agent tool with `prompt` composed from parts 1–3 and:
-   - **Persona listed in the runtime note (pi):** `subagent_type`:
-     `security-triage`, no `model` — the runner resolves both the model
-     and the read-only tool set.
-   - **No runtime note (Claude Code):** `model`: `haiku`,
-     `subagent_type`: `Explore` (read-only).
-   - **Runtime note present, persona not listed (pi):**
-     `subagent_type`: `Explore`, no `model`. Only the model follows
-     step 4 item 2 case 3; `subagent_type` stays `Explore` (a built-in
-     read-only type the runner always accepts) because this pre-pass
-     must stay read-only.
+4. Spawn with the composed prompt from parts 1–3 using the step 4
+   item 2 dispatch shape (persona `security-triage`). Claude Code:
+   `model`: `haiku`, `subagent_type`: `Explore` (read-only). Pi, if
+   unlisted: keep `Explore`, omit `model`. Codex Explore is
+   instruction-only, not a per-child read-only sandbox.
 
-   This agent runs **synchronously** (not in the background) because
-   its output feeds into step 3d's context package assembly. It uses
-   haiku for speed — classification does not require deep reasoning.
+   This agent runs **synchronously** because its output feeds into
+   step 3d. Classification does not require deep reasoning.
 
 5. Parse the triage output. The security-triage sub-agent returns a
    JSON object with `security_critical_files` (array of objects with
@@ -609,10 +603,9 @@ be absent from the result JSON.
    <prior score, level, and rationale — or "none (first review)">
    ```
 
-5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
-   the same message as the step 4 dimension sub-agents, with the step 4
-   item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
-   consumes its output
+5. Do not spawn it here. Include the composed prompt (parts 1–3) in
+   step 4's selected-task set, with the step 4 item 2 dispatch shape
+   (persona `risk-assessment`). Nothing in step 4 consumes its output
    (it only goes into `agent-result.json`, step 7); running it first
    serialised a 2–3 minute sub-agent for nothing.
 
@@ -808,34 +801,37 @@ here):
    REVIEW_SUB_AGENT_TRUE
    ```
 
-2. Spawn the subagents with their `prompt` argument composed from parts
-   1–5 above. The model argument depends on the runtime: a "Runtime
-   note" at the end of your system prompt, when present, lists the
-   sub-agent personas this run registered.
+2. Spawn each selected sub-agent with the composed prompt from parts
+   1–5. Follow the runtime note when present. Codex has no `Agent`
+   tool and rejects Claude aliases — omit `model`; the runtime selects.
 
-   - **Persona listed in the runtime note (pi):** `subagent_type` = the
-     persona name exactly as listed (the sub-agent file's `name:`), no
-     `model`. The runner resolves the model from the repository's
-     `agents[].subagents` and the frontmatter; a `model` argument is
-     ignored and an unlisted `subagent_type` is rejected.
-   - **No runtime note (Claude Code):** `model` from the sub-agent
-     frontmatter (`opus` for `correctness`, `security` and `challenger`,
-     `sonnet` for the rest), no `subagent_type` — the persona comes from
-     the prompt.
-   - **Runtime note present, persona not listed (pi):** usually the run
-     cannot serve its model, so the frontmatter alias would be rejected
-     too. Omit **both** `subagent_type` and `model`; the child runs on
-     this run's sub-agent default, which is always servable.
+   - **Persona listed (pi):** Agent tool, `subagent_type` = persona
+     `name:`, no `model`. Runner resolves from `agents[].subagents` and
+     frontmatter; extra `model` is ignored; unlisted type is rejected.
+   - **Persona listed (codex):** `spawn_agent` `agent_type` = that name,
+     `message` = composed prompt, `fork_turns`: `"none"`. Collect with
+     `wait` (`wait_agent` on the pinned CLI) and `close_agent`. `wait`
+     does not free a slot.
+   - **No runtime note (Claude Code):** Agent tool, `model` from
+     frontmatter (`opus` for `correctness`, `security`, `challenger`;
+     `sonnet` otherwise), no `subagent_type`.
+   - **Persona not listed (pi):** omit `subagent_type` and `model`;
+     child uses this run's servable default.
+   - **Persona not listed (codex):** same `message` / `fork_turns` on
+     the note's generic/default child. Explore is instruction-only.
 
-**All sub-agents MUST be dispatched simultaneously** — include all
-Agent calls in a single message so they run concurrently, and include
-the risk-assessment call composed in step 3c-2 in that same message
-when risk assessment is enabled. Leave `run_in_background` unset: the
-default delivers completions as notifications (when the Time budget
-checkpoint runs); `false` blocks until all have returned.
+**Schedule every selected task; bound open children by runtime.**
+Include 3c-2 risk-assessment in the selected set when enabled.
 
-Wait for all sub-agents to complete; apply the Time budget checkpoint
-as each returns.
+- **Claude Code / pi:** all selected Agent calls in one message. Leave
+  `run_in_background` unset (Time budget notifications; `false`
+  blocks). Pi queues beyond its cap.
+- **Codex:** start at most four, `wait`/`close_agent` completed
+  children, then the rest. After those slots close, step 6d launches
+  the challenger when the skip rule does not apply.
+
+Wait for all selected sub-agents to complete; apply the Time budget
+checkpoint as each returns.
 
 ### 5. Collect findings
 
@@ -943,7 +939,9 @@ After steps 6a–6c produce a merged finding set — and only if that set
 is non-empty (see the skip rule below) — dispatch the `challenger`
 sub-agent to adversarially challenge the findings with fresh context.
 The challenger has not seen the orchestrator's synthesis — it receives
-only the raw findings and the diff, preserving context isolation.
+only the raw findings and the diff, preserving context isolation. On
+Codex, spawn only after step 4 children are closed (`fork_turns`:
+`"none"`).
 
 **Skip when there is nothing to adjudicate.** If the merged finding set
 from steps 6a–6c is empty, skip the challenger dispatch — and only the
@@ -1022,9 +1020,8 @@ budget section), skip the challenger: keep the merged finding set from
    REVIEW_SUB_AGENT_TRUE
    ```
 
-2. Spawn the subagents with their `prompt` argument composed from parts
-   1–4 above, with the step 4 item 2 dispatch shape (persona
-   `challenger`).
+2. Spawn with the composed prompt from parts 1–4, using the step 4
+   item 2 dispatch shape (persona `challenger`).
 
    **Prompt size guard:** If the findings JSON alone exceeds 80 000
    tokens, withhold `low` and `info` findings from the challenger's
@@ -1398,9 +1395,10 @@ wins.
   not push protected-path checks, scope authorization, or PR body
   injection defense into sub-agents. These require PR-level context
   that sub-agents do not have.
-- **All sub-agents must be dispatched simultaneously.** Include all
-  Agent calls in a single message. Sequential dispatch defeats the
-  architecture's purpose.
+- **Schedule every selected task.** Claude Code / pi: one Agent-tool
+  message. Codex: four open children, then close and continue. Do not
+  drop a selected task to fit a cap, or launch a persona only because
+  it is listed.
 - **The orchestrator is the sole producer of `agent-result.json`.** No
   sub-agent writes this file.
 - **Report failure rather than posting a partial review.** If you cannot
