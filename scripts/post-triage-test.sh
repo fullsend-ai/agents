@@ -19,6 +19,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # Mock gh: record all calls to a log file.
 GH_LOG="${TMPDIR}/gh-calls.log"
+MOCK_CLOSED_ISSUES="${TMPDIR}/mock-closed-issues"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
@@ -28,6 +29,17 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
   printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open"
+  exit 0
+fi
+# Issue state lookup for the duplicate-close guard (GET /issues/{n}, not /labels).
+if [[ "\$1" == "api" ]] && [[ "\$2" =~ /issues/[0-9]+$ ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  num=\$(basename "\$2")
+  if [[ -f "${MOCK_CLOSED_ISSUES}" ]] && grep -qx "\$num" "${MOCK_CLOSED_ISSUES}"; then
+    echo '{"state":"closed"}'
+  else
+    echo '{"state":"open"}'
+  fi
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -307,10 +319,44 @@ run_test "duplicate-closes-issue" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "gh issue close 42 --repo test-org/test-repo --reason duplicate"
 
+run_test "duplicate-checks-target-is-open" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "gh api repos/test-org/test-repo/issues/10"
+
 run_test "duplicate-self-reference-fails" \
   '{"action":"duplicate","reasoning":"same issue","duplicate_of":42,"comment":"Duplicate of itself."}' \
   "" \
   "true"
+
+printf '10\n' > "${MOCK_CLOSED_ISSUES}"
+run_test_stdout "duplicate-closed-target-warns" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "is not open — leaving #42 open for re-triage"
+printf '10\n' > "${MOCK_CLOSED_ISSUES}"
+run_test "duplicate-closed-target-removes-duplicate-label" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "gh api repos/test-org/test-repo/issues/42/labels/duplicate -X DELETE --silent"
+printf '10\n' > "${MOCK_CLOSED_ISSUES}"
+DUP_SKIP_NAME="duplicate-closed-target-skips-close"
+DUP_SKIP_DIR="${TMPDIR}/run-${DUP_SKIP_NAME}"
+mkdir -p "${DUP_SKIP_DIR}/iteration-1/output"
+echo '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  > "${DUP_SKIP_DIR}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+DUP_SKIP_EXIT=0
+(cd "${DUP_SKIP_DIR}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || DUP_SKIP_EXIT=$?
+if [[ ${DUP_SKIP_EXIT} -ne 0 ]]; then
+  echo "FAIL: ${DUP_SKIP_NAME} — exit code ${DUP_SKIP_EXIT}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- "gh issue close 42 --repo test-org/test-repo --reason duplicate" "${GH_LOG}"; then
+  echo "FAIL: ${DUP_SKIP_NAME} — issue was closed despite closed duplicate_of target"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${DUP_SKIP_NAME}"
+fi
+rm -f "${MOCK_CLOSED_ISSUES}"
 
 run_test "prerequisites-posts-comment-and-labels" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
@@ -1467,7 +1513,7 @@ MOCK_NOTES_FILE="${TMPDIR}/mock-notes-override.json"
 MOCK_CURL_ISSUE_FAIL="${TMPDIR}/mock-curl-issue-fail"
 MOCK_CURL_LABEL_FAIL="${TMPDIR}/mock-curl-label-fail"
 MOCK_CURL_CLOSE_FAIL="${TMPDIR}/mock-curl-close-fail"
-printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_NOTES_FILE=%s\nMOCK_CURL_ISSUE_FAIL=%s\nMOCK_CURL_LABEL_FAIL=%s\nMOCK_CURL_CLOSE_FAIL=%s\n' "${CURL_LOG}" "${MOCK_NOTES_FILE}" "${MOCK_CURL_ISSUE_FAIL}" "${MOCK_CURL_LABEL_FAIL}" "${MOCK_CURL_CLOSE_FAIL}" > "${MOCK_BIN}/curl"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_NOTES_FILE=%s\nMOCK_CURL_ISSUE_FAIL=%s\nMOCK_CURL_LABEL_FAIL=%s\nMOCK_CURL_CLOSE_FAIL=%s\nMOCK_CLOSED_ISSUES=%s\n' "${CURL_LOG}" "${MOCK_NOTES_FILE}" "${MOCK_CURL_ISSUE_FAIL}" "${MOCK_CURL_LABEL_FAIL}" "${MOCK_CURL_CLOSE_FAIL}" "${MOCK_CLOSED_ISSUES}" > "${MOCK_BIN}/curl"
 cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
 
 # Parse the URL from args (last non-flag argument or after --request METHOD).
@@ -1515,9 +1561,18 @@ if [[ "${URL}" =~ /user$ ]] && [[ "${METHOD}" == "GET" ]]; then
   exit 0
 fi
 
-# Return labels for the issue when queried.
-if [[ "${URL}" =~ /issues/42$ ]] && [[ "${METHOD}" == "GET" ]]; then
-  echo '{"iid":42,"title":"Test issue","labels":["area/api","old-label"],"state":"opened"}'
+# Return issue JSON for GET /issues/{iid}. Issue 42 keeps the historical
+# labels used by label-verification tests; other iids default to opened
+# unless listed in MOCK_CLOSED_ISSUES (duplicate-close guard).
+if [[ "${URL}" =~ /issues/([0-9]+)$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  iid="${BASH_REMATCH[1]}"
+  if [[ -f "${MOCK_CLOSED_ISSUES}" ]] && grep -qx "${iid}" "${MOCK_CLOSED_ISSUES}"; then
+    echo "{\"iid\":${iid},\"title\":\"Test issue\",\"labels\":[],\"state\":\"closed\"}"
+  elif [[ "${iid}" == "42" ]]; then
+    echo '{"iid":42,"title":"Test issue","labels":["area/api","old-label"],"state":"opened"}'
+  else
+    echo "{\"iid\":${iid},\"title\":\"Test issue\",\"labels\":[],\"state\":\"opened\"}"
+  fi
   exit 0
 fi
 
@@ -1716,6 +1771,33 @@ run_gitlab_test "gitlab-duplicate-closes-issue" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "state_event=close"
 
+printf '10\n' > "${MOCK_CLOSED_ISSUES}"
+run_gitlab_test_stdout "gitlab-duplicate-closed-target-warns" \
+  '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  "is not open — leaving #42 open for re-triage"
+printf '10\n' > "${MOCK_CLOSED_ISSUES}"
+GL_DUP_SKIP_NAME="gitlab-duplicate-closed-target-skips-close"
+GL_DUP_SKIP_DIR="${TMPDIR}/run-${GL_DUP_SKIP_NAME}"
+mkdir -p "${GL_DUP_SKIP_DIR}/iteration-1/output"
+echo '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
+  > "${GL_DUP_SKIP_DIR}/iteration-1/output/agent-result.json"
+: > "${CURL_LOG}"
+: > "${GH_LOG}"
+GL_DUP_SKIP_EXIT=0
+(cd "${GL_DUP_SKIP_DIR}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || GL_DUP_SKIP_EXIT=$?
+if [[ ${GL_DUP_SKIP_EXIT} -ne 0 ]]; then
+  echo "FAIL: ${GL_DUP_SKIP_NAME} — exit code ${GL_DUP_SKIP_EXIT}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- "state_event=close" "${CURL_LOG}"; then
+  echo "FAIL: ${GL_DUP_SKIP_NAME} — issue was closed despite closed duplicate_of target"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${GL_DUP_SKIP_NAME}"
+fi
+rm -f "${MOCK_CLOSED_ISSUES}"
+
 # GitLab question action posts a comment.
 run_gitlab_test "gitlab-question-posts-comment" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
@@ -1824,7 +1906,7 @@ unset GH_TOKEN CI_SERVER_HOST
 
 # Jira mock curl: record calls and return appropriate responses.
 JIRA_CURL_LOG="${TMPDIR}/jira-curl-calls.log"
-printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${JIRA_CURL_LOG}" > "${MOCK_BIN}/curl"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_CLOSED_ISSUES=%s\n' "${JIRA_CURL_LOG}" "${MOCK_CLOSED_ISSUES}" > "${MOCK_BIN}/curl"
 cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
 
 # Parse the method and URL from args.
@@ -1869,6 +1951,18 @@ fi
 # Return components for the issue (used by component_actions handler).
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+  exit 0
+fi
+
+# Return status category for the duplicate-close guard. Keys listed in
+# MOCK_CLOSED_ISSUES are "done"; everything else is "new" (open).
+if [[ "${URL}" =~ /issue/([A-Z]+-[0-9]+)\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
+  key="${BASH_REMATCH[1]}"
+  if [[ -f "${MOCK_CLOSED_ISSUES}" ]] && grep -qx "${key}" "${MOCK_CLOSED_ISSUES}"; then
+    echo '{"fields":{"status":{"statusCategory":{"key":"done"}}}}'
+  else
+    echo '{"fields":{"status":{"statusCategory":{"key":"new"}}}}'
+  fi
   exit 0
 fi
 
@@ -1993,6 +2087,33 @@ run_jira_test "jira-clears-stale-triaged-label" \
 run_jira_test "jira-duplicate-transitions" \
   '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"This appears to be a duplicate of TESTPROJ-10."}' \
   '{"transition":{"id":"31"}}'
+
+printf 'TESTPROJ-10\n' > "${MOCK_CLOSED_ISSUES}"
+run_jira_test_stdout "jira-duplicate-closed-target-warns" \
+  '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"This appears to be a duplicate of TESTPROJ-10."}' \
+  "is not open — leaving #TESTPROJ-42 open for re-triage"
+printf 'TESTPROJ-10\n' > "${MOCK_CLOSED_ISSUES}"
+JIRA_DUP_SKIP_NAME="jira-duplicate-closed-target-skips-close"
+JIRA_DUP_SKIP_DIR="${TMPDIR}/run-${JIRA_DUP_SKIP_NAME}"
+mkdir -p "${JIRA_DUP_SKIP_DIR}/iteration-1/output"
+echo '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"This appears to be a duplicate of TESTPROJ-10."}' \
+  > "${JIRA_DUP_SKIP_DIR}/iteration-1/output/agent-result.json"
+: > "${JIRA_CURL_LOG}"
+: > "${GH_LOG}"
+JIRA_DUP_SKIP_EXIT=0
+(cd "${JIRA_DUP_SKIP_DIR}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || JIRA_DUP_SKIP_EXIT=$?
+if [[ ${JIRA_DUP_SKIP_EXIT} -ne 0 ]]; then
+  echo "FAIL: ${JIRA_DUP_SKIP_NAME} — exit code ${JIRA_DUP_SKIP_EXIT}"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- '{"transition":{"id":"31"}}' "${JIRA_CURL_LOG}"; then
+  echo "FAIL: ${JIRA_DUP_SKIP_NAME} — issue was transitioned despite closed duplicate_of target"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: ${JIRA_DUP_SKIP_NAME}"
+fi
+rm -f "${MOCK_CLOSED_ISSUES}"
 
 # Jira not-planned action transitions the issue via JIRA_NOT_PLANNED_TRANSITION.
 run_jira_test "jira-not-planned-transitions" \
@@ -2275,6 +2396,10 @@ if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
 fi
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+  exit 0
+fi
+if [[ "${URL}" =~ /issue/([A-Z]+-[0-9]+)\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"fields":{"status":{"statusCategory":{"key":"new"}}}}'
   exit 0
 fi
 exit 0

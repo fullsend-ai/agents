@@ -113,6 +113,17 @@ tracker_post_sticky_comment() {
 
 # --- Issues ---
 
+# Return 0 if issue $1 is currently open, 1 otherwise (closed, missing, or
+# unreadable). Used by the duplicate-close guard so a race between two
+# triage runs cannot close both issues as duplicates of each other.
+tracker_issue_is_open() {
+  local number="$1"
+  local resp state
+  resp=$(gh api "repos/${REPO}/issues/${number}" 2>/dev/null) || return 1
+  state=$(printf '%s' "${resp}" | jq -r '.state // empty') || return 1
+  [[ "${state}" == "open" ]]
+}
+
 tracker_close_issue() {
   local reason="$1"
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "${reason}"

@@ -299,6 +299,17 @@ tracker_post_sticky_comment() {
 
 # --- Issues ---
 
+# Return 0 if issue $1 is not in the Jira "done" status category, 1 otherwise
+# (done, missing, or unreadable). Used by the duplicate-close guard so a race
+# between two triage runs cannot close both issues as duplicates of each other.
+tracker_issue_is_open() {
+  local key="$1"
+  local resp category
+  resp=$(_jira_api GET "/issue/${key}?fields=status" 2>/dev/null) || return 1
+  category=$(printf '%s' "${resp}" | jq -r '.fields.status.statusCategory.key // empty') || return 1
+  [[ -n "${category}" && "${category}" != "done" ]]
+}
+
 tracker_close_issue() {
   local reason="$1"
   local transition_var

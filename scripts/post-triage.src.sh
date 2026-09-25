@@ -97,6 +97,9 @@ is_control_label() {
 
 # --- Action-specific validation and control labels ---
 
+# Set to 1 when a duplicate_of target is not open, so the post-action close is skipped.
+SKIP_DUPLICATE_CLOSE=""
+
 # Deferred label: when set, applied after label_actions so it fires last.
 # This prevents the ready-to-code webhook event from being superseded by
 # subsequent label events in the dispatch concurrency group (see #1752).
@@ -174,9 +177,23 @@ case "${ACTION}" in
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
-    tracker_remove_label "blocked"
-    tracker_remove_label "pr-open"
-    tracker_add_label "duplicate"
+    # Guard against a mutual-duplicate race: two near-simultaneous triage
+    # runs each naming the other as duplicate_of. If the canonical target is
+    # already closed (including as a duplicate of this issue), do not close
+    # this one — leave it open, drop the duplicate label, and flag re-triage.
+    if ! tracker_issue_is_open "${DUPLICATE_OF}"; then
+      echo "::warning::duplicate_of #$(_gha_sanitize "${DUPLICATE_OF}") is not open — leaving #$(_gha_sanitize "${ISSUE_NUMBER}") open for re-triage"
+      tracker_remove_label "duplicate"
+      SKIP_DUPLICATE_CLOSE=1
+      COMMENT="${COMMENT}
+
+---
+**Note:** Did not close this issue as a duplicate because #${DUPLICATE_OF} is not currently open (it may itself have been closed as a duplicate). Leaving this issue open for re-triage."
+    else
+      tracker_remove_label "blocked"
+      tracker_remove_label "pr-open"
+      tracker_add_label "duplicate"
+    fi
     ;;
 
   prerequisites)
@@ -782,7 +799,7 @@ fi
 
 # --- Post-action: close issues ---
 
-if [[ "${ACTION}" == "duplicate" ]]; then
+if [[ "${ACTION}" == "duplicate" && "${SKIP_DUPLICATE_CLOSE:-}" != "1" ]]; then
   tracker_close_issue "duplicate"
 fi
 

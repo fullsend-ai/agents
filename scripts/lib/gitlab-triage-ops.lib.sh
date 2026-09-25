@@ -272,6 +272,17 @@ ${body}"
 
 # --- Issues ---
 
+# Return 0 if issue $1 is currently opened, 1 otherwise (closed, missing, or
+# unreadable). Used by the duplicate-close guard so a race between two
+# triage runs cannot close both issues as duplicates of each other.
+tracker_issue_is_open() {
+  local number="$1"
+  local resp state
+  resp=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${number}" 2>/dev/null) || return 1
+  state=$(printf '%s' "${resp}" | jq -r '.state // empty') || return 1
+  [[ "${state}" == "opened" ]]
+}
+
 tracker_close_issue() {
   local _reason="$1"  # GitLab has no close-reason API; accepted for interface parity
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \

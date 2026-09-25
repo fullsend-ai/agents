@@ -49,6 +49,10 @@ whether to skip dispatching a *new* implementation.)
 
 Compare issue titles and descriptions for semantic overlap. An issue is a duplicate if it describes the same root problem, even if the symptoms or wording differ.
 
+**Canonical issue (HARD CONSTRAINT):** When two issues describe the same problem, the canonical (surviving) issue is the one with the lower issue number / earliest `createdAt`. Never mark an older issue as a duplicate of a newer one. If you are triaging the newer issue, emit `action: "duplicate"` with `duplicate_of` pointing at the older open issue. If you are triaging the older issue, it is the canonical tracker — do not close it as a duplicate of a later filing; choose another action (`sufficient`, `in-progress`, etc.) as appropriate for the older issue itself.
+
+Search **open** issues only for the canonical target. Do not mark this issue as a duplicate of a closed issue (including one already closed as a duplicate of this issue).
+
 Also look for **blocking relationships** — open issues or PRs/MRs that must be resolved before this issue can make progress. Common patterns:
 
 - The issue describes a feature that depends on infrastructure or API changes tracked in another issue
@@ -276,10 +280,13 @@ Information is missing that would change the triage outcome. Ask ONE focused, sp
 
 ### Action: `duplicate`
 
-This issue describes the same problem as an existing open issue.
+This issue describes the same problem as an existing **open** issue with a
+**lower** issue number (earlier `createdAt`). `duplicate_of` must identify
+that older open issue — never a newer issue, and never a closed issue.
 
 On GitHub/GitLab, `duplicate_of` is the issue number (integer). On Jira, it
-is the full issue key (string, e.g. `"PROJ-45"`).
+is the full issue key (string, e.g. `"PROJ-45"`). Prefer the numerically
+lower key (earlier `createdAt`) when two Jira issues match.
 
 ```json
 {

@@ -159,6 +159,17 @@ tracker_post_sticky_comment() {
 
 # --- Issues ---
 
+# Return 0 if issue $1 is currently open, 1 otherwise (closed, missing, or
+# unreadable). Used by the duplicate-close guard so a race between two
+# triage runs cannot close both issues as duplicates of each other.
+tracker_issue_is_open() {
+  local number="$1"
+  local resp state
+  resp=$(gh api "repos/${REPO}/issues/${number}" 2>/dev/null) || return 1
+  state=$(printf '%s' "${resp}" | jq -r '.state // empty') || return 1
+  [[ "${state}" == "open" ]]
+}
+
 tracker_close_issue() {
   local reason="$1"
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "${reason}"
@@ -493,6 +504,17 @@ ${body}"
 
 # --- Issues ---
 
+# Return 0 if issue $1 is currently opened, 1 otherwise (closed, missing, or
+# unreadable). Used by the duplicate-close guard so a race between two
+# triage runs cannot close both issues as duplicates of each other.
+tracker_issue_is_open() {
+  local number="$1"
+  local resp state
+  resp=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${number}" 2>/dev/null) || return 1
+  state=$(printf '%s' "${resp}" | jq -r '.state // empty') || return 1
+  [[ "${state}" == "opened" ]]
+}
+
 tracker_close_issue() {
   local _reason="$1"  # GitLab has no close-reason API; accepted for interface parity
   if ! _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
@@ -821,6 +843,17 @@ tracker_post_sticky_comment() {
 
 # --- Issues ---
 
+# Return 0 if issue $1 is not in the Jira "done" status category, 1 otherwise
+# (done, missing, or unreadable). Used by the duplicate-close guard so a race
+# between two triage runs cannot close both issues as duplicates of each other.
+tracker_issue_is_open() {
+  local key="$1"
+  local resp category
+  resp=$(_jira_api GET "/issue/${key}?fields=status" 2>/dev/null) || return 1
+  category=$(printf '%s' "${resp}" | jq -r '.fields.status.statusCategory.key // empty') || return 1
+  [[ -n "${category}" && "${category}" != "done" ]]
+}
+
 tracker_close_issue() {
   local reason="$1"
   local transition_var
@@ -1049,6 +1082,9 @@ is_control_label() {
 
 # --- Action-specific validation and control labels ---
 
+# Set to 1 when a duplicate_of target is not open, so the post-action close is skipped.
+SKIP_DUPLICATE_CLOSE=""
+
 # Deferred label: when set, applied after label_actions so it fires last.
 # This prevents the ready-to-code webhook event from being superseded by
 # subsequent label events in the dispatch concurrency group (see #1752).
@@ -1126,9 +1162,23 @@ case "${ACTION}" in
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
-    tracker_remove_label "blocked"
-    tracker_remove_label "pr-open"
-    tracker_add_label "duplicate"
+    # Guard against a mutual-duplicate race: two near-simultaneous triage
+    # runs each naming the other as duplicate_of. If the canonical target is
+    # already closed (including as a duplicate of this issue), do not close
+    # this one — leave it open, drop the duplicate label, and flag re-triage.
+    if ! tracker_issue_is_open "${DUPLICATE_OF}"; then
+      echo "::warning::duplicate_of #$(_gha_sanitize "${DUPLICATE_OF}") is not open — leaving #$(_gha_sanitize "${ISSUE_NUMBER}") open for re-triage"
+      tracker_remove_label "duplicate"
+      SKIP_DUPLICATE_CLOSE=1
+      COMMENT="${COMMENT}
+
+---
+**Note:** Did not close this issue as a duplicate because #${DUPLICATE_OF} is not currently open (it may itself have been closed as a duplicate). Leaving this issue open for re-triage."
+    else
+      tracker_remove_label "blocked"
+      tracker_remove_label "pr-open"
+      tracker_add_label "duplicate"
+    fi
     ;;
 
   prerequisites)
@@ -1734,7 +1784,7 @@ fi
 
 # --- Post-action: close issues ---
 
-if [[ "${ACTION}" == "duplicate" ]]; then
+if [[ "${ACTION}" == "duplicate" && "${SKIP_DUPLICATE_CLOSE:-}" != "1" ]]; then
   tracker_close_issue "duplicate"
 fi
 
