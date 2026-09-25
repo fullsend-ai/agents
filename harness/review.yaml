@@ -17,6 +17,7 @@ openshell:
     - profiles/fullsend-vertex-ai.yaml
 providers:
   - providers/vertex-ai.yaml
+  - openai
 
 role: review
 slug: fullsend-ai-review

@@ -16,6 +16,7 @@ openshell:
     - profiles/fullsend-vertex-ai.yaml
 providers:
   - providers/vertex-ai.yaml
+  - openai
 
 role: triage
 slug: fullsend-ai-triage
