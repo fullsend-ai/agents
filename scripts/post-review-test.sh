@@ -434,6 +434,31 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
 # Mock gh: handle specific subcommands, log everything else.
 
+# gh api graphql — review-thread fetch and resolveReviewThread mutation.
+# MOCK_REVIEW_THREADS_JSON overrides the default empty-thread list.
+# MOCK_REVIEW_THREADS_FAIL / MOCK_RESOLVE_THREAD_FAIL simulate errors.
+if [[ "\$1" == "api" && "\$2" == "graphql" ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  if [[ "\$*" == *"resolveReviewThread"* ]]; then
+    if [[ -n "\${MOCK_RESOLVE_THREAD_FAIL:-}" ]]; then
+      echo '{"errors":[{"message":"forbidden"}]}' >&2
+      exit 1
+    fi
+    echo '{"data":{"resolveReviewThread":{"thread":{"isResolved":true}}}}'
+    exit 0
+  fi
+  if [[ -n "\${MOCK_REVIEW_THREADS_FAIL:-}" ]]; then
+    echo "graphql failure" >&2
+    exit 1
+  fi
+  if [[ -n "\${MOCK_REVIEW_THREADS_JSON:-}" ]]; then
+    echo "\${MOCK_REVIEW_THREADS_JSON}"
+    exit 0
+  fi
+  echo '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}}'
+  exit 0
+fi
+
 # gh pr view ... --json state,isDraft → JSON with both fields.
 # MOCK_PR_IS_DRAFT can be set to "true" to simulate a draft PR.
 if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* ]]; then
@@ -2008,6 +2033,273 @@ run_label_test "risk-invalid-score-label-still-applied" \
 run_label_test "risk-stale-label-removal" \
   "${RISK_HIGH_RESULT}" \
   "--remove-label risk/low"
+
+# ---------------------------------------------------------------------------
+# Outdated review-thread resolution (#1413)
+# ---------------------------------------------------------------------------
+
+# shellcheck source=lib/github-review-ops.lib.sh
+source "${SCRIPT_DIR}/lib/github-review-ops.lib.sh"
+
+make_thread() {
+  jq -nc \
+    --arg id "$1" \
+    --argjson resolved "$2" \
+    --argjson outdated "$3" \
+    --argjson can_resolve "$4" \
+    --argjson comments "$5" \
+    --argjson has_next "${6:-false}" \
+    '{
+      id: $id,
+      isResolved: $resolved,
+      isOutdated: $outdated,
+      viewerCanResolve: $can_resolve,
+      comments: {pageInfo: {hasNextPage: $has_next}, nodes: $comments}
+    }'
+}
+
+wrap_threads() {
+  jq -nc --argjson nodes "$1" \
+    '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:$nodes}}}}}'
+}
+
+run_select_test() {
+  local test_name="$1"
+  local input_json="$2"
+  local expected="$3"
+
+  local actual
+  actual="$(printf '%s' "${input_json}" | _select_outdated_review_thread_ids)" || actual="__jq_failed__"
+
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+AGENT_OUTDATED='[{"outdated":true,"viewerDidAuthor":true}]'
+AGENT_CURRENT='[{"outdated":false,"viewerDidAuthor":true}]'
+HUMAN_OUTDATED='[{"outdated":true,"viewerDidAuthor":false}]'
+MIXED_AUTHORS='[{"outdated":true,"viewerDidAuthor":true},{"outdated":true,"viewerDidAuthor":false}]'
+MIXED_OUTDATED='[{"outdated":true,"viewerDidAuthor":true},{"outdated":false,"viewerDidAuthor":true}]'
+NO_COMMENTS='[]'
+
+ELIGIBLE=$(make_thread PRRT_eligible false true true "${AGENT_OUTDATED}")
+CURRENT_THREAD=$(make_thread PRRT_current false false true "${AGENT_OUTDATED}")
+CURRENT_COMMENT=$(make_thread PRRT_curcomment false true true "${AGENT_CURRENT}")
+RESOLVED=$(make_thread PRRT_resolved true true true "${AGENT_OUTDATED}")
+NO_PERM=$(make_thread PRRT_noperm false true false "${AGENT_OUTDATED}")
+HUMAN=$(make_thread PRRT_human false true true "${HUMAN_OUTDATED}")
+MIXED=$(make_thread PRRT_mixed false true true "${MIXED_AUTHORS}")
+PARTIAL=$(make_thread PRRT_partial false true true "${MIXED_OUTDATED}")
+EMPTY=$(make_thread PRRT_empty false true true "${NO_COMMENTS}")
+INCOMPLETE=$(make_thread PRRT_incomplete false true true "${AGENT_OUTDATED}" true)
+
+run_select_test "select-outdated-unresolved-ours" \
+  "$(jq -nc --argjson t "${ELIGIBLE}" '[$t]')" \
+  "PRRT_eligible"
+
+run_select_test "select-skips-current-thread" \
+  "$(jq -nc --argjson t "${CURRENT_THREAD}" '[$t]')" \
+  ""
+
+run_select_test "select-skips-current-comment" \
+  "$(jq -nc --argjson t "${CURRENT_COMMENT}" '[$t]')" \
+  ""
+
+run_select_test "select-skips-already-resolved" \
+  "$(jq -nc --argjson t "${RESOLVED}" '[$t]')" \
+  ""
+
+run_select_test "select-skips-no-permission" \
+  "$(jq -nc --argjson t "${NO_PERM}" '[$t]')" \
+  ""
+
+run_select_test "select-skips-human-comment" \
+  "$(jq -nc --argjson t "${HUMAN}" '[$t]')" \
+  ""
+
+run_select_test "select-skips-mixed-authors" \
+  "$(jq -nc --argjson t "${MIXED}" '[$t]')" \
+  ""
+
+run_select_test "select-skips-mixed-outdated" \
+  "$(jq -nc --argjson t "${PARTIAL}" '[$t]')" \
+  ""
+
+run_select_test "select-skips-empty-comments" \
+  "$(jq -nc --argjson t "${EMPTY}" '[$t]')" \
+  ""
+
+run_select_test "select-skips-incomplete-comment-page" \
+  "$(jq -nc --argjson t "${INCOMPLETE}" '[$t]')" \
+  ""
+
+run_select_test "select-matrix-only-eligible" \
+  "$(jq -nc --argjson a "${ELIGIBLE}" --argjson b "${RESOLVED}" --argjson c "${HUMAN}" '[$a,$b,$c]')" \
+  "PRRT_eligible"
+
+COMMENT_RESULT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123","body":"notes"}'
+
+run_outdated_integration() {
+  local test_name="$1"
+  local threads_envelope="$2"
+  local check_type="$3"
+  local pattern="$4"
+  local fetch_fail="${5:-}"
+  local resolve_fail="${6:-}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${COMMENT_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    if [[ -n "${threads_envelope}" ]]; then
+      export MOCK_REVIEW_THREADS_JSON="${threads_envelope}"
+    fi
+    if [[ -n "${fetch_fail}" ]]; then
+      export MOCK_REVIEW_THREADS_FAIL="${fetch_fail}"
+    fi
+    if [[ -n "${resolve_fail}" ]]; then
+      export MOCK_RESOLVE_THREAD_FAIL="${resolve_fail}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  case "${check_type}" in
+    stdout)
+      if ! grep -qF -- "${pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+        echo "FAIL: ${test_name} — expected stdout '${pattern}' not found"
+        echo "Actual stdout:"
+        cat "${TMPDIR}/stdout-${test_name}.log"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+    gh-call)
+      if ! grep -qF -- "${pattern}" "${GH_LOG}"; then
+        echo "FAIL: ${test_name} — expected gh call '${pattern}' not found"
+        echo "Actual calls:"
+        cat "${GH_LOG}"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+    no-gh-call)
+      if grep -qF -- "${pattern}" "${GH_LOG}"; then
+        echo "FAIL: ${test_name} — forbidden gh call '${pattern}' was found"
+        echo "Actual calls:"
+        cat "${GH_LOG}"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+    *)
+      echo "FAIL: ${test_name} — unknown check_type '${check_type}'"
+      FAILURES=$((FAILURES + 1))
+      return
+      ;;
+  esac
+
+  echo "PASS: ${test_name}"
+}
+
+ELIGIBLE_ENVELOPE=$(wrap_threads "$(jq -nc --argjson t "${ELIGIBLE}" '[$t]')")
+RESOLVED_ENVELOPE=$(wrap_threads "$(jq -nc --argjson t "${RESOLVED}" '[$t]')")
+HUMAN_ENVELOPE=$(wrap_threads "$(jq -nc --argjson t "${HUMAN}" '[$t]')")
+CURRENT_ENVELOPE=$(wrap_threads "$(jq -nc --argjson t "${CURRENT_THREAD}" '[$t]')")
+NOPERM_ENVELOPE=$(wrap_threads "$(jq -nc --argjson t "${NO_PERM}" '[$t]')")
+
+run_outdated_integration "outdated-thread-resolved" \
+  "${ELIGIBLE_ENVELOPE}" gh-call "resolveReviewThread"
+
+run_outdated_integration "outdated-thread-resolved-log" \
+  "${ELIGIBLE_ENVELOPE}" stdout "Resolved 1 outdated review-agent thread(s)"
+
+run_outdated_integration "already-resolved-no-mutation" \
+  "${RESOLVED_ENVELOPE}" no-gh-call "resolveReviewThread"
+
+run_outdated_integration "human-comment-no-mutation" \
+  "${HUMAN_ENVELOPE}" no-gh-call "resolveReviewThread"
+
+run_outdated_integration "current-thread-no-mutation" \
+  "${CURRENT_ENVELOPE}" no-gh-call "resolveReviewThread"
+
+run_outdated_integration "no-permission-no-mutation" \
+  "${NOPERM_ENVELOPE}" no-gh-call "resolveReviewThread"
+
+run_outdated_integration "threads-fetch-fail-nonfatal" \
+  "" stdout "skipping outdated-thread resolution" "1"
+
+run_outdated_integration "threads-fetch-fail-still-posts" \
+  "" gh-call "fullsend post-review" "1"
+
+run_outdated_integration "resolve-fail-nonfatal" \
+  "${ELIGIBLE_ENVELOPE}" stdout "Failed to resolve review thread" "" "1"
+
+run_outdated_integration "resolve-fail-still-posts" \
+  "${ELIGIBLE_ENVELOPE}" gh-call "fullsend post-review" "" "1"
+
+run_gitlab_outdated_noop_test() {
+  local test_name="gitlab-outdated-threads-noop"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo '{"action":"comment","pr_number":99,"repo":"test-group/test-project","head_sha":"abc123","body":"notes"}' \
+    > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export CI_SERVER_HOST="gitlab.com"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -qF -- "resolveReviewThread" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — GitLab path called resolveReviewThread"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_gitlab_outdated_noop_test
 
 # --- Summary ---
 

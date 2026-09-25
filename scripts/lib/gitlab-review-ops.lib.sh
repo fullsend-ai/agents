@@ -163,6 +163,12 @@ forge_get_recent_redispatch_comments() {
      | length'
 }
 
+# GitHub-only: GitLab discussions have no isOutdated equivalent in this
+# issue's scope. No-op so post-review can call this unconditionally.
+forge_resolve_outdated_review_threads() {
+  return 0
+}
+
 # --- Labels ---
 
 forge_add_label() {

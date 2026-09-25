@@ -69,6 +69,12 @@ The \`/fs-review\` command only reviews open PRs/MRs.
   exit 0
 fi
 
+# Resolve still-open GitHub review threads whose only comments are
+# outdated inline comments authored by the review agent. A later push
+# marks those threads isOutdated; leaving them unresolved keeps them
+# in the PR's unresolved-review state. Best-effort (GitLab no-op).
+forge_resolve_outdated_review_threads
+
 # Find the agent result — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
 # on the runner — not by the sandbox or the agent. No containment check
