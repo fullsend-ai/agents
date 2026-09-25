@@ -529,10 +529,27 @@ fi
 # Label logic is mirrored in post-review-test.sh — update both.
 # ---------------------------------------------------------------------------
 
+# When approve is downgraded due to protected paths, a human may already
+# have approved the current HEAD. If the forge reports the PR as approved
+# AND an authorized (write-level, non-bot, non-author) human approved this
+# SHA, the protected-path requirement is already satisfied. Fail closed on
+# any API error. Drafts never take this path.
+HAS_HUMAN_APPROVAL=false
+if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "true" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+  echo "Protected-path downgrade — checking for existing authorized human approval"
+  if forge_has_authorized_human_approval; then
+    HAS_HUMAN_APPROVAL=true
+    echo "Authorized human approval on current HEAD satisfies protected-path requirement"
+  else
+    echo "No authorized human approval on current HEAD — requires-manual-review"
+  fi
+fi
+
 # Determine the target outcome label before mutating anything so we can
 # skip no-op remove/re-add cycles that generate timeline noise.
 OUTCOME_LABEL=""
-if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+if [ "${ACTION}" = "approve" ] && [ "${PR_IS_DRAFT}" != "true" ] && \
+   { [ "${DOWNGRADED}" = "false" ] || [ "${HAS_HUMAN_APPROVAL}" = "true" ]; }; then
   OUTCOME_LABEL="ready-for-merge"
 elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
      [ "${ACTION}" = "comment" ]; then
@@ -551,7 +568,11 @@ for stale_label in "ready-for-merge" "requires-manual-review" "rejected"; do
 done
 
 if [ "${OUTCOME_LABEL}" = "ready-for-merge" ]; then
-  echo "Approve disposition — applying ready-for-merge label"
+  if [ "${HAS_HUMAN_APPROVAL}" = "true" ]; then
+    echo "Protected-path requirement satisfied by authorized human approval — applying ready-for-merge"
+  else
+    echo "Approve disposition — applying ready-for-merge label"
+  fi
   forge_create_label "ready-for-merge" "All reviewers approved — ready to merge" "0E8A16"
   forge_add_label_edit "ready-for-merge"
 elif [ "${OUTCOME_LABEL}" = "requires-manual-review" ]; then

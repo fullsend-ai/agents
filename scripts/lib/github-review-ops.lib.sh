@@ -145,3 +145,76 @@ forge_add_label_edit() {
 forge_list_repo_labels() {
   GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }
+
+# Returns 0 if an authorized human has already approved the current HEAD,
+# 1 otherwise. Fail-closed on any API error or incomplete signal.
+#
+# Two independent gates, both required (lessons from PR #305):
+#   1. GitHub's reviewDecision is APPROVED — handles latest-per-reviewer,
+#      outstanding CHANGES_REQUESTED, CODEOWNERS, and required reviews.
+#   2. At least one APPROVED review on the current HEAD SHA comes from a
+#      non-bot, non-author User with write/maintain/admin permission.
+#      author_association is not used: MEMBER does not imply write access
+#      when the org default_repository_permission is read.
+forge_has_authorized_human_approval() {
+  local pr_json
+  pr_json=$(GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json reviewDecision,headRefOid,author 2>/dev/null) || return 1
+  [[ -n "${pr_json}" ]] || return 1
+
+  local review_decision head_sha author_login
+  review_decision=$(printf '%s' "${pr_json}" | jq -r '.reviewDecision // empty') || return 1
+  head_sha=$(printf '%s' "${pr_json}" | jq -r '.headRefOid // empty') || return 1
+  author_login=$(printf '%s' "${pr_json}" | jq -r '.author.login // empty') || return 1
+
+  if [[ "${review_decision}" != "APPROVED" || -z "${head_sha}" ]]; then
+    return 1
+  fi
+
+  local reviews
+  reviews=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate 2>/dev/null) || return 1
+
+  local candidates
+  candidates=$(printf '%s' "${reviews}" | jq -r -s --arg sha "${head_sha}" --arg author "${author_login}" '
+    add // []
+    | map(select(.user != null and (.user.login // "") != ""))
+    | [.[]
+      | select(
+          .state == "APPROVED"
+          and .commit_id == $sha
+          and .user.login != $author
+          and (.user.type // "") == "User"
+          and ((.user.login | endswith("[bot]")) | not)
+        )
+      | .user.login]
+    | unique[]
+  ') || return 1
+
+  [[ -n "${candidates}" ]] || return 1
+
+  # Re-fetch HEAD SHA immediately before trusting the match. If the call
+  # fails or the SHA moved, fall closed — do not reuse the earlier snapshot.
+  local current_sha
+  current_sha=$(GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json headRefOid --jq '.headRefOid' 2>/dev/null) || return 1
+  [[ -n "${current_sha}" ]] || return 1
+  [[ "${current_sha}" == "${head_sha}" ]] || return 1
+
+  local login encoded perm_json role
+  while IFS= read -r login; do
+    [[ -n "${login}" ]] || continue
+    encoded=$(printf '%s' "${login}" | jq -sRr @uri) || continue
+    perm_json=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+      "repos/${REPO}/collaborators/${encoded}/permission" 2>/dev/null) || continue
+    role=$(printf '%s' "${perm_json}" | jq -r '.role_name // empty') || continue
+    case "${role}" in
+      admin|maintain|write)
+        echo "Authorized human approval on HEAD from ${login} (role=${role})"
+        return 0
+        ;;
+    esac
+  done <<< "${candidates}"
+
+  return 1
+}
