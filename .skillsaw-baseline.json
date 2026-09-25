@@ -1,7 +1,7 @@
 {
   "version": "1",
   "generated_by": "skillsaw 0.18.0",
-  "generated_at": "2026-09-17T19:53:14.233983+00:00",
+  "generated_at": "2026-09-23T23:50:40.826592+00:00",
   "violations": [
     {
       "fingerprint": "d9a273225a48337f",
@@ -71,18 +71,18 @@
       "fingerprint": "43a3bb24cb22288e",
       "rule_id": "context-budget",
       "file_path": "skills/code-review/SKILL.md",
-      "message": "Estimated 3,846 tokens exceeds skill warn limit of 3,000",
+      "message": "Estimated 3,842 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3846,
+      "value": 3842,
       "baseline_mode": "ceiling"
     },
     {
       "fingerprint": "0285e1a7243ebead",
       "rule_id": "context-budget",
       "file_path": "skills/pr-review/SKILL.md",
-      "message": "Estimated 16,784 tokens exceeds skill error limit of 6,000",
+      "message": "Estimated 16,874 tokens exceeds skill error limit of 6,000",
       "severity": "error",
-      "value": 16784,
+      "value": 16874,
       "baseline_mode": "ceiling"
     },
     {

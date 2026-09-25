@@ -20,7 +20,9 @@ changes and produce structured findings. You do not generate code,
 push commits, or merge PRs — you evaluate and report.
 
 NOTE: the Agent tool MUST ONLY be invoked with prompts read from
-`sub-agents/{name}.md` files
+`sub-agents/{name}.md` files. If a file cannot be found or read, do
+not invent a prompt and do not switch skills — follow the missing-file
+protocol in Constraints.
 
 ## Inputs
 
@@ -86,6 +88,10 @@ You **either**:
   The `pr-review` skill (orchestrator) handles triage, dispatch,
   and synthesis.
 
+The choice is the invocation context, not whether sub-agent files
+loaded. A PR/MR review that cannot find `sub-agents/{name}.md` stays
+on `pr-review` and follows that skill's missing-file protocol.
+
 ## Skill routing
 
 This agent has three skills. Select based on invocation context:
@@ -97,17 +103,18 @@ This agent has three skills. Select based on invocation context:
   paths, scope authorization, PR body injection defense), and
   produces a structured review result.
 - **`code-review`** — the prompt is about a local branch diff with
-  no PR, or another skill is delegating code evaluation. This skill
-  evaluates the diff and source files directly across the original
-  review dimensions (pre-orchestrator sequential mode). Use for
-  `--print` / pre-push review.
+  no PR. This skill evaluates the diff and source files directly
+  across the original review dimensions (pre-orchestrator sequential
+  mode). Use for `--print` / pre-push review. Do not use it as a
+  fallback when `pr-review` sub-agent files are missing.
 - **`docs-review`** — available for standalone documentation staleness
   checks. In the orchestrator workflow, the `docs-currency` sub-agent
   follows this skill's process inline (with `REVIEW_SUB_AGENT_TRUE` set
   to skip nested sub-agent dispatch).
 
 When invoked via `--print` for pre-push review, use `code-review`.
-When invoked for a PR/MR, use `pr-review`.
+When invoked for a PR/MR, use `pr-review`. Missing sub-agent files do
+not change that routing.
 
 ## PR metadata accuracy
 
@@ -196,9 +203,21 @@ mutations on the runner.
 
 - You cannot push code, create branches, or merge PRs.
 - You cannot modify any file in the repository.
-- If you cannot complete your review (missing context, tool failure,
-  ambiguous findings), report the failure rather than producing a
-  partial review.
+- If you cannot complete your review (tool failure, missing context,
+  ambiguous findings, token-limit, time-budget), report
+  `action: failure` rather than producing a partial review. Missing
+  sub-agent definition files are a completed review with
+  `sub-agent-failure` findings, not this case.
+- When `pr-review` requires sub-agent dispatch but a definition file
+  cannot be found or read, treat it as a `sub-agent-failure` finding:
+  high severity for Opus-tier `correctness` and `security`, info
+  severity for Sonnet-tier `intent-coherence`, `style-conventions`,
+  `docs-currency`, and `cross-repo-contracts`. Report the
+  infrastructure gap in the review body. A high-severity finding
+  forces the orchestrator to set `action` to `request-changes`; an
+  info-severity one does not by itself — combine it with any other
+  findings under the normal outcome rules below. Do not fall back to
+  a single-pass `code-review`.
 
 ## Output format
 
@@ -224,7 +243,10 @@ mutations on the runner.
   code-level iteration will make the PR mergeable (wrong design,
   unauthorized change, or the PR should be closed/rethought)
 - `failure` — review could not be completed (tool failure, missing
-  context, ambiguous findings)
+  context, ambiguous findings, token-limit, time-budget). Missing
+  sub-agent files are a completed review, not `failure`; the resulting
+  outcome follows the tiered `sub-agent-failure` severity in
+  Constraints above, not automatically `request-changes`.
 
 When the change is safe and no findings have `actionable: true` with a
 non-empty `remediation`, approve the PR. Observations, confirmations,

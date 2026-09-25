@@ -36,7 +36,7 @@ forge-specific review skill. The orchestrator is the sole producer of
 ## Sub-agent roster
 
 Sub-agent discovery: The sub-agents' definitions are in `sub-agents/`
-relative to this file.
+relative to this file. Missing files: `references/missing-sub-agents.md`.
 
 | Sub-agent              | Dispatch   | Dimensions                                                                                                              |
 |------------------------|------------|-------------------------------------------------------------------------------------------------------------------------|
@@ -353,8 +353,9 @@ complex PR that triggers all conditions legitimately needs all 6.
    tool calls) regardless of change size. Both assignments override the
    classification-based constraint from step 3e.
 4. **Challenger** — no re-review special case: step 6d dispatches it
-   only when the **current** review's steps 6a–6c produce findings;
-   prior findings alone do not qualify it.
+   only when the **current** review's steps 6a–6c produce findings
+   excluding `category: "sub-agent-failure"`; prior findings alone do
+   not qualify it.
 
 This reuses the existing scope constraint mechanism from step 3e — no
 new infrastructure needed. When `PRIOR_REVIEW_PROVENANCE` is not
@@ -376,8 +377,10 @@ normal scope (current behavior preserved).
 | Re-review after fix (prior findings in security only)    | correctness (full scope), security (normal scope), style-conventions (trivial scope), challenger\* |
 
 \*Conditional — step 6d dispatches the challenger only when the
-**current** review's steps 6a–6c produce findings; a re-review whose
-dispatched agents come back clean skips it like any other clean run.
+**current** review's steps 6a–6c produce findings excluding
+`category: "sub-agent-failure"`; a re-review whose dispatched agents
+come back clean (or come back only with `sub-agent-failure` findings)
+skips it like any other clean run.
 
 #### 3c-1. Security-critical file triage (large PRs)
 
@@ -728,6 +731,8 @@ prioritization.
 
 ### 4. Dispatch sub-agents
 
+Pre-flight, before dispatch: `references/missing-sub-agents.md`.
+
 For each selected **dimension** sub-agent (from step 3c — excludes
 `security-triage`, which runs in step 3c-1, and `challenger`, which
 runs in step 6d; `risk-assessment`, composed in 3c-2, is dispatched
@@ -855,8 +860,8 @@ of findings in the standard format:
 ```
 
 If a sub-agent fails to return findings (timeout, error, empty
-response), record a finding noting the gap. The severity depends on
-the sub-agent's tier:
+response, missing file — step 4's pre-flight), record a finding
+noting the gap. The severity depends on the sub-agent's tier:
 
 - **Opus-tier sub-agents** (`correctness`, `security`): record a
   **high**-severity finding. These dimensions are safety-critical —
@@ -939,29 +944,29 @@ and an auth bypass on the same line are two distinct findings.
 
 #### 6d. Challenger pass (dedicated sub-agent)
 
-After steps 6a–6c produce a merged finding set — and only if that set
-is non-empty (see the skip rule below) — dispatch the `challenger`
-sub-agent to adversarially challenge the findings with fresh context.
+After steps 6a–6c produce a merged finding set — and only if that set,
+**excluding `category: "sub-agent-failure"` findings**, is non-empty
+(see the skip rule below) — dispatch the `challenger` sub-agent to
+adversarially challenge the findings with fresh context.
 The challenger has not seen the orchestrator's synthesis — it receives
 only the raw findings and the diff, preserving context isolation.
 
 **Skip when there is nothing to adjudicate.** If the merged finding set
-from steps 6a–6c is empty, skip the challenger dispatch — and only the
-dispatch. Continue through steps 6e, 6e-1, and 6f as usual: the
-orchestrator-only checks (6e) run after the challenger and can add
-findings of their own (protected paths, scope authorization, PR
-metadata), so 6f's "no findings → approve" outcome applies only when
-the set is still empty after them.
-A dimension dispatch failure cannot produce this empty set: step 5
-records a `sub-agent-failure` finding for it (high for Opus-tier,
-info for Sonnet-tier), so a failed dimension keeps the set non-empty
-and the challenger still runs. An empty set means every dispatched
-dimension came back clean, and the challenger's job is to adjudicate
-findings it is given, not manufacture them from nothing. This rule
-exists for determinism: it codifies the skip the orchestrator already
-makes on clean runs, so the choice is no longer a per-run judgment
-call. Whether a set holding only `info` findings should skip as well is
-an open question; as written it does not.
+from steps 6a–6c, **excluding `category: "sub-agent-failure"` findings**,
+is empty, skip the challenger dispatch. This covers the case where only
+`sub-agent-failure` findings exist too: the challenger never adjudicates
+those (see Part 3), so carry them forward unchanged. Continue through
+6e, 6e-1, and 6f as usual: 6f's "no findings → approve" applies only
+when the set is still empty after 6e's own checks (protected paths,
+scope authorization, PR metadata).
+A dimension dispatch failure alone does not trigger a dispatch, since
+its `sub-agent-failure` finding is excluded from the challenger's input.
+An empty filtered set means every dispatched dimension came back clean;
+the challenger adjudicates findings, it doesn't manufacture them. This
+rule exists for determinism, codifying the skip the orchestrator already
+makes on clean runs so it's no longer a per-run judgment call. Whether a
+set holding only `info` findings should skip as well is an open
+question; as written it does not.
 (This does forfeit the challenger's secondary, not-owned allowance —
 see `sub-agents/challenger.md`'s "Do not own" section — to flag a
 genuine issue it happens to notice while checking an empty set against
@@ -994,14 +999,16 @@ budget section), skip the challenger: keep the merged finding set from
    are reviewing PR" template, and include everything else verbatim
 
    **Part 3 — Context package:** the merged finding set from steps
-   6a–6c (as a JSON array), plus the full PR diff and changed files
-   list. Format as:
+   6a–6c (as a JSON array, excluding `category: "sub-agent-failure"`
+   findings — re-append unchanged after step 3), plus the full PR
+   diff and changed files list. Format as:
 
    ```markdown
    ## Context
 
    ### Findings to challenge
-   <JSON array of all findings from steps 6a–6c>
+   <JSON array of 6a–6c findings, excluding `category:
+   "sub-agent-failure"`>
 
    ### Diff
    Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
@@ -1404,9 +1411,8 @@ wins.
 - **The orchestrator is the sole producer of `agent-result.json`.** No
   sub-agent writes this file.
 - **Report failure rather than posting a partial review.** If you cannot
-  complete the review (tool failure, missing context, all sub-agents
-  failed), produce a failure result (see step 7) rather than posting
-  an incomplete result.
+  complete the review, produce a failure result (see step 7). Missing
+  files: step 5.
 - **Write a result before the budget runs out.** A kill at
   `timeout_minutes` posts nothing; a `failure` result with `reason`
   `time-budget` written in time is posted as a notice (Time budget).

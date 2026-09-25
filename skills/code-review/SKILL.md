@@ -23,8 +23,8 @@ Follow these steps in order. Do not skip steps.
 Determine what to review:
 
 - If a diff, file list, or branch comparison was provided, use it.
-- If invoked by another skill (e.g., pr-review), use the diff and
-  context that skill provides.
+- If invoked by another skill, use the diff and context that skill
+  provides.
 - If none was provided, fall back to the current branch's diff against
   its merge base:
 
