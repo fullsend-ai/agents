@@ -95,6 +95,8 @@ script-test:
 	$(call run-timed,bash eval/scripts/scrub-eval-results-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
 	$(call run-timed,bash .github/scripts/vouch-check-test.sh)
+	$(call run-timed,bash eval/scripts/capture-fixture-test.sh)
+	$(call run-timed,python3 eval/scripts/removed-symbols-judge-test.py)
 
 test: script-test
 
