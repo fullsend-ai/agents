@@ -67,7 +67,7 @@ writing, and `$FULLSEND_OUTPUT_DIR/agent-result.json` in the root.
 Follow the runtime note when one is present. Do not invent an `Agent`
 tool on Codex, and do not pass Claude aliases (`opus`, `sonnet`,
 `haiku`) as a Codex `model`. Model selection on Codex is owned by the
-runtime (`agents[].subagents.default` and the runner's Codex sub-agent
+runtime (`agents[].subagents.default` and the runner's Codex subagent
 default).
 
 - **Claude Code / pi:** Agent tool, omit `subagent_type` (generic child

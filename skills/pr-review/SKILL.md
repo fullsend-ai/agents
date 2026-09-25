@@ -455,11 +455,24 @@ incident.
    ...
    ```
 
-4. Spawn with the composed prompt from parts 1–3 using the step 4
-   item 2 dispatch shape (persona `security-triage`). Claude Code:
-   `model`: `haiku`, `subagent_type`: `Explore` (read-only). Pi, if
-   unlisted: keep `Explore`, omit `model`. Codex Explore is
-   instruction-only, not a per-child read-only sandbox.
+4. Spawn with the composed prompt from parts 1–3 (persona
+   `security-triage`), following the runtime note when present.
+
+   - **Claude Code:** Agent tool, `model`: `haiku`, `subagent_type`:
+     `Explore` (read-only).
+   - **Pi, persona listed:** Agent tool, `subagent_type` =
+     `security-triage`, no `model`.
+   - **Pi, persona not listed:** keep `Explore`, omit `model`.
+   - **Codex, persona listed:** `spawn_agent` `agent_type`:
+     `security-triage`, `message` = composed prompt, `fork_turns`:
+     `"none"`. Collect with `wait` (`wait_agent` on the pinned CLI)
+     and `close_agent` before proceeding to step 3d — this pre-pass
+     must close its slot before step 4's four-slot batch opens.
+   - **Codex, persona not listed:** same `message` / `fork_turns` on
+     the note's generic/default child, then `wait` and `close_agent`
+     before proceeding to step 3d. Explore is instruction-only, not a
+     per-child read-only sandbox — accepted as this step's Codex
+     policy until fleet review/retro on Codex is supported.
 
    This agent runs **synchronously** because its output feeds into
    step 3d. Classification does not require deep reasoning.
