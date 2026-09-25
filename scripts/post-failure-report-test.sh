@@ -430,6 +430,552 @@ unset PUSH_TOKEN REPO_FULL_NAME ISSUE_NUMBER
 
 rm -rf "$(dirname "${MOCK_BIN}")"
 
+# ---------------------------------------------------------------------------
+# Transient retry + last-resort label (issue #1361)
+# ---------------------------------------------------------------------------
+
+run_transient_detector_test() {
+  local test_name="$1"
+  local sample="$2"
+  local expect_transient="$3"
+
+  if forge_is_transient_error "${sample}"; then
+    if [ "${expect_transient}" = "yes" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name}"
+      echo "  treated as transient: ${sample}"
+      FAILURES=$((FAILURES + 1))
+    fi
+  else
+    if [ "${expect_transient}" = "no" ]; then
+      echo "PASS: ${test_name}"
+    else
+      echo "FAIL: ${test_name}"
+      echo "  not treated as transient: ${sample}"
+      FAILURES=$((FAILURES + 1))
+    fi
+  fi
+}
+
+run_transient_detector_test "transient-http-503" \
+  "HTTP 503: Server Error" "yes"
+run_transient_detector_test "transient-internal-server-error" \
+  "GraphQL: Internal Server Error" "yes"
+run_transient_detector_test "transient-deadline-exceeded" \
+  "Post \"https://api.github.com/graphql\": context deadline exceeded" "yes"
+run_transient_detector_test "transient-curl-503" \
+  "curl: (22) The requested URL returned error: 503" "yes"
+run_transient_detector_test "non-transient-422" \
+  "HTTP 422: Validation Failed" "no"
+run_transient_detector_test "non-transient-403-permission" \
+  "HTTP 403: Resource not accessible by integration" "no"
+
+run_comment_retry_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local fail_times="$2"
+  local error_msg="$3"
+  local expect_attempts="$4"
+  local expect_label="${5:-no}"
+
+  local tmp mock_bin call_log rc=0 output attempts
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+n=$(grep -c 'issue comment' "${CALL_LOG}" 2>/dev/null || true)
+if printf '%s' " $*" | grep -q ' issue comment '; then
+  if [ "${n}" -le "${FAIL_TIMES}" ]; then
+    echo "${ERROR_MSG}" >&2
+    exit 1
+  fi
+  echo "https://github.com/my-org/my-repo/issues/42#issuecomment-1"
+  exit 0
+fi
+exit 0
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      sleep() { :; }
+      export PUSH_TOKEN="ghp_test"
+      export GH_TOKEN=""
+      export REPO_FULL_NAME="my-org/my-repo"
+      export ISSUE_NUMBER="42"
+      export GITHUB_RUN_ID="99"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export CALL_LOG="${call_log}"
+      export FAIL_TIMES="${fail_times}"
+      export ERROR_MSG="${error_msg}"
+      # shellcheck disable=SC2034
+      POST_FAILURE_REPORTED=false
+      set_post_failure "pr-creation-failed" "create failed"
+      PATH="${mock_bin}:${PATH}" report_post_failure_to_issue 1
+    } 2>&1
+  ) || rc=$?
+
+  attempts=$(grep -c 'issue comment' "${call_log}" || true)
+
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  report_post_failure_to_issue exited ${rc}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${attempts}" -ne "${expect_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_attempts} gh issue comment attempts, got ${attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${expect_label}" = "yes" ]; then
+    if ! echo "${output}" | grep -q 'Failed to post error comment'; then
+      echo "FAIL: ${test_name}"
+      echo "  expected comment-post failure warning"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+    if ! grep -q 'code-agent-failed' "${call_log}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected last-resort code-agent-failed label apply"
+      echo "  calls:"
+      cat "${call_log}"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+    if ! echo "${output}" | grep -qF "${error_msg}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected real gh stderr to be logged, not swallowed"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  else
+    if echo "${output}" | grep -q 'Failed to post error comment'; then
+      echo "FAIL: ${test_name}"
+      echo "  expected comment post to succeed, but failure warning was emitted"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+    if grep -q 'code-agent-failed' "${call_log}"; then
+      echo "FAIL: ${test_name}"
+      echo "  last-resort label applied even though comment succeeded"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+# 503 twice then success — 3 attempts, no last-resort label
+run_comment_retry_test "failure-comment-retries-transient-503" \
+  2 "HTTP 503: Internal Server Error" 3 no
+
+# 503 every time — 3 attempts then last-resort label, stderr preserved
+run_comment_retry_test "failure-comment-gives-up-after-3" \
+  99 "HTTP 503: Internal Server Error" 3 yes
+
+# Non-transient 422 — single attempt, then last-resort label
+run_comment_retry_test "failure-comment-no-retry-on-422" \
+  99 "HTTP 422: Validation Failed" 1 yes
+
+run_pr_comment_retry_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local fail_times="$2"
+  local error_msg="$3"
+  local expect_attempts="$4"
+
+  local tmp mock_bin call_log rc=0 output attempts
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+n=$(grep -c 'pr comment' "${CALL_LOG}" 2>/dev/null || true)
+if printf '%s' " $*" | grep -q ' pr comment '; then
+  if [ "${n}" -le "${FAIL_TIMES}" ]; then
+    echo "${ERROR_MSG}" >&2
+    exit 1
+  fi
+  echo "https://github.com/my-org/my-repo/pull/7#issuecomment-1"
+  exit 0
+fi
+exit 0
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      sleep() { :; }
+      export PUSH_TOKEN="ghp_test"
+      export GH_TOKEN=""
+      export REPO_FULL_NAME="my-org/my-repo"
+      export PR_NUMBER="7"
+      export GITHUB_RUN_ID="99"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export CALL_LOG="${call_log}"
+      export FAIL_TIMES="${fail_times}"
+      export ERROR_MSG="${error_msg}"
+      # shellcheck disable=SC2034
+      POST_FAILURE_REPORTED=false
+      set_post_failure "push-rejected" "push failed"
+      PATH="${mock_bin}:${PATH}" report_post_failure_to_pr 1
+    } 2>&1
+  ) || rc=$?
+
+  attempts=$(grep -c 'pr comment' "${call_log}" || true)
+
+  if [ "${rc}" -ne 0 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  report_post_failure_to_pr exited ${rc}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${attempts}" -ne "${expect_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_attempts} gh pr comment attempts, got ${attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if ! grep -q 'fix-agent-failed' "${call_log}"; then
+    echo "FAIL: ${test_name}"
+    echo "  expected last-resort fix-agent-failed label apply"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_pr_comment_retry_test "fix-failure-comment-retries-transient-503" \
+  99 "HTTP 503: Internal Server Error" 3
+
+# ---------------------------------------------------------------------------
+# forge_retry_transient sanitizes failure output before logging (review on
+# PR #1364, 2nd pass: preferring sanitize_failure_detail alone leaves
+# parameterized workflow commands and mid-string commands like
+# ::stop-commands::/::add-mask:: intact, since sanitize_comment_workflow_
+# commands only strips an exact line-start "::word::" form. Composing it
+# with sanitize_gha_log_output -- which strips any "::" occurrence
+# regardless of position or parameters -- closes that gap. Also uses a
+# token that actually matches the redaction regex ({20,} chars), unlike the
+# previous placeholder literal which never matched.
+# ---------------------------------------------------------------------------
+
+run_retry_sanitizes_output_test() {
+  local test_name="$1"
+  local real_token="$2"
+
+  local tmp mock_bin rc=0 output
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  mkdir -p "${mock_bin}"
+  cat > "${mock_bin}/gh" <<MOCK
+#!/usr/bin/env bash
+echo '::error file=x::HTTP 500 token=${real_token} ::stop-commands::deadbeef ::add-mask::secretvalue' >&2
+exit 1
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    {
+      # shellcheck disable=SC2317
+      sleep() { :; }
+      PATH="${mock_bin}:${PATH}" FORGE_TRANSIENT_RETRY_ATTEMPTS=1 \
+        forge_retry_transient gh whatever
+    } 2>&1
+  ) || rc=$?
+
+  if [ "${rc}" -eq 0 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected non-zero exit code"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if echo "${output}" | grep -q '::'; then
+    echo "FAIL: ${test_name}"
+    echo "  a workflow-command sequence was not stripped: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if echo "${output}" | grep -qF "${real_token}"; then
+    echo "FAIL: ${test_name}"
+    echo "  token was not redacted: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if ! echo "${output}" | grep -q 'HTTP 500'; then
+    echo "FAIL: ${test_name}"
+    echo "  diagnostic text was lost, not just sanitized: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_retry_sanitizes_output_test "forge-retry-sanitizes-failure-output" \
+  "$(printf 'gh%s_%s' 'p' 'abcdefghijklmnopqrstuvwxyz1234')"
+
+
+# ---------------------------------------------------------------------------
+# _post_failure_apply_failed_label dispatch, target=pr (review on PR #1364,
+# 2nd pass): forge_add_pr_label in both github-fix-ops.lib.sh and
+# gitlab-fix-ops.lib.sh unconditionally swallows forge errors
+# (`2>/dev/null || true` / `> /dev/null 2>/dev/null || true`) and always
+# returns 0, so calling it for last-resort apply would silently report
+# success during the exact outage this label exists to catch. These tests
+# source the real fix-ops libs (not stubs) so forge_add_pr_label is declared
+# with its actual swallowing body, then force the underlying gh/curl call to
+# fail persistently with a 5xx and assert the failure still surfaces via
+# "Failed to apply last-resort" rather than being absorbed by
+# forge_add_pr_label's `|| true`.
+# ---------------------------------------------------------------------------
+
+run_apply_label_surfaces_failure_github_test() {
+  local test_name="$1"
+
+  local tmp mock_bin call_log rc=0 output
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+echo "HTTP 500: Internal Server Error" >&2
+exit 1
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      sleep() { :; }
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/github-fix-ops.lib.sh"
+      export CALL_LOG="${call_log}"
+      export REPO_FULL_NAME="my-org/my-repo"
+      export PR_NUMBER="7"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      PATH="${mock_bin}:${PATH}" _post_failure_apply_failed_label "fix-agent-failed" "pr"
+    } 2>&1
+  ) || rc=$?
+
+  if [ "${rc}" -eq 0 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected a non-zero exit -- the persistent gh 500 should not be"
+    echo "  absorbed by forge_add_pr_label's swallow-all body"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if ! echo "${output}" | grep -q 'Failed to apply last-resort'; then
+    echo "FAIL: ${test_name}"
+    echo "  expected the apply failure to be surfaced, not swallowed"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if ! grep -qE '^pr edit ' "${call_log}"; then
+    echo "FAIL: ${test_name}"
+    echo "  expected the direct 'gh pr edit' path to be used"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_apply_label_surfaces_failure_github_test \
+  "apply-label-github-fix-agent-surfaces-persistent-failure"
+
+run_apply_label_surfaces_failure_gitlab_test() {
+  local test_name="$1"
+
+  local tmp mock_bin call_log rc=0 output
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+
+  cat > "${mock_bin}/curl" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+echo "HTTP 500: Internal Server Error" >&2
+exit 1
+MOCK
+  chmod +x "${mock_bin}/curl"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      sleep() { :; }
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/gitlab-fix-ops.lib.sh"
+      export CALL_LOG="${call_log}"
+      export FULLSEND_FORGE="gitlab"
+      export REPO_FULL_NAME="group/project"
+      export REPO_ENCODED="group%2Fproject"
+      export GITLAB_HOST="gitlab.example.com"
+      export CI_SERVER_HOST="gitlab.example.com"
+      export GITLAB_TOKEN="test-token"
+      export PR_NUMBER="7"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      PATH="${mock_bin}:${PATH}" _post_failure_apply_failed_label "fix-agent-failed" "pr"
+    } 2>&1
+  ) || rc=$?
+
+  if [ "${rc}" -eq 0 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected a non-zero exit -- the persistent curl 500 should not be"
+    echo "  absorbed by forge_add_pr_label's swallow-all body"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if ! echo "${output}" | grep -q 'Failed to apply last-resort'; then
+    echo "FAIL: ${test_name}"
+    echo "  expected the apply failure to be surfaced, not swallowed"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if ! grep -q 'merge_requests/7' "${call_log}"; then
+    echo "FAIL: ${test_name}"
+    echo "  expected the direct _gitlab_api PUT against the MR label endpoint"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_apply_label_surfaces_failure_gitlab_test \
+  "apply-label-gitlab-fix-agent-surfaces-persistent-failure"
+
+run_gitlab_issue_label_direct_api_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+
+  local tmp call_log rc=0 output
+  tmp=$(mktemp -d)
+  call_log="${tmp}/calls"
+  : > "${call_log}"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      sleep() { :; }
+      _gitlab_code_api() {
+        printf '%s\n' "$*" >> "${CALL_LOG}"
+        if printf '%s' "$*" | grep -q '/labels '; then
+          return 0
+        fi
+        echo "GitLab API error (HTTP 503): Service Unavailable" >&2
+        return 1
+      }
+      export CALL_LOG="${call_log}"
+      export FULLSEND_FORGE="gitlab"
+      export REPO_FULL_NAME="group/project"
+      export REPO_ENCODED="group%2Fproject"
+      export ISSUE_NUMBER="42"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      _post_failure_apply_failed_label "code-agent-failed" "issue"
+    } 2>&1
+  ) || rc=$?
+
+  if [ "${rc}" -eq 0 ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected a non-zero exit — the stubbed issue-label API always fails"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if ! grep -q 'issues/42' "${call_log}"; then
+    echo "FAIL: ${test_name}"
+    echo "  expected _gitlab_code_api PUT against the issue label endpoint"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if ! echo "${output}" | grep -q 'Failed to apply last-resort'; then
+    echo "FAIL: ${test_name}"
+    echo "  expected the apply failure to be surfaced, not swallowed"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_gitlab_issue_label_direct_api_test \
+  "apply-label-gitlab-issue-uses-direct-api-and-surfaces-failure"
+
 echo ""
 if [ ${FAILURES} -gt 0 ]; then
   echo "${FAILURES} test(s) failed"

@@ -793,9 +793,15 @@ fi
 # the note on its own so the rewrite still leaves a trace on the PR.
 signoff_note_fallback() {
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
-    forge_post_pr_comment "${PR_NUMBER}" \
-      "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)." \
-      || gha_echo warning "Could not post the Signed-off-by strip note to PR #${PR_NUMBER}"
+    if declare -F forge_retry_transient >/dev/null 2>&1; then
+      forge_retry_transient forge_post_pr_comment "${PR_NUMBER}" \
+        "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)." \
+        || gha_echo warning "Could not post the Signed-off-by strip note to PR #${PR_NUMBER}"
+    else
+      forge_post_pr_comment "${PR_NUMBER}" \
+        "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)." \
+        || gha_echo warning "Could not post the Signed-off-by strip note to PR #${PR_NUMBER}"
+    fi
   fi
 }
 

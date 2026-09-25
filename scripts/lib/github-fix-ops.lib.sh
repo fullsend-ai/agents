@@ -93,7 +93,7 @@ forge_post_pr_comment() {
   local body="$2"
   gh pr comment "${pr_number}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null
+    --body "${body}"
 }
 
 # --- Workspace operations ---
