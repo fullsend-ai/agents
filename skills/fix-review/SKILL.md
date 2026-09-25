@@ -17,11 +17,15 @@ produces fixes that introduce new issues or miss the reviewer's point.
 
 ## Tools reminder
 
-Use `Bash` for verification and committing. Use `Read`/`Write`/`Grep`/`Glob` for file operations. The `scan-secrets` helper is at `/usr/local/bin/scan-secrets` — verify with `command -v scan-secrets`. If missing, **STOP**.
+Use `Bash` for verification and committing — the exact step 3
+lint/test command, not a generic substitute. Use
+`Read`/`Write`/`Grep`/`Glob` for file operations. The `scan-secrets`
+helper is at `/usr/local/bin/scan-secrets` — verify with
+`command -v scan-secrets`. If missing, **STOP**.
 
 ## Progress markers
 
-At steps 1, 2, 4, 7a, 7b, 7c, and 8: `echo "::notice::STEP <N>: <title>"`
+At steps 1, 2, 3, 4, 7a, 7b, 7c, 8: `echo "::notice::STEP <N>: <title>"`
 
 ## Time budget
 
@@ -113,7 +117,16 @@ For each finding, record: `finding`, `path`, `description`, `related_findings`. 
 
 ### 3. Discover repo conventions
 
-Read `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`. Discover test/lint commands from `Makefile`, `package.json`, linter configs. Determine test command, lint command, commit conventions.
+```bash
+echo "::notice::STEP 3: Discover repo conventions"
+```
+
+Use `Read`/`Glob` on `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`,
+`Makefile`, `package.json`, `pyproject.toml`, and linter configs.
+AGENTS.md takes precedence over patterns in existing code. Determine
+the exact **test command** and **lint command** (package manager
+included, e.g. `pnpm lint-staged`), including stage-then-lint order —
+do not reorder around `git add` — and the **commit conventions**.
 
 ### 4. Plan fixes
 
@@ -155,22 +168,16 @@ echo "::notice::STEP 7b: Pre-commit hooks"
 
 Same rules as the code agent (see step 9b of the code-implementation
 skill for the full text):
-- Maximum 2 pre-commit/hook-execution runs per validation-loop
-  iteration (not per sandbox). A `pre-commit run` that failed on
-  infrastructure before executing any hook does not count — the
-  direct-execution fallback takes its place. A validation-loop retry
-  is a new iteration with a fresh budget; 7c's own retries do not
-  reopen 7b.
-- Pre-format your code before running pre-commit.
-- If `pre-commit` itself cannot run — typically because it cannot
-  fetch remote hook repositories — do not skip verification, unless
-  the fallback floor below says you cannot afford it. Otherwise fall
-  back to running the configured hooks directly, honoring each hook's
-  `entry`, `args`, `rev`, `stages`, `additional_dependencies`, and
-  file filters.
-- If the second run still fails, log the exact hook, file, and error
-  in the commit message and move on. Never claim hooks passed when
-  they did not.
+- Max 2 hook-execution runs per validation-loop iteration. An
+  infrastructure failure before any hook runs does not count — the
+  direct-execution fallback takes its place. 7c retries do not reopen 7b.
+- Pre-format before running pre-commit.
+- If `pre-commit` cannot fetch hook repos, run configured hooks
+  directly (`entry`, `args`, `rev`, `stages`,
+  `additional_dependencies`, file filters), unless the 300s floor
+  below says you cannot afford it.
+- If the second run fails, log hook/file/error in the commit message.
+  Never claim hooks passed when they did not.
 
 ```bash
 test -f .pre-commit-config.yaml && pre-commit run --files <all-changed-files>
@@ -198,13 +205,23 @@ run the fallback as described above.
 echo "::notice::STEP 7c: Tests and linters"
 ```
 
-Discover build/test commands: Read Makefile, package.json, pyproject.toml, or equivalent. Run test command (e.g., `make test`, `npm test`, `go test ./...`, `pytest`), then lint command (e.g., `make lint`, `golangci-lint run`, `eslint`, `ruff`) as separate invocations (not `&&`-chained; lint runs even if tests fail).
+Run both **tests** and **linters** using the exact step 3 commands,
+separately (not `&&`-chained; lint runs even if tests fail) — never a
+generic substitute (`npx` for `pnpm`, or a full-tree lint for
+`pnpm lint-staged`).
 
-If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit — 7b is closed for this iteration whether you spent the budget or skipped it. Retry limit: `MAX_RETRIES` (default: 1).
+Linting is separate from pre-commit (7b). If the command reads the git
+index (`lint-staged`, or docs say to stage first), `git add` intended
+files with explicit paths (never `git add -A`/`.`/`--all`) before
+running it; otherwise run it now and stage in 8a.
+
+If tests or linters fail: fix, re-run 7a then 7c (not pre-commit).
+Retry limit: `MAX_RETRIES` (default: 1).
 
 **7d. Self-review**
 
-Run `git diff`. Check for: unrelated changes, debug prints/TODOs, secrets, protected paths.
+Review `git diff` and `git diff --cached` for unrelated changes, debug
+prints/TODOs, secrets, or protected paths; revert extras.
 
 ### 8. Commit
 
@@ -214,7 +231,8 @@ echo "::notice::STEP 8: Commit"
 
 **8a. Stage files**
 
-`git add` only files you modified.
+`git add` only files you modified (explicit paths); re-add after 7c
+to include any auto-fixes.
 
 **8b. Scan staged content**
 
