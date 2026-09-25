@@ -39,6 +39,7 @@ This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce s
 - If `make lint` fails because unrelated changes on `main` increased an existing baselined violation, merge `main` and run `make lint-baseline`. Do not regenerate the baseline for violations introduced or increased by your PR; fix those instead.
 - Keep PRs focused. One problem area or decision per PR is easier to review than a grab-bag.
 - **If your PR introduces a breaking change**, the PR title must carry the `!` suffix (e.g., `feat(harness)!: require role field`). See [COMMITS.md](COMMITS.md#breaking-changes) for how to identify breaking changes and what to include in the commit body.
+- **Agent definitions dispatch from `main`.** CI fix/review runs on a PR load `agents/*.md` from `main`, not from the PR branch. In-review wording does not govern those runs until merge. See [AGENTS.md](AGENTS.md) section 9.
 
 ### Review etiquette
 
