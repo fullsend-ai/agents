@@ -48,10 +48,10 @@ the weighted sum, rounded to the nearest integer.
 
 ## Tier 1: Metadata Signals
 
-The `risk-tier1.sh` script outputs these KEY=VALUE signals. Evaluate
-each dimension and assign a 1-5 sub-score. Then average the dimension
-sub-scores for the Tier 1 composite (8 dimensions, not 10 — see the
-"Change size" composite below).
+The `risk-tier1.sh` script outputs these KEY=VALUE signals, then
+`TIER1_SCORE` (the average of this table's 8 dimension sub-scores, not
+10 — see "Change size" below) and `RISK_FLOOR` (`2` if any
+security-sensitive path is touched, else `1`). Use both as given.
 
 | Signal | Meaning | Scoring Guidance (1-5) |
 |--------|---------|------------------------|
@@ -67,15 +67,11 @@ sub-scores for the Tier 1 composite (8 dimensions, not 10 — see the
 | `AUTHOR_IS_BOT` | Boolean: authored by bot account | true = 1, false = 2 |
 | `AUTHOR_IS_FIRST_TIME` | Boolean: first-time contributor | false = 1, true = 4 |
 
-**Handling UNKNOWN values:** If a signal is `UNKNOWN`, skip it when
-computing the Tier 1 average (do not count it as 0 or any default).
-Only average the successfully computed sub-scores. For the Change size
-composite, if all three component signals are UNKNOWN, skip the entire
-composite dimension.
-
-**Tier 1 degenerate case:** If all dimensions are UNKNOWN (e.g., the
-initial API call failed), treat Tier 1 as unavailable and redistribute
-per the weight table above.
+**UNKNOWN values:** `UNKNOWN` signals are skipped in the average, not
+counted as 0; Change size is skipped when all three components are
+`UNKNOWN`. `TIER1_SCORE=UNKNOWN` means nothing could be scored (e.g.,
+the initial API call failed): treat Tier 1 as unavailable and
+redistribute per the weight table above.
 
 ## Tier 2: Git History Signals
 
@@ -158,6 +154,8 @@ The sub-agent must return a JSON object with this schema:
 {
   "score": 3,
   "level": "elevated",
+  "tier1_score": 2.62,
+  "risk_floor": 1,
   "tier1_signals": [
     {"dimension": "FILES_CHANGED", "value": "12"},
     {"dimension": "LINES_CHANGED", "value": "450"},
@@ -179,11 +177,13 @@ The sub-agent must return a JSON object with this schema:
 - `score` (integer 1-5)
 - `level` (string: "low", "moderate", "elevated", "high", "critical")
 - `rationale` (string: one-sentence summary of why this score was assigned)
+- `tier1_score`, `risk_floor` — the script's values (omit if `UNKNOWN`)
 
 **Optional fields:**
 - `tier1_signals` (array of {dimension, value} objects)
 - `tier2_signals` (array of {dimension, value} objects)
 - `tier3_signals` (array of {dimension, value} objects)
+- `degraded` — set only by the orchestrator's fallback
 
 The signal arrays enable graceful degradation: if a tier cannot be
 fully evaluated, return partial signals or omit the array entirely.
@@ -200,10 +200,7 @@ response directly.
    ```
    Capture KEY=VALUE output. Parse each line and store signals.
 
-2. **Evaluate Tier 1 dimensions:**
-   For each signal in the Tier 1 table, assign a 1-5 sub-score per the
-   scoring guidance. Compute the average of all valid sub-scores (skip
-   any `UNKNOWN` values). This is the Tier 1 composite score.
+2. **Tier 1 composite:** `TIER1_SCORE`, as given.
 
 3. **Evaluate Tier 2 dimensions:**
    For each file in the PR's changed file list, run the git log
@@ -219,7 +216,7 @@ response directly.
 5. **Compute weighted composite:**
    - If Tier 3 is available: `score = 0.50×Tier1 + 0.30×Tier2 + 0.20×Tier3`
    - If Tier 3 is unavailable: `score = 0.62×Tier1 + 0.38×Tier2`
-   Round to the nearest integer (1-5).
+   Round to the nearest integer (1-5), then `score = max(score, RISK_FLOOR)`.
 
 6. **Map score to level:**
    - 1 → "low"

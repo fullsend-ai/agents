@@ -520,7 +520,14 @@ PREV=""
 for arg in "\$@"; do
   if [[ "\${PREV}" == "--result" ]]; then
     if [[ "\${arg}" == "-" ]]; then
-      cat > "${TMPDIR}/last-result.json"
+      # post-comment streams a markdown body, not JSON — keep a copy so
+      # tests can inspect the sticky risk comment after the review post
+      # overwrites last-result.json.
+      if [[ "\$1" == "post-comment" ]]; then
+        tee "${TMPDIR}/last-comment.md" > "${TMPDIR}/last-result.json"
+      else
+        cat > "${TMPDIR}/last-result.json"
+      fi
     elif [[ -f "\${arg}" ]]; then
       cp "\${arg}" "${TMPDIR}/last-result.json"
     fi
@@ -2008,6 +2015,229 @@ run_label_test "risk-invalid-score-label-still-applied" \
 run_label_test "risk-stale-label-removal" \
   "${RISK_HIGH_RESULT}" \
   "--remove-label risk/low"
+
+# --- Floor, provenance, history (risk-tier1.sh TIER1_SCORE / RISK_FLOOR) ---
+
+# Runs post-review.sh and greps the captured sticky risk comment body.
+run_risk_comment_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local match_mode="${4:-substring}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-comment.md"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ ! -f "${TMPDIR}/last-comment.md" ]]; then
+    echo "FAIL: ${test_name} — no risk comment written"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # substring: pattern appears anywhere. line: pattern is an entire line
+  # (so appended meta fails the check). absent: pattern must NOT appear.
+  case "${match_mode}" in
+    line)
+      if ! grep -qxF "${expected_pattern}" "${TMPDIR}/last-comment.md"; then
+        echo "FAIL: ${test_name} — expected exact line '${expected_pattern}'"
+        cat "${TMPDIR}/last-comment.md"; FAILURES=$((FAILURES + 1)); return
+      fi ;;
+    absent)
+      if grep -qF "${expected_pattern}" "${TMPDIR}/last-comment.md"; then
+        echo "FAIL: ${test_name} — did not expect '${expected_pattern}'"
+        cat "${TMPDIR}/last-comment.md"; FAILURES=$((FAILURES + 1)); return
+      fi ;;
+    *)
+      if ! grep -qF "${expected_pattern}" "${TMPDIR}/last-comment.md"; then
+        echo "FAIL: ${test_name} — expected '${expected_pattern}' in risk comment"
+        cat "${TMPDIR}/last-comment.md"; FAILURES=$((FAILURES + 1)); return
+      fi ;;
+  esac
+  echo "PASS: ${test_name}"
+}
+
+# Sub-agent said low (1) but the script floored at 2 (security path) →
+# label and comment say moderate, and the log says why.
+RISK_FLOORED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak.","tier1_score":1.38,"risk_floor":2}}'
+
+run_label_test "risk-floor-raises-label" \
+  "${RISK_FLOORED_RESULT}" \
+  "gh label create risk/moderate"
+run_label_test_no_pattern "risk-floor-no-low-label" \
+  "${RISK_FLOORED_RESULT}" \
+  "gh label create risk/low"
+run_label_test_stdout "risk-floor-logged" \
+  "${RISK_FLOORED_RESULT}" \
+  "Risk score 1 floored to 2"
+run_risk_comment_test "risk-floor-comment-header" \
+  "${RISK_FLOORED_RESULT}" \
+  "**Risk Assessment: moderate (2/5)** · tier 1: 1.38"
+
+# The floor is recomputed from the changed files in post-review, so a
+# sub-agent that echoes risk_floor=1 or omits the field cannot disable it.
+# shellcheck disable=SC2031 # set here for the helpers' subshells, unset below
+export MOCK_PR_FILES="internal/auth/token.go"
+RISK_FLOOR_ECHOED_LOW='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak.","tier1_score":1.38,"risk_floor":1}}'
+run_label_test "risk-floor-recomputed-echoed-low" \
+  "${RISK_FLOOR_ECHOED_LOW}" \
+  "gh label create risk/moderate"
+run_label_test_stdout "risk-floor-recomputed-logged" \
+  "${RISK_FLOOR_ECHOED_LOW}" \
+  "Risk score 1 floored to 2"
+RISK_FLOOR_OMITTED='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test "risk-floor-recomputed-field-omitted" \
+  "${RISK_FLOOR_OMITTED}" \
+  "gh label create risk/moderate"
+# A non-approve action has no PR_FILES yet; the floor block fetches them.
+RISK_FLOOR_OMITTED_COMMENT='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Looks fine.","risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test "risk-floor-recomputed-on-comment-action" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/moderate"
+# The label follows level, and the schema does not tie level to score, so
+# the floor must hold on the level too: "low" beside a score already at the
+# floor (schema-valid), or beside an invalid score, still cannot label low.
+RISK_FLOOR_LEVEL_MISMATCH='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Looks fine.","risk_assessment":{"score":2,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test "risk-floor-holds-on-mismatched-level" \
+  "${RISK_FLOOR_LEVEL_MISMATCH}" \
+  "gh label create risk/moderate"
+RISK_FLOOR_INVALID_SCORE='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Looks fine.","risk_assessment":{"score":0,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test_no_pattern "risk-floor-holds-on-invalid-score" \
+  "${RISK_FLOOR_INVALID_SCORE}" \
+  "gh label create risk/low"
+unset MOCK_PR_FILES
+# Default mock files (src/main.go) touch no security path: no floor.
+run_label_test "risk-floor-no-security-path-stays-low" \
+  "${RISK_FLOOR_OMITTED}" \
+  "gh label create risk/low"
+# The floor's own fetch fails closed. A non-approve action fetches the file
+# list in the floor block; when it is still empty after one retry, nothing
+# was measured, so the change is treated as security-sensitive instead of
+# being labelled on the sub-agent's word (every fixture omits risk_floor).
+# shellcheck disable=SC2031 # set here for the helpers' subshells, unset below
+export MOCK_PR_FILES_FAIL="1"
+run_label_test "risk-floor-fetch-failure-fails-closed-on-comment" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/moderate"
+run_label_test_no_pattern "risk-floor-fetch-failure-no-low-label-on-comment" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/low"
+run_label_test_stdout "risk-floor-fetch-failure-warns" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "treating the change as security-sensitive"
+RISK_FLOOR_OMITTED_REQUEST_CHANGES='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"Issues found","findings":[{"severity":"high","category":"bug","file":"main.go","description":"nil deref"}],"risk_assessment":{"score":1,"level":"low","rationale":"Small auth tweak."}}'
+run_label_test "risk-floor-fetch-failure-fails-closed-on-request-changes" \
+  "${RISK_FLOOR_OMITTED_REQUEST_CHANGES}" \
+  "gh label create risk/moderate"
+# Unlike the approve path, this one does not abort: the review still posts.
+run_label_test "risk-floor-fetch-failure-still-posts-review" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "fullsend post-review"
+unset MOCK_PR_FILES_FAIL
+# A first-empty-then-populated list (the #2093 transient) recovers on the
+# retry, and the normal path match then decides — in both directions, so a
+# successful retry is neither ignored nor failed closed.
+# shellcheck disable=SC2031 # set here for the helpers' subshells, unset below
+export MOCK_FILES_CALL_MARKER="${TMPDIR}/marker-risk-floor-retry" \
+  MOCK_PR_FILES_ON_RETRY="internal/auth/token.go"
+rm -f "${MOCK_FILES_CALL_MARKER}"
+run_label_test "risk-floor-fetch-retry-recovers-security-path" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/moderate"
+export MOCK_PR_FILES_ON_RETRY="src/main.go"
+rm -f "${MOCK_FILES_CALL_MARKER}"
+run_label_test "risk-floor-fetch-retry-recovers-plain-path-stays-low" \
+  "${RISK_FLOOR_OMITTED_COMMENT}" \
+  "gh label create risk/low"
+unset MOCK_PR_FILES_ON_RETRY MOCK_FILES_CALL_MARKER
+# post-review.src.sh and risk-tier1.sh must carry the same pattern list.
+if diff \
+  <(sed -n '/^ *SECURITY_PATTERNS=(/,/^ *)/p' "${SCRIPT_DIR}/post-review.src.sh" | sed 's/^ *//') \
+  <(sed -n '/^ *SECURITY_PATTERNS=(/,/^ *)/p' "${SCRIPT_DIR}/../skills/pr-risk-assessment/scripts/risk-tier1.sh" | sed 's/^ *//') \
+  >/dev/null; then
+  echo "PASS: security-patterns-match-risk-tier1"
+else
+  echo "FAIL: security-patterns-match-risk-tier1 — SECURITY_PATTERNS differ between post-review.src.sh and risk-tier1.sh"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Floor never lowers a score
+RISK_ABOVE_FLOOR='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":3,"level":"elevated","rationale":"Bigger.","tier1_score":2.50,"risk_floor":2}}'
+run_label_test "risk-floor-does-not-lower" \
+  "${RISK_ABOVE_FLOOR}" \
+  "gh label create risk/elevated"
+
+# Degraded (tier-1-only fallback) is visible in the header and history row
+RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","rationale":"Risk sub-agent unavailable; tier-1 metadata only.","tier1_score":1.62,"risk_floor":1,"degraded":"tier1-only"}}'
+run_risk_comment_test "risk-degraded-header" \
+  "${RISK_DEGRADED_RESULT}" \
+  "· degraded: tier1-only"
+run_risk_comment_test "risk-history-row" \
+  "${RISK_DEGRADED_RESULT}" \
+  "| \`abc1234\` | $(date -u +%Y-%m-%d) | 2/5 moderate | 1.62 | tier1-only |"
+
+# A degraded score carries a risk/degraded marker label so consumers that
+# gate on risk can treat it as "no score"; a computed score does not.
+run_label_test "risk-degraded-marker-label" \
+  "${RISK_DEGRADED_RESULT}" \
+  "gh label create risk/degraded"
+run_label_test_no_pattern "risk-computed-no-degraded-marker" \
+  "${RISK_FLOORED_RESULT}" \
+  "gh label create risk/degraded"
+
+# Provenance fields are validated, not trusted: garbage is dropped, no floor applied
+RISK_BAD_PROVENANCE='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":1,"level":"low","rationale":"Typo.","tier1_score":"9;rm -rf","risk_floor":"5x","degraded":"<b>x</b>"}}'
+run_label_test "risk-bad-provenance-ignored" \
+  "${RISK_BAD_PROVENANCE}" \
+  "gh label create risk/low"
+run_risk_comment_test "risk-bad-provenance-header-line" \
+  "${RISK_BAD_PROVENANCE}" \
+  "**Risk Assessment: low (1/5)**" \
+  "line"
+run_risk_comment_test "risk-bad-provenance-no-tier1" \
+  "${RISK_BAD_PROVENANCE}" \
+  "· tier 1:" \
+  "absent"
+run_risk_comment_test "risk-bad-provenance-no-degraded" \
+  "${RISK_BAD_PROVENANCE}" \
+  "· degraded:" \
+  "absent"
+
+# A legacy result (no tier1_score/degraded) keeps the same header line —
+# no meta appended — but still gets a per-head-SHA history row, with the
+# tier-1 cell as "-" and the degraded cell empty.
+run_risk_comment_test "risk-legacy-result-header-line" \
+  "${RISK_LOW_RESULT}" \
+  "**Risk Assessment: low (1/5)**" \
+  "line"
+run_risk_comment_test "risk-legacy-result-no-meta" \
+  "${RISK_LOW_RESULT}" \
+  "· tier 1:" \
+  "absent"
+run_risk_comment_test "risk-legacy-history-row" \
+  "${RISK_LOW_RESULT}" \
+  "| \`abc123\` | $(date -u +%Y-%m-%d) | 1/5 low | - |  |"
 
 # --- Summary ---
 

@@ -743,7 +743,7 @@ is_control_label() {
 
 remove_stale_risk_labels() {
   local keep="${1:-}"
-  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical"; do
+  for stale_risk in "risk/low" "risk/moderate" "risk/elevated" "risk/high" "risk/critical" "risk/degraded"; do
     [[ -n "${keep}" && "risk/${keep}" == "${stale_risk}" ]] && continue
     forge_remove_label_edit "${stale_risk}"
   done
@@ -870,6 +870,67 @@ if [[ "${HAS_RISK}" == "true" ]]; then
       ;;
   esac
 
+  # Provenance fields from risk-tier1.sh via the sub-agent — optional,
+  # validated, never interpolated raw.
+  RISK_FLOOR=$(jq -r '.risk_assessment.risk_floor // empty' "${RESULT_FILE}")
+  [[ "${RISK_FLOOR}" =~ ^[1-5]$ ]] || RISK_FLOOR=""
+  TIER1_SCORE=$(jq -r '.risk_assessment.tier1_score // empty' "${RESULT_FILE}")
+  [[ "${TIER1_SCORE}" =~ ^[1-5](\.[0-9]{1,2})?$ ]] || TIER1_SCORE=""
+  RISK_DEGRADED=$(jq -r '.risk_assessment.degraded // empty' "${RESULT_FILE}")
+  [[ "${RISK_DEGRADED}" =~ ^[a-z0-9-]{1,32}$ ]] || RISK_DEGRADED=""
+
+  # The floor is recomputed here from the changed files, so a sub-agent
+  # that omits or lowers risk_floor cannot disable it: a security-sensitive
+  # path never labels low. Same list and match as risk-tier1.sh
+  # (post-review-test.sh pins the two lists equal). PR_FILES is already
+  # fetched on the approve path; other actions fetch it here, with the same
+  # single retry for the transient empty list (#2093).
+  SECURITY_PATTERNS=(
+    "mint/" "auth/" "oidc/" "rbac/" "permissions/"
+    "secrets/" "crypto/" "token/" "tokens/" "trust/"
+    "policies/"
+  )
+  if [ -z "${PR_FILES:-}" ]; then
+    PR_FILES=$(forge_get_pr_files) || PR_FILES=""
+    if [ -z "${PR_FILES}" ]; then
+      echo "::notice::PR files came back empty; retrying once in case of a transient forge data race (forge_get_pr_files)" >&2
+      sleep 10
+      PR_FILES=$(forge_get_pr_files) || PR_FILES=""
+    fi
+  fi
+  if [ -z "${PR_FILES}" ]; then
+    # Fail closed, as risk-tier1.sh does: no file list means nothing was
+    # measured, never a PR with zero risky files. The review is still
+    # posted — only the label is held at the security floor.
+    echo "::warning::Could not fetch PR files — treating the change as security-sensitive (risk floor 2)"
+    [[ "${RISK_FLOOR:-1}" -ge 2 ]] || RISK_FLOOR=2
+  else
+    while IFS= read -r file; do
+      [ -z "${file}" ] && continue
+      for pattern in "${SECURITY_PATTERNS[@]}"; do
+        if [[ "/${file}" == *"/${pattern}"* ]]; then
+          [[ "${RISK_FLOOR:-1}" -ge 2 ]] || RISK_FLOOR=2
+          break 2
+        fi
+      done
+    done <<< "${PR_FILES}"
+  fi
+  if [[ -n "${RISK_FLOOR}" && "${RISK_SCORE}" =~ ^[1-5]$ && "${RISK_SCORE}" -lt "${RISK_FLOOR}" ]]; then
+    echo "Risk score ${RISK_SCORE} floored to ${RISK_FLOOR} (security-sensitive path)"
+    RISK_SCORE="${RISK_FLOOR}"
+    case "${RISK_SCORE}" in
+      1) RISK_LEVEL="low" ;; 2) RISK_LEVEL="moderate" ;; 3) RISK_LEVEL="elevated" ;;
+      4) RISK_LEVEL="high" ;; 5) RISK_LEVEL="critical" ;;
+    esac
+  fi
+  # The label follows RISK_LEVEL and the schema does not tie level to score,
+  # so hold the floor on the level too: "low" beside an invalid score, or
+  # beside a score already at the floor, would otherwise still label low.
+  if [[ "${RISK_FLOOR:-1}" -ge 2 && "${RISK_LEVEL}" == "low" ]]; then
+    echo "Risk level low raised to moderate (security floor)"
+    RISK_LEVEL="moderate"
+  fi
+
   if [[ -n "${RISK_LEVEL}" ]]; then
     remove_stale_risk_labels "${RISK_LEVEL}"
 
@@ -886,15 +947,53 @@ if [[ "${HAS_RISK}" == "true" ]]; then
     forge_create_label "risk/${RISK_LEVEL}" "PR risk: ${RISK_LEVEL}" "${RISK_COLOR}"
     forge_add_label_edit "risk/${RISK_LEVEL}"
 
+    # A degraded (tier-1-only fallback) score is not a computed score.
+    # Mark it so consumers that route or gate on risk can treat it as
+    # "no score" — the level label alone is byte-identical to a fully
+    # computed one.
+    if [[ -n "${RISK_DEGRADED}" ]]; then
+      echo "Applying risk/degraded marker (${RISK_DEGRADED})"
+      forge_create_label "risk/degraded" "PR risk score is degraded (fallback)" "EDEDED"
+      forge_add_label_edit "risk/degraded"
+    fi
+
     # Post sticky risk comment
     RISK_RATIONALE=$(jq -r '(.risk_assessment.rationale // "No rationale provided.")[0:2000]' "${RESULT_FILE}" \
       | sed 's/<[^>]*>//g; s/!\[[^]]*\]([^)]*)//g; s/\[\([^]]*\)\]([^)]*)/\1/g; s/|/\\|/g')
 
+    RISK_META=""
+    [[ -n "${TIER1_SCORE}" ]] && RISK_META+=" · tier 1: ${TIER1_SCORE}"
+    [[ -n "${RISK_DEGRADED}" ]] && RISK_META+=" · degraded: ${RISK_DEGRADED}"
+
+    # Per-head-SHA history, carried forward from the previous sticky
+    # comment so drift across re-reviews is visible on the PR (GitHub
+    # only — the comment fetch is a gh call). Rows are re-admitted only
+    # when they match the exact shape this script writes.
+    RISK_HISTORY=""
+    if [[ "${FULLSEND_FORGE}" == "github" ]]; then
+      RISK_HEAD=$(jq -r '.head_sha // empty' "${RESULT_FILE}")
+      [[ "${RISK_HEAD}" =~ ^[0-9a-f]{6,40}$ ]] || RISK_HEAD=""
+      ROW_RE='^\| `[0-9a-f]{6,7}` \| [0-9]{4}-[0-9]{2}-[0-9]{2} \| [1-5]/5 [a-z]+ \| [0-9.-]+ \| [a-z0-9-]* \|$'
+      PRIOR_ROWS=$(GH_TOKEN="${REVIEW_TOKEN}" gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
+        --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->"))] | last | .body // empty' 2>/dev/null \
+        | grep -E "${ROW_RE}" || true)
+      NEW_ROW=""
+      if [[ -n "${RISK_HEAD}" && "${RISK_SCORE}" =~ ^[1-5]$ ]]; then
+        NEW_ROW="| \`${RISK_HEAD:0:7}\` | $(date -u +%Y-%m-%d) | ${RISK_SCORE}/5 ${RISK_LEVEL} | ${TIER1_SCORE:--} | ${RISK_DEGRADED} |"
+      fi
+      ROWS=$(printf '%s\n%s\n' "${PRIOR_ROWS}" "${NEW_ROW}" | sed '/^$/d' | tail -n 20)
+      if [[ -n "${ROWS}" ]]; then
+        RISK_HISTORY=$'\n\n<details>\n<summary>History</summary>\n\n| head | date | score | tier 1 | note |\n|---|---|---|---|---|\n'"${ROWS}"$'\n\n</details>'
+      fi
+    fi
+
     RISK_COMMENT=$(jq -n \
       --arg score "${RISK_SCORE}" \
       --arg level "${RISK_LEVEL}" \
+      --arg meta "${RISK_META}" \
       --arg rationale "${RISK_RATIONALE}" \
-      -r '"<!-- fullsend:risk-assessment -->\n**Risk Assessment: \($level) (\($score)/5)**\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>"')
+      --arg history "${RISK_HISTORY}" \
+      -r '"<!-- fullsend:risk-assessment -->\n**Risk Assessment: \($level) (\($score)/5)**\($meta)\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>\($history)"')
 
     printf '%s' "${RISK_COMMENT}" | fullsend post-comment \
       --repo "${REPO}" \

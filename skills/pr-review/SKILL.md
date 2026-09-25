@@ -573,9 +573,8 @@ be absent from the result JSON.
    ```
 
    Parse these into `prior_risk_score`, `prior_risk_level`, and
-   `prior_risk_rationale`. If no prior risk comment exists (first
-   review or comment was deleted), skip — the sub-agent will operate
-   without anchoring.
+   `prior_risk_rationale`. If no prior risk comment exists, skip — the
+   sub-agent operates without anchoring.
 
 4. Compose a spawn prompt containing:
 
@@ -586,10 +585,8 @@ be absent from the result JSON.
    `skills/pr-risk-assessment/SKILL.md` (everything after the
    frontmatter)
 
-   **Part 3 — Context:** the PR's changed file list with per-file
-   diff stats (additions, deletions), PR metadata (title, body,
-   author, labels), linked issue context (if any), and prior risk
-   assessment (if available from step 3). Format as:
+   **Part 3 — Context:** changed files with diff stats, PR metadata,
+   linked issue context, and the prior assessment from step 3:
 
    ```markdown
    ## Context
@@ -612,23 +609,22 @@ be absent from the result JSON.
 5. Do not spawn it here. Dispatch the composed prompt (parts 1–3) in
    the same message as the step 4 dimension sub-agents, with the step 4
    item 2 dispatch shape (persona `risk-assessment`). Nothing in step 4
-   consumes its output
-   (it only goes into `agent-result.json`, step 7); running it first
-   serialised a 2–3 minute sub-agent for nothing.
+   consumes its output; running it first serialised a 2–3 minute
+   sub-agent for nothing.
 
-6. Parse the risk assessment output. The sub-agent returns a JSON
-   object with `score`, `level`, `rationale`, and optional signal
-   arrays.
+6. Store the sub-agent's JSON (`score`, `level`, `rationale`,
+   `tier1_score`, `risk_floor`, optional signal arrays, `degraded`) as
+   `risk_assessment` for `agent-result.json` (step 7). Anything that
+   routes or gates on the score treats `degraded` as no score.
 
-7. Store the `risk_assessment` object for inclusion in
-   `agent-result.json` (step 7).
-
-**Failure fallback:** If the risk-assessment sub-agent fails
-(timeout, parse error, empty response), log an info-level note and
-proceed without a risk score. The `risk_assessment` field is
-optional in the schema — its absence is not an error. Do not record
-a finding for this failure (risk assessment is informational, not
-safety-critical).
+**Failure fallback:** If the sub-agent fails (timeout, parse error,
+empty response, `score` not 1–5), run
+`bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"`.
+If `TIER1_SCORE` is numeric, set `score` = max(round(`TIER1_SCORE`),
+`RISK_FLOOR`), its `level`, `tier1_score`, `risk_floor`,
+`degraded: "tier1-only"`, rationale "Risk sub-agent unavailable;
+tier-1 metadata only."; else omit `risk_assessment`. Log an info
+note; record no finding.
 
 #### 3d. Prepare context packages
 
