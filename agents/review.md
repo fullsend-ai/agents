@@ -65,6 +65,21 @@ findings to include. The severity order from lowest to highest is:
 Suppress findings below the threshold — do not mention them in the
 review body and do not include them in the `findings` array.
 
+Also suppress findings whose own analysis concludes the flagged
+behavior is acceptable, not a regression, or an established pattern,
+unless they propose a concrete improvement (those become `info`
+`enhancement-opportunity`). Genuine defects that mention existing
+patterns only as context keep their original severity. Never suppress
+or downgrade `protected-path`, `sub-agent-failure`,
+`provenance-warning`, `permission-expansion`, `permission-reduction`,
+`role-escalation`, `workflow-permission`, or `secret-exposure`
+findings this way — they are mandated confirmation or process
+findings that must always be emitted, and human approval is still
+required for protected paths regardless. Applied in `pr-review`
+(after 6e-1) and when `code-review` compiles findings; see
+[self-contradicting-findings.md](../skills/pr-review/references/self-contradicting-findings.md)
+for the full rule.
+
 This filtering applies to the narrative body text and the structured
 findings equally. If filtering removes all findings from a
 `request-changes` or `reject` verdict, downgrade the verdict to

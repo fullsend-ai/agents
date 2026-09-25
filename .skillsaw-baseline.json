@@ -71,9 +71,9 @@
       "fingerprint": "43a3bb24cb22288e",
       "rule_id": "context-budget",
       "file_path": "skills/code-review/SKILL.md",
-      "message": "Estimated 3,846 tokens exceeds skill warn limit of 3,000",
+      "message": "Estimated 3,870 tokens exceeds skill warn limit of 3,000",
       "severity": "warning",
-      "value": 3846,
+      "value": 3870,
       "baseline_mode": "ceiling"
     },
     {

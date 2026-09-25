@@ -947,7 +947,7 @@ only the raw findings and the diff, preserving context isolation.
 
 **Skip when there is nothing to adjudicate.** If the merged finding set
 from steps 6a–6c is empty, skip the challenger dispatch — and only the
-dispatch. Continue through steps 6e, 6e-1, and 6f as usual: the
+dispatch. Continue through steps 6e, 6e-1, 6e-2, and 6f as usual: the
 orchestrator-only checks (6e) run after the challenger and can add
 findings of their own (protected paths, scope authorization, PR
 metadata), so 6f's "no findings → approve" outcome applies only when
@@ -1045,11 +1045,11 @@ budget section), skip the challenger: keep the merged finding set from
      (`challenger_action`, `challenger_reason`) before merging into the
      review finding set — these are logged for transparency but are not
      part of the standard finding schema.
-   - If `adjudicated_findings` is empty but the set sent to the
-     challenger was non-empty, treat this as a challenger failure (fall back
-     per the immediate next step below). A legitimate challenger pass
-     that removes all findings is unlikely — an empty result more likely
-     indicates a parsing error or context truncation.
+   - If `adjudicated_findings` is empty but input was non-empty, check
+     whether `removed_findings` covers every input finding by identity
+     (including merge losers); if not, or if `removed_findings` is
+     missing or unparseable, treat it as a challenger failure (fall
+     back below).
    - Otherwise, replace the challenged subset with the challenger's
      `adjudicated_findings` (then re-append anything withheld).
    - Log any `removed_findings` for transparency but do not include
@@ -1194,10 +1194,8 @@ orchestrator findings) for pairs where:
   `.github/**` files")
 
 The most common pattern is a `protected-path` finding (from 6e)
-claiming insufficient authorization while an `implicit-authorization`
-or `missing-authorization` info-level finding (from a sub-agent)
-cites specific configuration (e.g., `renovate.json`, `dependabot.yml`)
-that explicitly authorizes the change pattern.
+claiming insufficient authorization while a sub-agent finding cites
+config (e.g., `renovate.json`) that authorizes the change.
 
 **How to reconcile:** For each orchestrator finding, check whether any
 existing sub-agent finding provides evidence that directly negates its
@@ -1232,10 +1230,14 @@ premise:
 - It does not re-run the challenger pass. Reconciliation operates
   on the final finding set, not on intermediate results.
 
+#### 6e-2. Self-contradicting findings
+
+Apply [self-contradicting-findings.md](references/self-contradicting-findings.md).
+
 #### 6f. Determine overall outcome
 
 Merge the reconciled PR-specific findings (from 6e-1) into the
-adjudicated set (step 6d) and evaluate:
+adjudicated set (step 6d), apply 6e-2, and evaluate:
 
 - Any **critical** or **high** finding → `request-changes`
 - One or more **medium** findings identifying a functional bug

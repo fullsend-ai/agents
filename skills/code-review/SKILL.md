@@ -237,12 +237,14 @@ For each issue identified, record:
   for observations, praise, broad suggestions, and anything already
   handled by the PR.
 
-**Cross-file finding self-check:** Before recording any finding that
-asserts what a specific file contains, verify that you read that file
-during step 2. If you did not read it, read it now before finalizing
-the finding. If the file is unreadable, reframe the finding to state
-that the contents could not be verified — do not assert unverified
-contents as fact.
+**Cross-file finding self-check:** Verify you read a file in step 2
+before asserting its contents — read it now if not, or say so if
+unreadable, rather than assert unverified contents.
+
+**Self-contradicting findings:** Drop no-fix self-contradictions; keep
+fixable as info, non-actionable; defects citing patterns keep
+severity — except those in the skip list (see
+[self-contradicting-findings.md](../pr-review/references/self-contradicting-findings.md)).
 
 #### Severity anchoring (re-reviews)
 
