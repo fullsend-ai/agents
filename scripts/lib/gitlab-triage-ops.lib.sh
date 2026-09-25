@@ -296,3 +296,29 @@ tracker_create_issue() {
   }
   echo "${response}" | jq -r '.web_url'
 }
+
+# Apply ready-for-triage to a newly created issue so GitLab dispatch
+# picks it up. Uses _gitlab_api (host-allowlisted) against target_repo —
+# the same already-allowlisted project (checked via is_target_allowed)
+# that created_url's issue was created in — rather than re-deriving the
+# project by parsing created_url, which would trust an unvalidated parse
+# of forge-returned text to pick which project gets a label mutation.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_repo="$2"
+  local saved_repo="${REPO}"
+  local saved_encoded="${REPO_ENCODED}"
+  local saved_number="${ISSUE_NUMBER}"
+  REPO="${target_repo}"
+  REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
+  ISSUE_NUMBER=$(basename "${created_url}")
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  REPO="${saved_repo}"
+  REPO_ENCODED="${saved_encoded}"
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}

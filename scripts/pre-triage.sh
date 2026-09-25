@@ -177,6 +177,34 @@ tracker_create_issue() {
   rm -f "${err_file}"
   echo "${url}"
 }
+
+# Apply ready-for-triage to a newly created issue so the dispatch shim
+# picks it up. issues.opened from a workflow-driven create may not start
+# a new run; issues.labeled does. Failures are non-fatal for the caller.
+#
+# target_repo must be the same already-allowlisted repo (checked via
+# is_target_allowed) that created_url's issue was created in. Mutating
+# against target_repo directly — rather than re-deriving the repo by
+# parsing created_url — avoids trusting an unvalidated/unanchored parse
+# of forge-returned text to pick which repo gets a label mutation.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_repo="$2"
+  local saved_repo="${REPO}"
+  local saved_number="${ISSUE_NUMBER}"
+  REPO="${target_repo}"
+  ISSUE_NUMBER=$(basename "${created_url}")
+  # Ensure the label exists in the target repo (needed for cross-repo splits).
+  tracker_create_label "ready-for-triage" "Triggers triage agent dispatch" "0E8A16"
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  REPO="${saved_repo}"
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
+}
 # END bundled: lib/github-triage-ops.lib.sh
     ;;
   gitlab)
@@ -512,6 +540,32 @@ tracker_create_issue() {
     return 1
   }
   echo "${response}" | jq -r '.web_url'
+}
+
+# Apply ready-for-triage to a newly created issue so GitLab dispatch
+# picks it up. Uses _gitlab_api (host-allowlisted) against target_repo —
+# the same already-allowlisted project (checked via is_target_allowed)
+# that created_url's issue was created in — rather than re-deriving the
+# project by parsing created_url, which would trust an unvalidated parse
+# of forge-returned text to pick which project gets a label mutation.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_repo="$2"
+  local saved_repo="${REPO}"
+  local saved_encoded="${REPO_ENCODED}"
+  local saved_number="${ISSUE_NUMBER}"
+  REPO="${target_repo}"
+  REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
+  ISSUE_NUMBER=$(basename "${created_url}")
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  REPO="${saved_repo}"
+  REPO_ENCODED="${saved_encoded}"
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
 }
 # END bundled: lib/gitlab-triage-ops.lib.sh
     ;;
@@ -917,6 +971,43 @@ tracker_create_issue() {
     return 1
   fi
   echo "${JIRA_BASE_URL}/browse/${key}"
+}
+
+# Apply ready-for-triage to a newly created issue so Jira dispatch can
+# pick it up. Failures are non-fatal for the caller.
+#
+# target_project must be the same already-allowlisted project key (checked
+# via is_target_allowed) that created_url's issue was created in. Unlike
+# GitHub/GitLab, the issue key used to address the label PUT (not just a
+# REPO global) has to be derived from created_url, so this validates the
+# URL against the same anchored pattern tracker_validate_issue_url uses and
+# then rebuilds the issue key from target_project plus only the numeric
+# suffix of created_url — rather than trusting the project name parsed out
+# of created_url — before mutating.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_project="$2"
+  local saved_number="${ISSUE_NUMBER}"
+  if [[ ! "${created_url}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    echo "ERROR: created_url does not match expected Jira pattern: $(_gha_sanitize "${created_url}")" >&2
+    return 1
+  fi
+  local parsed_key="${created_url##*/browse/}"
+  if [[ -n "${target_project}" ]]; then
+    # Rebuild the issue key from the already-allowlisted target project
+    # plus only the numeric suffix from created_url, rather than trusting
+    # the project name parsed out of created_url.
+    ISSUE_NUMBER="${target_project}-${parsed_key##*-}"
+  else
+    ISSUE_NUMBER="${parsed_key}"
+  fi
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
 }
 # END bundled: lib/jira-triage-ops.lib.sh
     ;;

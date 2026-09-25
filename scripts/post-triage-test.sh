@@ -36,6 +36,21 @@ if [[ "\$1" == "issue" ]] && [[ "\$2" == "create" ]]; then
   echo "https://github.com/mock-org/mock-repo/issues/999"
   exit 0
 fi
+# Optionally fail the first N ready-for-triage label adds so tests can
+# verify dispatch failure isolation (#1123).
+if echo "\$*" | grep -qF -- "labels[]=ready-for-triage"; then
+  FAIL_FILE="${TMPDIR}/mock-dispatch-fail-remaining"
+  if [[ -f "\$FAIL_FILE" ]]; then
+    remaining=\$(cat "\$FAIL_FILE")
+    echo "gh \$*" >> "${GH_LOG}"
+    if [[ "\$remaining" -gt 0 ]]; then
+      echo \$((remaining - 1)) > "\$FAIL_FILE"
+      echo "HTTP 422: Label does not exist" >&2
+      exit 1
+    fi
+    exit 0
+  fi
+fi
 # Capture stdin when --body-file - is used (e.g., gh issue comment).
 if echo "\$*" | grep -q -- "--body-file -"; then
   BODY=\$(cat)
@@ -1337,6 +1352,15 @@ run_test "split-creates-allowed-cross-repo-issue" \
   '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"allowed-org/allowed-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}' \
   "gh issue create --repo allowed-org/allowed-repo --title Upstream fix --body Fix upstream."
 
+# Cross-repo split: triage dispatch must mutate the already-allowlisted
+# target repo, not a repo re-derived by parsing the created-issue URL
+# (the mock always returns a fixed mock-org/mock-repo URL regardless of
+# --repo, so this fails if dispatch trusts that parse instead of the
+# allowlisted target).
+run_test "split-dispatches-triage-to-target-repo-not-parsed-url" \
+  '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"allowed-org/allowed-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}' \
+  "gh api repos/allowed-org/allowed-repo/issues/999/labels -f labels[]=ready-for-triage --silent"
+
 # Cross-repo split: sub-issue targeting a disallowed repo should be skipped.
 run_test_stdout "split-skips-disallowed-cross-repo-issue" \
   '{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"disallowed-org/other-repo","title":"Remote fix","body":"Fix remote."}],"comment":"Split across repos."}' \
@@ -1346,6 +1370,81 @@ run_test_stdout "split-skips-disallowed-cross-repo-issue" \
 run_test "split-defaults-to-source-repo" \
   '{"action":"split","reasoning":"no repo field","sub_issues":[{"title":"First","body":"a"},{"title":"Second","body":"b"}],"comment":"Split."}' \
   "gh issue create --repo test-org/test-repo --title First --body a"
+
+# --- Split triage dispatch tests (#1123) ---
+
+# Verify triage dispatch is issued for each created sub-issue via
+# the ready-for-triage label on the created issue URL, applied against
+# the allowlisted target repo (test-org/test-repo — the sub-issue has no
+# repo field, so it defaults to REPO).
+run_test "split-dispatches-triage-for-sub-issues" \
+  "${SPLIT_FIXTURE}" \
+  "gh api repos/test-org/test-repo/issues/999/labels -f labels[]=ready-for-triage --silent"
+
+# Verify the ready-for-triage label is created in the target repo
+# before it is applied (required for cross-repo splits).
+run_test "split-ensures-ready-for-triage-label" \
+  "${SPLIT_FIXTURE}" \
+  "gh label create ready-for-triage --repo test-org/test-repo"
+
+# Verify triage dispatch is ordered after issue creation.
+run_test_label_order "split-dispatch-after-creation" \
+  "${SPLIT_FIXTURE}" \
+  "gh issue create --repo test-org/test-repo --title Fix crash on save" \
+  "gh api repos/test-org/test-repo/issues/999/labels -f labels[]=ready-for-triage --silent"
+
+# Verify dispatch stdout message appears.
+run_test_stdout "split-dispatch-triage-logged" \
+  "${SPLIT_FIXTURE}" \
+  "Dispatching triage for sub-issue:"
+
+# Verify one dispatch failure does not block other sub-issues from being
+# created, dispatched, or from closing the original issue.
+echo "1" > "${TMPDIR}/mock-dispatch-fail-remaining"
+DISPATCH_FAIL_NAME="split-dispatch-failure-does-not-block-others"
+DISPATCH_FAIL_DIR="${TMPDIR}/run-${DISPATCH_FAIL_NAME}"
+mkdir -p "${DISPATCH_FAIL_DIR}/iteration-1/output"
+echo "${SPLIT_FIXTURE}" > "${DISPATCH_FAIL_DIR}/iteration-1/output/agent-result.json"
+: > "${GH_LOG}"
+DISPATCH_FAIL_EXIT=0
+(cd "${DISPATCH_FAIL_DIR}" && bash "${POST_SCRIPT}") > "${TMPDIR}/dispatch-fail-stdout.log" 2>&1 || DISPATCH_FAIL_EXIT=$?
+rm -f "${TMPDIR}/mock-dispatch-fail-remaining"
+DISPATCH_FAIL_FAILURES=0
+if [[ ${DISPATCH_FAIL_EXIT} -ne 0 ]]; then
+  echo "FAIL: ${DISPATCH_FAIL_NAME} — script exited with code ${DISPATCH_FAIL_EXIT}"
+  cat "${TMPDIR}/dispatch-fail-stdout.log"
+  DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+else
+  if ! grep -qF "gh issue create --repo test-org/test-repo --title Fix crash on save" "${GH_LOG}"; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — first sub-issue not created"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+  if ! grep -qF "gh issue create --repo test-org/test-repo --title Update error messages" "${GH_LOG}"; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — second sub-issue not created"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+  DISPATCH_COUNT=$(grep -cF "labels[]=ready-for-triage" "${GH_LOG}" || true)
+  if [[ "${DISPATCH_COUNT}" -lt 2 ]]; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — expected 2 dispatch attempts, got ${DISPATCH_COUNT}"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+  if ! grep -qF "Triage dispatch failed" "${GH_LOG}"; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — dispatch failure not disclosed in comment"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+  if ! grep -qF "gh issue close 42 --repo test-org/test-repo --reason completed" "${GH_LOG}"; then
+    echo "FAIL: ${DISPATCH_FAIL_NAME} — original issue not closed after dispatch failure"
+    DISPATCH_FAIL_FAILURES=$((DISPATCH_FAIL_FAILURES + 1))
+  fi
+fi
+if [[ ${DISPATCH_FAIL_FAILURES} -gt 0 ]]; then
+  echo "FAIL: ${DISPATCH_FAIL_NAME} — ${DISPATCH_FAIL_FAILURES} assertion(s) failed"
+  echo "Actual gh calls:"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + DISPATCH_FAIL_FAILURES))
+else
+  echo "PASS: ${DISPATCH_FAIL_NAME}"
+fi
 
 # --- Split functional test: end-to-end flow (#756) ---
 # Runs the split action once and verifies the complete flow in a single test:
@@ -1422,6 +1521,28 @@ else
   CLOSE_LINE=$(grep -nF "gh issue close" "${GH_LOG}" | head -1 | cut -d: -f1)
   if [[ -n "${COMMENT_LINE}" ]] && [[ -n "${CLOSE_LINE}" ]] && [[ "${COMMENT_LINE}" -ge "${CLOSE_LINE}" ]]; then
     echo "FAIL: ${FUNC_TEST_NAME} — comment should be posted before issue is closed"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 8. Triage dispatch: ready-for-triage label is added to created sub-issues (#1123).
+  if ! grep -qF "gh api repos/test-org/test-repo/issues/999/labels -f labels[]=ready-for-triage --silent" "${GH_LOG}"; then
+    echo "FAIL: ${FUNC_TEST_NAME} — triage dispatch (ready-for-triage label) not applied to sub-issue"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+  DISPATCH_COUNT=$(grep -cF "labels[]=ready-for-triage" "${GH_LOG}" || true)
+  if [[ "${DISPATCH_COUNT}" -lt 2 ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — expected dispatch for each sub-issue, got ${DISPATCH_COUNT}"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+
+  # 9. Triage dispatch happens AFTER sub-issue creation but BEFORE comment posting.
+  DISPATCH_LINE=$(grep -nF "labels[]=ready-for-triage" "${GH_LOG}" | head -1 | cut -d: -f1)
+  if [[ -n "${CREATE_LINE}" ]] && [[ -n "${DISPATCH_LINE}" ]] && [[ "${CREATE_LINE}" -ge "${DISPATCH_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — triage dispatch should happen after sub-issue creation"
+    FUNC_FAILURES=$((FUNC_FAILURES + 1))
+  fi
+  if [[ -n "${DISPATCH_LINE}" ]] && [[ -n "${COMMENT_LINE}" ]] && [[ "${DISPATCH_LINE}" -ge "${COMMENT_LINE}" ]]; then
+    echo "FAIL: ${FUNC_TEST_NAME} — triage dispatch should happen before comment posting"
     FUNC_FAILURES=$((FUNC_FAILURES + 1))
   fi
 fi
@@ -1797,6 +1918,15 @@ run_gitlab_test_stdout "gitlab-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"disallowed-org/other-repo","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
   "not in create_issues.allow_targets"
 
+# GitLab split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
+run_gitlab_test "gitlab-split-dispatches-triage" \
+  '{"action":"split","reasoning":"bundles two concerns","sub_issues":[{"title":"Fix A","body":"a"},{"title":"Fix B","body":"b"}],"comment":"Splitting."}' \
+  "add_labels=ready-for-triage"
+
+run_gitlab_test_stdout "gitlab-split-dispatch-logged" \
+  '{"action":"split","reasoning":"bundles two concerns","sub_issues":[{"title":"Fix A","body":"a"},{"title":"Fix B","body":"b"}],"comment":"Splitting."}' \
+  "Dispatching triage for sub-issue:"
+
 touch "${MOCK_CURL_CLOSE_FAIL}"
 run_gitlab_test "gitlab-close-issue-api-error-fails" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
@@ -2009,6 +2139,15 @@ run_jira_test "jira-completed-transitions" \
 run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   '{"transition":{"id":"51"}}'
+
+# Jira split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
+run_jira_test "jira-split-dispatches-triage" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  '"add":"ready-for-triage"'
+
+run_jira_test_stdout "jira-split-dispatch-logged" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "Dispatching triage for sub-issue:"
 
 # Jira split with multi-paragraph body produces ADF with separate paragraph nodes.
 # Verifies that newlines in sub-issue bodies are converted to hardBreak / separate
