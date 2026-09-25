@@ -46,7 +46,13 @@ fi
 FORGE=$(yq -r '.forge // "github"' "$INPUT")
 FIXTURE_TYPE=$(yq -r '.fixture.type // "issue"' "$INPUT")
 FIXTURE_TITLE=$(yq -r '.fixture.title' "$INPUT")
-FIXTURE_BODY=$(yq -r '.fixture.body' "$INPUT")
+FIXTURE_BODY=$(yq -r '.fixture.body // ""' "$INPUT")
+if [[ -z "$FIXTURE_BODY" ]]; then
+  # Alternative to fixture.body: fragments joined verbatim. Lets a case
+  # deliver a directive-shaped payload (e.g. prompt-injection fixtures)
+  # without any single YAML value containing the complete text.
+  FIXTURE_BODY=$(yq -r '.fixture.body_fragments // [] | join("")' "$INPUT")
+fi
 FIXTURE_BASE=$(yq -r '.fixture.base // "main"' "$INPUT")
 FIXTURE_HEAD=$(yq -r '.fixture.head_branch // ""' "$INPUT")
 FIXTURE_FILES=$(yq -r '.fixture.files // "[]"' "$INPUT")

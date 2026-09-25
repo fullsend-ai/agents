@@ -25,10 +25,14 @@ MR_IID=$(basename "${PR_URL}")
 ## MR data fetching
 
 ```bash
-# MR metadata: title, description, author, labels, draft status, head SHA
+# MR metadata: title, description, author, labels, draft status, head SHA.
+# Persist to a file too (shell vars do not survive between calls): the
+# fencing producer in pr-review step 3d reads title/description/labels
+# from it (map `.description` where step 3d says `.body`).
 MR_DATA=$(curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}")
+echo "$MR_DATA" > /sandbox/workspace/pr.json
 HEAD_SHA=$(echo "$MR_DATA" | jq -r '.sha')
 IS_DRAFT=$(echo "$MR_DATA" | jq -r '.draft')
 
@@ -49,7 +53,7 @@ jq -r '.changes[].new_path' /sandbox/workspace/mr-changes.json
 # Per-file diffs from the changes payload, written to disk for the sub-agents
 # to Read; generated files dropped. An empty file is a tool failure.
 jq -r '.changes[] | select(.new_path | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
-  | "### File: \(.new_path)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
+  | "### File: \(.new_path | @json | .[1:-1])\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
 test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```
 
@@ -99,16 +103,24 @@ timed out — scrub the token: `: > /tmp/pr-head.curlrc`.
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata
+# Fetch linked issue metadata (persisted so step 3d can fence its
+# title/description the same way as pr.json)
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>" \
-  | jq '{title, description}'
+  | jq '{title, description}' > /sandbox/workspace/issue.json
 
-# Fetch issue notes (comments)
+# Fetch issue notes (comments) — bodies only, oldest first, one JSON
+# array; system notes ("changed the description") dropped, since the
+# `system` flag does not survive the projection. Persisted like
+# issue.json: any commenter writes these, and step 3d fences a value
+# only from a file jq wrote, never from retyped text:
+#   jq -r '.[]' issue-comments.json > value.txt    (all, one block)
+#   jq -r '.[0]' issue-comments.json > value.txt   (one note, 0-based)
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>/notes"
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>/notes?sort=asc&per_page=100" \
+  | jq '[.[] | select(.system | not) | .body]' > /sandbox/workspace/issue-comments.json
 ```
 
 ## Prior review comparison
