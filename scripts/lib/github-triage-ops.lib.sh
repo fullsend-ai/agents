@@ -118,6 +118,17 @@ tracker_close_issue() {
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "${reason}"
 }
 
+# Echo the normalized issue state ("open" or "closed") and return 0 on success.
+# Returns non-zero if the state cannot be determined (caller fails closed).
+tracker_issue_state() {
+  local state
+  state=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}" --jq '.state' 2>/dev/null) || return 1
+  case "${state}" in
+    open | closed) printf '%s\n' "${state}" ;;
+    *) return 1 ;;
+  esac
+}
+
 tracker_create_issue() {
   local target_repo="$1"
   local title="$2"
