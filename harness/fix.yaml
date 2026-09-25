@@ -29,6 +29,7 @@ providers:
   - providers/vertex-ai.yaml
   - providers/package-registries.yaml
   - providers/gitleaks.yaml
+  - openai
 
 role: coder
 slug: fullsend-ai-coder
