@@ -200,6 +200,8 @@ echo "::notice::STEP 7c: Tests and linters"
 
 Discover build/test commands: Read Makefile, package.json, pyproject.toml, or equivalent. Run test command (e.g., `make test`, `npm test`, `go test ./...`, `pytest`), then lint command (e.g., `make lint`, `golangci-lint run`, `eslint`, `ruff`) as separate invocations (not `&&`-chained; lint runs even if tests fail).
 
+On `agents/`, `skills/`, `commands/`, `AGENTS.md`/`CLAUDE.md`, run `make lint` and fix context-budget warnings ([references/skillsaw.md](references/skillsaw.md)).
+
 If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit — 7b is closed for this iteration whether you spent the budget or skipped it. Retry limit: `MAX_RETRIES` (default: 1).
 
 **7d. Self-review**
