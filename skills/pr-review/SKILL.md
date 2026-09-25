@@ -385,7 +385,7 @@ When step 2 selected **per-file mode** (the PR met both the
 `FILE_COUNT` and `LINE_COUNT` large-PR thresholds), run a lightweight
 triage pass to identify security-critical files before preparing
 context packages. For PRs handled in small-PR mode, skip this step —
-all files receive uniform attention.
+all files receive uniform attention (scope floors: 3e).
 
 **Why:** In per-file mode, the orchestrator has already produced
 per-file diffs and diff summaries for each changed file. Security-
@@ -661,11 +661,19 @@ Based on the triage classification, assign a `scope_constraint` to
 each sub-agent's context package. This constraint is a hard limit that
 sub-agents must honor — it overrides their default exploration budget.
 
-| Change classification                                      | `scope_constraint`                                                                                                                                      |
-|------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Change classification | `scope_constraint` |
+|-----------------------|--------------------|
 | Mechanical / value-only (digest bump, version bump, hash swap, URL update, feature flag toggle) | `"trivial: ≤5 tool calls. Read ONLY the diff and linked issue. Do NOT read project docs, surrounding files, git history, or directory listings. Return findings immediately after scope verification."` |
-| Small non-mechanical (under 20 changed lines, structural)  | `"small: ≤15 tool calls. Read the diff, linked issue, and up to 3 context files directly relevant to the change."` |
-| Standard / large                                           | `"none"` (sub-agent uses its own exploration budget)                                                                                                     |
+| Small non-mechanical (under 20 changed lines, structural) | `"small: ≤15 tool calls. Read the diff, linked issue, and up to 3 context files directly relevant to the change."` |
+| Standard / large | `"none"` (sub-agent uses its own exploration budget) |
+
+**Path-pattern override:** Before assigning `trivial` or `small`,
+resolve governance paths per 3c-1 step 2, unioned with
+`sub-agents/security-triage.md`'s "Path patterns" section. A match
+sets `security`'s `scope_constraint` to `"none"`. Set `correctness`'s
+`scope_constraint` to `"none"` only if it also adds error-handling or
+control-flow (new catch, fail-closed/fail-open, or new branch). Other
+sub-agents keep the table's classification-based scope constraint.
 
 **Re-review override:** When the re-review dispatch rule (step 3c)
 assigns a scope to an always-included dimension — a `trivial` constraint
