@@ -234,7 +234,38 @@ vars. Key differences from single-forge setup:
   config or env files. OpenShell replaces the placeholder in the
   Basic Authorization header at the proxy boundary. The Jira overlay
   composes with the target-forge overlay (GitHub or GitLab) via
-  merge-all-matching.
+  merge-all-matching. Verified by
+  `scripts/sandbox-credential-boundary-test.sh` (`skill-*-uses-basic-auth-placeholder`).
+- **GitHub credentials use provider-backed delivery** — the GitHub
+  overlay attaches the `github-code` provider and `fullsend-github-code`
+  OpenShell profile. Sandbox `gh` commands authenticate with `GH_TOKEN`,
+  but `GH_TOKEN` inside the sandbox is the provider's opaque placeholder
+  — the real token is never expanded into sandbox config or env files.
+  The `gh` CLI sends it as an `Authorization` header; OpenShell replaces
+  the placeholder at the proxy boundary (the same header family as Jira
+  Basic auth). Runner-side pre/post scripts retain the real `GH_TOKEN`
+  via `env.runner`. Do not re-add `GH_TOKEN` to `env.sandbox` or to
+  `expand: true` host files. Verified by
+  `scripts/sandbox-credential-boundary-test.sh`
+  (`skill-github-forge-documents-authorization-rewrite` for the
+  Authorization/OpenShell wording, `skill-github-forge-uses-authorization-placeholder`
+  for the `gh` + `GH_TOKEN` usage, plus the env.sandbox / host_files denylist).
+- **GitLab credentials use provider-backed delivery** — the GitLab
+  overlay attaches the `gitlab-code` provider and `fullsend-gitlab-code`
+  OpenShell profile. Sandbox curl commands use
+  `--header "Authorization: Bearer ${GITLAB_TOKEN}"`, but `GITLAB_TOKEN`
+  inside the sandbox is the provider's opaque placeholder — the real
+  token is never expanded into sandbox config or env files. OpenShell
+  replaces the placeholder in the Authorization header at the proxy
+  boundary. GitLab's `PRIVATE-TOKEN` header has no established rewrite
+  precedent in this repo, so sandbox skills use Bearer auth (the same
+  Authorization-family path verified for Jira Basic auth). Runner-side
+  pre/post scripts retain the real `GITLAB_TOKEN` via `env.runner` and
+  are not proxied through OpenShell. Do not re-add `GITLAB_TOKEN` to
+  `env.sandbox` or to `expand: true` host files. Verified by
+  `scripts/sandbox-credential-boundary-test.sh`
+  (`skill-gitlab-forge-uses-bearer-auth-placeholder` plus the
+  env.sandbox / host_files denylist).
 - **External work-item identity** — when the source tracker differs from the
   target forge, the code agent derives the key from `ISSUE_URL`.
   Branch names and PR text use that key and link the source URL; they do not

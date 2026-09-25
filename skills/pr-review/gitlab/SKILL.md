@@ -27,7 +27,7 @@ MR_IID=$(basename "${PR_URL}")
 ```bash
 # MR metadata: title, description, author, labels, draft status, head SHA
 MR_DATA=$(curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}")
 HEAD_SHA=$(echo "$MR_DATA" | jq -r '.sha')
 IS_DRAFT=$(echo "$MR_DATA" | jq -r '.draft')
@@ -35,7 +35,7 @@ IS_DRAFT=$(echo "$MR_DATA" | jq -r '.draft')
 # MR changes (includes diff per file), saved for later Bash calls
 # (shell variables do not survive between calls; files do)
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}/changes" \
   > /sandbox/workspace/mr-changes.json
 
@@ -67,7 +67,7 @@ PR_HEAD=/sandbox/workspace/pr-head; WORK=/sandbox/workspace/pr-head.work; MANIFE
 CHANGES=/sandbox/workspace/mr-changes.json; CURLRC=/tmp/pr-head.curlrc
 API="https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/files"
 mkdir -p "$PR_HEAD" "$WORK"; : > "$MANIFEST"; : > "$WORK/failed"; FETCH_START=$(date +%s)
-OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\nfail\nsilent\n' "$GITLAB_TOKEN" > "$CURLRC"; umask "$OLDMASK"
+OLDMASK=$(umask); umask 077; printf 'header = "Authorization: Bearer %s"\nfail\nsilent\n' "$GITLAB_TOKEN" > "$CURLRC"; umask "$OLDMASK"
 jq -r '.changes[] | select(.deleted_file) | "removed \(.new_path)"' "$CHANGES" >> "$MANIFEST"
 jq -r '.changes[] | select(.deleted_file | not) | .new_path
   | select(test("\n") or startswith("/") or test("(^|/)\\.\\.(/|$)")) | "unsafe \(. | @json)"' "$CHANGES" >> "$MANIFEST"
@@ -101,13 +101,13 @@ timed out — scrub the token: `: > /tmp/pr-head.curlrc`.
 ```bash
 # Fetch linked issue metadata
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>" \
   | jq '{title, description}'
 
 # Fetch issue notes (comments)
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>/notes"
 ```
 
@@ -116,7 +116,7 @@ curl --fail --silent --show-error \
 ```bash
 # Compare commits between prior review and current HEAD
 COMPARE=$(curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}")
 CHANGED_FILES=$(echo "$COMPARE" | jq -r '.diffs[].new_path')
 ```

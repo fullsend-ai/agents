@@ -8,10 +8,13 @@ description: >-
 # GitLab API
 
 Use `curl` with the GitLab REST API. The environment provides `GITLAB_TOKEN`
-for authentication. All requests include:
+for authentication. `GITLAB_TOKEN` inside the sandbox is the opaque
+placeholder supplied by the GitLab provider — the real token never enters
+the sandbox. All requests use Bearer auth so OpenShell can replace the
+placeholder in the Authorization header at the proxy boundary:
 
 ```bash
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/..."
 ```
 
@@ -27,19 +30,19 @@ ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 
 ```bash
 # View an issue with full details
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}"
 
 # List issue comments (notes)
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=asc"
 
 # List open issues
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues?state=opened&per_page=100"
 
 # Search issues by keyword
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues?state=opened&search=keyword&per_page=30"
 ```
 
@@ -47,23 +50,23 @@ curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
 
 ```bash
 # List open merge requests
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests?state=opened&per_page=50"
 
 # Search merge requests by keyword
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests?state=opened&search=keyword&per_page=30"
 
 # View a specific merge request
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}"
 
 # Find MRs referencing a specific issue (targeted lookup for Existing-MR gate)
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/related_merge_requests"
 
 # Find MRs that would close a specific issue
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/closed_by"
 ```
 
@@ -71,11 +74,11 @@ curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
 
 ```bash
 # List root directory files
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/tree"
 
 # Read a specific file (raw content)
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/files/$(printf '%s' 'path/to/file' | jq -sRr @uri)/raw?ref=main"
 ```
 
@@ -84,11 +87,11 @@ curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
 ```bash
 # Search issues in another project (use URL-encoded project path)
 OTHER_PROJECT_ID=$(printf '%s' "group/other-project" | jq -sRr @uri)
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${OTHER_PROJECT_ID}/issues?state=opened&search=keyword&per_page=30"
 
 # Search merge requests in another project
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${OTHER_PROJECT_ID}/merge_requests?state=opened&search=keyword&per_page=30"
 ```
 

@@ -24,7 +24,7 @@ REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
 # View MR with full details
 curl --silent --config - \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
-  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\""
+  <<< "header = \"Authorization: Bearer ${GITLAB_TOKEN}\""
 ```
 
 ## MR Diff
@@ -33,7 +33,7 @@ curl --silent --config - \
 # Fetch the current diff (changes)
 curl --silent --config - \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/changes" \
-  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\"" \
+  <<< "header = \"Authorization: Bearer ${GITLAB_TOKEN}\"" \
   | jq -r '.changes[] | "--- a/\(.old_path)\n+++ b/\(.new_path)\n\(.diff)"'
 ```
 
@@ -51,7 +51,7 @@ re-fetch MR discussions as a substitute.
 # List MR notes (comments, for context on prior iterations)
 curl --silent --config - \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/notes?per_page=100&sort=asc" \
-  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\""
+  <<< "header = \"Authorization: Bearer ${GITLAB_TOKEN}\""
 ```
 
 ## Project CI
@@ -66,7 +66,7 @@ Inspect project CI during context gathering. Reuse
 # scripts/lib/gitlab-code-ops.lib.sh and scripts/pre-code.sh)
 MR_JSON=$(curl --silent --config - \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
-  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\"")
+  <<< "header = \"Authorization: Bearer ${GITLAB_TOKEN}\"")
 MR_SHA=$(echo "${MR_JSON}" | jq -r '.sha')
 HEAD_PIPELINE_ID=$(echo "${MR_JSON}" | jq -r '.head_pipeline.id // empty')
 HEAD_PIPELINE_SHA=$(echo "${MR_JSON}" | jq -r '.head_pipeline.sha // empty')
@@ -83,7 +83,7 @@ if [ -n "${HEAD_PIPELINE_ID}" ]; then
 else
   PIPELINE_ID=$(curl --silent --config - \
     "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/pipelines?per_page=100" \
-    <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\"" \
+    <<< "header = \"Authorization: Bearer ${GITLAB_TOKEN}\"" \
     | jq -r --arg sha "${MR_SHA}" --arg hsha "${HEAD_PIPELINE_SHA}" \
       '[.[] | select(.sha == $sha or ($hsha != "" and .sha == $hsha))] | (.[0].id // empty)')
 fi
@@ -91,7 +91,7 @@ fi
 # Jobs in a pipeline
 curl --silent --config - \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/pipelines/${PIPELINE_ID}/jobs?per_page=100" \
-  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\""
+  <<< "header = \"Authorization: Bearer ${GITLAB_TOKEN}\""
 ```
 
 **Exclude Fullsend agent/dispatch jobs** before diagnosing failures. Drop a
@@ -104,13 +104,13 @@ name starts with `dispatch-`. Do not add excluded jobs to `ci_inspections`.
 # Job log (trace). Read the failure; do not dump an entire successful log.
 curl --silent --config - \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/jobs/${JOB_ID}/trace" \
-  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\""
+  <<< "header = \"Authorization: Bearer ${GITLAB_TOKEN}\""
 
 # Artifacts (skip when the job published none)
 curl --silent --fail --config - \
   -o "/tmp/ci-artifacts-${JOB_ID}.zip" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/jobs/${JOB_ID}/artifacts" \
-  <<< "header = \"PRIVATE-TOKEN: ${GITLAB_TOKEN}\""
+  <<< "header = \"Authorization: Bearer ${GITLAB_TOKEN}\""
 ```
 
 If a log or artifact cannot be fetched, record that in the diagnosis and

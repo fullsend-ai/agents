@@ -22,7 +22,7 @@ All API calls use:
 ```bash
 curl --fail --silent --show-error \
   --connect-timeout 10 --max-time 30 \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4${ENDPOINT}"
 ```
 
@@ -35,7 +35,7 @@ source project.
 
 ```bash
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_REPO_ENCODED}/pipelines?per_page=20" \
   | jq '.[] | {id: .id, status: .status, ref: .ref, created_at: .created_at}'
 ```
@@ -44,7 +44,7 @@ curl --fail --silent --show-error \
 
 ```bash
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_REPO_ENCODED}/pipelines/<PIPELINE_ID>/jobs" \
   | jq '.[] | {id: .id, name: .name, status: .status, stage: .stage}'
 ```
@@ -53,7 +53,7 @@ curl --fail --silent --show-error \
 
 ```bash
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_REPO_ENCODED}/jobs/<JOB_ID>/trace" \
   | grep -i "error\|fail\|exit code"
 ```
@@ -62,7 +62,7 @@ curl --fail --silent --show-error \
 
 ```bash
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   --output artifacts.zip \
   "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_REPO_ENCODED}/jobs/<JOB_ID>/artifacts"
 ```
@@ -74,7 +74,7 @@ Search the target project — match each proposal's `target_repo`:
 ```bash
 TARGET_ENCODED=$(printf '%s' "<target_repo>" | jq -sRr @uri)
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<topic+keywords>&state=opened&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, web_url: .web_url, description: .description}'
 ```
