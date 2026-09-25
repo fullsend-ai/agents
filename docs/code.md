@@ -105,6 +105,19 @@ The validation loop does not fail on the trailer either: it soft-passes and
 leaves the repair to the post-script, so a trailer never costs a retry
 iteration.
 
+### Force-push preservation of human commits
+
+When a code-agent re-run cannot fast-forward the existing PR branch, the
+post-script falls back to `--force-with-lease`. Before that rewrite is
+published, it fetches the remote tip and refuses the force-push if any
+commit on the branch that is **not** authored by this code agent (`fullsend-code`
+plus the bot email) would be lost — including human commits and fix-agent
+commits that share the same bot email. The run fails closed, comments on the
+issue (and on the open PR when one exists) with the dropped commit's SHA and
+author, and leaves the remote branch untouched.
+
+A re-run that only replaces earlier code-agent commits still force-pushes.
+
 ## Custom sandbox image
 
 The code agent runs inside a sandbox container built from the universal
