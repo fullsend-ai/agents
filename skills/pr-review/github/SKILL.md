@@ -95,10 +95,45 @@ gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
 
 ## Prior review comparison
 
+Requires `pr-files.json` from "PR data fetching" above. Writes
+`/sandbox/workspace/changed-since-prior.txt` for the orchestrator
+(step 2a): one path per line, or a single line `all` when the delta
+cannot be enumerated. An empty file means no PR-level file changed.
+
+Compare `${BASE_SHA}...${PRIOR_REVIEW_SHA}` (three-dot: the prior
+PR-vs-base), then delta against the current PR-vs-base. Do not compare
+`${PRIOR_REVIEW_SHA}...${HEAD_SHA}`: that range includes base-branch
+files a rebase incorporated and falsely re-qualifies conditional
+sub-agents (docs-currency, security, intent-coherence,
+cross-repo-contracts).
+
 ```bash
-# Compare commits between prior review and current HEAD
-COMPARE=$(gh api "repos/${REPO_FULL_NAME}/compare/${PRIOR_REVIEW_SHA}...${HEAD_SHA}")
-CHANGED_FILES=$(echo "$COMPARE" | jq -r '.files[].filename')
+# Prior PR-vs-base at PRIOR_REVIEW_SHA vs current PR-vs-base. Blob SHA
+# / status changes are PR-level; files that only changed on the base
+# branch are not. Scanner dialect (#1190): `test` not `[ ]`, no nested
+# $( ), no glob `case` arm after a literal one, no rm.
+BASE_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" --jq '.base.sha')
+if gh api "repos/${REPO_FULL_NAME}/compare/${BASE_SHA}...${PRIOR_REVIEW_SHA}" > /sandbox/workspace/prior-pr-compare.json
+then
+  jq -n -r --slurpfile cur /sandbox/workspace/pr-files.json --slurpfile prior /sandbox/workspace/prior-pr-compare.json '
+    if (($prior[0].total_commits // 0) > 250)
+       or ((($prior[0].commits // []) | length) >= 250)
+       or ((($prior[0].files // []) | length) >= 300)
+    then "all"
+    else
+      def sig($o): "\($o.sha // "")|\($o.status // "")";
+      ($cur[0] // [] | map(.filename) | unique) as $pr
+      | (($prior[0].files // []) | map({key: .filename, value: sig(.)}) | from_entries) as $pmap
+      | (($cur[0] // []) | map({key: .filename, value: sig(.)}) | from_entries) as $cmap
+      | (($pmap + $cmap) | keys_unsorted[]) as $f
+      | select(($pr | index($f)) and (($pmap[$f] // "") != ($cmap[$f] // "")))
+      | $f
+    end
+  ' > /sandbox/workspace/changed-since-prior.txt || echo all > /sandbox/workspace/changed-since-prior.txt
+else
+  echo all > /sandbox/workspace/changed-since-prior.txt
+fi
+cat /sandbox/workspace/changed-since-prior.txt
 ```
 
 ## Interactive mode (non-pipeline)

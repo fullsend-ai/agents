@@ -201,16 +201,15 @@ If `PRIOR_REVIEW_PROVENANCE` starts with `unverifiable-`, the prior
 review file is empty and this run should proceed as a first review.
 Note the provenance failure as an info-level finding (see step 7).
 
-If `PRIOR_REVIEW_SHA` is non-empty, compute the set of files that
-changed since the prior review using the forge-specific review skill's
-"Prior review comparison" commands. Extract the list of changed file
-paths from the response.
+If `PRIOR_REVIEW_SHA` is non-empty, compute `changed_since_prior` via
+the forge skill's "Prior review comparison" (PR-vs-base delta in
+`/sandbox/workspace/changed-since-prior.txt`; not a prior-to-HEAD
+range). Read that file: one path per line, or `all` if unenumerable.
+An empty file means no PR-level file changed.
 
-If the compare API fails (e.g., 404 from force-push or history
-rewrite), or if the response indicates a truncated result (e.g.,
-GitHub's compare API silently truncates file lists at 300 files when
-`total_commits` exceeds 250), treat all files as changed — no
-anchoring for this run.
+If the compare fails (404, force-push) or is truncated (GitHub drops
+files at 300 when `total_commits` exceeds 250), treat all files as
+changed — no anchoring for this run.
 
 ### 3. Triage
 
