@@ -96,34 +96,17 @@ tracker_remove_label() {
   gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
 }
 
-tracker_strip_labels() {
-  local labels=("$@")
-  for label in "${labels[@]}"; do
-    local encoded
-    encoded=$(printf '%s' "${label}" | jq -sRr @uri)
-    gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
-  done
-}
-
-tracker_verify_labels_stripped() {
-  local labels=("$@")
-  local labels_json
-  labels_json=$(printf '%s\n' "${labels[@]}" | jq -R . | jq -s .)
-
-  local remaining
-  remaining=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" 2>/dev/null \
-    | jq -r --argjson check "${labels_json}" \
-        '[.[] | select(.name as $n | $check | index($n)) | .name] | join(", ")' \
-    || echo "VERIFY_FAILED")
-
-  if [[ "${remaining}" == "VERIFY_FAILED" ]]; then
-    echo "ERROR: cannot verify label state — API call failed" >&2
+tracker_list_issue_labels() {
+  local output
+  # Fail closed: a failed or unparseable listing must not be indistinguishable
+  # from a genuinely empty label set, or stale-control-label removal silently
+  # skips every label while adds still fire for labels already present (#1408
+  # regression risk -- see review on PR #1410).
+  if ! output=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" --paginate --jq '.[].name' 2>&1); then
+    echo "ERROR: failed to list labels for issue #${ISSUE_NUMBER}: ${output}" >&2
     return 1
   fi
-  if [[ -n "${remaining}" ]]; then
-    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
-    return 1
-  fi
+  printf '%s' "${output}"
 }
 
 tracker_list_repo_labels() {
@@ -345,42 +328,21 @@ tracker_remove_label() {
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
 }
 
-tracker_strip_labels() {
-  local labels=("$@")
-  for label in "${labels[@]}"; do
-    _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
-      --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
-  done
-}
-
-tracker_verify_labels_stripped() {
-  local labels=("$@")
-  local current_labels
-  current_labels=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null | jq -r '[.labels[]] | join(",")' 2>/dev/null || echo "VERIFY_FAILED")
-
-  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
-    echo "ERROR: cannot verify label state — API call failed" >&2
+tracker_list_issue_labels() {
+  local raw
+  # Fail closed: a failed or unparseable listing must not be indistinguishable
+  # from a genuinely empty label set, or stale-control-label removal silently
+  # skips every label while adds still fire for labels already present (#1408
+  # regression risk -- see review on PR #1410).
+  if ! raw=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>&1); then
+    echo "ERROR: failed to list labels for issue #${ISSUE_NUMBER}: ${raw}" >&2
     return 1
   fi
-
-  local remaining=""
-  IFS=',' read -ra current_array <<< "${current_labels}"
-  for current in "${current_array[@]}"; do
-    for check in "${labels[@]}"; do
-      if [[ "${current}" == "${check}" ]]; then
-        if [[ -n "${remaining}" ]]; then
-          remaining="${remaining}, ${current}"
-        else
-          remaining="${current}"
-        fi
-      fi
-    done
-  done
-
-  if [[ -n "${remaining}" ]]; then
-    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+  if ! echo "${raw}" | jq -e '.labels != null' >/dev/null 2>&1; then
+    echo "ERROR: unexpected response listing labels for issue #${ISSUE_NUMBER}: ${raw}" >&2
     return 1
   fi
+  echo "${raw}" | jq -r '.labels[]?'
 }
 
 tracker_list_repo_labels() {
@@ -680,51 +642,21 @@ tracker_remove_label() {
     --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
 }
 
-tracker_strip_labels() {
-  local labels=("$@")
-  for label in "${labels[@]}"; do
-    _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-      --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
-  done
-}
-
-tracker_verify_labels_stripped() {
-  local labels=("$@")
+tracker_list_issue_labels() {
   local raw_labels
-  raw_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>/dev/null) || {
-    echo "ERROR: cannot verify label state — API call failed" >&2
-    return 1
-  }
-
-  # An unparseable body must not read as "no labels remaining" — parse it up
-  # front so a bad shape fails loudly, matching the GitHub/GitLab sentinel.
-  local current_labels
-  current_labels=$(echo "${raw_labels}" | jq -r '[.fields.labels[]] | join("\n")' 2>/dev/null) \
-    || current_labels="VERIFY_FAILED"
-  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
-    echo "ERROR: cannot verify label state — unexpected response shape" >&2
+  # Fail closed: a failed or unparseable listing must not be indistinguishable
+  # from a genuinely empty label set, or stale-control-label removal silently
+  # skips every label while adds still fire for labels already present (#1408
+  # regression risk -- see review on PR #1410).
+  if ! raw_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>&1); then
+    echo "ERROR: failed to list labels for issue ${ISSUE_NUMBER}: ${raw_labels}" >&2
     return 1
   fi
-
-  local remaining=""
-  local current
-  while IFS= read -r current; do
-    [[ -z "${current}" ]] && continue
-    for check in "${labels[@]}"; do
-      if [[ "${current}" == "${check}" ]]; then
-        if [[ -n "${remaining}" ]]; then
-          remaining="${remaining}, ${current}"
-        else
-          remaining="${current}"
-        fi
-      fi
-    done
-  done <<< "${current_labels}"
-
-  if [[ -n "${remaining}" ]]; then
-    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+  if ! echo "${raw_labels}" | jq -e '.fields.labels != null' >/dev/null 2>&1; then
+    echo "ERROR: unexpected response listing labels for issue ${ISSUE_NUMBER}: ${raw_labels}" >&2
     return 1
   fi
+  echo "${raw_labels}" | jq -r '.fields.labels[]?'
 }
 
 # Jira has no per-project label registry like GitHub/GitLab — any string is
@@ -1030,11 +962,19 @@ echo "Repo: ${REPO}"
 echo "Issue: #${ISSUE_NUMBER}"
 
 # Control labels managed by the triage pipeline. The post script refuses to
-# add or remove these via label_actions. pre-triage.sh resets needs-info,
-# ready-to-code, duplicate, feature, question, not-planned, completed,
-# and pr-open before each run; the action handlers below apply the rest.
-# pr-open is also created and applied independently by the code agent's
-# pre-check (scripts/pre-code.sh) when it finds a human PR before dispatching.
+# add or remove these via label_actions. Action handlers record the desired
+# control labels for this run; stale control labels that are not desired
+# are removed once after the handlers, skipping any label about to be
+# (re)applied so we don't generate a no-op unlabel/relabel timeline event
+# (#1408). pr-open is also created and applied independently by the code
+# agent's pre-check (scripts/pre-code.sh) when it finds a human PR before
+# dispatching.
+#
+# Trade-off: stale control labels are only guaranteed to be cleared once
+# this reconciliation loop runs, i.e. after a *successful* run reaches this
+# point. pre-triage.sh no longer strips them up front, so an early exit
+# above (e.g. invalid agent JSON) leaves stale control labels in place
+# until the next successful run (see pre-triage.sh header).
 CONTROL_LABELS=("needs-info" "ready-to-code" "duplicate" "feature" "blocked" "triaged" "question" "bug" "documentation" "not-planned" "completed" "pr-open")
 
 is_control_label() {
@@ -1047,18 +987,58 @@ is_control_label() {
   return 1
 }
 
+# Snapshot of labels currently on the issue, used to skip no-op add/remove
+# API calls that would otherwise generate timeline noise (#1408).
+#
+# tracker_list_issue_labels fails closed (non-zero exit, no stdout) on API
+# or parse failure, so a transient failure here can never be mistaken for
+# "issue has no labels" -- treating it as empty would skip every stale
+# control-label removal below while apply_control_label/tracker_add_label
+# still fire for labels already present, regenerating the no-op add/remove
+# cycle this script exists to prevent. Abort loudly instead, matching the
+# behavior of the tracker_verify_labels_stripped helpers this replaced.
+if ! CURRENT_ISSUE_LABELS=$(tracker_list_issue_labels); then
+  echo "ERROR: cannot verify label state — API call failed" >&2
+  exit 1
+fi
+
+issue_has_label() {
+  local label="$1"
+  [[ -z "${CURRENT_ISSUE_LABELS}" ]] && return 1
+  echo "${CURRENT_ISSUE_LABELS}" | grep -qFx "${label}"
+}
+
+# Desired control labels for this run. Handlers record via apply_control_label
+# (immediate add, skipped when already present) or by appending when deferring
+# ready-to-code.
+DESIRED_CONTROL_LABELS=()
+
+apply_control_label() {
+  local label="$1"
+  DESIRED_CONTROL_LABELS+=("${label}")
+  if issue_has_label "${label}"; then
+    echo "Keeping existing '${label}' label"
+    return 0
+  fi
+  tracker_add_label "${label}"
+}
+
+is_desired_control_label() {
+  local label="$1"
+  local desired
+  [[ ${#DESIRED_CONTROL_LABELS[@]} -eq 0 ]] && return 1
+  for desired in "${DESIRED_CONTROL_LABELS[@]}"; do
+    [[ "${desired}" == "${label}" ]] && return 0
+  done
+  return 1
+}
+
 # --- Action-specific validation and control labels ---
 
 # Deferred label: when set, applied after label_actions so it fires last.
 # This prevents the ready-to-code webhook event from being superseded by
 # subsequent label events in the dispatch concurrency group (see #1752).
 DEFERRED_LABEL=""
-
-# Clear a stale "triaged" label from a prior re-triage before dispatching on
-# the new action. Every terminal action below resets its own set of control
-# labels, but "triaged" is only ever re-applied (never removed) by the
-# handlers themselves, so it must be cleared up front rather than per-branch.
-tracker_remove_label "triaged"
 
 # --- Cross-repo issue creation allowlist ---
 # Used by prerequisites and split actions. Read once before the case
@@ -1111,9 +1091,7 @@ case "${ACTION}" in
       echo "ERROR: action is 'insufficient' but no comment provided" >&2
       exit 1
     fi
-    tracker_remove_label "blocked"
-    tracker_remove_label "pr-open"
-    tracker_add_label "needs-info"
+    apply_control_label "needs-info"
     ;;
 
   duplicate)
@@ -1126,9 +1104,7 @@ case "${ACTION}" in
       echo "ERROR: issue cannot be a duplicate of itself (#${ISSUE_NUMBER})" >&2
       exit 1
     fi
-    tracker_remove_label "blocked"
-    tracker_remove_label "pr-open"
-    tracker_add_label "duplicate"
+    apply_control_label "duplicate"
     ;;
 
   prerequisites)
@@ -1205,10 +1181,7 @@ ${ISSUE_BODY}
 ${FAILED_CREATES}"
     fi
 
-    tracker_remove_label "ready-to-code"
-    tracker_remove_label "needs-info"
-    tracker_remove_label "pr-open"
-    tracker_add_label "blocked"
+    apply_control_label "blocked"
     ;;
 
   in-progress)
@@ -1252,11 +1225,8 @@ ${FAILED_CREATES}"
 
 **Addressed by:**${PR_LIST}"
 
-    tracker_remove_label "blocked"
-    tracker_remove_label "ready-to-code"
-    tracker_remove_label "needs-info"
     tracker_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
-    tracker_add_label "pr-open"
+    apply_control_label "pr-open"
     ;;
 
   sufficient)
@@ -1321,10 +1291,6 @@ ${FAILED_CREATES}"
         fi
       fi
     fi
-
-    tracker_remove_label "blocked"
-    tracker_remove_label "needs-info"
-    tracker_remove_label "pr-open"
 
     # Low-risk categories (bug, documentation, performance) auto-promote to
     # ready-to-code, which triggers the code agent. Feature work and anything
@@ -1406,50 +1372,53 @@ ${FAILED_CREATES}"
       echo "::warning::Triage detected workflow file changes required (#325)"
       if [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
         echo "Applying triaged label (workflow changes required)..."
-        tracker_add_label "triaged"
+        apply_control_label "triaged"
         WORKFLOW_BLOCKED=true
       fi
     fi
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
-        tracker_add_label "bug"
+        apply_control_label "bug"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
+          DESIRED_CONTROL_LABELS+=("ready-to-code")
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          tracker_add_label "triaged"
+          apply_control_label "triaged"
         fi
         ;;
       documentation)
         echo "Applying documentation label..."
-        tracker_add_label "documentation"
+        apply_control_label "documentation"
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
+          DESIRED_CONTROL_LABELS+=("ready-to-code")
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          tracker_add_label "triaged"
+          apply_control_label "triaged"
         fi
         ;;
       performance)
         if [[ "${WORKFLOW_BLOCKED}" != "true" ]] && [[ "${AUTO_CODE_ALLOWED}" == "true" ]]; then
           echo "Deferring ready-to-code label (${CATEGORY}) until after label_actions..."
           DEFERRED_LABEL="ready-to-code"
+          DESIRED_CONTROL_LABELS+=("ready-to-code")
         elif [[ "${WORKFLOW_BLOCKED}" != "true" ]]; then
           echo "Applying triaged label (auto-code disabled for ${CATEGORY})..."
-          tracker_add_label "triaged"
+          apply_control_label "triaged"
         fi
         ;;
       feature)
         echo "Applying feature + triaged labels..."
-        tracker_add_label "feature"
-        tracker_add_label "triaged"
+        apply_control_label "feature"
+        apply_control_label "triaged"
         ;;
       *)
         echo "Applying triaged label (${CATEGORY})..."
-        tracker_add_label "triaged"
+        apply_control_label "triaged"
         ;;
     esac
     ;;
@@ -1524,10 +1493,6 @@ ${SUB_BODY}
 ${FAILED_CREATES}"
     fi
 
-    tracker_remove_label "blocked"
-    tracker_remove_label "needs-info"
-    tracker_remove_label "ready-to-code"
-    tracker_remove_label "pr-open"
     ;;
 
   question)
@@ -1535,10 +1500,7 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'question' but no comment provided" >&2
       exit 1
     fi
-    tracker_remove_label "blocked"
-    tracker_remove_label "needs-info"
-    tracker_remove_label "pr-open"
-    tracker_add_label "question"
+    apply_control_label "question"
     ;;
 
   not-planned)
@@ -1546,10 +1508,7 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'not-planned' but no comment provided" >&2
       exit 1
     fi
-    tracker_remove_label "blocked"
-    tracker_remove_label "needs-info"
-    tracker_remove_label "pr-open"
-    tracker_add_label "not-planned"
+    apply_control_label "not-planned"
     ;;
 
   completed)
@@ -1557,10 +1516,7 @@ ${FAILED_CREATES}"
       echo "ERROR: action is 'completed' but no comment provided" >&2
       exit 1
     fi
-    tracker_remove_label "blocked"
-    tracker_remove_label "needs-info"
-    tracker_remove_label "pr-open"
-    tracker_add_label "completed"
+    apply_control_label "completed"
     ;;
 
   *)
@@ -1568,6 +1524,16 @@ ${FAILED_CREATES}"
     exit 1
     ;;
 esac
+
+# Remove stale control labels from prior runs, skipping any label this run
+# is about to (re)apply so we don't create a pointless unlabel/relabel cycle.
+# Also skip labels that are not currently on the issue — DELETE of a missing
+# label is a no-op on the API but still not worth a request.
+for stale_label in "${CONTROL_LABELS[@]}"; do
+  is_desired_control_label "${stale_label}" && continue
+  issue_has_label "${stale_label}" || continue
+  tracker_remove_label "${stale_label}"
+done
 
 # --- Process label_actions (applies to all actions) ---
 
@@ -1607,11 +1573,19 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
           echo "::warning::Skipping label '$(_gha_sanitize "${LA_LABEL}")' -- does not exist in repo (will not auto-create)"
           continue
         fi
+        if issue_has_label "${LA_LABEL}"; then
+          echo "Keeping existing '$(_gha_sanitize "${LA_LABEL}")' label"
+          continue
+        fi
         echo "Adding label '$(_gha_sanitize "${LA_LABEL}")'..."
         tracker_add_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
         ;;
       remove)
+        if ! issue_has_label "${LA_LABEL}"; then
+          echo "Label '$(_gha_sanitize "${LA_LABEL}")' is not on the issue — skipping remove"
+          continue
+        fi
         echo "Removing label '$(_gha_sanitize "${LA_LABEL}")'..."
         tracker_remove_label "${LA_LABEL}"
         LABELS_APPLIED=$((LABELS_APPLIED + 1))
@@ -1700,14 +1674,18 @@ fi
 # --- Apply deferred label (must be last label mutation) ---
 
 if [[ -n "${DEFERRED_LABEL}" ]]; then
-  echo "Applying deferred label '${DEFERRED_LABEL}'..."
-  # forge_ensure_label creates the label via `gh` against REPO. On Jira, REPO
-  # is a project key, not an OWNER/REPO, and Jira has no label registry to
-  # create into — any string is already a valid label.
-  if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
-    forge_ensure_label "${DEFERRED_LABEL}"
+  if issue_has_label "${DEFERRED_LABEL}"; then
+    echo "Keeping existing '${DEFERRED_LABEL}' label"
+  else
+    echo "Applying deferred label '${DEFERRED_LABEL}'..."
+    # forge_ensure_label creates the label via `gh` against REPO. On Jira, REPO
+    # is a project key, not an OWNER/REPO, and Jira has no label registry to
+    # create into — any string is already a valid label.
+    if [[ "${FULLSEND_TRACKER}" != "jira" ]]; then
+      forge_ensure_label "${DEFERRED_LABEL}"
+    fi
+    tracker_add_label "${DEFERRED_LABEL}"
   fi
-  tracker_add_label "${DEFERRED_LABEL}"
 fi
 
 # --- Append action-hints footer (sufficient only) ---

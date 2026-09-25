@@ -20,40 +20,10 @@ MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 
 CURL_LOG="${TMPDIR}/curl-calls.log"
-MOCK_LABELS_FILE="${TMPDIR}/mock-labels.json"
-echo '[]' > "${MOCK_LABELS_FILE}"
 
-# Mock curl: record calls and return the labels currently on the issue.
-printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/curl"
-cat >> "${MOCK_BIN}/curl" <<CURLMOCK
-
-METHOD="GET"
-URL=""
-for arg in "\$@"; do
-  case "\${arg}" in
-    --request) shift_next=method ;;
-    --fail|--silent|--show-error) ;;
-    --connect-timeout|--max-time|--user|--header|--data) shift_next=skip ;;
-    *)
-      if [[ "\${shift_next:-}" == "method" ]]; then
-        METHOD="\${arg}"
-        shift_next=""
-      elif [[ "\${shift_next:-}" == "skip" ]]; then
-        shift_next=""
-      elif [[ "\${arg}" =~ ^https:// ]]; then
-        URL="\${arg}"
-      fi
-      ;;
-  esac
-done
-
-if [[ "\${URL}" =~ \\?fields=labels\$ ]] && [[ "\${METHOD}" == "GET" ]]; then
-  echo '{"fields":{"labels":'"\$(cat "${MOCK_LABELS_FILE}")"'}}'
-  exit 0
-fi
-
-exit 0
-CURLMOCK
+# Mock curl: record calls. pre-triage.sh no longer mutates labels (#1408),
+# so a successful run should not invoke curl at all.
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nexit 0\n' "${CURL_LOG}" > "${MOCK_BIN}/curl"
 chmod +x "${MOCK_BIN}/curl"
 
 export PATH="${MOCK_BIN}:${PATH}"
@@ -101,9 +71,16 @@ run_test() {
     return
   fi
 
-  if [[ -n "${expected_pattern}" ]] && ! grep -qF -- "${expected_pattern}" "${CURL_LOG}"; then
-    echo "FAIL: ${test_name} — expected curl call pattern '${expected_pattern}' not found"
-    echo "Actual curl calls:"
+  if [[ -n "${expected_pattern}" ]] && ! grep -qF -- "${expected_pattern}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_pattern}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expect_no_mutation}" == "true" ]] && [[ -s "${CURL_LOG}" ]]; then
+    echo "FAIL: ${test_name} — expected no mutation but curl was called"
     cat "${CURL_LOG}"
     FAILURES=$((FAILURES + 1))
     return
@@ -112,19 +89,11 @@ run_test() {
   echo "PASS: ${test_name}"
 }
 
-# Valid Jira issue URL: parses and strips each triage control label.
-echo '[]' > "${MOCK_LABELS_FILE}"
-run_test "jira-valid-url-resets-labels" \
+# Valid Jira issue URL: parses and validates without mutating labels (#1408).
+run_test "jira-valid-url-validates-target" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
-  '"remove":"needs-info"'
-
-run_test "jira-valid-url-resets-pr-open-label" \
-  "https://test.atlassian.net/browse/TESTPROJ-42" \
-  '"remove":"pr-open"'
-
-run_test "jira-valid-url-resets-completed-label" \
-  "https://test.atlassian.net/browse/TESTPROJ-42" \
-  '"remove":"completed"'
+  "Triage target validated: TESTPROJ#TESTPROJ-42" \
+  "false" "true"
 
 # Malformed Jira issue URL: fails validation, performs no mutation.
 run_test "jira-malformed-url-fails" \
@@ -138,35 +107,20 @@ run_test "jira-disallowed-host-fails" \
   "is not in the allowed host list" \
   "true" "true"
 
-# A control label still present after stripping fails verification (mutation
-# is attempted, but the post-strip verification GET still reports it).
-echo '["needs-info"]' > "${MOCK_LABELS_FILE}"
-run_test "jira-label-not-stripped-fails" \
-  "https://test.atlassian.net/browse/TESTPROJ-42" \
-  "triage labels still present after reset" \
-  "true"
-echo '[]' > "${MOCK_LABELS_FILE}"
-
-# An unexpected response shape must fail loudly, not read as "no labels left".
-echo 'null' > "${MOCK_LABELS_FILE}"
-run_test "jira-label-verify-malformed-response-fails" \
-  "https://test.atlassian.net/browse/TESTPROJ-42" \
-  "cannot verify label state" \
-  "true"
-echo '[]' > "${MOCK_LABELS_FILE}"
-
 # JIRA_BASE_URL with trailing slash should still match the parsed URL.
 export JIRA_BASE_URL="https://test.atlassian.net/"
 run_test "jira-base-url-trailing-slash-ok" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
-  '"remove":"needs-info"'
+  "Triage target validated: TESTPROJ#TESTPROJ-42" \
+  "false" "true"
 unset JIRA_BASE_URL
 
 # More than one trailing slash must normalise too.
 export JIRA_BASE_URL="https://test.atlassian.net//"
 run_test "jira-base-url-multiple-trailing-slashes-ok" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
-  '"remove":"needs-info"'
+  "Triage target validated: TESTPROJ#TESTPROJ-42" \
+  "false" "true"
 unset JIRA_BASE_URL
 
 # --- Jira credential guard tests (#876) ---

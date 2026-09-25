@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
-# pre-triage.sh — Strip triage-related labels before the agent runs.
+# pre-triage.sh — Validate the triage target before the agent runs.
 #
-# Runs on the host via the harness pre_script mechanism. Ensures every
-# triage invocation starts from a clean label baseline, preventing
-# mutual-exclusion violations (Story 2, #125).
+# Runs on the host via the harness pre_script mechanism. Control-label
+# reconciliation is owned by post-triage.sh, which diffs the desired
+# labels against the issue's current labels so unchanged labels are not
+# removed and re-added (#1408).
+#
+# Trade-off: this script no longer strips control labels up front, so the
+# mutual-exclusion guarantee (preventing conflicting control labels,
+# Story 2, #125) now only holds after a *successful* post-triage.sh run
+# reaches its stale-label reconciliation loop. An early exit in
+# post-triage.sh (e.g. invalid agent JSON) no longer guarantees stale
+# control labels are cleared before the next attempt.
 #
 # Required env vars:
 #   ISSUE_URL        — HTML URL of the issue
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
-#
-# IMPORTANT: Uses the labels API directly (DELETE /issues/{number}/labels/{name})
-# instead of gh issue edit. gh issue edit uses PATCH /issues/{number}
-# which fires issues.edited, re-triggering the triage dispatch in the shim workflow.
 
 set -euo pipefail
 
@@ -28,11 +32,4 @@ tracker_validate_issue_url
 echo "::notice::🔗 Triage target: $(_gha_sanitize "${ISSUE_URL}")"
 tracker_parse_issue_url
 
-echo "Resetting triage labels on ${REPO}#${ISSUE_NUMBER}"
-
-TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned completed pr-open)
-
-tracker_strip_labels "${TRIAGE_LABELS[@]}"
-tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"
-
-echo "Label reset complete."
+echo "Triage target validated: ${REPO}#${ISSUE_NUMBER}"

@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
 # GENERATED from pre-triage.src.sh — DO NOT EDIT. Run: make script-build
-# pre-triage.sh — Strip triage-related labels before the agent runs.
+# pre-triage.sh — Validate the triage target before the agent runs.
 #
-# Runs on the host via the harness pre_script mechanism. Ensures every
-# triage invocation starts from a clean label baseline, preventing
-# mutual-exclusion violations (Story 2, #125).
+# Runs on the host via the harness pre_script mechanism. Control-label
+# reconciliation is owned by post-triage.sh, which diffs the desired
+# labels against the issue's current labels so unchanged labels are not
+# removed and re-added (#1408).
+#
+# Trade-off: this script no longer strips control labels up front, so the
+# mutual-exclusion guarantee (preventing conflicting control labels,
+# Story 2, #125) now only holds after a *successful* post-triage.sh run
+# reaches its stale-label reconciliation loop. An early exit in
+# post-triage.sh (e.g. invalid agent JSON) no longer guarantees stale
+# control labels are cleared before the next attempt.
 #
 # Required env vars:
 #   ISSUE_URL        — HTML URL of the issue
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
-#
-# IMPORTANT: Uses the labels API directly (DELETE /issues/{number}/labels/{name})
-# instead of gh issue edit. gh issue edit uses PATCH /issues/{number}
-# which fires issues.edited, re-triggering the triage dispatch in the shim workflow.
 
 set -euo pipefail
 
@@ -92,34 +96,17 @@ tracker_remove_label() {
   gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
 }
 
-tracker_strip_labels() {
-  local labels=("$@")
-  for label in "${labels[@]}"; do
-    local encoded
-    encoded=$(printf '%s' "${label}" | jq -sRr @uri)
-    gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
-  done
-}
-
-tracker_verify_labels_stripped() {
-  local labels=("$@")
-  local labels_json
-  labels_json=$(printf '%s\n' "${labels[@]}" | jq -R . | jq -s .)
-
-  local remaining
-  remaining=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" 2>/dev/null \
-    | jq -r --argjson check "${labels_json}" \
-        '[.[] | select(.name as $n | $check | index($n)) | .name] | join(", ")' \
-    || echo "VERIFY_FAILED")
-
-  if [[ "${remaining}" == "VERIFY_FAILED" ]]; then
-    echo "ERROR: cannot verify label state — API call failed" >&2
+tracker_list_issue_labels() {
+  local output
+  # Fail closed: a failed or unparseable listing must not be indistinguishable
+  # from a genuinely empty label set, or stale-control-label removal silently
+  # skips every label while adds still fire for labels already present (#1408
+  # regression risk -- see review on PR #1410).
+  if ! output=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" --paginate --jq '.[].name' 2>&1); then
+    echo "ERROR: failed to list labels for issue #${ISSUE_NUMBER}: ${output}" >&2
     return 1
   fi
-  if [[ -n "${remaining}" ]]; then
-    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
-    return 1
-  fi
+  printf '%s' "${output}"
 }
 
 tracker_list_repo_labels() {
@@ -341,42 +328,21 @@ tracker_remove_label() {
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
 }
 
-tracker_strip_labels() {
-  local labels=("$@")
-  for label in "${labels[@]}"; do
-    _gitlab_api PUT "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" \
-      --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
-  done
-}
-
-tracker_verify_labels_stripped() {
-  local labels=("$@")
-  local current_labels
-  current_labels=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>/dev/null | jq -r '[.labels[]] | join(",")' 2>/dev/null || echo "VERIFY_FAILED")
-
-  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
-    echo "ERROR: cannot verify label state — API call failed" >&2
+tracker_list_issue_labels() {
+  local raw
+  # Fail closed: a failed or unparseable listing must not be indistinguishable
+  # from a genuinely empty label set, or stale-control-label removal silently
+  # skips every label while adds still fire for labels already present (#1408
+  # regression risk -- see review on PR #1410).
+  if ! raw=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}" 2>&1); then
+    echo "ERROR: failed to list labels for issue #${ISSUE_NUMBER}: ${raw}" >&2
     return 1
   fi
-
-  local remaining=""
-  IFS=',' read -ra current_array <<< "${current_labels}"
-  for current in "${current_array[@]}"; do
-    for check in "${labels[@]}"; do
-      if [[ "${current}" == "${check}" ]]; then
-        if [[ -n "${remaining}" ]]; then
-          remaining="${remaining}, ${current}"
-        else
-          remaining="${current}"
-        fi
-      fi
-    done
-  done
-
-  if [[ -n "${remaining}" ]]; then
-    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+  if ! echo "${raw}" | jq -e '.labels != null' >/dev/null 2>&1; then
+    echo "ERROR: unexpected response listing labels for issue #${ISSUE_NUMBER}: ${raw}" >&2
     return 1
   fi
+  echo "${raw}" | jq -r '.labels[]?'
 }
 
 tracker_list_repo_labels() {
@@ -676,51 +642,21 @@ tracker_remove_label() {
     --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
 }
 
-tracker_strip_labels() {
-  local labels=("$@")
-  for label in "${labels[@]}"; do
-    _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-      --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
-  done
-}
-
-tracker_verify_labels_stripped() {
-  local labels=("$@")
+tracker_list_issue_labels() {
   local raw_labels
-  raw_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>/dev/null) || {
-    echo "ERROR: cannot verify label state — API call failed" >&2
-    return 1
-  }
-
-  # An unparseable body must not read as "no labels remaining" — parse it up
-  # front so a bad shape fails loudly, matching the GitHub/GitLab sentinel.
-  local current_labels
-  current_labels=$(echo "${raw_labels}" | jq -r '[.fields.labels[]] | join("\n")' 2>/dev/null) \
-    || current_labels="VERIFY_FAILED"
-  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
-    echo "ERROR: cannot verify label state — unexpected response shape" >&2
+  # Fail closed: a failed or unparseable listing must not be indistinguishable
+  # from a genuinely empty label set, or stale-control-label removal silently
+  # skips every label while adds still fire for labels already present (#1408
+  # regression risk -- see review on PR #1410).
+  if ! raw_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>&1); then
+    echo "ERROR: failed to list labels for issue ${ISSUE_NUMBER}: ${raw_labels}" >&2
     return 1
   fi
-
-  local remaining=""
-  local current
-  while IFS= read -r current; do
-    [[ -z "${current}" ]] && continue
-    for check in "${labels[@]}"; do
-      if [[ "${current}" == "${check}" ]]; then
-        if [[ -n "${remaining}" ]]; then
-          remaining="${remaining}, ${current}"
-        else
-          remaining="${current}"
-        fi
-      fi
-    done
-  done <<< "${current_labels}"
-
-  if [[ -n "${remaining}" ]]; then
-    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+  if ! echo "${raw_labels}" | jq -e '.fields.labels != null' >/dev/null 2>&1; then
+    echo "ERROR: unexpected response listing labels for issue ${ISSUE_NUMBER}: ${raw_labels}" >&2
     return 1
   fi
+  echo "${raw_labels}" | jq -r '.fields.labels[]?'
 }
 
 # Jira has no per-project label registry like GitHub/GitLab — any string is
@@ -931,11 +867,4 @@ tracker_validate_issue_url
 echo "::notice::🔗 Triage target: $(_gha_sanitize "${ISSUE_URL}")"
 tracker_parse_issue_url
 
-echo "Resetting triage labels on ${REPO}#${ISSUE_NUMBER}"
-
-TRIAGE_LABELS=(needs-info ready-to-code duplicate feature question not-planned completed pr-open)
-
-tracker_strip_labels "${TRIAGE_LABELS[@]}"
-tracker_verify_labels_stripped "${TRIAGE_LABELS[@]}"
-
-echo "Label reset complete."
+echo "Triage target validated: ${REPO}#${ISSUE_NUMBER}"

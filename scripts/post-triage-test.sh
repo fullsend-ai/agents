@@ -19,15 +19,32 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # Mock gh: record all calls to a log file.
 GH_LOG="${TMPDIR}/gh-calls.log"
+ISSUE_LABELS_FILE="${TMPDIR}/issue-labels.txt"
+: > "${ISSUE_LABELS_FILE}"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
+FAIL_ISSUE_LABELS_MARKER="${TMPDIR}/fail-issue-labels"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
+# Current labels on the issue (GET .../issues/N/labels). Default empty so
+# tests observe adds; individual tests seed ISSUE_LABELS_FILE to exercise
+# the skip-already-present path (#1408).
+if [[ "\$1" == "api" ]] && [[ "\$2" == *"/issues/"*"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
+  # FAIL_ISSUE_LABELS_MARKER simulates an API/CLI failure while listing
+  # current issue labels, to exercise the fail-closed path (silent-failure
+  # review finding on PR #1410).
+  if [[ -f "${FAIL_ISSUE_LABELS_MARKER}" ]]; then
+    echo "gh: HTTP 502: Bad Gateway" >&2
+    exit 1
+  fi
+  cat "${ISSUE_LABELS_FILE}"
+  exit 0
+fi
 # When querying the repo labels list, return a set of known test labels so that
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
   # Return labels used by the test fixtures, one per line (--jq '.[].name').
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "enhancement" "bug" "documentation" "pr-open"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "priority/low" "priority/medium" "component/parser" "enhancement" "bug" "documentation" "pr-open"
   exit 0
 fi
 # For issue create, return a fake URL on stdout so callers can capture it.
@@ -121,6 +138,17 @@ create_issues:
 CFGEOF
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
+# Seed current-issue labels for the skip-already-present path (#1408).
+# Tests that need labels already on the issue set TEST_ISSUE_LABELS to a
+# newline-separated list for that invocation only:
+#   TEST_ISSUE_LABELS=$'blocked\ntriaged' run_test ...
+seed_issue_labels() {
+  : > "${ISSUE_LABELS_FILE}"
+  if [[ -n "${TEST_ISSUE_LABELS:-}" ]]; then
+    printf '%s\n' "${TEST_ISSUE_LABELS}" > "${ISSUE_LABELS_FILE}"
+  fi
+}
+
 run_test() {
   local test_name="$1"
   local json_content="$2"
@@ -132,6 +160,7 @@ run_test() {
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
 
+  seed_issue_labels
   # Clear gh call log.
   : > "${GH_LOG}"
 
@@ -175,6 +204,7 @@ run_test_stdout() {
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  seed_issue_labels
   : > "${GH_LOG}"
 
   local exit_code=0
@@ -208,18 +238,18 @@ run_test "insufficient-posts-comment-and-labels" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=needs-info --silent"
 
-run_test "insufficient-removes-blocked-label" \
+TEST_ISSUE_LABELS='blocked' run_test "insufficient-removes-blocked-label" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
-run_test "insufficient-removes-pr-open-label" \
+TEST_ISSUE_LABELS='pr-open' run_test "insufficient-removes-pr-open-label" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
 # A stale "triaged" label from a prior re-triage must be cleared on every
 # terminal action, not just "sufficient" — the removal happens once before
 # the action dispatch (see #1754 review feedback).
-run_test "insufficient-clears-stale-triaged-label" \
+TEST_ISSUE_LABELS='triaged' run_test "insufficient-clears-stale-triaged-label" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
 
@@ -238,7 +268,7 @@ run_test "sufficient-bug-gets-bug-label" \
 # A stale "triaged" label from a prior re-triage (e.g. TRIAGE_AUTO_CODE was
 # "off" at the time) must be cleared even when this run auto-promotes to
 # ready-to-code, or the issue ends up with both labels simultaneously.
-run_test "sufficient-clears-stale-triaged-label" \
+TEST_ISSUE_LABELS='triaged' run_test "sufficient-clears-stale-triaged-label" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
 
@@ -279,15 +309,15 @@ run_test "sufficient-appends-action-hints-footer" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
   "/fs-code"
 
-run_test "sufficient-removes-blocked-label" \
+TEST_ISSUE_LABELS='blocked' run_test "sufficient-removes-blocked-label" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
-run_test "sufficient-removes-needs-info-label" \
+TEST_ISSUE_LABELS='needs-info' run_test "sufficient-removes-needs-info-label" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
 
-run_test "sufficient-removes-pr-open-label" \
+TEST_ISSUE_LABELS='pr-open' run_test "sufficient-removes-pr-open-label" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash","information_gaps":[]},"comment":"## Triage Summary\n\nThis is ready."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
@@ -295,11 +325,11 @@ run_test "duplicate-labels" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=duplicate --silent"
 
-run_test "duplicate-removes-blocked-label" \
+TEST_ISSUE_LABELS='blocked' run_test "duplicate-removes-blocked-label" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
-run_test "duplicate-removes-pr-open-label" \
+TEST_ISSUE_LABELS='pr-open' run_test "duplicate-removes-pr-open-label" \
   '{"action":"duplicate","reasoning":"same as #10","duplicate_of":10,"comment":"This appears to be a duplicate of #10."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
@@ -320,7 +350,7 @@ run_test "prerequisites-applies-blocked-label" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=blocked --silent"
 
-run_test "prerequisites-removes-pr-open-label" \
+TEST_ISSUE_LABELS='pr-open' run_test "prerequisites-removes-pr-open-label" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
@@ -354,15 +384,15 @@ run_test "in-progress-applies-pr-open-label" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=pr-open --silent"
 
-run_test "in-progress-removes-blocked-label" \
+TEST_ISSUE_LABELS='blocked' run_test "in-progress-removes-blocked-label" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
-run_test "in-progress-removes-ready-to-code-label" \
+TEST_ISSUE_LABELS='ready-to-code' run_test "in-progress-removes-ready-to-code-label" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/ready-to-code -X DELETE --silent"
 
-run_test "in-progress-removes-needs-info-label" \
+TEST_ISSUE_LABELS='needs-info' run_test "in-progress-removes-needs-info-label" \
   '{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
 
@@ -423,15 +453,15 @@ run_test "question-applies-question-label" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported.\n\nDid this answer your question, or would you like to open a feature request for Python 4 support?"}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=question --silent"
 
-run_test "question-removes-blocked-label" \
+TEST_ISSUE_LABELS='blocked' run_test "question-removes-blocked-label" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
-run_test "question-removes-needs-info-label" \
+TEST_ISSUE_LABELS='needs-info' run_test "question-removes-needs-info-label" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
 
-run_test "question-removes-pr-open-label" \
+TEST_ISSUE_LABELS='pr-open' run_test "question-removes-pr-open-label" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the repository docs, Python 4 is not currently supported."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
@@ -448,15 +478,15 @@ run_test "not-planned-applies-label" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope for the project goals."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=not-planned --silent"
 
-run_test "not-planned-removes-blocked-label" \
+TEST_ISSUE_LABELS='blocked' run_test "not-planned-removes-blocked-label" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
-run_test "not-planned-removes-needs-info-label" \
+TEST_ISSUE_LABELS='needs-info' run_test "not-planned-removes-needs-info-label" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
 
-run_test "not-planned-removes-pr-open-label" \
+TEST_ISSUE_LABELS='pr-open' run_test "not-planned-removes-pr-open-label" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
@@ -477,15 +507,15 @@ run_test "completed-applies-label" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=completed --silent"
 
-run_test "completed-removes-blocked-label" \
+TEST_ISSUE_LABELS='blocked' run_test "completed-removes-blocked-label" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
-run_test "completed-removes-needs-info-label" \
+TEST_ISSUE_LABELS='needs-info' run_test "completed-removes-needs-info-label" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
 
-run_test "completed-removes-pr-open-label" \
+TEST_ISSUE_LABELS='pr-open' run_test "completed-removes-pr-open-label" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
@@ -549,7 +579,7 @@ run_test "label-actions-reason-appended-to-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"API crash matches area/api label.","actions":[{"action":"add","label":"area/api"}]}}' \
   "API crash matches area/api label."
 
-run_test "label-actions-remove" \
+TEST_ISSUE_LABELS='area/cli' run_test "label-actions-remove" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Stale area label removed.","actions":[{"action":"remove","label":"area/cli"}]}}' \
   "gh api repos/test-org/test-repo/issues/42/labels/area%2Fcli -X DELETE --silent"
 
@@ -579,6 +609,7 @@ run_test_no_pattern() {
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  seed_issue_labels
   : > "${GH_LOG}"
 
   local exit_code=0
@@ -606,6 +637,84 @@ run_test_no_pattern "label-actions-all-refused-no-reason" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "Should not appear."
 
+# --- No-op label cycle tests (#1408) ---
+# Re-triaging a feature that already has feature+triaged+priority/medium, with
+# only a priority change, must not remove/re-add feature or triaged.
+NOOP_FEATURE_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature.","label_actions":{"reason":"Priority dropped.","actions":[{"action":"add","label":"priority/low"},{"action":"remove","label":"priority/medium"}]}}'
+
+TEST_ISSUE_LABELS=$'feature\ntriaged\npriority/medium' run_test_no_pattern "noop-skip-feature-readd" \
+  "${NOOP_FEATURE_FIXTURE}" \
+  "labels[]=feature"
+
+TEST_ISSUE_LABELS=$'feature\ntriaged\npriority/medium' run_test_no_pattern "noop-skip-triaged-readd" \
+  "${NOOP_FEATURE_FIXTURE}" \
+  "labels[]=triaged"
+
+TEST_ISSUE_LABELS=$'feature\ntriaged\npriority/medium' run_test_no_pattern "noop-skip-feature-remove" \
+  "${NOOP_FEATURE_FIXTURE}" \
+  "labels/feature -X DELETE"
+
+TEST_ISSUE_LABELS=$'feature\ntriaged\npriority/medium' run_test_no_pattern "noop-skip-triaged-remove" \
+  "${NOOP_FEATURE_FIXTURE}" \
+  "labels/triaged -X DELETE"
+
+TEST_ISSUE_LABELS=$'feature\ntriaged\npriority/medium' run_test "noop-priority-change-adds-low" \
+  "${NOOP_FEATURE_FIXTURE}" \
+  "labels[]=priority/low"
+
+TEST_ISSUE_LABELS=$'feature\ntriaged\npriority/medium' run_test "noop-priority-change-removes-medium" \
+  "${NOOP_FEATURE_FIXTURE}" \
+  "labels/priority%2Fmedium -X DELETE"
+
+TEST_ISSUE_LABELS=$'feature\ntriaged\npriority/medium' run_test_stdout "noop-keep-existing-feature-log" \
+  "${NOOP_FEATURE_FIXTURE}" \
+  "Keeping existing 'feature' label"
+
+# Absent stale control labels must not be deleted.
+run_test_no_pattern "noop-skip-absent-blocked-remove" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "labels/blocked -X DELETE"
+
+# A failed (or unparseable) issue-labels snapshot must not be treated as "no
+# labels on the issue" -- that would silently skip every stale control-label
+# removal below while still calling tracker_add_label for labels already
+# present, regenerating the exact no-op add/remove cycle this script exists
+# to prevent (review finding on PR #1410). The script must abort loudly
+# instead.
+touch "${FAIL_ISSUE_LABELS_MARKER}"
+FAIL_SNAPSHOT_RUN_DIR="${TMPDIR}/run-issue-labels-fetch-failure-aborts"
+mkdir -p "${FAIL_SNAPSHOT_RUN_DIR}/iteration-1/output"
+echo '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  > "${FAIL_SNAPSHOT_RUN_DIR}/iteration-1/output/agent-result.json"
+seed_issue_labels
+: > "${GH_LOG}"
+FAIL_SNAPSHOT_EXIT_CODE=0
+(cd "${FAIL_SNAPSHOT_RUN_DIR}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || FAIL_SNAPSHOT_EXIT_CODE=$?
+if [[ ${FAIL_SNAPSHOT_EXIT_CODE} -eq 0 ]]; then
+  echo "FAIL: issue-labels-fetch-failure-aborts — expected failure but got success"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -qF -- "ERROR: cannot verify label state" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: issue-labels-fetch-failure-aborts — expected loud error message not found"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qE -- "labels(/[a-z-]+ -X DELETE|.*-f labels)" "${GH_LOG}"; then
+  echo "FAIL: issue-labels-fetch-failure-aborts — label mutation ran despite failed snapshot"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: issue-labels-fetch-failure-aborts"
+fi
+rm -f "${FAIL_ISSUE_LABELS_MARKER}"
+
+# Re-triaging a bug that already has ready-to-code must not re-add it.
+TEST_ISSUE_LABELS=$'bug\nready-to-code' run_test_no_pattern "noop-skip-ready-to-code-readd" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
+  "labels[]=ready-to-code"
+
+TEST_ISSUE_LABELS=$'bug\nready-to-code' run_test_no_pattern "noop-skip-bug-readd" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}' \
+  "labels[]=bug"
+
 # run_test_label_order verifies that a pattern appears AFTER another pattern
 # in the gh call log (i.e., ordering of API calls).
 run_test_label_order() {
@@ -617,6 +726,7 @@ run_test_label_order() {
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  seed_issue_labels
   : > "${GH_LOG}"
 
   local exit_code=0
@@ -712,6 +822,7 @@ run_validated_dir_test() {
   echo '{"action":"not_a_bug","reasoning":"wrong","comment":"Should not be used."}' \
     > "${run_dir}/iteration-2/output/agent-result.json"
 
+  seed_issue_labels
   : > "${GH_LOG}"
 
   local exit_code=0
@@ -903,6 +1014,7 @@ run_test_stdout_with_env() {
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  seed_issue_labels
   : > "${GH_LOG}"
 
   local exit_code=0
@@ -940,6 +1052,7 @@ run_test_no_pattern_with_env() {
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  seed_issue_labels
   : > "${GH_LOG}"
 
   local exit_code=0
@@ -1298,23 +1411,23 @@ run_test "split-appends-sub-issue-links" \
   "${SPLIT_FIXTURE}" \
   "Split into:"
 
-run_test "split-removes-blocked-label" \
+TEST_ISSUE_LABELS='blocked' run_test "split-removes-blocked-label" \
   "${SPLIT_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels/blocked -X DELETE --silent"
 
-run_test "split-removes-needs-info-label" \
+TEST_ISSUE_LABELS='needs-info' run_test "split-removes-needs-info-label" \
   "${SPLIT_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels/needs-info -X DELETE --silent"
 
-run_test "split-removes-ready-to-code-label" \
+TEST_ISSUE_LABELS='ready-to-code' run_test "split-removes-ready-to-code-label" \
   "${SPLIT_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels/ready-to-code -X DELETE --silent"
 
-run_test "split-removes-pr-open-label" \
+TEST_ISSUE_LABELS='pr-open' run_test "split-removes-pr-open-label" \
   "${SPLIT_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels/pr-open -X DELETE --silent"
 
-run_test "split-clears-stale-triaged-label" \
+TEST_ISSUE_LABELS='triaged' run_test "split-clears-stale-triaged-label" \
   "${SPLIT_FIXTURE}" \
   "gh api repos/test-org/test-repo/issues/42/labels/triaged -X DELETE --silent"
 
@@ -1357,6 +1470,7 @@ FUNC_TEST_NAME="split-functional-end-to-end"
 FUNC_RUN_DIR="${TMPDIR}/run-${FUNC_TEST_NAME}"
 mkdir -p "${FUNC_RUN_DIR}/iteration-1/output"
 echo "${SPLIT_FUNC_FIXTURE}" > "${FUNC_RUN_DIR}/iteration-1/output/agent-result.json"
+TEST_ISSUE_LABELS=$'blocked\nneeds-info\nready-to-code\npr-open\ntriaged' seed_issue_labels
 : > "${GH_LOG}"
 
 FUNC_EXIT=0
@@ -1515,9 +1629,9 @@ if [[ "${URL}" =~ /user$ ]] && [[ "${METHOD}" == "GET" ]]; then
   exit 0
 fi
 
-# Return labels for the issue when queried.
+# Return labels currently on the issue. Default empty so adds are observed.
 if [[ "${URL}" =~ /issues/42$ ]] && [[ "${METHOD}" == "GET" ]]; then
-  echo '{"iid":42,"title":"Test issue","labels":["area/api","old-label"],"state":"opened"}'
+  echo '{"iid":42,"title":"Test issue","labels":[],"state":"opened"}'
   exit 0
 fi
 
@@ -1824,6 +1938,8 @@ unset GH_TOKEN CI_SERVER_HOST
 
 # Jira mock curl: record calls and return appropriate responses.
 JIRA_CURL_LOG="${TMPDIR}/jira-curl-calls.log"
+export JIRA_ISSUE_LABELS_FILE="${TMPDIR}/jira-issue-labels.json"
+echo '[]' > "${JIRA_ISSUE_LABELS_FILE}"
 printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${JIRA_CURL_LOG}" > "${MOCK_BIN}/curl"
 cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
 
@@ -1872,6 +1988,19 @@ if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" =
   exit 0
 fi
 
+# Return current labels on the issue (used to skip no-op add/remove).
+# MOCK_JIRA_LABELS_FAIL simulates an API failure while listing current
+# issue labels, to exercise the fail-closed path (silent-failure review
+# finding on PR #1410).
+if [[ "${URL}" =~ \?fields=labels$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ -n "${MOCK_JIRA_LABELS_FAIL:-}" ]]; then
+    echo "curl: (22) The requested URL returned error: 502" >&2
+    exit 22
+  fi
+  echo '{"fields":{"labels":'"$(cat "${JIRA_ISSUE_LABELS_FILE:-/dev/null}" 2>/dev/null || echo '[]')"'}}'
+  exit 0
+fi
+
 # Everything else (label add/remove PUTs, transition POSTs): accept silently.
 exit 0
 CURLMOCK
@@ -1887,6 +2016,11 @@ run_jira_test() {
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
 
+  if [[ -n "${TEST_ISSUE_LABELS:-}" ]]; then
+    printf '%s\n' "${TEST_ISSUE_LABELS}" | jq -R . | jq -s . > "${JIRA_ISSUE_LABELS_FILE}"
+  else
+    echo '[]' > "${JIRA_ISSUE_LABELS_FILE}"
+  fi
   : > "${JIRA_CURL_LOG}"
   : > "${GH_LOG}"
 
@@ -1931,6 +2065,11 @@ run_jira_test_stdout() {
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  if [[ -n "${TEST_ISSUE_LABELS:-}" ]]; then
+    printf '%s\n' "${TEST_ISSUE_LABELS}" | jq -R . | jq -s . > "${JIRA_ISSUE_LABELS_FILE}"
+  else
+    echo '[]' > "${JIRA_ISSUE_LABELS_FILE}"
+  fi
   : > "${JIRA_CURL_LOG}"
   : > "${GH_LOG}"
 
@@ -1985,9 +2124,18 @@ run_jira_test "jira-insufficient-adds-needs-info" \
   '"add":"needs-info"'
 
 # Jira control-label reset: every run clears a stale "triaged" label up front.
-run_jira_test "jira-clears-stale-triaged-label" \
+TEST_ISSUE_LABELS='triaged' run_jira_test "jira-clears-stale-triaged-label" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   '"remove":"triaged"'
+
+# A failed issue-labels snapshot on Jira must abort loudly rather than be
+# treated as "no labels" (silent-failure review finding on PR #1410).
+export MOCK_JIRA_LABELS_FAIL=1
+run_jira_test "jira-issue-labels-fetch-failure-aborts" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "" \
+  "true"
+unset MOCK_JIRA_LABELS_FAIL
 
 # Jira duplicate action transitions the issue via JIRA_DUPLICATE_TRANSITION.
 run_jira_test "jira-duplicate-transitions" \
@@ -2164,7 +2312,7 @@ run_jira_test "jira-in-progress-adds-pr-open" \
   '"add":"pr-open"'
 
 # Jira in-progress action removes stale labels.
-run_jira_test "jira-in-progress-removes-blocked" \
+TEST_ISSUE_LABELS='blocked' run_jira_test "jira-in-progress-removes-blocked" \
   '{"action":"in-progress","reasoning":"PR linked to issue","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}' \
   '"remove":"blocked"'
 
@@ -2179,7 +2327,7 @@ run_jira_test "jira-question-adds-label" \
   '"add":"question"'
 
 # Jira question action removes stale labels.
-run_jira_test "jira-question-removes-needs-info" \
+TEST_ISSUE_LABELS='needs-info' run_jira_test "jira-question-removes-needs-info" \
   '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
   '"remove":"needs-info"'
 
@@ -2275,6 +2423,15 @@ if [[ "${URL}" =~ /issue$ ]] && [[ "${METHOD}" == "POST" ]]; then
 fi
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+  exit 0
+fi
+# Return current labels on the issue (used to skip no-op add/remove). This
+# mock predates the no-op label diff, so it defaults to an empty label set;
+# tracker_list_issue_labels now fails closed on an unhandled/empty response,
+# so this branch must exist even though no component_actions test seeds
+# TEST_ISSUE_LABELS.
+if [[ "${URL}" =~ \?fields=labels$ ]] && [[ "${METHOD}" == "GET" ]]; then
+  echo '{"fields":{"labels":[]}}'
   exit 0
 fi
 exit 0

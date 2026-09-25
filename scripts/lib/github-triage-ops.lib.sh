@@ -50,34 +50,17 @@ tracker_remove_label() {
   gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
 }
 
-tracker_strip_labels() {
-  local labels=("$@")
-  for label in "${labels[@]}"; do
-    local encoded
-    encoded=$(printf '%s' "${label}" | jq -sRr @uri)
-    gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels/${encoded}" -X DELETE --silent 2>/dev/null || true
-  done
-}
-
-tracker_verify_labels_stripped() {
-  local labels=("$@")
-  local labels_json
-  labels_json=$(printf '%s\n' "${labels[@]}" | jq -R . | jq -s .)
-
-  local remaining
-  remaining=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" 2>/dev/null \
-    | jq -r --argjson check "${labels_json}" \
-        '[.[] | select(.name as $n | $check | index($n)) | .name] | join(", ")' \
-    || echo "VERIFY_FAILED")
-
-  if [[ "${remaining}" == "VERIFY_FAILED" ]]; then
-    echo "ERROR: cannot verify label state — API call failed" >&2
+tracker_list_issue_labels() {
+  local output
+  # Fail closed: a failed or unparseable listing must not be indistinguishable
+  # from a genuinely empty label set, or stale-control-label removal silently
+  # skips every label while adds still fire for labels already present (#1408
+  # regression risk -- see review on PR #1410).
+  if ! output=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/labels" --paginate --jq '.[].name' 2>&1); then
+    echo "ERROR: failed to list labels for issue #${ISSUE_NUMBER}: ${output}" >&2
     return 1
   fi
-  if [[ -n "${remaining}" ]]; then
-    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
-    return 1
-  fi
+  printf '%s' "${output}"
 }
 
 tracker_list_repo_labels() {

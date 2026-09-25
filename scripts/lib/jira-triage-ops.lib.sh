@@ -158,51 +158,21 @@ tracker_remove_label() {
     --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
 }
 
-tracker_strip_labels() {
-  local labels=("$@")
-  for label in "${labels[@]}"; do
-    _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-      --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
-  done
-}
-
-tracker_verify_labels_stripped() {
-  local labels=("$@")
+tracker_list_issue_labels() {
   local raw_labels
-  raw_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>/dev/null) || {
-    echo "ERROR: cannot verify label state — API call failed" >&2
-    return 1
-  }
-
-  # An unparseable body must not read as "no labels remaining" — parse it up
-  # front so a bad shape fails loudly, matching the GitHub/GitLab sentinel.
-  local current_labels
-  current_labels=$(echo "${raw_labels}" | jq -r '[.fields.labels[]] | join("\n")' 2>/dev/null) \
-    || current_labels="VERIFY_FAILED"
-  if [[ "${current_labels}" == "VERIFY_FAILED" ]]; then
-    echo "ERROR: cannot verify label state — unexpected response shape" >&2
+  # Fail closed: a failed or unparseable listing must not be indistinguishable
+  # from a genuinely empty label set, or stale-control-label removal silently
+  # skips every label while adds still fire for labels already present (#1408
+  # regression risk -- see review on PR #1410).
+  if ! raw_labels=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=labels" 2>&1); then
+    echo "ERROR: failed to list labels for issue ${ISSUE_NUMBER}: ${raw_labels}" >&2
     return 1
   fi
-
-  local remaining=""
-  local current
-  while IFS= read -r current; do
-    [[ -z "${current}" ]] && continue
-    for check in "${labels[@]}"; do
-      if [[ "${current}" == "${check}" ]]; then
-        if [[ -n "${remaining}" ]]; then
-          remaining="${remaining}, ${current}"
-        else
-          remaining="${current}"
-        fi
-      fi
-    done
-  done <<< "${current_labels}"
-
-  if [[ -n "${remaining}" ]]; then
-    echo "ERROR: triage labels still present after reset: ${remaining}" >&2
+  if ! echo "${raw_labels}" | jq -e '.fields.labels != null' >/dev/null 2>&1; then
+    echo "ERROR: unexpected response listing labels for issue ${ISSUE_NUMBER}: ${raw_labels}" >&2
     return 1
   fi
+  echo "${raw_labels}" | jq -r '.fields.labels[]?'
 }
 
 # Jira has no per-project label registry like GitHub/GitLab — any string is
