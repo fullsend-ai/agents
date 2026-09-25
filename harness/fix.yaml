@@ -27,6 +27,7 @@ openshell:
     - profiles/fullsend-gitleaks.yaml
 providers:
   - providers/vertex-ai.yaml
+  - openai
   - providers/package-registries.yaml
   - providers/gitleaks.yaml
 
@@ -52,6 +53,7 @@ host_files:
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
+    optional_for_openai: true
   - src: ${REVIEW_BODY_FILE}
     dest: /sandbox/workspace/review-body.txt
   - src: ${GCP_OIDC_TOKEN_FILE}

@@ -16,6 +16,7 @@ openshell:
     - profiles/fullsend-vertex-ai.yaml
 providers:
   - providers/vertex-ai.yaml
+  - openai
 
 role: prioritize
 slug: fullsend-ai-prioritize
@@ -26,6 +27,7 @@ host_files:
     expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/.gcp-credentials.json
+    optional_for_openai: true
   - src: ${GCP_OIDC_TOKEN_FILE}
     dest: /sandbox/workspace/.gcp-oidc-token
     optional: true
