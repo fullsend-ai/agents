@@ -19,10 +19,21 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # Mock gh: record all calls to a log file.
 GH_LOG="${TMPDIR}/gh-calls.log"
+MOCK_COMMENTS_FILE="${TMPDIR}/mock-comments.json"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
+# When listing issue comments, return a test-specific fixture if present.
+if [[ "\$1" == "api" ]] && [[ "\$*" == *"/comments"* ]]; then
+  echo "gh \$*" >> "${GH_LOG}"
+  if [[ -f "${MOCK_COMMENTS_FILE}" ]]; then
+    cat "${MOCK_COMMENTS_FILE}"
+  else
+    echo "[]"
+  fi
+  exit 0
+fi
 # When querying the repo labels list, return a set of known test labels so that
 # the label-existence guard in post-triage.sh allows them through.
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
@@ -605,6 +616,80 @@ run_test_no_pattern() {
 run_test_no_pattern "label-actions-all-refused-no-reason" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "Should not appear."
+
+# --- Re-triage acknowledgement (#1405) ---
+# Sticky-comment actions must also post a short new comment when an existing
+# sticky is being updated, so the requester sees a reply (edits are silent).
+
+FEATURE_SUFFICIENT_JSON='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}'
+BUG_SUFFICIENT_JSON='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}'
+IN_PROGRESS_JSON='{"action":"in-progress","reasoning":"PR #50 fixes the reported bug","pull_requests":[{"url":"https://github.com/test-org/test-repo/pull/50"}],"comment":"An open PR is already addressing this issue."}'
+INSUFFICIENT_JSON='{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}'
+
+run_test_no_pattern "sufficient-first-run-no-retriage-ack" \
+  "${BUG_SUFFICIENT_JSON}" \
+  "Re-triage requested"
+
+printf '%s' '[{"id":1,"body":"<!-- fullsend:triage-agent -->\nPrior triage summary","created_at":"2020-01-01T00:00:00Z"}]' > "${MOCK_COMMENTS_FILE}"
+run_test "sufficient-feature-retriage-posts-ack" \
+  "${FEATURE_SUFFICIENT_JSON}" \
+  "Re-triage requested: this is still a valid issue and is not ready for implementation."
+rm -f "${MOCK_COMMENTS_FILE}"
+
+printf '%s' '[{"id":1,"body":"<!-- fullsend:triage-agent -->\nPrior triage summary","created_at":"2020-01-01T00:00:00Z"}]' > "${MOCK_COMMENTS_FILE}"
+run_test "sufficient-bug-retriage-posts-ready-to-code-ack" \
+  "${BUG_SUFFICIENT_JSON}" \
+  "Re-triage requested: the issue remains fully specified and labeled ready-to-code."
+rm -f "${MOCK_COMMENTS_FILE}"
+
+printf '%s' '[{"id":1,"body":"<!-- fullsend:triage-in-progress -->\nPrior in-progress summary","created_at":"2020-01-01T00:00:00Z"}]' > "${MOCK_COMMENTS_FILE}"
+run_test "in-progress-retriage-posts-ack" \
+  "${IN_PROGRESS_JSON}" \
+  "Re-triage requested: an open PR/MR still addresses this issue."
+rm -f "${MOCK_COMMENTS_FILE}"
+
+printf '%s' '[{"id":1,"body":"<!-- fullsend:triage-agent -->\nPrior triage summary","created_at":"2020-01-01T00:00:00Z"}]' > "${MOCK_COMMENTS_FILE}"
+run_test_no_pattern "insufficient-with-sticky-does-not-post-ack" \
+  "${INSUFFICIENT_JSON}" \
+  "Re-triage requested"
+rm -f "${MOCK_COMMENTS_FILE}"
+
+NOW_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+printf '%s' "[{\"id\":1,\"body\":\"<!-- fullsend:triage-agent -->\\nPrior triage summary\",\"created_at\":\"2020-01-01T00:00:00Z\"},{\"id\":2,\"body\":\"<!-- fullsend:triage-retriage-ack -->\\nRe-triage requested: this is still a valid issue and is not ready for implementation.\",\"created_at\":\"${NOW_TS}\"}]" > "${MOCK_COMMENTS_FILE}"
+run_test_stdout "sufficient-retriage-skips-duplicate-ack" \
+  "${FEATURE_SUFFICIENT_JSON}" \
+  "Skipping re-triage acknowledgement"
+rm -f "${MOCK_COMMENTS_FILE}"
+
+printf '%s' '[{"id":1,"body":"<!-- fullsend:triage-agent -->\nPrior triage summary","created_at":"2020-01-01T00:00:00Z"},{"id":2,"body":"<!-- fullsend:triage-retriage-ack -->\nRe-triage requested: this is still a valid issue and is not ready for implementation.","created_at":"2020-01-01T00:00:00Z"}]' > "${MOCK_COMMENTS_FILE}"
+run_test "sufficient-retriage-posts-ack-when-prior-ack-is-old" \
+  "${FEATURE_SUFFICIENT_JSON}" \
+  "Re-triage requested: this is still a valid issue and is not ready for implementation."
+rm -f "${MOCK_COMMENTS_FILE}"
+
+# A differing outcome within the window must still post a new ack, even
+# though a recent comment already carries the retriage-ack marker (#1406).
+NOW_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+printf '%s' "[{\"id\":1,\"body\":\"<!-- fullsend:triage-agent -->\\nPrior triage summary\",\"created_at\":\"2020-01-01T00:00:00Z\"},{\"id\":2,\"body\":\"<!-- fullsend:triage-retriage-ack -->\\nRe-triage requested: an open PR/MR still addresses this issue.\",\"created_at\":\"${NOW_TS}\"}]" > "${MOCK_COMMENTS_FILE}"
+run_test "sufficient-retriage-posts-ack-when-outcome-differs" \
+  "${FEATURE_SUFFICIENT_JSON}" \
+  "Re-triage requested: this is still a valid issue and is not ready for implementation."
+rm -f "${MOCK_COMMENTS_FILE}"
+
+# Duplicate-ack skip must still update the sticky comment.
+NOW_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+printf '%s' "[{\"id\":1,\"body\":\"<!-- fullsend:triage-agent -->\\nPrior triage summary\",\"created_at\":\"2020-01-01T00:00:00Z\"},{\"id\":2,\"body\":\"<!-- fullsend:triage-retriage-ack -->\\nRe-triage requested: this is still a valid issue and is not ready for implementation.\",\"created_at\":\"${NOW_TS}\"}]" > "${MOCK_COMMENTS_FILE}"
+run_test "sufficient-retriage-skip-still-updates-sticky" \
+  "${FEATURE_SUFFICIENT_JSON}" \
+  "fullsend post-comment --repo test-org/test-repo --number 42 --marker <!-- fullsend:triage-agent -->"
+rm -f "${MOCK_COMMENTS_FILE}"
+
+NOW_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+printf '%s' "[{\"id\":1,\"body\":\"<!-- fullsend:triage-agent -->\\nPrior triage summary\",\"created_at\":\"2020-01-01T00:00:00Z\"},{\"id\":2,\"body\":\"<!-- fullsend:triage-retriage-ack -->\\nRe-triage requested: this is still a valid issue and is not ready for implementation.\",\"created_at\":\"${NOW_TS}\"}]" > "${MOCK_COMMENTS_FILE}"
+run_test_no_pattern "sufficient-retriage-skip-does-not-post-issue-comment" \
+  "${FEATURE_SUFFICIENT_JSON}" \
+  "gh issue comment"
+rm -f "${MOCK_COMMENTS_FILE}"
 
 # run_test_label_order verifies that a pattern appears AFTER another pattern
 # in the gh call log (i.e., ordering of API calls).
@@ -1770,6 +1855,21 @@ run_gitlab_test "gitlab-sticky-comment-preserves-history" \
   "Previous run"
 rm -f "${MOCK_NOTES_FILE}"
 
+# Re-triage of an existing sufficient sticky posts a short new note (#1405).
+printf '%s' '[{"id":400,"body":"<!-- fullsend:triage-agent -->\nPrior triage summary","author":{"username":"fullsend-bot"},"created_at":"2020-01-01T00:00:00.000Z"}]' > "${MOCK_NOTES_FILE}"
+run_gitlab_test "gitlab-sufficient-retriage-posts-ack" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  "Re-triage requested: this is still a valid issue and is not ready for implementation."
+rm -f "${MOCK_NOTES_FILE}"
+
+# Back-to-back re-triage within the window does not post another ack.
+NOW_TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+printf '%s' "[{\"id\":400,\"body\":\"<!-- fullsend:triage-agent -->\\nPrior triage summary\",\"author\":{\"username\":\"fullsend-bot\"},\"created_at\":\"2020-01-01T00:00:00.000Z\"},{\"id\":401,\"body\":\"<!-- fullsend:triage-retriage-ack -->\\nRe-triage requested: this is still a valid issue and is not ready for implementation.\",\"author\":{\"username\":\"fullsend-bot\"},\"created_at\":\"${NOW_TS}\"}]" > "${MOCK_NOTES_FILE}"
+run_gitlab_test_stdout "gitlab-sufficient-retriage-skips-duplicate-ack" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  "Skipping re-triage acknowledgement"
+rm -f "${MOCK_NOTES_FILE}"
+
 # Test: curl timeout flags are present in API calls.
 : > "${CURL_LOG}"
 run_gitlab_test "gitlab-curl-has-timeout-flags" \
@@ -1824,7 +1924,8 @@ unset GH_TOKEN CI_SERVER_HOST
 
 # Jira mock curl: record calls and return appropriate responses.
 JIRA_CURL_LOG="${TMPDIR}/jira-curl-calls.log"
-printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${JIRA_CURL_LOG}" > "${MOCK_BIN}/curl"
+MOCK_JIRA_COMMENTS_FILE="${TMPDIR}/mock-jira-comments.json"
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\nMOCK_JIRA_COMMENTS_FILE=%s\n' "${JIRA_CURL_LOG}" "${MOCK_JIRA_COMMENTS_FILE}" > "${MOCK_BIN}/curl"
 cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
 
 # Parse the method and URL from args.
@@ -1869,6 +1970,16 @@ fi
 # Return components for the issue (used by component_actions handler).
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=components ]] && [[ "${METHOD}" == "GET" ]]; then
   echo '{"fields":{"components":[{"name":"existing-component"}]}}'
+  exit 0
+fi
+
+# Return issue comments for re-triage acknowledgement detection (#1405).
+if [[ "${URL}" =~ /comment ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ -f "${MOCK_JIRA_COMMENTS_FILE}" ]]; then
+    cat "${MOCK_JIRA_COMMENTS_FILE}"
+  else
+    echo '{"startAt":0,"maxResults":100,"total":0,"comments":[]}'
+  fi
   exit 0
 fi
 
@@ -2107,6 +2218,32 @@ fi
 run_jira_test "jira-sufficient-posts-comment" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady."}' \
   "fullsend issues post-comment --tracker jira"
+
+# Re-triage of an existing sticky posts a short new comment (#1405).
+printf '%s' '{"startAt":0,"maxResults":100,"total":1,"comments":[{"id":"1","body":"<!-- fullsend:triage-agent -->\nPrior triage summary","created":"2020-01-01T00:00:00.000+0000"}]}' > "${MOCK_JIRA_COMMENTS_FILE}"
+run_jira_test "jira-sufficient-retriage-posts-ack" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  "Re-triage requested: this is still a valid issue and is not ready for implementation."
+rm -f "${MOCK_JIRA_COMMENTS_FILE}"
+
+NOW_TS=$(date -u +"%Y-%m-%dT%H:%M:%S.000+0000")
+printf '%s' "{\"startAt\":0,\"maxResults\":100,\"total\":2,\"comments\":[{\"id\":\"1\",\"body\":\"<!-- fullsend:triage-agent -->\\nPrior triage summary\",\"created\":\"2020-01-01T00:00:00.000+0000\"},{\"id\":\"2\",\"body\":\"<!-- fullsend:triage-retriage-ack -->\\nRe-triage requested: this is still a valid issue and is not ready for implementation.\",\"created\":\"${NOW_TS}\"}]}" > "${MOCK_JIRA_COMMENTS_FILE}"
+run_jira_test_stdout "jira-sufficient-retriage-skips-duplicate-ack" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  "Skipping re-triage acknowledgement"
+rm -f "${MOCK_JIRA_COMMENTS_FILE}"
+
+# Jira Cloud actually returns comment bodies as ADF documents (objects), not
+# plain strings. The marker line and outcome sentence can land in separate
+# ADF text nodes split by a hardBreak node, so a naive `tostring | contains`
+# on the whole document never sees them as one contiguous substring. Exercise
+# that real shape so a regression back to whole-string matching is caught.
+NOW_TS=$(date -u +"%Y-%m-%dT%H:%M:%S.000+0000")
+printf '%s' "{\"startAt\":0,\"maxResults\":100,\"total\":2,\"comments\":[{\"id\":\"1\",\"body\":\"<!-- fullsend:triage-agent -->\\nPrior triage summary\",\"created\":\"2020-01-01T00:00:00.000+0000\"},{\"id\":\"2\",\"body\":{\"type\":\"doc\",\"version\":1,\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"<!-- fullsend:triage-retriage-ack -->\"},{\"type\":\"hardBreak\"},{\"type\":\"text\",\"text\":\"Re-triage requested: this is still a valid issue and is not ready for implementation.\"}]}]},\"created\":\"${NOW_TS}\"}]}" > "${MOCK_JIRA_COMMENTS_FILE}"
+run_jira_test_stdout "jira-sufficient-retriage-skips-duplicate-ack-adf-body" \
+  '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature."}' \
+  "Skipping re-triage acknowledgement"
+rm -f "${MOCK_JIRA_COMMENTS_FILE}"
 
 # Jira sufficient bug action applies bug label.
 run_jira_test "jira-sufficient-bug-adds-label" \

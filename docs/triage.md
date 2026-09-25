@@ -33,6 +33,12 @@ It can also be triggered manually with the `/fs-triage` command.
 The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
 
+Re-triage of a `sufficient` or `in-progress` issue updates the existing sticky
+summary comment in place. Forges do not notify on comment edits, and the edited
+comment stays at its original place in the timeline, so the post-script also
+posts a short new comment stating the outcome. Back-to-back re-triage requests
+within 10 minutes do not get a second copy of that short reply.
+
 ## Control labels
 
 These labels are managed by the triage agent based on its assessment of the issue.

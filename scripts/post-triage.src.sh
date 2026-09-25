@@ -771,11 +771,65 @@ fi
 
 # --- Post comment ---
 
+# When a re-triage run updates an existing sticky comment, forges do not
+# notify on edits and the comment stays at its original timeline position —
+# effectively invisible. Post a short new comment so the requester sees a
+# reply. Suppress back-to-back duplicates within RETRIAGE_ACK_WINDOW_SECONDS
+# (#1405).
+RETRIAGE_ACK_MARKER="<!-- fullsend:triage-retriage-ack -->"
+RETRIAGE_ACK_WINDOW_SECONDS=600
+
+_retriage_ack_body() {
+  case "${ACTION}" in
+    in-progress)
+      printf '%s' "Re-triage requested: an open PR/MR still addresses this issue."
+      ;;
+    sufficient)
+      if [[ "${DEFERRED_LABEL}" == "ready-to-code" ]]; then
+        printf '%s' "Re-triage requested: the issue remains fully specified and labeled ready-to-code."
+      else
+        printf '%s' "Re-triage requested: this is still a valid issue and is not ready for implementation."
+      fi
+      ;;
+    *)
+      printf '%s' "Re-triage requested: the triage assessment has been updated."
+      ;;
+  esac
+}
+
+_post_retriage_ack_if_needed() {
+  local ack
+  ack="${RETRIAGE_ACK_MARKER}
+$(_retriage_ack_body)"
+  # Key the duplicate check on the full ack text (marker + outcome sentence),
+  # not just the marker, so a differing outcome within the window still
+  # posts a new visible comment instead of being silently suppressed.
+  if tracker_has_comment_with_marker "${ack}" "${RETRIAGE_ACK_WINDOW_SECONDS}"; then
+    echo "Skipping re-triage acknowledgement — already posted within ${RETRIAGE_ACK_WINDOW_SECONDS}s"
+    return 0
+  fi
+  echo "Posting re-triage acknowledgement comment..."
+  if ! tracker_post_comment "${ack}"; then
+    echo "::warning::Failed to post re-triage acknowledgement comment"
+  fi
+}
+
 echo "Posting comment..."
-if [[ "${ACTION}" == "sufficient" ]]; then
-  tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-agent -->"
-elif [[ "${ACTION}" == "in-progress" ]]; then
-  tracker_post_sticky_comment "${COMMENT}" "<!-- fullsend:triage-in-progress -->"
+STICKY_MARKER=""
+case "${ACTION}" in
+  sufficient) STICKY_MARKER="<!-- fullsend:triage-agent -->" ;;
+  in-progress) STICKY_MARKER="<!-- fullsend:triage-in-progress -->" ;;
+esac
+
+if [[ -n "${STICKY_MARKER}" ]]; then
+  HAD_STICKY=false
+  if tracker_has_comment_with_marker "${STICKY_MARKER}"; then
+    HAD_STICKY=true
+  fi
+  tracker_post_sticky_comment "${COMMENT}" "${STICKY_MARKER}"
+  if [[ "${HAD_STICKY}" == "true" ]]; then
+    _post_retriage_ack_if_needed
+  fi
 else
   tracker_post_comment "${COMMENT}"
 fi

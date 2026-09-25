@@ -153,6 +153,38 @@ tracker_post_sticky_comment() {
   printf '%s' "${body}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "${marker}" --token "${GH_TOKEN}" --result -
 }
 
+# Returns 0 if an issue comment whose body contains marker exists.
+# If window_seconds is provided and greater than 0, only comments created
+# within that many seconds count. API failures are treated as "not found"
+# so a missing acknowledgement never fails the run (#1405).
+tracker_has_comment_with_marker() {
+  local marker="$1"
+  local window_seconds="${2:-0}"
+  local comments
+  comments=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" --paginate 2>/dev/null) || comments="[]"
+
+  local count=0
+  if [[ "${window_seconds}" -gt 0 ]]; then
+    count=$(printf '%s' "${comments}" | jq -s --arg marker "${marker}" --argjson window "${window_seconds}" \
+      'def ts_epoch:
+         ((. // "") | sub("\\.[0-9]+"; "")) as $s
+         | ($s | capture("(?<sign>[+-])(?<hh>[0-9]{2}):?(?<mm>[0-9]{2})$") // null) as $cap
+         | if $cap == null then
+             ($s | try fromdateiso8601 catch 0)
+           else
+             ($s | sub("[+-][0-9]{2}:?[0-9]{2}$"; "Z") | try fromdateiso8601 catch 0) as $naive
+             | (($cap.hh | tonumber) * 3600 + ($cap.mm | tonumber) * 60) as $off
+             | if $cap.sign == "+" then $naive - $off else $naive + $off end
+           end;
+       add // [] | [.[] | select((.body // "") | contains($marker))
+            | select((.created_at // "") | ts_epoch > (now - $window))] | length' 2>/dev/null) || count=0
+  else
+    count=$(printf '%s' "${comments}" | jq -s --arg marker "${marker}" \
+      'add // [] | [.[] | select((.body // "") | contains($marker))] | length' 2>/dev/null) || count=0
+  fi
+  [[ "${count:-0}" -gt 0 ]]
+}
+
 # --- Issues ---
 
 tracker_close_issue() {
@@ -424,10 +456,57 @@ _gitlab_bot_username() {
 
 # --- Comments (notes in GitLab) ---
 
+_gitlab_list_issue_notes() {
+  local notes="[]"
+  local page=1 max_pages=50
+  while [[ "${page}" -le "${max_pages}" ]]; do
+    local batch
+    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=asc&page=${page}" 2>/dev/null) || break
+    local count
+    count=$(echo "${batch}" | jq 'length') || break
+    [[ "${count}" -eq 0 ]] && break
+    notes=$(echo "${notes}" "${batch}" | jq -s 'add')
+    page=$((page + 1))
+  done
+  echo "${notes}"
+}
+
 tracker_post_comment() {
   local body="$1"
   _gitlab_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
     --data-urlencode "body=${body}" > /dev/null
+}
+
+# Returns 0 if an issue note whose body contains marker exists.
+# If window_seconds is provided and greater than 0, only notes created
+# within that many seconds count. API failures are treated as "not found"
+# so a missing acknowledgement never fails the run (#1405).
+tracker_has_comment_with_marker() {
+  local marker="$1"
+  local window_seconds="${2:-0}"
+  local notes
+  notes=$(_gitlab_list_issue_notes)
+
+  local count=0
+  if [[ "${window_seconds}" -gt 0 ]]; then
+    count=$(printf '%s' "${notes}" | jq --arg marker "${marker}" --argjson window "${window_seconds}" \
+      'def ts_epoch:
+         ((. // "") | sub("\\.[0-9]+"; "")) as $s
+         | ($s | capture("(?<sign>[+-])(?<hh>[0-9]{2}):?(?<mm>[0-9]{2})$") // null) as $cap
+         | if $cap == null then
+             ($s | try fromdateiso8601 catch 0)
+           else
+             ($s | sub("[+-][0-9]{2}:?[0-9]{2}$"; "Z") | try fromdateiso8601 catch 0) as $naive
+             | (($cap.hh | tonumber) * 3600 + ($cap.mm | tonumber) * 60) as $off
+             | if $cap.sign == "+" then $naive - $off else $naive + $off end
+           end;
+       [.[] | select((.body // "") | contains($marker))
+            | select((.created_at // "") | ts_epoch > (now - $window))] | length' 2>/dev/null) || count=0
+  else
+    count=$(printf '%s' "${notes}" | jq --arg marker "${marker}" \
+      '[.[] | select((.body // "") | contains($marker))] | length' 2>/dev/null) || count=0
+  fi
+  [[ "${count:-0}" -gt 0 ]]
 }
 
 tracker_post_sticky_comment() {
@@ -443,17 +522,8 @@ ${body}"
     return
   }
 
-  local notes="[]"
-  local page=1 max_pages=50
-  while [[ "${page}" -le "${max_pages}" ]]; do
-    local batch
-    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=asc&page=${page}" 2>/dev/null) || break
-    local count
-    count=$(echo "${batch}" | jq 'length') || break
-    [[ "${count}" -eq 0 ]] && break
-    notes=$(echo "${notes}" "${batch}" | jq -s 'add')
-    page=$((page + 1))
-  done
+  local notes
+  notes=$(_gitlab_list_issue_notes)
 
   local match
   match=$(echo "${notes}" | jq --arg marker "${marker}" --arg user "${bot_user}" \
@@ -813,6 +883,63 @@ tracker_post_sticky_comment() {
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
     --marker "${marker}" --result -
+}
+
+# Returns 0 if an issue comment whose body contains marker exists.
+# If window_seconds is provided and greater than 0, only comments created
+# within that many seconds count. API failures are treated as "not found"
+# so a missing acknowledgement never fails the run (#1405).
+# Body may be ADF (object) or a string; tostring covers both.
+tracker_has_comment_with_marker() {
+  local marker="$1"
+  local window_seconds="${2:-0}"
+  _jira_require_vars || return 1
+
+  local comments="[]"
+  local start_at=0 max_pages=50
+  local _page
+  for _page in $(seq 1 "${max_pages}"); do
+    local batch
+    batch=$(_jira_api GET "/issue/${ISSUE_NUMBER}/comment?startAt=${start_at}&maxResults=100" 2>/dev/null) || break
+    local count
+    count=$(echo "${batch}" | jq -r '.comments | length // 0' 2>/dev/null) || break
+    [[ "${count}" -eq 0 ]] && break
+    comments=$(echo "${comments}" "$(echo "${batch}" | jq '.comments')" | jq -s 'add')
+    if [[ "${count}" -lt 100 ]]; then
+      break
+    fi
+    start_at=$((start_at + count))
+  done
+
+  # Jira Cloud returns comment bodies as ADF documents (objects), not plain
+  # strings. `tostring` JSON-serializes an ADF object, and a real newline
+  # between two lines of `marker` (e.g. the ack marker + outcome sentence)
+  # is not necessarily a contiguous substring of that serialization — the
+  # two lines can land in separate ADF text nodes split by a hardBreak node.
+  # Match each line of `marker` independently instead of the whole string,
+  # since each individual line still survives JSON-serialization intact.
+  local n=0
+  if [[ "${window_seconds}" -gt 0 ]]; then
+    n=$(printf '%s' "${comments}" | jq --arg marker "${marker}" --argjson window "${window_seconds}" \
+      'def ts_epoch:
+         ((. // "") | sub("\\.[0-9]+"; "")) as $s
+         | ($s | capture("(?<sign>[+-])(?<hh>[0-9]{2}):?(?<mm>[0-9]{2})$") // null) as $cap
+         | if $cap == null then
+             ($s | try fromdateiso8601 catch 0)
+           else
+             ($s | sub("[+-][0-9]{2}:?[0-9]{2}$"; "Z") | try fromdateiso8601 catch 0) as $naive
+             | (($cap.hh | tonumber) * 3600 + ($cap.mm | tonumber) * 60) as $off
+             | if $cap.sign == "+" then $naive - $off else $naive + $off end
+           end;
+       ($marker | split("\n")) as $lines
+       | [.[] | select((.body | tostring) as $b | all($lines[]; . as $l | $b | contains($l)))
+            | select((.created // "") | ts_epoch > (now - $window))] | length' 2>/dev/null) || n=0
+  else
+    n=$(printf '%s' "${comments}" | jq --arg marker "${marker}" \
+      '($marker | split("\n")) as $lines
+       | [.[] | select((.body | tostring) as $b | all($lines[]; . as $l | $b | contains($l)))] | length' 2>/dev/null) || n=0
+  fi
+  [[ "${n:-0}" -gt 0 ]]
 }
 
 # --- Issues ---
