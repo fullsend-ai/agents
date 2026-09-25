@@ -38,6 +38,26 @@ gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query=
   }' --jq '.data.repository.issue.subIssues.nodes'
 ```
 
+## Re-check Data
+
+Comment authors with their account type, creation time and fullsend
+marker, for the end-of-run re-check. `--paginate` is required: an active issue exceeds one
+page.
+
+```bash
+# Through a file: gh's --jq takes one expression and has no --arg.
+gh api --paginate "repos/OWNER/REPO/issues/NUMBER/comments" > /tmp/recheck-comments.json
+jq -c --arg since "$FULLSEND_RUN_STARTED_AT" '.[] | select((.created_at | fromdate) > ($since | fromdate))
+  | {login: .user.login, type: .user.type, at: .created_at, fullsend: ((.body // "") | contains("<!-- fullsend:")), body}' /tmp/recheck-comments.json
+```
+
+`fullsend` marks a body carrying the marker; it excludes the item only when
+`type` is `"Bot"` — a human's comment is never excluded, marker or not.
+Fullsend's exact logins are `fullsend-ai-${FULLSEND_ROLE}[bot]` and any App
+login that authored a marked comment on this issue, never a pattern; `type`
+tells an App from a human, never the login's shape, and other Apps stay in
+as context. The `since` filter parses both timestamps, as the other forges do.
+
 ## Pull Requests
 
 ```bash

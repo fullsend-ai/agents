@@ -145,3 +145,46 @@ not execute or extract artifact contents into the repository.
 For `flaky` or `transient-infra` failures, recommend that the user rerun the
 job. For `unrelated` failures, tell the user to file an issue with the
 responsible owner.
+
+## Re-check Data
+
+The final re-check needs the current head and the activity created after the
+run started, with the author and time of each. `--paginate` is required: an
+active PR exceeds one page.
+
+```bash
+# Current head SHA (through a file: the scanner cannot resolve a gh call
+# inside $( ), see fullsend-ai/agents#1190). Run as written.
+gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" > /tmp/recheck-pr.json
+NEW_HEAD_SHA=$(jq -r '.head.sha' /tmp/recheck-pr.json)
+
+# Activity newer than the run start: general PR comments, reviews (whose
+# field is submitted_at, not created_at), inline review comments. Each goes
+# through a file — gh's --jq takes one expression and has no --arg.
+gh api --paginate "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" > /tmp/recheck-comments.json
+jq -c --arg since "$FULLSEND_RUN_STARTED_AT" '.[] | select((.created_at | fromdate) > ($since | fromdate))
+  | {login: .user.login, type: .user.type, at: .created_at, fullsend: ((.body // "") | contains("<!-- fullsend:")), body}' /tmp/recheck-comments.json
+gh api --paginate "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/reviews" > /tmp/recheck-reviews.json
+jq -c --arg since "$FULLSEND_RUN_STARTED_AT" '.[] | select(((.submitted_at // empty) | fromdate) > ($since | fromdate))
+  | {login: .user.login, type: .user.type, at: .submitted_at, fullsend: ((.body // "") | contains("<!-- fullsend:")), body}' /tmp/recheck-reviews.json
+gh api --paginate "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/comments" > /tmp/recheck-review-comments.json
+jq -c --arg since "$FULLSEND_RUN_STARTED_AT" '.[] | select((.created_at | fromdate) > ($since | fromdate))
+  | {login: .user.login, type: .user.type, at: .created_at, fullsend: ((.body // "") | contains("<!-- fullsend:")), body}' /tmp/recheck-review-comments.json
+
+# Delta from the dispatched head to the current one, when they differ. The
+# REST compare is always merge-base...head, so it is the tree diff only while
+# status is "ahead"; "diverged" means a force-push, 300 files means a cut list.
+gh api "repos/${REPO_FULL_NAME}/compare/${FULLSEND_RUN_HEAD_SHA}...${NEW_HEAD_SHA}" \
+  --jq '{status, total_commits, file_count: (.files | length),
+         files: [.files[] | {filename, previous_filename, status, patch}]}'
+```
+
+`fullsend` marks a body carrying the marker; it excludes the item only when
+`type` is `"Bot"` — a human's comment is never excluded, marker or not.
+Fullsend's exact logins are `fullsend-ai-${FULLSEND_ROLE}[bot]` and any App
+login that authored a marked comment on this PR, never a pattern; `type`
+tells an App from a human, never the login's shape, and other Apps stay in
+as context. The `since` filter parses both timestamps, as the other forges do.
+The delta is complete only when `status` is `ahead` and `file_count` is under
+300; a 404 means the dispatched head is gone, and anything else is
+unverified. A rename sets `previous_filename` and an empty `patch`.
