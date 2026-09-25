@@ -331,6 +331,8 @@ If you use `base:` composition to override `harness/triage.yaml`:
 
 The triage agent runs in a read-only sandbox. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
 
+On GitHub and GitLab, before choosing an action, it searches for open PRs/MRs that already implement the issue — in the issue's own repository and in other repositories in the same org/group, even when those repositories are not named on the issue. A matching open PR/MR produces an `in-progress` result whose comment names the PR/MR and reports its CI/pipeline and review status, so a human doing prioritization can see the in-flight work. A PR/MR that closes without merging is treated as abandoned, not in-flight. Jira has no PR/MR search; see [Multi-forge support](#multi-forge-support).
+
 The agent's only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
 
 ## Custom network policy

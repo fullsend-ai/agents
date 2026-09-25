@@ -223,11 +223,37 @@ ${ISSUE_BODY}
       CREATED_URLS="${CREATED_URLS} ${CREATED_URL}"
     done
 
-    # Collect existing URLs.
+    # Collect existing URLs. An entry marked "redacted" (agents/triage.md's
+    # visibility check) is a real blocker the agent found but must not
+    # surface publicly — exclude it from the footer too, since this footer
+    # is appended unconditionally regardless of what `comment` says.
+    #
+    # The agent's `redacted` flag is a signal, not a guarantee: an agent
+    # that omits it, sets it false, or could not determine visibility
+    # would otherwise leak the URL here. Re-check visibility server-side
+    # (_candidate_url_is_public, triage-ops.lib.sh) before trusting an
+    # unmarked entry, and treat private/internal/unknown the same as an
+    # explicit `redacted: true`.
     EXISTING_COUNT=$(jq '.prerequisites.existing // [] | length' "${RESULT_FILE}")
     EXISTING_URLS=""
+    REDACTED_EXISTING_COUNT=0
     for i in $(seq 0 $((EXISTING_COUNT - 1))); do
       URL=$(jq -r ".prerequisites.existing[${i}].url" "${RESULT_FILE}")
+      IS_REDACTED=$(jq -r ".prerequisites.existing[${i}].redacted // false" "${RESULT_FILE}")
+      if [[ "${IS_REDACTED}" == "true" ]]; then
+        REDACTED_EXISTING_COUNT=$((REDACTED_EXISTING_COUNT + 1))
+        # Belt-and-suspenders: the agent flagged this one itself, but it may
+        # still have named the URL in `comment` despite the withhold
+        # instruction (see _redact_url_from_text).
+        COMMENT="$(_redact_url_from_text "${COMMENT}" "${URL}")"
+        continue
+      fi
+      if ! _candidate_url_is_public "${URL}"; then
+        echo "::warning::Server-side visibility check withheld a prerequisite URL the agent did not mark redacted"
+        REDACTED_EXISTING_COUNT=$((REDACTED_EXISTING_COUNT + 1))
+        COMMENT="$(_redact_url_from_text "${COMMENT}" "${URL}")"
+        continue
+      fi
       EXISTING_URLS="${EXISTING_URLS} ${URL}"
     done
 
@@ -244,6 +270,10 @@ ${ISSUE_BODY}
       COMMENT="${COMMENT}
 
 **Blocked by:**${BLOCKER_LIST}"
+    elif [[ "${REDACTED_EXISTING_COUNT}" -gt 0 ]]; then
+      COMMENT="${COMMENT}
+
+**Blocked by:** a prerequisite in another repository (details withheld)."
     fi
 
     if [[ -n "${FAILED_CREATES}" ]]; then
@@ -284,21 +314,52 @@ ${FAILED_CREATES}"
       echo "::warning::Ignoring 'prerequisites' on an 'in-progress' result -- mention separate blockers in 'comment' instead"
     fi
 
-    # Collect PR URLs from pull_requests array. Capture via command
-    # substitution rather than process substitution so a jq failure — a
-    # pull_requests that passed the count check but is not an array of
-    # objects, e.g. a bare string — still trips set -e instead of silently
-    # rendering an empty list. -e also rejects a null url.
-    PR_URLS=$(jq -er '.pull_requests[].url' "${RESULT_FILE}")
+    # Collect PR URLs from pull_requests array, one index at a time so a
+    # jq failure — a pull_requests entry that is not an object, e.g. a bare
+    # string, or has a null url — still trips set -e instead of silently
+    # rendering an empty list. An entry marked "redacted" (agents/triage.md's
+    # visibility check) is a real PR the agent found but must not surface
+    # publicly — exclude it from this footer too, since it is appended
+    # unconditionally regardless of what `comment` says.
+    #
+    # The agent's `redacted` flag is a signal, not a guarantee: an agent
+    # that omits it, sets it false, or could not determine visibility
+    # would otherwise leak the URL here. Re-check visibility server-side
+    # (_candidate_url_is_public, triage-ops.lib.sh) before trusting an
+    # unmarked entry, and treat private/internal/unknown the same as an
+    # explicit `redacted: true`.
     PR_LIST=""
-    while IFS= read -r url; do
+    REDACTED_PR_COUNT=0
+    for i in $(seq 0 $((PR_COUNT - 1))); do
+      URL=$(jq -er ".pull_requests[${i}].url" "${RESULT_FILE}")
+      IS_REDACTED=$(jq -r ".pull_requests[${i}].redacted // false" "${RESULT_FILE}")
+      if [[ "${IS_REDACTED}" == "true" ]]; then
+        REDACTED_PR_COUNT=$((REDACTED_PR_COUNT + 1))
+        # Belt-and-suspenders: the agent flagged this one itself, but it may
+        # still have named the URL in `comment` despite the withhold
+        # instruction (see _redact_url_from_text).
+        COMMENT="$(_redact_url_from_text "${COMMENT}" "${URL}")"
+        continue
+      fi
+      if ! _candidate_url_is_public "${URL}"; then
+        echo "::warning::Server-side visibility check withheld a pull request URL the agent did not mark redacted"
+        REDACTED_PR_COUNT=$((REDACTED_PR_COUNT + 1))
+        COMMENT="$(_redact_url_from_text "${COMMENT}" "${URL}")"
+        continue
+      fi
       PR_LIST="${PR_LIST}
-- ${url}"
-    done <<< "${PR_URLS}"
+- ${URL}"
+    done
 
-    COMMENT="${COMMENT}
+    if [[ -n "${PR_LIST}" ]]; then
+      COMMENT="${COMMENT}
 
 **Addressed by:**${PR_LIST}"
+    elif [[ "${REDACTED_PR_COUNT}" -gt 0 ]]; then
+      COMMENT="${COMMENT}
+
+**Addressed by:** work already in progress in another repository (details withheld)."
+    fi
 
     tracker_remove_label "blocked"
     tracker_remove_label "ready-to-code"

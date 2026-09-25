@@ -40,6 +40,112 @@ TRIAGE_OPS_SH_LOADED=1
 
 _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/%/%25/g; s/::/%3A%3A/g'; }
 
+# --- Candidate URL visibility (defense in depth) ---
+#
+# `redacted: true` on a pull_requests/prerequisites.existing entry is a
+# signal the triage agent sets after checking visibility itself
+# (agents/triage.md's Visibility check) — it is not something this script
+# can trust alone: an agent that omits the field, sets it false, or could
+# not determine visibility would otherwise let a private candidate
+# PR/MR/issue URL reach the automated "Addressed by:"/"Blocked by:"
+# footer, which post-triage.sh appends unconditionally regardless of what
+# `comment` says. Before interpolating any candidate URL into either
+# footer, resolve the candidate's own repo/project visibility straight
+# from the URL. This dispatches on the URL's own host rather than
+# FULLSEND_TRACKER, since a Jira- or GitLab-triaged issue can still
+# reference a GitHub PR, and vice versa.
+#
+# Prints one of: public | private | internal | unknown. Fails closed: any
+# lookup failure, missing credential/tool, or unrecognized URL shape
+# reports "unknown". Callers must treat anything other than "public" as
+# not safe to publish. Jira issue URLs have no repo-visibility concept in
+# this pipeline, so they are reported "public" (not redacted by this
+# check) — the leak this check closes is specifically candidate
+# GitHub/GitLab repos, per agents/triage.md's Visibility check.
+_candidate_url_visibility() {
+  local url="$1"
+  case "${url}" in
+    https://github.com/*)
+      local repo vis
+      repo=$(echo "${url}" | sed -E 's#^https://github\.com/([^/]+/[^/]+)/.*#\1#')
+      if [[ -z "${repo}" ]] || ! command -v gh >/dev/null 2>&1; then
+        echo "unknown"
+        return
+      fi
+      vis=$(gh repo view "${repo}" --json visibility --jq '.visibility' 2>/dev/null) || {
+        echo "unknown"
+        return
+      }
+      # GitHub's GraphQL RepositoryVisibility enum is uppercase
+      # (PUBLIC/PRIVATE/INTERNAL); case-fold so the caller's lowercase
+      # "public" comparison actually matches.
+      vis=$(printf '%s' "${vis}" | tr '[:upper:]' '[:lower:]')
+      echo "${vis:-unknown}"
+      ;;
+    https://*/-/merge_requests/*|https://*/-/issues/*)
+      local host project encoded vis
+      host=$(echo "${url}" | sed -E 's#^https://([^/]+)/.*#\1#')
+      project=$(echo "${url}" | sed -E 's#^https://[^/]+/(.+)/-/(merge_requests|issues)/[0-9]+$#\1#')
+      if [[ -z "${host}" || -z "${project}" || -z "${GITLAB_TOKEN:-}" ]] || ! declare -F _validate_gitlab_host >/dev/null 2>&1; then
+        echo "unknown"
+        return
+      fi
+      _validate_gitlab_host "${host}" >/dev/null 2>&1 || {
+        echo "unknown"
+        return
+      }
+      encoded=$(printf '%s' "${project}" | jq -sRr @uri)
+      vis=$(curl --fail --silent --show-error --connect-timeout 10 --max-time 30 \
+        --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+        "https://${host}/api/v4/projects/${encoded}" 2>/dev/null | jq -r '.visibility // empty') || {
+        echo "unknown"
+        return
+      }
+      echo "${vis:-unknown}"
+      ;;
+    https://*.atlassian.net/browse/*)
+      echo "public"
+      ;;
+    *)
+      echo "unknown"
+      ;;
+  esac
+}
+
+# True (exit 0) only when the candidate URL's visibility resolves to
+# "public". Private, internal, unknown, and lookup failures all count as
+# not public — the caller treats them the same as an agent-set `redacted`.
+_candidate_url_is_public() {
+  [[ "$(_candidate_url_visibility "$1")" == "public" ]]
+}
+
+# Strips literal occurrences of a withheld candidate URL from freeform text.
+#
+# _candidate_url_is_public (and the agent's own `redacted` flag) only gate
+# whether a URL reaches the automated "Blocked by:"/"Addressed by:" footer.
+# The agent-authored `comment` field is a separate, untrusted channel:
+# agents/triage.md instructs the agent not to name a withheld candidate's
+# repo/title/URL there, but that's a prompt instruction, not an enforced
+# boundary, and the fetched PR/MR content that informs `comment` is itself
+# untrusted input. Call this for every withheld URL before the comment is
+# posted so a withheld identity can't leak through prose that echoes it.
+#
+# Escaping matches the sed-based marker-escaping used elsewhere in this
+# codebase (e.g. gitlab-triage-ops.lib.sh's sticky-comment stripping):
+# escape basic-regex metacharacters, then escape "/" since sed uses it as
+# the delimiter.
+_redact_url_from_text() {
+  local text="$1"
+  local url="$2"
+  if [[ -z "${url}" ]]; then
+    printf '%s' "${text}"
+    return
+  fi
+  local escaped_url
+  escaped_url=$(printf '%s' "${url}" | sed 's/[].[*^$()+?{|\\]/\\&/g; s|/|\\/|g')
+  printf '%s' "${text}" | sed "s/${escaped_url}/[link withheld]/g"
+}
+
 FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
 
 case "${FULLSEND_TRACKER:-}" in
@@ -1175,11 +1281,37 @@ ${ISSUE_BODY}
       CREATED_URLS="${CREATED_URLS} ${CREATED_URL}"
     done
 
-    # Collect existing URLs.
+    # Collect existing URLs. An entry marked "redacted" (agents/triage.md's
+    # visibility check) is a real blocker the agent found but must not
+    # surface publicly — exclude it from the footer too, since this footer
+    # is appended unconditionally regardless of what `comment` says.
+    #
+    # The agent's `redacted` flag is a signal, not a guarantee: an agent
+    # that omits it, sets it false, or could not determine visibility
+    # would otherwise leak the URL here. Re-check visibility server-side
+    # (_candidate_url_is_public, triage-ops.lib.sh) before trusting an
+    # unmarked entry, and treat private/internal/unknown the same as an
+    # explicit `redacted: true`.
     EXISTING_COUNT=$(jq '.prerequisites.existing // [] | length' "${RESULT_FILE}")
     EXISTING_URLS=""
+    REDACTED_EXISTING_COUNT=0
     for i in $(seq 0 $((EXISTING_COUNT - 1))); do
       URL=$(jq -r ".prerequisites.existing[${i}].url" "${RESULT_FILE}")
+      IS_REDACTED=$(jq -r ".prerequisites.existing[${i}].redacted // false" "${RESULT_FILE}")
+      if [[ "${IS_REDACTED}" == "true" ]]; then
+        REDACTED_EXISTING_COUNT=$((REDACTED_EXISTING_COUNT + 1))
+        # Belt-and-suspenders: the agent flagged this one itself, but it may
+        # still have named the URL in `comment` despite the withhold
+        # instruction (see _redact_url_from_text).
+        COMMENT="$(_redact_url_from_text "${COMMENT}" "${URL}")"
+        continue
+      fi
+      if ! _candidate_url_is_public "${URL}"; then
+        echo "::warning::Server-side visibility check withheld a prerequisite URL the agent did not mark redacted"
+        REDACTED_EXISTING_COUNT=$((REDACTED_EXISTING_COUNT + 1))
+        COMMENT="$(_redact_url_from_text "${COMMENT}" "${URL}")"
+        continue
+      fi
       EXISTING_URLS="${EXISTING_URLS} ${URL}"
     done
 
@@ -1196,6 +1328,10 @@ ${ISSUE_BODY}
       COMMENT="${COMMENT}
 
 **Blocked by:**${BLOCKER_LIST}"
+    elif [[ "${REDACTED_EXISTING_COUNT}" -gt 0 ]]; then
+      COMMENT="${COMMENT}
+
+**Blocked by:** a prerequisite in another repository (details withheld)."
     fi
 
     if [[ -n "${FAILED_CREATES}" ]]; then
@@ -1236,21 +1372,52 @@ ${FAILED_CREATES}"
       echo "::warning::Ignoring 'prerequisites' on an 'in-progress' result -- mention separate blockers in 'comment' instead"
     fi
 
-    # Collect PR URLs from pull_requests array. Capture via command
-    # substitution rather than process substitution so a jq failure — a
-    # pull_requests that passed the count check but is not an array of
-    # objects, e.g. a bare string — still trips set -e instead of silently
-    # rendering an empty list. -e also rejects a null url.
-    PR_URLS=$(jq -er '.pull_requests[].url' "${RESULT_FILE}")
+    # Collect PR URLs from pull_requests array, one index at a time so a
+    # jq failure — a pull_requests entry that is not an object, e.g. a bare
+    # string, or has a null url — still trips set -e instead of silently
+    # rendering an empty list. An entry marked "redacted" (agents/triage.md's
+    # visibility check) is a real PR the agent found but must not surface
+    # publicly — exclude it from this footer too, since it is appended
+    # unconditionally regardless of what `comment` says.
+    #
+    # The agent's `redacted` flag is a signal, not a guarantee: an agent
+    # that omits it, sets it false, or could not determine visibility
+    # would otherwise leak the URL here. Re-check visibility server-side
+    # (_candidate_url_is_public, triage-ops.lib.sh) before trusting an
+    # unmarked entry, and treat private/internal/unknown the same as an
+    # explicit `redacted: true`.
     PR_LIST=""
-    while IFS= read -r url; do
+    REDACTED_PR_COUNT=0
+    for i in $(seq 0 $((PR_COUNT - 1))); do
+      URL=$(jq -er ".pull_requests[${i}].url" "${RESULT_FILE}")
+      IS_REDACTED=$(jq -r ".pull_requests[${i}].redacted // false" "${RESULT_FILE}")
+      if [[ "${IS_REDACTED}" == "true" ]]; then
+        REDACTED_PR_COUNT=$((REDACTED_PR_COUNT + 1))
+        # Belt-and-suspenders: the agent flagged this one itself, but it may
+        # still have named the URL in `comment` despite the withhold
+        # instruction (see _redact_url_from_text).
+        COMMENT="$(_redact_url_from_text "${COMMENT}" "${URL}")"
+        continue
+      fi
+      if ! _candidate_url_is_public "${URL}"; then
+        echo "::warning::Server-side visibility check withheld a pull request URL the agent did not mark redacted"
+        REDACTED_PR_COUNT=$((REDACTED_PR_COUNT + 1))
+        COMMENT="$(_redact_url_from_text "${COMMENT}" "${URL}")"
+        continue
+      fi
       PR_LIST="${PR_LIST}
-- ${url}"
-    done <<< "${PR_URLS}"
+- ${URL}"
+    done
 
-    COMMENT="${COMMENT}
+    if [[ -n "${PR_LIST}" ]]; then
+      COMMENT="${COMMENT}
 
 **Addressed by:**${PR_LIST}"
+    elif [[ "${REDACTED_PR_COUNT}" -gt 0 ]]; then
+      COMMENT="${COMMENT}
+
+**Addressed by:** work already in progress in another repository (details withheld)."
+    fi
 
     tracker_remove_label "blocked"
     tracker_remove_label "ready-to-code"

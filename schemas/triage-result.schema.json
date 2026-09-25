@@ -46,6 +46,10 @@
               { "pattern": "^https://github\\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[0-9]+$" },
               { "pattern": "^https://(gitlab\\.com|gitlab\\.cee\\.redhat\\.com)(/[a-zA-Z0-9._-]+)+/-/merge_requests/[0-9]+$" }
             ]
+          },
+          "redacted": {
+            "type": "boolean",
+            "description": "True when the candidate repository is private/internal and this issue's repository is public (see agents/triage.md's Visibility check). The post-script omits redacted entries from the automated 'Addressed by:' footer, closing the leak that naming the URL only in the prose comment cannot."
           }
         },
         "additionalProperties": false
@@ -68,6 +72,10 @@
                   { "pattern": "^https://(gitlab\\.com|gitlab\\.cee\\.redhat\\.com)(/[a-zA-Z0-9._-]+)+/-/(issues|merge_requests)/[0-9]+$" },
                   { "pattern": "^https://[a-zA-Z0-9-]+\\.atlassian\\.net/browse/[A-Z][A-Z0-9]*-[0-9]+$" }
                 ]
+              },
+              "redacted": {
+                "type": "boolean",
+                "description": "True when the candidate repository is private/internal and this issue's repository is public (see agents/triage.md's Visibility check). The post-script omits redacted entries from the automated 'Blocked by:' footer, closing the leak that naming the URL only in the prose comment cannot."
               }
             },
             "additionalProperties": false
