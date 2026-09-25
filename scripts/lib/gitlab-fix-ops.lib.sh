@@ -83,6 +83,27 @@ forge_get_pr_head_ref() {
   ) | jq -r '.source_branch // empty'
 }
 
+# Returns GitHub-style PR state (OPEN, CLOSED, MERGED) or empty on failure.
+# Fail-open: callers must treat empty as "unknown, proceed with push".
+# locked GitLab MRs are treated as CLOSED (same as gitlab-review-ops).
+forge_get_pr_state() {
+  local pr_number="$1"
+  local state
+  state="$(
+    (
+      # shellcheck disable=SC2030,SC2031
+      GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+      _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+    ) | jq -r '.state // empty'
+  )" || true
+  case "${state}" in
+    opened) echo "OPEN" ;;
+    closed) echo "CLOSED" ;;
+    merged) echo "MERGED" ;;
+    locked) echo "CLOSED" ;;
+  esac
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {

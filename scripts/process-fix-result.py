@@ -129,10 +129,42 @@ FOOTER = (
     "- Push commits directly — review re-runs automatically on push"
 )
 
+SKIPPED_PUSH_FOOTER = (
+    "\n---\n"
+    "**Next steps:**\n"
+    "- Open a follow-up PR with the proposed changes if they still apply "
+    "on the target branch\n"
+    "- The findings listed above were not applied because this PR is "
+    "already merged or closed"
+)
+
 ATTRIBUTION = (
     '\n<sub>Updated by <a href="https://github.com/fullsend-ai/fullsend">'
     "fullsend</a> fix agent</sub>"
 )
+
+
+def _skipped_push_state():
+    """Return MERGED/CLOSED when the post-script skipped the push, else ''."""
+    raw = os.environ.get("FIX_PUSH_SKIPPED_STATE", "")
+    if not raw:
+        return ""
+    state = raw.strip().splitlines()[0].upper()
+    if state in {"MERGED", "CLOSED"}:
+        return state
+    return ""
+
+
+def skipped_push_banner(state):
+    """Build the warning banner for a skipped push."""
+    state_lower = state.lower()
+    return (
+        f"> **Push skipped:** this PR is already **{state_lower}**. "
+        "The fix agent finished after the PR was merged or closed, so "
+        "its commit was not pushed. The proposed changes below did not "
+        "land — open a follow-up PR if they still apply on the target "
+        "branch.\n"
+    )
 
 
 def _post_comment_github(repo, pr_number, full):
@@ -309,6 +341,11 @@ def main(argv=None):
     print(f"Processed: {fixed} fixed, {disagreed} disagreed")
 
     summary_body = build_summary_body(data)
+    skipped_state = _skipped_push_state()
+    footer = FOOTER
+    if skipped_state:
+        summary_body = skipped_push_banner(skipped_state) + "\n" + summary_body
+        footer = SKIPPED_PUSH_FOOTER
     # Record the post-script's trailer strip so the rewrite is visible.
     signoff_note = ""
     try:
@@ -320,7 +357,7 @@ def main(argv=None):
         signoff_note = (
             f"\n\n_Removed a Signed-off-by trailer from {stripped} agent commit{plural}._"
         )
-    suffix = signoff_note + FOOTER + ATTRIBUTION
+    suffix = signoff_note + footer + ATTRIBUTION
     success = post_summary(repo, pr_number, summary_body, suffix=suffix, dry_run=dry_run)
 
     return 0 if success else 2

@@ -48,6 +48,14 @@ forge_get_pr_head_ref() {
     --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null
 }
 
+# Returns GitHub PR state (OPEN, CLOSED, MERGED) or empty on failure.
+# Fail-open: callers must treat empty as "unknown, proceed with push".
+forge_get_pr_state() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json state --jq '.state' 2>/dev/null || true
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
