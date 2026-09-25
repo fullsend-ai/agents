@@ -529,11 +529,48 @@ fi
 # Label logic is mirrored in post-review-test.sh — update both.
 # ---------------------------------------------------------------------------
 
+# Returns 0 when the result has at least one finding and every finding
+# is category=protected-path at info|low|medium. Fail closed (return 1)
+# on missing findings, mixed categories, high/critical, or parse errors.
+findings_are_only_governance_protected_path() {
+  local result_file="$1"
+  [[ -n "${result_file}" && -f "${result_file}" ]] || return 1
+  jq -e '
+    (.findings | type == "array")
+    and (.findings | length > 0)
+    and (.findings | all(
+      .category == "protected-path"
+      and (.severity == "info" or .severity == "low" or .severity == "medium")
+    ))
+  ' "${result_file}" >/dev/null 2>&1
+}
+
+# When the agent's native verdict is comment and the only remaining
+# findings are protected-path governance notices at medium or below, a
+# human may already have approved the current HEAD. requires-manual-review
+# would then be semantically wrong. Skip it (do not apply ready-for-merge
+# — the agent did not approve). Still post the review comment. Fail
+# closed on any API error. Drafts never take this path.
+SKIP_MANUAL_REVIEW=false
+if [ "${ACTION}" = "comment" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
+  if findings_are_only_governance_protected_path "${RESULT_FILE}"; then
+    echo "Native comment with only governance protected-path findings — checking for existing authorized human approval"
+    if forge_has_authorized_human_approval; then
+      SKIP_MANUAL_REVIEW=true
+      echo "Skipping requires-manual-review: authorized human approval on current HEAD already satisfies the protected-path requirement"
+    else
+      echo "No authorized human approval on current HEAD — requires-manual-review"
+    fi
+  fi
+fi
+
 # Determine the target outcome label before mutating anything so we can
 # skip no-op remove/re-add cycles that generate timeline noise.
 OUTCOME_LABEL=""
 if [ "${ACTION}" = "approve" ] && [ "${DOWNGRADED}" = "false" ] && [ "${PR_IS_DRAFT}" != "true" ]; then
   OUTCOME_LABEL="ready-for-merge"
+elif [ "${ACTION}" = "comment" ] && [ "${SKIP_MANUAL_REVIEW}" = "true" ]; then
+  OUTCOME_LABEL=""
 elif { [ "${ACTION}" = "approve" ] && { [ "${DOWNGRADED}" = "true" ] || [ "${PR_IS_DRAFT}" = "true" ]; }; } || \
      [ "${ACTION}" = "comment" ]; then
   OUTCOME_LABEL="requires-manual-review"

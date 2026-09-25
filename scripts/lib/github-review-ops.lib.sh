@@ -145,3 +145,116 @@ forge_add_label_edit() {
 forge_list_repo_labels() {
   GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }
+
+# Returns 0 if an authorized human has already approved the current HEAD,
+# 1 otherwise. Fail-closed on any API error or incomplete signal.
+#
+# Two independent gates, both required (lessons from PR #305):
+#   1. GitHub's reviewDecision does not indicate an outstanding block.
+#      reviewDecision is only ever CHANGES_REQUESTED, REVIEW_REQUIRED,
+#      APPROVED, or null — it is null whenever the base branch has no
+#      required-review branch-protection rule configured, regardless of
+#      how many humans have approved. Null/empty is therefore treated as
+#      "no required-review protection configured", not as rejection, and
+#      falls through to Gate 2. CHANGES_REQUESTED and REVIEW_REQUIRED
+#      still fail closed unconditionally. Because a null reviewDecision
+#      can't be relied on to reflect an outstanding CHANGES_REQUESTED
+#      review, Gate 2 additionally scans each reviewer's latest review
+#      itself and fails closed if any is blocking.
+#   2. At least one APPROVED review on the current HEAD SHA comes from a
+#      non-bot, non-author User with write/maintain/admin permission.
+#      author_association is not used: MEMBER does not imply write access
+#      when the org default_repository_permission is read.
+forge_has_authorized_human_approval() {
+  local pr_json
+  pr_json=$(GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json reviewDecision,headRefOid,author 2>/dev/null) || return 1
+  [[ -n "${pr_json}" ]] || return 1
+
+  local review_decision head_sha author_login
+  review_decision=$(printf '%s' "${pr_json}" | jq -r '.reviewDecision // empty') || return 1
+  head_sha=$(printf '%s' "${pr_json}" | jq -r '.headRefOid // empty') || return 1
+  author_login=$(printf '%s' "${pr_json}" | jq -r '.author.login // empty') || return 1
+
+  [[ -n "${head_sha}" ]] || return 1
+  [[ -n "${author_login}" ]] || return 1
+
+  case "${review_decision}" in
+    CHANGES_REQUESTED|REVIEW_REQUIRED)
+      return 1
+      ;;
+  esac
+
+  local reviews
+  reviews=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate 2>/dev/null) || return 1
+
+  # Each reviewer's *effective* review ignores COMMENTED and PENDING —
+  # GitHub's own merge-gating semantics do the same: a later comment does
+  # not clear an outstanding CHANGES_REQUESTED. Only the latest of
+  # APPROVED/CHANGES_REQUESTED/DISMISSED per reviewer counts.
+  local blocking_count
+  blocking_count=$(printf '%s' "${reviews}" | jq -r -s '
+    add // []
+    | map(select(.user != null and (.user.login // "") != ""))
+    | map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
+    | group_by(.user.login)
+    | map(max_by(.submitted_at // ""))
+    | map(select(.state == "CHANGES_REQUESTED"))
+    | length
+  ') || return 1
+  [[ "${blocking_count}" == "0" ]] || return 1
+
+  # Candidates use each reviewer's *effective* review — the same
+  # group_by/max_by pipeline as blocking_count above — so a reviewer's
+  # earlier APPROVED row is not reused once a later review (even a
+  # since-dismissed CHANGES_REQUESTED) has superseded it. Matching only
+  # the raw APPROVED row's own commit_id/state, without regard to
+  # whether it is still that reviewer's latest state, would let a stale
+  # approval authorize the skip after the reviewer's standing changed.
+  local candidates
+  candidates=$(printf '%s' "${reviews}" | jq -r -s --arg sha "${head_sha}" --arg author "${author_login}" '
+    add // []
+    | map(select(.user != null and (.user.login // "") != ""))
+    | map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
+    | group_by(.user.login)
+    | map(max_by(.submitted_at // ""))
+    | [.[]
+      | select(
+          .state == "APPROVED"
+          and .commit_id == $sha
+          and .user.login != $author
+          and (.user.type // "") == "User"
+          and ((.user.login | endswith("[bot]")) | not)
+        )
+      | .user.login]
+    | unique[]
+  ') || return 1
+
+  [[ -n "${candidates}" ]] || return 1
+
+  # Re-fetch HEAD SHA immediately before trusting the match. If the call
+  # fails or the SHA moved, fall closed — do not reuse the earlier snapshot.
+  local current_sha
+  current_sha=$(GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json headRefOid --jq '.headRefOid' 2>/dev/null) || return 1
+  [[ -n "${current_sha}" ]] || return 1
+  [[ "${current_sha}" == "${head_sha}" ]] || return 1
+
+  local login encoded perm_json role
+  while IFS= read -r login; do
+    [[ -n "${login}" ]] || continue
+    encoded=$(printf '%s' "${login}" | jq -sRr @uri) || continue
+    perm_json=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+      "repos/${REPO}/collaborators/${encoded}/permission" 2>/dev/null) || continue
+    role=$(printf '%s' "${perm_json}" | jq -r '.role_name // empty') || continue
+    case "${role}" in
+      admin|maintain|write)
+        echo "Authorized human approval on HEAD from ${login} (role=${role})"
+        return 0
+        ;;
+    esac
+  done <<< "${candidates}"
+
+  return 1
+}

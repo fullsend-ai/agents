@@ -180,6 +180,119 @@ forge_add_label_edit() {
 forge_list_repo_labels() {
   GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/labels" --paginate --jq '.[].name' 2>/dev/null || true
 }
+
+# Returns 0 if an authorized human has already approved the current HEAD,
+# 1 otherwise. Fail-closed on any API error or incomplete signal.
+#
+# Two independent gates, both required (lessons from PR #305):
+#   1. GitHub's reviewDecision does not indicate an outstanding block.
+#      reviewDecision is only ever CHANGES_REQUESTED, REVIEW_REQUIRED,
+#      APPROVED, or null — it is null whenever the base branch has no
+#      required-review branch-protection rule configured, regardless of
+#      how many humans have approved. Null/empty is therefore treated as
+#      "no required-review protection configured", not as rejection, and
+#      falls through to Gate 2. CHANGES_REQUESTED and REVIEW_REQUIRED
+#      still fail closed unconditionally. Because a null reviewDecision
+#      can't be relied on to reflect an outstanding CHANGES_REQUESTED
+#      review, Gate 2 additionally scans each reviewer's latest review
+#      itself and fails closed if any is blocking.
+#   2. At least one APPROVED review on the current HEAD SHA comes from a
+#      non-bot, non-author User with write/maintain/admin permission.
+#      author_association is not used: MEMBER does not imply write access
+#      when the org default_repository_permission is read.
+forge_has_authorized_human_approval() {
+  local pr_json
+  pr_json=$(GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json reviewDecision,headRefOid,author 2>/dev/null) || return 1
+  [[ -n "${pr_json}" ]] || return 1
+
+  local review_decision head_sha author_login
+  review_decision=$(printf '%s' "${pr_json}" | jq -r '.reviewDecision // empty') || return 1
+  head_sha=$(printf '%s' "${pr_json}" | jq -r '.headRefOid // empty') || return 1
+  author_login=$(printf '%s' "${pr_json}" | jq -r '.author.login // empty') || return 1
+
+  [[ -n "${head_sha}" ]] || return 1
+  [[ -n "${author_login}" ]] || return 1
+
+  case "${review_decision}" in
+    CHANGES_REQUESTED|REVIEW_REQUIRED)
+      return 1
+      ;;
+  esac
+
+  local reviews
+  reviews=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/reviews" --paginate 2>/dev/null) || return 1
+
+  # Each reviewer's *effective* review ignores COMMENTED and PENDING —
+  # GitHub's own merge-gating semantics do the same: a later comment does
+  # not clear an outstanding CHANGES_REQUESTED. Only the latest of
+  # APPROVED/CHANGES_REQUESTED/DISMISSED per reviewer counts.
+  local blocking_count
+  blocking_count=$(printf '%s' "${reviews}" | jq -r -s '
+    add // []
+    | map(select(.user != null and (.user.login // "") != ""))
+    | map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
+    | group_by(.user.login)
+    | map(max_by(.submitted_at // ""))
+    | map(select(.state == "CHANGES_REQUESTED"))
+    | length
+  ') || return 1
+  [[ "${blocking_count}" == "0" ]] || return 1
+
+  # Candidates use each reviewer's *effective* review — the same
+  # group_by/max_by pipeline as blocking_count above — so a reviewer's
+  # earlier APPROVED row is not reused once a later review (even a
+  # since-dismissed CHANGES_REQUESTED) has superseded it. Matching only
+  # the raw APPROVED row's own commit_id/state, without regard to
+  # whether it is still that reviewer's latest state, would let a stale
+  # approval authorize the skip after the reviewer's standing changed.
+  local candidates
+  candidates=$(printf '%s' "${reviews}" | jq -r -s --arg sha "${head_sha}" --arg author "${author_login}" '
+    add // []
+    | map(select(.user != null and (.user.login // "") != ""))
+    | map(select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "DISMISSED"))
+    | group_by(.user.login)
+    | map(max_by(.submitted_at // ""))
+    | [.[]
+      | select(
+          .state == "APPROVED"
+          and .commit_id == $sha
+          and .user.login != $author
+          and (.user.type // "") == "User"
+          and ((.user.login | endswith("[bot]")) | not)
+        )
+      | .user.login]
+    | unique[]
+  ') || return 1
+
+  [[ -n "${candidates}" ]] || return 1
+
+  # Re-fetch HEAD SHA immediately before trusting the match. If the call
+  # fails or the SHA moved, fall closed — do not reuse the earlier snapshot.
+  local current_sha
+  current_sha=$(GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json headRefOid --jq '.headRefOid' 2>/dev/null) || return 1
+  [[ -n "${current_sha}" ]] || return 1
+  [[ "${current_sha}" == "${head_sha}" ]] || return 1
+
+  local login encoded perm_json role
+  while IFS= read -r login; do
+    [[ -n "${login}" ]] || continue
+    encoded=$(printf '%s' "${login}" | jq -sRr @uri) || continue
+    perm_json=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+      "repos/${REPO}/collaborators/${encoded}/permission" 2>/dev/null) || continue
+    role=$(printf '%s' "${perm_json}" | jq -r '.role_name // empty') || continue
+    case "${role}" in
+      admin|maintain|write)
+        echo "Authorized human approval on HEAD from ${login} (role=${role})"
+        return 0
+        ;;
+    esac
+  done <<< "${candidates}"
+
+  return 1
+}
 # END bundled: lib/github-review-ops.lib.sh
     ;;
   gitlab)
@@ -430,6 +543,164 @@ forge_list_repo_labels() {
     echo "${batch}" | jq -r '.[].name'
     page=$((page + 1))
   done
+}
+
+# Parses a GitLab ISO-8601 timestamp (optional fractional seconds, and
+# either a trailing "Z" or a numeric UTC offset such as "+02:00" or
+# "-0700") into epoch seconds. Returns nothing (not even null) when the
+# input is empty, not a string, or does not match — callers must treat a
+# missing result as a parse failure and fail closed.
+_GITLAB_ISO8601_EPOCH_JQ_DEF='
+def iso8601_epoch:
+  if . == null or (length) == 0 then empty
+  else
+    ((capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.[0-9]+)?(?<tz>Z|[+-][0-9]{2}:?[0-9]{2})$")?) // null) as $m
+    | if $m == null then empty
+      else
+        ($m.base + "Z" | fromdateiso8601) as $base
+        | (if $m.tz == "Z" then 0
+           else
+             ($m.tz[1:] | gsub(":"; "")) as $digits
+             | (($digits[0:2] | tonumber) * 3600 + ($digits[2:4] | tonumber) * 60) as $mag
+             | (if ($m.tz | startswith("-")) then -$mag else $mag end)
+           end) as $offset
+        | $base - $offset
+      end
+  end;
+'
+
+# Returns 0 if an authorized human has already approved the current HEAD,
+# 1 otherwise. Fail-closed on any API error or incomplete signal.
+#
+# Three independent gates, all required:
+#   1. GitLab's approvals.approved is true — respects approval rules.
+#   2. At least one non-bot, non-author approver has Developer or higher
+#      (access_level >= 30). approved=true with zero required approvals
+#      and an empty approved_by list does not satisfy this gate.
+#   3. That approver has an "approved this merge request" system note
+#      timestamped at or after the MR version whose head_commit_sha
+#      matches current HEAD was created. approved_by is MR-level, not
+#      SHA-scoped: when a project disables reset_approvals_on_push, an
+#      approval recorded before earlier pushes still appears here after
+#      HEAD has moved. Gate 3 binds the approval to HEAD the same way
+#      GitHub's `commit_id == sha` does — using GitLab's own record of
+#      when the SHA became MR HEAD (the diff version's created_at), not
+#      the commit's committer date, which is not push-ordered and can
+#      predate a still-standing approval note under a workflow that
+#      backdates commits or replays them from another branch. Gate 3
+#      itself spans a versions call, paginated notes, and a member
+#      lookup, so HEAD is re-checked one final time immediately before
+#      returning success — a push during that window must not be
+#      authorized against the earlier snapshot.
+forge_has_authorized_human_approval() {
+  local mr_data
+  mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || return 1
+  [[ -n "${mr_data}" ]] || return 1
+
+  local sha author_login
+  sha=$(printf '%s' "${mr_data}" | jq -r '.sha // empty') || return 1
+  author_login=$(printf '%s' "${mr_data}" | jq -r '.author.username // empty') || return 1
+  [[ -n "${sha}" ]] || return 1
+  [[ -n "${author_login}" ]] || return 1
+
+  local approvals
+  approvals=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/approvals" 2>/dev/null) || return 1
+  [[ -n "${approvals}" ]] || return 1
+
+  local approved
+  approved=$(printf '%s' "${approvals}" | jq -r '.approved // false') || return 1
+  if [[ "${approved}" != "true" ]]; then
+    return 1
+  fi
+
+  local candidates
+  candidates=$(printf '%s' "${approvals}" | jq -r --arg author "${author_login}" '
+    [.approved_by[]? | .user
+      | select(
+          . != null
+          and (.username // "") != ""
+          and .username != $author
+          and ((.bot // false) | not)
+          and ((.username | endswith("_bot")) | not)
+        )
+      | "\(.id)\t\(.username)"]
+    | unique[]
+  ') || return 1
+
+  [[ -n "${candidates}" ]] || return 1
+
+  # Re-fetch SHA immediately before trusting the match. Fail closed if the
+  # call errors or HEAD moved since the first read.
+  local current_sha
+  current_sha=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null \
+    | jq -r '.sha // empty') || return 1
+  [[ -n "${current_sha}" ]] || return 1
+  [[ "${current_sha}" == "${sha}" ]] || return 1
+
+  # Gate 3: resolve when the current HEAD SHA became the MR's HEAD — per
+  # GitLab's own diff-version record, not the commit's committer date
+  # (not push-ordered; see the doc comment above) — then require a
+  # qualifying approval note timestamped at or after that. Fail closed if
+  # the call errors, no version matches current HEAD, or its timestamp is
+  # unavailable/unparseable.
+  local versions version_epoch
+  versions=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/versions" 2>/dev/null) || return 1
+  [[ -n "${versions}" ]] || return 1
+  version_epoch=$(printf '%s' "${versions}" | jq -r --arg sha "${current_sha}" '
+    '"${_GITLAB_ISO8601_EPOCH_JQ_DEF}"'
+    [.[]? | select(.head_commit_sha == $sha) | (.created_at | iso8601_epoch)]
+    | if length > 0 then max else empty end
+  ') || return 1
+  [[ "${version_epoch}" =~ ^[0-9]+$ ]] || return 1
+
+  # Paginate notes so a qualifying approval on a busy MR isn't missed by
+  # only checking the most recent page. Capped and fail-closed on overflow
+  # like forge_list_repo_labels: if the cap is hit, any note beyond it is
+  # simply not considered, and gate 3 below fails closed as usual.
+  local notes="[]" page=1 max_pages=50
+  while [[ "${page}" -le "${max_pages}" ]]; do
+    local batch batch_count
+    batch=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/notes?per_page=100&sort=desc&page=${page}" 2>/dev/null) || return 1
+    [[ -n "${batch}" ]] || return 1
+    batch_count=$(printf '%s' "${batch}" | jq 'length') || return 1
+    [[ "${batch_count}" =~ ^[0-9]+$ ]] || return 1
+    notes=$(jq -c -n --argjson a "${notes}" --argjson b "${batch}" '$a + $b') || return 1
+    [[ "${batch_count}" -lt 100 ]] && break
+    page=$((page + 1))
+  done
+  [[ -n "${notes}" ]] || return 1
+
+  local id username member access approval_epoch
+  while IFS=$'\t' read -r id username; do
+    [[ -n "${id}" ]] || continue
+
+    approval_epoch=$(printf '%s' "${notes}" | jq -r --arg user "${username}" '
+      '"${_GITLAB_ISO8601_EPOCH_JQ_DEF}"'
+      [.[]? | select(.system == true and .body == "approved this merge request" and (.author.username // "") == $user)
+            | (.created_at | iso8601_epoch)]
+      | if length > 0 then max else empty end
+    ') || continue
+    [[ "${approval_epoch}" =~ ^[0-9]+$ ]] || continue
+    [ "${approval_epoch}" -ge "${version_epoch}" ] || continue
+
+    member=$(_gitlab_api GET "/projects/${REPO_ENCODED}/members/all/${id}" 2>/dev/null) || continue
+    access=$(printf '%s' "${member}" | jq -r '.access_level // 0') || continue
+    if [[ "${access}" =~ ^[0-9]+$ ]] && [ "${access}" -ge 30 ]; then
+      # Gate 3 spans a versions call, up to 50 paginated notes pages, and a
+      # member lookup — re-check HEAD one last time immediately before
+      # trusting the result. A push during that window that replaces the
+      # approved HEAD with an unreviewed one must not be authorized here.
+      local final_sha
+      final_sha=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null \
+        | jq -r '.sha // empty') || return 1
+      [[ -n "${final_sha}" ]] || return 1
+      [[ "${final_sha}" == "${current_sha}" ]] || return 1
+      echo "Authorized human approval from ${username} (access_level=${access}) on HEAD ${current_sha}"
+      return 0
+    fi
+  done <<< "${candidates}"
+
+  return 1
 }
 # END bundled: lib/gitlab-review-ops.lib.sh
     ;;

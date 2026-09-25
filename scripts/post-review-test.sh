@@ -25,9 +25,12 @@ determine_outcome_label() {
   local action="$1"
   local downgraded="$2"
   local is_draft="${3:-false}"
+  local skip_manual_review="${4:-false}"
 
   if [ "${action}" = "approve" ] && [ "${downgraded}" = "false" ] && [ "${is_draft}" != "true" ]; then
     echo "ready-for-merge"
+  elif [ "${action}" = "comment" ] && [ "${skip_manual_review}" = "true" ]; then
+    echo "none"
   elif { [ "${action}" = "approve" ] && { [ "${downgraded}" = "true" ] || [ "${is_draft}" = "true" ]; }; } || \
        [ "${action}" = "comment" ]; then
     echo "requires-manual-review"
@@ -46,17 +49,19 @@ run_test() {
   local downgraded="$3"
   local expected="$4"
   local is_draft="${5:-false}"
+  local skip_manual_review="${6:-false}"
 
   local actual
-  actual="$(determine_outcome_label "${action}" "${downgraded}" "${is_draft}")"
+  actual="$(determine_outcome_label "${action}" "${downgraded}" "${is_draft}" "${skip_manual_review}")"
 
   if [ "${actual}" != "${expected}" ]; then
     echo "FAIL: ${test_name}"
-    echo "  action:     '${action}'"
-    echo "  downgraded: '${downgraded}'"
-    echo "  is_draft:   '${is_draft}'"
-    echo "  expected:   '${expected}'"
-    echo "  actual:     '${actual}'"
+    echo "  action:              '${action}'"
+    echo "  downgraded:          '${downgraded}'"
+    echo "  is_draft:            '${is_draft}'"
+    echo "  skip_manual_review:  '${skip_manual_review}'"
+    echo "  expected:            '${expected}'"
+    echo "  actual:              '${actual}'"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -77,6 +82,16 @@ run_test "approve-with-downgrade" \
 # Comment (split/conflicting review) → requires-manual-review
 run_test "comment-split-review" \
   "comment" "false" "requires-manual-review"
+
+# Native comment whose only trigger is governance protected-path, with a
+# qualifying human approval already on HEAD → skip requires-manual-review.
+run_test "comment-skip-manual-review-with-human-approval" \
+  "comment" "false" "none" "false" "true"
+
+# Genuine comment without the skip flag still gets requires-manual-review
+# even if a human has approved (skip is computed from findings + approval).
+run_test "comment-without-skip-flag-unchanged" \
+  "comment" "false" "requires-manual-review" "false" "false"
 
 # request-changes → no outcome label
 run_test "request-changes-no-label" \
@@ -118,6 +133,70 @@ run_test "request-changes-draft-unchanged" \
 
 run_test "reject-draft-unchanged" \
   "reject" "false" "rejected" "true"
+
+# ---------------------------------------------------------------------------
+# Governance protected-path finding predicate
+# Mirrors findings_are_only_governance_protected_path() in post-review.sh
+# ---------------------------------------------------------------------------
+
+findings_are_only_governance_protected_path() {
+  local json="$1"
+  echo "${json}" | jq -e '
+    (.findings | type == "array")
+    and (.findings | length > 0)
+    and (.findings | all(
+      .category == "protected-path"
+      and (.severity == "info" or .severity == "low" or .severity == "medium")
+    ))
+  ' >/dev/null 2>&1
+}
+
+run_governance_findings_test() {
+  local test_name="$1"
+  local json="$2"
+  local expected="$3"
+  local actual="false"
+  if findings_are_only_governance_protected_path "${json}"; then
+    actual="true"
+  fi
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected: '${expected}'"
+    echo "  actual:   '${actual}'"
+    echo "  json:     ${json}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_governance_findings_test "governance-findings-medium-protected-path" \
+  '{"action":"comment","findings":[{"severity":"medium","category":"protected-path","file":"scripts/x.sh","description":"d"}]}' \
+  "true"
+
+run_governance_findings_test "governance-findings-low-protected-path" \
+  '{"action":"comment","findings":[{"severity":"low","category":"protected-path","file":"scripts/x.sh","description":"d"}]}' \
+  "true"
+
+run_governance_findings_test "governance-findings-info-protected-path" \
+  '{"action":"comment","findings":[{"severity":"info","category":"protected-path","file":"scripts/x.sh","description":"d"}]}' \
+  "true"
+
+run_governance_findings_test "governance-findings-high-protected-path" \
+  '{"action":"comment","findings":[{"severity":"high","category":"protected-path","file":"scripts/x.sh","description":"d"}]}' \
+  "false"
+
+run_governance_findings_test "governance-findings-mixed-category" \
+  '{"action":"comment","findings":[{"severity":"medium","category":"protected-path","file":"scripts/x.sh","description":"d"},{"severity":"medium","category":"bug","file":"src/main.go","description":"d"}]}' \
+  "false"
+
+run_governance_findings_test "governance-findings-no-findings" \
+  '{"action":"comment","body":"split review"}' \
+  "false"
+
+run_governance_findings_test "governance-findings-empty-array" \
+  '{"action":"comment","findings":[]}' \
+  "false"
 
 # ---------------------------------------------------------------------------
 # Severity-threshold filtering logic
@@ -442,6 +521,55 @@ if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json state"* 
   exit 0
 fi
 
+# gh pr view ... --json headRefOid (TOCTOU re-fetch, not the combined query)
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json headRefOid"* ]] && [[ "\$*" != *"reviewDecision"* ]]; then
+  if [[ -n "\${MOCK_HEAD_SHA_REFETCH_FAIL:-}" ]]; then
+    echo "mock gh pr view headRefOid failure" >&2
+    exit 1
+  fi
+  echo "\${MOCK_PR_HEAD_SHA_REFETCH:-\${MOCK_PR_HEAD_SHA:-abcdef0123456789abcdef0123456789abcdef01}}"
+  exit 0
+fi
+
+# gh pr view ... --json reviewDecision,headRefOid,author
+# Unset MOCK_REVIEW_DECISION → null (fail closed). Set to "null" for the
+# same. MOCK_REVIEW_DECISION_FAIL simulates an API error.
+if [[ "\$1" == "pr" ]] && [[ "\$2" == "view" ]] && [[ "\$*" == *"--json reviewDecision"* ]]; then
+  if [[ -n "\${MOCK_REVIEW_DECISION_FAIL:-}" ]]; then
+    echo "mock gh pr view reviewDecision failure" >&2
+    exit 1
+  fi
+  SHA="\${MOCK_PR_HEAD_SHA:-abcdef0123456789abcdef0123456789abcdef01}"
+  AUTHOR="\${MOCK_PR_AUTHOR:-alice}"
+  if [[ -z "\${MOCK_REVIEW_DECISION+x}" ]] || [[ "\${MOCK_REVIEW_DECISION}" == "null" ]]; then
+    echo "{\"reviewDecision\":null,\"headRefOid\":\"\${SHA}\",\"author\":{\"login\":\"\${AUTHOR}\"}}"
+  else
+    echo "{\"reviewDecision\":\"\${MOCK_REVIEW_DECISION}\",\"headRefOid\":\"\${SHA}\",\"author\":{\"login\":\"\${AUTHOR}\"}}"
+  fi
+  exit 0
+fi
+
+# gh api repos/.../pulls/{n}/reviews --paginate
+if [[ "\$1" == "api" ]] && [[ "\$*" == *"/pulls/"*"/reviews"* ]]; then
+  if [[ -n "\${MOCK_REVIEWS_FAIL:-}" ]]; then
+    echo "mock gh api reviews failure" >&2
+    exit 1
+  fi
+  echo "\${MOCK_REVIEWS_JSON:-[]}"
+  exit 0
+fi
+
+# gh api repos/.../collaborators/{login}/permission
+if [[ "\$1" == "api" ]] && [[ "\$*" == *"/collaborators/"* ]]; then
+  if [[ -n "\${MOCK_PERMISSION_FAIL:-}" ]]; then
+    echo "mock gh api permission failure" >&2
+    exit 1
+  fi
+  ROLE="\${MOCK_COLLABORATOR_ROLE:-write}"
+  echo "{\"permission\":\"\${ROLE}\",\"role_name\":\"\${ROLE}\"}"
+  exit 0
+fi
+
 # gh api repos/.../pulls/{n}/files --paginate --jq '.[].filename'
 # → configurable via MOCK_PR_FILES (the mock emits the already-jq'd
 # filename list, matching what forge_get_pr_files consumes). Uses
@@ -565,10 +693,94 @@ if [[ "\${METHOD}" == "POST" ]]; then
   exit 0
 fi
 
-# GET /merge_requests/:iid → MR metadata
-if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" != *"/notes"* ]] && [[ "\${URL}" != *"/changes"* ]] && [[ "\${URL}" != *"/labels"* ]]; then
+# GET /merge_requests/:iid/approvals
+if [[ "\${URL}" == *"/approvals"* ]]; then
+  if [[ -n "\${MOCK_MR_APPROVALS_FAIL:-}" ]]; then
+    echo "mock curl approvals failure" >&2
+    exit 1
+  fi
+  if [[ -n "\${MOCK_MR_APPROVALS_JSON:-}" ]]; then
+    echo "\${MOCK_MR_APPROVALS_JSON}"
+  else
+    echo '{"approved":false,"approved_by":[]}'
+  fi
+  exit 0
+fi
+
+# GET /members/all/:id
+if [[ "\${URL}" == *"/members/all/"* ]]; then
+  if [[ -n "\${MOCK_MR_MEMBER_FAIL:-}" ]]; then
+    echo "mock curl member failure" >&2
+    exit 1
+  fi
+  LEVEL="\${MOCK_MR_ACCESS_LEVEL:-40}"
+  echo "{\"access_level\":\${LEVEL}}"
+  exit 0
+fi
+
+# GET /merge_requests/:iid/versions → diff versions. Used to bind the
+# authorized-human-approval skip to GitLab's own record of when the
+# current HEAD SHA became the MR's HEAD.
+if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" == *"/versions"* ]]; then
+  if [[ -n "\${MOCK_MR_VERSIONS_FAIL:-}" ]]; then
+    echo "mock curl versions failure" >&2
+    exit 1
+  fi
+  if [[ -n "\${MOCK_MR_VERSIONS_JSON:-}" ]]; then
+    echo "\${MOCK_MR_VERSIONS_JSON}"
+  else
+    SHA="\${MOCK_MR_SHA:-abc123}"
+    CREATED_AT="\${MOCK_MR_VERSION_CREATED_AT:-2024-01-01T00:00:00.000Z}"
+    printf '[{"head_commit_sha":"%s","created_at":"%s"}]\n' "\${SHA}" "\${CREATED_AT}"
+  fi
+  exit 0
+fi
+
+# GET /merge_requests/:iid/notes → discussion notes (approval system notes)
+if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" == *"/notes"* ]]; then
+  if [[ -n "\${MOCK_MR_NOTES_FAIL:-}" ]]; then
+    echo "mock curl notes failure" >&2
+    exit 1
+  fi
+  if [[ -n "\${MOCK_MR_NOTES_JSON:-}" ]]; then
+    echo "\${MOCK_MR_NOTES_JSON}"
+  else
+    NOTE_AUTHOR="\${MOCK_MR_NOTE_AUTHOR:-alice}"
+    printf '[{"system":true,"body":"approved this merge request","author":{"username":"%s"},"created_at":"2024-06-01T00:00:00.000Z"}]\n' "\${NOTE_AUTHOR}"
+  fi
+  exit 0
+fi
+
+# GET /merge_requests/:iid → MR metadata. Called once from forge_get_pr_info
+# up front, then up to three more times inside forge_has_authorized_human_
+# approval (the initial read, the Gate-2 TOCTOU re-fetch, and — only when
+# Gate 3 succeeds — the final re-check immediately before returning 0) — a
+# call counter lets the mock simulate the HEAD SHA moving between reads.
+if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" != *"/notes"* ]] && [[ "\${URL}" != *"/changes"* ]] && [[ "\${URL}" != *"/labels"* ]] && [[ "\${URL}" != *"/approvals"* ]] && [[ "\${URL}" != *"/versions"* ]]; then
+  COUNT_FILE=".gitlab-mr-fetch-count"
+  MR_FETCH_COUNT=0
+  [[ -f "\${COUNT_FILE}" ]] && MR_FETCH_COUNT="\$(cat "\${COUNT_FILE}")"
+  MR_FETCH_COUNT=\$((MR_FETCH_COUNT + 1))
+  echo "\${MR_FETCH_COUNT}" > "\${COUNT_FILE}"
+
   DRAFT="\${MOCK_MR_IS_DRAFT:-false}"
-  echo '{"state":"opened","draft":'"\${DRAFT}"',"author":{"username":"testuser"},"iid":99}'
+  AUTHOR="\${MOCK_MR_AUTHOR:-testuser}"
+  SHA="\${MOCK_MR_SHA:-abc123}"
+  if [[ "\${MR_FETCH_COUNT}" -ge 3 ]]; then
+    if [[ -n "\${MOCK_MR_REFETCH_FAIL:-}" ]]; then
+      echo "mock curl mr refetch failure" >&2
+      exit 1
+    fi
+    SHA="\${MOCK_MR_SHA_REFETCH:-\${SHA}}"
+  fi
+  if [[ "\${MR_FETCH_COUNT}" -ge 4 ]]; then
+    if [[ -n "\${MOCK_MR_FINAL_REFETCH_FAIL:-}" ]]; then
+      echo "mock curl mr final refetch failure" >&2
+      exit 1
+    fi
+    SHA="\${MOCK_MR_SHA_FINAL_REFETCH:-\${SHA}}"
+  fi
+  printf '{"state":"opened","draft":%s,"author":{"username":"%s"},"iid":99,"sha":"%s"}\n' "\${DRAFT}" "\${AUTHOR}" "\${SHA}"
   exit 0
 fi
 
@@ -1935,6 +2147,379 @@ run_protected_paths_default_drift_test() {
   echo "PASS: ${test_name}"
 }
 run_protected_paths_default_drift_test
+
+# ---------------------------------------------------------------------------
+# Skip requires-manual-review when a native comment verdict is only a
+# governance protected-path finding and an authorized human already approved.
+# ---------------------------------------------------------------------------
+
+HUMAN_APPROVAL_HEAD_SHA="abc123"
+HUMAN_APPROVAL_REVIEWS='[{"state":"APPROVED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-01T00:00:00Z"}]'
+GOVERNANCE_COMMENT_JSON='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123abc123abc123abc123abc123abc123abc1","body":"Protected-path notice","findings":[{"severity":"medium","category":"protected-path","file":"scripts/post-review.src.sh","description":"Touches a protected path; human approval required."}]}'
+MIXED_COMMENT_JSON='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123abc123abc123abc123abc123abc123abc1","body":"Mixed findings","findings":[{"severity":"medium","category":"protected-path","file":"scripts/post-review.src.sh","description":"Touches a protected path."},{"severity":"medium","category":"bug","file":"src/main.go","description":"Possible nil deref."}]}'
+HIGH_PROTECTED_COMMENT_JSON='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123abc123abc123abc123abc123abc123abc1","body":"High protected-path","findings":[{"severity":"high","category":"protected-path","file":"scripts/post-review.src.sh","description":"Protected path without justification."}]}'
+NO_FINDINGS_COMMENT_JSON='{"action":"comment","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc123abc123abc123abc123abc123abc123abc1","body":"Split review with no findings."}'
+
+run_comment_human_approval_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_pattern="$3"
+  local match_where="$4"  # "log" (GH_LOG) or "stdout"
+  local expect_absent="${5:-false}"
+  shift 5
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS="${DEFAULT_PROTECTED_PATHS}"
+    export MOCK_PR_HEAD_SHA="${HUMAN_APPROVAL_HEAD_SHA}"
+    export MOCK_PR_AUTHOR="bob"
+    for assignment in "$@"; do
+      name="${assignment%%=*}"
+      value="${assignment#*=}"
+      printf -v "${name}" '%s' "${value}"
+      export "${name?}"
+    done
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local haystack
+  if [[ "${match_where}" == "stdout" ]]; then
+    haystack="${TMPDIR}/stdout-${test_name}.log"
+  else
+    haystack="${GH_LOG}"
+  fi
+  if [[ "${expect_absent}" == "true" ]]; then
+    if grep -qF -- "${expected_pattern}" "${haystack}"; then
+      echo "FAIL: ${test_name} — unexpected '${expected_pattern}' in ${match_where}"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      echo "Actual gh calls:"
+      cat "${GH_LOG}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if ! grep -qF -- "${expected_pattern}" "${haystack}"; then
+      echo "FAIL: ${test_name} — expected '${expected_pattern}' in ${match_where}"
+      echo "Actual stdout:"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      echo "Actual gh calls:"
+      cat "${GH_LOG}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Happy path: native comment, only medium protected-path finding, human approved HEAD
+run_comment_human_approval_test "comment-governance-human-approval-skips-label" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "true" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+run_comment_human_approval_test "comment-governance-human-approval-log-message" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "Skipping requires-manual-review: authorized human approval" "stdout" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# Review comment is still posted when the label is skipped
+run_comment_human_approval_test "comment-governance-human-approval-still-posts-review" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "fullsend post-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# Skip path does not apply ready-for-merge (the agent did not approve)
+run_comment_human_approval_test "comment-governance-human-approval-no-ready-for-merge" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label ready-for-merge" "log" "true" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# Mixed findings (protected-path + bug) still get requires-manual-review
+run_comment_human_approval_test "comment-mixed-findings-manual-review" \
+  "${MIXED_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# High protected-path (insufficient context) still gets requires-manual-review
+run_comment_human_approval_test "comment-high-protected-path-manual-review" \
+  "${HIGH_PROTECTED_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# Comment with no findings (split review) still gets requires-manual-review
+run_comment_human_approval_test "comment-no-findings-manual-review" \
+  "${NO_FINDINGS_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# No authorized human approval → still requires-manual-review
+run_comment_human_approval_test "comment-governance-no-human-approval" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false"
+
+# Bot-only approval does not skip the label
+run_comment_human_approval_test "comment-governance-bot-approval-manual-review" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  'MOCK_REVIEWS_JSON=[{"state":"APPROVED","commit_id":"abc123","user":{"login":"some-app[bot]","type":"Bot"},"submitted_at":"2026-01-01T00:00:00Z"}]' \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# Stale SHA: approval is on a different commit than current HEAD
+run_comment_human_approval_test "comment-governance-stale-sha-manual-review" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  'MOCK_REVIEWS_JSON=[{"state":"APPROVED","commit_id":"oldsha","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-01T00:00:00Z"}]' \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# reviewDecision CHANGES_REQUESTED even with a human APPROVED row
+run_comment_human_approval_test "comment-governance-changes-requested-manual-review" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=CHANGES_REQUESTED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# Read-only collaborator approval does not skip the label
+run_comment_human_approval_test "comment-governance-read-permission-manual-review" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=read"
+
+# Self-approval by the PR author does not skip the label
+run_comment_human_approval_test "comment-governance-self-approve-manual-review" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_PR_AUTHOR=alice" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# Draft PR with human approval still requires-manual-review (check is skipped)
+run_comment_human_approval_test "comment-governance-draft-manual-review" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_PR_IS_DRAFT=true" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# Reviews API failure → fail closed
+run_comment_human_approval_test "comment-governance-reviews-api-fail-closed" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_FAIL=1"
+
+# TOCTOU: HEAD SHA changed between the first snapshot and the re-fetch
+run_comment_human_approval_test "comment-governance-toctou-sha-changed" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  "MOCK_REVIEW_DECISION=APPROVED" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write" \
+  "MOCK_PR_HEAD_SHA_REFETCH=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+
+# reviewDecision is null (e.g. no required-review branch protection
+# configured, per fullsend-ai/fullsend#5522) but a qualifying human
+# APPROVED review exists on HEAD → skip still fires. MOCK_REVIEW_DECISION
+# is intentionally omitted so the mock returns reviewDecision:null.
+run_comment_human_approval_test "comment-governance-null-decision-human-approval-skips-label" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "true" \
+  "MOCK_REVIEWS_JSON=${HUMAN_APPROVAL_REVIEWS}" \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# reviewDecision is null and one reviewer's latest review is
+# CHANGES_REQUESTED → still requires-manual-review even though no human
+# review's own state is stale (fails closed since reviewDecision can't be
+# trusted to reflect this when null).
+run_comment_human_approval_test "comment-governance-null-decision-changes-requested-blocks" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  'MOCK_REVIEWS_JSON=[{"state":"CHANGES_REQUESTED","commit_id":"abc123","user":{"login":"carol","type":"User"},"submitted_at":"2026-01-01T00:00:00Z"},{"state":"APPROVED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-02T00:00:00Z"}]' \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# reviewDecision is null and a reviewer's CHANGES_REQUESTED was later
+# superseded by their own APPROVED review → only the latest review per
+# reviewer counts, so the skip still fires.
+run_comment_human_approval_test "comment-governance-null-decision-stale-changes-requested-skips-label" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "true" \
+  'MOCK_REVIEWS_JSON=[{"state":"CHANGES_REQUESTED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-01T00:00:00Z"},{"state":"APPROVED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-02T00:00:00Z"}]' \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# reviewDecision is null and the same qualifying human's CHANGES_REQUESTED
+# was later "superseded" only by a COMMENTED review — COMMENTED must not
+# count as the reviewer's effective state, so the outstanding
+# CHANGES_REQUESTED still blocks the skip.
+run_comment_human_approval_test "comment-governance-null-decision-changes-requested-then-commented-blocks" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  'MOCK_REVIEWS_JSON=[{"state":"APPROVED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-01T00:00:00Z"},{"state":"CHANGES_REQUESTED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-02T00:00:00Z"},{"state":"COMMENTED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-03T00:00:00Z"}]' \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# reviewDecision is null; reviewer A (dave) approved HEAD but reviewer B
+# (carol) has an outstanding CHANGES_REQUESTED whose only later review is
+# COMMENTED — the skip must still not fire even though a qualifying
+# APPROVED row exists from a different reviewer.
+run_comment_human_approval_test "comment-governance-null-decision-approved-plus-stale-comment-blocks" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  'MOCK_REVIEWS_JSON=[{"state":"APPROVED","commit_id":"abc123","user":{"login":"dave","type":"User"},"submitted_at":"2026-01-01T00:00:00Z"},{"state":"CHANGES_REQUESTED","commit_id":"abc123","user":{"login":"carol","type":"User"},"submitted_at":"2026-01-01T00:00:00Z"},{"state":"COMMENTED","commit_id":"abc123","user":{"login":"carol","type":"User"},"submitted_at":"2026-01-02T00:00:00Z"}]' \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# reviewDecision is null; a qualifying reviewer (alice) approved HEAD, then
+# had an outstanding CHANGES_REQUESTED that was later dismissed. The latest
+# effective state is DISMISSED (not blocking, so blocking_count is 0), but
+# the earlier APPROVED row must not be reused as a stale authorization since
+# it is no longer that reviewer's effective state. No reviewer currently has
+# a fresh APPROVED effective review, so requires-manual-review still applies.
+run_comment_human_approval_test "comment-governance-null-decision-approved-then-changes-requested-then-dismissed-blocks" \
+  "${GOVERNANCE_COMMENT_JSON}" \
+  "--add-label requires-manual-review" "log" "false" \
+  'MOCK_REVIEWS_JSON=[{"state":"APPROVED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-01T00:00:00Z"},{"state":"CHANGES_REQUESTED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-02T00:00:00Z"},{"state":"DISMISSED","commit_id":"abc123","user":{"login":"alice","type":"User"},"submitted_at":"2026-01-03T00:00:00Z"}]' \
+  "MOCK_COLLABORATOR_ROLE=write"
+
+# ---------------------------------------------------------------------------
+# GitLab: skip requires-manual-review for native comment + governance finding
+# ---------------------------------------------------------------------------
+
+run_gitlab_comment_human_approval_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  shift 3
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export CI_SERVER_HOST="gitlab.com"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS="${DEFAULT_PROTECTED_PATHS}"
+    export MOCK_MR_SHA="abc123"
+    export MOCK_MR_AUTHOR="bob"
+    for assignment in "$@"; do
+      name="${assignment%%=*}"
+      value="${assignment#*=}"
+      printf -v "${name}" '%s' "${value}"
+      export "${name?}"
+    done
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+GITLAB_GOVERNANCE_COMMENT_JSON='{"action":"comment","pr_number":99,"repo":"test-group/test-project","head_sha":"abc123abc123abc123abc123abc123abc123abc1","body":"Protected-path notice","findings":[{"severity":"medium","category":"protected-path","file":"scripts/post-review.src.sh","description":"Touches a protected path; human approval required."}]}'
+GITLAB_APPROVED_JSON='{"approved":true,"approved_by":[{"user":{"id":2,"username":"alice","bot":false}}]}'
+
+run_gitlab_comment_human_approval_test "gitlab-comment-governance-human-approval-skips-label" \
+  "${GITLAB_GOVERNANCE_COMMENT_JSON}" \
+  "Skipping requires-manual-review: authorized human approval" \
+  "MOCK_MR_APPROVALS_JSON=${GITLAB_APPROVED_JSON}" \
+  "MOCK_MR_ACCESS_LEVEL=40"
+
+run_gitlab_comment_human_approval_test "gitlab-comment-governance-not-approved" \
+  "${GITLAB_GOVERNANCE_COMMENT_JSON}" \
+  "No authorized human approval on current HEAD" \
+  "MOCK_MR_APPROVALS_JSON={\"approved\":false,\"approved_by\":[]}"
+
+run_gitlab_comment_human_approval_test "gitlab-comment-governance-bot-only" \
+  "${GITLAB_GOVERNANCE_COMMENT_JSON}" \
+  "No authorized human approval on current HEAD" \
+  'MOCK_MR_APPROVALS_JSON={"approved":true,"approved_by":[{"user":{"id":1,"username":"project_123_bot","bot":true}}]}'
+
+run_gitlab_comment_human_approval_test "gitlab-comment-governance-guest-access" \
+  "${GITLAB_GOVERNANCE_COMMENT_JSON}" \
+  "No authorized human approval on current HEAD" \
+  "MOCK_MR_APPROVALS_JSON=${GITLAB_APPROVED_JSON}" \
+  "MOCK_MR_ACCESS_LEVEL=20"
+
+run_gitlab_comment_human_approval_test "gitlab-comment-governance-stale-approval" \
+  "${GITLAB_GOVERNANCE_COMMENT_JSON}" \
+  "No authorized human approval on current HEAD" \
+  "MOCK_MR_APPROVALS_JSON=${GITLAB_APPROVED_JSON}" \
+  "MOCK_MR_ACCESS_LEVEL=40" \
+  "MOCK_MR_VERSION_CREATED_AT=2024-12-01T00:00:00.000Z"
+
+# TOCTOU: HEAD SHA moved during Gate 3's own window (versions call, notes
+# pagination, member lookup) — after the Gate-2 TOCTOU re-fetch succeeded
+# but before returning success. The final re-check must catch this and
+# still fail closed rather than trusting the earlier snapshot.
+run_gitlab_comment_human_approval_test "gitlab-comment-governance-gate3-toctou-sha-changed" \
+  "${GITLAB_GOVERNANCE_COMMENT_JSON}" \
+  "No authorized human approval on current HEAD" \
+  "MOCK_MR_APPROVALS_JSON=${GITLAB_APPROVED_JSON}" \
+  "MOCK_MR_ACCESS_LEVEL=40" \
+  "MOCK_MR_SHA_FINAL_REFETCH=deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 
 # ---------------------------------------------------------------------------
 # Risk assessment label + comment tests
