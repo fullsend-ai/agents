@@ -7,11 +7,12 @@
 #
 # Skip signalling uses the pre-script output protocol
 # (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
-# when an open human PR already addresses the issue, this script writes
-# skipped=true to the file named by FULLSEND_PRESCRIPT_OUTPUT and
-# fullsend run stops before creating the sandbox. Under a CLI that
-# predates the protocol the variable is unset and the write is skipped —
-# the run proceeds, which matches the pre-protocol behavior.
+# when an open human PR already addresses the issue, or the issue has
+# sub-issues (a tracking/parent issue), this script writes skipped=true
+# to the file named by FULLSEND_PRESCRIPT_OUTPUT and fullsend run stops
+# before creating the sandbox. Under a CLI that predates the protocol
+# the variable is unset and the write is skipped — the run proceeds,
+# which matches the pre-protocol behavior.
 #
 # Required environment variables (set by the workflow):
 #   ISSUE_NUMBER       — must be a positive integer
@@ -292,6 +293,37 @@ forge_enable_auto_merge() {
 }
 
 # --- Issue operations ---
+
+# forge_has_sub_issues — whether the GitHub issue has sub-issues (children).
+# Prints a non-negative integer that is non-zero iff children exist. GitHub
+# exposes an exact child count, but callers must treat the result as a
+# truthy/falsy signal only — GitLab's implementation of this same contract
+# can only report 0 or 1 — and must not display it as an exact count in
+# shared (forge-agnostic) messages. Fail-open: prints 0 on API errors so a
+# missing sub-issues field (older GHES) does not skip legitimate leaf work.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  local count
+  count="$(gh api graphql \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          subIssues(first: 1) {
+            totalCount
+          }
+        }
+      }
+    }' --jq '.data.repository.issue.subIssues.totalCount // 0' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
 
 forge_get_issue_comments() {
   local raw
@@ -803,6 +835,51 @@ forge_enable_auto_merge() {
 
 # --- Issue operations ---
 
+# forge_has_sub_issues — 1 if the GitLab work item has child items, else 0.
+# Uses the work-item hierarchy widget (GitLab's analogue of GitHub sub-issues).
+# This only signals presence, not an exact child count (GitLab's hierarchy
+# widget here exposes hasChildren, not a count) — matches the GitHub
+# implementation's truthy/falsy contract; callers must not display this
+# value as an exact count in shared (forge-agnostic) messages.
+# Fail-open: prints 0 on API errors or older GitLab versions without the field.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  if [[ -z "${GITLAB_HOST:-}" || -z "${REPO_FULL_NAME:-}" || -z "${issue_number}" ]]; then
+    echo 0
+    return 0
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || {
+    echo 0
+    return 0
+  }
+  local payload
+  payload="$(jq -n \
+    --arg path "${REPO_FULL_NAME}" \
+    --arg iid "${issue_number}" \
+    --arg query 'query($path: ID!, $iid: String!) { project(fullPath: $path) { workItem(iid: $iid) { widgets { ... on WorkItemWidgetHierarchy { hasChildren } } } } }' \
+    '{query: $query, variables: {path: $path, iid: $iid}}')" || {
+    echo 0
+    return 0
+  }
+  local body
+  body="$(curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --data "${payload}" \
+    "https://${GITLAB_HOST}/api/graphql" 2>/dev/null)" || {
+    echo 0
+    return 0
+  }
+  local count
+  count="$(printf '%s' "${body}" | jq -r '[.data.project.workItem.widgets[]? | select(.hasChildren == true)] | if length > 0 then 1 else 0 end' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
+
 forge_get_issue_comments() {
   local notes="[]"
   local page=1 max_pages=50
@@ -965,14 +1042,14 @@ fi
 # is set. --force counts only as the command's flag token on the first line —
 # the same first-line tokenization the dispatch router uses — so a comment
 # merely mentioning --force (or a pasted log containing it) cannot bypass
-# the existing-PR check.
+# the existing-PR or tracking-issue checks.
 FORCE_WORD=""
 if [[ -n "${COMMENT_BODY:-}" ]]; then
   FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
 fi
 echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
 if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
-  echo "Force override — skipping existing-PR check"
+  echo "Force override — skipping existing-PR and tracking-issue checks"
   exit 0
 fi
 
@@ -1023,6 +1100,34 @@ To override, comment \`/fs-code --force\` on this issue.
 fi
 
 echo "No existing human PRs found — proceeding with code agent"
+
+# ---------------------------------------------------------------------------
+# Skip tracking/parent issues that have sub-issues (child work items)
+# ---------------------------------------------------------------------------
+# GitHub native sub-issues (and GitLab work-item children) mean this is a
+# tracking issue: implementation belongs on the children, not the parent.
+# /fs-code --force above bypasses this check.
+echo "Checking for sub-issues on issue #${ISSUE_NUMBER}..."
+HAS_SUB_ISSUES="$(forge_has_sub_issues "${ISSUE_NUMBER}")"
+
+if [[ "${HAS_SUB_ISSUES}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::notice::Issue #${ISSUE_NUMBER} has sub-issue(s) — skipping code agent"
+
+  SKIP_COMMENT="This issue has sub-issues — skipping automated implementation.
+
+The code agent implements leaf work items. Use the child issues for implementation, or comment \`/fs-code --force\` to implement this parent issue anyway.
+
+<sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
+
+  forge_post_issue_comment "${SKIP_COMMENT}" || true
+
+  echo "Skipping code agent — issue #${ISSUE_NUMBER} is a tracking issue with sub-issue(s)"
+  prescript_output "skipped" "true"
+  prescript_output "reason" "issue #${ISSUE_NUMBER} has sub-issue(s); implement the child issues instead"
+  exit 0
+fi
+
+echo "No sub-issues found — proceeding with code agent"
 
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies

@@ -27,7 +27,9 @@ The code agent is triggered when the `ready-to-code` label is applied to an issu
 Requires write-level repository permission (admin, maintain, or write).
 
 The `/fs-code` command accepts an optional `--force` flag. It can only be used
-on issues (not PRs).
+on issues (not PRs). `--force` bypasses the existing-PR check and the
+tracking-issue check (issues that have GitHub sub-issues or GitLab child
+work items).
 
 ## Control labels
 
@@ -56,7 +58,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 The code agent follows a three-phase pipeline: pre-script, sandbox execution, post-script.
 
-1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue.
+1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue, and skips tracking issues that have sub-issues (GitHub sub-issues or GitLab work-item children). `/fs-code --force` bypasses both checks.
 2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
 3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 

@@ -1485,6 +1485,37 @@ forge_enable_auto_merge() {
 
 # --- Issue operations ---
 
+# forge_has_sub_issues — whether the GitHub issue has sub-issues (children).
+# Prints a non-negative integer that is non-zero iff children exist. GitHub
+# exposes an exact child count, but callers must treat the result as a
+# truthy/falsy signal only — GitLab's implementation of this same contract
+# can only report 0 or 1 — and must not display it as an exact count in
+# shared (forge-agnostic) messages. Fail-open: prints 0 on API errors so a
+# missing sub-issues field (older GHES) does not skip legitimate leaf work.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  local count
+  count="$(gh api graphql \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          subIssues(first: 1) {
+            totalCount
+          }
+        }
+      }
+    }' --jq '.data.repository.issue.subIssues.totalCount // 0' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
+
 forge_get_issue_comments() {
   local raw
   if ! raw="$(gh api --paginate \
@@ -1994,6 +2025,51 @@ forge_enable_auto_merge() {
 }
 
 # --- Issue operations ---
+
+# forge_has_sub_issues — 1 if the GitLab work item has child items, else 0.
+# Uses the work-item hierarchy widget (GitLab's analogue of GitHub sub-issues).
+# This only signals presence, not an exact child count (GitLab's hierarchy
+# widget here exposes hasChildren, not a count) — matches the GitHub
+# implementation's truthy/falsy contract; callers must not display this
+# value as an exact count in shared (forge-agnostic) messages.
+# Fail-open: prints 0 on API errors or older GitLab versions without the field.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  if [[ -z "${GITLAB_HOST:-}" || -z "${REPO_FULL_NAME:-}" || -z "${issue_number}" ]]; then
+    echo 0
+    return 0
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || {
+    echo 0
+    return 0
+  }
+  local payload
+  payload="$(jq -n \
+    --arg path "${REPO_FULL_NAME}" \
+    --arg iid "${issue_number}" \
+    --arg query 'query($path: ID!, $iid: String!) { project(fullPath: $path) { workItem(iid: $iid) { widgets { ... on WorkItemWidgetHierarchy { hasChildren } } } } }' \
+    '{query: $query, variables: {path: $path, iid: $iid}}')" || {
+    echo 0
+    return 0
+  }
+  local body
+  body="$(curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --data "${payload}" \
+    "https://${GITLAB_HOST}/api/graphql" 2>/dev/null)" || {
+    echo 0
+    return 0
+  }
+  local count
+  count="$(printf '%s' "${body}" | jq -r '[.data.project.workItem.widgets[]? | select(.hasChildren == true)] | if length > 0 then 1 else 0 end' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
 
 forge_get_issue_comments() {
   local notes="[]"
