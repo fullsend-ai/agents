@@ -108,7 +108,8 @@ the ability to create PRs and post comments during the agent run.
 Each case directory under `eval/<agent>/cases/` contains:
 
 - `input.yaml` — fixture definition (forge, fixture type, title, body,
-  PR files)
+  PR files). Pull-request cases may add `followup_files` and a
+  `prior_review` body/provenance to exercise a re-review.
 - `annotations.yaml` — expected outcomes (labels, review expectations,
   `max_turns`, `max_cost_usd`)
 - `repo/` (optional) — base repo contents pushed to main before the

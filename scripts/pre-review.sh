@@ -11,6 +11,8 @@
 # Optional environment variables:
 #   REVIEW_TOKEN        — token for PR state checks and comments
 #   REVIEW_SKIP_AUTHORS — comma-separated author list to skip
+#   PRIOR_REVIEW_FILE   — prior sticky review body; rewritten to validated JSON
+#   PRIOR_REVIEW_PROVENANCE — authenticated provenance for the prior review
 set -euo pipefail
 
 : "${PR_URL:?PR_URL must be set}"
@@ -448,6 +450,84 @@ echo "Input validation passed:"
 echo "  PR_NUMBER=${PR_NUMBER}"
 echo "  REPO=${REPO}"
 echo "  PR_URL=${PR_URL}"
+
+# ---------------------------------------------------------------------------
+# Replace the human-readable sticky review with a mechanically validated,
+# structured projection before host_files copies it into the sandbox. The
+# projection is appended by post-review.sh from schema-validated findings.
+# Anything missing, malformed, unauthenticated, or path-unsafe fails closed to
+# an empty file, which makes the agent perform a full first-review dispatch.
+# ---------------------------------------------------------------------------
+validate_prior_review_projection() {
+  local prior_file="$1"
+  local marker encoded decoded tmp_file
+  local -a markers
+
+  tmp_file="$(mktemp "${prior_file}.validated.XXXXXX")"
+  mapfile -t markers < <(grep -E '^<!-- fullsend:review-findings-v1:[A-Za-z0-9+/=]+ -->$' \
+    "${prior_file}" || true)
+  if [[ ${#markers[@]} -ne 1 ]]; then
+    : > "${prior_file}"
+    rm -f "${tmp_file}"
+    echo "::warning::Prior review projection rejected — using full first-review dispatch"
+    return
+  fi
+  marker="${markers[0]}"
+  encoded="${marker#<!-- fullsend:review-findings-v1:}"
+  encoded="${encoded% -->}"
+  decoded="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
+
+  if printf '%s' "${decoded}" | jq -ce '
+    def allowed_category:
+      IN(
+        "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
+        "auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln", "sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection", "unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open", "permission-expansion", "permission-reduction", "role-escalation", "workflow-permission", "secret-exposure",
+        "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering",
+        "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
+        "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
+        "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+      );
+    def safe_path:
+      type == "string" and length > 0 and . != "N/A" and
+      (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+    if (
+      type == "object" and
+      ((keys - ["version", "findings"]) | length == 0) and
+      .version == 1 and
+      (.findings | type == "array") and
+      all(.findings[];
+        type == "object" and
+        ((keys - ["severity", "category", "file", "line"]) | length == 0) and
+        (.severity | IN("info", "low", "medium", "high", "critical")) and
+        (.category | type == "string" and allowed_category) and
+        (.file | safe_path) and
+        (.line == null or (.line | type == "number" and . > 0 and floor == .))
+      )
+    ) then {
+      version: 1,
+      findings: [.findings[] | {
+        severity: .severity,
+        category: .category,
+        file: .file,
+        line: .line
+      }]
+    } else error("invalid prior review projection") end
+  ' > "${tmp_file}"; then
+    mv "${tmp_file}" "${prior_file}"
+    echo "Prior review projection validated"
+  else
+    : > "${prior_file}"
+    rm -f "${tmp_file}"
+    echo "::warning::Prior review projection rejected — using full first-review dispatch"
+  fi
+}
+
+if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
+  case "${PRIOR_REVIEW_PROVENANCE:-none}" in
+    app-verified|bot-verified) validate_prior_review_projection "${PRIOR_REVIEW_FILE}" ;;
+    *) : > "${PRIOR_REVIEW_FILE}" ;;
+  esac
+fi
 
 # ---------------------------------------------------------------------------
 # Check PR state — skip review on merged or closed PRs
