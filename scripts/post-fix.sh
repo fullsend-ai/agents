@@ -689,6 +689,24 @@ post_failure_workflow_run_url() {
     "${GITHUB_RUN_ID:-unknown}"
 }
 
+# Pick a markdown fence longer than any backtick run in the text so a
+# line of backticks in error output cannot close the details block.
+_markdown_code_fence() {
+  awk '
+    BEGIN { max = 2 }
+    {
+      s = $0
+      while (match(s, /`+/)) {
+        if (RLENGTH > max) max = RLENGTH
+        s = substr(s, RSTART + RLENGTH)
+      }
+    }
+    END {
+      for (i = 0; i <= max; i++) printf "`"
+    }
+  ' <<< "$1"
+}
+
 build_post_failure_comment() {
   local agent_kind="$1"       # code | fix
   local exit_code="$2"
@@ -697,7 +715,7 @@ build_post_failure_comment() {
   local repo_full_name="$5"
   local retry_command="$6"
 
-  local label env_note sanitized_detail run_url detail_block indented_detail
+  local label env_note sanitized_detail run_url detail_block fence
 
   label="$(post_failure_category_label "${category}")"
   env_note="$(post_failure_security_note "${category}")"
@@ -710,11 +728,13 @@ build_post_failure_comment() {
   fi
 
   if [ -n "${sanitized_detail}" ]; then
-    indented_detail="$(printf '%s\n' "${sanitized_detail}" | sed 's/^/    /')"
+    fence="$(_markdown_code_fence "${sanitized_detail}")"
     detail_block="$(cat <<EOF
 
 **Details:**
-${indented_detail}
+${fence}
+${sanitized_detail}
+${fence}
 EOF
 )"
   else

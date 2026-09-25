@@ -182,6 +182,91 @@ run_fix_failure_comment_test "fix-failure-comment-has-fs-fix-retry" \
 run_fix_failure_comment_test "fix-failure-comment-has-workflow-link" \
   "push-rejected" "push failed" "/actions/runs/" "yes"
 
+# Verify the Details section is a fenced code block: content keeps its
+# original indentation, and the action sentence is after the closing fence.
+run_details_fence_test() {
+  local test_name="$1"
+  local category="$2"
+  local detail="$3"
+  local content_line="$4"
+  local agent_kind="${5:-code}"
+  local retry="${6:-/fs-code}"
+
+  local actual
+  actual="$(build_post_failure_comment "${agent_kind}" 1 "${category}" "${detail}" "my-org/my-repo" "${retry}")"
+
+  if ! printf '%s\n' "${actual}" | awk -v content="${content_line}" '
+    $0 == "**Details:**" { saw_details=1; next }
+    saw_details && !opened {
+      if ($0 ~ /^```+$/) { fence=$0; opened=1; next }
+      else { exit 1 }
+    }
+    opened && !closed {
+      if ($0 == fence) { closed=1; next }
+      if ($0 == content) found=1
+      if ($0 ~ /^Please check the workflow logs/ || $0 ~ /^Retry with /) inside_action=1
+      next
+    }
+    closed {
+      if ($0 ~ /^Please check the workflow logs/ || $0 ~ /^Retry with /) after_action=1
+    }
+    END {
+      if (!saw_details || !opened || !closed || !found || inside_action || !after_action) exit 1
+    }
+  '; then
+    echo "FAIL: ${test_name}"
+    echo "  details were not a fenced code block containing: '${content_line}'"
+    echo "  comment was:"
+    printf '%s\n' "${actual}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  case "${content_line}" in
+    '    '*) ;;
+    *)
+      if printf '%s\n' "${actual}" | grep -qF "    ${content_line}"; then
+        echo "FAIL: ${test_name}"
+        echo "  found 4-space indented copy of content line (old indented-block format)"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+  esac
+
+  echo "PASS: ${test_name}"
+}
+
+run_details_fence_test "failure-comment-details-uses-fenced-block" \
+  "push-rejected" "error: failed to push" \
+  "error: failed to push"
+
+run_details_fence_test "failure-comment-preserves-existing-indent" \
+  "push-rejected" \
+  "$(printf '%s\n' 'error: failed to push some refs' ' ! [rejected] HEAD -> branch' 'hint: Updates were rejected')" \
+  " ! [rejected] HEAD -> branch"
+
+run_details_fence_test "failure-comment-literal-backticks-in-fenced-details" \
+  "push-rejected" \
+  'refusing to allow a GitHub App to create or update `.github/workflows/e2e.yml`' \
+  'refusing to allow a GitHub App to create or update `.github/workflows/e2e.yml`'
+
+run_details_fence_test "failure-comment-inner-fence-does-not-close-block" \
+  "push-rejected" \
+  "$(printf '%s\n' 'error: failed to push' '```' 'hint: Updates were rejected')" \
+  '```'
+
+run_details_fence_test "failure-comment-uncommitted-work-fenced-details" \
+  "uncommitted-work" "M  src/foo.go" "M  src/foo.go"
+
+run_details_fence_test "fix-failure-comment-details-uses-fenced-block" \
+  "push-rejected" "permission denied" \
+  "permission denied" "fix" "/fs-fix"
+
+run_failure_comment_test "failure-comment-empty-detail-no-details-section" \
+  "push-rejected" "" "my-org/my-repo" "12345" \
+  "**Details:**" "no"
+
 run_sanitize_test() {
   local test_name="$1"
   local input="$2"
