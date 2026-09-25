@@ -239,7 +239,8 @@ rebase request.
    could not run because the base ref is missing, and stop the rebase.
 3. If `origin/${BASE}` is already an ancestor of `HEAD`, the branch is up
    to date. Do not rebase. If rebase was the only instruction, produce
-   structured output and stop with no new commit.
+   structured output with `rebased_onto_target: true` (step 8) and stop
+   with no new commit.
 4. Run `git rebase origin/${BASE}` (non-interactive; do not use `-i`).
 5. On conflicts: resolve them, `git add` the resolved files, then
    `GIT_EDITOR=true git rebase --continue`. Repeat until the rebase
@@ -249,6 +250,11 @@ rebase request.
 7. After a successful rebase, further code fixes land as **new commits**
    on the rebased history. Do not amend rebased commits. A rebase-only
    run needs no extra commit — the rewritten commits are the result.
+   **Even when no new commit is needed, you MUST still perform step 8.**
+   The post-script cannot see that you ran `git rebase`. Omitting
+   `rebased_onto_target: true` because "the rebase itself was the
+   deliverable" makes post-fix.sh replay your commits onto the stale
+   remote PR tip and re-hit the conflicts you already resolved.
 8. Set the top-level `rebased_onto_target: true` field in `agent-result.json`
    whenever this run's HEAD reflects a human-requested rebase onto the
    target that still needs to be published on the remote PR — not only in
@@ -275,12 +281,16 @@ rebase request.
      re-running `git rebase` (see "Validation retry behavior" below), carry
      this field forward from the iteration that performed (or no-op'd) the
      rebase if its result still needs publishing.
-   - Never set this field for a failed/aborted rebase or a bot-triggered
-     run — bot-triggered runs never rebase, and the post-script now also
-     independently verifies that the triggering `/fs-fix` instruction text
-     itself asked for a rebase (not just that `TRIGGER_SOURCE` is human)
-     before trusting a `true` value. A wrong `true` here makes the
-     post-script force-push over real remote commits.
+   - Set `rebased_onto_target: false` for a failed/aborted rebase on a
+     human rebase request — do not omit the field. Validation fails a
+     human rebase request that leaves it absent (treated as false by
+     post-fix.sh, which then replays onto the stale remote PR tip).
+     Never set this field to `true` on a bot-triggered run — bot-triggered
+     runs never rebase, and the post-script independently verifies that
+     the triggering `/fs-fix` instruction text itself asked for a rebase
+     (not just that `TRIGGER_SOURCE` is human) before trusting a `true`
+     value. A wrong `true` here makes the post-script force-push over
+     real remote commits.
 
 A rebase rewrites commit SHAs. Together with squash and redo/reset (see
 below), that is an allowed exception to "create a new commit; do not
@@ -459,6 +469,11 @@ describes the schema. The post-script reads this file to post a summary
 comment on the PR. Without this file, the post-script cannot communicate
 your work back to the reviewer.
 
+On a human rebase request, `rebased_onto_target` MUST be present (`true`
+after success or the step-3 no-op, including rebase-only runs with no new
+commit; `false` if the rebase failed or was aborted). Validation rejects a
+missing field rather than treating it as `false`.
+
 After writing the file, validate it before exiting:
 
 ```bash
@@ -479,7 +494,9 @@ Your exit state is the handoff contract:
 - **Clean commit on the PR branch** → the post-script pushes and posts a
   summary comment on the PR.
 - **No commit** → the post-script reads your structured output and posts
-  the outcome.
+  the outcome. After a rebase-only run this is expected — you MUST still
+  set `rebased_onto_target: true` (step 8). Validation fails a human
+  rebase request that omits the field.
 
 ## Iteration awareness
 

@@ -101,6 +101,126 @@ run_test "schema-invalid-json" \
   'not json' \
   "false"
 
+# ---------------------------------------------------------------------------
+# Part 1b: fix-result.json requires rebased_onto_target on a human rebase
+# request (issue #1387). Schema leaves the field optional; this extra check
+# fails loud so the validation_loop can send the agent back to set it.
+# ---------------------------------------------------------------------------
+
+FIX_SCHEMA="${SCRIPT_DIR}/../schemas/fix-result.schema.json"
+FIX_RESULT_NO_FIELD='{"pr_number":42,"summary":"Addressed review comments.","trigger_source":"human","tests_passed":true,"actions":[{"type":"fix","finding":"unrelated","description":"Tightened the nil check."}],"files_changed":[]}'
+FIX_RESULT_REBASE_ACTION_NO_FIELD='{"pr_number":42,"summary":"Rebased onto main.","trigger_source":"human","tests_passed":true,"actions":[{"type":"fix","finding":"rebase onto main","description":"Rebased the branch onto origin/main."}],"files_changed":[]}'
+FIX_RESULT_REBASE_ACTION_TRUE='{"pr_number":42,"summary":"Rebased onto main.","trigger_source":"human","tests_passed":true,"actions":[{"type":"fix","finding":"rebase onto main","description":"Rebased the branch onto origin/main."}],"files_changed":[],"rebased_onto_target":true}'
+FIX_RESULT_REBASE_ACTION_FALSE='{"pr_number":42,"summary":"Rebase aborted.","trigger_source":"human","tests_passed":true,"actions":[{"type":"fix","finding":"rebase onto main","description":"git rebase --abort: could not resolve conflicts."}],"files_changed":[],"rebased_onto_target":false}'
+FIX_RESULT_BOT_REBASE_ACTION_NO_FIELD='{"pr_number":42,"summary":"Bot-triggered fix.","trigger_source":"bot","tests_passed":true,"actions":[{"type":"fix","finding":"unrelated review finding","description":"Did not rebase."}],"files_changed":[]}'
+
+run_fix_rebase_field_test() {
+  local test_name="$1"
+  local json_content="$2"
+  local expect_pass="$3"
+  local expect_output="${4:-}"
+  local trigger_source="${5:-}"
+  local human_instruction="${6:-}"
+  local forge="${7:-github}"
+
+  local test_dir="${TMPDIR}/${test_name}"
+  mkdir -p "${test_dir}/output"
+  echo "${json_content}" > "${test_dir}/output/agent-result.json"
+
+  local exit_code=0
+  FULLSEND_OUTPUT_SCHEMA="${FIX_SCHEMA}" \
+  FULLSEND_FORGE="${forge}" \
+  TRIGGER_SOURCE="${trigger_source}" \
+  HUMAN_INSTRUCTION="${human_instruction}" \
+    bash -c "cd '${test_dir}' && bash '${VALIDATOR}'" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  local passed=true
+  if [[ "${expect_pass}" == "true" && ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected PASS but got exit ${exit_code}"
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
+  elif [[ "${expect_pass}" == "false" && ${exit_code} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — expected FAIL but got PASS"
+    passed=false
+  fi
+
+  if [[ -n "${expect_output}" ]] && ! grep -qF "${expect_output}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected output to contain: ${expect_output}"
+    echo "  actual output:"
+    head -10 "${TMPDIR}/stdout.log"
+    passed=false
+  fi
+
+  if [[ "${passed}" == "true" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_fix_rebase_field_test "fix-human-rebase-instruction-missing-field" \
+  "${FIX_RESULT_NO_FIELD}" \
+  "false" \
+  "requires rebased_onto_target" \
+  "alice" \
+  "rebase onto main"
+
+run_fix_rebase_field_test "fix-human-merge-conflict-instruction-missing-field" \
+  "${FIX_RESULT_NO_FIELD}" \
+  "false" \
+  "requires rebased_onto_target" \
+  "alice" \
+  "fix merge conflicts"
+
+run_fix_rebase_field_test "fix-human-rebase-instruction-field-true" \
+  "${FIX_RESULT_REBASE_ACTION_TRUE}" \
+  "true" \
+  "PASS: output validated against schema" \
+  "alice" \
+  "rebase onto main"
+
+run_fix_rebase_field_test "fix-human-rebase-instruction-field-false" \
+  "${FIX_RESULT_REBASE_ACTION_FALSE}" \
+  "true" \
+  "PASS: output validated against schema" \
+  "alice" \
+  "rebase onto main"
+
+run_fix_rebase_field_test "fix-actions-record-rebase-missing-field" \
+  "${FIX_RESULT_REBASE_ACTION_NO_FIELD}" \
+  "false" \
+  "requires rebased_onto_target" \
+  "alice" \
+  "please address the review comments"
+
+run_fix_rebase_field_test "fix-bot-trigger-rebase-action-missing-field" \
+  "${FIX_RESULT_BOT_REBASE_ACTION_NO_FIELD}" \
+  "true" \
+  "PASS: output validated against schema" \
+  "fullsend-ai-review[bot]" \
+  ""
+
+run_fix_rebase_field_test "fix-gitlab-bot-trigger-missing-field" \
+  "${FIX_RESULT_NO_FIELD}" \
+  "true" \
+  "PASS: output validated against schema" \
+  "project_123_bot" \
+  "rebase onto main" \
+  "gitlab"
+
+run_fix_rebase_field_test "fix-human-non-rebase-instruction-missing-field" \
+  "${FIX_RESULT_NO_FIELD}" \
+  "true" \
+  "PASS: output validated against schema" \
+  "alice" \
+  "fix the typo in the README"
+
+# Code-result schema must not grow this check (no rebased_onto_target field).
+run_test "code-schema-unaffected-by-fix-rebase-field-check" \
+  '{"target_branch":"main"}' \
+  "true" \
+  "PASS: output validated against schema"
+
 # The run_test helper always creates output/agent-result.json, so testing a
 # missing output directory requires a separate helper.
 run_test_no_output_dir() {

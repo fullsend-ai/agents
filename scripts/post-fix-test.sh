@@ -95,6 +95,17 @@ else
   echo "PASS: bundled-script-gates-rebase-skip-on-agent-result"
 fi
 
+# Issue #1387: when a human asked for a rebase and ancestry already looks
+# like one, but rebased_onto_target is not true, log before replaying onto
+# origin/BRANCH. Ancestry alone still must not skip (GitLab reconstruction).
+if ! grep -q 'skip-logic did not apply -- issue #1387' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-logs-redundant-prepush-rebase"
+  echo "  ${POST_SCRIPT} missing issue #1387 metric for a redundant pre-push rebase"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-logs-redundant-prepush-rebase"
+fi
+
 # Agent squash/redo must not be replayed onto the pre-rewrite remote PR
 # tip (issue #1332). The skip is what lets --force-with-lease publish it.
 if ! grep -q 'skipping rebase onto origin/${BRANCH} to preserve the agent history rewrite' "${POST_SCRIPT}"; then
@@ -3652,6 +3663,101 @@ run_push_history_rewrite_non_rewrite_instruction_ignores_marker_test() {
   echo "PASS: ${test_name}"
 }
 
+# Issue #1387: human /fs-fix rebase request, skip topology matches (HEAD
+# based on advanced target, diverged from origin/BRANCH), but the agent
+# omitted rebased_onto_target. Skip must NOT fire (ancestry alone is also
+# a GitLab reconstruction — issue #565). The metric/log line must fire so
+# a redundant pre-push rebase is observable, then the replay proceeds.
+run_push_rebase_omitted_marker_logs_redundant_replay_test() {
+  local test_name="push-rebase-omitted-marker-logs-redundant-replay"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  mkdir -p "${base}/iteration-1/output"
+  cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "human",
+  "actions": [
+    {"type": "fix", "finding": "rebase onto main", "description": "Rebased the branch onto origin/main per the human /fs-fix rebase request."}
+  ],
+  "summary": "Rebased onto main.",
+  "tests_passed": true,
+  "files_changed": []
+}
+JSONEOF
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" "test-user" "rebase onto main" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "skipping rebase onto origin/agent/99-test-fix" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — skipped origin/BRANCH rebase with rebased_onto_target omitted"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skip-logic did not apply -- issue #1387" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing redundant pre-push rebase metric"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Rebasing local agent/99-test-fix onto origin/agent/99-test-fix" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected pre-push rebase onto origin/BRANCH to proceed"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${real_a}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — remote tip is not a fast-forward of real A"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 run_push_rebase_reconstructed_test
 run_push_rebase_matching_history_test
 run_push_rebase_fresh_branch_test
@@ -3663,6 +3769,7 @@ run_push_rebase_bot_trigger_ignores_marker_test
 run_push_rebase_human_non_rebase_instruction_ignores_marker_test
 run_push_rebase_human_rebase_request_skips_stale_reconstruction_test
 run_push_rebase_preserves_agent_rebase_after_validation_retry_test
+run_push_rebase_omitted_marker_logs_redundant_replay_test
 run_push_history_rewrite_preserves_squash_test
 run_push_history_rewrite_refuses_partial_squash_test
 run_push_history_rewrite_preserves_redo_test
