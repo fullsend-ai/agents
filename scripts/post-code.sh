@@ -2812,6 +2812,11 @@ fi
 
 # ---------------------------------------------------------------------------
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
+#
+# Fetch origin/BRANCH before the lease retry so the tracking ref is current
+# (issue #409). Without it, --force-with-lease compares against the clone-time
+# ref and fails with "stale info". The + refspec force-updates the tracking
+# ref. force-with-lease still rejects a concurrent push after the fetch.
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
@@ -2819,7 +2824,13 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
-    gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    gha_echo warning "Plain push failed (non-fast-forward) — fetching and retrying with --force-with-lease"
+    echo "Fetching remote branch ${BRANCH} before --force-with-lease retry..."
+    FETCH_OUTPUT="$(git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && FETCH_RC=0 || FETCH_RC=$?
+    print_sanitized_gha_log "${FETCH_OUTPUT}"
+    if [ "${FETCH_RC}" -ne 0 ]; then
+      gha_echo warning "Fetch of origin/${BRANCH} failed — --force-with-lease may reject due to a stale tracking ref"
+    fi
     FORCE_PUSH_OUTPUT=""
     if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
