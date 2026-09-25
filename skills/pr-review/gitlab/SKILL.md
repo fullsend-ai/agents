@@ -114,12 +114,87 @@ curl --fail --silent --show-error \
 ## Prior review comparison
 
 ```bash
-# Compare commits between prior review and current HEAD
+# Three-dot compare for changed_since_prior (merge-base to HEAD).
+# After a same-tree rebase rewrite this lists the full PR diff, not
+# zero files — do not use it to detect identical content. Use Tree
+# identity (rebase-only) below for that.
 COMPARE=$(curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}")
 CHANGED_FILES=$(echo "$COMPARE" | jq -r '.diffs[].new_path')
 ```
+
+## Tree identity (rebase-only)
+
+GitLab's commit API does not return a tree SHA. Two-dot (`straight=true`)
+compare diffs the two trees directly; an empty `diffs` array means
+identical content. Check `compare_timeout` first — a timeout can also
+produce an empty diffs list.
+
+```bash
+TREE_COMPARE=$(curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}&straight=true")
+echo "$TREE_COMPARE" | jq -r '"COMPARE_TIMEOUT=\(.compare_timeout)\nTREE_DIFF_COUNT=\(.diffs | length)"'
+echo "$TREE_COMPARE" | jq -r 'if .compare_timeout == true then "TREES_IDENTICAL=false" elif .diffs == null then "TREES_IDENTICAL=false" elif (.diffs | length) == 0 then "TREES_IDENTICAL=true" else "TREES_IDENTICAL=false" end'
+```
+
+A non-zero curl exit (missing SHA, 404) means fall through to a full
+review.
+
+## Base-branch file count (rebase-only)
+
+Compare the MR's file count against the target branch at the prior
+reviewed commit with the current `CURRENT_BASE_FILE_COUNT` computed
+below from `mr-changes.json`. A `compare_timeout` of `true` is
+untrusted — fall through.
+
+```bash
+TARGET_BRANCH=$(curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}" \
+  | jq -r '.target_branch')
+TARGET_BRANCH_ENC=$(printf '%s' "$TARGET_BRANCH" | jq -sRr @uri)
+PRIOR_BASE=$(curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${TARGET_BRANCH_ENC}&to=${PRIOR_REVIEW_SHA}")
+echo "$PRIOR_BASE" | jq -r '"PRIOR_BASE_FILE_COUNT=\(.diffs | length)\nCOMPARE_TIMEOUT=\(.compare_timeout)"'
+CURRENT_BASE_FILE_COUNT=$(jq '.changes | length' /sandbox/workspace/mr-changes.json)
+echo "CURRENT_BASE_FILE_COUNT=$CURRENT_BASE_FILE_COUNT"
+```
+
+## Base ref stability (rebase-only)
+
+Identical trees say nothing about whether the MR was retargeted to a
+different target branch. Confirm base identity directly against the
+value the prior review persisted, rather than scanning system notes:
+parse `PRIOR_BASE_REF` from whichever line in the current section
+(content before `<details><summary>Previous run</summary>`) of
+`/sandbox/workspace/prior-review.txt` carries `**Base Ref:**` (step 7
+of `SKILL.md` embeds it; reviews posted before that change have no
+`**Base Ref:**` field) and compare it to the live target branch,
+re-fetched here since shell variables do not survive between Bash
+tool calls.
+
+```bash
+TARGET_BRANCH=$(curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}" \
+  | jq -r '.target_branch')
+PRIOR_BASE_REF=$(sed -n -e '/<summary>Previous run<\/summary>/q' \
+  -e 's/.*\*\*Base Ref:\*\* \([^[:space:]]*\).*/\1/p' /sandbox/workspace/prior-review.txt | head -n1)
+echo "PRIOR_BASE_REF=$PRIOR_BASE_REF"
+if test -n "$PRIOR_BASE_REF" && test "$PRIOR_BASE_REF" = "$TARGET_BRANCH"; then
+  echo "BASE_REF_STABLE=true"
+else
+  echo "BASE_REF_STABLE=false"
+fi
+```
+
+An empty `$PRIOR_BASE_REF` (no `**Base Ref:**` field in the prior
+comment) means the check is inconclusive — treat that the same as
+`BASE_REF_STABLE=false`. This removes the dependency on system-note
+retention and pagination entirely.
 
 ## Notes
 
