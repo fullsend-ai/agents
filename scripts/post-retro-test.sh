@@ -46,14 +46,35 @@ done
 
 echo "gh $*" >> "${GH_LOG}"
 
-# Label creation calls — succeed silently (mimics --force behavior).
+# Label creation calls — controlled by GH_MOCK_LABEL_FAIL.
 if [[ "$1" == "label" && "$2" == "create" ]]; then
+  if [[ "${GH_MOCK_LABEL_FAIL:-}" == "1" ]]; then
+    echo "HTTP 403: Resource not accessible by integration" >&2
+    exit 1
+  fi
   exit 0
 fi
 
 # Issue creation calls — return a fake issue URL.
+# Optional stderr on success is controlled by GH_MOCK_ISSUE_CREATE_STDERR.
 if [[ "$1" == "issue" && "$2" == "create" ]]; then
+  if [[ -n "${GH_MOCK_ISSUE_CREATE_STDERR:-}" ]]; then
+    echo "${GH_MOCK_ISSUE_CREATE_STDERR}" >&2
+  fi
   echo "https://github.com/test-org/target-repo/issues/99"
+  exit 0
+fi
+
+# Issue view calls — return label status based on GH_MOCK_ISSUE_LABELS.
+if [[ "$1" == "issue" && "$2" == "view" ]]; then
+  if [[ "${GH_MOCK_ISSUE_VIEW_FAIL:-}" == "1" ]]; then
+    echo "HTTP 403: Resource not accessible by integration" >&2
+    exit 1
+  fi
+  if [[ "${GH_MOCK_ISSUE_LABELS:-present}" == "none" ]]; then
+    exit 0
+  fi
+  echo "ready-for-triage"
   exit 0
 fi
 
@@ -103,9 +124,31 @@ for arg in "$@"; do
   fi
 done
 
-# Label creation — succeed silently
+# Label creation — controlled by CURL_MOCK_LABEL_FAIL.
 if [[ "${URL}" == *"/labels" ]] && [[ " $* " == *" POST "* || " $* " == *" -X POST "* ]]; then
+  if [[ "${CURL_MOCK_LABEL_FAIL:-}" == "1" ]]; then
+    echo "curl: (22) The requested URL returned error: 403" >&2
+    exit 22
+  fi
+  if [[ "${CURL_MOCK_LABEL_FAIL:-}" == "409" ]]; then
+    echo "curl: (22) The requested URL returned error: 409" >&2
+    exit 22
+  fi
   echo '{"id": 1, "name": "ready-for-triage"}'
+  exit 0
+fi
+
+# Issue GET — return label status based on CURL_MOCK_ISSUE_LABELS.
+if [[ "${URL}" == *"/issues/"* ]] && [[ " $* " == *" GET "* || " $* " == *" -X GET "* ]] && [[ "${URL}" != *"/notes" ]]; then
+  if [[ "${CURL_MOCK_ISSUE_VIEW_FAIL:-}" == "1" ]]; then
+    echo "curl: (22) The requested URL returned error: 403" >&2
+    exit 22
+  fi
+  if [[ "${CURL_MOCK_ISSUE_LABELS:-present}" == "none" ]]; then
+    echo '{"iid": 99, "labels": []}'
+    exit 0
+  fi
+  echo '{"iid": 99, "labels": ["ready-for-triage"]}'
   exit 0
 fi
 
@@ -943,6 +986,67 @@ run_validated_dir_test "validated-dir-neither-filename" \
   "" \
   "true"
 
+# ---------------------------------------------------------------------------
+# Label application failure warnings (#365)
+# ---------------------------------------------------------------------------
+
+# Label creation fails → WARNING logged, issue still created.
+export GH_MOCK_LABEL_FAIL="1"
+run_test_stdout "label-create-fails-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "::warning::failed to create/verify ready-for-triage label"
+
+run_test "label-create-fails-issue-created" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create"
+export GH_MOCK_LABEL_FAIL=""
+
+# Label not applied after creation → WARNING logged.
+export GH_MOCK_ISSUE_LABELS="none"
+run_test_stdout "label-not-applied-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "::warning::ready-for-triage label not applied to"
+export GH_MOCK_ISSUE_LABELS=""
+
+# gh issue view fails → "unable to verify", not "label not applied".
+export GH_MOCK_ISSUE_VIEW_FAIL="1"
+run_test_stdout "label-view-fails-unable-to-verify" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "::warning::unable to verify ready-for-triage label"
+run_test_stdout_absent "label-view-fails-not-reported-as-missing" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete." \
+  "label not applied"
+export GH_MOCK_ISSUE_VIEW_FAIL=""
+
+# Happy path → no WARNING lines about label failures.
+run_test_stdout_absent "happy-path-no-label-create-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete." \
+  "::warning::failed to create/verify ready-for-triage label"
+
+run_test_stdout_absent "happy-path-no-label-not-applied-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete." \
+  "::warning::ready-for-triage label not applied"
+
+# gh issue create stderr is logged separately; ISSUE_URL stays a clean URL.
+export GH_MOCK_ISSUE_CREATE_STDERR="Warning: some gh diagnostic"
+run_test_stdout "issue-create-stderr-logged" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "::warning::gh issue create stderr"
+run_test_stdout "issue-create-url-clean" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created: https://github.com/test-org/target-repo/issues/99"
+if grep -E '^Created: ' "${TMPDIR}/stdout.log" | grep -vqE '^Created: https://github.com/test-org/target-repo/issues/99$'; then
+  echo "FAIL: issue-create-url-clean-strict — Created line mixed stderr into ISSUE_URL"
+  grep -E '^Created: ' "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: issue-create-url-clean-strict"
+fi
+export GH_MOCK_ISSUE_CREATE_STDERR=""
+
 # ===========================================================================
 # GitLab test cases (FULLSEND_FORGE=gitlab)
 # ===========================================================================
@@ -1468,6 +1572,70 @@ elif [[ -s "${GH_LOG}" ]]; then
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: gl-validated-dir (FULLSEND_VALIDATED_ITERATION_DIR works under GitLab)"
+fi
+
+# GitLab: label creation fails → WARNING logged, issue still created.
+export CURL_MOCK_LABEL_FAIL="1"
+run_gl_test "gl-label-create-fails-warning" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "::warning::failed to create/verify ready-for-triage label"
+run_gl_test "gl-label-create-fails-issue-created" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Created:"
+export CURL_MOCK_LABEL_FAIL=""
+
+# GitLab: label already exists (409) → treated as success, no warning,
+# issue still created.
+export CURL_MOCK_LABEL_FAIL="409"
+run_gl_test "gl-label-create-409-issue-created" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Created:"
+if grep -qF "::warning::failed to create/verify ready-for-triage label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gl-label-create-409-no-warning — 409 response incorrectly reported as failure"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-label-create-409-no-warning (no label-create warning on 409)"
+fi
+export CURL_MOCK_LABEL_FAIL=""
+
+# GitLab: label not applied after creation → WARNING logged.
+export CURL_MOCK_ISSUE_LABELS="none"
+run_gl_test "gl-label-not-applied-warning" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "::warning::ready-for-triage label not applied to"
+export CURL_MOCK_ISSUE_LABELS=""
+
+# GitLab: issue GET fails → "unable to verify", not "label not applied".
+export CURL_MOCK_ISSUE_VIEW_FAIL="1"
+run_gl_test "gl-label-view-fails-unable-to-verify" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "::warning::unable to verify ready-for-triage label"
+run_gl_test "gl-label-view-fails-complete" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete."
+if grep -qF "label not applied" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gl-label-view-fails-not-reported-as-missing — view failure reported as missing label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-label-view-fails-not-reported-as-missing"
+fi
+export CURL_MOCK_ISSUE_VIEW_FAIL=""
+
+# GitLab happy path → no label-failure WARNING.
+run_gl_test "gl-happy-path-no-label-create-warning" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Post-retro complete."
+if grep -qF "::warning::failed to create/verify ready-for-triage label" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gl-happy-path-no-label-create-warning — unexpected label-create warning"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-happy-path-no-label-create-warning (no label-create warning)"
+fi
+if grep -qF "::warning::ready-for-triage label not applied" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gl-happy-path-no-label-not-applied-warning — unexpected label-not-applied warning"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gl-happy-path-no-label-not-applied-warning (no label-not-applied warning)"
 fi
 
 # --- Results ---
