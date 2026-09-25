@@ -16,6 +16,8 @@ First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) p
 
 Claude Code (`claude`) is the stable default every repo gets; `pi` is in its enablement (experimental) phase and is selected per repo with `runtime: pi` — see fullsend's [Runtimes](https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md). Every harness sets `effort: high` explicitly.
 
+Codex native sub-agent dispatch for **Review** and **Retro** depends on [fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970). Those agents stay on `claude` / `pi` in the table above until that runtime work and a live Codex review/retro verification are both available. Do not flip harness `runtime:` defaults before that gate.
+
 See [`docs/`](docs/) for detailed documentation on each agent.
 
 ## Repository structure
