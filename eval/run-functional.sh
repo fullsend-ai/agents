@@ -151,7 +151,12 @@ fi
 # The harness has inconsistent path resolution for dataset.path between
 # workspace.py (config-dir-relative) and execute.py (cwd-relative). Work
 # around this by rewriting dataset.path to an absolute path at runtime.
-EVAL_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX.yaml")"
+# BSD mktemp (macOS) only substitutes trailing X's, so a template with a
+# .yaml suffix produces the literal name eval-runtime-XXXXXX.yaml and a second
+# run fails with "File exists". Create the temp name first, then add the suffix.
+EVAL_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX")"
+EVAL_YAML="${EVAL_YAML_TMP}.yaml"
+mv "$EVAL_YAML_TMP" "$EVAL_YAML"
 
 yq_expr=".dataset.path = \"${CASES_DIR}\""
 if [[ "$EVAL_TIER" == "release" ]]; then
@@ -235,12 +240,21 @@ fi
 # ---------------------------------------------------------------------------
 # execute_run <config> <run-id> <run-dir>: sets exec_exit.
 execute_run() {
-  local config="$1" run_id="$2" run_dir="$3"
+  local config="$1" run_id="$2" run_dir="$3" first_run="${4:-}"
   mkdir -p "$run_dir"
   echo "=== Creating workspaces ==="
+  # EVAL_CASES="001-foo 002-bar" limits the first run to those case
+  # directories (workspace.py --cases). A retry run is already staged with
+  # only the cases it should repeat, so it gets no --cases.
+  local case_args=()
+  if [[ "$first_run" == "first" && -n "${EVAL_CASES:-}" ]]; then
+    # shellcheck disable=SC2206 # intentional word splitting on whitespace
+    case_args=(--cases ${EVAL_CASES})
+  fi
   if ! python3 "$WORKSPACE_PY" \
     --config "$config" \
-    --run-id "$run_id"; then
+    --run-id "$run_id" \
+    "${case_args[@]+"${case_args[@]}"}"; then
     echo "ERROR: workspace.py failed for run ${run_id}" >&2
     return 1
   fi
@@ -248,6 +262,13 @@ execute_run() {
   echo ""
   echo "=== Executing ==="
   exec_exit=0
+  # Forward EVAL_MODEL/EVAL_EFFORT to the harness too, so an eval whose
+  # runner.command carries the {model}/{effort} placeholders (eval/code-rhai)
+  # resolves them from the override instead of models.skill. Evals without
+  # the placeholders (eval/code) still get the override from run-fullsend.sh's env.
+  local model_args=()
+  [[ -n "${EVAL_MODEL:-}" ]] && model_args+=(--model "$EVAL_MODEL")
+  [[ -n "${EVAL_EFFORT:-}" ]] && model_args+=(--effort "$EVAL_EFFORT")
   AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
     python3 "$EXECUTE_PY" \
       --workspace "/tmp/agent-eval/${run_id}" \
@@ -255,22 +276,31 @@ execute_run() {
       --config "$config" \
       --output "$run_dir" \
       --run-id "$run_id" \
+      "${model_args[@]+"${model_args[@]}"}" \
     || exec_exit=$?
 
   # Copy output artifacts from harness workspace to runs directory.
   # execute.py copies stdout/stderr/input but not the output/ subdirectory
   # that after_each hooks populate (e.g., fixture-state.json).
-  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name
+  # execute.py copies stdout/stderr/input but not the outputs[*].path
+  # subdirectories that after_each hooks populate (output/fixture-state.json,
+  # and eval/code-rhai's judge/ tree). Copy every declared outputs path.
+  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name out_path
+  local output_paths=()
+  mapfile -t output_paths < <(yq -r '.outputs[] | .path // ""' "$config" | grep -v '^$')
+  [[ ${#output_paths[@]} -eq 0 ]] && output_paths=(output)
   if [[ -d "$ws_cases" ]]; then
     for ws_case in "$ws_cases"/*/; do
       case_name=$(basename "$ws_case")
-      if [[ -d "$ws_case/output" ]]; then
-        mkdir -p "$run_dir/cases/${case_name}/output"
-        if ! cp -a "$ws_case/output/." "$run_dir/cases/${case_name}/output/"; then
-          echo "ERROR: copying ${case_name} output into ${run_dir} failed" >&2
-          return 2
+      for out_path in "${output_paths[@]}"; do
+        if [[ -d "$ws_case/$out_path" ]]; then
+          mkdir -p "$run_dir/cases/${case_name}/$out_path"
+          if ! cp -a "$ws_case/$out_path/." "$run_dir/cases/${case_name}/$out_path/"; then
+            echo "ERROR: copying ${case_name} ${out_path} into ${run_dir} failed" >&2
+            return 2
+          fi
         fi
-      fi
+      done
     done
   fi
 }
@@ -299,7 +329,7 @@ pre_agent_failures() {
   done
 }
 
-execute_run "$EVAL_YAML" "$RUN_ID" "$RUN_DIR" || exit 1
+execute_run "$EVAL_YAML" "$RUN_ID" "$RUN_DIR" first || exit 1
 
 if [[ $exec_exit -ne 0 ]]; then
   echo "WARNING: execute.py exited $exec_exit" >&2
@@ -322,7 +352,9 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
   for case_name in "${retry_cases[@]}"; do
     cp -a "${CASES_DIR}/${case_name}" "${RETRY_STAGE_DIR}/${case_name}"
   done
-  RETRY_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX.yaml")"
+  RETRY_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX")"
+  RETRY_YAML="${RETRY_YAML_TMP}.yaml"
+  mv "$RETRY_YAML_TMP" "$RETRY_YAML"
   yq ".dataset.path = \"${RETRY_STAGE_DIR}\"" "$EVAL_YAML" > "$RETRY_YAML"
   RETRY_RUN_ID="${RUN_ID}-retry"
   RETRY_RUN_DIR="${RUNS_DIR}/${RETRY_RUN_ID}"
