@@ -5,6 +5,11 @@ id: fullsend-github-ro
 display_name: Fullsend GitHub (read-only)
 description: Read-only GitHub API access for fullsend agents
 category: source_control
+credentials:
+  - name: api_token
+    description: GitHub token
+    env_vars: [GH_TOKEN]
+    required: true
 endpoints:
   - host: api.github.com
     port: 443
