@@ -14,6 +14,15 @@ source:
     - https://github.com/opendatahub-io/kserve/pull/1992
   snapshot_commit: 24b4defee05ff6e76e22f086bb61a7ade90b0fe8   # 2026-09-16
   snapshot_rule: "parent of the merge commit of PR #1957, the epic's first PR to be accepted (merged 2026-09-16)"
+  # Paths materialize-case.sh removes from the tree, on top of the CI
+  # workflows and Dependabot/Renovate configs every case loses: release
+  # manifest bundles unrelated to the epic (292 MB) and upstream
+  # dummy-credential fixtures plus a sample TLS key that trip secret scanners.
+  exclude:
+    - install
+    - test/e2e/credentials
+    - docs/samples/storage/hf/hf_secret.yaml
+    - docs/openshift/serverless/gateways.yaml
   vendored: "tree at the snapshot minus install/ (release manifest bundles, 292 MB, unrelated to the epic) and minus test/e2e/credentials/ and docs/samples/storage/hf/hf_secret.yaml and docs/openshift/serverless/gateways.yaml (upstream dummy-credential fixtures and a sample TLS key that trip secret scanners); removed: .github/workflows (automation that would act on the ephemeral repo)"
 
 # Pass-to-pass: the repository's own test command, run on the agent's PR head
