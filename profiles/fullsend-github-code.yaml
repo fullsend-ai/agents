@@ -5,6 +5,11 @@ id: fullsend-github-code
 display_name: Fullsend GitHub (code agents)
 description: Read-only GitHub API and Git operations for code and fix agents
 category: source_control
+credentials:
+  - name: api_token
+    description: GitHub token
+    env_vars: [GH_TOKEN]
+    required: true
 endpoints:
   - host: api.github.com
     port: 443
