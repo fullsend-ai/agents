@@ -285,6 +285,32 @@ jobs:
           echo "${FULLSEND_CHECKOUT}/bin" >> "$GITHUB_PATH"
           "${FULLSEND_CHECKOUT}/bin/fullsend" --version
 
+      - name: Install Podman
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y podman
+
+      - name: Configure rootless Podman
+        run: |
+          whoami_user="$(whoami)"
+          grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
+          podman system migrate
+
+      - name: Start Podman API service
+        run: |
+          SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
+          if [ ! -S "${SOCKET_PATH}" ]; then
+            mkdir -p "$(dirname "${SOCKET_PATH}")"
+            podman system service --time=0 "unix://${SOCKET_PATH}" &
+            for _i in $(seq 1 30); do
+              [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+              sleep 1
+            done
+            [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
+          fi
+
+      # After Podman: the gateway pins compute_driver = "podman" and does not
+      # start without the Podman API socket.
       - name: Configure OpenShell gateway
         run: |
           eval "$(grep -E '^OPENSHELL_(VERSION|SHA)=' "${FULLSEND_CHECKOUT}/.github/scripts/openshell-version.sh")"
@@ -311,30 +337,6 @@ jobs:
       - name: Install OpenShell CLI
         run: |
           "${FULLSEND_CHECKOUT}/.github/scripts/install-openshell.sh"
-
-      - name: Install Podman
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y podman
-
-      - name: Configure rootless Podman
-        run: |
-          whoami_user="$(whoami)"
-          grep -q "^${whoami_user}:" /etc/subuid || sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 "${whoami_user}"
-          podman system migrate
-
-      - name: Start Podman API service
-        run: |
-          SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
-          if [ ! -S "${SOCKET_PATH}" ]; then
-            mkdir -p "$(dirname "${SOCKET_PATH}")"
-            podman system service --time=0 "unix://${SOCKET_PATH}" &
-            for _i in $(seq 1 30); do
-              [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
-              sleep 1
-            done
-            [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
-          fi
 
       - name: Install validation dependencies
         run: pip install --quiet "jsonschema>=4.18.0"
