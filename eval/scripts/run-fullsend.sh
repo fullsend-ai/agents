@@ -22,6 +22,13 @@ set -euo pipefail
 AGENT="${1:?agent name required}"
 # $2 is the workspace path (passed by harness, unused here)
 OUTPUT_DIR="${3:?output dir required}"
+# Optional $4/$5: the harness's {model} and {effort} placeholders. An eval that
+# puts them in runner.command (eval/code-rhai) gets per-run model/effort from
+# `execute.py --model/--effort`, which is how eval-anova drives matrix cells.
+# Non-empty values win over the EVAL_MODEL/EVAL_EFFORT environment; evals that
+# omit the placeholders (eval/code) keep the environment-only behaviour.
+if [[ -n "${4:-}" ]]; then EVAL_MODEL="$4"; fi
+if [[ -n "${5:-}" ]]; then EVAL_EFFORT="$5"; fi
 
 FULLSEND_DIR="$(cd "${FULLSEND_DIR:?FULLSEND_DIR is required}" && pwd)"
 FIXTURE_URL="${FIXTURE_URL:?FIXTURE_URL is required (set by before_each hook)}"
@@ -52,8 +59,21 @@ fi
 EVAL_GH_WORKSPACE=$(mktemp -d)
 TARGET_DIR="${EVAL_GH_WORKSPACE}/target-repo"
 GH_CRED_HELPER='!f(){ echo "password=${GH_TOKEN}"; };f'
-git -c "credential.helper=${GH_CRED_HELPER}" \
-  clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
+# GitHub occasionally resets the connection mid-clone (curl 56); retry.
+cloned=0
+for attempt in 1 2 3; do
+  rm -rf "$TARGET_DIR"
+  if git -c "credential.helper=${GH_CRED_HELPER}" \
+       clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"; then
+    cloned=1; break
+  fi
+  echo "WARNING: clone attempt ${attempt} failed; retrying in $((attempt * 10))s" >&2
+  sleep $((attempt * 10))
+done
+if [[ $cloned -ne 1 ]]; then
+  echo "ERROR: could not clone ${EPHEMERAL_REPO} after 3 attempts" >&2
+  exit 1
+fi
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
 # Fix must run on the PR's actual head branch (post-script pushes
@@ -223,13 +243,19 @@ install -m 0600 /dev/null "$ENV_FILE"
     emit_env "PRIOR_REVIEW_PROVENANCE" "${PRIOR_REVIEW_PROVENANCE:-}"
   fi
 
+  # OpenAI key for the pi/codex runtimes. fullsend keeps it on the runner and
+  # hands the sandbox a placeholder (ADR 0092); it never enters the sandbox.
+  [[ -n "${OPENAI_API_KEY:-}" ]] && emit_env "OPENAI_API_KEY" "${OPENAI_API_KEY}"
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"
   [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]        && emit_env "GOOGLE_CLOUD_PROJECT" "${GOOGLE_CLOUD_PROJECT}"
   [[ -n "${CLOUD_ML_REGION:-}" ]]             && emit_env "CLOUD_ML_REGION" "${CLOUD_ML_REGION}"
   [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]] && emit_env "GOOGLE_APPLICATION_CREDENTIALS" "${GOOGLE_APPLICATION_CREDENTIALS}"
 } > "$ENV_FILE"
 
-FULLSEND_BIN="$(command -v fullsend)"
+# The binary copied into the sandbox must be Linux; on a macOS host point
+# EVAL_SANDBOX_BINARY at a GOOS=linux build (CI runs on Linux and uses the
+# host binary as before).
+FULLSEND_BIN="${EVAL_SANDBOX_BINARY:-$(command -v fullsend)}"
 EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 
 mkdir -p "$OUTPUT_DIR"
@@ -239,12 +265,25 @@ printf '%s\n' "$PRE_AGENT_HEAD" > "${OUTPUT_DIR}/pre-agent-head.txt"
 # run-functional.sh) become explicit fullsend run flags so the choice shows
 # up in the run plan, metrics.json (requested_*) and the logs.
 override_args=()
+# EVAL_NO_POST_SCRIPT=1 runs the agent but skips its post-script: the agent's
+# structured result stays under OUTPUT_DIR and nothing is pushed or posted.
+# Used by eval/code-rhai's run-review-agent.sh, which reads the review
+# agent's findings from disk instead of letting it post a review (posting
+# would also hit GitHub's self-review 422, since one token opens the PR and
+# would review it).
+[[ "${EVAL_NO_POST_SCRIPT:-}" == "1" ]] && override_args+=(--no-post-script)
 [[ -n "${EVAL_RUNTIME:-}" ]] && override_args+=(--runtime "$EVAL_RUNTIME")
 [[ -n "${EVAL_MODEL:-}" ]] && override_args+=(--model "$EVAL_MODEL")
 [[ -n "${EVAL_EFFORT:-}" ]] && override_args+=(--effort "$EVAL_EFFORT")
 
+# Forge detection falls back to CI env vars (GITHUB_ACTIONS/GITLAB_CI), so a
+# local run resolves no forge and pre-code.sh fails on an empty
+# FULLSEND_FORGE. Pass it explicitly; --forge takes precedence everywhere.
+EVAL_FORGE="${EVAL_FORGE:-github}"
+
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
+  --forge "$EVAL_FORGE" \
   --fullsend-dir "${FULLSEND_DIR}" \
   --target-repo "$TARGET_DIR" \
   --env-file "$ENV_FILE" \
