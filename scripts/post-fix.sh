@@ -19,6 +19,7 @@
 #
 # Steps:
 #   0. Check for agent commits
+#   0b. Verify branch matches PR head ref; skip push if PR is merged/closed
 #   1. Authoritative secret scan
 #   2. Auto-install pre-commit tool deps (from .pre-commit-tools.yaml)
 #   3. Authoritative pre-commit check
@@ -27,7 +28,8 @@
 #   6. Iteration-cap warning label
 #   7. Summary
 #
-# After pushing, this script processes agent-result.json to:
+# After the push step (or after skipping it because the PR is already
+# merged/closed), this script processes agent-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
 #   - Apply labels (needs-human) if the iteration cap is approaching
 #
@@ -121,6 +123,14 @@ forge_get_pr_head_ref() {
   local pr_number="$1"
   GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
     --repo "${REPO_FULL_NAME}" --json headRefName --jq '.headRefName' 2>/dev/null
+}
+
+# Returns GitHub PR state (OPEN, CLOSED, MERGED) or empty on failure.
+# Fail-open: callers must treat empty as "unknown, proceed with push".
+forge_get_pr_state() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json state --jq '.state' 2>/dev/null || true
 }
 
 # --- Push operations ---
@@ -310,6 +320,27 @@ forge_get_pr_head_ref() {
     GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
     _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
   ) | jq -r '.source_branch // empty'
+}
+
+# Returns GitHub-style PR state (OPEN, CLOSED, MERGED) or empty on failure.
+# Fail-open: callers must treat empty as "unknown, proceed with push".
+# locked GitLab MRs are treated as CLOSED (same as gitlab-review-ops).
+forge_get_pr_state() {
+  local pr_number="$1"
+  local state
+  state="$(
+    (
+      # shellcheck disable=SC2030,SC2031
+      GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+      _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+    ) | jq -r '.state // empty'
+  )" || true
+  case "${state}" in
+    opened) echo "OPEN" ;;
+    closed) echo "CLOSED" ;;
+    merged) echo "MERGED" ;;
+    locked) echo "CLOSED" ;;
+  esac
 }
 
 # --- Push operations ---
@@ -1518,6 +1549,30 @@ BRANCH="$(git branch --show-current)"
 # because 1b only runs when NO_PUSH=false.
 SIGNOFF_STRIPPED=false
 SIGNOFF_STRIPPED_COUNT=0
+# Set when the PR is already MERGED or CLOSED (issue #1130).
+FIX_PUSH_SKIPPED_STATE=""
+
+# skip_push_if_pr_not_open — query PR/MR state and set NO_PUSH if it is
+# already MERGED or CLOSED. Fail-open: a missing or unknown state does
+# not block a legitimate push. Called from 0b (after the head-ref match)
+# and again immediately before the push so a merge that lands during the
+# secret-scan/pre-commit window is still caught.
+skip_push_if_pr_not_open() {
+  if [ "${NO_PUSH}" = "true" ]; then
+    return 0
+  fi
+  local pr_state
+  pr_state="$(forge_get_pr_state "${PR_NUMBER}" 2>/dev/null || true)"
+  pr_state="$(printf '%s' "${pr_state}" | tr -d '[:space:]' | tr '[:lower:]' '[:upper:]')"
+  case "${pr_state}" in
+    MERGED|CLOSED)
+      gha_echo warning \
+        "PR #${PR_NUMBER} is ${pr_state} — skipping push (PR was merged or closed while the fix agent was running)."
+      NO_PUSH=true
+      FIX_PUSH_SKIPPED_STATE="${pr_state}"
+      ;;
+  esac
+}
 
 if [ -z "${BRANCH}" ] || [ "${BRANCH}" = "main" ] || [ "${BRANCH}" = "master" ]; then
   gha_echo warning "Agent did not produce a commit on a feature branch (current: '${BRANCH:-detached HEAD}')"
@@ -1554,6 +1609,8 @@ if [ "${NO_PUSH}" = "false" ]; then
     post_fail_to_pr branch-mismatch \
       "Agent branch '${BRANCH}' does not match PR #${PR_NUMBER} head ref '${EXPECTED_BRANCH}'. Refusing to push."
   fi
+
+  skip_push_if_pr_not_open
 fi
 
 # ---------------------------------------------------------------------------
@@ -1608,17 +1665,26 @@ DIFF_BASE="${PRE_AGENT_HEAD:-$(git rev-parse HEAD~1 2>/dev/null || echo HEAD)}"
 # Signed-off-by and gitleaks). Detect this and fall back to merge-base, which
 # isolates only the branch's own commits — the same approach used for
 # BRANCH_CHANGED_FILES below and for SCAN_RANGE in post-code.src.sh.
+#
+# Skip the repair entirely when NO_PUSH is already true (e.g. the PR was
+# merged/closed while the agent was running — issue #1130): gitleaks and
+# pre-commit never run on this path, so there is nothing DIFF_BASE needs to
+# stay accurate for, and failing to resolve a trusted target SHA here must
+# not turn into a hard setup-error that blocks the graceful skip-push +
+# proposed-changes-comment path this combination is meant to take.
 if ! git merge-base --is-ancestor "${DIFF_BASE}" HEAD 2>/dev/null; then
-  if [ "${NO_PUSH}" = "false" ]; then
-    fetch_trusted_target_sha
-  fi
-  _rebase_mb="$(git merge-base HEAD "${TRUSTED_TARGET_SHA}" 2>/dev/null)" || _rebase_mb=""
-  if [ -n "${_rebase_mb}" ]; then
-    echo "PRE_AGENT_HEAD is not an ancestor of HEAD (history rewrite detected) — using merge-base for DIFF_BASE"
-    DIFF_BASE="${_rebase_mb}"
+  if [ "${NO_PUSH}" = "true" ]; then
+    echo "PRE_AGENT_HEAD is not an ancestor of HEAD (history rewrite detected), but NO_PUSH is already true — leaving DIFF_BASE as-is (no scan needs it on this path)"
   else
-    post_fail_to_pr setup-error \
-      "PRE_AGENT_HEAD is not an ancestor of HEAD and merge-base failed — cannot determine safe DIFF_BASE"
+    fetch_trusted_target_sha
+    _rebase_mb="$(git merge-base HEAD "${TRUSTED_TARGET_SHA}" 2>/dev/null)" || _rebase_mb=""
+    if [ -n "${_rebase_mb}" ]; then
+      echo "PRE_AGENT_HEAD is not an ancestor of HEAD (history rewrite detected) — using merge-base for DIFF_BASE"
+      DIFF_BASE="${_rebase_mb}"
+    else
+      post_fail_to_pr setup-error \
+        "PRE_AGENT_HEAD is not an ancestor of HEAD and merge-base failed — cannot determine safe DIFF_BASE"
+    fi
   fi
 fi
 
@@ -2101,33 +2167,39 @@ ${REBASE_OUTPUT}"
       "Could not fetch remote branch '${BRANCH}' before rebase: ${FETCH_OUTPUT}"
   fi
 
-  # Plain push first. Falls back to --force-with-lease when the push
-  # is rejected (non-fast-forward), which happens after a rebase, squash,
-  # or reset — the agent rewrote history so the remote branch diverged.
-  # force-with-lease is safe: it still rejects if someone else pushed in
-  # the meantime.
-  echo "Pushing branch ${BRANCH}..."
-  PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
-  print_sanitized_gha_log "${PUSH_OUTPUT}"
+  # Re-check PR state immediately before the push so a merge that landed
+  # during secret scan / pre-commit / rebase is still caught (issue #1130).
+  skip_push_if_pr_not_open
 
-  if [ "${PUSH_RC}" -ne 0 ]; then
-    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
-      gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
-      FORCE_PUSH_OUTPUT=""
-      if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
-        print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
-        PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
+  if [ "${NO_PUSH}" = "false" ]; then
+    # Plain push first. Falls back to --force-with-lease when the push
+    # is rejected (non-fast-forward), which happens after a rebase, squash,
+    # or reset — the agent rewrote history so the remote branch diverged.
+    # force-with-lease is safe: it still rejects if someone else pushed in
+    # the meantime.
+    echo "Pushing branch ${BRANCH}..."
+    PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+    print_sanitized_gha_log "${PUSH_OUTPUT}"
+
+    if [ "${PUSH_RC}" -ne 0 ]; then
+      if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+        gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+        FORCE_PUSH_OUTPUT=""
+        if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+          print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
+          PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
-        post_fail_to_pr "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
+          post_fail_to_pr "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}"
+        fi
+        print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
+      else
+        PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}")"
+        post_fail_to_pr "${PUSH_CATEGORY}" "${PUSH_OUTPUT}"
       fi
-      print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
-    else
-      PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}")"
-      post_fail_to_pr "${PUSH_CATEGORY}" "${PUSH_OUTPUT}"
     fi
+    echo "Branch ${BRANCH} pushed successfully"
   fi
-  echo "Branch ${BRANCH} pushed successfully"
 fi
 
 # ---------------------------------------------------------------------------
@@ -2164,11 +2236,39 @@ signoff_note_fallback() {
   fi
 }
 
+# When the PR was already merged/closed and process-fix-result.py did not
+# run, still leave a comment so the proposed changes are not silent.
+post_skipped_push_fallback_comment() {
+  if [ -z "${FIX_PUSH_SKIPPED_STATE:-}" ]; then
+    return 0
+  fi
+  if ! declare -F forge_post_pr_comment >/dev/null; then
+    return 0
+  fi
+  local state_lower body files_block
+  state_lower="$(printf '%s' "${FIX_PUSH_SKIPPED_STATE}" | tr '[:upper:]' '[:lower:]')"
+  files_block=""
+  if [ -n "${CHANGED_FILES:-}" ]; then
+    files_block="$(printf '%s\n' "${CHANGED_FILES}" | sed 's/^/- /')"
+    files_block="
+
+Changed files:
+${files_block}"
+  fi
+  body="Fix agent completed but this PR is already **${state_lower}**. Proposed commits were not pushed.${files_block}
+
+Open a follow-up PR if the changes still apply on the target branch."
+  forge_post_pr_comment "${PR_NUMBER}" "${body}" \
+    || gha_echo warning "Could not post merged-PR skip comment to PR #${PR_NUMBER}"
+}
+
 if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
   gha_echo warning "No agent-result.json found — skipping summary comment"
+  post_skipped_push_fallback_comment
   signoff_note_fallback
 elif [ ! -f "${PROCESS_SCRIPT}" ]; then
   gha_echo warning "process-fix-result.py not found at ${PROCESS_SCRIPT} — skipping"
+  post_skipped_push_fallback_comment
   signoff_note_fallback
 else
   # Scan agent-result.json for secrets before posting content as a PR comment.
@@ -2187,6 +2287,7 @@ else
 
   echo "Processing agent-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
+  FIX_PUSH_SKIPPED_STATE="${FIX_PUSH_SKIPPED_STATE:-}" \
   SIGNOFF_STRIPPED_COUNT="${SIGNOFF_STRIPPED_COUNT}" \
     python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then

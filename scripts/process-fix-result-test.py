@@ -179,6 +179,12 @@ class TestBuildSummaryBody(unittest.TestCase):
         self.assertIn("/fs-fix", mod.FOOTER)
         self.assertIn("Push commits directly", mod.FOOTER)
 
+    def test_skipped_push_footer_constant(self):
+        self.assertIn("**Next steps:**", mod.SKIPPED_PUSH_FOOTER)
+        self.assertIn("follow-up PR", mod.SKIPPED_PUSH_FOOTER)
+        self.assertIn("already merged or closed", mod.SKIPPED_PUSH_FOOTER)
+        self.assertNotIn("/fs-review", mod.SKIPPED_PUSH_FOOTER)
+
     def test_disagree_only_body(self):
         data = {
             "summary": "Disagreed with all findings.",
@@ -327,6 +333,43 @@ class TestCommentTruncation(unittest.TestCase):
         with patch.dict(os.environ, {"SIGNOFF_STRIPPED_COUNT": "3"}):
             _rc, _body, suffix = _run_main_capture(data)
         self.assertIn("Removed a Signed-off-by trailer from 3 agent commits.", suffix)
+
+    def test_skipped_push_banner_and_footer_for_merged(self):
+        data = dict(_VALID_FIX_RESULT)
+        with patch.dict(os.environ, {"FIX_PUSH_SKIPPED_STATE": "MERGED"}):
+            rc, body, suffix = _run_main_capture(data)
+        self.assertEqual(rc, 0)
+        self.assertIn("Push skipped", body)
+        self.assertIn("**merged**", body)
+        self.assertIn("follow-up PR", suffix)
+        self.assertNotIn("/fs-review", suffix)
+        self.assertIn("Fixed (1)", body)
+
+    def test_skipped_push_banner_for_closed(self):
+        data = dict(_VALID_FIX_RESULT)
+        with patch.dict(os.environ, {"FIX_PUSH_SKIPPED_STATE": "closed"}):
+            rc, body, suffix = _run_main_capture(data)
+        self.assertEqual(rc, 0)
+        self.assertIn("**closed**", body)
+        self.assertIn("follow-up PR", suffix)
+        self.assertNotIn("/fs-review", suffix)
+
+    def test_skipped_push_ignored_for_open_or_unknown(self):
+        data = dict(_VALID_FIX_RESULT)
+        for val in ("OPEN", "UNKNOWN", ""):
+            with patch.dict(os.environ, {"FIX_PUSH_SKIPPED_STATE": val}):
+                rc, body, suffix = _run_main_capture(data)
+            self.assertEqual(rc, 0)
+            self.assertNotIn("Push skipped", body)
+            self.assertIn("/fs-review", suffix)
+
+    def test_skipped_push_uses_first_line_only(self):
+        data = dict(_VALID_FIX_RESULT)
+        with patch.dict(os.environ, {"FIX_PUSH_SKIPPED_STATE": "MERGED\n<script>"}):
+            rc, body, _suffix = _run_main_capture(data)
+        self.assertEqual(rc, 0)
+        self.assertIn("**merged**", body)
+        self.assertNotIn("<script>", body)
 
     def test_signoff_note_absent_when_unset_or_zero(self):
         data = dict(_VALID_FIX_RESULT)

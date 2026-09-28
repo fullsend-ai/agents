@@ -84,7 +84,7 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
 2. **Sandbox** — the agent reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** pushes the commit and posts a summary comment on the PR.
+4. **Post-script** pushes the commit and posts a summary comment on the PR. If the PR was merged or closed while the agent was running, the post-script skips the push and comments with the proposed changes instead.
 
 ### Signed-off-by trailers
 
@@ -104,6 +104,13 @@ The strip is recorded on the PR summary comment:
 ```text
 _Removed a Signed-off-by trailer from 1 agent commit._
 ```
+
+### Merged or closed PRs
+
+If a human merges or closes the PR while the fix agent is running, the
+post-script detects that the PR is no longer open and skips the push.
+It posts a comment listing the proposed changes so they can be applied
+in a follow-up PR instead of being silently discarded on a dead branch.
 
 ### Rebasing a stale PR
 

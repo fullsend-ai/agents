@@ -140,6 +140,26 @@ else
   echo "PASS: bundled-script-requires-non-bot-trigger-for-rebase-skip"
 fi
 
+# Refuse to push when the PR was merged or closed while the agent ran
+# (issue #1130). The skip must query forge_get_pr_state and only fire on
+# an explicit MERGED/CLOSED result so a failed state query cannot block
+# a legitimate push.
+if ! grep -q 'forge_get_pr_state' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-skips-push-when-pr-not-open"
+  echo "  ${POST_SCRIPT} missing forge_get_pr_state query before push"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'MERGED|CLOSED' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-skips-push-when-pr-not-open"
+  echo "  ${POST_SCRIPT} does not skip push for MERGED/CLOSED PR state"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'FIX_PUSH_SKIPPED_STATE' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-skips-push-when-pr-not-open"
+  echo "  ${POST_SCRIPT} does not record FIX_PUSH_SKIPPED_STATE for the summary comment"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-skips-push-when-pr-not-open"
+fi
+
 # ---------------------------------------------------------------------------
 # Keyword detection for human squash / redo requests (issue #1332).
 # Sourced from fix-ops.lib.sh — the same functions the post-script uses.
@@ -713,14 +733,27 @@ exit 0
 MOCKEOF
 chmod +x "${REBASE_MOCK_BIN}/sleep"
 
-# Mock gh: return the expected branch name for pr view (gh --jq outputs the
-# extracted value, not JSON), accept everything else.
+# Mock gh: return the expected branch name for pr view --json headRefName
+# (gh --jq outputs the extracted value, not JSON) and OPEN for --json state
+# so the merge-status guard (issue #1130) does not skip the push. Accept
+# everything else.
 cat > "${REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr view")
-    # gh --jq '.headRefName' outputs just the string value
-    echo 'agent/99-test-fix'
+    json_field=""
+    prev=""
+    for arg in "$@"; do
+      if [ "${prev}" = "--json" ]; then
+        json_field="${arg}"
+        break
+      fi
+      prev="${arg}"
+    done
+    case "${json_field}" in
+      state) echo 'OPEN' ;;
+      *) echo 'agent/99-test-fix' ;;
+    esac
     exit 0
     ;;
   "pr comment"|"issue comment")
@@ -859,6 +892,135 @@ Signed-off-by: Human User <human@example.com>" -q
 # Signed-off-by trailer.
 run_rebase_diffbase_test "rebase-diffbase-no-false-positive"
 
+# ---------------------------------------------------------------------------
+# Combine the #1130 merged/closed-PR race with a fix-agent rebase/squash/redo:
+# NO_PUSH is already true (PR merged) by the time the 0c rebase-detection
+# block runs, so PRE_AGENT_HEAD being a non-ancestor of HEAD must not escalate
+# to a hard setup-error — it should fall through to the graceful skip-push +
+# proposed-changes-comment path instead. Before the fix, TRUSTED_TARGET_SHA
+# stayed empty (fetch_trusted_target_sha was only called when NO_PUSH was
+# false), `git merge-base HEAD ""` failed, and the script exited 1 via
+# post_fail_to_pr setup-error.
+# ---------------------------------------------------------------------------
+run_push_skipped_merged_after_rebase_test() {
+  local test_name="push-skipped-when-pr-merged-after-rebase"
+
+  local run_dir="${REBASE_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  mkdir -p "${repo_dir}"
+
+  # Same rebase-scenario scaffolding as run_rebase_diffbase_test:
+  #   main:   init -- upstream
+  #   branch: init -- upstream -- agent-commit (rebased onto main)
+  # PRE_AGENT_HEAD is the pre-rebase branch tip, not an ancestor of HEAD.
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  git -C "${repo_dir}" commit --allow-empty -m "branch work" -q
+  local pre_rebase_head
+  pre_rebase_head="$(git -C "${repo_dir}" rev-parse HEAD)"
+
+  git -C "${repo_dir}" checkout -q main
+  git -C "${repo_dir}" commit --allow-empty -m "upstream change" -q
+
+  git -C "${repo_dir}" checkout -q agent/99-test-fix
+  git -C "${repo_dir}" rebase -q main
+
+  echo "agent fix" > "${repo_dir}/agent-fix.txt"
+  git -C "${repo_dir}" add agent-fix.txt
+  git -C "${repo_dir}" commit -m "fix: agent change" -q
+
+  git -C "${repo_dir}" remote add origin "${repo_dir}" 2>/dev/null || true
+  git -C "${repo_dir}" fetch -q origin main 2>/dev/null || true
+
+  # Mock gh: PR state MERGED (unlike REBASE_MOCK_BIN's gh, which returns
+  # OPEN), headRefName matches the checked-out branch, and pr/issue comment
+  # echoes the body so the skip comment can be asserted.
+  local mock_bin="${REBASE_TMPDIR}/bin-${test_name}"
+  mkdir -p "${mock_bin}"
+  cp -a "${REBASE_MOCK_BIN}/." "${mock_bin}/"
+  cat > "${mock_bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view")
+    json_field=""
+    prev=""
+    for arg in "$@"; do
+      if [ "${prev}" = "--json" ]; then
+        json_field="${arg}"
+        break
+      fi
+      prev="${arg}"
+    done
+    case "${json_field}" in
+      state) echo 'MERGED' ;;
+      *) echo 'agent/99-test-fix' ;;
+    esac
+    exit 0
+    ;;
+  "pr comment"|"issue comment")
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --body) echo "$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+  chmod +x "${mock_bin}/gh"
+
+  local exit_code=0
+  local stdout_log="${REBASE_TMPDIR}/stdout-${test_name}.log"
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${mock_bin}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export TARGET_BRANCH="main"
+    export PRE_AGENT_HEAD="${pre_rebase_head}"
+    bash "${POST_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code} (expected 0; a merged PR must skip gracefully, not fail closed as a setup-error)"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "setup-error" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — reported setup-error instead of the graceful skip-push path"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Pushed: no" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — summary did not report Pushed: no"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "already \*\*merged\*\*" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — skip comment was not posted"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_push_skipped_merged_after_rebase_test
+
 rm -rf "${REBASE_TMPDIR}"
 
 # Signed-off-by trailer stripping is covered by scripts/signoff-strip-test.sh,
@@ -962,13 +1124,13 @@ cat > "${GL_MOCK_BIN}/curl" <<'MOCKEOF'
 #!/usr/bin/env bash
 MOCK_DIR="${GL_MOCK_DIR:-/tmp}"
 echo "$@" >> "${MOCK_DIR}/curl-calls.log"
-# Respond to merge_requests/:iid GET with source_branch
+# Respond to merge_requests/:iid GET with source_branch and state
 if echo "$@" | grep -q "merge_requests/"; then
   if echo "$@" | grep -q "notes"; then
     # POST note — just succeed
     exit 0
   fi
-  echo '{"source_branch": "agent/99-test-fix", "iid": 99}'
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99, "state": "opened"}'
   exit 0
 fi
 # Respond to labels POST — succeed silently
@@ -1055,6 +1217,105 @@ run_gitlab_postfix_test() {
 
 # GitLab: happy-path — successful push flow
 run_gitlab_postfix_test "gitlab-happy-path" "false" "true"
+
+# GitLab: merged MR skips push (issue #1130).
+run_gitlab_merged_skips_push_test() {
+  local test_name="gitlab-merged-skips-push"
+  local run_dir="${GL_TMPDIR}/run-${test_name}"
+  local repo_dir="${run_dir}/repo"
+  local mock_dir="${run_dir}/mocks"
+  local mock_bin="${run_dir}/bin"
+  mkdir -p "${repo_dir}" "${mock_dir}" "${mock_bin}"
+
+  cat > "${mock_bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+MOCK_DIR="${GL_MOCK_DIR:-/tmp}"
+echo "$@" >> "${MOCK_DIR}/curl-calls.log"
+if echo "$@" | grep -q "merge_requests/"; then
+  if echo "$@" | grep -q "notes"; then
+    echo "posted-note" >> "${MOCK_DIR}/notes.log"
+    exit 0
+  fi
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99, "state": "merged"}'
+  exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${mock_bin}/curl"
+
+  git init -q -b main "${repo_dir}"
+  git -C "${repo_dir}" config user.email "test@example.com"
+  git -C "${repo_dir}" config user.name "Test"
+  git -C "${repo_dir}" commit --allow-empty -m "init" -q
+  git -C "${repo_dir}" checkout -q -b agent/99-test-fix
+  echo "fixed" > "${repo_dir}/file.txt"
+  git -C "${repo_dir}" add file.txt
+  git -C "${repo_dir}" commit -q -m "fix: agent change"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${mock_bin}:${GL_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-gitlab-token"
+    export GITLAB_TOKEN="fake-gitlab-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export REPO_ENCODED="test-group%2Ftest-project"
+    export GITLAB_HOST="gitlab.com"
+    export CI_SERVER_HOST="gitlab.com"
+    export PR_NUMBER="99"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="gitlab"
+    export GL_MOCK_DIR="${mock_dir}"
+    bash "${POST_SCRIPT}"
+  ) > "${GL_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "is MERGED" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — missing skip warning for MERGED"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skipping push" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — missing skipping-push message"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "pushed successfully" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — push was reported as successful"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Pushed: no" "${GL_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — summary did not report Pushed: no"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ ! -f "${mock_dir}/notes.log" ]]; then
+    echo "FAIL: ${test_name} — skip comment was not posted"
+    cat "${GL_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "gh should not be called" "${GL_TMPDIR}/stdout-${test_name}.log" 2>/dev/null; then
+    echo "FAIL: ${test_name} — gh was called in GitLab mode"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_gitlab_merged_skips_push_test
 
 # GitLab: missing PR_URL → fail closed (unbound variable)
 run_gitlab_postfix_pr_url_test() {
@@ -1245,7 +1506,7 @@ if echo "$@" | grep -q "merge_requests/"; then
   if echo "$@" | grep -q "notes"; then
     exit 0
   fi
-  echo '{"source_branch": "agent/99-test-fix", "iid": 99}'
+  echo '{"source_branch": "agent/99-test-fix", "iid": 99, "state": "opened"}'
   exit 0
 fi
 if echo "$@" | grep -q "/labels"; then
@@ -1390,7 +1651,19 @@ cat > "${PUSH_REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr view")
-    echo 'agent/99-test-fix'
+    json_field=""
+    prev=""
+    for arg in "$@"; do
+      if [ "${prev}" = "--json" ]; then
+        json_field="${arg}"
+        break
+      fi
+      prev="${arg}"
+    done
+    case "${json_field}" in
+      state) echo 'OPEN' ;;
+      *) echo 'agent/99-test-fix' ;;
+    esac
     exit 0
     ;;
   "pr comment"|"issue comment")
@@ -3679,6 +3952,246 @@ run_push_history_rewrite_indistinguishable_from_reconstruction_test
 run_push_history_rewrite_preserves_reconstructed_human_commit_test
 run_push_history_rewrite_bot_trigger_ignores_marker_test
 run_push_history_rewrite_non_rewrite_instruction_ignores_marker_test
+
+# ---------------------------------------------------------------------------
+# Skip push when the PR is already MERGED or CLOSED (issue #1130).
+# ---------------------------------------------------------------------------
+run_push_skipped_when_pr_not_open_test() {
+  local test_name="$1"
+  local pr_state="$2"
+  local mock_bin="${PUSH_REBASE_TMPDIR}/bin-${test_name}"
+  mkdir -p "${mock_bin}"
+  cp -a "${PUSH_REBASE_MOCK_BIN}/." "${mock_bin}/"
+  cat > "${mock_bin}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr view")
+    json_field=""
+    prev=""
+    for arg in "\$@"; do
+      if [ "\${prev}" = "--json" ]; then
+        json_field="\${arg}"
+        break
+      fi
+      prev="\${arg}"
+    done
+    case "\${json_field}" in
+      state) echo '${pr_state}' ;;
+      *) echo 'agent/99-test-fix' ;;
+    esac
+    exit 0
+    ;;
+  "pr comment"|"issue comment")
+    while [ \$# -gt 0 ]; do
+      case "\$1" in
+        --body) echo "\$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+  chmod +x "${mock_bin}/gh"
+
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local remote_before
+  remote_before="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${mock_bin}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "is ${pr_state}" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing skip warning for ${pr_state}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skipping push" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing skipping-push message"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "pushed successfully" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — push was reported as successful"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Pushed: no" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — summary did not report Pushed: no"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local state_lower
+  state_lower="$(printf '%s' "${pr_state}" | tr '[:upper:]' '[:lower:]')"
+  if ! grep -q "already \*\*${state_lower}\*\*" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — skip comment was not posted"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_after
+  remote_after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_after}" != "${remote_before}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved despite skipped push"
+    echo "  before: ${remote_before}"
+    echo "  after:  ${remote_after}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_push_skipped_when_pr_not_open_test \
+  "push-skipped-when-pr-merged" "MERGED"
+run_push_skipped_when_pr_not_open_test \
+  "push-skipped-when-pr-closed" "CLOSED"
+
+# ---------------------------------------------------------------------------
+# Fail-open invariant: an empty or unrecognized forge_get_pr_state result
+# (failed query, unknown state) must not block the push — only an explicit
+# MERGED/CLOSED does. The existing happy-path mocks return OPEN, which takes
+# the same case-statement fallthrough as empty/unknown, so a later accidental
+# default-to-closed change would not be caught without a dedicated test.
+# ---------------------------------------------------------------------------
+run_push_not_skipped_when_pr_state_unrecognized_test() {
+  local test_name="$1"
+  local pr_state="$2"
+  local mock_bin="${PUSH_REBASE_TMPDIR}/bin-${test_name}"
+  mkdir -p "${mock_bin}"
+  cp -a "${PUSH_REBASE_MOCK_BIN}/." "${mock_bin}/"
+  cat > "${mock_bin}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr view")
+    json_field=""
+    prev=""
+    for arg in "\$@"; do
+      if [ "\${prev}" = "--json" ]; then
+        json_field="\${arg}"
+        break
+      fi
+      prev="\${arg}"
+    done
+    case "\${json_field}" in
+      state) echo '${pr_state}' ;;
+      *) echo 'agent/99-test-fix' ;;
+    esac
+    exit 0
+    ;;
+  "pr comment"|"issue comment")
+    while [ \$# -gt 0 ]; do
+      case "\$1" in
+        --body) echo "\$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+  chmod +x "${mock_bin}/gh"
+
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${mock_bin}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "pushed successfully" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — push did not report success (fail-open invariant broken for state='${pr_state}')"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Pushed: yes" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — summary did not report Pushed: yes"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_after
+  remote_after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  local local_head
+  local_head="$(git -C "${base}/repo" rev-parse HEAD)"
+  if [ "${remote_after}" != "${local_head}" ]; then
+    echo "FAIL: ${test_name} — remote branch was not updated with the agent's commit"
+    echo "  remote: ${remote_after}"
+    echo "  local:  ${local_head}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_push_not_skipped_when_pr_state_unrecognized_test \
+  "push-not-skipped-when-pr-state-empty" ""
+run_push_not_skipped_when_pr_state_unrecognized_test \
+  "push-not-skipped-when-pr-state-unknown" "SOMETHING_UNEXPECTED"
 
 rm -rf "${PUSH_REBASE_TMPDIR}"
 
