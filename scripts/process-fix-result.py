@@ -36,6 +36,7 @@ def build_summary_body(data):
 
     fixed = [a for a in actions if a.get("type") == "fix"]
     disagreed = [a for a in actions if a.get("type") == "disagree"]
+    deferred = [a for a in actions if a.get("type") == "defer"]
 
     fixes_text = ""
     if fixed:
@@ -56,6 +57,15 @@ def build_summary_body(data):
             reason = a.get("reason", "No reason provided.")
             items.append(f"{i}. **{finding}**: {reason}")
         disagree_text = "\n".join(items)
+
+    defer_text = ""
+    if deferred:
+        items = []
+        for i, a in enumerate(deferred, 1):
+            finding = a.get("finding", "unknown")
+            reason = a.get("reason", "No reason provided.")
+            items.append(f"{i}. **{finding}**: {reason}")
+        defer_text = "\n".join(items)
 
     dp_text = ""
     if decision_points:
@@ -82,6 +92,9 @@ def build_summary_body(data):
 
     if disagree_text:
         sections.append(f"**Disagreed ({len(disagreed)}):**\n{disagree_text}\n")
+
+    if defer_text:
+        sections.append(f"**Deferred ({len(deferred)}):**\n{defer_text}\n")
 
     sections.append(f"**Tests:** {tests_str}")
 
@@ -298,7 +311,7 @@ def main(argv=None):
         print("::warning::jsonschema not installed — skipping schema validation")
 
     actions = data.get("actions", [])
-    valid_types = {"fix", "disagree"}
+    valid_types = {"fix", "disagree", "defer"}
     for a in actions:
         atype = a.get("type", "")
         if atype not in valid_types:
@@ -306,7 +319,8 @@ def main(argv=None):
             print(f"::warning::Unknown action type '{safe_atype}' — ignored", file=sys.stderr)
     fixed = sum(1 for a in actions if a.get("type") == "fix")
     disagreed = sum(1 for a in actions if a.get("type") == "disagree")
-    print(f"Processed: {fixed} fixed, {disagreed} disagreed")
+    deferred = sum(1 for a in actions if a.get("type") == "defer")
+    print(f"Processed: {fixed} fixed, {disagreed} disagreed, {deferred} deferred")
 
     summary_body = build_summary_body(data)
     # Record the post-script's trailer strip so the rewrite is visible.

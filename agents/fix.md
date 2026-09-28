@@ -25,8 +25,10 @@ Before writing any code, you must be able to answer four questions:
 
 1. **What is the reviewer's overall concern?** (Read the full review body
    first. Understand the high-level theme before looking at individual findings.)
-2. **What specific findings did the reviewer raise?** (Parse each finding
-   from the review body in the context of the overall concern.)
+2. **What specific findings did the reviewer raise?** Parse every finding
+   from the review body and record the count before acting on any of them.
+   A completeness claim ("the only finding") is valid only when it matches
+   that count.
 3. **Is each finding correct?** (Verified against the code, not assumed.)
 4. **What is the smallest correct fix that addresses the whole review?**
 
@@ -40,19 +42,40 @@ Multiple findings may be symptoms of one root-cause issue. The correct fix
 addresses the root cause — not independent patches that might contradict
 each other or miss the reviewer's actual intent.
 
+## Enumerate findings first
+
+Before editing code or writing structured output, extract every finding
+from the review body (the `fix-review` skill's step 2). For each finding
+record `[category]`, severity, and location, then log the total count.
+
+Each finding becomes one `actions[]` entry (`fix`, `disagree`, or
+`defer`). Extra actions (rebase, squash, CI) are allowed in addition,
+not instead.
+
+The `finding` field of each per-finding action MUST contain the finding's
+`[category]` tag exactly as it appears in the review body (for example
+`[stale-docs]`). The validation loop counts `[tag]` bullets in the raw
+review body and rejects output that does not cover them.
+
+A human instruction that narrows scope (rebase, squash, a single-file
+edit) does not drop the other findings — record `defer` with a reason
+for each finding the instruction puts out of scope.
+
 ## Trigger modes
 
 You operate in one of two modes depending on how you were triggered:
 
 - **Bot-triggered** (review agent requested changes): The review agent posts
-  all findings as a single review body. Read the full review body and address
-  every finding — either by fixing the code or by recording a reasoned
-  disagreement in your structured output.
+  all findings as a single review body. Read the full review body, enumerate
+  every finding, and address each one — `fix`, `disagree`, or `defer` in
+  structured output. Do not skip a finding because another one looks like
+  a familiar disagree pattern.
 
 - **Human-triggered** (`/fs-fix [instruction]`): Follow the human's instruction.
   The instruction takes precedence over any prior bot review feedback. If the
   human's instruction conflicts with the review agent's feedback, follow the
-  human.
+  human. Findings the instruction puts out of scope still appear in structured
+  output as `defer` with a reason — they are not dropped.
 
 The `TRIGGER_SOURCE` environment variable contains the forge username that
 triggered this fix run (e.g., `"orgname-review[bot]"` on GitHub,
@@ -139,8 +162,10 @@ path unchanged.
   not refactor adjacent code, add features beyond scope, or "improve" things
   nobody asked about.
 - Do not rerun CI jobs. Recommend a rerun to the user instead.
-- You MUST address every finding from the review body. For each finding, either
-  fix the code or record a disagreement with a reason. Do not silently skip items.
+- You MUST address every finding from the review body. For each finding, emit
+  a `fix`, `disagree`, or `defer` action. Do not silently skip items. Do not
+  claim a finding count ("the only finding") that disagrees with the
+  enumeration from step 2 of the `fix-review` skill.
 - You cannot push branches, create PRs, merge PRs, post comments on PRs or
   issues, or edit labels. These are post-script responsibilities.
 - You cannot run `git add -A`, `git add .`, or `git add --all`. Only stage
@@ -289,7 +314,9 @@ branch for a change of strategy.
 
 Every rebase run (success, no-op, or failure) still writes structured output
 with ≥1 `actions` item — a `fix` action whose `finding` records the rebase
-and whose `description` records the outcome.
+and whose `description` records the outcome. Review findings still each get
+their own action; record `defer` for findings the rebase instruction puts
+out of scope.
 
 ## Rewrite fix-agent history (squash / redo)
 
@@ -396,6 +423,8 @@ Every squash run (success, no-op, or failure) still writes structured
 output with ≥1 `actions` item — a `fix` action whose `finding` records
 the squash and whose `description` records the outcome, including the
 rewrite base and how many commits were combined (or why it did not run).
+Review findings still each get their own action; record `defer` for
+findings the squash instruction puts out of scope.
 
 ### Authorized rewrite range (redo / reset)
 
@@ -449,15 +478,17 @@ Every redo run (success or failure) still writes structured output with
 ≥1 `actions` item — a `fix` action whose `finding` records the redo and
 whose `description` records the outcome, including the rewrite base and
 that human-authored commits were preserved (or why the rewrite did not
-run).
+run). Review findings still each get their own action; record `defer`
+for findings the redo instruction puts out of scope.
 
 ## Structured output
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json` that
 documents your actions on every review finding. The `fix-review` skill
-describes the schema. The post-script reads this file to post a summary
-comment on the PR. Without this file, the post-script cannot communicate
-your work back to the reviewer.
+describes the schema. Each review finding is one `actions[]` entry whose
+`finding` field includes that finding's `[category]` tag. The post-script
+reads this file to post a summary comment on the PR. Without this file, the
+post-script cannot communicate your work back to the reviewer.
 
 After writing the file, validate it before exiting:
 

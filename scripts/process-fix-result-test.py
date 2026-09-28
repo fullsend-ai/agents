@@ -151,6 +151,36 @@ class TestBuildSummaryBody(unittest.TestCase):
         self.assertIn("Fixed (2)", body)
         self.assertIn("Disagreed (1)", body)
 
+    def test_deferred_findings(self):
+        data = {
+            "summary": "Rebased; deferred 2 findings.",
+            "trigger_source": "human",
+            "iteration": 1,
+            "tests_passed": True,
+            "actions": [
+                {
+                    "type": "fix",
+                    "finding": "rebase onto main",
+                    "description": "Rebased onto origin/main",
+                },
+                {
+                    "type": "defer",
+                    "finding": "[stale-docs] AGENTS.md:97",
+                    "reason": "Human instruction limited this run to rebase",
+                },
+                {
+                    "type": "defer",
+                    "finding": "[protected-path] AGENTS.md",
+                    "reason": "Human instruction limited this run to rebase",
+                },
+            ],
+        }
+        body = build_summary_body(data)
+        self.assertIn("Fixed (1)", body)
+        self.assertIn("Deferred (2)", body)
+        self.assertIn("[stale-docs] AGENTS.md:97", body)
+        self.assertNotIn("Disagreed (", body)
+
     def test_no_actions(self):
         data = {
             "summary": "Nothing to fix.",

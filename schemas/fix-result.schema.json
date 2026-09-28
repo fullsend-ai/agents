@@ -25,7 +25,7 @@
       "type": "array",
       "minItems": 1,
       "maxItems": 50,
-      "description": "Actions taken on each review finding.",
+      "description": "Actions taken on each review finding. Every structured finding in the review body must have a corresponding entry whose finding field contains that finding's [category] tag.",
       "items": {
         "type": "object",
         "required": ["type", "finding"],
@@ -33,13 +33,13 @@
         "properties": {
           "type": {
             "type": "string",
-            "enum": ["fix", "disagree"],
-            "description": "Action type: fix (addressed the finding), disagree (reasoned rejection)."
+            "enum": ["fix", "disagree", "defer"],
+            "description": "Action type: fix (addressed the finding), disagree (reasoned rejection), defer (acknowledged but out of this run's scope)."
           },
           "finding": {
             "type": "string",
             "maxLength": 256,
-            "description": "Short label for the review finding being addressed."
+            "description": "Short label for the review finding being addressed. For a review finding, include that finding's [category] tag as it appears in the review body."
           },
           "path": {
             "type": "string",
@@ -54,7 +54,7 @@
           "reason": {
             "type": "string",
             "maxLength": 2048,
-            "description": "Why the agent disagrees with the feedback (for disagree actions)."
+            "description": "Why the agent disagrees with the finding (disagree) or why it is out of this run's scope (defer)."
           }
         },
         "allOf": [
@@ -64,6 +64,10 @@
           },
           {
             "if": { "properties": { "type": { "const": "disagree" } }, "required": ["type"] },
+            "then": { "required": ["type", "finding", "reason"] }
+          },
+          {
+            "if": { "properties": { "type": { "const": "defer" } }, "required": ["type"] },
             "then": { "required": ["type", "finding", "reason"] }
           }
         ]

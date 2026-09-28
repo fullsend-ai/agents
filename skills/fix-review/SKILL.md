@@ -101,15 +101,15 @@ If empty, pointer-only, or under 200 bytes, recover via your forge
 skill's Review findings fallback. Do not re-fetch PR reviews. If still
 unusable, log error or disagree.
 
-**Step 2b — Understand the review before acting:**
+**Step 2b — Enumerate every finding before acting:**
 
-Read the entire review carefully. Identify: (1) the reviewer's overall concern, (2) individual findings with file/line references, (3) whether findings share a root cause.
+Read the entire review. Ignore `<details>` blocks (prior iterations). List every `- **[<category>]**` bullet and log `FINDINGS: N total` before any fix. Completeness claims ("the only finding") must match this count.
 
 **Step 2c — Build your action list:**
 
-For each finding, record: `finding`, `path`, `description`, `related_findings`. Ignore `<details>` blocks (prior iterations). Inline PR comments are not used; humans direct fixes via `/fs-fix`.
+One `actions[]` entry per finding (`fix`, `disagree`, or `defer`). The `finding` field MUST contain the `[category]` tag. Extra rebase/CI actions are in addition. Inline PR comments are not used; humans direct fixes via `/fs-fix`.
 
-**If trigger type is `"human"`:** Use `HUMAN_INSTRUCTION` as primary directive. If empty or vague, also follow step 2a.
+**If trigger type is `"human"`:** Use `HUMAN_INSTRUCTION` as primary directive. If empty or vague, also follow step 2a. Out-of-scope findings get `defer`.
 
 ### 3. Discover repo conventions
 
@@ -248,8 +248,8 @@ which gitlint &>/dev/null && gitlint --commit HEAD
   "trigger_source": "bot",
   "iteration": 1,
   "actions": [
-    {"type": "fix", "finding": "Missing input validation", "path": "src/input.sh", "description": "Reject empty input before processing"},
-    {"type": "disagree", "finding": "Rename the public command", "path": "src/cli.sh", "reason": "The existing name is part of the documented public interface"}
+    {"type": "fix", "finding": "[missing-validation] src/input.sh", "path": "src/input.sh", "description": "Reject empty input before processing"},
+    {"type": "disagree", "finding": "[rename] public command", "path": "src/cli.sh", "reason": "The existing name is part of the documented public interface"}
   ],
   "decision_points": [{"description": "Preserve the public command name", "alternatives": ["Rename the command", "Keep the documented name"], "rationale": "Renaming would break existing callers"}],
   "summary": "Addressed both review findings",
@@ -263,7 +263,7 @@ which gitlint &>/dev/null && gitlint --commit HEAD
 }
 ```
 
-**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8) and `ci_inspections` (project CI jobs inspected per step 2 and `agents/fix.md`'s Project CI inspection section; each entry requires `job` and `classification`, with `status`/`diagnosis`/`remediation` optional — see the forge-specific `fix-review` skill for the recipes that gather these). `trigger_source` is `"bot"`/`"human"`. Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1), `summary`, `tests_passed`, `files_changed`.
+**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8) and `ci_inspections` (project CI jobs inspected per step 2 and `agents/fix.md`'s Project CI inspection section; each entry requires `job` and `classification`, with `status`/`diagnosis`/`remediation` optional — see the forge-specific `fix-review` skill for the recipes that gather these). `trigger_source` is `"bot"`/`"human"`. Types: `fix` (needs `type`, `finding`, `description`) or `disagree`/`defer` (need `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1, covering every finding), `summary`, `tests_passed`, `files_changed`.
 
 Validate: `fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"`. If fails after 3 attempts, write best JSON and exit.
 

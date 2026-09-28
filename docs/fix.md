@@ -82,9 +82,11 @@ To cover a CI system other than GitHub Actions or GitLab CI, add a skill in `.ag
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
 1. **Pre-script** validates inputs and checks the iteration cap (preventing infinite fix loops).
-2. **Sandbox** — the agent reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
-3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
+2. **Sandbox** — the agent enumerates every review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters. Each finding gets a `fix`, `disagree`, or `defer` action.
+3. **Validation loop** — the output is checked against a schema and against the `[category]` tags in the raw review body, with up to 2 retry iterations if the output is malformed or omits a finding.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
+
+A finding cannot be dropped silently. The validation loop re-reads the review body the agent received and rejects output whose `actions` do not cover every structured finding tag. A human `/fs-fix` instruction that narrows scope (for example `rebase`) still records the other findings as `defer`.
 
 ### Signed-off-by trailers
 

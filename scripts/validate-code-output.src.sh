@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# validate-code-output.src.sh — Validate code/fix agent output: schema + pre-commit.
+# validate-code-output.src.sh — Validate code/fix agent output: schema +
+# finding coverage (fix) + pre-commit.
 #
 # Wraps validate-output-schema.sh's schema check with an additional pre-commit
 # gate run against TARGET_REPO_DIR.  Used as the validation_loop.script for the
 # code and fix harnesses so that a lint or type-check failure consumes a retry
 # iteration (with feedback) instead of ending the run terminally in the
-# post-script.
+# post-script. For the fix agent, also checks that every structured finding
+# tag in REVIEW_BODY_FILE is covered by an actions[].finding value.
 #
 # The pre-commit check runs on the runner (not in the sandbox), so it has
 # full network access and the repo's pre-commit tool dependencies are already
@@ -18,6 +20,15 @@
 #   FULLSEND_OUTPUT_FILE   — filename to validate (default: agent-result.json)
 #   TARGET_REPO_DIR        — path to the target repo (empty on sweep path)
 #   TARGET_BRANCH          — branch the PR targets (for merge-base derivation)
+#   REVIEW_BODY_FILE       — raw review body (fix agent; finding-coverage check)
+#   FULLSEND_FORGE         — "github"/"gitlab" (fix agent; gates the GitHub
+#                            pointer-body recovery below)
+#   REPO_FULL_NAME         — "owner/repo" (fix agent; pointer-body recovery)
+#   PR_NUMBER              — PR number (fix agent; pointer-body recovery)
+#   TRIGGER_SOURCE         — forge username that triggered the fix (fix agent;
+#                            selects the review-agent comment to recover)
+#   PUSH_TOKEN / GH_TOKEN  — GitHub auth for the recovery API call (same
+#                            PUSH_TOKEN-as-GH_TOKEN pattern as post-fix.src.sh)
 #
 # Category gating:
 #   pre-commit-blocked — agent-fixable; consumes a retry iteration
@@ -87,6 +98,109 @@ except ValidationError as e:
 " "${RESULT_FILE}" "${FULLSEND_OUTPUT_SCHEMA}"; then
   exit 1
 fi
+
+# ============================================================================
+# Part 1.5: Fix-agent finding coverage (fix-result schema only)
+# ============================================================================
+# Counts `- **[category]**` bullets in the raw review body and requires each
+# occurrence to appear as `[category]` in some actions[].finding. Runs against
+# the review payload the agent received, not the agent's restated summary.
+# Skip when the schema is not fix-result, REVIEW_BODY_FILE is unset/missing,
+# or the body has no structured findings (empty human /fs-fix eval path).
+#
+# On GitHub, COMMENT/CHANGES_REQUESTED reviews post the full structured
+# findings as a separate issue comment marked `<!-- fullsend:review-agent -->`
+# (skills/fix-review/github/SKILL.md's "Review findings fallback"); the
+# formal review body copied into REVIEW_BODY_FILE contains only a pointer
+# sentence ("See the [review comment](...) for full details."). The
+# sandbox-side skill recovers the full comment via the issue-comments API,
+# but that recovery never reaches this runner-side file, so a naive read of
+# REVIEW_BODY_FILE here would parse zero findings and silently skip the
+# coverage check on the exact flow it exists to guard. Recover the same way
+# here, and fail closed (not skip) when recovery is unavailable or comes up
+# empty, so an unresolved pointer body cannot be mistaken for "no findings".
+
+review_body_is_pointer_only() {
+  local file="$1"
+  # A genuinely empty/whitespace-only body is a legitimate "no review" case
+  # (e.g. a human /fs-fix run with no prior review) already handled as a
+  # skip by review-finding-coverage.py itself — leave that alone here.
+  #
+  # Unlike the sandbox-side skill's fallback trigger (which also treats any
+  # body under 200 bytes as worth a fallback attempt — a cheap, safe guess
+  # to make from inside the agent's own sandbox), this check intentionally
+  # only matches the literal known pointer sentence. A blanket length
+  # threshold here would misclassify genuinely short-but-real review bodies
+  # (e.g. a terse structured review, or "LGTM") as pointer-only and either
+  # overwrite them with an unrelated resolved comment or fail closed on
+  # content that never needed resolving.
+  grep -q '[^[:space:]]' "${file}" || return 1
+  grep -qxE 'See the .*review comment.*for full details\.?' "${file}"
+}
+
+resolve_pointer_review_body() {
+  # Prints the recovered review-agent comment body on success. Prints
+  # nothing and returns 1 on any failure: non-GitHub forge, missing
+  # PR/repo context, no gh/jq on the runner, an API error, or no matching
+  # comment. Mirrors skills/fix-review/github/SKILL.md's fallback.
+  if [ "${FULLSEND_FORGE:-}" != "github" ]; then
+    return 1
+  fi
+  if [ -z "${REPO_FULL_NAME:-}" ] || [ -z "${PR_NUMBER:-}" ]; then
+    return 1
+  fi
+  if ! command -v gh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+    return 1
+  fi
+
+  local login_select
+  case "${TRIGGER_SOURCE:-}" in
+    *"[bot]") login_select='select(.user.login == $login)' ;;
+    *) login_select='select(.user.login | endswith("-review[bot]"))' ;;
+  esac
+
+  local comments
+  comments="$(GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh api --paginate --slurp \
+    "repos/${REPO_FULL_NAME}/issues/${PR_NUMBER}/comments" 2>/dev/null)" || return 1
+
+  local comment
+  comment="$(printf '%s' "${comments}" | jq -r --arg login "${TRIGGER_SOURCE:-}" \
+    "add // [] | [.[] | ${login_select} | select(.body | contains(\"<!-- fullsend:review-agent -->\"))] | last | .body // empty" \
+    2>/dev/null)" || return 1
+
+  [ -n "${comment}" ] || return 1
+  printf '%s' "${comment}"
+}
+
+_schema_base="$(basename "${FULLSEND_OUTPUT_SCHEMA}")"
+case "${_schema_base}" in
+  fix-result.schema.json)
+    _coverage_py="${BASH_SOURCE[0]%/*}/review-finding-coverage.py"
+    if [ -z "${REVIEW_BODY_FILE:-}" ]; then
+      echo "REVIEW_BODY_FILE unset — skipping finding coverage"
+    elif [ ! -f "${REVIEW_BODY_FILE}" ]; then
+      echo "REVIEW_BODY_FILE not a file — skipping finding coverage"
+    elif [ ! -f "${_coverage_py}" ]; then
+      echo "FAIL: review-finding-coverage.py not found at ${_coverage_py}"
+      exit 1
+    else
+      _coverage_body_file="${REVIEW_BODY_FILE}"
+      if review_body_is_pointer_only "${REVIEW_BODY_FILE}"; then
+        _resolved_body="$(resolve_pointer_review_body)" || _resolved_body=""
+        if [ -n "${_resolved_body}" ]; then
+          echo "REVIEW_BODY_FILE is pointer-only — resolved full findings via GitHub issue-comment API"
+          _coverage_body_file="$(mktemp)"
+          printf '%s' "${_resolved_body}" > "${_coverage_body_file}"
+        else
+          echo "FAIL: REVIEW_BODY_FILE is pointer-only (full findings posted as a separate issue comment) and could not be resolved via the GitHub issue-comment API fallback — cannot verify finding coverage"
+          exit 1
+        fi
+      fi
+      python3 "${_coverage_py}" "${RESULT_FILE}" "${_coverage_body_file}" || exit 1
+    fi
+    ;;
+esac
+unset _schema_base _coverage_py _coverage_body_file _resolved_body
 
 # ============================================================================
 # Part 2: Pre-commit gate against TARGET_REPO_DIR

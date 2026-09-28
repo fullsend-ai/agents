@@ -437,6 +437,18 @@ run_test_custom_filename "disagree-with-reason-valid" \
   "${FIX_SCHEMA}" \
   "true"
 
+run_test_custom_filename "defer-missing-reason" \
+  '{"pr_number":42,"summary":"s","trigger_source":"human","iteration":1,"tests_passed":true,"actions":[{"type":"defer","finding":"[stale-docs] AGENTS.md:97"}],"files_changed":["f.go"]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "defer-with-reason-valid" \
+  '{"pr_number":42,"summary":"s","trigger_source":"human","iteration":1,"tests_passed":true,"actions":[{"type":"defer","finding":"[stale-docs] AGENTS.md:97","reason":"Human instruction limited this run to rebase"}],"files_changed":["f.go"]}' \
+  "fix-result.json" \
+  "${FIX_SCHEMA}" \
+  "true"
+
 run_test_custom_filename "empty-actions-rejected" \
   '{"pr_number":42,"summary":"s","trigger_source":"bot","iteration":1,"tests_passed":true,"actions":[],"files_changed":["f.go"]}' \
   "fix-result.json" \
