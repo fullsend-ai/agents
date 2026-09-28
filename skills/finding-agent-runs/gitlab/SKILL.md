@@ -21,7 +21,7 @@ REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
 ```bash
 # List recent pipelines in the dispatch repo
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_ENCODED}/pipelines?ref=main&per_page=10" \
   | jq '.[] | {id: .id, status: .status, ref: .ref, created_at: .created_at}'
 ```
@@ -31,7 +31,7 @@ curl --fail --silent --show-error \
 ```bash
 # List jobs in a pipeline
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_ENCODED}/pipelines/<PIPELINE_ID>/jobs" \
   | jq '.[] | {id: .id, name: .name, status: .status, stage: .stage}'
 ```
@@ -41,7 +41,7 @@ curl --fail --silent --show-error \
 ```bash
 # Read job log output
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_ENCODED}/jobs/<JOB_ID>/trace" \
   | grep -i "error\|fail\|exit code"
 ```
@@ -51,7 +51,7 @@ curl --fail --silent --show-error \
 ```bash
 # Download job artifacts
 curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   --output artifacts.zip \
   "https://${GITLAB_HOST}/api/v4/projects/${DISPATCH_ENCODED}/jobs/<JOB_ID>/artifacts"
 ```

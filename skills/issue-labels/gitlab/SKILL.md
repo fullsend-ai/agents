@@ -32,7 +32,7 @@ ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 ## Step 1: Discover available labels
 
 ```bash
-curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/labels?per_page=100" \
   | jq '[.[] | {name, description}]'
 ```
@@ -47,7 +47,7 @@ The sub-agent should:
 
 1. Query recent closed and open issues:
    ```bash
-   curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+   curl --silent --header "Authorization: Bearer ${GITLAB_TOKEN}" \
      "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues?per_page=50&order_by=updated_at&sort=desc" \
      | jq '[.[] | {iid, title, labels}]'
    ```

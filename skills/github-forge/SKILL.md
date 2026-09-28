@@ -8,7 +8,10 @@ description: >-
 # GitHub CLI
 
 Use the `gh` CLI to interact with GitHub repositories. The environment
-provides `GH_TOKEN` for authentication.
+provides `GH_TOKEN` for authentication. `GH_TOKEN` inside the sandbox is
+the opaque placeholder supplied by the GitHub provider — the real token
+never enters the sandbox. The `gh` CLI sends it as an `Authorization`
+header; OpenShell replaces the placeholder at the proxy boundary.
 
 ## Issues
 

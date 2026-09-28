@@ -64,6 +64,16 @@ check_env_sandbox() {
     done
 }
 
+# skill_rel_name — unique test-name slug from a skills/ path.
+# skills/github-forge/SKILL.md        → github-forge
+# skills/issue-labels/gitlab/SKILL.md → issue-labels-gitlab
+skill_rel_name() {
+  local skill_file="$1"
+  local rel="${skill_file#"${REPO_ROOT}/skills/"}"
+  rel="${rel%/SKILL.md}"
+  echo "${rel//\//-}"
+}
+
 # check_host_files — scan host_files with expand: true (top-level,
 # overlays, and forge blocks) for denylisted variable references in
 # their source files.
@@ -159,6 +169,126 @@ for skill_file in "${JIRA_SKILL_FILES[@]}"; do
     assert_pass "${test_name}"
   else
     assert_fail "${test_name}" "missing --user Basic auth with opaque JIRA_TOKEN placeholder"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Test: GitHub skill files send GH_TOKEN through Authorization (via gh)
+# ---------------------------------------------------------------------------
+# Positive complement to the GH_TOKEN sandbox denylist: the real token never
+# enters sandbox config, but sandbox GitHub API calls must still go through
+# an OpenShell-rewritten Authorization header. The gh CLI reads GH_TOKEN from
+# the environment and sends it as Authorization; OpenShell replaces the
+# provider placeholder at the proxy boundary — the same header family as
+# Jira Basic auth, which this script verifies above.
+GITHUB_SKILL_FILES=(
+  "${REPO_ROOT}/skills/github-forge/SKILL.md"
+  "${REPO_ROOT}/skills/fix-review/github/SKILL.md"
+)
+
+for skill_file in "${GITHUB_SKILL_FILES[@]}"; do
+  skill_name="$(skill_rel_name "${skill_file}")"
+  test_name="skill-${skill_name}-uses-authorization-placeholder"
+
+  if [ ! -f "${skill_file}" ]; then
+    assert_fail "${test_name}" "${skill_file} not found"
+    continue
+  fi
+
+  if grep -qF 'provides `GH_TOKEN` for authentication' "${skill_file}" &&
+    grep -qE 'gh (issue|pr|api|run|label)' "${skill_file}"; then
+    assert_pass "${test_name}"
+  else
+    assert_fail "${test_name}" "missing gh CLI auth via GH_TOKEN (Authorization-family path)"
+  fi
+done
+
+# Canonical GitHub forge skill must name the Authorization rewrite path
+# explicitly, matching the Jira skill's documented Basic-auth contract.
+test_name="skill-github-forge-documents-authorization-rewrite"
+github_forge="${REPO_ROOT}/skills/github-forge/SKILL.md"
+if grep -qF 'Authorization' "${github_forge}" &&
+  grep -qF 'OpenShell' "${github_forge}"; then
+  assert_pass "${test_name}"
+else
+  assert_fail "${test_name}" "github-forge skill must document that gh sends Authorization for OpenShell rewrite"
+fi
+
+# ---------------------------------------------------------------------------
+# Test: GitHub skill files must not send GH_TOKEN via an unverified header
+# ---------------------------------------------------------------------------
+# Regression guard against every GitHub skill file, matching GitLab's
+# exhaustive no-private-token coverage below: gh sends GH_TOKEN via
+# Authorization, so no skill should introduce a custom header carrying it.
+# Flags GH_TOKEN on the same -H/--header line, on the line right after a
+# -H/--header flag (continuation), and in curl --config `header = ...`
+# lines, since none of those forms carry the token through Authorization.
+GITHUB_TOKEN_HEADER_FILES=(
+  "${REPO_ROOT}/skills/github-forge/SKILL.md"
+  "${REPO_ROOT}/skills/fix-review/github/SKILL.md"
+  "${REPO_ROOT}/skills/finding-agent-runs/github/SKILL.md"
+  "${REPO_ROOT}/skills/issue-labels/github/SKILL.md"
+  "${REPO_ROOT}/skills/pr-review/github/SKILL.md"
+  "${REPO_ROOT}/skills/retro-analysis/github/SKILL.md"
+)
+
+for skill_file in "${GITHUB_TOKEN_HEADER_FILES[@]}"; do
+  skill_name="$(skill_rel_name "${skill_file}")"
+  test_name="skill-${skill_name}-no-unverified-token-header"
+
+  if [ ! -f "${skill_file}" ]; then
+    assert_fail "${test_name}" "${skill_file} not found"
+    continue
+  fi
+
+  if grep -qF 'PRIVATE-TOKEN' "${skill_file}" ||
+    grep -A 1 -E -- '(-H|--header)' "${skill_file}" | grep -qF 'GH_TOKEN' ||
+    grep -E -- 'header[[:space:]]*=' "${skill_file}" | grep -qF 'GH_TOKEN'; then
+    assert_fail "${test_name}" "GH_TOKEN must not be passed via a custom header; gh sends Authorization"
+  else
+    assert_pass "${test_name}"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Test: GitLab skill files carry GITLAB_TOKEN through Authorization: Bearer
+# ---------------------------------------------------------------------------
+# PRIVATE-TOKEN has no established OpenShell rewrite precedent in this repo
+# (unlike Authorization, which Jira Basic auth and GitHub gh both use).
+# GitLab's REST API accepts Authorization: Bearer for personal/project access
+# tokens, so sandbox skills must use that header. Runner-side pre/post
+# scripts keep PRIVATE-TOKEN: they hold the real token via env.runner and
+# are not proxied through OpenShell.
+GITLAB_SKILL_FILES=(
+  "${REPO_ROOT}/skills/gitlab-forge/SKILL.md"
+  "${REPO_ROOT}/skills/issue-labels/gitlab/SKILL.md"
+  "${REPO_ROOT}/skills/pr-review/gitlab/SKILL.md"
+  "${REPO_ROOT}/skills/finding-agent-runs/gitlab/SKILL.md"
+  "${REPO_ROOT}/skills/fix-review/gitlab/SKILL.md"
+  "${REPO_ROOT}/skills/retro-analysis/gitlab/SKILL.md"
+)
+
+for skill_file in "${GITLAB_SKILL_FILES[@]}"; do
+  skill_name="$(skill_rel_name "${skill_file}")"
+  test_name="skill-${skill_name}-uses-bearer-auth-placeholder"
+
+  if [ ! -f "${skill_file}" ]; then
+    assert_fail "${test_name}" "${skill_file} not found"
+    continue
+  fi
+
+  if grep -qF 'Authorization: Bearer ${GITLAB_TOKEN}' "${skill_file}" ||
+    grep -qF 'Authorization: Bearer %s' "${skill_file}"; then
+    assert_pass "${test_name}"
+  else
+    assert_fail "${test_name}" "missing Authorization: Bearer with GITLAB_TOKEN placeholder"
+  fi
+
+  test_name="skill-${skill_name}-no-private-token-header"
+  if grep -qF 'PRIVATE-TOKEN' "${skill_file}"; then
+    assert_fail "${test_name}" "PRIVATE-TOKEN has no established OpenShell rewrite precedent; use Authorization: Bearer"
+  else
+    assert_pass "${test_name}"
   fi
 done
 
