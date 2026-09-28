@@ -42,6 +42,10 @@ validation_loop:
 
 timeout_minutes: 10
 
+# Steering absorbs work-item updates; absorbed updates skip the pre-script.
+steer:
+  enabled: true
+
 env:
   # TRIAGE_AUTO_CODE is read by both the agent (sandbox) and the post-script
   # (runner). Keep the two in sync so discretionary mode is visible to the

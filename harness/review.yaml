@@ -78,6 +78,10 @@ env:
 # PR size; 20 sat on it. Mirrored as TIMEOUT_SECONDS in env.sandbox.
 timeout_minutes: 45
 
+# Steering absorbs work-item updates; absorbed updates skip the pre-script.
+steer:
+  enabled: true
+
 forge:
   github:
     providers:

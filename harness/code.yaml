@@ -86,6 +86,10 @@ env:
 # Per iteration. Mirrored as TIMEOUT_SECONDS in env.sandbox.
 timeout_minutes: 60
 
+# Steering absorbs work-item updates; absorbed updates skip the pre-script.
+steer:
+  enabled: true
+
 overlays:
   - when: 'runtime.forge == "github"'
     providers:
