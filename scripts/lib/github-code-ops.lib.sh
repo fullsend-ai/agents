@@ -48,8 +48,8 @@ forge_add_label() {
   local target="${2:-issue}"
   local number="${3:-${ISSUE_NUMBER}}"
   if [ "${target}" = "pr" ]; then
-    gh issue edit "${number}" --repo "${REPO_FULL_NAME}" \
-      --add-label "${label}" 2>/dev/null || \
+    gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels" \
+      -f "labels[]=${label}" --silent 2>/dev/null || \
       gha_echo warning "Failed to apply ${label} label to PR #${number}"
   else
     gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels" \
@@ -228,6 +228,37 @@ forge_enable_auto_merge() {
 }
 
 # --- Issue operations ---
+
+# forge_has_sub_issues — whether the GitHub issue has sub-issues (children).
+# Prints a non-negative integer that is non-zero iff children exist. GitHub
+# exposes an exact child count, but callers must treat the result as a
+# truthy/falsy signal only — GitLab's implementation of this same contract
+# can only report 0 or 1 — and must not display it as an exact count in
+# shared (forge-agnostic) messages. Fail-open: prints 0 on API errors so a
+# missing sub-issues field (older GHES) does not skip legitimate leaf work.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  local count
+  count="$(gh api graphql \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          subIssues(first: 1) {
+            totalCount
+          }
+        }
+      }
+    }' --jq '.data.repository.issue.subIssues.totalCount // 0' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
 
 forge_get_issue_comments() {
   local raw

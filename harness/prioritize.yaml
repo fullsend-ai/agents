@@ -16,6 +16,7 @@ openshell:
     - profiles/fullsend-vertex-ai.yaml
 providers:
   - providers/vertex-ai.yaml
+  - openai
 
 role: prioritize
 slug: fullsend-ai-prioritize
@@ -35,6 +36,7 @@ post_script: scripts/post-prioritize.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
+  preflight_check: 'python3 -c "import jsonschema"'
   schema: schemas/prioritize-result.schema.json
   max_iterations: 2
 
@@ -62,7 +64,6 @@ forge:
         FULLSEND_FORGE: github
       sandbox:
         ISSUE_URL: "${GITHUB_ISSUE_URL}"
-        GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
   gitlab:
     providers:
@@ -83,5 +84,4 @@ forge:
         FULLSEND_FORGE: gitlab
       sandbox:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
-        GITLAB_TOKEN: "${GITLAB_TOKEN}"
         FULLSEND_FORGE: gitlab

@@ -516,6 +516,7 @@ ${FAILED_CREATES}"
 
     CREATED_URLS=""
     FAILED_CREATES=""
+    FAILED_DISPATCHES=""
     for i in $(seq 0 $((SUB_ISSUE_COUNT - 1))); do
       SUB_TITLE=$(jq -r ".sub_issues[${i}].title" "${RESULT_FILE}")
       SUB_BODY=$(jq -r ".sub_issues[${i}].body" "${RESULT_FILE}")
@@ -552,6 +553,14 @@ ${SUB_BODY}
       echo "Created: ${CREATED_URL}"
       CREATED_URLS="${CREATED_URLS}
 - ${CREATED_URL}"
+
+      # Queue the sub-issue for triage. A dispatch failure must not
+      # prevent other sub-issues from being created or dispatched (#1123).
+      echo "Dispatching triage for sub-issue: $(_gha_sanitize "${CREATED_URL}")"
+      if ! tracker_dispatch_triage "${CREATED_URL}" "${TARGET_REPO}"; then
+        FAILED_DISPATCHES="${FAILED_DISPATCHES}
+- ${CREATED_URL}"
+      fi
     done
 
     if [[ -z "${CREATED_URLS}" ]] && [[ -n "${FAILED_CREATES}" ]]; then
@@ -570,6 +579,13 @@ ${SUB_BODY}
 
 **Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
 ${FAILED_CREATES}"
+    fi
+
+    if [[ -n "${FAILED_DISPATCHES}" ]]; then
+      COMMENT="${COMMENT}
+
+**Triage dispatch failed** (run \`/fs-triage\` manually on these issues):
+${FAILED_DISPATCHES}"
     fi
 
     tracker_remove_label "blocked"

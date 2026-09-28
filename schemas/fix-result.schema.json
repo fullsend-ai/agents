@@ -123,6 +123,51 @@
     "history_rewritten": {
       "type": "boolean",
       "description": "Set to true whenever this run's HEAD reflects an authorized human squash or redo/reset that still needs to be published on the remote PR (see 'Rewrite fix-agent history' in agents/fix.md), or a validation-loop retry carrying the field forward. A squash targets the whole PR range (fix-agent, code-agent, and human commits alike) and must land as exactly one commit ahead of the target branch; a redo/reset only discards and re-implements the contiguous fix-agent commit suffix, preserving every commit below it. Never set for a failed/aborted rewrite, a squash no-op (PR already a single commit), or a bot-triggered run. The post-script requires this field together with a harness-verified human squash/redo request (TRIGGER_SOURCE plus the literal /fs-fix instruction text) before skipping the replay onto the remote PR tip — for a squash it additionally refuses to publish unless exactly one commit results, and for a redo/reset it refuses to publish if a human-authored or code-agent commit below the rewrite base would be lost."
+    },
+    "ci_inspections": {
+      "type": "array",
+      "maxItems": 50,
+      "description": "Project CI jobs inspected during context gathering. Omit Fullsend agent/dispatch workflows. Include up to 50 entries, prioritizing failed and pending jobs over passing ones.",
+      "items": {
+        "type": "object",
+        "required": ["job", "classification"],
+        "additionalProperties": false,
+        "properties": {
+          "job": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "description": "Check, job, or pipeline name as reported by the CI system."
+          },
+          "status": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "Observed status from the CI system (for example success, failure, pending, cancelled)."
+          },
+          "classification": {
+            "type": "string",
+            "enum": [
+              "passing",
+              "pending",
+              "pr-related",
+              "unrelated",
+              "flaky",
+              "transient-infra"
+            ],
+            "description": "Diagnosis relative to this PR. passing: completed successfully. pending: still running. pr-related: failure caused by this PR's changes. unrelated: failure not caused by this PR. flaky: intermittent failure. transient-infra: infrastructure or transient platform failure. There is no dedicated value for a cancelled or skipped job: record the raw state in `status` and pick the closest classification instead — `pending` if the job may still run to completion, `transient-infra` if it was cancelled/skipped by infrastructure rather than the job's own logic, or `unrelated` if it was intentionally skipped for reasons unconnected to this PR."
+          },
+          "diagnosis": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "Evidence for the classification, including what logs or artifacts were read."
+          },
+          "remediation": {
+            "type": "string",
+            "maxLength": 2048,
+            "description": "What was done or recommended: a code fix applied, a request that the user rerun the job, or guidance to file an issue with the responsible owner."
+          }
+        }
+      }
     }
   }
 }

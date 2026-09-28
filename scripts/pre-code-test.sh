@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# pre-code-test.sh — Test pre-code.sh with mock gh to verify existing-PR check
-# and the pre-script output protocol skip signal
-# (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718).
+# pre-code-test.sh — Test pre-code.sh with mock gh to verify existing-PR check,
+# tracking-issue (sub-issues) skip, and the pre-script output protocol skip
+# signal (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718).
 #
 # Uses a mock gh command to capture calls without hitting GitHub.
 # Run from the repo root: bash scripts/pre-code-test.sh
@@ -303,6 +303,15 @@ _gql_wrap() {
   # Wrap a JSON array of PR nodes into a closedByPullRequestsReferences response.
   local nodes="$1"
   printf '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":%s}}}}}' "${nodes}"
+}
+
+# Combined response so both GraphQL queries (PRs and sub-issues) can share
+# one mock payload. Missing subIssues is treated as totalCount 0 by the jq
+# filter; this helper sets an explicit count when tests need it.
+_gql_wrap_sub() {
+  local nodes="$1"
+  local sub_count="$2"
+  printf '{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":%s},"subIssues":{"totalCount":%s}}}}}' "${nodes}" "${sub_count}"
 }
 
 # Empty response (no closing PRs).
@@ -650,6 +659,82 @@ run_test_stdout "closed-pr-does-not-block" \
 run_test_stdout "closing-ref-open-pr-still-blocks" \
   "${HUMAN_PR_JSON}" \
   "Skipping code agent" \
+  0
+
+# --- Tracking-issue skip (GitHub sub-issues, issue #1493) ---
+# Parent/tracking issues with child work items must not dispatch the coder.
+# The mock returns the same JSON to both GraphQL queries; _gql_wrap_sub
+# includes subIssues.totalCount so the second query sees children.
+
+SUB_ISSUES_GQL_JSON="$(_gql_wrap_sub '[]' 2)"
+ZERO_SUB_ISSUES_GQL_JSON="$(_gql_wrap_sub '[]' 0)"
+SUB_ISSUES_AND_HUMAN_PR_JSON="$(_gql_wrap_sub '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]' 2)"
+
+# Sub-issues present, no human PRs → skip the code agent.
+run_test_stdout "sub-issues-skip-agent" \
+  "${SUB_ISSUES_GQL_JSON}" \
+  "Skipping code agent — issue #42 is a tracking issue with sub-issue(s)" \
+  0
+
+run_test "sub-issues-posts-comment" \
+  "${SUB_ISSUES_GQL_JSON}" \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -" \
+  0
+
+run_test_stdout "sub-issues-notice" \
+  "${SUB_ISSUES_GQL_JSON}" \
+  "has sub-issue(s)" \
+  0
+
+# Explicit totalCount 0 is a leaf issue → proceed.
+run_test_stdout "zero-sub-issues-proceeds" \
+  "${ZERO_SUB_ISSUES_GQL_JSON}" \
+  "No sub-issues found" \
+  0
+
+# Missing subIssues field (existing PR-only payload) also proceeds.
+run_test_stdout "missing-sub-issues-field-proceeds" \
+  "${EMPTY_GQL_JSON}" \
+  "No sub-issues found" \
+  0
+
+# Human PR takes precedence: both present → skip with the existing-PR message.
+run_test_stdout "human-pr-precedes-sub-issues" \
+  "${SUB_ISSUES_AND_HUMAN_PR_JSON}" \
+  "Found existing human PR #99 by @human-dev" \
+  0
+
+run_test_stdout_excludes "human-pr-precedes-sub-issues-no-tracking-skip" \
+  "${SUB_ISSUES_AND_HUMAN_PR_JSON}" \
+  "Skipping code agent" \
+  "tracking issue" \
+  0
+
+# --force bypasses the tracking-issue check (exits before it).
+run_test_stdout_excludes "force-skips-sub-issues-check" \
+  "${SUB_ISSUES_GQL_JSON}" \
+  "Force override" \
+  "Checking for sub-issues" \
+  0 \
+  "CODE_FORCE=true"
+
+run_test_stdout_excludes "force-comment-skips-sub-issues-check" \
+  "${SUB_ISSUES_GQL_JSON}" \
+  "Force override" \
+  "Checking for sub-issues" \
+  0 \
+  "COMMENT_BODY=/fs-code --force"
+
+# Protocol: sub-issues skip writes skipped=true with a reason.
+run_test_prescript_output "protocol-skip-on-sub-issues" \
+  "${SUB_ISSUES_GQL_JSON}" \
+  "skipped=true${NL}reason=issue #42 has sub-issue(s); implement the child issues instead${NL}" \
+  0
+
+# Protocol: explicit zero sub-issues → proceed, file stays empty.
+run_test_prescript_output "protocol-empty-on-zero-sub-issues" \
+  "${ZERO_SUB_ISSUES_GQL_JSON}" \
+  "" \
   0
 
 # --- Summary ---

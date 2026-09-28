@@ -6,11 +6,12 @@
 #
 # Skip signalling uses the pre-script output protocol
 # (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
-# when an open human PR already addresses the issue, this script writes
-# skipped=true to the file named by FULLSEND_PRESCRIPT_OUTPUT and
-# fullsend run stops before creating the sandbox. Under a CLI that
-# predates the protocol the variable is unset and the write is skipped —
-# the run proceeds, which matches the pre-protocol behavior.
+# when an open human PR already addresses the issue, or the issue has
+# sub-issues (a tracking/parent issue), this script writes skipped=true
+# to the file named by FULLSEND_PRESCRIPT_OUTPUT and fullsend run stops
+# before creating the sandbox. Under a CLI that predates the protocol
+# the variable is unset and the write is skipped — the run proceeds,
+# which matches the pre-protocol behavior.
 #
 # Required environment variables (set by the workflow):
 #   ISSUE_NUMBER       — must be a positive integer
@@ -99,14 +100,14 @@ fi
 # is set. --force counts only as the command's flag token on the first line —
 # the same first-line tokenization the dispatch router uses — so a comment
 # merely mentioning --force (or a pasted log containing it) cannot bypass
-# the existing-PR check.
+# the existing-PR or tracking-issue checks.
 FORCE_WORD=""
 if [[ -n "${COMMENT_BODY:-}" ]]; then
   FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
 fi
 echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
 if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
-  echo "Force override — skipping existing-PR check"
+  echo "Force override — skipping existing-PR and tracking-issue checks"
   exit 0
 fi
 
@@ -157,6 +158,34 @@ To override, comment \`/fs-code --force\` on this issue.
 fi
 
 echo "No existing human PRs found — proceeding with code agent"
+
+# ---------------------------------------------------------------------------
+# Skip tracking/parent issues that have sub-issues (child work items)
+# ---------------------------------------------------------------------------
+# GitHub native sub-issues (and GitLab work-item children) mean this is a
+# tracking issue: implementation belongs on the children, not the parent.
+# /fs-code --force above bypasses this check.
+echo "Checking for sub-issues on issue #${ISSUE_NUMBER}..."
+HAS_SUB_ISSUES="$(forge_has_sub_issues "${ISSUE_NUMBER}")"
+
+if [[ "${HAS_SUB_ISSUES}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::notice::Issue #${ISSUE_NUMBER} has sub-issue(s) — skipping code agent"
+
+  SKIP_COMMENT="This issue has sub-issues — skipping automated implementation.
+
+The code agent implements leaf work items. Use the child issues for implementation, or comment \`/fs-code --force\` to implement this parent issue anyway.
+
+<sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
+
+  forge_post_issue_comment "${SKIP_COMMENT}" || true
+
+  echo "Skipping code agent — issue #${ISSUE_NUMBER} is a tracking issue with sub-issue(s)"
+  prescript_output "skipped" "true"
+  prescript_output "reason" "issue #${ISSUE_NUMBER} has sub-issue(s); implement the child issues instead"
+  exit 0
+fi
+
+echo "No sub-issues found — proceeding with code agent"
 
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies

@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:
@@ -20,6 +21,17 @@ jobs:
           script: |
             const author = context.payload.pull_request.user.login;
             const authorType = context.payload.pull_request.user.type;
+
+            // Neutralize the characters core does not already escape (% \r \n)
+            // before API error text reaches the actions command channel via
+            // core.setFailed / core.warning: ANSI escapes, remaining control
+            // characters, and the '::' command delimiter.
+            function sanitizeWorkflowValue(message) {
+              return String(message)
+                .replace(/\u001b\[[0-9;?]*[a-zA-Z]/g, '')
+                .replace(/[\u0000-\u001f\u007f]/g, '')
+                .replace(/::/g, ': :');
+            }
 
             // Skip bots (dependabot, renovate, fullsend agents, etc.).
             if (authorType === 'Bot') {
@@ -38,7 +50,8 @@ jobs:
               trusted = ['admin', 'maintain', 'write'].includes(data.role_name);
             } catch (e) {
               if (e.status !== 404) {
-                console.log(`Permission check error (status=${e.status}): ${e.message}`);
+                core.setFailed(`Could not check collaborator permission (status=${e.status}): ${sanitizeWorkflowValue(e.message)}`);
+                return;
               }
             }
 
@@ -67,7 +80,8 @@ jobs:
                 name => name.toLowerCase() === author.toLowerCase()
               );
             } catch (e) {
-              console.log(`Could not read VOUCHED.td: ${e.message}`);
+              core.setFailed(`Could not read VOUCHED.td: ${sanitizeWorkflowValue(e.message)}`);
+              return;
             }
 
             if (vouched) {
@@ -107,5 +121,5 @@ jobs:
                 ].join('\n'),
               });
             } catch (e) {
-              console.log(`Warning: Could not post explanation comment: ${e.message}`);
+              core.warning(`Could not post explanation comment: ${sanitizeWorkflowValue(e.message)}`);
             }

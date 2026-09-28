@@ -56,6 +56,18 @@ run_case() {
 run_case "valid-manifest-passes" \
   "${VALID_YAML}" 0 "code.yaml: OK"
 
+run_case "run-health-scorer-allowed" \
+  '---
+agent: code
+measurements:
+  - id: em-001
+    scorer: trace_fitness
+    version: 1
+  - id: em-002
+    scorer: run_health
+    version: 1
+' 0 "code.yaml: OK"
+
 run_case "unknown-scorer" \
   "---
 agent: code

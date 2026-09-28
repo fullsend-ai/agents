@@ -85,6 +85,29 @@ def build_summary_body(data):
 
     sections.append(f"**Tests:** {tests_str}")
 
+    ci_inspections = data.get("ci_inspections") or []
+    if ci_inspections:
+        items = []
+        for i, job in enumerate(ci_inspections, 1):
+            name = job.get("job", "unknown")
+            status = job.get("status", "")
+            classification = job.get("classification", "")
+            diagnosis = job.get("diagnosis", "")
+            remediation = job.get("remediation", "")
+            status_bit = f", `{status}`" if status else ""
+            line = f"{i}. **{name}** ({classification}{status_bit})"
+            details = []
+            if diagnosis:
+                details.append(diagnosis)
+            if remediation:
+                details.append(remediation)
+            if details:
+                line += ": " + " ".join(details)
+            items.append(line)
+        sections.append(
+            f"\n**CI inspections ({len(ci_inspections)}):**\n" + "\n".join(items)
+        )
+
     strategy_change = data.get("strategy_change", "")
     if strategy_change:
         sections.append(f"\n> **Strategy change:** {strategy_change}")
