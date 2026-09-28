@@ -716,6 +716,23 @@ if [ "${NO_PUSH}" = "false" ]; then
       fi
     fi
     if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
+      # Issue #1387: the skip above requires rebased_onto_target:true. When a
+      # human asked for a rebase and local ancestry already looks like one
+      # (HEAD based on origin/TARGET_BRANCH, diverged from origin/BRANCH,
+      # target ahead of the remote PR tip) but the agent omitted the field,
+      # this replay re-hits conflicts the sandbox already resolved. Do not
+      # skip on ancestry alone — that topology is also a GitLab MR
+      # reconstruction against a moved target (issue #565). Log so the miss
+      # is visible; the validation_loop (validate-code-output.src.sh) is what
+      # fails loud and asks the agent to set the field.
+      if [ "${HUMAN_REBASE_REQUESTED}" = "true" ] \
+        && [ "${AGENT_REBASED_ONTO_TARGET}" != "true" ] \
+        && git rev-parse --verify "origin/${TARGET_BRANCH}" >/dev/null 2>&1 \
+        && git merge-base --is-ancestor "origin/${TARGET_BRANCH}" HEAD 2>/dev/null \
+        && ! git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null \
+        && ! git merge-base --is-ancestor "origin/${TARGET_BRANCH}" "origin/${BRANCH}" 2>/dev/null; then
+        gha_echo warning "pre-push rebase onto origin/${BRANCH} proceeding despite human rebase request and ancestry matching an agent rebase onto origin/${TARGET_BRANCH} (rebased_onto_target=${AGENT_REBASED_ONTO_TARGET}; skip-logic did not apply -- issue #1387)"
+      fi
       echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."
       REBASE_OUTPUT="$(git rebase "origin/${BRANCH}" 2>&1)" && REBASE_RC=0 || REBASE_RC=$?
       if [ "${REBASE_RC}" -ne 0 ]; then

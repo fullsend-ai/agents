@@ -6,7 +6,10 @@
 # gate run against TARGET_REPO_DIR.  Used as the validation_loop.script for the
 # code and fix harnesses so that a lint or type-check failure consumes a retry
 # iteration (with feedback) instead of ending the run terminally in the
-# post-script.
+# post-script. For fix-result.json, also fail-loud when a human rebase request
+# (or a non-bot actions log that records a rebase) omits rebased_onto_target
+# (issue #1387) — the schema leaves the field optional, and post-fix.sh would
+# otherwise treat absent as false and replay onto the stale remote PR tip.
 #
 # The pre-commit check runs on the runner (not in the sandbox), so it has
 # full network access and the repo's pre-commit tool dependencies are already
@@ -19,6 +22,9 @@
 #   FULLSEND_OUTPUT_FILE   — filename to validate (default: agent-result.json)
 #   TARGET_REPO_DIR        — path to the target repo (empty on sweep path)
 #   TARGET_BRANCH          — branch the PR targets (for merge-base derivation)
+#   HUMAN_INSTRUCTION      — harness-captured /fs-fix text (fix harness)
+#   TRIGGER_SOURCE         — forge username that triggered the run (fix harness)
+#   FULLSEND_FORGE         — github or gitlab (bot-username suffix)
 #
 # Category gating:
 #   pre-commit-blocked — agent-fixable; consumes a retry iteration
@@ -1006,6 +1012,60 @@ except ValidationError as e:
     sys.exit(1)
 " "${RESULT_FILE}" "${FULLSEND_OUTPUT_SCHEMA}"; then
   exit 1
+fi
+
+# ============================================================================
+# Part 1b: Human rebase requests must set rebased_onto_target (issue #1387)
+# ============================================================================
+#
+# post-fix.sh fail-closes a missing rebased_onto_target to false, then
+# replays local commits onto the stale remote PR tip — re-hitting conflicts
+# the sandbox already resolved. The schema leaves the field optional, so a
+# rebase-only run that omits it still schema-validates. Fail here so the
+# validation_loop can send the agent back to set the field before the
+# sandbox is destroyed.
+#
+# Require the field when a harness-captured human /fs-fix instruction asked
+# for a rebase, or when a non-bot run's actions log itself records a rebase.
+# Bot-triggered runs never rebase; do not require the field for them.
+# Keep the instruction matcher in sync with is_human_rebase_request /
+# is_bot_user in scripts/lib/fix-ops.lib.sh.
+
+if [[ "${FULLSEND_OUTPUT_SCHEMA}" == *fix-result.schema.json ]]; then
+  _fix_trigger="${TRIGGER_SOURCE:-}"
+  _fix_instruction="$(printf '%s' "${HUMAN_INSTRUCTION:-}" | tr '[:upper:]' '[:lower:]')"
+  _fix_is_bot=false
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [[ "${_fix_trigger}" =~ _bot$ ]]; then
+      _fix_is_bot=true
+    fi
+  elif [[ "${_fix_trigger}" =~ \[bot\]$ ]]; then
+    _fix_is_bot=true
+  fi
+
+  _fix_human_rebase=false
+  if [ "${_fix_is_bot}" = "false" ]; then
+    if [[ "${_fix_instruction}" == *"rebase"* || "${_fix_instruction}" == *"merge conflict"* ]]; then
+      _fix_human_rebase=true
+    fi
+  fi
+
+  _fix_actions_rebase=false
+  if [ "${_fix_is_bot}" = "false" ]; then
+    _fix_actions_text="$(jq -r '[.actions[]? | ((.finding // "") + " " + (.description // "") + " " + (.reason // ""))] | join("\n")' "${RESULT_FILE}" 2>/dev/null || true)"
+    _fix_actions_text="$(printf '%s' "${_fix_actions_text}" | tr '[:upper:]' '[:lower:]')"
+    if [[ "${_fix_actions_text}" == *"rebase"* || "${_fix_actions_text}" == *"merge conflict"* ]]; then
+      _fix_actions_rebase=true
+    fi
+  fi
+
+  if [ "${_fix_human_rebase}" = "true" ] || [ "${_fix_actions_rebase}" = "true" ]; then
+    _fix_has_field="$(jq -r 'has("rebased_onto_target")' "${RESULT_FILE}" 2>/dev/null || echo false)"
+    if [ "${_fix_has_field}" != "true" ]; then
+      echo "FAIL: human /fs-fix rebase request requires rebased_onto_target in agent-result.json (true after a successful rebase or step-3 no-op, including rebase-only runs with no new commit; false if the rebase failed or was aborted). Omitting the field is treated as false by post-fix.sh and will replay local commits onto the stale remote PR tip, re-hitting conflicts already resolved in the sandbox. See agents/fix.md 'How to rebase' step 8 and issue #1387."
+      exit 1
+    fi
+  fi
 fi
 
 # ============================================================================
