@@ -2041,7 +2041,7 @@ run_label_test "risk-stale-label-removal" \
   "${RISK_HIGH_RESULT}" \
   "--remove-label risk/low"
 
-# --- Floor, provenance, history (risk-tier1.sh TIER1_SCORE / RISK_FLOOR) ---
+# --- Floor and provenance (risk-tier1.sh TIER1_SCORE / RISK_FLOOR) ---
 
 # Runs post-review.sh and greps the captured sticky risk comment body.
 run_risk_comment_test() {
@@ -2213,14 +2213,11 @@ run_label_test "risk-floor-does-not-lower" \
   "${RISK_ABOVE_FLOOR}" \
   "gh label create risk/elevated"
 
-# Degraded (tier-1-only fallback) is visible in the header and history row
+# Degraded (tier-1-only fallback) is visible in the header
 RISK_DEGRADED_RESULT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abc1234def","body":"LGTM","risk_assessment":{"score":2,"level":"moderate","rationale":"Risk sub-agent unavailable; tier-1 metadata only.","tier1_score":1.62,"risk_floor":1,"degraded":"tier1-only"}}'
 run_risk_comment_test "risk-degraded-header" \
   "${RISK_DEGRADED_RESULT}" \
   "· degraded: tier1-only"
-run_risk_comment_test "risk-history-row" \
-  "${RISK_DEGRADED_RESULT}" \
-  "| \`abc1234\` | $(date -u +%Y-%m-%d) | 2/5 moderate | 1.62 | tier1-only |"
 
 # A degraded score carries a risk/degraded marker label so consumers that
 # gate on risk can treat it as "no score"; a computed score does not.
@@ -2249,9 +2246,8 @@ run_risk_comment_test "risk-bad-provenance-no-degraded" \
   "· degraded:" \
   "absent"
 
-# A legacy result (no tier1_score/degraded) keeps the same header line —
-# no meta appended — but still gets a per-head-SHA history row, with the
-# tier-1 cell as "-" and the degraded cell empty.
+# A legacy result (no tier1_score/degraded) keeps the same header line,
+# with no meta appended.
 run_risk_comment_test "risk-legacy-result-header-line" \
   "${RISK_LOW_RESULT}" \
   "**Risk Assessment: low (1/5)**" \
@@ -2260,9 +2256,6 @@ run_risk_comment_test "risk-legacy-result-no-meta" \
   "${RISK_LOW_RESULT}" \
   "· tier 1:" \
   "absent"
-run_risk_comment_test "risk-legacy-history-row" \
-  "${RISK_LOW_RESULT}" \
-  "| \`abc123\` | $(date -u +%Y-%m-%d) | 1/5 low | - |  |"
 
 # ---------------------------------------------------------------------------
 # Outdated review-thread resolution (#1413)

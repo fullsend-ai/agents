@@ -1123,35 +1123,12 @@ if [[ "${HAS_RISK}" == "true" ]]; then
     [[ -n "${TIER1_SCORE}" ]] && RISK_META+=" · tier 1: ${TIER1_SCORE}"
     [[ -n "${RISK_DEGRADED}" ]] && RISK_META+=" · degraded: ${RISK_DEGRADED}"
 
-    # Per-head-SHA history, carried forward from the previous sticky
-    # comment so drift across re-reviews is visible on the PR (GitHub
-    # only — the comment fetch is a gh call). Rows are re-admitted only
-    # when they match the exact shape this script writes.
-    RISK_HISTORY=""
-    if [[ "${FULLSEND_FORGE}" == "github" ]]; then
-      RISK_HEAD=$(jq -r '.head_sha // empty' "${RESULT_FILE}")
-      [[ "${RISK_HEAD}" =~ ^[0-9a-f]{6,40}$ ]] || RISK_HEAD=""
-      ROW_RE='^\| `[0-9a-f]{6,7}` \| [0-9]{4}-[0-9]{2}-[0-9]{2} \| [1-5]/5 [a-z]+ \| [0-9.-]+ \| [a-z0-9-]* \|$'
-      PRIOR_ROWS=$(GH_TOKEN="${REVIEW_TOKEN}" gh api --paginate "repos/${REPO}/issues/${PR_NUMBER}/comments" \
-        --jq '[.[] | select(.body | contains("<!-- fullsend:risk-assessment -->"))] | last | .body // empty' 2>/dev/null \
-        | grep -E "${ROW_RE}" || true)
-      NEW_ROW=""
-      if [[ -n "${RISK_HEAD}" && "${RISK_SCORE}" =~ ^[1-5]$ ]]; then
-        NEW_ROW="| \`${RISK_HEAD:0:7}\` | $(date -u +%Y-%m-%d) | ${RISK_SCORE}/5 ${RISK_LEVEL} | ${TIER1_SCORE:--} | ${RISK_DEGRADED} |"
-      fi
-      ROWS=$(printf '%s\n%s\n' "${PRIOR_ROWS}" "${NEW_ROW}" | sed '/^$/d' | tail -n 20)
-      if [[ -n "${ROWS}" ]]; then
-        RISK_HISTORY=$'\n\n<details>\n<summary>History</summary>\n\n| head | date | score | tier 1 | note |\n|---|---|---|---|---|\n'"${ROWS}"$'\n\n</details>'
-      fi
-    fi
-
     RISK_COMMENT=$(jq -n \
       --arg score "${RISK_SCORE}" \
       --arg level "${RISK_LEVEL}" \
       --arg meta "${RISK_META}" \
       --arg rationale "${RISK_RATIONALE}" \
-      --arg history "${RISK_HISTORY}" \
-      -r '"<!-- fullsend:risk-assessment -->\n**Risk Assessment: \($level) (\($score)/5)**\($meta)\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>\($history)"')
+      -r '"<!-- fullsend:risk-assessment -->\n**Risk Assessment: \($level) (\($score)/5)**\($meta)\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>"')
 
     printf '%s' "${RISK_COMMENT}" | fullsend post-comment \
       --repo "${REPO}" \
