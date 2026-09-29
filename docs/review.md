@@ -143,7 +143,8 @@ budget its own tail.
 
 ### Where the time goes
 
-A review is six phases, and only one of them scales with the PR:
+A review is six phases — five when a clean run skips the challenger —
+and only one of them scales with the PR:
 
 | Phase | What happens | Typical |
 |---|---|---|
@@ -151,7 +152,7 @@ A review is six phases, and only one of them scales with the PR:
 | dispatch | prompts composed; risk assessment + dimension sub-agents in one message | 3 min |
 | dimensions | sub-agents review in parallel; `correctness` is the long pole | 4–13 min (grows with the diff) |
 | synthesis | merge, de-duplicate | ~1 min |
-| challenger | one sub-agent re-checks every finding | 2.5–6 min |
+| challenger | one sub-agent re-checks every finding; skipped when steps 6a–6c produce no findings (`skills/pr-review/SKILL.md` step 6d) | 2.5–6 min |
 | assembly | `agent-result.json`, schema check | ~1 min |
 
 A 51-line PR and a 5 700-line PR both spend 13–18 minutes on the fixed
