@@ -22,9 +22,11 @@ walks the merge's extra parents (historical target-branch commits this
 PR did not author). Those two facts are why a merge needs its own scan
 path, and why skipping any item below is a secret-scan bypass.
 
-Current implementation lives in `scripts/post-fix.src.sh` (bundled into
-`scripts/post-fix.sh`, `scripts/post-code.sh`, and
-`scripts/validate-code-output.sh`).
+Current implementation lives in `scripts/post-fix.src.sh`, bundled only
+into `scripts/post-fix.sh`. `scripts/post-code.src.sh` and
+`scripts/validate-code-output.src.sh` bundle the shared
+`gitleaks-install.lib.sh` and `precommit-gate.lib.sh` libraries but do
+not contain the per-merge `--cc`/`--pipe` scan described here.
 
 ## Checklist
 

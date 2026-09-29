@@ -284,9 +284,8 @@ records the outcome.
 When a review finding or this run's edits touch merge-commit secret
 scanning (gitleaks `--log-opts`/`--pipe` of a merge, `--cc`, parent
 trust, or skip-logic that uses merge parents or target ancestry), read
-[skills/fix-review/references/merge-commit-secret-scan.md](../skills/fix-review/references/merge-commit-secret-scan.md)
-and apply every item before implementing. Do not patch only the named
-finding.
+`skills/fix-review/references/merge-commit-secret-scan.md` and apply
+every item before implementing. Do not patch only the named finding.
 
 ## Rebase onto the target branch
 
