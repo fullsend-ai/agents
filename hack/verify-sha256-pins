@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Verify that URL #sha256= integrity fragments match actual content.
+#
+# Scans harness/*.yaml and .fullsend/config.yaml for URL+#sha256=HASH
+# patterns, fetches each URL, and compares the computed sha256 against
+# the pinned hash.  Field-agnostic: any YAML string value matching
+# the pattern is checked, so future fields are covered automatically.
+#
+# Container image digests (@sha256:) are ignored.
+#
+# Usage:
+#   ./hack/verify-sha256-pins
+#
+# Environment:
+#   REPO_ROOT      — override repo root (default: parent of script dir)
+#   VERIFY_FETCH   — override fetch command (default: curl -sfL);
+#                    receives the URL as $1, must write content to stdout
+set -euo pipefail
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+FETCH_CMD="${VERIFY_FETCH:-curl -sfL}"
+
+errors=0
+checked=0
+
+echo "Verifying sha256 pins..."
+echo "================================================"
+
+# Collect YAML files to scan.
+files=()
+shopt -s nullglob
+for f in "$REPO_ROOT"/harness/*.yaml; do
+  files+=("$f")
+done
+shopt -u nullglob
+[[ -f "$REPO_ROOT/.fullsend/config.yaml" ]] && files+=("$REPO_ROOT/.fullsend/config.yaml")
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "  No YAML files to scan"
+  echo ""
+  echo "OK: no sha256 pins to verify"
+  exit 0
+fi
+
+for file in "${files[@]}"; do
+  relpath="${file#"$REPO_ROOT/"}"
+
+  # Find lines containing URL #sha256= fragments (not @sha256: image digests).
+  # grep -n gives "LINENO:LINE"; we split on the first colon.
+  while IFS= read -r grepline; do
+    lineno="${grepline%%:*}"
+    line="${grepline#*:}"
+
+    # Extract every URL+#sha256=HEX token on the line.
+    # The URL ends at the first whitespace, quote, or end of string after
+    # the hex hash.  Use grep -oE to pull each match individually.
+    while IFS= read -r url_with_hash; do
+      url="${url_with_hash%%#sha256=*}"
+      expected="${url_with_hash##*#sha256=}"
+
+      # Skip placeholder/template values (e.g. <sha256sum>).
+      if [[ ! "$expected" =~ ^[0-9a-fA-F]+$ ]]; then
+        continue
+      fi
+
+      # Fetch the URL content to a temp file so we can detect fetch failures
+      # separately from hash computation.
+      local_tmp="$(mktemp)"
+      if ! $FETCH_CMD "$url" > "$local_tmp" 2>/dev/null; then
+        rm -f "$local_tmp"
+        echo "  ERROR: ${relpath}:${lineno}: failed to fetch ${url}"
+        errors=$((errors + 1))
+        continue
+      fi
+      actual="$(sha256sum "$local_tmp" | awk '{print $1}')"
+      rm -f "$local_tmp"
+
+      if [[ "$actual" != "$expected" ]]; then
+        echo "  MISMATCH: ${relpath}:${lineno}"
+        echo "    url:      ${url}"
+        echo "    expected: ${expected}"
+        echo "    actual:   ${actual}"
+        errors=$((errors + 1))
+      else
+        echo "  ${relpath}:${lineno}: OK"
+      fi
+      checked=$((checked + 1))
+    done < <(echo "$line" | grep -oE 'https?://[^[:space:]"'"'"']*#sha256=[0-9a-fA-F]+' || true)
+  done < <(grep -n '#sha256=' "$file" | grep -v '@sha256:' || true)
+done
+
+echo ""
+echo "================================================"
+if [[ $errors -gt 0 ]]; then
+  echo "FAILED: ${errors} error(s) found"
+  exit 1
+else
+  echo "OK: ${checked} sha256 pin(s) verified"
+fi
