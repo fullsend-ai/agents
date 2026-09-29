@@ -123,7 +123,7 @@ Read `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`. Discover test/lint commands fr
 echo "::notice::STEP 4: Plan fixes"
 ```
 
-Start from the whole-review theme, not individual findings. Plan a single coherent fix for related findings; individual fixes for standalone findings. For each, determine: (1) Is feedback valid? (2) What's the minimal fix? (3) Should I disagree?
+Start from the whole-review theme. One coherent fix for related findings; individual fixes otherwise. For each: valid? minimal fix? disagree? Merge-commit secret-scan: apply the [checklist](references/merge-commit-secret-scan.md) in full.
 
 **Strategy escalation:** If `FIX_ITERATION` > `STRATEGY_ESCALATION_THRESHOLD` (default: 3), read commit history (`git log --oneline "${BASE_BRANCH}..HEAD"` — use the local `${BASE_BRANCH}` ref, not `origin/${BASE_BRANCH}`; sandbox network policy may block git protocol access), try a fundamentally different approach, and note the change in structured output.
 
