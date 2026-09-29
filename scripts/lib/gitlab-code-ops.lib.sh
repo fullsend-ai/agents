@@ -23,6 +23,8 @@ GITLAB_CODE_OPS_SH_LOADED=1
 
 # shellcheck source=gitlab-host-validation.lib.sh
 source "${BASH_SOURCE[0]%/*}/gitlab-host-validation.lib.sh"
+# shellcheck source=forge-transient-retry.lib.sh
+source "${BASH_SOURCE[0]%/*}/forge-transient-retry.lib.sh"
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() { echo "::${1}::${2:-}"; }
@@ -149,14 +151,14 @@ forge_create_label() {
 forge_post_issue_comment() {
   local body="$1"
   _gitlab_code_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 forge_post_pr_comment() {
   local mr_iid="$1"
   local body="$2"
   _gitlab_code_api POST "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 # --- MR lifecycle ---
@@ -230,7 +232,7 @@ forge_create_pr() {
   local title="$3"
   local body="$4"
   local response
-  response=$(_gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
+  response=$(forge_retry_transient _gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
     --data-urlencode "source_branch=${head}" \
     --data-urlencode "target_branch=${base}" \
     --data-urlencode "title=${title}" \

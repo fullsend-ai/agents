@@ -393,7 +393,11 @@ ${detail_block}
 
 Retry with \`/fs-code\` if appropriate."
 
-  if ! forge_post_issue_comment "${body}"; then
+  if declare -F forge_retry_transient >/dev/null 2>&1; then
+    if ! forge_retry_transient forge_post_issue_comment "${body}"; then
+      gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
+    fi
+  elif ! forge_post_issue_comment "${body}"; then
     gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
   fi
 }
@@ -788,9 +792,15 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
 
   # This path exits before the PR body is assembled, so the note goes here.
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
-    forge_post_pr_comment "${EXISTING_PR_NUM}" \
-      "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
-      || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
+    if declare -F forge_retry_transient >/dev/null 2>&1; then
+      forge_retry_transient forge_post_pr_comment "${EXISTING_PR_NUM}" \
+        "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
+        || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
+    else
+      forge_post_pr_comment "${EXISTING_PR_NUM}" \
+        "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
+        || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
+    fi
   fi
 
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing

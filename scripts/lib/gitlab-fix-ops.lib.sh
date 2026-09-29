@@ -133,7 +133,7 @@ forge_post_pr_comment() {
   local mr_iid="$1"
   local body="$2"
   _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 # --- Workspace operations ---

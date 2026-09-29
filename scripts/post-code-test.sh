@@ -57,6 +57,22 @@ else
   echo "PASS: bundled-script-has-ensure-label"
 fi
 
+if ! grep -q 'forge_retry_transient gh pr create' "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"; then
+  echo "FAIL: create-pr-wrapped-in-transient-retry"
+  echo "  github-code-ops.lib.sh does not wrap gh pr create with forge_retry_transient"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: create-pr-wrapped-in-transient-retry"
+fi
+
+if ! grep -q 'code-agent-failed' "${SCRIPT_DIR}/lib/post-failure-report.lib.sh"; then
+  echo "FAIL: post-failure-has-last-resort-label"
+  echo "  post-failure-report.lib.sh missing code-agent-failed last-resort label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-last-resort-label"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -3026,6 +3042,7 @@ run_am_test() {
     # shellcheck disable=SC2317
     sleep() { :; }
 
+    # shellcheck disable=SC2030
     export REPO_ENCODED="test-group%2Ftest-project"
     forge_enable_auto_merge "1" "--squash"
   ) 2>&1
@@ -3210,7 +3227,7 @@ run_workflow_url_test() {
     # shellcheck disable=SC1091
     source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
     eval "${env_setup}"
-    # shellcheck disable=SC2031
+    # shellcheck disable=SC2030,SC2031
     export REPO_FULL_NAME="test-group/test-project"
     forge_get_workflow_run_url
   ) 2>&1
@@ -3244,6 +3261,175 @@ run_workflow_url_test "gitlab-workflow-url-gha-fallback" \
 run_workflow_url_test "gitlab-workflow-url-gha-precedence" \
   'export GITHUB_RUN_ID="111"; export GITHUB_REPOSITORY="org/repo"; export CI_SERVER_URL="https://gitlab.com"; export CI_JOB_ID="999"' \
   "https://github.com/org/repo/actions/runs/111"
+
+# =============================================================================
+# forge_create_pr transient retry (issue #1361)
+# =============================================================================
+
+run_gh_create_pr_retry_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local fail_times="$2"
+  local error_msg="$3"
+  local expect_attempts="$4"
+  local expect_rc="$5"
+
+  local tmp mock_bin call_log rc=0 output attempts
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+n=$(grep -c 'pr create' "${CALL_LOG}" 2>/dev/null || true)
+if printf '%s' " $*" | grep -q ' pr create '; then
+  if [ "${n}" -le "${FAIL_TIMES}" ]; then
+    echo "${ERROR_MSG}" >&2
+    exit 1
+  fi
+  echo "https://github.com/org/repo/pull/1"
+  exit 0
+fi
+exit 0
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITHUB_CODE_OPS_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+      sleep() { :; }
+      export REPO_FULL_NAME="org/repo"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export CALL_LOG="${call_log}"
+      export FAIL_TIMES="${fail_times}"
+      export ERROR_MSG="${error_msg}"
+      export PATH="${mock_bin}:${PATH}"
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  attempts=$(grep -c 'pr create' "${call_log}" || true)
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${attempts}" -ne "${expect_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_attempts} gh pr create attempts, got ${attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${expect_rc}" -eq 0 ]; then
+    if ! echo "${output}" | grep -q 'https://github.com/org/repo/pull/1'; then
+      echo "FAIL: ${test_name}"
+      echo "  expected PR URL on success"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_gh_create_pr_retry_test "create-pr-retries-transient-503" \
+  2 "HTTP 503: Internal Server Error" 3 0
+run_gh_create_pr_retry_test "create-pr-gives-up-after-3" \
+  99 "HTTP 503: Internal Server Error" 3 1
+run_gh_create_pr_retry_test "create-pr-no-retry-on-422" \
+  99 "HTTP 422: Validation Failed" 1 1
+run_gh_create_pr_retry_test "create-pr-succeeds-first-try" \
+  0 "HTTP 503: Internal Server Error" 1 0
+
+run_gl_create_pr_retry_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local fail_times="$2"
+  local error_msg="$3"
+  local expect_attempts="$4"
+  local expect_rc="$5"
+
+  local tmp call_log rc=0 output attempts
+  tmp=$(mktemp -d)
+  call_log="${tmp}/calls"
+  : > "${call_log}"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITLAB_CODE_OPS_SH_LOADED
+      unset GITLAB_HOST_VALIDATION_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+      sleep() { :; }
+      export CALL_LOG="${call_log}"
+      export FAIL_TIMES="${fail_times}"
+      export ERROR_MSG="${error_msg}"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export REPO_ENCODED="group%2Fproject"
+      _gitlab_code_api_with_status() {
+        printf '%s\n' "called" >> "${CALL_LOG}"
+        local n
+        n=$(wc -l < "${CALL_LOG}" | tr -d ' ')
+        if [ "${n}" -le "${FAIL_TIMES}" ]; then
+          echo "${ERROR_MSG}" >&2
+          return 1
+        fi
+        echo '{"web_url":"https://gitlab.com/group/project/-/merge_requests/1"}'
+        return 0
+      }
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  attempts=$(wc -l < "${call_log}" | tr -d ' ')
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${attempts}" -ne "${expect_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_attempts} GitLab create attempts, got ${attempts}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+run_gl_create_pr_retry_test "gitlab-create-pr-retries-transient-503" \
+  2 "GitLab API error (HTTP 503): no available server" 3 0
+run_gl_create_pr_retry_test "gitlab-create-pr-gives-up-after-3" \
+  99 "GitLab API error (HTTP 503): no available server" 3 1
+run_gl_create_pr_retry_test "gitlab-create-pr-no-retry-on-400" \
+  99 "GitLab API error (HTTP 400): invalid source branch" 1 1
 
 # --- Summary ---
 
