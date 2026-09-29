@@ -39,12 +39,15 @@ wait/poll loop, or inter-component contract in the diff:
   succeeded?
 - When the diff introduces or modifies a wait/poll loop over
   child-process, subprocess, or sub-agent status, enumerate every
-  status the loop can observe (running, errored, shutdown/killed,
-  not-found, timed-out, completed-with-result, completed-empty) and
-  confirm each has a defined handling path. Do not stop at the
-  happy-path / nonempty-result case. Treating completed-empty or
-  errored as "still running" is a logic error: the child never closes
-  and never receives its failure fallback.
+  status the loop can observe — both non-terminal (e.g., running,
+  which should keep polling) and terminal (e.g., errored,
+  shutdown/killed, not-found, timed-out, completed-with-result,
+  completed-empty) — and confirm each has a defined handling path. Do
+  not stop at the happy-path / nonempty-result case. Treating a
+  terminal status as "still running" is a logic error: the wait never
+  terminates. Where the loop's target has an associated close or
+  failure-fallback mechanism, additionally verify that errored and
+  completed-empty statuses trigger it.
 
 **Consumer completeness:** If the diff adds new values to an enum,
 dispatch table, JSON schema enum, or case/switch structure, identify all
