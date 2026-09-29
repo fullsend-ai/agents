@@ -26,7 +26,7 @@ assertion loosening or coverage reduction that coincides with production
 changes — this is a security-adjacent concern (split-payload pattern).
 
 **Runtime mechanism checklist:** For any guard, flag, dispatch mechanism,
-or inter-component contract in the diff:
+wait/poll loop, or inter-component contract in the diff:
 
 - Trace the full path from producer to consumer and verify the mechanism
   will function at runtime (e.g., is a "flag" actually an env var that
@@ -37,6 +37,14 @@ or inter-component contract in the diff:
 - Check failure paths: if the mechanism's component fails or is
   unavailable, does the caller handle it or silently proceed as if it
   succeeded?
+- When the diff introduces or modifies a wait/poll loop over
+  child-process, subprocess, or sub-agent status, enumerate every
+  status the loop can observe (running, errored, shutdown/killed,
+  not-found, timed-out, completed-with-result, completed-empty) and
+  confirm each has a defined handling path. Do not stop at the
+  happy-path / nonempty-result case. Treating completed-empty or
+  errored as "still running" is a logic error: the child never closes
+  and never receives its failure fallback.
 
 **Consumer completeness:** If the diff adds new values to an enum,
 dispatch table, JSON schema enum, or case/switch structure, identify all
