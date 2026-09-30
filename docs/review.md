@@ -107,7 +107,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `REVIEW_RISK_ASSESSMENT_ENABLED` | Enables the risk assessment (GitHub only). When `true`, the orchestrator dispatches a risk-assessment sub-agent alongside the review dimensions. The sub-agent computes a composite 1–5 risk score from metadata signals, git history, and linked issue context. The post-script applies a `risk/*` label and posts a sticky risk comment. Set in `forge.github.env` in the harness — not in the top-level `env:` block, since the risk assessment scripts depend on the GitHub API and produce fabricated scores on other forges. | `true` (GitHub) | `"true"`, `"false"` |
 | `REVIEW_GIT_FETCH_DEPTH` | Controls clone deepening for git history analysis (risk assessment Tier 2). When set to `"0"`, the pre-script unshallows the target repo clone so the risk-assessment sub-agent can access full commit history. When unset and `REVIEW_RISK_ASSESSMENT_ENABLED` is `true`, defaults to `"0"` automatically — the Tier 2 sub-agent requires full git history. Set explicitly to any other value (e.g., `"1"`) to disable deepening even with risk assessment enabled. Set in `env.runner` in harness YAML (consumed by the pre-script on the runner). | _(auto: `"0"` when risk assessment enabled, no deepening otherwise)_ | `"0"` to fully unshallow |
 | `TIMEOUT_SECONDS` | Mirror of the harness `timeout_minutes`, in seconds, read by the `pr-review` skill to skip the challenger pass and write a result before the deadline (see [Time budget](#time-budget)). Set in `env.sandbox`; change it together with `timeout_minutes`. | `2700` | Seconds, equal to `timeout_minutes × 60` |
-| `REVIEW_CORRECTNESS_EXECUTION` | Whether the correctness sub-agent may invoke scoped Bash to run `--help`/`--version`/`--dry-run` and targeted unit tests. See [Correctness execution](#correctness-execution). Set in `env.sandbox` in [`harness/review.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/review.yaml). | `off` | `off`, `shadow`, `on` |
+| `REVIEW_CORRECTNESS_EXECUTION` | Whether the correctness sub-agent may invoke its scoped `--help`/`--version` wrapper script. See [Correctness execution](#correctness-execution). Set in `env.sandbox` in [`harness/review.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/review.yaml). | `off` | `off`, `shadow`, `on` |
 | `ANTHROPIC_DEFAULT_SONNET_MODEL` | Fleet-wide base pin for the `sonnet` alias on the Claude Code runtime, exported by [`env/gcp-vertex.env`](../env/gcp-vertex.env) (mounted by every harness). Claude Code resolves the alias itself — for the main model, the Agent tool's `model:` argument and sub-agent frontmatter — and a pinned alias is used as written with no startup fallback. Override it when your Vertex project does not serve the pinned id. With `opus` unpinned, a run that reaches the CLI with no `--model` defaults to this id; every harness here sets `model:`. | `claude-sonnet-4-6` | A Claude model id your Vertex project serves, set via `env.sandbox` in a `base:` overlay |
 
 Override any variable by extending the harness file via a `base` reference and setting `env.runner` / `env.sandbox` in your custom harness YAML. `base` composition merges `env.runner`/`env.sandbox` per-key — child values override, everything else inherits from the base (ADR 0045, ADR 0055). Per ADR 0080 and ADR 0081, this harness-level override is the correct path; the CI workflow `env:` block is reserved for infrastructure plumbing, not agent behavior knobs like these.
@@ -119,22 +119,29 @@ the `actionable` flag, respecting the user's configured threshold throughout.
 
 ### Correctness execution
 
-The correctness sub-agent has Bash, matching the risk-assessment sub-agent's
-narrow grant. The review harness still sets `readonly_repo: true` and reuses
-the existing OpenShell profiles (`profiles/fullsend-github-ro.yaml`,
-`profiles/fullsend-gitlab-ro.yaml`). `$REVIEW_CORRECTNESS_EXECUTION` controls
-whether that tool is used:
+The correctness sub-agent has Bash, but its prompt
+(`skills/pr-review/sub-agents/correctness.md`, "Scoped execution")
+restricts it to a single fixed wrapper script,
+[`skills/pr-review/scripts/correctness-cli-check.sh`](https://github.com/fullsend-ai/agents/blob/main/skills/pr-review/scripts/correctness-cli-check.sh),
+the same pattern the risk-assessment sub-agent uses for `risk-tier1.sh`.
+The review harness still sets `readonly_repo: true` and reuses the
+existing OpenShell profiles (`profiles/fullsend-github-ro.yaml`,
+`profiles/fullsend-gitlab-ro.yaml`). `$REVIEW_CORRECTNESS_EXECUTION`
+controls whether that script is invoked:
 
 | Value | Effect |
 |-------|--------|
 | `off` | Static review only. The sub-agent does not invoke Bash. Default. |
-| `shadow` | Run allowed commands. Execution-derived findings are rewritten to `info` / non-actionable and do not change the review verdict. Use this to pilot the grant. |
-| `on` | Run allowed commands. Execution-derived findings participate in the verdict at their real severity. |
+| `shadow` | Run the allowed invocation. Execution-derived findings (`execution_derived: true`) are rewritten to `low` severity and non-actionable and do not change the review verdict, but stay in the structured findings array for evaluating the pilot. |
+| `on` | Run the allowed invocation. Execution-derived findings participate in the verdict at their real severity. |
 
-Allowed commands are (1) `--help` / `--version` / `--dry-run` on CLI tools the
-diff newly invokes, and (2) the repo's declared unit-test command targeted at
-changed packages or files. Arbitrary shell is not allowed. Unset and any other
-value are treated as `off`.
+The only allowed invocation is the wrapper script, given a bare CLI
+binary name from the diff. The script itself validates the name as a
+plain `PATH` basename — rejecting paths, flags, and shell
+metacharacters — and runs only `--help` (falling back to `--version`)
+under its own timeout; it never runs tests, builds, or arbitrary shell,
+and never touches PR-head content. Unset and any value other than
+`shadow`/`on` are treated as `off`.
 
 To pilot on a repo, set `REVIEW_CORRECTNESS_EXECUTION: "shadow"` in a `base:`
 overlay `env.sandbox` block. After the shadow window, set `"on"` if precision
@@ -151,7 +158,7 @@ fails closed when `CI_SERVER_HOST` is not set.
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata.
-2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. When `$REVIEW_CORRECTNESS_EXECUTION` is `shadow` or `on`, the correctness sub-agent may run `--help`/`--version`/`--dry-run` and targeted unit tests; see [Correctness execution](#correctness-execution). The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
+2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. When `$REVIEW_CORRECTNESS_EXECUTION` is `shadow` or `on`, the correctness sub-agent may invoke its scoped `--help`/`--version` wrapper script; see [Correctness execution](#correctness-execution). The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)).
 4. **Post-script** posts the review on the PR. On GitHub, it also resolves still-open review threads whose only comments are outdated inline comments authored by the review agent, so stale comments do not remain in the PR's unresolved-review state.
 

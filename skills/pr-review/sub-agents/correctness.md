@@ -109,11 +109,13 @@ Never present unverified file contents as fact in a finding.
 
 ### Scoped execution
 
-Bash is restricted to the two invocation classes below, plus one
-mode-read call if needed. The sandbox filesystem is read-only on the
-checkout (`readonly_repo`); `/tmp` is writable. Network access is limited
-to the review harness OpenShell profile (GitHub: `gh`/`node`; GitLab:
-`curl`/`node`).
+Bash is restricted to a single fixed wrapper script
+(`"${CLAUDE_CONFIG_DIR}/skills/pr-review/scripts/correctness-cli-check.sh"`),
+plus one mode-read call if needed. Never invoke a CLI, test runner, or
+any other command directly — only through that script. There is no
+allowance to run unit tests, build commands, or anything else that
+touches PR-head content; PR-head files (`/sandbox/workspace/pr-head/`)
+are for Read only.
 
 Read the execution mode from the context package section `### Correctness
 execution mode`. If that section is missing, print the env var with one
@@ -123,41 +125,43 @@ or `on` as `off`.
 
 - **`off`:** Do not invoke Bash except the mode-read printf. Review
   statically with Read, Grep, and Glob.
-- **`shadow` or `on`:** Run the allowed invocations below. Every finding
-  that depends on command output MUST start its `description` with
-  `Execution: `. Findings from static analysis MUST NOT use that prefix.
-  The orchestrator decides whether those findings affect the verdict;
-  emit the real severity and do not downgrade it yourself.
+- **`shadow` or `on`:** Run the allowed invocation below. Every finding
+  that depends on command output MUST set `execution_derived: true` (see
+  the `pr-review` skill's finding structure — this is a structured
+  field, not a text prefix). Findings from static analysis MUST NOT set
+  that field. The orchestrator decides whether those findings affect the
+  verdict; emit the real severity and do not downgrade it yourself.
 
-**Allowed invocations.** Each command MUST run under `timeout` (30s for
-help/version/dry-run, 60s for tests). Stop after 5 invocations or 60s
-total wall time, whichever comes first.
+**Allowed invocation: CLI help/version.** When the diff adds or changes
+an invocation of an external CLI (`gh`, `curl`, `jq`, `docker`, or any
+other executable invoked in the diff) and the code relies on a specific
+flag for safety or correctness, run:
 
-1. **CLI help, version, and dry-run.** When the diff adds or changes an
-   invocation of an external CLI (`gh`, `curl`, `jq`, `docker`, or any
-   other executable invoked in the diff) and the code relies on a
-   specific flag for safety or correctness: run `<tool> --help`. Use
-   `--version` or `--dry-run` only when `--help` does not document the
-   flag the code depends on. Identify the behavioral assumption the code
-   makes about the flag combination. Flag cases where the tool's
-   documented behavior differs from that assumption — fallback
-   behaviors, silent degradation, and ignored flags. Prioritize flags
-   that control destructive or irreversible operations.
-2. **Targeted tests.** When the diff adds or modifies tests that exercise
-   CLI or API behavior, timestamp arithmetic, or parsers of external
-   output: run the repo's declared unit-test command targeted at the
-   changed packages or files (a Makefile test target, a `package.json`
-   script, `pytest <path>`, or `go test ./changed/pkg`). Do not run the
-   full suite, e2e tests, behaviour tests, or integration tests. If no
-   declared test command is identifiable from `Makefile`, `package.json`,
-   `pyproject.toml`, or `go.mod`, skip this class.
+```
+bash "${CLAUDE_CONFIG_DIR}/skills/pr-review/scripts/correctness-cli-check.sh" <binary>
+```
 
-**Environment failure:** If a command is missing from `PATH`, blocked by
-the sandbox, times out, or fails because the tree is read-only, skip it.
-Do not emit a finding about the sandbox, the missing toolchain, or the
-read-only checkout.
+`<binary>` must be the bare command name exactly as it appears in the
+diff — no path separators, no flags, no shell metacharacters (e.g. `gh`,
+never `./local-script`, `/tmp/x`, or `gh pr merge`). The script resolves
+`<binary>` on `PATH` itself, refuses anything that is not a plain PATH
+basename, and runs `--help` (falling back to `--version` only when
+`--help` fails) under its own 30-second timeout. It never accepts
+arbitrary flags and never runs `--dry-run` or any other invocation.
+Stop after 3 invocations of the script.
 
-**Scope constraint:** Allowed invocations count toward the orchestrator's
-tool-call budget. Under a `trivial` constraint, skip class 2 and run at
-most one class-1 help command. Under a `small` constraint, run at most
-two invocations total.
+Identify the behavioral assumption the code makes about the flag
+combination. Flag cases where the tool's documented behavior differs
+from that assumption — fallback behaviors, silent degradation, and
+ignored flags. Prioritize flags that control destructive or irreversible
+operations.
+
+**Environment failure:** If the script prints `ENVIRONMENT_FAILURE:` —
+the binary is missing from `PATH`, isn't a plain PATH basename, times
+out, or produced no output — skip it. Do not emit a finding about the
+sandbox, the missing toolchain, or the script's refusal.
+
+**Scope constraint:** Invocations of the wrapper script count toward the
+orchestrator's tool-call budget. Under a `trivial` constraint, skip
+execution entirely. Under a `small` constraint, run at most one
+invocation.

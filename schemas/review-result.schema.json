@@ -116,6 +116,10 @@
         "actionable": {
           "type": "boolean",
           "description": "When true with a non-empty remediation, routes the verdict to request-changes so the fix agent can address the finding automatically."
+        },
+        "execution_derived": {
+          "type": "boolean",
+          "description": "True when this finding depends on sandboxed command output (the correctness sub-agent's scoped execution), rather than static analysis. See agents/review.md 'Correctness execution findings'."
         }
       },
       "additionalProperties": false

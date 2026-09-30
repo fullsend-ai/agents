@@ -51,9 +51,9 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   fails.
 - `REVIEW_CORRECTNESS_EXECUTION` — whether the correctness sub-agent
   may invoke scoped Bash. Values: `off` (default; static review only),
-  `shadow` (run allowed commands; execution findings are logged as
-  info and do not affect the verdict), `on` (execution findings
-  participate in the verdict). Set in `env.sandbox` in
+  `shadow` (run the allowed invocation; execution findings are logged
+  as low severity and do not affect the verdict), `on` (execution
+  findings participate in the verdict). Set in `env.sandbox` in
   `harness/review.yaml`. Treat unset or any other value as `off`.
 
 ## Severity filtering
@@ -114,6 +114,29 @@ This agent has three skills. Select based on invocation context:
 
 When invoked via `--print` for pre-push review, use `code-review`.
 When invoked for a PR/MR, use `pr-review`.
+
+## Correctness execution dispatch
+
+When dispatching the `correctness` sub-agent, include a context-package
+section `### Correctness execution mode` whose value is
+`$REVIEW_CORRECTNESS_EXECUTION` (`off` if unset). Omit that section for
+other sub-agents.
+
+Findings with `execution_derived: true` are execution-derived (set by
+the correctness sub-agent's "Scoped execution" procedure — a structured
+field, not a text prefix, so a mislabeled or injected description cannot
+spoof or suppress the tag). After merging sub-agent findings:
+
+- **`on`:** Leave them unchanged. They participate in the challenger
+  pass and the verdict.
+- **`shadow` or `off`:** Set each to `severity: low` (not `info` — an
+  `info` finding is stripped by both the default
+  `$REVIEW_FINDING_SEVERITY_THRESHOLD` and the post-script's independent
+  filter, which would make shadow-mode findings invisible) and
+  `actionable: false`. Withhold them from the challenger pass and
+  re-append after it (skip the challenger if nothing else remains). They
+  cannot change the verdict. Describe them as observations in the review
+  body, kept separate from other findings.
 
 ## PR metadata accuracy
 
@@ -239,25 +262,6 @@ and analysis notes at any severity level do not block.
 The `code-review` skill defines the finding structure. The `pr-review`
 skill defines the review comment format and procedure.
 
-### Correctness execution findings
-
-When dispatching the `correctness` sub-agent, include a context-package
-section `### Correctness execution mode` whose value is
-`$REVIEW_CORRECTNESS_EXECUTION` (`off` if unset). Omit that section for
-other sub-agents.
-
-Findings whose `description` starts with `Execution: ` are
-execution-derived. After merging sub-agent findings:
-
-- **`on`:** Leave them unchanged. They participate in the challenger
-  pass and the verdict.
-- **`shadow` or `off`:** Set each to `severity: info` and
-  `actionable: false`; rewrite the prefix to `Execution (original
-  severity: <sev>): `. Withhold them from the challenger and re-append
-  after it (skip the challenger if nothing else remains). They cannot
-  change the verdict. Describe them as observations in the review body.
-  Keep `Execution: ` prefixed findings separate from unprefixed ones.
-
 ### Pipeline mode output
 
 When `$FULLSEND_OUTPUT_DIR` is set, write the result to
@@ -303,6 +307,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `description` | string  | yes      | Finding description (min 1 char)              |
 | `remediation` | string  | no       | Suggested fix                                 |
 | `actionable`  | boolean | no       | When true with a non-empty `remediation`, routes the verdict to `request-changes` so the fix agent can address the finding automatically (follow-up issue creation is temporarily disabled; see #1137) |
+| `execution_derived` | boolean | no | True when the finding depends on sandboxed command output (correctness sub-agent scoped execution) rather than static analysis. See "Correctness execution dispatch" above |
 
 Schema validation failures trigger a harness retry iteration. The jq
 examples below show the exact JSON shape for each action.
