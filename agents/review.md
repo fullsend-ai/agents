@@ -49,6 +49,12 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   is a re-review. Contains the prior run's findings with assessed
   severities. Absent on first review or when provenance validation
   fails.
+- `REVIEW_CORRECTNESS_EXECUTION` — whether the correctness sub-agent
+  may invoke scoped Bash. Values: `off` (default; static review only),
+  `shadow` (run allowed commands; execution findings are logged as
+  info and do not affect the verdict), `on` (execution findings
+  participate in the verdict). Set in `env.sandbox` in
+  `harness/review.yaml`. Treat unset or any other value as `off`.
 
 ## Severity filtering
 
@@ -232,6 +238,25 @@ and analysis notes at any severity level do not block.
 
 The `code-review` skill defines the finding structure. The `pr-review`
 skill defines the review comment format and procedure.
+
+### Correctness execution findings
+
+When dispatching the `correctness` sub-agent, include a context-package
+section `### Correctness execution mode` whose value is
+`$REVIEW_CORRECTNESS_EXECUTION` (`off` if unset). Omit that section for
+other sub-agents.
+
+Findings whose `description` starts with `Execution: ` are
+execution-derived. After merging sub-agent findings:
+
+- **`on`:** Leave them unchanged. They participate in the challenger
+  pass and the verdict.
+- **`shadow` or `off`:** Set each to `severity: info` and
+  `actionable: false`; rewrite the prefix to `Execution (original
+  severity: <sev>): `. Withhold them from the challenger and re-append
+  after it (skip the challenger if nothing else remains). They cannot
+  change the verdict. Describe them as observations in the review body.
+  Keep `Execution: ` prefixed findings separate from unprefixed ones.
 
 ### Pipeline mode output
 

@@ -73,6 +73,13 @@ env:
     # Mirror of timeout_minutes (the code/fix convention); the pr-review
     # skill budgets its tail from it. Keep the two in sync.
     TIMEOUT_SECONDS: "2700"
+    # Correctness sub-agent scoped Bash. Default off preserves static
+    # review. Set to "shadow" to run --help / targeted tests and log
+    # Execution: findings as info without changing the verdict; "on"
+    # lets those findings affect the action. Override via base:
+    # composition. Sandbox-only: the orchestrator and correctness
+    # sub-agent read it; the post-script does not.
+    REVIEW_CORRECTNESS_EXECUTION: "off"
 
 # Per iteration. The pipeline has a ~13–18 minute floor independent of
 # PR size; 20 sat on it. Mirrored as TIMEOUT_SECONDS in env.sandbox.

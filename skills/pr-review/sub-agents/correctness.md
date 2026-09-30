@@ -4,7 +4,7 @@ description: >-
   Evaluates logic correctness, edge cases, nil handling, API contracts,
   test adequacy/integrity.
 model: opus
-tools: Read, Grep, Glob
+tools: Read, Bash, Grep, Glob
 permissionMode: dontAsk
 background: true
 ---
@@ -106,3 +106,58 @@ based on common patterns — read it.
 If the file cannot be read (e.g., it is in another repository or
 inaccessible), state that you were unable to verify the contents.
 Never present unverified file contents as fact in a finding.
+
+### Scoped execution
+
+Bash is restricted to the two invocation classes below, plus one
+mode-read call if needed. The sandbox filesystem is read-only on the
+checkout (`readonly_repo`); `/tmp` is writable. Network access is limited
+to the review harness OpenShell profile (GitHub: `gh`/`node`; GitLab:
+`curl`/`node`).
+
+Read the execution mode from the context package section `### Correctness
+execution mode`. If that section is missing, print the env var with one
+Bash call: `printf '%s\n' "${REVIEW_CORRECTNESS_EXECUTION:-off}"`. Treat
+a missing section, an unset variable, and any value other than `shadow`
+or `on` as `off`.
+
+- **`off`:** Do not invoke Bash except the mode-read printf. Review
+  statically with Read, Grep, and Glob.
+- **`shadow` or `on`:** Run the allowed invocations below. Every finding
+  that depends on command output MUST start its `description` with
+  `Execution: `. Findings from static analysis MUST NOT use that prefix.
+  The orchestrator decides whether those findings affect the verdict;
+  emit the real severity and do not downgrade it yourself.
+
+**Allowed invocations.** Each command MUST run under `timeout` (30s for
+help/version/dry-run, 60s for tests). Stop after 5 invocations or 60s
+total wall time, whichever comes first.
+
+1. **CLI help, version, and dry-run.** When the diff adds or changes an
+   invocation of an external CLI (`gh`, `curl`, `jq`, `docker`, or any
+   other executable invoked in the diff) and the code relies on a
+   specific flag for safety or correctness: run `<tool> --help`. Use
+   `--version` or `--dry-run` only when `--help` does not document the
+   flag the code depends on. Identify the behavioral assumption the code
+   makes about the flag combination. Flag cases where the tool's
+   documented behavior differs from that assumption — fallback
+   behaviors, silent degradation, and ignored flags. Prioritize flags
+   that control destructive or irreversible operations.
+2. **Targeted tests.** When the diff adds or modifies tests that exercise
+   CLI or API behavior, timestamp arithmetic, or parsers of external
+   output: run the repo's declared unit-test command targeted at the
+   changed packages or files (a Makefile test target, a `package.json`
+   script, `pytest <path>`, or `go test ./changed/pkg`). Do not run the
+   full suite, e2e tests, behaviour tests, or integration tests. If no
+   declared test command is identifiable from `Makefile`, `package.json`,
+   `pyproject.toml`, or `go.mod`, skip this class.
+
+**Environment failure:** If a command is missing from `PATH`, blocked by
+the sandbox, times out, or fails because the tree is read-only, skip it.
+Do not emit a finding about the sandbox, the missing toolchain, or the
+read-only checkout.
+
+**Scope constraint:** Allowed invocations count toward the orchestrator's
+tool-call budget. Under a `trivial` constraint, skip class 2 and run at
+most one class-1 help command. Under a `small` constraint, run at most
+two invocations total.
