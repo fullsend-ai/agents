@@ -941,6 +941,7 @@ When merging
 - Combine descriptions if they add complementary detail
 - Keep the more specific remediation
 - Preserve `actionable: true` if either finding had it
+- Attach merged_from on every 6b merge (confidence.md).
 
 #### 6c. Preserve distinct-category findings
 
@@ -1011,7 +1012,7 @@ budget section), skip the challenger: keep the merged finding set from
 
    **Part 3 — Context package:** the merged finding set from steps
    6a–6c (as a JSON array), plus the full PR diff and changed files
-   list. Format as:
+   list. Strip/restore merged_from via confidence.md. Format as:
 
    ```markdown
    ## Context
@@ -1063,9 +1064,7 @@ budget section), skip the challenger: keep the merged finding set from
      part of the standard finding schema.
    - If `adjudicated_findings` is empty but the set sent to the
      challenger was non-empty, treat this as a challenger failure (fall back
-     per the immediate next step below). A legitimate challenger pass
-     that removes all findings is unlikely — an empty result more likely
-     indicates a parsing error or context truncation.
+     per the immediate next step below).
    - Otherwise, replace the challenged subset with the challenger's
      `adjudicated_findings` (then re-append anything withheld).
    - Log any `removed_findings` for transparency but do not include
@@ -1290,6 +1289,10 @@ blocking language removes the only automated signal that the findings
 require action, because `comment` (COMMENTED review state) does not
 block the PR. When the summary language and the verdict action
 contradict each other, escalate the verdict to match the language.
+
+#### 6g. Confidence
+
+Follow confidence.md.
 
 ### 7. Produce the review result
 
