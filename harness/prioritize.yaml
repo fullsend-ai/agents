@@ -43,6 +43,10 @@ validation_loop:
 
 timeout_minutes: 10
 
+# One-shot analysis with nothing to act on mid-run, and not taught the runner-update envelope.
+steer:
+  enabled: false
+
 forge:
   github:
     providers:
