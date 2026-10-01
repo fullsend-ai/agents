@@ -47,9 +47,13 @@ jq -r '.changes[].new_path' /sandbox/workspace/mr-changes.json
 
 ```bash
 # Per-file diffs from the changes payload, written to disk for the sub-agents
-# to Read; generated files dropped. An empty file is a tool failure.
-jq -r '.changes[] | select(.new_path | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
-  | "### File: \(.new_path)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
+# to Read. Nothing is dropped here: pr-review step 2c filters unreviewable
+# content (with the migrations exemption and the per-file disclosure).
+# An empty file is a tool failure.
+# A path holding a control character, `"` or `\` is written JSON-quoted (the
+# only paths @json alters), so a newline in a filename cannot forge a
+# `### File:` line; the step 2c filter dequotes it.
+jq -r '.changes[] | "### File: \(.new_path | select((@json | .[1:-1]) == .) // @json)\n\(.diff)"' /sandbox/workspace/mr-changes.json > /sandbox/workspace/pr-diff.txt
 test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```
 

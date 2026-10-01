@@ -40,9 +40,12 @@ test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure
 
 ```bash
 # From the files API — the checkout is the base branch, so never `git diff` it.
-# Generated files are dropped here.
-jq -r '.[] | select(.filename | test("(^|/)(vendor|node_modules)/|(package-lock\\.json|go\\.sum|yarn\\.lock|\\.pb\\.go)$") | not)
-  | "### File: \(.filename)\n\(.patch // "(no patch from the API: binary or oversized)")"' \
+# Nothing is dropped here: pr-review step 2c filters unreviewable content
+# (with the migrations exemption and the per-file disclosure) for both paths.
+# A path holding a control character, `"` or `\` is written JSON-quoted (the
+# only paths @json alters), so a newline in a filename cannot forge a
+# `### File:` line; the step 2c filter dequotes it.
+jq -r '.[] | "### File: \(.filename | select((@json | .[1:-1]) == .) // @json)\n\(.patch // "(no patch from the API: binary or oversized)")"' \
   /sandbox/workspace/pr-files.json > /sandbox/workspace/pr-diff.txt
 test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure result (reason tool-failure)"
 ```
