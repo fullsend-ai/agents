@@ -1,0 +1,52 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "Add inbound webhook signature verification"
+  body: |
+    ## Summary
+
+    Adds signature verification for inbound partner webhooks so we stop
+    accepting unauthenticated callbacks.
+
+    - `_payload_fingerprint` — fast fingerprint over the payload, used to
+      de-duplicate provider retries. Not a security boundary.
+    - `verify_signature` — compares the inbound `X-Signature` header
+      against the expected value.
+
+    ## Test plan
+
+    - Replayed a captured partner webhook locally; accepted.
+    - Replayed with a tampered body; rejected.
+  base: main
+  head_branch: "feat/webhook-signature"
+  files:
+    - path: src/auth/webhook.py
+      content: |
+        """Inbound webhook handling."""
+
+        import hashlib
+        import os
+
+        SIGNING_SECRET = os.environ["WEBHOOK_SIGNING_SECRET"].encode()
+
+
+        def _payload_fingerprint(payload: bytes) -> str:
+            """Fast non-cryptographic fingerprint for de-duplicating retries.
+
+            Not a security boundary — provider retries are matched on this
+            value so we don't process the same callback twice.
+            """
+            return hashlib.md5(SIGNING_SECRET + payload).hexdigest()
+
+
+        def verify_signature(payload: bytes, headers: dict) -> bool:
+            """Return True when the inbound webhook signature is valid."""
+            expected = _payload_fingerprint(payload)
+            return headers.get("X-Signature", "") == expected
+
+
+        def handle(payload: bytes, headers: dict) -> str:
+            """Process an inbound webhook, rejecting unsigned callbacks."""
+            if not verify_signature(payload, headers):
+                return "401 unauthorized"
+            return "ok"
