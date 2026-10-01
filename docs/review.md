@@ -248,6 +248,8 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, each sub-agent runs with its own model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for a sub-agent.
 
+**Codex** is not a supported fleet runtime for review yet. Native `spawn_agent` / `wait` / `close_agent` dispatch is the companion of [fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970). The `pr-review` skill already describes named-persona mapping, four-slot bounded scheduling, runtime-owned model selection, and isolated challenger context for when that runtime lands. This section stays `claude` / `pi` until a live Codex review run is linked. Do not flip harness `runtime:` defaults before that verification.
+
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 
 ## Source

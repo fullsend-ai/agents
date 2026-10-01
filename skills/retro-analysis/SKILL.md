@@ -56,6 +56,8 @@ could not be discovered.
 
 ### Dispatch subagents for each investigation thread
 
+Unnamed generic children only (no persona roster). Follow the runtime note.
+
 - **Workflow tracer:** "Find all agent workflow runs related to issue/PR #N. List each run with its stage, status, conclusion, and timestamp."
 - **Trace reader:** "Download and read the reasoning trace for run <RUN_ID>. Summarize what decisions the agent made and why."
 - **Comment analyzer:** "Read all comments on PR #N. Categorize them: agent review comments, human review comments, CI results, human interventions."

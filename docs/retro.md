@@ -104,6 +104,8 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
 
+**Codex** is not a supported fleet runtime for retro yet. Unnamed investigation children via the runtime's generic/default `spawn_agent` role are the companion of [fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970). Retro has no named persona roster; the root still synthesizes results. This section stays `claude` / `pi` until a live Codex retro run is linked. Do not flip harness `runtime:` defaults before that verification.
+
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 
 ## Source
