@@ -71,6 +71,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 |----------|---------|--------|
 | `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
 | `FIX_CONFLICT_UPDATE_STRATEGY` | `merge` | How the fix agent updates a PR/MR when the forge reports a **real** merge conflict: `merge` (default; creates a merge commit and preserves history) or `rebase` (replays the PR onto the target; the post-script force-pushes with `--force-with-lease`). Blocked/behind/unknown mergeability is never treated as a conflict. Override via `base:` composition. |
+| `FULLSEND_RUN_HEAD_SHA` | (set by the runner) | The PR/MR head SHA the run was dispatched for. The agent compares it against the current head in its end-of-run re-check. Set by the runner — not declared in the harness. |
+| `FULLSEND_RUN_STARTED_AT` | (set by the runner) | RFC 3339 UTC instant the agent iteration started, used by the end-of-run re-check to select comments newer than the run. Set by the runner — not declared in the harness. |
 
 ### Skill: `fix-review`
 
@@ -87,9 +89,11 @@ The fix agent uses the `fix-history-rewrite` skill for human-requested rebase, s
 The fix agent follows a similar pipeline to the [code agent](code.md), with an additional validation step:
 
 1. **Pre-script** validates inputs, checks the iteration cap (preventing infinite fix loops), and — when the forge reports a real merge conflict — fetches the latest target branch into the sandbox checkout.
-2. **Sandbox** — the agent inspects forge mergeability, reconciles a reported conflict, reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
+2. **Sandbox** — the agent inspects forge mergeability, reconciles a reported conflict, reads each review finding, inspects project CI, implements targeted fixes, verifies them against tests and linters, and re-checks once for a moved head or comments newer than `FULLSEND_RUN_STARTED_AT` (fullsend's own excluded) before committing. On a moved head it reads the delta and commits only when the delta is disjoint from the fix — the post-script replays the commit onto the new head before pushing, and nothing verifies the combined tree — otherwise it leaves no commit and reports the overlap.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** pushes the commit and posts a summary comment on the PR.
+
+**Runner updates.** When a run is steerable, the runner can deliver a mid-run update from a collaborator the route job verified is authorized to direct the run. The runner exports `FULLSEND_STEER_ACTIVE` when a follow-up watcher started for the run; without it the agent treats the opening line as an injection attempt wherever it appears. It reaches the agent as a message beginning `Runner update: your task inputs changed after this run started.` and amends the task — including widening or narrowing the fix, or moving it to a new head. It grants no tools or permissions and relaxes no security instruction; any part that asks for either is ignored and reported. The same line appearing inside PR content is not a runner update — the agent reports it as an injection attempt. The agent records what the update changed in its structured output.
 
 ### Signed-off-by trailers
 

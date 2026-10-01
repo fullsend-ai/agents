@@ -43,6 +43,42 @@ curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues?state=opened&search=keyword&per_page=30"
 ```
 
+## Re-check Data
+
+Note authors with their creation time, for the end-of-run re-check.
+
+```bash
+# Scanner dialect: the token goes through a curl config file, never the
+# command line; no `break` in a loop. Run as written.
+RC=/tmp/recheck.curlrc
+OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\nfail\nsilent\n' "$GITLAB_TOKEN" > "$RC"; umask "$OLDMASK"
+
+# Notes newer than the run start, newest first. Page 1 holds the newest 100;
+# when it is full and its last note is still newer than the run start, fetch
+# page=2 the same way.
+curl -K "$RC" -o /tmp/recheck-notes.json "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes?per_page=100&sort=desc&page=1"
+jq -c --arg since "$FULLSEND_RUN_STARTED_AT" '.[] | select(.system != true)
+  | select((.created_at | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdate) > ($since | fromdate))
+  | {username: .author.username, author_id: .author.id, at: .created_at, fullsend: ((.body // "") | contains("<!-- fullsend:")), body}' /tmp/recheck-notes.json
+
+# The note author object has no `bot` field: for the marked notes only, look
+# each author up and read it. Run as written (no `break`).
+jq -r '.[] | select(.system != true) | select((.body // "") | contains("<!-- fullsend:")) | .author.id' /tmp/recheck-notes.json | sort -u > /tmp/recheck-marked-authors.txt
+while read -r uid; do
+  curl -K "$RC" -o "/tmp/recheck-user-${uid}.json" "https://${GITLAB_HOST}/api/v4/users/${uid}"
+  jq -c '{id, username, bot}' "/tmp/recheck-user-${uid}.json"
+done < /tmp/recheck-marked-authors.txt
+: > "$RC"
+```
+
+`select(.system != true)` drops GitLab's state notes. `fullsend` marks a
+body carrying the marker; it excludes the note only when the author's `bot`
+field on `users/:id` is true — a person's note is never excluded, marker or
+not, and without that lookup a marked note is kept as context. The exact username of a bot that authored a marked note is fullsend's
+login, never a pattern; `bot` tells a bot from a person, never the username's
+shape, and other bots stay in as context. The `since` filter normalises GitLab's fractional seconds
+and offset before comparing.
+
 ## Merge Requests
 
 ```bash
