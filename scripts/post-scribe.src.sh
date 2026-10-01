@@ -124,11 +124,16 @@ is_valid_confidence() {
   [[ "${1}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
 
+# Numeric less-than via awk. The supported runner image does not ship bc.
+numeric_lt() {
+  awk -v a="${1}" -v b="${2}" 'BEGIN { exit (a+0 < b+0) ? 0 : 1 }'
+}
+
 if ! is_valid_confidence "${MIN_CONFIDENCE}"; then
   echo "ERROR: SCRIBE_MIN_CONFIDENCE must be a number between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
   exit 1
 fi
-if (( $(echo "${MIN_CONFIDENCE} < 0 || ${MIN_CONFIDENCE} > 1" | bc -l) )); then
+if numeric_lt "${MIN_CONFIDENCE}" "0" || numeric_lt "1" "${MIN_CONFIDENCE}"; then
   echo "ERROR: SCRIBE_MIN_CONFIDENCE must be between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
   exit 1
 fi
@@ -300,7 +305,7 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
     gate_reject "${TOPIC}" "invalid confidence value"
     continue
   fi
-  if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
+  if numeric_lt "${CONFIDENCE}" "${MIN_CONFIDENCE}"; then
     gate_reject "${TOPIC}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
     continue
   fi
@@ -401,7 +406,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
     gate_reject "${TITLE}" "invalid confidence value"
     continue
   fi
-  if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
+  if numeric_lt "${CONFIDENCE}" "${MIN_CONFIDENCE}"; then
     gate_reject "${TITLE}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
     continue
   fi
@@ -577,8 +582,10 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"
 
   SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: .}')
+  # Slack is best-effort: bound the request so a stalled webhook cannot hang the job.
   if printf '%s' "${SLACK_PAYLOAD}" \
-      | curl -fsSL -X POST -H 'Content-Type: application/json' \
+      | curl -fsSL --connect-timeout 10 --max-time 30 \
+        -X POST -H 'Content-Type: application/json' \
         --data-binary @- "${SLACK_WEBHOOK}" >/dev/null 2>&1; then
     echo "Slack notification sent"
   else
