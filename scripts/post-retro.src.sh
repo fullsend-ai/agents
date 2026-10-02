@@ -192,8 +192,9 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     # Ensure the label exists in the target repo before applying it.
-    # Follows the same pattern as post-review.sh for ready-for-merge.
     # --force / idempotent creation makes this safe to repeat.
+    # Label-create failures are warned (not silenced) so missing triage
+    # routing is visible in workflow logs.
     forge_create_label "${TARGET_REPO}" "ready-for-triage" \
       "Triggers triage agent dispatch" "0E8A16"
 
@@ -205,6 +206,9 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     echo "Created: ${ISSUE_URL}"
+    # Issue create may succeed while dropping labels the token cannot
+    # manage. Verify so operators can detect issues that skipped triage.
+    forge_verify_issue_label "${TARGET_REPO}" "${ISSUE_URL}" "ready-for-triage"
     ISSUE_LINKS="${ISSUE_LINKS}- [${TITLE}](${ISSUE_URL}) (in \`${TARGET_REPO}\`)
 "
   done
