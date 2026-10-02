@@ -87,13 +87,19 @@ if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Check for existing human PRs linked to this issue
+# Check for existing human PRs and tracking issues, unless bypassed
 # ---------------------------------------------------------------------------
+# These checks are best-effort and can be bypassed via --force or a missing
+# forge token. A bypass only skips these checks — it must NOT exit the
+# script, since downstream runner setup (pre-commit tool resolution and
+# installation, below) still needs to run before the sandbox is created.
+SKIP_EXISTING_CHECKS=0
+
 # Skip if the forge-specific token is not available (best-effort check).
 if { [ "${FULLSEND_FORGE}" = "github" ] && [ -z "${GH_TOKEN:-}" ]; } || \
    { [ "${FULLSEND_FORGE}" = "gitlab" ] && [ -z "${GITLAB_TOKEN:-}" ]; }; then
   echo "No ${FULLSEND_FORGE} token set — skipping existing-PR check"
-  exit 0
+  SKIP_EXISTING_CHECKS=1
 fi
 
 # Allow override when the trigger comment is `/fs-code --force` or CODE_FORCE
@@ -106,86 +112,88 @@ if [[ -n "${COMMENT_BODY:-}" ]]; then
   FORCE_WORD="$(printf '%s\n' "${COMMENT_BODY}" | head -1 | tr -d '\r' | awk '{print $2}')"
 fi
 echo "Evaluating force override: CODE_FORCE='${CODE_FORCE:-}' COMMENT_BODY='${COMMENT_BODY:-}'"
-if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
+if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]] \
+   && { [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; }; then
   echo "Force override — skipping existing-PR and tracking-issue checks"
-  exit 0
+  SKIP_EXISTING_CHECKS=1
 fi
 
-BOT_LOGIN="fullsend-ai[bot]"
-CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
+if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]]; then
+  BOT_LOGIN="fullsend-ai[bot]"
+  CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
 
-echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
+  echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 
-HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}")"
+  HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}")"
 
-if [[ -n "${HUMAN_PR_LINES}" ]]; then
-  # Parse the first PR for the notice.
-  FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
-  FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
+  if [[ -n "${HUMAN_PR_LINES}" ]]; then
+    # Parse the first PR for the notice.
+    FIRST_PR_NUM="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f1)"
+    FIRST_PR_AUTHOR="$(echo "${HUMAN_PR_LINES}" | head -1 | cut -f2)"
 
-  # GitLab uses ! for MR references; GitHub uses #.
-  _pr_prefix="#"
-  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
-    _pr_prefix="!"
-  fi
+    # GitLab uses ! for MR references; GitHub uses #.
+    _pr_prefix="#"
+    if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+      _pr_prefix="!"
+    fi
 
-  echo "::notice::Found existing human PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+    echo "::notice::Found existing human PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
 
-  # Apply pr-open label to signal work is already underway.
-  forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
-  forge_add_label "pr-open"
+    # Apply pr-open label to signal work is already underway.
+    forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"
+    forge_add_label "pr-open"
 
-  # Build a markdown list of existing PRs.
-  PR_LIST_MD=""
-  while IFS=$'\t' read -r pr_num pr_author _pr_url; do
-    PR_LIST_MD="${PR_LIST_MD}
+    # Build a markdown list of existing PRs.
+    PR_LIST_MD=""
+    while IFS=$'\t' read -r pr_num pr_author _pr_url; do
+      PR_LIST_MD="${PR_LIST_MD}
 - ${_pr_prefix}${pr_num} by @${pr_author}"
-  done <<< "${HUMAN_PR_LINES}"
+    done <<< "${HUMAN_PR_LINES}"
 
-  SKIP_COMMENT="An open PR already addresses this issue — skipping automated implementation.
+    SKIP_COMMENT="An open PR already addresses this issue — skipping automated implementation.
 ${PR_LIST_MD}
 
 To override, comment \`/fs-code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-  forge_post_issue_comment "${SKIP_COMMENT}" || true
+    forge_post_issue_comment "${SKIP_COMMENT}" || true
 
-  echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
-  prescript_output "skipped" "true"
-  prescript_output "reason" "open PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR} already addresses issue #${ISSUE_NUMBER}"
-  exit 0
-fi
+    echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
+    prescript_output "skipped" "true"
+    prescript_output "reason" "open PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR} already addresses issue #${ISSUE_NUMBER}"
+    exit 0
+  fi
 
-echo "No existing human PRs found — proceeding with code agent"
+  echo "No existing human PRs found — proceeding with code agent"
 
-# ---------------------------------------------------------------------------
-# Skip tracking/parent issues that have sub-issues (child work items)
-# ---------------------------------------------------------------------------
-# GitHub native sub-issues (and GitLab work-item children) mean this is a
-# tracking issue: implementation belongs on the children, not the parent.
-# /fs-code --force above bypasses this check.
-echo "Checking for sub-issues on issue #${ISSUE_NUMBER}..."
-HAS_SUB_ISSUES="$(forge_has_sub_issues "${ISSUE_NUMBER}")"
+  # ---------------------------------------------------------------------------
+  # Skip tracking/parent issues that have sub-issues (child work items)
+  # ---------------------------------------------------------------------------
+  # GitHub native sub-issues (and GitLab work-item children) mean this is a
+  # tracking issue: implementation belongs on the children, not the parent.
+  echo "Checking for sub-issues on issue #${ISSUE_NUMBER}..."
+  HAS_SUB_ISSUES="$(forge_has_sub_issues "${ISSUE_NUMBER}")"
 
-if [[ "${HAS_SUB_ISSUES}" =~ ^[1-9][0-9]*$ ]]; then
-  echo "::notice::Issue #${ISSUE_NUMBER} has sub-issue(s) — skipping code agent"
+  if [[ "${HAS_SUB_ISSUES}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "::notice::Issue #${ISSUE_NUMBER} has sub-issue(s) — skipping code agent"
 
-  SKIP_COMMENT="This issue has sub-issues — skipping automated implementation.
+    SKIP_COMMENT="This issue has sub-issues — skipping automated implementation.
 
 The code agent implements leaf work items. Use the child issues for implementation, or comment \`/fs-code --force\` to implement this parent issue anyway.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-  forge_post_issue_comment "${SKIP_COMMENT}" || true
+    forge_post_issue_comment "${SKIP_COMMENT}" || true
 
-  echo "Skipping code agent — issue #${ISSUE_NUMBER} is a tracking issue with sub-issue(s)"
-  prescript_output "skipped" "true"
-  prescript_output "reason" "issue #${ISSUE_NUMBER} has sub-issue(s); implement the child issues instead"
-  exit 0
+    echo "Skipping code agent — issue #${ISSUE_NUMBER} is a tracking issue with sub-issue(s)"
+    prescript_output "skipped" "true"
+    prescript_output "reason" "issue #${ISSUE_NUMBER} has sub-issue(s); implement the child issues instead"
+    exit 0
+  fi
+
+  echo "No sub-issues found — proceeding with code agent"
 fi
-
-echo "No sub-issues found — proceeding with code agent"
 
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies

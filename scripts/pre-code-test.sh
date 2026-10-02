@@ -731,6 +731,34 @@ run_test_prescript_output "protocol-skip-on-sub-issues" \
   "skipped=true${NL}reason=issue #42 has sub-issue(s); implement the child issues instead${NL}" \
   0
 
+# --- Regression: force/no-token bypass must still reach runner setup
+# (issue #1583) ---
+# Previously the force-override and missing-token guards used a bare
+# `exit 0`, which also skipped the pre-commit tool resolution/install
+# section near the end of the script. Point REPO_DIR at this repo (which
+# ships a real .pre-commit-config.yaml) — with GITHUB_WORKSPACE cleared so
+# the workspace-fallback lookup does not mask the result — and confirm
+# execution reaches that section (observed via its "companion scripts not
+# found" warning, since this repo does not vendor the companion scripts)
+# even though the existing-PR/tracking-issue checks are bypassed.
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+run_test_stdout "force-code-force-reaches-precommit-install-section" \
+  "${EMPTY_GQL_JSON}" \
+  "Pre-commit tool auto-install skipped: companion scripts not found" \
+  0 \
+  "CODE_FORCE=true
+REPO_DIR=${REPO_ROOT}
+GITHUB_WORKSPACE="
+
+run_test_stdout "no-gh-token-reaches-precommit-install-section" \
+  "${EMPTY_GQL_JSON}" \
+  "Pre-commit tool auto-install skipped: companion scripts not found" \
+  0 \
+  "GH_TOKEN=
+REPO_DIR=${REPO_ROOT}
+GITHUB_WORKSPACE="
+
 # Protocol: explicit zero sub-issues → proceed, file stays empty.
 run_test_prescript_output "protocol-empty-on-zero-sub-issues" \
   "${ZERO_SUB_ISSUES_GQL_JSON}" \
