@@ -111,6 +111,38 @@ tracker_post_sticky_comment() {
   printf '%s' "${body}" | fullsend post-comment --repo "${REPO}" --number "${ISSUE_NUMBER}" --marker "${marker}" --token "${GH_TOKEN}" --result -
 }
 
+# Returns 0 if an issue comment whose body contains marker exists.
+# If window_seconds is provided and greater than 0, only comments created
+# within that many seconds count. API failures are treated as "not found"
+# so a missing acknowledgement never fails the run (#1405).
+tracker_has_comment_with_marker() {
+  local marker="$1"
+  local window_seconds="${2:-0}"
+  local comments
+  comments=$(gh api "repos/${REPO}/issues/${ISSUE_NUMBER}/comments" --paginate 2>/dev/null) || comments="[]"
+
+  local count=0
+  if [[ "${window_seconds}" -gt 0 ]]; then
+    count=$(printf '%s' "${comments}" | jq -s --arg marker "${marker}" --argjson window "${window_seconds}" \
+      'def ts_epoch:
+         ((. // "") | sub("\\.[0-9]+"; "")) as $s
+         | ($s | capture("(?<sign>[+-])(?<hh>[0-9]{2}):?(?<mm>[0-9]{2})$") // null) as $cap
+         | if $cap == null then
+             ($s | try fromdateiso8601 catch 0)
+           else
+             ($s | sub("[+-][0-9]{2}:?[0-9]{2}$"; "Z") | try fromdateiso8601 catch 0) as $naive
+             | (($cap.hh | tonumber) * 3600 + ($cap.mm | tonumber) * 60) as $off
+             | if $cap.sign == "+" then $naive - $off else $naive + $off end
+           end;
+       add // [] | [.[] | select((.body // "") | contains($marker))
+            | select((.created_at // "") | ts_epoch > (now - $window))] | length' 2>/dev/null) || count=0
+  else
+    count=$(printf '%s' "${comments}" | jq -s --arg marker "${marker}" \
+      'add // [] | [.[] | select((.body // "") | contains($marker))] | length' 2>/dev/null) || count=0
+  fi
+  [[ "${count:-0}" -gt 0 ]]
+}
+
 # --- Issues ---
 
 tracker_close_issue() {
