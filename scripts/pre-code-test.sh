@@ -27,6 +27,10 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 #   $1 — JSON string to return for "gh api graphql" calls. When the caller
 #        passes --jq, the mock pipes this JSON through jq so the real
 #        filter expression is exercised.  Pass an empty string for no PRs.
+#        The real `gh api` CLI has no `--arg` flag (that belongs to
+#        standalone `jq`), so the mock rejects it like the real CLI would —
+#        any caller that still needs an --arg-style filter must fetch the
+#        JSON here and pipe it through a separate `jq` invocation.
 build_mock() {
   local graphql_output="$1"
   local mock_bin="${TMPDIR}/bin"
@@ -48,23 +52,25 @@ echo "gh $*" >> "${CALL_LOG}"
 
 # Route by subcommand
 if [[ "$1" == "api" && "$2" == "graphql" ]]; then
-  # Parse --jq and --arg flags from arguments, just like the real gh CLI.
+  # Parse --jq from arguments, just like the real gh CLI. Real `gh api`
+  # has no --arg flag, so reject it here too — a caller that regresses to
+  # passing --arg straight to `gh api graphql` (rather than piping into a
+  # standalone jq) must fail the same way the real CLI would.
   JQ_EXPR=""
-  JQ_ARGS=()
   shift 2
   while [[ $# -gt 0 ]]; do
     if [[ "$1" == "--jq" ]]; then
       JQ_EXPR="$2"
       shift 2
     elif [[ "$1" == "--arg" ]]; then
-      JQ_ARGS+=(--arg "$2" "$3")
-      shift 3
+      echo "gh: unknown flag: --arg" >&2
+      exit 1
     else
       shift
     fi
   done
   if [[ -n "${JQ_EXPR}" ]] && [[ -s "${PR_OUTPUT}" ]]; then
-    jq -r "${JQ_ARGS[@]}" "${JQ_EXPR}" "${PR_OUTPUT}"
+    jq -r "${JQ_EXPR}" "${PR_OUTPUT}"
   else
     cat "${PR_OUTPUT}"
   fi
@@ -295,8 +301,10 @@ run_test_stdout_excludes() {
 # --- Test cases ---
 
 # JSON helpers — build GraphQL response JSON that the mock returns to the
-# script.  The mock pipes this through jq using the real --jq expression
-# from pre-code.sh, so the filter is exercised end-to-end.
+# script.  The mock returns this JSON as-is (no --jq/--arg handling by
+# `gh`, matching the real CLI), and pre-code.sh pipes it through its own
+# standalone `jq -r --arg ...` filter, so the real filter expression is
+# exercised end-to-end.
 # The response format matches GitHub's closedByPullRequestsReferences query.
 
 _gql_wrap() {

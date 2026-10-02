@@ -98,6 +98,9 @@ forge_list_prs_for_issue() {
   # instead of "fullsend-ai-coder[bot]"), so strip the suffix before comparing
   # and additionally require __typename == "Bot" — matching only on the bare
   # login would risk excluding a human whose login happens to collide with it.
+  # `gh api graphql` has no `--arg` flag of its own (that belongs to
+  # standalone `jq`), so fetch the raw JSON first and pipe it through a
+  # separate `jq -r --arg ...` invocation to apply the bot-login filter.
   gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
@@ -114,7 +117,8 @@ forge_list_prs_for_issue() {
           }
         }
       }
-    }' --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" --jq '
+    }' 2>/dev/null \
+    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" '
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == "OPEN")
            | select(.author.__typename != "Bot"
