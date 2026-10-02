@@ -425,12 +425,23 @@ forge_enable_auto_merge() {
 # widget here exposes hasChildren, not a count) — matches the GitHub
 # implementation's truthy/falsy contract; callers must not display this
 # value as an exact count in shared (forge-agnostic) messages.
-# Fail-open: prints 0 on API errors or older GitLab versions without the field.
+# Fail-open: prints 0 on API errors or older GitLab versions without the
+# field. A confirmed hasChildren==false is silent; curl --fail errors or
+# malformed JSON log a ::warning:: before returning 0 so the two paths
+# are distinguishable in workflow logs.
 forge_has_sub_issues() {
   local issue_number="${1:-${ISSUE_NUMBER}}"
   if [[ -z "${GITLAB_HOST:-}" || -z "${REPO_FULL_NAME:-}" || -z "${issue_number}" ]]; then
     echo 0
     return 0
+  fi
+  # Validate before interpolating into the ::warning:: workflow command below —
+  # this function has no caller-side guarantee that issue_number is a plain
+  # positive integer, so an unvalidated future caller must not be able to
+  # inject workflow-command metacharacters into the log.
+  local safe_issue_number="unknown"
+  if [[ "${issue_number}" =~ ^[1-9][0-9]*$ ]]; then
+    safe_issue_number="${issue_number}"
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || {
     echo 0
@@ -452,12 +463,14 @@ forge_has_sub_issues() {
     --header "Content-Type: application/json" \
     --data "${payload}" \
     "https://${GITLAB_HOST}/api/graphql" 2>/dev/null)" || {
+    echo "::warning::sub-issue check failed for issue #${safe_issue_number} — assuming no sub-issues (fail-open)" >&2
     echo 0
     return 0
   }
   local count
   count="$(printf '%s' "${body}" | jq -r '[.data.project.workItem.widgets[]? | select(.hasChildren == true)] | if length > 0 then 1 else 0 end' 2>/dev/null || true)"
   if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo "::warning::sub-issue check failed for issue #${safe_issue_number} — assuming no sub-issues (fail-open)" >&2
     echo 0
     return 0
   fi

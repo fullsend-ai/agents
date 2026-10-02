@@ -27,8 +27,11 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 #   $1 — JSON string to return for "gh api graphql" calls. When the caller
 #        passes --jq, the mock pipes this JSON through jq so the real
 #        filter expression is exercised.  Pass an empty string for no PRs.
+#   $2 — optional exit code for "gh api graphql" (default 0). Non-zero
+#        simulates an actual API/command failure (issue #1517).
 build_mock() {
   local graphql_output="$1"
+  local graphql_exit="${2:-0}"
   local mock_bin="${TMPDIR}/bin"
   local gh_log="${TMPDIR}/gh-calls.log"
 
@@ -38,16 +41,25 @@ build_mock() {
 
   # Write the GraphQL output to a file so the mock can read it.
   printf '%s' "${graphql_output}" > "${TMPDIR}/graphql-output.txt"
+  printf '%s' "${graphql_exit}" > "${TMPDIR}/graphql-exit.txt"
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 CALL_LOG="LOGFILE_PLACEHOLDER"
 PR_OUTPUT="OUTPUT_PLACEHOLDER"
+GRAPHQL_EXIT_FILE="EXITFILE_PLACEHOLDER"
 
 echo "gh $*" >> "${CALL_LOG}"
 
 # Route by subcommand
 if [[ "$1" == "api" && "$2" == "graphql" ]]; then
+  _gql_exit=0
+  if [[ -f "${GRAPHQL_EXIT_FILE}" ]]; then
+    _gql_exit="$(cat "${GRAPHQL_EXIT_FILE}")"
+  fi
+  if [[ -n "${_gql_exit}" && "${_gql_exit}" != "0" ]]; then
+    exit "${_gql_exit}"
+  fi
   # Parse --jq and --arg flags from arguments, just like the real gh CLI.
   JQ_EXPR=""
   JQ_ARGS=()
@@ -83,8 +95,10 @@ MOCKEOF
   # but this is a generated mock — not repo source code).
   local escaped_log="${gh_log//\//\\/}"
   local escaped_out="${TMPDIR//\//\\/}\/graphql-output.txt"
+  local escaped_exit="${TMPDIR//\//\\/}\/graphql-exit.txt"
   perl -pi -e "s/LOGFILE_PLACEHOLDER/${escaped_log}/g" "${mock_bin}/gh"
   perl -pi -e "s/OUTPUT_PLACEHOLDER/${escaped_out}/g" "${mock_bin}/gh"
+  perl -pi -e "s/EXITFILE_PLACEHOLDER/${escaped_exit}/g" "${mock_bin}/gh"
 
   chmod +x "${mock_bin}/gh"
 
@@ -166,9 +180,10 @@ run_test_stdout() {
   local expected_stdout="$3"
   local expect_exit="$4"
   local extra_env="${5:-}"
+  local graphql_exit="${6:-0}"
 
   local mock_bin
-  mock_bin="$(build_mock "${graphql_output}")"
+  mock_bin="$(build_mock "${graphql_output}" "${graphql_exit}")"
   local gh_output="${TMPDIR}/github-output.txt"
   : > "${gh_output}"
 
@@ -735,6 +750,187 @@ run_test_prescript_output "protocol-skip-on-sub-issues" \
 run_test_prescript_output "protocol-empty-on-zero-sub-issues" \
   "${ZERO_SUB_ISSUES_GQL_JSON}" \
   "" \
+  0
+
+# --- Fail-open observability (issue #1517) ---
+# Confirmed zero / missing field must stay silent; actual API failure must
+# still proceed but emit a distinct ::warning:: so the paths are distinguishable.
+FAIL_OPEN_WARNING="::warning::sub-issue check failed for issue #42 — assuming no sub-issues (fail-open)"
+
+run_test_stdout_excludes "zero-sub-issues-no-fail-open-warning" \
+  "${ZERO_SUB_ISSUES_GQL_JSON}" \
+  "No sub-issues found" \
+  "sub-issue check failed" \
+  0
+
+run_test_stdout_excludes "missing-sub-issues-field-no-fail-open-warning" \
+  "${EMPTY_GQL_JSON}" \
+  "No sub-issues found" \
+  "sub-issue check failed" \
+  0
+
+run_test_stdout "sub-issues-api-failure-proceeds" \
+  "${EMPTY_GQL_JSON}" \
+  "No sub-issues found" \
+  0 \
+  "" \
+  "1"
+
+run_test_stdout "sub-issues-api-failure-warns" \
+  "${EMPTY_GQL_JSON}" \
+  "${FAIL_OPEN_WARNING}" \
+  0 \
+  "" \
+  "1"
+
+run_test_stdout "sub-issues-malformed-json-proceeds" \
+  "this is not json" \
+  "No sub-issues found" \
+  0
+
+run_test_stdout "sub-issues-malformed-json-warns" \
+  "this is not json" \
+  "${FAIL_OPEN_WARNING}" \
+  0
+
+# --- GitLab tracking-issue fail-open (issue #1517) ---
+# Mock curl so REST MR listing succeeds (empty list) while GraphQL can be
+# set to confirmed-zero, curl --fail, or malformed JSON independently.
+
+build_gitlab_mock() {
+  local graphql_mode="${1:-ok-zero}"
+  local mock_bin="${TMPDIR}/bin"
+
+  rm -rf "${mock_bin}"
+  mkdir -p "${mock_bin}"
+  printf '%s' "${graphql_mode}" > "${TMPDIR}/gitlab-graphql-mode.txt"
+
+  cat > "${mock_bin}/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+MODE_FILE="GLMODE_PLACEHOLDER"
+url=""
+for arg in "$@"; do
+  case "${arg}" in
+    https://*) url="${arg}" ;;
+  esac
+done
+if [[ "${url}" == *"/api/graphql"* ]]; then
+  mode="ok-zero"
+  if [[ -f "${MODE_FILE}" ]]; then
+    mode="$(cat "${MODE_FILE}")"
+  fi
+  case "${mode}" in
+    fail)
+      exit 22
+      ;;
+    malformed)
+      echo "this is not json"
+      exit 0
+      ;;
+    *)
+      echo '{"data":{"project":{"workItem":{"widgets":[{"hasChildren":false}]}}}}'
+      exit 0
+      ;;
+  esac
+fi
+if [[ "${url}" == *"/merge_requests"* ]]; then
+  echo '[]'
+  exit 0
+fi
+echo '{}'
+exit 0
+CURLEOF
+
+  local escaped_mode="${TMPDIR//\//\\/}\/gitlab-graphql-mode.txt"
+  perl -pi -e "s/GLMODE_PLACEHOLDER/${escaped_mode}/g" "${mock_bin}/curl"
+  chmod +x "${mock_bin}/curl"
+  echo "${mock_bin}"
+}
+
+run_gitlab_test_stdout() {
+  local test_name="$1"
+  local graphql_mode="$2"
+  local expected_stdout="$3"
+  local expect_exit="$4"
+  local excluded_stdout="${5:-}"
+
+  local mock_bin
+  mock_bin="$(build_gitlab_mock "${graphql_mode}")"
+  local gh_output="${TMPDIR}/github-output.txt"
+  : > "${gh_output}"
+
+  local env_cmd=(
+    env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY -u GITLAB_HOST
+    PATH="${mock_bin}:${PATH}"
+    ISSUE_NUMBER="42"
+    REPO_FULL_NAME="test-group/test-project"
+    ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+    FULLSEND_FORGE="gitlab"
+    GITLAB_TOKEN="fake-token"
+    CI_SERVER_HOST="gitlab.com"
+    GITHUB_OUTPUT="${gh_output}"
+  )
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -s "${gh_output}" ]]; then
+    echo "FAIL: ${test_name} — unexpected GITHUB_OUTPUT writes:"
+    cat "${gh_output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${excluded_stdout}" ]] && grep -qF "${excluded_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
+    echo "FAIL: ${test_name} — excluded stdout '${excluded_stdout}' was found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_test_stdout "gitlab-zero-sub-issues-proceeds" \
+  "ok-zero" \
+  "No sub-issues found" \
+  0 \
+  "sub-issue check failed"
+
+run_gitlab_test_stdout "gitlab-sub-issues-api-failure-proceeds" \
+  "fail" \
+  "No sub-issues found" \
+  0
+
+run_gitlab_test_stdout "gitlab-sub-issues-api-failure-warns" \
+  "fail" \
+  "${FAIL_OPEN_WARNING}" \
+  0
+
+run_gitlab_test_stdout "gitlab-sub-issues-malformed-json-proceeds" \
+  "malformed" \
+  "No sub-issues found" \
+  0
+
+run_gitlab_test_stdout "gitlab-sub-issues-malformed-json-warns" \
+  "malformed" \
+  "${FAIL_OPEN_WARNING}" \
   0
 
 # --- Summary ---

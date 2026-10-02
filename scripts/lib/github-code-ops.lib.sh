@@ -236,12 +236,22 @@ forge_enable_auto_merge() {
 # can only report 0 or 1 — and must not display it as an exact count in
 # shared (forge-agnostic) messages. Fail-open: prints 0 on API errors so a
 # missing sub-issues field (older GHES) does not skip legitimate leaf work.
+# A confirmed zero is silent; command failure or non-numeric output logs a
+# ::warning:: before returning 0 so the two paths are distinguishable.
 forge_has_sub_issues() {
   local issue_number="${1:-${ISSUE_NUMBER}}"
+  # Validate before interpolating into the ::warning:: workflow command below —
+  # this function has no caller-side guarantee that issue_number is a plain
+  # positive integer, so an unvalidated future caller must not be able to
+  # inject workflow-command metacharacters into the log.
+  local safe_issue_number="unknown"
+  if [[ "${issue_number}" =~ ^[1-9][0-9]*$ ]]; then
+    safe_issue_number="${issue_number}"
+  fi
   local owner="${REPO_FULL_NAME%%/*}"
   local name="${REPO_FULL_NAME##*/}"
   local count
-  count="$(gh api graphql \
+  if ! count="$(gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
     query($owner: String!, $name: String!, $number: Int!) {
@@ -252,8 +262,13 @@ forge_has_sub_issues() {
           }
         }
       }
-    }' --jq '.data.repository.issue.subIssues.totalCount // 0' 2>/dev/null || true)"
+    }' --jq '.data.repository.issue.subIssues.totalCount // 0' 2>/dev/null)"; then
+    echo "::warning::sub-issue check failed for issue #${safe_issue_number} — assuming no sub-issues (fail-open)" >&2
+    echo 0
+    return 0
+  fi
   if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo "::warning::sub-issue check failed for issue #${safe_issue_number} — assuming no sub-issues (fail-open)" >&2
     echo 0
     return 0
   fi
