@@ -54,6 +54,16 @@ applied — the `pull_request_review` event triggers the [fix agent](fix.md) dir
 Stale outcome labels from prior review runs are removed before the new one is
 applied.
 
+When the agent's native verdict is `comment` and the only remaining findings
+(after severity filtering) are `protected-path` governance notices at medium
+or below, the post-script checks whether an authorized human
+(write/maintain/admin on GitHub; Developer or above on GitLab) has already
+approved the current HEAD. If so, it skips `requires-manual-review` — the
+condition that label represents is already satisfied. The review comment,
+including the protected-path finding, is still posted. The check fails closed
+on API errors, bot-only approvals, self-approvals, stale SHAs, outstanding
+`CHANGES_REQUESTED`, mixed or high-severity findings, and draft PRs.
+
 When risk assessment is enabled (`REVIEW_RISK_ASSESSMENT_ENABLED`), the
 post-script applies a `risk/*` label reflecting the composite risk score:
 
