@@ -19,6 +19,11 @@
 #   REPO_FULL_NAME     — must be owner/repo format
 #   ISSUE_URL          — must be a valid issue URL for the forge
 #   FULLSEND_FORGE     — "github" or "gitlab"
+#
+# Optional environment variables:
+#   FULLSEND_APP_SET   — GitHub App identity prefix (default "fullsend-ai").
+#                         Used to derive the bot/coder bot logins excluded
+#                         from the existing-PR check.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -1053,8 +1058,13 @@ if [[ "${CODE_FORCE:-}" == "true" ]] || [[ "${FORCE_WORD}" == "--force" ]]; then
   exit 0
 fi
 
-BOT_LOGIN="fullsend-ai[bot]"
-CODER_BOT_LOGIN="fullsend-ai-coder[bot]"
+# Derive bot identities from FULLSEND_APP_SET so custom app sets (e.g.
+# "custom-app" -> "custom-app[bot]" / "custom-app-coder[bot]") are
+# recognized as bot-authored PRs instead of being misclassified as human.
+# Defaults to "fullsend-ai" to preserve the prior hardcoded identities.
+APP_SET="${FULLSEND_APP_SET:-fullsend-ai}"
+BOT_LOGIN="${APP_SET}[bot]"
+CODER_BOT_LOGIN="${APP_SET}-coder[bot]"
 
 echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
 

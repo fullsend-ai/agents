@@ -326,6 +326,12 @@ BOT_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-
 # Single fullsend-ai-coder[bot] PR.
 CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"}]')"
 
+# Single custom-app[bot] PR (custom FULLSEND_APP_SET, no role suffix).
+CUSTOM_BOT_PR_JSON="$(_gql_wrap '[{"number":12,"url":"https://github.com/test-org/test-repo/pull/12","author":{"login":"custom-app[bot]"},"state":"OPEN"}]')"
+
+# Single custom-app-coder[bot] PR (custom FULLSEND_APP_SET coder identity).
+CUSTOM_CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":13,"url":"https://github.com/test-org/test-repo/pull/13","author":{"login":"custom-app-coder[bot]"},"state":"OPEN"}]')"
+
 # Both bot PRs plus a human PR.
 MIXED_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"},{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]')"
 
@@ -406,6 +412,29 @@ run_test_stdout "coder-bot-pr-plus-human-pr-blocks" \
 run_test_stdout "both-bots-do-not-block" \
   "${BOTH_BOTS_JSON}" \
   "No existing human PRs found" \
+  0
+
+# --- Regression tests: FULLSEND_APP_SET custom bot identities (issue #1584) ---
+
+# Custom coder bot PR + matching FULLSEND_APP_SET → recognized as bot, proceeds.
+run_test_stdout "custom-app-set-coder-bot-pr-does-not-block" \
+  "${CUSTOM_CODER_BOT_PR_JSON}" \
+  "No existing human PRs found" \
+  0 \
+  "FULLSEND_APP_SET=custom-app"
+
+# Custom (non-coder) bot PR + matching FULLSEND_APP_SET → recognized as bot, proceeds.
+run_test_stdout "custom-app-set-bot-pr-does-not-block" \
+  "${CUSTOM_BOT_PR_JSON}" \
+  "No existing human PRs found" \
+  0 \
+  "FULLSEND_APP_SET=custom-app"
+
+# Same PR author, but FULLSEND_APP_SET unset → derived default logins don't
+# match "custom-app-coder[bot]", so it's treated as a human PR and blocks.
+run_test_stdout "custom-coder-login-blocks-without-app-set" \
+  "${CUSTOM_CODER_BOT_PR_JSON}" \
+  "Skipping code agent" \
   0
 
 # Multiple human PRs → should block and apply label.
