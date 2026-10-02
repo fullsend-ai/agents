@@ -656,8 +656,13 @@ forge_list_prs_for_issue() {
       # Fail open on API errors (bad token, transient 5xx, etc.) to match the
       # GitHub implementation's contract: callers run this under
       # `set -euo pipefail` via command substitution, so returning non-zero
-      # here would crash the caller instead of degrading gracefully.
-      gha_echo warning "forge_list_prs_for_issue: GitLab API failed on page ${page} — failing open (treating as no existing PRs)"
+      # here would crash the caller instead of degrading gracefully. Send
+      # the warning to stderr explicitly — gha_echo normally writes to
+      # stdout (so GitHub Actions can parse the `::warning::` workflow
+      # command), but this function's stdout is the caller's actual return
+      # value via command substitution, so a stdout warning here would get
+      # captured as if it were PR data and defeat the fail-open behavior.
+      gha_echo warning "forge_list_prs_for_issue: GitLab API failed on page ${page} — failing open (treating as no existing PRs)" >&2
       break
     }
     local count
