@@ -166,7 +166,7 @@ post-script applies the actions via `PUT /rest/api/3/issue/{key}` with
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. See [Ready-to-code promotion](#ready-to-code-promotion). | `on` | `on`/`always`, `off`/`never`, `discretionary` |
+| `TRIAGE_AUTO_CODE` | Controls whether triage auto-applies `ready-to-code`. See [Ready-to-code promotion](#ready-to-code-promotion). | `discretionary` | `on`/`always`, `off`/`never`, `discretionary` |
 | `TRIAGE_AUTO_CODE_CATEGORIES` | Comma-separated list of categories eligible for auto-promotion when `TRIAGE_AUTO_CODE` is `on`/`always` or `discretionary`. | `bug,documentation,performance` | `bug`, `documentation`, `performance` |
 
 To override these defaults per repo or org, create a custom harness for the
@@ -180,20 +180,20 @@ and `env.sandbox` values, referenced from `.fullsend/config.yaml`.
 `TRIAGE_AUTO_CODE` has three modes:
 
 - `on` / `always` — auto-apply `ready-to-code` for categories listed in
-  `TRIAGE_AUTO_CODE_CATEGORIES`. This is the default. `on` is the supported
-  alias for `always`.
+  `TRIAGE_AUTO_CODE_CATEGORIES`. `on` is the supported alias for `always`.
 - `off` / `never` — never auto-apply `ready-to-code`; always apply `triaged`.
   A human must run `/fs-code` or apply the label. `off` is the supported
   alias for `never`.
-- `discretionary` — the triage agent decides per issue. On a `sufficient`
-  result it sets `triage_summary.promote_to_ready_to_code` to `true` (promote)
-  or `false` (leave `triaged` for human prioritization). The post-script
-  honors that field only in this mode, and only when the category is in
-  `TRIAGE_AUTO_CODE_CATEGORIES` and `requires_workflow_changes` is not set.
-  If the field is omitted, the post-script withholds promotion.
+- `discretionary` — the triage agent decides per issue. This is the default.
+  On a `sufficient` result it sets `triage_summary.promote_to_ready_to_code`
+  to `true` (promote) or `false` (leave `triaged` for human prioritization).
+  The post-script honors that field only in this mode, and only when the
+  category is in `TRIAGE_AUTO_CODE_CATEGORIES` and `requires_workflow_changes`
+  is not set. If the field is omitted, the post-script withholds promotion.
 
-Use `discretionary` for workflows such as backlog grooming, where
-triage should still classify issues but must not flood the coding queue.
+Use `discretionary` so triage still classifies issues but can withhold
+promotion for hold-for-prioritization requests, stale issues, and backlog
+grooming instead of flooding the coding queue.
 
 ### Issue filing allowlist
 
