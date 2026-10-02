@@ -42,7 +42,7 @@ These labels are managed by the triage agent based on its assessment of the issu
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
 | `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: `triaged` is applied instead when `requires_workflow_changes` is set, when `TRIAGE_AUTO_CODE` is `off`/`never`, or when `TRIAGE_AUTO_CODE` is `discretionary` and the agent withholds promotion. |
 | `triaged` | The issue is fully specified but requires human prioritization before coding — a feature or other category, auto-promotion disabled, or a discretionary withhold. |
-| `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
+| `duplicate` | The issue duplicates an existing **open** issue. The agent identified the original (the lower-numbered / earlier filing) and this issue is closed automatically. If the canonical issue is already closed, this issue is left open for re-triage. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |
@@ -332,6 +332,8 @@ If you use `base:` composition to override `harness/triage.yaml`:
 The triage agent runs in a read-only sandbox. It fetches the issue content — title, body, labels, comments — and reads repository context (architecture docs, existing issues, PRs) to understand the landscape. It then decides whether the issue has enough information to act on, or whether clarification is needed.
 
 The agent's only output is a structured JSON triage result consumed by the post-script, which applies labels and posts a summary comment.
+
+When the agent chooses `duplicate`, the canonical issue is the lower-numbered (earlier) filing. The post-script then verifies that target is still open before closing. If the target is already closed — including as a duplicate of the issue currently being triaged — the current issue is left open, the `duplicate` label is removed, and a warning is emitted so it can be re-triaged. This prevents two near-simultaneous triage runs from closing both issues as duplicates of each other.
 
 ## Custom network policy
 

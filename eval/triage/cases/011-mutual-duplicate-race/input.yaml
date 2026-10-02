@@ -1,0 +1,33 @@
+forge: github
+fixture:
+  type: issue
+  title: "Tag expiration test flakes on cy.first() in repository-details"
+  body: |
+    The Cypress test `web/cypress/e2e/repository-details.cy.ts` fails
+    intermittently in the tag-expiration suite. `cy.first()` races the
+    DOM and the assertion times out.
+
+    Seen on this PR and on several sibling CVE-bump branches this week.
+
+# Two near-simultaneous filings of the same flake. The seed is the older
+# issue (created first, lower number). The fixture is the newer one. The
+# agent should treat the seed as canonical and close this fixture as a
+# duplicate of it — never the other way around.
+seed_issues:
+  - title: "Flaky Cypress: tag-expiration cy.first() timing race"
+    body: |
+      ## Bug Report
+
+      **What happened:**
+      `web/cypress/e2e/repository-details.cy.ts` fails intermittently in
+      the tag-expiration tests. `cy.first()` times out waiting for a
+      row that has not rendered yet.
+
+      **Steps to reproduce:**
+      1. Open a PR that runs the Cypress e2e suite
+      2. Observe `repository-details.cy.ts` fail on tag expiration
+      3. Re-run; it often passes
+
+      **Environment:**
+      - CI: GitHub Actions
+      - Test: web/cypress/e2e/repository-details.cy.ts
