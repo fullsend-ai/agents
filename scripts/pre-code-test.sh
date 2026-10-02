@@ -318,28 +318,32 @@ _gql_wrap_sub() {
 EMPTY_GQL_JSON="$(_gql_wrap '[]')"
 
 # Single human PR.
-HUMAN_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]')"
+# GraphQL's author.login never carries the REST "[bot]" suffix — including
+# __typename here mirrors the real closedByPullRequestsReferences response
+# shape, where every author node reports its __typename.
+HUMAN_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev","__typename":"User"},"state":"OPEN"}]')"
 
-# Single fullsend-ai[bot] PR.
-BOT_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"}]')"
+# Single fullsend-ai bot PR. GraphQL reports the bare login ("fullsend-ai",
+# not "fullsend-ai[bot]") with __typename "Bot".
+BOT_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai","__typename":"Bot"},"state":"OPEN"}]')"
 
-# Single fullsend-ai-coder[bot] PR.
-CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"}]')"
+# Single fullsend-ai-coder bot PR, bare GraphQL-style login.
+CODER_BOT_PR_JSON="$(_gql_wrap '[{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder","__typename":"Bot"},"state":"OPEN"}]')"
 
 # Both bot PRs plus a human PR.
-MIXED_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"},{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]')"
+MIXED_PR_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai","__typename":"Bot"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder","__typename":"Bot"},"state":"OPEN"},{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev","__typename":"User"},"state":"OPEN"}]')"
 
 # Multiple human PRs.
-MULTI_HUMAN_PR_JSON="$(_gql_wrap '[{"number":50,"url":"https://github.com/test-org/test-repo/pull/50","author":{"login":"dev-a"},"state":"OPEN"},{"number":51,"url":"https://github.com/test-org/test-repo/pull/51","author":{"login":"dev-b"},"state":"OPEN"}]')"
+MULTI_HUMAN_PR_JSON="$(_gql_wrap '[{"number":50,"url":"https://github.com/test-org/test-repo/pull/50","author":{"login":"dev-a","__typename":"User"},"state":"OPEN"},{"number":51,"url":"https://github.com/test-org/test-repo/pull/51","author":{"login":"dev-b","__typename":"User"},"state":"OPEN"}]')"
 
 # Both bots only (no human PRs).
-BOTH_BOTS_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai[bot]"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder[bot]"},"state":"OPEN"}]')"
+BOTH_BOTS_JSON="$(_gql_wrap '[{"number":10,"url":"https://github.com/test-org/test-repo/pull/10","author":{"login":"fullsend-ai","__typename":"Bot"},"state":"OPEN"},{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"fullsend-ai-coder","__typename":"Bot"},"state":"OPEN"}]')"
 
 # Human PR in MERGED state (should be filtered out by .state == "OPEN").
-MERGED_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"MERGED"}]')"
+MERGED_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev","__typename":"User"},"state":"MERGED"}]')"
 
 # Human PR in CLOSED state (should be filtered out by .state == "OPEN").
-CLOSED_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"CLOSED"}]')"
+CLOSED_PR_JSON="$(_gql_wrap '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev","__typename":"User"},"state":"CLOSED"}]')"
 
 # No existing PRs → agent proceeds (exit 0, no label/comment).
 run_test_stdout "no-existing-prs-proceeds" \
@@ -668,7 +672,7 @@ run_test_stdout "closing-ref-open-pr-still-blocks" \
 
 SUB_ISSUES_GQL_JSON="$(_gql_wrap_sub '[]' 2)"
 ZERO_SUB_ISSUES_GQL_JSON="$(_gql_wrap_sub '[]' 0)"
-SUB_ISSUES_AND_HUMAN_PR_JSON="$(_gql_wrap_sub '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev"},"state":"OPEN"}]' 2)"
+SUB_ISSUES_AND_HUMAN_PR_JSON="$(_gql_wrap_sub '[{"number":99,"url":"https://github.com/test-org/test-repo/pull/99","author":{"login":"human-dev","__typename":"User"},"state":"OPEN"}]' 2)"
 
 # Sub-issues present, no human PRs → skip the code agent.
 run_test_stdout "sub-issues-skip-agent" \
