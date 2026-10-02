@@ -14,7 +14,7 @@ labels:
     - ready-to-code
     - needs-info
 
-max_turns: 35
+max_turns: 40
 max_cost_usd: 2.00
 
 triage_expectations: |
