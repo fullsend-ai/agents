@@ -24,9 +24,24 @@
 #   EVAL_EFFORT   — effort override (fullsend run --effort)
 #   GOOGLE_APPLICATION_CREDENTIALS, ANTHROPIC_VERTEX_PROJECT_ID, etc.
 #   AGENT_EVAL_HARNESS_DIR — path to agent-eval-harness
+#
+# Under a cross-repo GitHub Actions caller (the fullsend release gate),
+# AGENT=review exits 0 without running cases (interim, see #1573).
 set -euo pipefail
 
 AGENT="${1:?agent name required}"
+
+# Interim release-gate scoping (#1573): a cross-repo workflow_call (the
+# fullsend release gate) skips the review suite, whose live-model cases are
+# too slow and turn-sensitive to gate every release. The review suite still
+# runs on agents PRs, pushes, merge queue and dispatch, where GITHUB_REPOSITORY
+# is fullsend-ai/agents. Local runs (no GITHUB_ACTIONS) are unaffected.
+if [[ "$AGENT" == "review" && "${GITHUB_ACTIONS:-}" == "true" \
+  && -n "${GITHUB_REPOSITORY:-}" && "$GITHUB_REPOSITORY" != "fullsend-ai/agents" ]]; then
+  echo "::notice::Skipping review functional tests for cross-repo caller ${GITHUB_REPOSITORY} (release gate, see fullsend-ai/agents#1573); they still run on agents PRs."
+  exit 0
+fi
+
 EVAL_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${EVAL_DIR}/.." && pwd)"
 export REPO_ROOT
