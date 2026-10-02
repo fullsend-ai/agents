@@ -435,7 +435,10 @@ cat > "${MOCK_BIN}/gh" <<MOCKEOF
 # Mock gh: handle specific subcommands, log everything else.
 
 # gh api graphql — review-thread fetch and resolveReviewThread mutation.
-# MOCK_REVIEW_THREADS_JSON overrides the default empty-thread list.
+# MOCK_REVIEW_THREADS_JSON overrides the default empty-thread list (single page).
+# MOCK_REVIEW_THREADS_PAGES, when set, is a JSON array of GraphQL response
+# objects returned in order for successive reviewThreads fetches. A marker
+# file (MOCK_THREADS_PAGE_MARKER) tracks the next page index.
 # MOCK_REVIEW_THREADS_FAIL / MOCK_RESOLVE_THREAD_FAIL simulate errors.
 if [[ "\$1" == "api" && "\$2" == "graphql" ]]; then
   echo "gh \$*" >> "${GH_LOG}"
@@ -450,6 +453,16 @@ if [[ "\$1" == "api" && "\$2" == "graphql" ]]; then
   if [[ -n "\${MOCK_REVIEW_THREADS_FAIL:-}" ]]; then
     echo "graphql failure" >&2
     exit 1
+  fi
+  if [[ -n "\${MOCK_REVIEW_THREADS_PAGES:-}" ]]; then
+    marker="\${MOCK_THREADS_PAGE_MARKER:-${TMPDIR}/review-threads-page-idx}"
+    idx=0
+    if [[ -f "\$marker" ]]; then
+      idx=\$(cat "\$marker")
+    fi
+    echo \$((idx + 1)) > "\$marker"
+    echo "\${MOCK_REVIEW_THREADS_PAGES}" | jq -c --argjson i "\$idx" '.[\$i] // empty'
+    exit 0
   fi
   if [[ -n "\${MOCK_REVIEW_THREADS_JSON:-}" ]]; then
     echo "\${MOCK_REVIEW_THREADS_JSON}"
@@ -2309,9 +2322,13 @@ make_thread() {
     }'
 }
 
+# wrap_threads NODES [HAS_NEXT [END_CURSOR]]
+# HAS_NEXT is a JSON boolean (default false). Empty END_CURSOR becomes null.
 wrap_threads() {
   jq -nc --argjson nodes "$1" \
-    '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:$nodes}}}}}'
+    --argjson has_next "${2:-false}" \
+    --arg end_cursor "${3:-}" \
+    '{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:$has_next,endCursor:(if $end_cursor == "" then null else $end_cursor end)},nodes:$nodes}}}}}'
 }
 
 run_select_test() {
@@ -2512,6 +2529,124 @@ run_outdated_integration "resolve-fail-nonfatal" \
 
 run_outdated_integration "resolve-fail-still-posts" \
   "${ELIGIBLE_ENVELOPE}" gh-call "fullsend post-review" "" "1"
+
+# Pagination coverage for forge_resolve_outdated_review_threads (#1515).
+# wrap_threads() defaults to a single page (hasNextPage:false), so these
+# cases drive MOCK_REVIEW_THREADS_PAGES to exercise the cursor walk, the
+# 20-page cap, and the missing-cursor abort.
+run_outdated_pagination_test() {
+  local test_name="$1"
+  local pages_json="$2"
+  local expected_stdout="$3"
+  local expected_fetches="$4"
+  local extra_stdout="${5:-}"
+  local extra_gh="${6:-}"
+  local extra_gh2="${7:-}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local marker="${TMPDIR}/review-threads-page-idx-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${COMMENT_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${marker}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_REVIEW_THREADS_PAGES="${pages_json}"
+    export MOCK_THREADS_PAGE_MARKER="${marker}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${extra_stdout}" ]] && ! grep -qF -- "${extra_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${extra_stdout}' not found"
+    echo "Actual stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local fetch_count
+  fetch_count=$(grep -c 'reviewThreads' "${GH_LOG}" || true)
+  if [[ "${fetch_count}" != "${expected_fetches}" ]]; then
+    echo "FAIL: ${test_name} — expected ${expected_fetches} reviewThreads fetches, got ${fetch_count}"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${extra_gh}" ]] && ! grep -qF -- "${extra_gh}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected gh call '${extra_gh}' not found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${extra_gh2}" ]] && ! grep -qF -- "${extra_gh2}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — expected gh call '${extra_gh2}' not found"
+    echo "Actual calls:"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+PAGE1_THREAD=$(make_thread PRRT_page1 false true true "${AGENT_OUTDATED}")
+PAGE2_THREAD=$(make_thread PRRT_page2 false true true "${AGENT_OUTDATED}")
+PAGE1_ENVELOPE=$(wrap_threads "$(jq -nc --argjson t "${PAGE1_THREAD}" '[$t]')" true "cursor-page-1")
+PAGE2_ENVELOPE=$(wrap_threads "$(jq -nc --argjson t "${PAGE2_THREAD}" '[$t]')")
+MULTI_PAGES=$(jq -nc --argjson p1 "${PAGE1_ENVELOPE}" --argjson p2 "${PAGE2_ENVELOPE}" '[$p1,$p2]')
+
+run_outdated_pagination_test "threads-multipage-aggregates" \
+  "${MULTI_PAGES}" \
+  "Resolved 2 outdated review-agent thread(s)" \
+  "2" \
+  "" \
+  "threadId=PRRT_page1" \
+  "threadId=PRRT_page2"
+
+CAP_PAGE=$(wrap_threads '[]' true "cursor-page-cap")
+CAP_PAGES=$(jq -nc --argjson p "${CAP_PAGE}" '[range(21) | $p]')
+
+run_outdated_pagination_test "threads-page-cap-stops" \
+  "${CAP_PAGES}" \
+  "Review thread pagination hit page cap" \
+  "20"
+
+MISSING_CURSOR_PAGES=$(jq -nc --argjson p "$(wrap_threads "$(jq -nc --argjson t "${ELIGIBLE}" '[$t]')" true)" '[$p]')
+
+run_outdated_pagination_test "threads-missing-cursor-aborts" \
+  "${MISSING_CURSOR_PAGES}" \
+  "Review thread page missing cursor" \
+  "1" \
+  "Resolved 1 outdated review-agent thread(s)"
 
 run_gitlab_outdated_noop_test() {
   local test_name="gitlab-outdated-threads-noop"
