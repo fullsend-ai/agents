@@ -506,7 +506,7 @@ fi
 
 # gh api repos/.../labels --paginate (list repo labels)
 if [[ "\$1" == "api" ]] && [[ "\$2" == *"/labels" ]] && [[ "\$*" == *"--paginate"* ]] && [[ "\$*" != *"-f "* ]] && [[ "\$*" != *"-X "* ]]; then
-  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser"
+  printf '%s\n' "area/api" "area/cli" "priority/high" "component/parser" "kind:fix"
   exit 0
 fi
 
@@ -949,12 +949,55 @@ run_label_test_stdout "label-actions-newline-injection-refused" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Injection.","actions":[{"action":"add","label":"ok\n::set-output name=x::pwned"}]}}' \
   "::warning::Refused label"
 
-# Label with :: delimiter (GHA command injection attempt) — :: is sanitized to :,
-# so the label becomes ":warning:injected" which passes the character regex but
-# does not exist in the repo. The important thing is the :: is stripped.
-run_label_test_stdout "label-actions-gha-delimiter-sanitized" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Injection.","actions":[{"action":"add","label":"::warning::injected"}]}}' \
-  "::warning::Skipping label ':warning:injected'"
+# Labels containing '::' are refused; warnings show them encoded.
+run_label_test_stdout "label-actions-double-colon-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"add","label":"::warning::injected"}]}}' \
+  "::warning::Refused label '%3A%3Awarning%3A%3Ainjected'"
+
+run_label_test_stdout "label-actions-triple-colon-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"add","label":":::error:::injected"}]}}' \
+  "::warning::Refused label '%3A%3A:error%3A%3A:injected'"
+
+# ':::' in the action is encoded in the unknown-action warning.
+run_label_test_stdout "label-actions-triple-colon-action" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":":::add:::x","label":"area/api"}]}}' \
+  "::warning::Unknown label action '%3A%3A:add%3A%3A:x' for label 'area/api'"
+
+# '%' is encoded first, so ':%:' cannot become '::'.
+run_label_test_stdout "label-actions-percent-between-colons-action" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":":%:add","label":"ready-for-merge"}]}}' \
+  "::warning::Refused to :%25:add control label 'ready-for-merge'"
+
+# A label is never rewritten into a different, existing one.
+run_label_test_no_pattern "label-actions-colon-run-not-rewritten" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"add","label":"kind:::fix"}]}}' \
+  "labels[]=kind:fix"
+
+run_label_test_no_pattern "label-actions-percent-not-rewritten" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"remove","label":"priority%/high"}]}}' \
+  "labels/priority%2Fhigh"
+
+run_label_test_no_pattern "label-actions-newline-not-rewritten" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"add","label":"area/\napi"}]}}' \
+  "labels[]=area/api"
+
+run_label_test_no_pattern "label-actions-cr-not-rewritten" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"re\rmove","label":"priority/hi\rgh"}]}}' \
+  "labels/priority%2Fhigh"
+
+# A single ':' is valid in a label name.
+run_label_test "label-actions-single-colon-label-applied" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"add","label":"kind:fix"}]}}' \
+  "gh api repos/test-org/test-repo/issues/99/labels -f labels[]=kind:fix --silent"
+
+# '%' reaches a warning line only as '%25'.
+run_label_test_stdout "label-actions-url-encoded-newline" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"add","label":"bad%0Ainjected"}]}}' \
+  "::warning::Refused label 'bad%250Ainjected'"
+
+run_label_test_stdout "label-actions-percent-adjacent-fragment-reassembly" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Test.","actions":[{"action":"add","label":"%0%0aA"}]}}' \
+  "::warning::Refused label '%250%250aA'"
 
 # --- Severity filtering integration tests ---
 # These invoke the real post-review.sh with REVIEW_FINDING_SEVERITY_THRESHOLD
@@ -2551,6 +2594,21 @@ run_gitlab_outdated_noop_test() {
   echo "PASS: ${test_name}"
 }
 run_gitlab_outdated_noop_test
+
+# No label-actions output line may carry '::' after its own '::cmd::' prefix.
+shopt -s nullglob
+LABEL_LOGS=("${TMPDIR}"/stdout-label-actions-*.log)
+shopt -u nullglob
+if [[ ${#LABEL_LOGS[@]} -eq 0 ]]; then
+  echo "FAIL: label-actions '::' scan found no logs"
+  FAILURES=$((FAILURES + 1))
+fi
+for log in "${LABEL_LOGS[@]}"; do
+  if sed -E 's/^::[a-z-]+[^:]*:://' "${log}" | grep -F '::'; then
+    echo "FAIL: ${log##*/stdout-} — '::' survived in a warning line"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
 
 # --- Summary ---
 

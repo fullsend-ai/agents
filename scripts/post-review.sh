@@ -933,23 +933,17 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
     LA_ACTION=$(jq -r ".label_actions.actions[${i}].action" "${RESULT_FILE}")
     LA_LABEL=$(jq -r ".label_actions.actions[${i}].label" "${RESULT_FILE}")
 
-    # Sanitize jq -r output: strip newlines, carriage returns, and GHA
-    # workflow command delimiters to prevent command injection via crafted
-    # label names or action values.
-    LA_ACTION="${LA_ACTION//$'\n'/}"
-    LA_ACTION="${LA_ACTION//$'\r'/}"
-    LA_ACTION="${LA_ACTION//::/:}"
-    LA_LABEL="${LA_LABEL//$'\n'/}"
-    LA_LABEL="${LA_LABEL//$'\r'/}"
-    LA_LABEL="${LA_LABEL//::/:}"
+    # Decide on the values as given; print only _gha_sanitize copies.
+    LA_ACTION_SHOWN=$(_gha_sanitize "${LA_ACTION}")
+    LA_LABEL_SHOWN=$(_gha_sanitize "${LA_LABEL}")
 
-    if [[ ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
-      echo "::warning::Refused label '${LA_LABEL}' -- contains invalid characters"
+    if [[ "${LA_LABEL}" == *::* || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters or a double colon"
       continue
     fi
 
     if is_control_label "${LA_LABEL}"; then
-      echo "::warning::Refused to ${LA_ACTION} control label '${LA_LABEL}' -- control labels are managed by the review pipeline"
+      echo "::warning::Refused to ${LA_ACTION_SHOWN} control label '${LA_LABEL}' -- control labels are managed by the review pipeline"
       continue
     fi
 
@@ -965,7 +959,7 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
         VALIDATED_LABEL_REMOVES+=("${LA_LABEL}")
         ;;
       *)
-        echo "::warning::Unknown label action '${LA_ACTION}' for label '${LA_LABEL}'"
+        echo "::warning::Unknown label action '${LA_ACTION_SHOWN}' for label '${LA_LABEL}'"
         ;;
     esac
   done
