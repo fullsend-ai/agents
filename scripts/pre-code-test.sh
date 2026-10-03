@@ -737,6 +737,148 @@ run_test_prescript_output "protocol-empty-on-zero-sub-issues" \
   "" \
   0
 
+# =============================================================================
+# GitLab forge_list_prs_for_issue — fail open on API error (issue #1585)
+# =============================================================================
+#
+# pre-code.src.sh invokes this function as
+# `HUMAN_PR_LINES="$(forge_list_prs_for_issue ...)"` under `set -euo
+# pipefail`. A non-zero return therefore crashes the whole pre-script
+# instead of degrading gracefully. These tests exercise
+# scripts/lib/gitlab-code-ops.lib.sh directly (overriding the low-level API
+# call) to cover a real API-failure path — distinct from a confirmed
+# zero-MRs result, where the API call itself succeeds and returns "[]".
+
+run_gl_list_prs_test() {
+  local test_name="$1"
+  local mock_body="$2"
+  local expect_exit="$3"
+  local expect_output="$4"
+
+  local gl_stderr_log="${TMPDIR}/gl-list-prs-stderr.log"
+  local gl_output
+  local gl_exit=0
+  gl_output=$(
+    unset GITLAB_CODE_OPS_SH_LOADED
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+
+    # Override _gitlab_code_api with the test mock (AFTER source).
+    eval "${mock_body}"
+
+    export REPO_ENCODED="test-group%2Ftest-project"
+    forge_list_prs_for_issue "42" "bot-login" "coder-bot-login" 2>"${gl_stderr_log}"
+  ) || gl_exit=$?
+
+  if [[ ${gl_exit} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${gl_exit}"
+    cat "${gl_stderr_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${gl_output}" != "${expect_output}" ]]; then
+    echo "FAIL: ${test_name} — expected output '${expect_output}', got '${gl_output}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# API failure on page 1 (bad token, transient 5xx, etc.) must fail open:
+# exit 0 with no PRs reported, matching the GitHub implementation's
+# contract instead of crashing the caller.
+run_gl_list_prs_test "gitlab-list-prs-api-failure-fails-open" '
+_gitlab_code_api() { return 1; }
+' 0 ""
+
+# Confirmed zero MRs — the API call succeeds and returns an empty page.
+# Same observable output as the failure case, but reached via the success
+# path rather than the fail-open path.
+run_gl_list_prs_test "gitlab-list-prs-zero-mrs-confirmed" '
+_gitlab_code_api() { echo "[]"; }
+' 0 ""
+
+# =============================================================================
+# GitLab forge_list_prs_for_issue — production pre-script regression (#1585)
+# =============================================================================
+#
+# The unit-level tests above exercise gitlab-code-ops.lib.sh in isolation.
+# This test runs the actual pre-code script end-to-end with
+# FULLSEND_FORGE=gitlab and a mock `curl` that fails every API call,
+# asserting that the pre-script output file stays empty (the run proceeds)
+# rather than picking up a stray skipped=true. This is the regression the
+# unit tests could not catch on their own: forge_list_prs_for_issue's
+# fail-open warning used to be written to the same stdout stream that
+# `HUMAN_PR_LINES="$(forge_list_prs_for_issue ...)"` captures as PR data,
+# so the warning text made HUMAN_PR_LINES nonempty and tripped the
+# existing-PR skip path even though no PR was found.
+
+build_gitlab_api_failure_mock() {
+  local mock_bin="${TMPDIR}/gl-bin"
+  rm -rf "${mock_bin}"
+  mkdir -p "${mock_bin}"
+  # Simulate every GitLab API call failing (bad token, transient 5xx, etc.)
+  # — the only forge call reached before the regression check is
+  # forge_list_prs_for_issue's merge-requests lookup.
+  cat > "${mock_bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 1
+MOCKEOF
+  chmod +x "${mock_bin}/curl"
+  echo "${mock_bin}"
+}
+
+run_gitlab_prescript_output_test() {
+  local test_name="$1"
+  local expected_content="$2"
+  local expect_exit="$3"
+
+  local mock_bin
+  mock_bin="$(build_gitlab_api_failure_mock)"
+  local proto_out="${TMPDIR}/gl-prescript-output.txt"
+  : > "${proto_out}"
+
+  local env_cmd=(
+    env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY -u REPO_DIR -u CI_PROJECT_DIR
+    PATH="${mock_bin}:${PATH}"
+    ISSUE_NUMBER="42"
+    REPO_FULL_NAME="test-group/test-project"
+    ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+    CI_SERVER_HOST="gitlab.com"
+    FULLSEND_FORGE="gitlab"
+    GITLAB_TOKEN="fake-token"
+    FULLSEND_PRESCRIPT_OUTPUT="${proto_out}"
+  )
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/gl-stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${TMPDIR}/gl-stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! diff <(printf '%s' "${expected_content}") "${proto_out}" > "${TMPDIR}/gl-proto-diff.log" 2>&1; then
+    echo "FAIL: ${test_name} — protocol output mismatch"
+    cat "${TMPDIR}/gl-proto-diff.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# A GitLab API failure while checking for existing human PRs must fail
+# open: the pre-script output file stays empty (run proceeds) instead of
+# being populated with skipped=true from a stray stdout warning.
+run_gitlab_prescript_output_test "protocol-empty-on-gitlab-api-failure" \
+  "" \
+  0
+
 # --- Summary ---
 
 echo ""
