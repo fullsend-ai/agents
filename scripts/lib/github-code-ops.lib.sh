@@ -93,6 +93,14 @@ forge_list_prs_for_issue() {
   # Use closedByPullRequestsReferences to find only PRs with closing keywords
   # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
   # from text-search matching (e.g., #1 matching #12 in a PR title).
+  #
+  # GraphQL's Bot.login omits the REST "[bot]" suffix (e.g. "fullsend-ai-coder"
+  # instead of "fullsend-ai-coder[bot]"), so strip the suffix before comparing
+  # and additionally require __typename == "Bot" — matching only on the bare
+  # login would risk excluding a human whose login happens to collide with it.
+  # `gh api graphql` has no `--arg` flag of its own (that belongs to
+  # standalone `jq`), so fetch the raw JSON first and pipe it through a
+  # separate `jq -r --arg ...` invocation to apply the bot-login filter.
   gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
@@ -103,17 +111,19 @@ forge_list_prs_for_issue() {
             nodes {
               number
               url
-              author { login }
+              author { login __typename }
               state
             }
           }
         }
       }
-    }' --arg bot "${bot_login}" --arg coder "${coder_bot_login}" --jq '
+    }' 2>/dev/null \
+    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" '
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == "OPEN")
-           | select(.author.login != $bot
-               and .author.login != $coder)]
+           | select(.author.__typename != "Bot"
+               or (.author.login != $bot
+                   and .author.login != $coder))]
     | .[] | "\(.number)\t\(.author.login)\t\(.url)"
   ' 2>/dev/null || true
 }
