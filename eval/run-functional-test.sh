@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Tests for run-functional.sh's tier selection, release-tier case
-# filtering/gating, and the non-zero-case-exit ("false green") fix.
+# filtering/gating, the non-zero-case-exit ("false green") fix, and the
+# score.py-exit-under-set-e ("missing RESULT line") fix.
 #
 # Every invocation of the script under test runs with `env -i` and a
 # minimal stub PATH: a per-test bin/ directory stubs python3 (standing in
@@ -416,6 +417,20 @@ if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "002-full-only-case (exit missing)";
   pass "a case record with no exit_code fails the script"
 else
   fail "a case record with no exit_code fails the script (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_EXECUTE_EXIT=0 \
+  STUB_CASE_RESULTS="001-release-case:0,002-full-only-case:0" \
+  STUB_SCORE_EXIT=1 2>&1) || RC=$?
+if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "RESULT: score.py exited 1"; then
+  pass "a non-zero score.py exit under set -e still prints a RESULT line and fails the script"
+else
+  fail "a non-zero score.py exit under set -e still prints a RESULT line and fails the script (rc=$RC, output: $OUT)"
 fi
 rm -rf "$ROOT"
 

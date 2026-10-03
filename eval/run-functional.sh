@@ -293,10 +293,12 @@ echo "=== Scoring ==="
 if [[ -n "${EVALS_HOST_CREDENTIALS:-}" ]]; then
   export GOOGLE_APPLICATION_CREDENTIALS="$EVALS_HOST_CREDENTIALS"
 fi
+score_exit=0
 AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
   python3 "$SCORE_PY" judges \
     --run-id "$RUN_ID" \
-    --config "$EVAL_YAML"
+    --config "$EVAL_YAML" \
+  || score_exit=$?
 
 echo ""
 if [[ ${#case_failures[@]} -gt 0 ]]; then
@@ -305,6 +307,10 @@ if [[ ${#case_failures[@]} -gt 0 ]]; then
 fi
 if [[ $exec_exit -ne 0 ]]; then
   echo "=== RESULT: execute.py exited ${exec_exit} ===" >&2
+  exit 1
+fi
+if [[ $score_exit -ne 0 ]]; then
+  echo "=== RESULT: score.py exited ${score_exit} ===" >&2
   exit 1
 fi
 echo "=== RESULT: All phases complete ==="
