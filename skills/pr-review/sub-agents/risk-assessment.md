@@ -26,7 +26,9 @@ review verdicts.
    ```bash
    bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"
    ```
-   Capture the KEY=VALUE output. Each line is one signal.
+   Capture the KEY=VALUE output. Each line is one signal. The last
+   two, `TIER1_SCORE` and `RISK_FLOOR`, are already computed — copy
+   them into the output as `tier1_score` and `risk_floor`.
 
 2. Evaluate Tier 2 (git history) signals by running `git log` on
    the changed files listed in the context package. For each file,
@@ -38,7 +40,8 @@ review verdicts.
    acceptance criteria coverage, and note unresolved discussions.
 
 4. Compute the weighted composite score per the scoring model in the
-   linked skill (SKILL.md). Round to the nearest integer (1–5).
+   linked skill (SKILL.md), using `TIER1_SCORE` as the Tier 1 value.
+   Round to the nearest integer (1–5), then `max(score, RISK_FLOOR)`.
 
    4a. If prior risk assessment data is provided in the context,
        apply the **Re-review anchoring** rules below.
@@ -56,6 +59,8 @@ Return a JSON object:
 {
   "score": 3,
   "level": "elevated",
+  "tier1_score": 2.62,
+  "risk_floor": 1,
   "tier1_signals": [{"dimension": "...", "value": "..."}],
   "tier2_signals": [{"dimension": "...", "value": "..."}],
   "tier3_signals": [{"dimension": "...", "value": "..."}],
@@ -64,7 +69,8 @@ Return a JSON object:
 ```
 
 `score` (1–5 integer), `level` (low/moderate/elevated/high/critical),
-and `rationale` are required. Signal arrays are optional for graceful
+`rationale`, `tier1_score` and `risk_floor` are required (the last two
+only when the script did not return `UNKNOWN`). Signal arrays are optional for graceful
 degradation when individual tiers cannot be evaluated.
 
 Score-to-level mapping: 1=low, 2=moderate, 3=elevated, 4=high, 5=critical.

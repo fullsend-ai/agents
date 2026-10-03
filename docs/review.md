@@ -67,6 +67,14 @@ post-script applies a `risk/*` label reflecting the composite risk score:
 
 Risk labels are informational — they do not gate the review outcome.
 
+The sticky risk comment also carries the deterministic Tier 1 score
+(`risk-tier1.sh` computes it; the sub-agent copies it rather than
+re-scoring), a floor of `moderate` whenever a security-sensitive path is
+touched (or the changed-file list cannot be fetched, so nothing was
+measured), and a `degraded: tier1-only` marker when the sub-agent was
+unavailable and the score came from Tier 1 alone. Anything that routes
+or gates on the score must treat `degraded` as "no score".
+
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `priority/high`) but these are informational — they do not control agent
 behavior.
