@@ -20,7 +20,7 @@ agents:
     model: sonnet
   - source: harness/fix.yaml
     model: sonnet
-  - source: harness/review.yaml
+  - source: eval/harness/review.yaml
     model: sonnet
   - source: harness/retro.yaml
     model: sonnet

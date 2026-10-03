@@ -1,0 +1,16 @@
+# Eval-only overlay of the review harness. The repo-root config.yaml
+# registers this file instead of harness/review.yaml, so it applies to
+# the functional evals and behaviour tests only; consumers compose
+# harness/review.yaml and never see it.
+#
+# The parent run is already on Sonnet 5.5 through config.yaml's `sonnet`
+# alias. The review sub-agent personas name their own model, and on the
+# Claude runtime Claude Code resolves those names inside the sandbox from
+# ANTHROPIC_DEFAULT_*_MODEL, not from fullsend's models.aliases. Point
+# `opus` and `sonnet` at Sonnet 5.5 so no persona runs Opus; `haiku`
+# (security-triage) keeps Claude Code's default.
+base: ../../harness/review.yaml
+env:
+  sandbox:
+    ANTHROPIC_DEFAULT_OPUS_MODEL: claude-sonnet-5-5
+    ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-5-5
