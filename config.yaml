@@ -2,10 +2,27 @@ version: "1"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/fullsend-ai/fullsend/"
   - "https://raw.githubusercontent.com/fullsend-ai/agents/"
+# This file is the workspace the functional evals and behaviour tests run
+# in (FULLSEND_DIR = repo root); consumers configure agents through their
+# own .fullsend/config.yaml. The evals run every agent on Sonnet 5.5: the
+# harness defaults (harness/*.yaml model:) stay as shipped, and each entry
+# below overrides the parent model to the `sonnet` alias, which this block
+# pins to an id the eval Vertex project serves. A pinned alias has no
+# fallback, so a project without this id fails the run instead of
+# silently using another model. EVAL_MODEL still overrides per run.
+models:
+  aliases:
+    sonnet: claude-sonnet-5-5
 agents:
   - source: harness/triage.yaml
+    model: sonnet
   - source: harness/code.yaml
+    model: sonnet
   - source: harness/fix.yaml
+    model: sonnet
   - source: harness/review.yaml
+    model: sonnet
   - source: harness/retro.yaml
+    model: sonnet
   - source: harness/prioritize.yaml
+    model: sonnet

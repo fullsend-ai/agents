@@ -113,8 +113,8 @@ runner:
 # Declared here for harness reporting / parity with sibling evals only —
 # same "advisory / not enforced" class of limitation as max_budget_usd above.
 models:
-  skill: claude-opus-4-6
-  judge: claude-opus-4-6
+  skill: claude-sonnet-5-5
+  judge: claude-sonnet-5-5
 
 dataset:
   path: cases

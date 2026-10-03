@@ -57,8 +57,8 @@ runner:
     EVAL_EFFORT: $EVAL_EFFORT
 
 models:
-  skill: claude-opus-4-6
-  judge: claude-opus-4-6
+  skill: claude-sonnet-5-5
+  judge: claude-sonnet-5-5
 
 dataset:
   path: cases
