@@ -203,19 +203,35 @@ queued PRs into one tested commit; the combined group's `headBranch` then
 names a *different* PR's number even though this PR's changes are included,
 and that run is invisible to the filter above. Treat the filtered result as
 an initial association only — also list unfiltered `merge_group` runs in
-the same window and, for each, confirm combined-group membership using
-commit ancestry rather than branch name (e.g.
-`git merge-base --is-ancestor <this-PR's-revision-sha> <run-headSha>`, or
-inspect the synthetic commit's parents via
-`gh api repos/${REPO_FULL_NAME}/commits/<run-headSha>`).
+the same window and, for each, confirm combined-group membership.
+
+Plain ancestry is not sufficient by itself: with merge-commit merging, once
+this PR lands, its revision SHA becomes an ancestor of every later commit on
+the base branch too, so a bare
+`git merge-base --is-ancestor <this-PR's-revision-sha> <run-headSha>` would
+also match unrelated `merge_group` runs that happened long after this PR
+already merged. Confirm the group actually *introduced* the revision rather
+than merely having it already present through the base branch: check that
+the revision is an ancestor of the run's `headSha` but is **not** already an
+ancestor of the merge group's base commit at the time of that attempt (the
+commit the queue entry forked from — read from the `merge_group` event's
+`merge_group.base_sha`, or by inspecting the synthetic commit's parents via
+`gh api repos/${REPO_FULL_NAME}/commits/<run-headSha>`), and additionally
+restrict candidate runs to this PR's own queue-attempt interval — between
+when the PR entered the merge queue and when it left it (merged, was
+dequeued, or the queue entry's attempt concluded) — using each candidate
+run's `createdAt`. A run whose ancestry check passes only because the base
+already contains the revision, or whose `createdAt` falls outside that
+interval, is not this PR's merge attempt.
 
 Checks/status queries elsewhere in this skill run against this PR's own
 revision SHAs; they do not cover synthetic queue commits. Third-party CI
 (Checks API records or status contexts) triggered only by a push to a
 `gh-readonly-queue/*` ref is invisible unless queried directly. Discover
 queue refs/SHAs independently of the Actions run list above (e.g.
-`git ls-remote origin 'refs/gh-readonly-queue/*'` while the queue entry is
-live, or queue metadata from the `merge_group` event if available), then
+`git ls-remote origin 'refs/heads/gh-readonly-queue/*'` while the queue
+entry is live — GitHub queue branches live under `refs/heads/`, not bare
+`refs/` — or queue metadata from the `merge_group` event if available), then
 run the check-runs and statuses queries from "Enumerate revisions" above
 against each recovered queue SHA. Raising `--limit` on the Actions query
 only recovers more Actions runs — it cannot recover this third-party
