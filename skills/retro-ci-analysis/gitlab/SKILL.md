@@ -21,13 +21,28 @@ REPO_ENCODED=$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)
 
 ## Enumerate revisions
 
-Each diff version of the MR records the revision's head/base/start SHAs:
+Each diff version of the MR records the revision's head/base/start SHAs.
+This endpoint is paginated — a single `per_page=100` request silently
+truncates MRs with more than 100 versions, omitting their older revision
+SHAs even though pipeline enumeration below is paginated. Page until an
+empty array is returned and union the revision SHAs from every page:
 
 ```bash
-curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/versions?per_page=100" \
-  | jq '.[] | {id, head_commit_sha, base_commit_sha, created_at}'
+page=1
+while :; do
+  PAGE_RESULT=$(curl --fail --silent --show-error \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/versions?per_page=100&page=${page}") || {
+      echo "coverage gap: could not retrieve MR version page ${page}; revision inventory may be incomplete"
+      break
+    }
+  COUNT=$(echo "${PAGE_RESULT}" | jq 'length')
+  if [ "${COUNT}" -eq 0 ]; then
+    break
+  fi
+  echo "${PAGE_RESULT}" | jq '.[] | {id, head_commit_sha, base_commit_sha, created_at}'
+  page=$((page + 1))
+done
 ```
 
 ## Enumerate pipelines across revisions and merge-time runs

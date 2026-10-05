@@ -294,14 +294,22 @@ for attempt in $(seq 1 "${RUN_ATTEMPTS}"); do
   JOBS=$(gh api --paginate "repos/${REPO_FULL_NAME}/actions/runs/${RUN_ID}/attempts/${attempt}/jobs?per_page=100")
   echo "${JOBS}" | jq --arg attempt "${attempt}" '.jobs[] | {attempt: ($attempt | tonumber), name, conclusion, id}'
 
-  # Fetch failed-job logs for *this* attempt while the loop variable still
-  # names it. Doing this after the loop instead reuses whichever value
+  # Fetch logs for *this* attempt's non-passing jobs while the loop variable
+  # still names it. Doing this after the loop instead reuses whichever value
   # ${attempt} was left holding (the last attempt), so a failed attempt 1
   # followed by a passing attempt 2 would list both attempts' job outcomes
   # but silently skip attempt 1's failure logs — the evidence classification
-  # actually needs.
-  if echo "${JOBS}" | jq -e '.jobs[] | select(.conclusion == "failure")' >/dev/null; then
-    gh run view "${RUN_ID}" --repo "${REPO_FULL_NAME}" --attempt "${attempt}" --log-failed
+  # actually needs. Gating on `conclusion == "failure"` alone also misses an
+  # attempt whose jobs all ended `timed_out` (a timeout, not a failure),
+  # losing that attempt's log inspection entirely — check both conclusions,
+  # and fetch each qualifying job's log by job ID instead of `--log-failed`
+  # so timed-out jobs aren't dropped.
+  NON_PASSING_IDS=$(echo "${JOBS}" | jq -r '.jobs[] | select(.conclusion == "failure" or .conclusion == "timed_out") | .id')
+  if [ -n "${NON_PASSING_IDS}" ]; then
+    echo "${NON_PASSING_IDS}" | while IFS= read -r JOB_ID; do
+      gh api "repos/${REPO_FULL_NAME}/actions/jobs/${JOB_ID}/logs" \
+        || echo "::warning::Could not fetch log for job ${JOB_ID} (attempt ${attempt}) — record as a coverage gap"
+    done
   fi
 done
 
