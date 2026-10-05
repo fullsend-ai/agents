@@ -197,6 +197,30 @@ gh run list --repo "${REPO_FULL_NAME}" --event merge_group \
   | jq --arg pr "${PR_NUMBER}" '[.[] | select(.headBranch | test("/pr-" + $pr + "-"))]'
 ```
 
+Branch-name matching on `pr-<number>-` only finds merge groups where *this*
+PR is the batch's own queue entry. GitHub's merge queue can combine several
+queued PRs into one tested commit; the combined group's `headBranch` then
+names a *different* PR's number even though this PR's changes are included,
+and that run is invisible to the filter above. Treat the filtered result as
+an initial association only — also list unfiltered `merge_group` runs in
+the same window and, for each, confirm combined-group membership using
+commit ancestry rather than branch name (e.g.
+`git merge-base --is-ancestor <this-PR's-revision-sha> <run-headSha>`, or
+inspect the synthetic commit's parents via
+`gh api repos/${REPO_FULL_NAME}/commits/<run-headSha>`).
+
+Checks/status queries elsewhere in this skill run against this PR's own
+revision SHAs; they do not cover synthetic queue commits. Third-party CI
+(Checks API records or status contexts) triggered only by a push to a
+`gh-readonly-queue/*` ref is invisible unless queried directly. Discover
+queue refs/SHAs independently of the Actions run list above (e.g.
+`git ls-remote origin 'refs/gh-readonly-queue/*'` while the queue entry is
+live, or queue metadata from the `merge_group` event if available), then
+run the check-runs and statuses queries from "Enumerate revisions" above
+against each recovered queue SHA. Raising `--limit` on the Actions query
+only recovers more Actions runs — it cannot recover this third-party
+evidence.
+
 Whether or not the filtered result is empty, check whether the oldest run
 in the *unfiltered* repo-wide query predates the PR's own timeline (e.g.
 its first commit or the point it became mergeable). A nonempty filtered
@@ -204,7 +228,8 @@ result does not by itself prove the window reaches back far enough — a busy
 repository can return a recent passing attempt while an earlier failing
 attempt lies outside the window. If the window doesn't reach that far back,
 raise `--limit` further or page with `--limit` increments until it does; if
-it still can't be exhausted, record a coverage gap instead of reporting "no
+it still can't be exhausted, or if combined-group membership or queue SHAs
+cannot be recovered, record a coverage gap instead of reporting "no
 merge-queue runs" or treating the filtered result as complete.
 
 `headSha` on a `merge_group` run is a synthetic commit GitHub generates for

@@ -180,11 +180,30 @@ curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${PIPELINE_PROJECT_ID}/jobs/${JOB_ID}/trace"
 
-# Artifacts (skip when the job published none)
-curl --fail --silent --show-error \
+# Artifacts (skip when the job published none). GitLab can respond with a
+# 302 to object storage/CDN for externally-stored artifacts; --fail alone
+# treats that redirect as success and saves its response body instead of
+# the archive. Resolve the redirect ourselves first so we can skip
+# forwarding PRIVATE-TOKEN to whatever host it points to (the presigned
+# redirect target already carries its own auth, and may not be a GitLab
+# host at all).
+ARTIFACT_URL="https://${GITLAB_HOST}/api/v4/projects/${PIPELINE_PROJECT_ID}/jobs/${JOB_ID}/artifacts"
+REDIRECT_TARGET=$(curl --silent --show-error --output /dev/null \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  --output "/tmp/ci-artifacts-${JOB_ID}.zip" \
-  "https://${GITLAB_HOST}/api/v4/projects/${PIPELINE_PROJECT_ID}/jobs/${JOB_ID}/artifacts"
+  --write-out '%{redirect_url}' "${ARTIFACT_URL}")
+
+if [ -n "${REDIRECT_TARGET}" ]; then
+  curl --fail --silent --show-error \
+    --output "/tmp/ci-artifacts-${JOB_ID}.zip" "${REDIRECT_TARGET}"
+else
+  curl --fail --silent --show-error \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --output "/tmp/ci-artifacts-${JOB_ID}.zip" "${ARTIFACT_URL}"
+fi
+
+# Validate the result is actually an archive before treating it as
+# evidence — a swallowed redirect or error page is not a zip.
+unzip -l "/tmp/ci-artifacts-${JOB_ID}.zip" > /dev/null 2>&1 || echo "coverage gap: artifact for job ${JOB_ID} did not download as a valid archive"
 ```
 
 If a log or artifact cannot be fetched, note the gap and continue. Search

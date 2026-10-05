@@ -76,15 +76,24 @@ code change.
 
 Compare repeated executions of the same test/job: across the same commit
 (reruns) and across different PR revisions. A test that fails then passes
-on the *same* commit with no intervening change is strong evidence of
-flakiness or infrastructure flakiness, not a regression.
+on the *same* commit with no intervening change is evidence of
+nondeterminism — it does not by itself rule out a PR regression. A PR can
+introduce an intermittent defect (e.g., a race condition) that does not
+reproduce on every run. Before excluding PR causation, correlate the
+fail/pass pattern with this PR's diff and, when available, pre-change
+executions of the same test/job on the base revision. If the diff
+plausibly explains intermittent behavior in the failing path, or
+pre-change executions are unavailable for comparison, retain an
+**Inconclusive** classification rather than ruling out a regression.
 
 Classify each finding as one of:
 
 - **Likely PR regression** — the failure correlates with a specific change
   in this PR's diff and reproduces consistently on the tested commit.
 - **Likely flaky test** — same test/job both fails and passes across
-  executions of the same commit, with no explanatory code change.
+  executions of the same commit, with no explanatory code change, and
+  nothing in the diff plausibly explains intermittent behavior in the
+  failing path.
 - **Transient infrastructure** — failure matches infra symptoms (network
   timeout, registry/runner unavailability, OOM-killed runner) uncorrelated
   with the diff or test logic.
