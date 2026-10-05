@@ -184,6 +184,12 @@ already stripped the payload.
 - Does the change fit the overall design of the module/system?
 - Is the complexity proportional to the value delivered?
 - Are there simpler alternatives that achieve the same goal?
+- **Multi-issue scope bundling:** escalate to at least **medium**
+  severity (category `scope-bundling`) when commits/description
+  reference 2+ distinct issues AND changed files span separate domains
+  (e.g., issue-specific docs vs. general-purpose skills/infra);
+  recommend splitting the PR. Same-domain bundling (a feature with its
+  own tests) stays low severity.
 
 #### Style/conventions
 
