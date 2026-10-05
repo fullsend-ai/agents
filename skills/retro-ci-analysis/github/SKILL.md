@@ -119,8 +119,37 @@ gh run list --repo "${REPO_FULL_NAME}" --branch "${HEAD_BRANCH}" \
 ```
 
 Group the result by `headSha` to see which runs tested which revision. The
-`gh` CLI paginates via `--limit`, not a cursor flag — raise the limit if a
-long-lived PR has more runs than the default window.
+`gh` CLI paginates via `--limit`, not a cursor flag, but this endpoint caps
+combined results at 1,000 runs regardless of how high `--limit` is set — a
+busy or long-lived PR's branch can have more executions than that before
+every revision is covered, and raising `--limit` alone cannot recover the
+rest. Detect truncation by checking whether the returned run count hit the
+requested `--limit` (or 1,000, whichever is smaller); when it does,
+partition the query into bounded `--created` windows that together span
+the PR's full review interval and union the results:
+
+```bash
+# Example: split the review interval into date-bounded windows so no
+# single query needs more than 1,000 results.
+gh run list --repo "${REPO_FULL_NAME}" --branch "${HEAD_BRANCH}" \
+  --created "2024-01-15..2024-02-01" \
+  --json databaseId,name,workflowName,headSha,event,conclusion,status,createdAt,url \
+  --limit 1000
+```
+
+Also supplement — not replace — the branch-filtered query with per-revision
+Actions-run lookups driven by the SHAs collected in "Enumerate revisions"
+above, since those don't depend on the branch window at all:
+
+```bash
+gh api --paginate "repos/${REPO_FULL_NAME}/actions/runs?head_sha=${SHA}" \
+  --jq '.workflow_runs[] | {databaseId: .id, name, workflowName: .name, headSha: .head_sha, event, conclusion, status, createdAt: .created_at, url: .html_url}'
+```
+
+Record an explicit coverage gap whenever the branch-filtered window is
+exhausted at the cap and neither the `--created` partitioning nor the
+per-revision supplement can confirm complete coverage of the review
+interval.
 
 Branch name alone does not establish that a run belongs to *this* PR: a
 different fork, or a later PR, can reuse the same branch name against this
