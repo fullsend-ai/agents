@@ -7,7 +7,10 @@ description: >
   reference solution: the repo's own tests must still pass (deterministic),
   and a model judge scores the PR against the epic's acceptance criteria,
   with the fullsend review agent's findings as evidence. The pipeline guard in
-  eval/code stays as is.
+  eval/code stays as is. The matrix below runs the same cases and judges for
+  each coder model (one arm per model); run-fullsend.sh picks the runtime
+  from the model id (provider-prefixed ids such as openai/... run on pi,
+  bare Anthropic ids on Claude Code) unless EVAL_RUNTIME says otherwise.
 
 execution:
   # The eval's identity for the harness (run directories, reports). The
@@ -36,7 +39,7 @@ execution:
     EVAL_REVIEW_RUNTIME: $EVAL_REVIEW_RUNTIME
     EVAL_REVIEW_MODEL: $EVAL_REVIEW_MODEL
     EVAL_REVIEW_EFFORT: $EVAL_REVIEW_EFFORT
-    # OpenAI key for GPT arms on the pi/codex runtimes (runner-side only).
+    # OpenAI key for OpenAI-model arms (pi runtime) and the codex judge (runner-side only).
     OPENAI_API_KEY: $OPENAI_API_KEY
     EVAL_SKIP_REVIEW: $EVAL_SKIP_REVIEW
     # Inner `timeout` around the code agent's fullsend run (see
@@ -74,6 +77,9 @@ runner:
   # run, from models.skill below. run-fullsend.sh turns them into
   # `fullsend run --model/--effort`, so harness/code.yaml itself stays untouched
   # and metrics.json records both requested_model and the resolved model.
+  # Effort is passed explicitly so every arm runs at the same level; high is
+  # what harness/code.yaml sets, so the Claude arm is unchanged by it.
+  effort: high
   command:
     - "run-fullsend.sh"
     - "code"            # the fullsend agent under test (not the eval name)
@@ -86,10 +92,10 @@ models:
   # Baseline pin for the code agent. harness/code.yaml says `model: opus`, an
   # alias that resolves to Opus 5 where the Vertex project serves it and falls
   # back to Opus 4.6 where it does not (the fleet projects, as of 2026-09-21).
-  # Pin the id so every project runs the same baseline. Local test runs
-  # override this with EVAL_MODEL (Sonnet).
+  # Pin the id so every project runs the same baseline. A plain run uses this;
+  # a matrix run (eval-anova) takes each model from matrix.factors.model.
   skill: claude-opus-4-6
-  # Judge: GPT-6 Sol on the codex runner, the same judge as the GPT arm so
+  # Judge: GPT-6 Sol on the codex runner, the same judge for every arm so
   # the arms are scored identically. Bill (2026-09-26): Sol and Opus 4.6 are
   # both second-tier models and Sol is current, so it is a fair judge for the
   # Opus 4.6 baseline; judging Opus 5 would want a top-tier judge.
@@ -98,9 +104,13 @@ models:
 # eval-anova matrix (agent-eval-harness >= 1.49). Single baseline cell until a
 # budget exists; total runs = conditions x cases x replications.
 matrix:
+  # One arm per coder model, same cases, same judges. claude-opus-4-6 is the
+  # fleet's code agent as it runs today; openai/gpt-6-luna is the cheaper
+  # comparison on the pi runtime.
   factors:
     model:
       - claude-opus-4-6
+      - openai/gpt-6-luna
   replications: 1
 
 dataset:
@@ -288,7 +298,7 @@ judges:
     agent:
       # codex runner: the judge is a codex session; permission_mode plan maps
       # to codex's read-only filesystem sandbox (the verdict comes back via
-      # the stdout fallback). Effort high. Same judge as eval/code-rhai-gpt so
+      # the stdout fallback). Effort high. The same judge for every arm so
       # the two arms are scored identically (2026-09-26).
       runner:
         type: codex
@@ -365,7 +375,7 @@ judges:
     agent:
       # codex runner: the judge is a codex session; permission_mode plan maps
       # to codex's read-only filesystem sandbox (the verdict comes back via
-      # the stdout fallback). Effort high. Same judge as eval/code-rhai-gpt so
+      # the stdout fallback). Effort high. The same judge for every arm so
       # the two arms are scored identically (2026-09-26).
       runner:
         type: codex

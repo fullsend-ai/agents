@@ -133,16 +133,24 @@ not a verdict; the judge prompt says so. Because the review agent is itself
 under evaluation (AISDLC-24), compare judge scores with and without the
 review input on the first few cases, and keep the recorded version.
 
-## Model pin and matrix runs
+## Model pin, arms and matrix runs
 
 `harness/code.yaml` says `model: opus`, an alias that Claude Code resolves to
 Opus 5 where the Vertex project serves it and to Opus 4.6 where it does not
 (the fleet projects, as of 2026-09-21). `models.skill` pins the baseline id;
 `runner.command` carries the harness `{model}`/`{effort}` placeholders, which
 `run-fullsend.sh` turns into `fullsend run --model/--effort`, so the production
-harness file is untouched. `EVAL_MODEL` overrides it per run (local testing
-uses Sonnet). `EVAL_REVIEW_MODEL` does the same for the review step;
-`EVAL_SKIP_REVIEW=1` skips it.
+harness file is untouched.
+
+Each coder model is an arm. `matrix.factors.model` lists the arms (today
+`claude-opus-4-6`, the fleet's code agent as it runs, and `openai/gpt-6-luna`
+as the cheaper comparison); the cases, the review step and the judges are the
+same for every arm. `run-fullsend.sh` picks the runtime from the model id,
+provider-prefixed ids such as `openai/...` on pi and bare Anthropic ids on
+Claude Code, unless `EVAL_RUNTIME` is set. A plain `run-functional.sh code-rhai`
+runs the baseline arm; `EVAL_MODEL=openai/gpt-6-luna` runs the other; a matrix
+run through `eval-anova` runs them all. `EVAL_REVIEW_MODEL` overrides the
+review step's model; `EVAL_SKIP_REVIEW=1` skips it.
 
 Repeated trials and comparisons use the harness's `eval-anova` and
 `eval-compare` skills (agent-eval-harness 1.49 or later; the submodule here is
