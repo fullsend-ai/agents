@@ -272,6 +272,13 @@ override_args=()
 # would also hit GitHub's self-review 422, since one token opens the PR and
 # would review it).
 [[ "${EVAL_NO_POST_SCRIPT:-}" == "1" ]] && override_args+=(--no-post-script)
+# Runtime follows the model when not set explicitly: a provider-prefixed id
+# (openai/gpt-6-luna, google-vertex/gemini-..., xai/grok-...) is a pi model,
+# since the Claude Code runtime only serves Anthropic models; a bare Anthropic
+# id keeps fullsend's default (claude). Lets one eval's matrix mix vendors.
+if [[ -z "${EVAL_RUNTIME:-}" && "${EVAL_MODEL:-}" == */* ]]; then
+  EVAL_RUNTIME=pi
+fi
 [[ -n "${EVAL_RUNTIME:-}" ]] && override_args+=(--runtime "$EVAL_RUNTIME")
 [[ -n "${EVAL_MODEL:-}" ]] && override_args+=(--model "$EVAL_MODEL")
 [[ -n "${EVAL_EFFORT:-}" ]] && override_args+=(--effort "$EVAL_EFFORT")
