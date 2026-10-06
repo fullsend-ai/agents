@@ -139,9 +139,12 @@ on a verified, clean revert PR.
 
 A PR **bundles scope** when both of the following hold:
 
-- **Multiple issues referenced:** its commits, title, or description
-  reference two or more distinct issue numbers or issue links (e.g.
-  `Closes #42` and `Closes #57`, or prose naming two separate issues).
+- **Multiple issues referenced:** its title or description references
+  two or more distinct issue numbers or issue links (e.g. `Closes #42`
+  and `Closes #57`, or prose naming two separate issues). Your context
+  package does not include commit messages — judge this signal from
+  `pr_metadata` and `issue_context` only, not from commits you cannot
+  see.
 - **Separate domains:** the changed files fall into clearly different
   categories — e.g., issue-specific docs/specs/plans vs.
   general-purpose skills/infrastructure, or unrelated feature or
