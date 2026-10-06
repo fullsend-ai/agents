@@ -22,6 +22,11 @@ IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
 # Total commit count, used by "Commit messages" below to detect the
 # commits endpoint's 250-commit fetch cap.
 PR_COMMIT_COUNT=$(echo "$PR_DATA" | jq -r '.commits')
+PR_COMMIT_COUNT_FILE=/sandbox/workspace/pr-commit-count
+case "$PR_COMMIT_COUNT" in
+  ''|*[!0-9]*) printf '%s\n' unknown > "$PR_COMMIT_COUNT_FILE" ;;
+  *) printf '%s\n' "$PR_COMMIT_COUNT" > "$PR_COMMIT_COUNT_FILE" ;;
+esac
 
 # PR files list — every page, flattened, saved for later Bash calls
 # (shell variables do not survive between calls; files do)
@@ -114,12 +119,20 @@ gh api "repos/${ISSUE_REPO}/issues/<issue-number>/comments"
 # this fetch is complete; when it is not, mark the context incomplete
 # instead of silently passing a truncated commit list as the full set.
 COMMITS_FILE=/sandbox/workspace/pr-commits.json
+PR_COMMIT_COUNT_FILE=/sandbox/workspace/pr-commit-count
 rm -f /sandbox/workspace/pr-commit-messages.txt /sandbox/workspace/pr-commit-messages-incomplete
+PR_COMMIT_COUNT=unknown
+if test -r "$PR_COMMIT_COUNT_FILE"; then
+  PR_COMMIT_COUNT=$(cat "$PR_COMMIT_COUNT_FILE")
+fi
+case "$PR_COMMIT_COUNT" in
+  ''|*[!0-9]*) PR_COMMIT_COUNT=unknown ;;
+esac
 if gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$COMMITS_FILE"; then
   jq -r 'add // [] | [.[] | .commit.message] | join("\n---\n")' "$COMMITS_FILE" > /sandbox/workspace/pr-commit-messages.txt
-  if test "${PR_COMMIT_COUNT:-0}" -gt 250; then
+  if test "$PR_COMMIT_COUNT" = unknown || test "$PR_COMMIT_COUNT" -gt 250; then
     printf '%s\n' true > /sandbox/workspace/pr-commit-messages-incomplete
-    echo "COMMIT MESSAGES INCOMPLETE — PR has ${PR_COMMIT_COUNT} commits, endpoint capped at 250; set commit_messages_incomplete in the context package" >&2
+    echo "COMMIT MESSAGES INCOMPLETE — PR commit count is ${PR_COMMIT_COUNT}; endpoint capped at 250; set commit_messages_incomplete in the context package" >&2
   fi
 else
   echo "COMMIT MESSAGES FETCH FAILED — omit commit_messages from the context package; do not treat as zero commit-based issue references" >&2
