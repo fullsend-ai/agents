@@ -19,6 +19,9 @@ fetching to these commands when `FULLSEND_FORGE=github`.
 PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
 HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
 IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
+# Total commit count, used by "Commit messages" below to detect the
+# commits endpoint's 250-commit fetch cap.
+PR_COMMIT_COUNT=$(echo "$PR_DATA" | jq -r '.commits')
 
 # PR files list — every page, flattened, saved for later Bash calls
 # (shell variables do not survive between calls; files do)
@@ -86,11 +89,14 @@ echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata
-gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
+# Fetch linked issue metadata. ISSUE_REPO is the reference's resolved
+# repository (SKILL.md step 2b): REPO_FULL_NAME for a bare `#N`
+# reference, or the named `owner/repo` for an `owner/repo#N` reference.
+# Never fetch a qualified cross-repo reference from REPO_FULL_NAME.
+gh api "repos/${ISSUE_REPO}/issues/<issue-number>" --jq '{title, body}'
 
 # Fetch issue comments
-gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
+gh api "repos/${ISSUE_REPO}/issues/<issue-number>/comments"
 ```
 
 ## Commit messages
@@ -101,10 +107,20 @@ gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
 # inside a commit message. Check the fetch status explicitly: without
 # this, a failed `gh` call with empty stdout still lets `jq` succeed,
 # producing an empty-but-"ok" file indistinguishable from "no commits".
+#
+# GitHub's commits endpoint caps the returned list at 250 commits —
+# `--paginate` does not lift that cap. PR_COMMIT_COUNT (the PR's total
+# commit count, fetched in "PR data fetching" above) tells us whether
+# this fetch is complete; when it is not, mark the context incomplete
+# instead of silently passing a truncated commit list as the full set.
 COMMITS_FILE=/sandbox/workspace/pr-commits.json
-rm -f /sandbox/workspace/pr-commit-messages.txt
+rm -f /sandbox/workspace/pr-commit-messages.txt /sandbox/workspace/pr-commit-messages-incomplete
 if gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$COMMITS_FILE"; then
   jq -r 'add // [] | [.[] | .commit.message] | join("\n---\n")' "$COMMITS_FILE" > /sandbox/workspace/pr-commit-messages.txt
+  if test "${PR_COMMIT_COUNT:-0}" -gt 250; then
+    printf '%s\n' true > /sandbox/workspace/pr-commit-messages-incomplete
+    echo "COMMIT MESSAGES INCOMPLETE — PR has ${PR_COMMIT_COUNT} commits, endpoint capped at 250; set commit_messages_incomplete in the context package" >&2
+  fi
 else
   echo "COMMIT MESSAGES FETCH FAILED — omit commit_messages from the context package; do not treat as zero commit-based issue references" >&2
 fi
