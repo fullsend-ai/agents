@@ -2723,14 +2723,20 @@ done
 # Risk verdict gate tests
 # ---------------------------------------------------------------------------
 
-# Builds a throwaway git checkout under "${run_dir}/repo" that is either a
-# full clone ("full") or a shallow clone ("shallow"), for tests that exercise
-# the Tier 2 deepen-failure detection (REPO_DIR + is-shallow-repository).
+# Builds a throwaway checkout under "${run_dir}/repo" for tests that exercise
+# the Tier 2 deepen-failure detection (REPO_DIR + is-shallow-repository):
+# a full clone ("full"), a shallow clone ("shallow"), or an existing
+# directory that is not a git repo at all ("not-a-repo"), which makes
+# `git rev-parse --is-shallow-repository` fail outright.
 make_risk_test_repo() {
   local run_dir="$1"
   local mode="$2"
   local src_repo="${run_dir}/repo-src"
   rm -rf "${src_repo}" "${run_dir}/repo"
+  if [ "${mode}" = "not-a-repo" ]; then
+    mkdir -p "${run_dir}/repo"
+    return
+  fi
   git init -q "${src_repo}"
   git -C "${src_repo}" -c user.email=test@test.invalid -c user.name=test \
     commit -q --allow-empty -m init
@@ -2775,7 +2781,11 @@ run_risk_verdict_test() {
     export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
     export REVIEW_RISK_VERDICT_THRESHOLD="${threshold}"
     export MOCK_PR_FILES="README.md"
-    if [[ -n "${fetch_depth}" ]]; then
+    if [[ "${fetch_depth}" == "EMPTY" ]]; then
+      # Sentinel: export an explicitly empty REVIEW_GIT_FETCH_DEPTH="",
+      # distinct from the "" default below which means "leave unset".
+      export REVIEW_GIT_FETCH_DEPTH=""
+    elif [[ -n "${fetch_depth}" ]]; then
       export REVIEW_GIT_FETCH_DEPTH="${fetch_depth}"
     fi
     if [[ -n "${repo_mode}" ]]; then
@@ -3422,6 +3432,23 @@ run_risk_verdict_test "risk-v-tier2-unset-full" \
   "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
   "" "downgrading approve to comment" \
   "" "full"
+
+# --- Explicitly empty REVIEW_GIT_FETCH_DEPTH="" + shallow repo → pre-script
+#     (pre-review.src.sh:177-179) also skips deepening for an explicit empty
+#     value, so the post-script must not coerce "" to "0" and must not force
+#     a degraded downgrade here either ---
+run_risk_verdict_test "risk-v-tier2-empty-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment" \
+  "EMPTY" "shallow"
+
+# --- Unset REVIEW_GIT_FETCH_DEPTH + existing checkout where `git
+#     rev-parse --is-shallow-repository` fails outright (not a git repo) →
+#     unknown history fails closed as a degraded downgrade ---
+run_risk_verdict_test "risk-v-tier2-git-error" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (degraded)" "" \
+  "" "not-a-repo"
 
 # --- Threshold 6 disables the gate even with a shallow repo ---
 run_risk_verdict_test "risk-v-tier2-threshold6-shallow" \
