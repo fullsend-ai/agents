@@ -960,10 +960,33 @@ if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" = "true" ]; then
       RISK_NOTICE+=$'> **Risk assessment missing** — risk assessment is enabled but no score was\n'
       RISK_NOTICE+=$'> produced. A human reviewer must evaluate this PR.\n'
     else
+      # Detect a failed Tier 2 clone-deepen attempt independently of what the
+      # sub-agent reported. REVIEW_GIT_FETCH_DEPTH is not forwarded to the
+      # sandbox, so the sub-agent cannot reliably tell "skipped" (deepening
+      # never attempted) from "degraded" (deepening attempted and failed)
+      # and may omit `degraded` even when the repo is still shallow. Mirror
+      # the unset-defaults-to-"0" rule from pre-review.src.sh:178-179 (an
+      # explicit non-zero value means deepening was never attempted, which
+      # is the existing "skipped" behaviour) and check the same checkout
+      # path pre-review.src.sh:182 uses.
+      TIER2_DEEPEN_FAILED=false
+      if [ "${REVIEW_GIT_FETCH_DEPTH:-0}" = "0" ]; then
+        RISK_TARGET_DIR="${REPO_DIR:-${GITHUB_WORKSPACE:-.}/target-repo}"
+        if [ -d "${RISK_TARGET_DIR}" ] \
+          && git -C "${RISK_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null | grep -q true; then
+          TIER2_DEEPEN_FAILED=true
+        fi
+      fi
+
       RISK_HAS_DEGRADED=$(jq '.risk_assessment | has("degraded")' "${RESULT_FILE}")
       RISK_HAS_SCORE=$(jq '.risk_assessment | has("score")' "${RESULT_FILE}")
 
-      if [ "${RISK_HAS_DEGRADED}" = "true" ]; then
+      if [ "${TIER2_DEEPEN_FAILED}" = "true" ]; then
+        RISK_STATUS="degraded"
+        RISK_NOTICE=$'\n\n---\n\n'
+        RISK_NOTICE+=$'> **Risk assessment degraded** — the risk score was not fully computed\n'
+        RISK_NOTICE+="> (tier2-deepen-failed). A human reviewer must evaluate this PR."$'\n'
+      elif [ "${RISK_HAS_DEGRADED}" = "true" ]; then
         RISK_DEGRADED_REASON=$(jq -r '.risk_assessment.degraded' "${RESULT_FILE}" | tr -dc '[:print:]')
         RISK_STATUS="degraded"
         RISK_NOTICE=$'\n\n---\n\n'
