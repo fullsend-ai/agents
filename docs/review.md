@@ -44,8 +44,8 @@ These labels reflect the review outcome and are updated after each review.
 | Label | Meaning |
 |-------|---------|
 | `ready-for-review` | Workflow state marker on the PR. Applied by the [code agent](code.md) after pushing. In per-repo installs, triggers review when applied to a PR. |
-| `ready-for-merge` | The review agent approved the PR. No blocking findings. |
-| `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. |
+| `ready-for-merge` | The review agent approved the PR. No blocking findings. Also applied when the agent would have approved but the PR touches protected paths and an authorized human has already approved the current HEAD. |
+| `requires-manual-review` | The review agent found issues that require human judgment — it could not confidently approve or reject. Also applied when the agent would have approved a protected-path PR and no authorized human approval is on the current HEAD. |
 | `rejected` | The review agent rejected the PR and closed it. |
 
 When the review agent requests changes (without rejecting), no outcome label is
@@ -53,6 +53,14 @@ applied — the `pull_request_review` event triggers the [fix agent](fix.md) dir
 
 Stale outcome labels from prior review runs are removed before the new one is
 applied.
+
+Protected-path PRs cannot be approved by the agent — the review is posted as a
+comment and the protected-path notice remains in the body. If an authorized
+human (write/maintain/admin on GitHub; Developer or above on GitLab) has already
+approved the current HEAD and the forge still reports the PR as approved, the
+outcome label is `ready-for-merge` instead of `requires-manual-review`. The check
+fails closed on API errors, bot-only approvals, stale SHAs, outstanding
+`CHANGES_REQUESTED`, and draft PRs.
 
 When risk assessment is enabled (`REVIEW_RISK_ASSESSMENT_ENABLED`), the
 post-script applies a `risk/*` label reflecting the composite risk score:
