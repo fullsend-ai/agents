@@ -37,8 +37,6 @@ judge_notes: |
   UI modules live under packages/ and are wired through the frontend plugin
   system, which the repo's AGENTS.md and docs describe.
 
-labels:
-  forbidden: []
 
 # First-run budgets; tighten from the measured result.
 max_turns: 300

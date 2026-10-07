@@ -47,8 +47,6 @@ judge_notes: |
   the expected shape. The repo tree omits install/ (release manifest bundles,
   292 MB) to keep the fixture pushable; nothing in the epic touches it.
 
-labels:
-  forbidden: []
 
 # First-run budgets; tighten from the measured result.
 max_turns: 300

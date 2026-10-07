@@ -151,8 +151,6 @@ test_timeout_s: 1800
 # agreed). Leave empty when there is nothing to note.
 judge_notes: ""
 
-labels:
-  forbidden: []
 
 # First-run budgets; tighten from the measured result.
 max_turns: 300

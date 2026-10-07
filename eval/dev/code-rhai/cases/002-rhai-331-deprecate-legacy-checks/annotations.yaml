@@ -33,8 +33,6 @@ judge_notes: |
   for deprecation of /v1/guardrail/checks in favour of the upstream
   /v1/checks endpoint; the fork already carries both routes at the snapshot.
 
-labels:
-  forbidden: []
 
 # First-run budgets; tighten from the measured result.
 max_turns: 300
