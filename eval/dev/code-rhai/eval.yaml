@@ -15,7 +15,7 @@ description: >
 execution:
   # The eval's identity for the harness (run directories, reports). The
   # fullsend agent under test is named literally in runner.command below.
-  skill: code-rhai
+  skill: dev/code-rhai
   mode: case
   # Code agent (up to 2 x 60 min) + review agent (45 min) + tests + overhead.
   # Local-only for now; this does not fit the 45-minute CI job.

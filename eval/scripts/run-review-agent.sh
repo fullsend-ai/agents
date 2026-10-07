@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# after_each hook (eval/code-rhai): run the fullsend review agent on the PR the
+# after_each hook (eval/dev/code-rhai): run the fullsend review agent on the PR the
 # code agent opened, without posting anything, and keep its findings for the
 # quality judge. Runs after capture-pr-artifacts.sh and before teardown.
 #

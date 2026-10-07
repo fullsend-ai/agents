@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build an eval/code-rhai case from a Jira epic sample entry (rhai-epics dataset,
+# Build an eval/dev/code-rhai case from a Jira epic sample entry (rhai-epics dataset,
 # schema_version >= 4, with descriptions). The epic is the case: its text becomes
 # the issue the agent sees; its linked PRs are used only to identify the
 # repository and to choose the snapshot commit.
 #
 # Usage:
-#   build-case.sh --sample sample.json --epic RHAI-517 --case eval/code-rhai/cases/NNN-slug
+#   build-case.sh --sample sample.json --epic RHAI-517 --case eval/dev/code-rhai/cases/NNN-slug
 #                 [--snapshot <sha>] [--keep-workflows]
 #
 # Snapshot rule (decided 2026-09-24): the repository as it was the moment the

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# after_each hook (eval/code-rhai): save what the judges need from the agent's
+# after_each hook (eval/dev/code-rhai): save what the judges need from the agent's
 # PR before the ephemeral repo is deleted, and run the repo's own tests on it.
 #
 # Needs output/fixture-state.json from capture-fixture.sh. Writes two trees:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Sanity-check an eval/code-rhai case before spending an agent run on it:
+# Sanity-check an eval/dev/code-rhai case before spending an agent run on it:
 #   1. input.yaml holds real epic text (no TODO/PLACEHOLDER)
 #   2. annotations has a regression command (judge_notes is optional)
 #   3. the regression command passes on the bare snapshot (scratch copy of repo/)

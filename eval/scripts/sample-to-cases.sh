@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# List what eval/code-rhai cases a Jira epic sample (rhai-epics dataset,
+# List what eval/dev/code-rhai cases a Jira epic sample (rhai-epics dataset,
 # schema_version >= 4) can yield. The epic is the case unit. Eligible: the epic
 # has a description and all its linked PRs are in one repository. For each
 # epic prints the repo (language, size), the linked PRs with merge state, the
@@ -35,6 +35,6 @@ while IFS=$'\t' read -r key status dlen repos summary; do
     else echo "   snapshot: current default-branch tip (nothing merged yet)"; fi
   fi
   slug=$(printf '%s' "$summary" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-|-$//g' | cut -c1-40)
-  echo "   build: eval/scripts/build-case.sh --sample $SAMPLE --epic $key --case eval/code-rhai/cases/NNN-${key,,}-${slug}"
+  echo "   build: eval/scripts/build-case.sh --sample $SAMPLE --epic $key --case eval/dev/code-rhai/cases/NNN-${key,,}-${slug}"
   echo
 done
