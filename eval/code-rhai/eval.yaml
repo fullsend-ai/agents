@@ -39,7 +39,7 @@ execution:
     EVAL_REVIEW_RUNTIME: $EVAL_REVIEW_RUNTIME
     EVAL_REVIEW_MODEL: $EVAL_REVIEW_MODEL
     EVAL_REVIEW_EFFORT: $EVAL_REVIEW_EFFORT
-    # OpenAI key for OpenAI-model arms (pi runtime) and the codex judge (runner-side only).
+    # OpenAI key for OpenAI-model arms on the pi runtime (runner-side only).
     OPENAI_API_KEY: $OPENAI_API_KEY
     EVAL_SKIP_REVIEW: $EVAL_SKIP_REVIEW
     # Inner `timeout` around the code agent's fullsend run (see
@@ -95,11 +95,13 @@ models:
   # Pin the id so every project runs the same baseline. A plain run uses this;
   # a matrix run (eval-anova) takes each model from matrix.factors.model.
   skill: claude-opus-4-6
-  # Judge: GPT-6 Sol on the codex runner, the same judge for every arm so
-  # the arms are scored identically. Bill (2026-09-26): Sol and Opus 4.6 are
-  # both second-tier models and Sol is current, so it is a fair judge for the
-  # Opus 4.6 baseline; judging Opus 5 would want a top-tier judge.
-  judge: gpt-6-sol
+  # Judge: Opus 5.5 on the Claude Code runner, the same judge for every arm
+  # so the arms are scored identically, and above every model it judges. On
+  # the ten artifacts of the first five-case set it agreed with GPT-6 Sol
+  # within one point everywhere but separated the arms more (2026-10-07).
+  # Reached through the EnMaaS gateway locally (ANTHROPIC_BASE_URL and
+  # ANTHROPIC_API_KEY in the environment; the runner passes both through).
+  judge: claude-opus-5-5
 
 # eval-anova matrix (agent-eval-harness >= 1.49). Single baseline cell until a
 # budget exists; total runs = conditions x cases x replications.
@@ -291,19 +293,16 @@ judges:
       1-5 against the task's requirements by a tool-using judge that reads the
       PR head checkout, with the repo test result and the fullsend review
       agent's findings as evidence. No reference solution.
-    model: gpt-6-sol
+    model: claude-opus-5-5
     samples: 1
     score_range: [1, 5]
     if: "'\"outcome\":\"pr\"' in outputs['files'].get('output/agent-outcome.json', '')"
     agent:
-      # codex runner: the judge is a codex session; permission_mode plan maps
-      # to codex's read-only filesystem sandbox (the verdict comes back via
-      # the stdout fallback). Effort high. The same judge for every arm so
-      # the two arms are scored identically (2026-09-26).
-      runner:
-        type: codex
-        effort: high
-        permission_mode: plan
+      # Claude Code runner. Write is needed for the verdict file the harness
+      # contract asks for (./output/score.json); without it the verdict was
+      # lost (2026-09-25). The harness copies rather than symlinks the staged
+      # material when a judge can write, so nothing real is reachable.
+      allowed_tools: [Read, Grep, Glob, Write]
       inputs: [judge]
       timeout: 1800
       max_budget_usd: 6.00
@@ -368,19 +367,16 @@ judges:
       When the agent stopped without a PR, was its stated reason valid? 1-5,
       judged against the task description, the case notes, and the
       repository the agent was given. Skipped when a PR exists.
-    model: gpt-6-sol
+    model: claude-opus-5-5
     samples: 1
     score_range: [1, 5]
     if: "'\"outcome\":\"declined\"' in outputs['files'].get('output/agent-outcome.json', '')"
     agent:
-      # codex runner: the judge is a codex session; permission_mode plan maps
-      # to codex's read-only filesystem sandbox (the verdict comes back via
-      # the stdout fallback). Effort high. The same judge for every arm so
-      # the two arms are scored identically (2026-09-26).
-      runner:
-        type: codex
-        effort: high
-        permission_mode: plan
+      # Claude Code runner. Write is needed for the verdict file the harness
+      # contract asks for (./output/score.json); without it the verdict was
+      # lost (2026-09-25). The harness copies rather than symlinks the staged
+      # material when a judge can write, so nothing real is reachable.
+      allowed_tools: [Read, Grep, Glob, Write]
       inputs: [judge]
       timeout: 1800
       max_budget_usd: 6.00
