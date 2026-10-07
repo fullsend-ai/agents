@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Materialize a case's repo/ tree from its recipe card.
 #
-# A case directory under eval/code-rhai/cases/ is a card: input.yaml (the
+# A case directory under eval/dev/code-rhai/cases/ is a card: input.yaml (the
 # epic as the issue) and annotations.yaml (provenance, snapshot commit,
 # regression command). The repository tree the fixture pushes is NOT
 # committed; this script rebuilds it from annotations.source.repo at

@@ -23,7 +23,7 @@ AGENT="${1:?agent name required}"
 # $2 is the workspace path (passed by harness, unused here)
 OUTPUT_DIR="${3:?output dir required}"
 # Optional $4/$5: the harness's {model} and {effort} placeholders. An eval that
-# puts them in runner.command (eval/code-rhai) gets per-run model/effort from
+# puts them in runner.command (eval/dev/code-rhai) gets per-run model/effort from
 # `execute.py --model/--effort`, which is how eval-anova drives matrix cells.
 # Non-empty values win over the EVAL_MODEL/EVAL_EFFORT environment; evals that
 # omit the placeholders (eval/code) keep the environment-only behaviour.
@@ -267,7 +267,7 @@ printf '%s\n' "$PRE_AGENT_HEAD" > "${OUTPUT_DIR}/pre-agent-head.txt"
 override_args=()
 # EVAL_NO_POST_SCRIPT=1 runs the agent but skips its post-script: the agent's
 # structured result stays under OUTPUT_DIR and nothing is pushed or posted.
-# Used by eval/code-rhai's run-review-agent.sh, which reads the review
+# Used by eval/dev/code-rhai's run-review-agent.sh, which reads the review
 # agent's findings from disk instead of letting it post a review (posting
 # would also hit GitHub's self-review 422, since one token opens the PR and
 # would review it).
