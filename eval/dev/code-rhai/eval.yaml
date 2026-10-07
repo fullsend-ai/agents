@@ -287,6 +287,11 @@ judges:
       # lost (2026-09-25). The harness copies rather than symlinks the staged
       # material when a judge can write, so nothing real is reachable.
       allowed_tools: [Read, Grep, Glob, Write]
+      # An allow list only pre-approves; headless Claude Code would still let
+      # the judge shell out or fetch the web. Deny those so the judge sees
+      # only the staged judge/ directory (harness 1.49.1 ignores this key and
+      # the patched harness defaults to the same list).
+      denied_tools: [Bash, WebFetch, WebSearch, Agent]
       inputs: [judge]
       timeout: 1800
       max_budget_usd: 6.00
@@ -361,6 +366,11 @@ judges:
       # lost (2026-09-25). The harness copies rather than symlinks the staged
       # material when a judge can write, so nothing real is reachable.
       allowed_tools: [Read, Grep, Glob, Write]
+      # An allow list only pre-approves; headless Claude Code would still let
+      # the judge shell out or fetch the web. Deny those so the judge sees
+      # only the staged judge/ directory (harness 1.49.1 ignores this key and
+      # the patched harness defaults to the same list).
+      denied_tools: [Bash, WebFetch, WebSearch, Agent]
       inputs: [judge]
       timeout: 1800
       max_budget_usd: 6.00
