@@ -149,7 +149,7 @@ outputs:
 
 judges:
   # ---- deterministic ---------------------------------------------------
-  # forbidden_labels / max_turns / max_cost are copied verbatim from
+  # max_turns / max_cost are copied verbatim from
   # eval/code/eval.yaml — keep them in sync. pr_created differs: it only
   # counts PRs on agent/ branches.
   - name: pr_created
