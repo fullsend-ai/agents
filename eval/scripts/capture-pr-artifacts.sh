@@ -88,6 +88,11 @@ no_pr() {
     write_outcome failed "$1"
     echo "outcome: failed ($1)"
   fi
+  # No PR head to test: say so explicitly, so the regression check can report
+  # "not applicable" instead of mistaking a missing file for a failed capture.
+  jq -n --arg r "$1" '{command: null, exit_code: null, not_applicable: true, reason: ("no PR: " + $r)}' \
+    > "$OUTPUT_DIR/regression.json"
+  printf '# Repository tests\n\nNot applicable: no pull request was produced.\n' > "$JUDGE_DIR/tests.md"
   exit 0
 }
 [[ -f "$STATE_FILE" ]] || no_pr "fixture-state.json missing; capture-fixture.sh did not run"
@@ -121,7 +126,17 @@ gh pr view "$num" --repo "$EPHEMERAL_REPO" --json number,url,title,body,headRefN
 write_outcome pr "agent PR #${num}"
 
 # Diff, size-capped so the judge's reading stays bounded.
-gh pr diff "$num" --repo "$EPHEMERAL_REPO" > "$JUDGE_DIR/diff.full" || : > "$JUDGE_DIR/diff.full"
+diff_rc=0
+gh pr diff "$num" --repo "$EPHEMERAL_REPO" > "$JUDGE_DIR/diff.full" 2> "$JUDGE_DIR/diff.err" || diff_rc=$?
+if (( diff_rc != 0 )); then
+  # Never hand the judge an empty diff that looks like a real one.
+  printf '[DIFF CAPTURE FAILED: `gh pr diff` exited %s. Judge the change from pr-head/ only.]\n%s\n' \
+    "$diff_rc" "$(cat "$JUDGE_DIR/diff.err")" > "$JUDGE_DIR/diff.full"
+  jq --argjson rc "$diff_rc" '. + {diff_captured: false, diff_exit_code: $rc}' "$OUTPUT_DIR/pr.json" > "$OUTPUT_DIR/pr.json.tmp" \
+    && mv "$OUTPUT_DIR/pr.json.tmp" "$OUTPUT_DIR/pr.json"
+  echo "WARNING: gh pr diff failed (exit $diff_rc); recorded in pr.json and diff.patch" >&2
+fi
+rm -f "$JUDGE_DIR/diff.err"
 size=$(wc -c < "$JUDGE_DIR/diff.full" | tr -d ' ')
 if (( size > MAX_BYTES )); then
   head -c "$MAX_BYTES" "$JUDGE_DIR/diff.full" > "$JUDGE_DIR/diff.patch"
@@ -155,7 +170,10 @@ if [[ -z "$cmd" || "$cmd" == "TODO" ]]; then
 fi
 echo "Running regression tests: $cmd"
 rc=0
-( cd "$WORK/pr" && timeout "$tmo" bash -o pipefail -c "$cmd" ) > "$OUTPUT_DIR/regression.log" 2>&1 || rc=$?
+# The PR head is agent-written code built from untrusted inputs; run it with a
+# scrubbed environment so no forge, LLM or cloud credential is in reach.
+( cd "$WORK/pr" && timeout "$tmo" env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
+    LANG="${LANG:-C.UTF-8}" TERM=dumb CI=1 bash -o pipefail -c "$cmd" ) > "$OUTPUT_DIR/regression.log" 2>&1 || rc=$?
 timed_out=false; [[ $rc -eq 124 ]] && timed_out=true
 jq -n --arg c "$cmd" --argjson rc "$rc" --argjson to "$timed_out" --argjson t "$tmo" \
   '{command: $c, exit_code: $rc, timed_out: $to, timeout_s: $t, log: "output/regression.log"}' > "$OUTPUT_DIR/regression.json"

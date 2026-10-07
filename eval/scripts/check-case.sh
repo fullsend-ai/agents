@@ -21,7 +21,8 @@ if [[ -n "$cmd" && "$cmd" != "TODO" ]]; then
   tmo=$(yq -r '.test_timeout_s // 1800' "$ANN")
   WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
   cp -a "$CASE_DIR/repo/." "$WORK/"
-  rc=0; ( cd "$WORK" && timeout "$tmo" bash -o pipefail -c "$cmd" ) > "$CASE_DIR/.check-regression.log" 2>&1 || rc=$?
+  rc=0; ( cd "$WORK" && timeout "$tmo" env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
+      LANG="${LANG:-C.UTF-8}" TERM=dumb CI=1 bash -o pipefail -c "$cmd" ) > "$CASE_DIR/.check-regression.log" 2>&1 || rc=$?
   if [[ $rc -eq 0 ]]; then echo "OK   3. regression command passes on the bare snapshot"; rm -f "$CASE_DIR/.check-regression.log";
   else echo "BAD  3. regression command exit $rc on the bare snapshot (log: $CASE_DIR/.check-regression.log)"; fail=1; fi
 fi

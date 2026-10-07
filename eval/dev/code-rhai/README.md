@@ -80,9 +80,7 @@ source:
 regression_tests:
   command: "uv sync --locked --group dev && uv run pytest -q -n auto tests"
 test_timeout_s: 1800
-judge_notes: |                      # optional; leave empty when nothing to note
-  The epic says the manifest URL is still to be agreed with another team;
-  any sensible well-known path is acceptable.
+judge_notes: ""                     # fixture facts only; empty by default (see below)
 max_turns: 300
 max_cost_usd: 40.00
 ```
@@ -93,7 +91,7 @@ max_cost_usd: 40.00
 eval/scripts/sample-to-cases.sh sample.json          # what the sample can yield
 eval/scripts/build-case.sh --sample sample.json --epic RHAI-517 \
   --case eval/dev/code-rhai/cases/001-rhai-517-nemo-capability-manifest
-# fill regression_tests.command and judge_notes
+# fill regression_tests.command
 eval/scripts/check-case.sh eval/dev/code-rhai/cases/001-rhai-517-nemo-capability-manifest
 ```
 
@@ -101,10 +99,16 @@ eval/scripts/check-case.sh eval/dev/code-rhai/cases/001-rhai-517-nemo-capability
 from the rhai-epics sampler). It refuses epics that span repositories or lack
 a description. `check-case.sh` confirms the input is real task text, the regression
 command is set and passes on the bare snapshot, and no TODO is left. The
-human work per case is the regression command, a glance at the snapshot
-choice, and, optionally, judge notes: things the task leaves open or that
-must not be held against the agent. Datasets that come with their own task
-descriptions (GitHub issues, public benchmarks) normally need no notes.
+human work per case is the regression command and a glance at the snapshot
+choice.
+
+`judge_notes` is almost always empty. It exists for facts about the fixture
+that the judge cannot discover on its own, such as a directory deliberately
+left out of the snapshot that the task would otherwise touch. It must never
+describe the task, the human solution or the human PRs: the task text is the
+only specification the judge gets, and anything the task leaves open is for
+the judge to treat as open. Earlier drafts of the five cards carried notes
+that restated the epic or described the human change; those were removed.
 
 ## How a run flows
 
@@ -158,6 +162,11 @@ Repeated trials and comparisons use the harness's `eval-anova` and
 prints the grid and a cost bound without executing.
 
 ## Local run notes
+
+`EVAL_CASES="001-rhai-517-nemo-capability-manifest 004-rhai-369-konflux-data-registry"`
+(whitespace-separated case directory names) limits a run to those cases: the
+workspace, the retry of pre-agent failures and the final per-case check all
+use the same list.
 
 For a macOS host: `TMPDIR=/tmp`; a `GOOS=linux` fullsend build in
 `EVAL_SANDBOX_BINARY`; `--forge github` is passed by `run-fullsend.sh`. CI is
