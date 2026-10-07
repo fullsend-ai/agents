@@ -33,7 +33,8 @@ judged on its own terms.
 1. Deterministic first: the outcome; a PR exists; the repository's own test
    command still passes on the PR head; budgets and labels are respected.
 2. For a PR: the fullsend review agent reviews it (findings kept, nothing
-   posted), then a tool-using judge (Claude Code with read-only tools, Opus 5)
+   posted), then a tool-using judge (Claude Code runner, Opus 5.5; it may
+   write only its own verdict file)
    scores the PR 1 to 5 against the task's requirements. It works in a
    staged directory holding the task description, the case author's notes,
    the PR description and diff, the repository test result, the review
