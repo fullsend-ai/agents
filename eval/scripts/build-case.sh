@@ -115,11 +115,20 @@ size=$(du -sh "$CASE_DIR/repo" | cut -f1)
 python3 - "$CASE_DIR/input.yaml" "${EPIC}: ${summary}" "$description" <<'PY'
 import sys, yaml
 path, title, body = sys.argv[1], sys.argv[2], sys.argv[3]
+# Write the body as a literal block scalar (body: |-) so the card reads as prose in a
+# diff. Trailing whitespace is stripped first: a literal block cannot carry it under
+# the repo's trailing-whitespace hook, and PyYAML would otherwise fall back to quoting.
+body = "\n".join(line.rstrip() for line in body.split("\n")).rstrip("\n")
+class Literal(str):
+    pass
+yaml.add_representer(Literal, lambda d, s: d.represent_scalar(
+    "tag:yaml.org,2002:str", s, style="|"))
 # ready-to-code is the label that triggers the code agent in production
 # (docs/code.md); the fixture carries it so runtimes that check readiness proceed.
-yaml.safe_dump({"forge": "github", "fixture": {"type": "issue", "title": title, "body": body,
-                                                "labels": ["ready-to-code"]}},
-               open(path, "w"), sort_keys=False, allow_unicode=True, width=1000)
+yaml.dump({"forge": "github", "fixture": {"type": "issue", "title": title,
+                                           "body": Literal(body),
+                                           "labels": ["ready-to-code"]}},
+          open(path, "w"), sort_keys=False, allow_unicode=True, width=10**6)
 PY
 
 prs_yaml=$(jq -r '.code_changes[] | select(.kind=="pull_request") | "    - " + .url' <<<"$epic_json")

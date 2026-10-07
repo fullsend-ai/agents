@@ -2,7 +2,31 @@ forge: github
 fixture:
   type: issue
   title: 'RHAI-369: Konflux Pipeline Onboarding for Data Hub BFF Image'
-  body: "Konflux Pipeline Onboarding for Data Hub BFF Image\nDescription\nOnboard the Data Hub BFF container image (\nodh-mod-arch-data-hub-container\n) to the Konflux build pipeline. This follows the established pattern for the 9 existing BFF module images in the odh-dashboard repository, each of which has a dedicated Konflux component and pipeline configuration.\nScope\nKonflux component definition for the data-hub BFF image, following the naming convention of existing components (e.g., \nodh-mod-arch-agent-ops-container\n)\nPipeline configuration referencing \nDockerfile.konflux.data-hub\n in the odh-dashboard repository\nMulti-architecture build support (x86_64 at minimum, matching existing BFF image architectures)\nImage pushed to the standard Konflux output registry with appropriate tags\nIntegration with existing odh-dashboard Konflux application (the data-hub BFF is a new component within the existing application, not a new application)\nAcceptance Criteria\nKonflux pipeline builds\
-    \ the data-hub BFF image from \nDockerfile.konflux.data-hub\n successfully\nBuilt image passes Konflux security checks (CVE scan, FIPS compliance via check-payload)\nImage is available in the Konflux output registry with standard tagging\nPipeline triggers on commits to the odh-dashboard repository branches that affect the data-hub BFF code\nPipeline configuration follows the same pattern as existing BFF module components in the odh-dashboard Konflux application\nHLR Traceability\nHLRCoverage(Supporting infrastructure)Enables CI/CD for the Data Hub BFF image; no direct HLR coverage but required for production deployment of all P0 HLRs"
+  body: |-
+    Konflux Pipeline Onboarding for Data Hub BFF Image
+    Description
+    Onboard the Data Hub BFF container image (
+    odh-mod-arch-data-hub-container
+    ) to the Konflux build pipeline. This follows the established pattern for the 9 existing BFF module images in the odh-dashboard repository, each of which has a dedicated Konflux component and pipeline configuration.
+    Scope
+    Konflux component definition for the data-hub BFF image, following the naming convention of existing components (e.g.,
+    odh-mod-arch-agent-ops-container
+    )
+    Pipeline configuration referencing
+    Dockerfile.konflux.data-hub
+     in the odh-dashboard repository
+    Multi-architecture build support (x86_64 at minimum, matching existing BFF image architectures)
+    Image pushed to the standard Konflux output registry with appropriate tags
+    Integration with existing odh-dashboard Konflux application (the data-hub BFF is a new component within the existing application, not a new application)
+    Acceptance Criteria
+    Konflux pipeline builds the data-hub BFF image from
+    Dockerfile.konflux.data-hub
+     successfully
+    Built image passes Konflux security checks (CVE scan, FIPS compliance via check-payload)
+    Image is available in the Konflux output registry with standard tagging
+    Pipeline triggers on commits to the odh-dashboard repository branches that affect the data-hub BFF code
+    Pipeline configuration follows the same pattern as existing BFF module components in the odh-dashboard Konflux application
+    HLR Traceability
+    HLRCoverage(Supporting infrastructure)Enables CI/CD for the Data Hub BFF image; no direct HLR coverage but required for production deployment of all P0 HLRs
   labels:
   - ready-to-code
