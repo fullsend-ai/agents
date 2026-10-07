@@ -115,12 +115,12 @@ while :; do
   fi
 done
 UNIQUE_COUNT=$(echo "$MATCHED_PATHS" | jq 'length')
-if [ "$FAILED" -eq 1 ] || [ "$UNIQUE_COUNT" -eq 100 ]; then
-  echo "SEARCH FAILED OR AMBIGUOUS: a curl error, pagination cut off before a partial page, or a full final page means the true count could extend beyond what was collected — treat as failed and drop the proposal per the shared skill's fail-closed rule" >&2
+if [ "$FAILED" -eq 1 ]; then
+  echo "SEARCH FAILED OR AMBIGUOUS: a curl error or pagination cut off before a partial page means the true count could extend beyond what was collected — treat as failed and drop the proposal per the shared skill's fail-closed rule" >&2
   exit 1
 fi
 echo "UNIQUE_COUNT=${UNIQUE_COUNT}"
 echo "$MATCHED_PATHS" | jq '.'
 ```
 
-Apply the `PATH_SUFFIX` filter and the uniqueness count together, in the same `jq` expression that builds `MATCHED_PATHS` — filtering `path` only after a later, separate step re-introduces the undercount this recipe exists to avoid. The final `if` makes the fail-closed signal observable in the recipe's own output: a `curl` failure inside the loop, pagination cut off before a partial page, or a full final page (`UNIQUE_COUNT` equal to `per_page`, 100) all print a failure to stderr and exit non-zero instead of printing a path list, so the parent skill's fail-closed rule can't be missed by reading a short-looking but truncated result. This is a heuristic for the pattern token, not a parser of exact CLI invocations — review hits before counting them.
+Apply the `PATH_SUFFIX` filter and the uniqueness count together, in the same `jq` expression that builds `MATCHED_PATHS` — filtering `path` only after a later, separate step re-introduces the undercount this recipe exists to avoid. The final `if` makes the fail-closed signal observable in the recipe's own output: a `curl` failure inside the loop or pagination cut off before a partial page (the 10-page cutoff) prints a failure to stderr and exits non-zero instead of printing a path list, so the parent skill's fail-closed rule can't be missed by reading a short-looking but truncated result. This is a heuristic for the pattern token, not a parser of exact CLI invocations — review hits before counting them.
