@@ -823,28 +823,42 @@ Determine which packages to test from your changed files:
 git diff --name-only <target-branch>
 ```
 
-Use the local `<target-branch>` ref (see step 4).
+Use the local `<target-branch>` ref, not `origin/<target-branch>`, for
+the reasons given in step 4. This shows all files that differ between
+the target branch and the working tree — including previously
+committed changes on the feature branch.
 
 Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
 a final validation after targeted tests pass, but prefer targeted runs
 first to save time and context budget.
 
-**Run the repo's lint command** — the command from step 3. Linting is
-separate from pre-commit (9b); run the documented command even if 9b
-passed or was skipped. If it reads the git index (`lint-staged`, or the
-contributing guide says to stage first), `git add` the intended files
-with explicit paths (never `git add -A` / `.` / `--all`) and then run it.
-Do not substitute a full-tree lint (`pnpm lint`, `pnpm lint:fix`).
-Otherwise run it now and stage in 10a.
+**Run the repo's lint command** — this is the lint command you identified
+in step 3 from `CLAUDE.md`, `CONTRIBUTING.md`, `Makefile`, or CI config.
+You MUST run it now. Linting is separate from pre-commit (9b) — even if
+pre-commit passed or was skipped, you still run the lint command here.
+
+If the command reads the git index (`lint-staged`, or the contributing
+guide says to stage first), `git add` the intended files with explicit
+paths (never `git add -A` / `.` / `--all`) and then run it. Do not
+substitute a full-tree lint (`pnpm lint`, `pnpm lint:fix`). If you are
+resuming a branch whose implementation is already committed (step 4),
+staging may leave the index identical to HEAD and the staged-file linter
+will find no files and exit 0 — that is not verification. Take the file
+set from `git diff --name-only <target-branch>` and use a
+repository-supported way to lint exactly those files (for example, the
+tool's documented file-list or diff-against-ref mode, or
+`git diff --name-only <target-branch> | xargs pre-commit run --files`
+when the repo uses pre-commit). If no supported method exists, disclose
+in the commit message that those files were not linted.
 
 ```bash
-# Exact command from step 3. Examples:
-make lint
-golangci-lint run ./...
-uv run ruff check src/ tests/
-npm run lint
-eslint src/
-pnpm lint-staged   # after git add
+# Use the exact lint command discovered in step 3. Examples:
+make lint                                         # Go repos with Makefile
+golangci-lint run ./...                           # Go without Makefile
+uv run ruff check src/ tests/                     # Python with ruff
+npm run lint                                      # JS/TS repos
+eslint src/                                       # JS/TS without npm script
+pnpm lint-staged                                  # after git add (index-based)
 ```
 
 If the repo specifies multiple lint/format commands (e.g.,
