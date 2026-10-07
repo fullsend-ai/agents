@@ -2458,6 +2458,9 @@ if [[ "\${_cmd}" == "push" && "\${_has_delete}" != "true" && "\${_has_u}" == "tr
   fi
   if [[ "\${_remaining}" -gt 0 ]]; then
     echo "\$((_remaining - 1))" > "${state_dir}/fail_remaining"
+    if [[ "\${_has_force}" == "true" && -f "${state_dir}/land_before_fail" ]]; then
+      ${REAL_GIT} "\$@" >/dev/null 2>&1 || true
+    fi
     if [[ -f "${state_dir}/fail_message" ]]; then
       cat "${state_dir}/fail_message" >&2
     else
@@ -2613,13 +2616,42 @@ else
   echo "PASS: push-nff-still-force-with-lease"
 fi
 
-# --force-with-lease is a single attempt, not wrapped in the backoff loop:
-# a transient error on the force push fails closed immediately rather than
-# retrying (a retry could misreport failure if the first attempt actually
-# landed on the remote — see scripts/post-code.src.sh section 7b).
+# The --force-with-lease fallback is wrapped in the same backoff loop.
+# Recover: two 5xx on the force push, then success on the third attempt.
+mkdir -p "${PUSH_TX_TMPDIR}/nff-tx-recover"
+: > "${PUSH_TX_TMPDIR}/nff-tx-recover/nff_plain"
+printf '2\n' > "${PUSH_TX_TMPDIR}/nff-tx-recover/fail_remaining"
+printf '%s\n' 'remote: Internal Server Error' > "${PUSH_TX_TMPDIR}/nff-tx-recover/fail_message"
+run_push_tx_script "nff-tx-recover"
+_tx_nffrec_rc="$(cat "${PUSH_TX_TMPDIR}/nff-tx-recover/rc")"
+_tx_nffrec_log="${PUSH_TX_TMPDIR}/nff-tx-recover/stdout.log"
+_tx_nffrec_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/nff-tx-recover/sleep.log" | sed 's/ *$//')"
+_tx_nffrec_force_count="$(grep -c 'force=true' "${PUSH_TX_TMPDIR}/nff-tx-recover/push.log" || true)"
+if [ "${_tx_nffrec_rc}" -ne 0 ]; then
+  echo "FAIL: push-nff-force-transient-recovers — expected exit 0, got ${_tx_nffrec_rc}"
+  cat "${_tx_nffrec_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_tx_nffrec_sleep}" != "2 4" ]; then
+  echo "FAIL: push-nff-force-transient-recovers — expected sleep 2 4, got '${_tx_nffrec_sleep}'"
+  cat "${_tx_nffrec_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_tx_nffrec_force_count}" != "3" ]; then
+  echo "FAIL: push-nff-force-transient-recovers — expected 3 --force-with-lease attempts, got ${_tx_nffrec_force_count}"
+  cat "${PUSH_TX_TMPDIR}/nff-tx-recover/push.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'Posting failure comment' "${_tx_nffrec_log}"; then
+  echo "FAIL: push-nff-force-transient-recovers — posted a failure comment"
+  cat "${_tx_nffrec_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: push-nff-force-transient-recovers"
+fi
+
+# Exhaustion: persistent 5xx on the force push fails after 3 attempts with
+# backoff and posts a failure comment.
 mkdir -p "${PUSH_TX_TMPDIR}/nff-tx"
 : > "${PUSH_TX_TMPDIR}/nff-tx/nff_plain"
-printf '2\n' > "${PUSH_TX_TMPDIR}/nff-tx/fail_remaining"
+printf '9\n' > "${PUSH_TX_TMPDIR}/nff-tx/fail_remaining"
 printf '%s\n' 'remote: Internal Server Error' > "${PUSH_TX_TMPDIR}/nff-tx/fail_message"
 run_push_tx_script "nff-tx"
 _tx_nfftx_rc="$(cat "${PUSH_TX_TMPDIR}/nff-tx/rc")"
@@ -2627,27 +2659,64 @@ _tx_nfftx_log="${PUSH_TX_TMPDIR}/nff-tx/stdout.log"
 _tx_nfftx_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/nff-tx/sleep.log" | sed 's/ *$//')"
 _tx_nfftx_force_count="$(grep -c 'force=true' "${PUSH_TX_TMPDIR}/nff-tx/push.log" || true)"
 if [ "${_tx_nfftx_rc}" -eq 0 ]; then
-  echo "FAIL: push-nff-force-transient-fails-closed — expected non-zero exit"
+  echo "FAIL: push-nff-force-transient-exhausted-fails — expected non-zero exit"
   cat "${_tx_nfftx_log}"
   FAILURES=$((FAILURES + 1))
-elif [ -n "${_tx_nfftx_sleep}" ]; then
-  echo "FAIL: push-nff-force-transient-fails-closed — retried --force-with-lease ('${_tx_nfftx_sleep}')"
+elif [ "${_tx_nfftx_sleep}" != "2 4" ]; then
+  echo "FAIL: push-nff-force-transient-exhausted-fails — expected sleep 2 4, got '${_tx_nfftx_sleep}'"
   cat "${_tx_nfftx_log}"
   FAILURES=$((FAILURES + 1))
-elif [ "${_tx_nfftx_force_count}" != "1" ]; then
-  echo "FAIL: push-nff-force-transient-fails-closed — expected exactly one --force-with-lease attempt, got ${_tx_nfftx_force_count}"
+elif [ "${_tx_nfftx_force_count}" != "3" ]; then
+  echo "FAIL: push-nff-force-transient-exhausted-fails — expected 3 --force-with-lease attempts, got ${_tx_nfftx_force_count}"
   cat "${PUSH_TX_TMPDIR}/nff-tx/push.log"
   FAILURES=$((FAILURES + 1))
 elif ! grep -q 'retrying with --force-with-lease' "${_tx_nfftx_log}"; then
-  echo "FAIL: push-nff-force-transient-fails-closed — missing force-with-lease warning"
+  echo "FAIL: push-nff-force-transient-exhausted-fails — missing force-with-lease warning"
   cat "${_tx_nfftx_log}"
   FAILURES=$((FAILURES + 1))
 elif ! grep -q 'Posting failure comment' "${_tx_nfftx_log}"; then
-  echo "FAIL: push-nff-force-transient-fails-closed — expected failure comment"
+  echo "FAIL: push-nff-force-transient-exhausted-fails — expected failure comment"
   cat "${_tx_nfftx_log}"
   FAILURES=$((FAILURES + 1))
 else
-  echo "PASS: push-nff-force-transient-fails-closed"
+  echo "PASS: push-nff-force-transient-exhausted-fails"
+fi
+
+# Lost response: the first force push lands on the remote but the client sees
+# a 5xx. The remote branch already equals HEAD, so the script must succeed
+# without retrying (a retry would be rejected with a stale lease).
+mkdir -p "${PUSH_TX_TMPDIR}/nff-tx-landed"
+: > "${PUSH_TX_TMPDIR}/nff-tx-landed/nff_plain"
+: > "${PUSH_TX_TMPDIR}/nff-tx-landed/land_before_fail"
+printf '1\n' > "${PUSH_TX_TMPDIR}/nff-tx-landed/fail_remaining"
+printf '%s\n' 'remote: Internal Server Error' > "${PUSH_TX_TMPDIR}/nff-tx-landed/fail_message"
+run_push_tx_script "nff-tx-landed"
+_tx_nffland_rc="$(cat "${PUSH_TX_TMPDIR}/nff-tx-landed/rc")"
+_tx_nffland_log="${PUSH_TX_TMPDIR}/nff-tx-landed/stdout.log"
+_tx_nffland_sleep="$(tr '\n' ' ' < "${PUSH_TX_TMPDIR}/nff-tx-landed/sleep.log" | sed 's/ *$//')"
+_tx_nffland_force_count="$(grep -c 'force=true' "${PUSH_TX_TMPDIR}/nff-tx-landed/push.log" || true)"
+if [ "${_tx_nffland_rc}" -ne 0 ]; then
+  echo "FAIL: push-nff-force-transient-already-landed — expected exit 0, got ${_tx_nffland_rc}"
+  cat "${_tx_nffland_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ -n "${_tx_nffland_sleep}" ]; then
+  echo "FAIL: push-nff-force-transient-already-landed — retried despite remote matching HEAD ('${_tx_nffland_sleep}')"
+  cat "${_tx_nffland_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_tx_nffland_force_count}" != "1" ]; then
+  echo "FAIL: push-nff-force-transient-already-landed — expected exactly one --force-with-lease attempt, got ${_tx_nffland_force_count}"
+  cat "${PUSH_TX_TMPDIR}/nff-tx-landed/push.log"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q 'already matches HEAD' "${_tx_nffland_log}"; then
+  echo "FAIL: push-nff-force-transient-already-landed — missing already-landed notice"
+  cat "${_tx_nffland_log}"
+  FAILURES=$((FAILURES + 1))
+elif grep -q 'Posting failure comment' "${_tx_nffland_log}"; then
+  echo "FAIL: push-nff-force-transient-already-landed — posted a failure comment"
+  cat "${_tx_nffland_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: push-nff-force-transient-already-landed"
 fi
 
 # A plain-push failure whose 5xx body also contains rejection phrasing

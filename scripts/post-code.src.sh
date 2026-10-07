@@ -763,11 +763,27 @@ is_transient_push_error() {
     'internal server error|HTTP[[:space:]]*50[0-4]|returned error:[[:space:]]*50[0-4]|connection reset'
 }
 
+# remote_branch_matches_head returns 0 when the remote branch already points
+# at the local HEAD commit. Used to detect a push whose success response was
+# lost to a transient transport error. A failed ls-remote counts as "no match".
+remote_branch_matches_head() {
+  local remote_sha local_sha
+  remote_sha="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 | cut -f1)" || return 1
+  local_sha="$(git rev-parse HEAD 2>/dev/null)" || return 1
+  [ -n "${remote_sha}" ] && [ "${remote_sha}" = "${local_sha}" ]
+}
+
 # git_push_with_transient_retry runs `git push "$@"` up to 3 times with
 # exponential backoff (2s, then 4s) on transient server-side errors.
 # Non-transient failures return immediately so the caller can apply
 # --force-with-lease. Sets PUSH_OUTPUT to the last git push combined
 # stdout+stderr and returns that push's exit code.
+#
+# When PUSH_VERIFY_LANDED=true, a transient failure is followed by a check
+# that the remote branch already equals local HEAD; if so the push is treated
+# as successful (the server applied it but the response was lost) instead of
+# being retried with a now-stale --force-with-lease expectation.
+PUSH_VERIFY_LANDED=false
 git_push_with_transient_retry() {
   local max_attempts=3
   local delay=2
@@ -784,6 +800,11 @@ git_push_with_transient_retry() {
     if ! is_transient_push_error "${output}"; then
       PUSH_OUTPUT="${output}"
       return "${rc}"
+    fi
+    if [ "${PUSH_VERIFY_LANDED}" = "true" ] && remote_branch_matches_head; then
+      gha_echo warning "git push reported a transient error but ${BRANCH} on the remote already matches HEAD — treating as success"
+      PUSH_OUTPUT="${output}"
+      return 0
     fi
     if [ "${attempt}" -eq "${max_attempts}" ]; then
       gha_echo warning "git push failed with a transient error after ${max_attempts} attempts"
@@ -802,14 +823,14 @@ git_push_with_transient_retry() {
 # ---------------------------------------------------------------------------
 # 7b. Push, with transient-error backoff then --force-with-lease fallback.
 #
-# --force-with-lease is deliberately a single attempt, not wrapped in
-# git_push_with_transient_retry: the lease compares against the locally
-# cached remote-tracking ref, which git only advances on a push this
-# client observed succeed. If a force-with-lease attempt lands on the
-# remote but the client sees a transient error and retries, the retry's
-# lease check would use the same stale expected value and get rejected
-# as non-transient "stale info" — reporting failure even though the
-# branch update already succeeded.
+# The --force-with-lease fallback uses the same backoff loop, with
+# PUSH_VERIFY_LANDED=true. The lease compares against the locally cached
+# remote-tracking ref, which git only advances on a push this client
+# observed succeed, so a retry after a lost success response would be
+# rejected as stale. Before each retry the loop therefore checks whether
+# the remote branch already equals local HEAD and, if so, stops with
+# success. The lease is never refreshed, so unrelated remote updates are
+# still rejected.
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT=""
@@ -832,7 +853,12 @@ if [ "${PUSH_RC}" -ne 0 ]; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     PLAIN_PUSH_OUTPUT="${PUSH_OUTPUT}"
     FORCE_PUSH_OUTPUT=""
-    if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+    FORCE_PUSH_RC=0
+    PUSH_VERIFY_LANDED=true
+    git_push_with_transient_retry --force-with-lease -u origin -- "${BRANCH}" && FORCE_PUSH_RC=0 || FORCE_PUSH_RC=$?
+    PUSH_VERIFY_LANDED=false
+    FORCE_PUSH_OUTPUT="${PUSH_OUTPUT}"
+    if [ "${FORCE_PUSH_RC}" -ne 0 ]; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
       PUSH_CATEGORY="$(categorize_push_failure "${PLAIN_PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
