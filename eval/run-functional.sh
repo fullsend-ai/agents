@@ -212,7 +212,11 @@ export FULLSEND_DIR
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 RUNS_BASE="${EVAL_DIR}/runs"
-RUNS_DIR="${RUNS_BASE}/${AGENT}"
+# Results are keyed by the eval's own name, not its path: an eval under a
+# subdirectory (eval/dev/<name>, run as `run-functional.sh dev/<name>`) keeps
+# execution.skill = <name>, which score.py joins to AGENT_EVAL_RUNS_DIR, so
+# the runner must write runs to the same place.
+RUNS_DIR="${RUNS_BASE}/$(basename "$AGENT")"
 RUN_DIR="${RUNS_DIR}/${RUN_ID}"
 mkdir -p "$RUN_DIR"
 
