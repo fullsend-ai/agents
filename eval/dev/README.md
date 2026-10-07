@@ -17,7 +17,7 @@ EVAL_ORG=<github-user-or-org> ./eval/run-functional.sh dev/<name>
 
 The runner treats `dev/<name>` like any other eval name: the config is
 `eval/dev/<name>/eval.yaml`, cases are `eval/dev/<name>/cases/`, and results
-land under `eval/runs/dev/<name>/`. Comparisons across arms or repeated
+land under `eval/runs/<name>/` (the eval keeps its own name as `execution.skill`). Comparisons across arms or repeated
 samples use the harness's `eval-anova` and `eval-compare` skills.
 
 | Eval | Measures | Notes |
