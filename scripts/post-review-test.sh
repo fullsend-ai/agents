@@ -2723,11 +2723,7 @@ done
 # Risk verdict gate tests
 # ---------------------------------------------------------------------------
 
-# Builds a throwaway checkout under "${run_dir}/repo" for tests that exercise
-# the Tier 2 deepen-failure detection (REPO_DIR + is-shallow-repository):
-# a full clone ("full"), a shallow clone ("shallow"), or an existing
-# directory that is not a git repo at all ("not-a-repo"), which makes
-# `git rev-parse --is-shallow-repository` fail outright.
+# Builds a checkout at "${run_dir}/repo": "full", "shallow", or "not-a-repo".
 make_risk_test_repo() {
   local run_dir="$1"
   local mode="$2"
@@ -2782,8 +2778,7 @@ run_risk_verdict_test() {
     export REVIEW_RISK_VERDICT_THRESHOLD="${threshold}"
     export MOCK_PR_FILES="README.md"
     if [[ "${fetch_depth}" == "EMPTY" ]]; then
-      # Sentinel: export an explicitly empty REVIEW_GIT_FETCH_DEPTH="",
-      # distinct from the "" default below which means "leave unset".
+      # Sentinel for an explicitly empty value ("" means leave unset).
       export REVIEW_GIT_FETCH_DEPTH=""
     elif [[ -n "${fetch_depth}" ]]; then
       export REVIEW_GIT_FETCH_DEPTH="${fetch_depth}"
@@ -3400,12 +3395,8 @@ run_risk_gated_field_test() {
 run_risk_gated_field_test
 
 # ---------------------------------------------------------------------------
-# Tier 2 clone-deepen-failure detection (REVIEW_GIT_FETCH_DEPTH not
-# forwarded to the sandbox — see issue #1621). The sub-agent may produce a
-# score with no "degraded" field even when the clone is still shallow; the
-# post-script must independently detect this and force a degraded downgrade.
-# Uses RISK_SCORE_3_RESULT (score 3 < threshold 4, no "degraded" key) so the
-# downgrade below is attributable only to the new depth/shallow check.
+# Tier 2 deepen-failure detection (#1621). RISK_SCORE_3_RESULT has no
+# "degraded" key, so any downgrade comes from the shallow check alone.
 # ---------------------------------------------------------------------------
 
 # --- Unset REVIEW_GIT_FETCH_DEPTH + shallow repo → degraded downgrade ---
@@ -3420,8 +3411,7 @@ run_risk_verdict_test "risk-v-tier2-zero-shallow" \
   "Risk gate triggered (degraded)" "" \
   "0" "shallow"
 
-# --- REVIEW_GIT_FETCH_DEPTH=1 + shallow repo → deepening was never
-#     attempted (opted out); existing "skipped" behaviour, no downgrade ---
+# --- REVIEW_GIT_FETCH_DEPTH=1 + shallow repo → opted out, no downgrade ---
 run_risk_verdict_test "risk-v-tier2-one-shallow" \
   "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
   "" "downgrading approve to comment" \
@@ -3433,18 +3423,13 @@ run_risk_verdict_test "risk-v-tier2-unset-full" \
   "" "downgrading approve to comment" \
   "" "full"
 
-# --- Explicitly empty REVIEW_GIT_FETCH_DEPTH="" + shallow repo → pre-script
-#     (pre-review.src.sh:177-179) also skips deepening for an explicit empty
-#     value, so the post-script must not coerce "" to "0" and must not force
-#     a degraded downgrade here either ---
+# --- Explicitly empty REVIEW_GIT_FETCH_DEPTH="" + shallow repo → no downgrade ---
 run_risk_verdict_test "risk-v-tier2-empty-shallow" \
   "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
   "" "downgrading approve to comment" \
   "EMPTY" "shallow"
 
-# --- Unset REVIEW_GIT_FETCH_DEPTH + existing checkout where `git
-#     rev-parse --is-shallow-repository` fails outright (not a git repo) →
-#     unknown history fails closed as a degraded downgrade ---
+# --- Unset REVIEW_GIT_FETCH_DEPTH + not a git repo → fails closed ---
 run_risk_verdict_test "risk-v-tier2-git-error" \
   "${RISK_SCORE_3_RESULT}" "true" "4" "true" \
   "Risk gate triggered (degraded)" "" \
@@ -3456,7 +3441,7 @@ run_risk_verdict_test "risk-v-tier2-threshold6-shallow" \
   "" "downgrading approve to comment" \
   "" "shallow"
 
-# --- Verdict body check: tier2-deepen-failed reason appears in the notice ---
+# --- tier2-deepen-failed reason appears in the posted body ---
 run_risk_verdict_tier2_body_test() {
   local test_name="risk-v-tier2-body"
   local run_dir="${TMPDIR}/run-risk-${test_name}"

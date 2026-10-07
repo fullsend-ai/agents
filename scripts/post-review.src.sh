@@ -388,29 +388,16 @@ if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" = "true" ]; then
       RISK_NOTICE+=$'> **Risk assessment missing** — risk assessment is enabled but no score was\n'
       RISK_NOTICE+=$'> produced. A human reviewer must evaluate this PR.\n'
     else
-      # Detect a failed Tier 2 clone-deepen attempt independently of what the
-      # sub-agent reported. REVIEW_GIT_FETCH_DEPTH is not forwarded to the
-      # sandbox, so the sub-agent cannot reliably tell "skipped" (deepening
-      # never attempted) from "degraded" (deepening attempted and failed)
-      # and may omit `degraded` even when the repo is still shallow. Mirror
-      # the unset-only default from pre-review.src.sh:177-179 (a `+set`
-      # check, not `:-`) so an explicitly empty REVIEW_GIT_FETCH_DEPTH="" —
-      # which also skips deepening on the pre-script side — does not get
-      # coerced to "0" here and falsely treated as a failed deepen. An
-      # explicit non-zero value means deepening was never attempted, which
-      # is the existing "skipped" behaviour; check the same checkout path
-      # pre-review.src.sh:182 uses.
+      # Detect a failed Tier 2 deepen independently of the sub-agent, which
+      # cannot see REVIEW_GIT_FETCH_DEPTH. Unset-only default (not `:-`),
+      # mirroring pre-review.src.sh: an explicit empty value skips deepening.
       TIER2_DEEPEN_FAILED=false
       if [ "${REVIEW_GIT_FETCH_DEPTH-0}" = "0" ]; then
         RISK_TARGET_DIR="${REPO_DIR:-${GITHUB_WORKSPACE:-.}/target-repo}"
         if [ -d "${RISK_TARGET_DIR}" ]; then
           RISK_SHALLOW_STATUS=0
           RISK_SHALLOW_OUTPUT=$(git -C "${RISK_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null) || RISK_SHALLOW_STATUS=$?
-          # The only result that proves full history is available is exit 0
-          # with output exactly "false". Treat anything else — a non-zero
-          # exit, or output that isn't exactly "false" (including "true" or
-          # unexpected/empty output) — as a failed/unknown deepen so history
-          # availability fails closed instead of silently approving.
+          # Only exit 0 with exactly "false" proves full history; fail closed.
           if [ "${RISK_SHALLOW_STATUS}" -ne 0 ] || [ "${RISK_SHALLOW_OUTPUT}" != "false" ]; then
             TIER2_DEEPEN_FAILED=true
           fi
