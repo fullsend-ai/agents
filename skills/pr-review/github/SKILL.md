@@ -94,14 +94,12 @@ echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata. ISSUE_REPO is the reference's resolved
-# repository (SKILL.md step 2b): REPO_FULL_NAME for a bare `#N`
-# reference, or the named `owner/repo` for an `owner/repo#N` reference.
-# Never fetch a qualified cross-repo reference from REPO_FULL_NAME.
-gh api "repos/${ISSUE_REPO}/issues/<issue-number>" --jq '{title, body}'
+# Fetch linked issue metadata from the PR repository. Step 2b only
+# resolves bare `#N` references; never fetch contributor-named repos.
+gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
 
 # Fetch issue comments
-gh api "repos/${ISSUE_REPO}/issues/<issue-number>/comments"
+gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>/comments"
 ```
 
 ## Commit messages
@@ -119,8 +117,13 @@ gh api "repos/${ISSUE_REPO}/issues/<issue-number>/comments"
 # this fetch is complete; when it is not, mark the context incomplete
 # instead of silently passing a truncated commit list as the full set.
 COMMITS_FILE=/sandbox/workspace/pr-commits.json
+COMMIT_MESSAGES_FILE=/sandbox/workspace/pr-commit-messages.txt
+COMMIT_MESSAGES_INCOMPLETE_FILE=/sandbox/workspace/pr-commit-messages-incomplete
+COMMIT_MESSAGES_AVAILABLE_FILE=/sandbox/workspace/pr-commit-messages-available
 PR_COMMIT_COUNT_FILE=/sandbox/workspace/pr-commit-count
-rm -f /sandbox/workspace/pr-commit-messages.txt /sandbox/workspace/pr-commit-messages-incomplete
+: > "$COMMIT_MESSAGES_FILE"
+printf '%s\n' false > "$COMMIT_MESSAGES_INCOMPLETE_FILE"
+printf '%s\n' false > "$COMMIT_MESSAGES_AVAILABLE_FILE"
 PR_COMMIT_COUNT=unknown
 if test -r "$PR_COMMIT_COUNT_FILE"; then
   PR_COMMIT_COUNT=$(cat "$PR_COMMIT_COUNT_FILE")
@@ -129,10 +132,14 @@ case "$PR_COMMIT_COUNT" in
   ''|*[!0-9]*) PR_COMMIT_COUNT=unknown ;;
 esac
 if gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$COMMITS_FILE"; then
-  jq -r 'add // [] | [.[] | .commit.message] | join("\n---\n")' "$COMMITS_FILE" > /sandbox/workspace/pr-commit-messages.txt
-  if test "$PR_COMMIT_COUNT" = unknown || test "$PR_COMMIT_COUNT" -gt 250; then
-    printf '%s\n' true > /sandbox/workspace/pr-commit-messages-incomplete
-    echo "COMMIT MESSAGES INCOMPLETE — PR commit count is ${PR_COMMIT_COUNT}; endpoint capped at 250; set commit_messages_incomplete in the context package" >&2
+  if jq -r 'add // [] | [.[] | .commit.message] | join("\n---\n")' "$COMMITS_FILE" > "$COMMIT_MESSAGES_FILE"; then
+    printf '%s\n' true > "$COMMIT_MESSAGES_AVAILABLE_FILE"
+    if test "$PR_COMMIT_COUNT" = unknown || test "$PR_COMMIT_COUNT" -gt 250; then
+      printf '%s\n' true > "$COMMIT_MESSAGES_INCOMPLETE_FILE"
+      echo "COMMIT MESSAGES INCOMPLETE — PR commit count is ${PR_COMMIT_COUNT}; endpoint capped at 250; set commit_messages_incomplete in the context package" >&2
+    fi
+  else
+    echo "COMMIT MESSAGES PARSE FAILED — omit commit_messages from the context package" >&2
   fi
 else
   echo "COMMIT MESSAGES FETCH FAILED — omit commit_messages from the context package; do not treat as zero commit-based issue references" >&2
