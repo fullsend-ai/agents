@@ -177,11 +177,15 @@ already stripped the payload.
 
 - Does the change trace to a linked issue or authorized feature request?
 - Does the implementation match what the linked issue describes?
-- Is scope authorized and compatible with the module design? New
-  capability is a feature, not a bug fix, regardless of its label.
-- Is the complexity justified, or is a simpler solution enough?
-- **Multi-issue scope bundling:** use **medium+** `scope-bundling` when
-  2+ issue references span separate domains; recommend a split.
+- Is the scope appropriate to the claimed intent authorization tier
+  (bug fix vs. new feature)? A change that adds new capability is a
+  feature, not a bug fix, regardless of how it is labeled.
+- Does the change go beyond what the linked issue authorized?
+- Does the change fit the overall design of the module/system?
+- Is the complexity proportional to the value delivered?
+- Are there simpler alternatives that achieve the same goal?
+- **Multi-issue scope bundling:** use **medium+** `scope-bundling` for
+  2+ issue references across separate domains; recommend a split.
   Same-domain feature-plus-tests bundling stays low.
 
 #### Style/conventions

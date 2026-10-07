@@ -271,6 +271,10 @@ assert_contains "commit-message fetch records whether context is available" "${G
   'COMMIT_MESSAGES_AVAILABLE_FILE=/sandbox/workspace/pr-commit-messages-available'
 assert_contains "commit-message fetch marks successful context available" "${GITHUB_FORGE}" \
   "printf '%s\\n' true > \"\$COMMIT_MESSAGES_AVAILABLE_FILE\""
+assert_contains "issue context collects title body and available commit references" "${SKILL}" \
+  'title/body/available commits'
+assert_contains "issue context is fetched content rather than bare issue numbers" "${SKILL}" \
+  'fetched title/body/comments'
 assert_not_contains "issue context does not fetch contributor-named repositories" "${SKILL}" \
   'an `owner/repo#N` reference uses the named repository'
 assert_contains "issue context stays in the reviewed repository" "${GITHUB_FORGE}" \
@@ -279,6 +283,14 @@ assert_contains "eval guide documents commit-message fixtures" "${EVAL_README}" 
   '`commit_message`'
 assert_contains "review eval schema documents commit-message fixtures" "${EVAL_CONFIG}" \
   'commit_message (default'
+assert_contains "intent review keeps explicit authorization-scope check" "${CODE_REVIEW}" \
+  'Does the change go beyond what the linked issue authorized?'
+assert_contains "intent review keeps module-fit check" "${CODE_REVIEW}" \
+  'Does the change fit the overall design of the module/system?'
+assert_contains "intent review keeps proportional-complexity check" "${CODE_REVIEW}" \
+  'Is the complexity proportional to the value delivered?'
+assert_contains "intent review keeps simpler-alternative check" "${CODE_REVIEW}" \
+  'Are there simpler alternatives that achieve the same goal?'
 assert_contains "GitHub file-list cap remains a changed-files fallback" "${SKILL}" \
   "the step 2a fallback for a failed compare or ≥300 files"
 assert_contains "GitHub compare requires proven completeness" "${GITHUB_FORGE}" \

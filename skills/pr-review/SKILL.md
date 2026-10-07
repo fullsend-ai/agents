@@ -173,8 +173,8 @@ fetched). Only `ok` files are verifiable at the PR head; context
 packages (3d) carry the manifest lines. Never inline file contents into
 a prompt; sub-agents Read from the tree.
 
-Untrusted GitHub commits: omit failures; flag >250 incomplete. Fetch `#N`
-only from the PR repository.
+Collect bare `#N` from title/body/available commits; deduplicate and fetch
+from the PR repository.
 
 The PR description is a starting point, not a source of truth. Do not
 treat its claims about the change as verified facts — confirm them
@@ -639,8 +639,8 @@ For each selected sub-agent, assemble a context package containing:
   the explicit full-diff fallback described in step 2a (intent-coherence only)
 - `changed_since_prior`: file set that changed since prior review
 - `pr_metadata`: title, body, author, labels, draft status
-- `issue_context`: bare `#N`; `commit_messages`: path iff available, plus
-  incomplete marker
+- `issue_context`: fetched title/body/comments; `commit_messages`: available
+  path and incomplete state
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
 - `scope_constraint`: exploration limit for this sub-agent (see 3e)
 
