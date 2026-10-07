@@ -236,6 +236,19 @@ if [[ ${#case_dirs[@]} -eq 0 ]]; then
   echo "WARNING: no cases found in ${CASES_DIR} — skipping functional tests for ${AGENT}"
   exit 0
 fi
+# EVAL_CASES narrows the run to the named case directories. The same list is
+# what the retry and the final per-case check expect, so an unselected case
+# is not reported as missing.
+if [[ -n "${EVAL_CASES:-}" ]]; then
+  selected=()
+  # shellcheck disable=SC2086 # intentional word splitting on whitespace
+  for name in ${EVAL_CASES}; do
+    [[ -d "${CASES_DIR}/${name}" ]] || { echo "ERROR: EVAL_CASES names '${name}', not a directory under ${CASES_DIR}" >&2; exit 1; }
+    selected+=("${CASES_DIR}/${name}/")
+  done
+  case_dirs=("${selected[@]}")
+  echo "Selected ${#case_dirs[@]} case(s) via EVAL_CASES"
+fi
 
 # ---------------------------------------------------------------------------
 # Phases 1-2: create workspaces and execute — the harness drives case

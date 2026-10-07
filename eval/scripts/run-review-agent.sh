@@ -57,7 +57,7 @@ mkdir -p "$REVIEW_OUT"
 rc=0
 FIXTURE_TYPE=pull_request FIXTURE_URL="$url" FIXTURE_NUMBER="$num" \
 EPHEMERAL_REPO="$EPHEMERAL_REPO" EVAL_NO_POST_SCRIPT=1 \
-EVAL_RUNTIME="${EVAL_REVIEW_RUNTIME:-claude}" \
+EVAL_RUNTIME="${EVAL_REVIEW_RUNTIME:-}" \
 EVAL_MODEL="${EVAL_REVIEW_MODEL:-claude-sonnet-4-6}" EVAL_EFFORT="${EVAL_REVIEW_EFFORT:-}" \
 EVAL_TIMEOUT="${EVAL_REVIEW_TIMEOUT:-2700}" \
   run-fullsend.sh review "$CASE_WORKSPACE" "$REVIEW_OUT" || rc=$?
@@ -65,7 +65,12 @@ echo "review agent run exit: $rc"
 
 result=$(find "$REVIEW_OUT" -maxdepth 4 -path '*/iteration-*/output/agent-result.json' | sort -V | tail -1)
 if [[ -n "$result" ]]; then
-  jq '. + {review_ran: true}' "$result" > "$OUTPUT_DIR/review-result.json"
+  # A result file is not a review: the schema's action enum includes "failure".
+  jq --argjson rc "$rc" '. + {exit_code: $rc,
+        review_ran: ((.action // "") as $a | ($a != "" and $a != "failure")),
+        reason: (if (.action // "") == "failure" then "review agent reported failure"
+                 elif (.action // "") == "" then "agent-result.json has no action" else null end)}' \
+    "$result" > "$OUTPUT_DIR/review-result.json"
 else
   jq -n --argjson rc "$rc" '{review_ran: false, reason: "no agent-result.json from the review run", exit_code: $rc}' > "$OUTPUT_DIR/review-result.json"
 fi

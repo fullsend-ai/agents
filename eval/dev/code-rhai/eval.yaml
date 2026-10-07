@@ -201,6 +201,8 @@ judges:
       if not raw:
           return False, "regression.json not found — capture-pr-artifacts.sh did not run"
       r = json.loads(raw)
+      if r.get("not_applicable"):
+          return True, f"Not applicable: {r.get('reason')}"
       if r.get("skipped"):
           return True, f"Skipped: {r.get('reason')}"
       if r.get("clone_failed"):
@@ -304,8 +306,9 @@ judges:
       Everything you need is under ./judge/ in your working directory:
 
       - judge/task.md      the task description the agent was given
-      - judge/notes.md     notes from the case author: things the task leaves
-                           open, or that must not be held against the agent
+      - judge/notes.md     notes from the case author about the fixture itself
+                           (for example a directory left out of the snapshot);
+                           usually "none"
       - judge/pr.md        the PR title, the list of files it changed, and the
                            description the agent wrote for it
       - judge/diff.patch   the PR diff (a note at the end says if it was cut short)
@@ -325,7 +328,10 @@ judges:
       acceptance criteria, use those; otherwise derive the requirements from
       the text. Work through them one at a time. For each, say whether the
       change satisfies it, partly satisfies it, or does not address it, citing
-      the file that supports your call. Then consider: does the PR stay within
+      the file that supports your call. A criterion that could only be observed
+      on a deployed system is judged from the code and tests that would make
+      it true. Where the task leaves a detail open or defers it to someone
+      else, any reasonable choice satisfies it. Then consider: does the PR stay within
       the task's scope (no unrelated changes, no machinery the task did not
       ask for); does it follow the conventions of the surrounding code; does
       it add or update tests for the new behaviour; would a maintainer of this

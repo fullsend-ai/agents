@@ -153,19 +153,10 @@ PRIOR_REVIEW_SHA=""
 
 case "${FORGE}:${FIXTURE_TYPE}" in
   github:issue)
-    # Optional fixture.labels (e.g. ready-to-code, the label that triggers the
-    # code agent in production). Labels must exist on the fresh repo first.
-    label_args=()
-    while IFS= read -r lbl; do
-      [[ -z "$lbl" ]] && continue
-      gh label create "$lbl" --repo "$EPHEMERAL_REPO" --force --color 0e8a16 >/dev/null 2>&1 || true
-      label_args+=(--label "$lbl")
-    done < <(yq -r '.fixture.labels // [] | .[]' "$INPUT")
     FIXTURE_URL=$(gh issue create \
       --repo "$EPHEMERAL_REPO" \
       --title "$FIXTURE_TITLE" \
-      --body "$FIXTURE_BODY" \
-      "${label_args[@]+"${label_args[@]}"}")
+      --body "$FIXTURE_BODY")
     FIXTURE_NUMBER="${FIXTURE_URL##*/}"
     echo "Created issue: $FIXTURE_URL"
     # Optional fixture.labels: labels the issue already carries when the
