@@ -100,6 +100,7 @@ dimension using category as the key:
 | style-conventions    | `naming-convention`, `error-handling-idiom`, `api-shape`, `code-organization`, `doc-style`, `pattern-inconsistency`                                                                                                                                                      |
 | docs-currency        | `stale-doc`, `missing-doc`, `incorrect-doc`, `incomplete-doc`                                                                                                                                                                                                            |
 | cross-repo-contracts | `breaking-api`, `breaking-schema`, `breaking-config`, `breaking-cli`, `missing-deprecation`, `missing-version-bump`, `backward-incompatible`                                                                                                                             |
+| user-experience        | `uxd-evaluate-design-heuristics`                                                                                                                                                                                                                                             |
 
 The host accepts only categories in this table. A missing or malformed
 projection triggers the full first-review path; never infer categories.
