@@ -36,8 +36,6 @@ judge_notes: |
   observed. This repository is a fork of NVIDIA NeMo-Guardrails; "fork
   identity" and "upstream divergence" refer to that relationship.
 
-labels:
-  forbidden: []
 
 # First-run budgets; tighten from the measured result.
 max_turns: 300

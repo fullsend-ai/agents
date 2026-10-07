@@ -31,7 +31,7 @@ finished cleanly, opened no PR, and left a message saying why), or `failed`
 judged on its own terms.
 
 1. Deterministic first: the outcome; a PR exists; the repository's own test
-   command still passes on the PR head; budgets and labels are respected.
+   command still passes on the PR head; budgets are reported.
 2. For a PR: the fullsend review agent reviews it (findings kept, nothing
    posted), then a tool-using judge (Claude Code runner, Opus 5; it may
    write only its own verdict file)
@@ -83,7 +83,6 @@ test_timeout_s: 1800
 judge_notes: |                      # optional; leave empty when nothing to note
   The epic says the manifest URL is still to be agreed with another team;
   any sensible well-known path is acceptable.
-labels: {forbidden: []}
 max_turns: 300
 max_cost_usd: 40.00
 ```
