@@ -167,3 +167,23 @@ when identical across forges). When reviewing PRs, do not flag a
 static literal default in these blocks as hardcoded, but do flag a
 regression that replaces one of these computed passthrough values
 with a literal.
+
+## 9. `preflight_check` is a raw host command, not a resolved script path
+
+Unlike `pre_script`, `post_script`, and `validation_loop.script`,
+`validation_loop.preflight_check` is not a path resolved relative to the
+harness directory or a checked-out repository. fullsend runs the value
+via `sh -c` on the bare host **before** sandbox creation and repo
+checkout (see issue #422 / PR #1418). It therefore does not reliably
+receive harness-injected env vars such as `FULLSEND_DIR`, and a
+repository-relative path like `scripts/common-preflight.sh` fails with
+`No such file or directory`.
+
+The value must be a self-contained inline command that needs no
+repository file — for example `python3 -c "import jsonschema"` as used
+in [`harness/code.yaml`](harness/code.yaml) and the other six harness
+files. Do not "fix" these into a shared script path or wrap them in
+`${FULLSEND_DIR}/...`. When reviewing a PR that changes
+`validation_loop.preflight_check`, flag a path-resolution or
+env-injection assumption as a regression; the inline form is the
+intended shape.
