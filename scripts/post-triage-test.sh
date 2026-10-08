@@ -114,7 +114,8 @@ export PATH="${MOCK_BIN}:${PATH}"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
 export FULLSEND_TRACKER="github"
-# Harness defaults — post-triage.sh expects these from the harness env.
+# Test-suite baseline for mechanical on-mode. Individual tests override
+# TRIAGE_AUTO_CODE; the shipped harness default is discretionary (#1507).
 export TRIAGE_AUTO_CODE="on"
 export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
 
@@ -1288,6 +1289,25 @@ run_test_with_env "auto-code-discretionary-uppercase-promote-true" \
   "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=ready-to-code --silent" \
   "false" \
   "TRIAGE_AUTO_CODE=DISCRETIONARY"
+
+# Guard the shipped harness default (#1507). Mechanical on-mode ignored
+# explicit hold-for-prioritization requests; runner and sandbox must stay
+# in sync on discretionary. Uses grep rather than yq because this suite
+# mocks yq for config.yaml allowlist parsing. The four-space indent is the
+# top-level env block; overlay env keys are indented further.
+run_harness_auto_code_default_test() {
+  local test_name="harness-triage-auto-code-is-discretionary"
+  local harness_file="${SCRIPT_DIR}/../harness/triage.yaml"
+  local count
+  count="$(grep -cE '^    TRIAGE_AUTO_CODE: "discretionary"$' "${harness_file}" || true)"
+  if [[ "${count}" -ne 2 ]]; then
+    echo "FAIL: ${test_name} — expected TRIAGE_AUTO_CODE: \"discretionary\" twice (runner + sandbox), found ${count}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_harness_auto_code_default_test
 
 # --- Split action tests (#756) ---
 
