@@ -119,6 +119,144 @@ If you are unsure whether a failure is a genuine flake or a real bug,
 say so explicitly in your proposal and recommend investigation before
 applying either fix category.
 
+## Flapping detection
+
+Check whether the workflow exhibits fix-break oscillation: the agent
+repeatedly applies and reverses the same change, or the review-fix loop
+never converges. Flapping wastes agent cycles and often signals a deeper
+problem (conflicting instructions or an approach the agent cannot settle
+on).
+
+Flapping is distinct from test flakiness (above): flakiness is the *same
+commit* passing and failing with no diff between runs; flapping is driven
+by the agent's *own changes* across successive code/fix runs.
+
+### Applicability
+
+Flapping detection applies to PR-based workflows with code/fix cycles
+**on GitHub**. Matching, diff, and check recipes are GitHub
+payloads and `gh` flags; they live in
+`skills/retro-analysis/github/SKILL.md`. GitLab retros load this shared
+file too, but `skills/retro-analysis/gitlab/SKILL.md` has no equivalent
+listing, payload, or per-SHA check recipe — **skip flapping detection
+when the forge is GitLab** rather than running GitHub commands.
+
+Resolve the target PR before gathering data:
+
+- If the retro originates from a PR, use it directly: `PR_NUMBER` is its
+  number and `PR_REPO` is its `owner/repo` (parse both from
+  `$ORIGINATING_URL`).
+- If the retro originates from an issue, resolve linked PRs with the
+  `github-forge` / `gitlab-forge` skill's linked-PR/MR recipe
+  (`closedByPullRequestsReferences` / `closed_by`) — not the
+  forge-specific retro-analysis skill, which has no linkage recipe.
+  That query returns a list of up to 50 nodes, each with `state`,
+  `url`, and an updated-at field (`updatedAt` / `updated_at`).
+  Tie-break: prefer the single open linked PR; if none is open, take
+  the most recently updated; if several are open, either skip
+  flapping detection or analyse each separately and say which PR each
+  finding refers to. If no linked PR exists, skip flapping detection.
+  Derive `PR_REPO` by parsing the node's `url` — it may differ from
+  `$REPO_FULL_NAME`.
+
+Once `PR_REPO` is resolved, re-derive `DISPATCH_REPO` from `PR_REPO`'s
+org (`${PR_ORG}/.fullsend`). `$DISPATCH_REPO` built from
+`$REPO_FULL_NAME` is the wrong dispatch repo when the PR lives under a
+different org. Use `PR_NUMBER` and `PR_REPO` (not `$REPO_FULL_NAME`) for
+all data gathering below.
+
+### Data gathering
+
+Dispatch a subagent to identify the code/fix/review workflow runs for
+this PR. **Reuse the GitHub recipes in
+`skills/retro-analysis/github/SKILL.md` (Flapping detection)** — that
+skill lists `code.yml`, `fix.yml`, and `review.yml` at `--limit 10`.
+Do not point at `finding-agent-runs` (it has no `fix.yml` recipe and
+caps at 5).
+
+Bound the search; do not list every historic run:
+
+- **Fix and review** runs: the PR's lifetime (`createdAt`..`updatedAt`).
+- **Code** runs: at or before `PR.createdAt` (the code run *creates*
+  the PR; a lifetime window drops it and destroys Pattern 1's
+  baseline). Confirm a candidate via the log printing
+  `PR_REPO/pull/PR_NUMBER`.
+
+**Matching.** `$DISPATCH_REPO` is org-wide. A run matches only if
+source repo equals `PR_REPO` and one of: the pull-request number,
+the comment-issue number, or the issue parsed from
+`agent/{issue}-{slug}`. Code runs have no pull-request object;
+matching only on PR number drops them.
+
+**Diffs.** Dispatch-time head SHA is the branch *before* the run.
+Run N's patch is consecutive output heads (the following review
+run's head). Compare patch/hunks, not file paths. The code run has
+no start SHA: PR `baseRefOid` (or merge-base with the first review
+head) → first review head. Skipping it collapses three file-changing
+runs into the normal add-then-remove that must not be flagged.
+
+**Ordering.** By workflow creation time; collapse same-SHA reruns.
+Recorded heads may be unreachable after rebase.
+
+**Checks.** Named check at each run's output-anchor SHA (following
+review head; last run: PR head at retro time), not dispatch-time
+head or the current-head listing. Per-SHA recipe is in the GitHub
+skill.
+
+### Patterns to detect
+
+Count only **file-changing** (code/fix) runs as steps after collapsing
+same-SHA reruns; review runs typically touch no files and serve as
+diff anchors and finding-text correlation.
+
+1. **File oscillation:** across three or more consecutive file-changing
+   runs, the same lines in a file are changed, reverted, then changed
+   again — a repeated A→B→A pattern (run N adds a line, run N+1 removes
+   it, run N+2 adds it back). Compare hunks from the consecutive-head
+   patches, not file-path lists. A single add-then-remove is the normal
+   review-fix cycle, not oscillation.
+2. **Check-status flipping:** the same named CI check (e.g. `unit-tests`)
+   must go `pass→fail→pass→fail` across runs whose patches touch
+   overlapping files: the failure must reappear after an intervening
+   pass. A single `pass→fail→pass` is ordinary regress-then-recover:
+   `pass` is the desired attractor, so that shape is convergence, not
+   oscillation. CI results are reported at check/job level, not per
+   test. A check that flips with no overlap in the agent's changed
+   files is likely test flakiness (above), not agent-caused flapping.
+3. **Cycle count:** repeated review-fix cycles on the same PR without
+   convergence — the review keeps raising the same or alternating
+   findings (a fix for one issue reintroduces a previously resolved one).
+   As a starting heuristic, treat more than two cycles as a signal, but
+   this is a provisional default: the flapping budget should be
+   configurable per repo and per agent role. See
+   [`flapping-convergence.md`](https://github.com/fullsend-ai/fullsend/blob/main/docs/problems/flapping-convergence.md),
+   which lists the right default as an open question. A single rework
+   cycle that the review then approves is normal iteration.
+
+### When flapping is detected
+
+Include a proposal with these specifics:
+
+- **target_repo:** where the fix should land (see Localization guidance below)
+- **title:** start with "Flapping detected:" followed by what oscillated
+- **what_happened:** list each cycle with run IDs, which files changed, and how the changes reversed
+- **what_could_go_better:** identify what might be driving the loop (conflicting review criteria, ambiguous instructions, an unconverging approach)
+- **proposed_change:** suggest a concrete intervention (clarify the conflicting instruction, add a convergence guard)
+- **validation_criteria:** a measurable outcome tied to the pattern, e.g. "The next 2 fix cycles touching `<file>` should not re-introduce the change reverted in run N+1."
+
+### When NOT to flag
+
+- A single rework cycle (review requested changes, fix addressed them, review approved) is normal.
+- Different files changing across runs is normal iteration, not oscillation.
+- A CI check flipping with no overlap in the agent's changed files is flakiness, not flapping.
+- A single `pass→fail→pass` on a named check that then stays green is recovery, not oscillation.
+- If a recorded head SHA is no longer reachable from the PR head
+  (rebase / force-push), treat a reversal signal as unreliable rather
+  than as oscillation.
+- Same-SHA workflow reruns are not additional steps.
+- Only flag when the same change is applied and reversed repeatedly, or the review-fix loop clearly fails to converge.
+- Skip this section entirely on GitLab (no recipe yet).
+
 ## Before proposing: check for existing issues
 
 **This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
