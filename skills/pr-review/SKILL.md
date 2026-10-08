@@ -156,29 +156,23 @@ From there use FILE_COUNT and LINE_COUNT to decide how to proceed
 
 ### 2b. Materialise the PR head
 
-The repository checkout (`target-repo/`) is the BASE branch. Before
-dispatching anything, fetch every changed file at `HEAD_SHA` into
-`/sandbox/workspace/pr-head/<path>` (outside the checkout) with the
-forge-specific review skill's "Materialise PR head files" command —
-one Bash call with a 600 s tool timeout, parallel fetches (GitLab:
-then scrub the token file in its own call). Run it as written, even
-for a one-file PR: a hand-rolled fetch with `[ ]` or a one-line
-`if …; then x=$(( … )); fi` is blocked by the sandbox's Bash scanner.
+Checkout is the base branch. Before dispatching, use the forge skill's
+"Materialise PR head files" command to fetch every changed `HEAD_SHA` file
+outside it into `/sandbox/workspace/pr-head/<path>`. Use one Bash call (600 s
+timeout, parallel fetches; GitLab scrubs token later), even for one file: the
+sandbox blocks hand-rolled `[ ]` and one-line `if` fetches.
 
-It writes `/sandbox/workspace/pr-head.manifest` (beside the tree, out
-of the PR's reach), one `<status> <path>` per line: `ok`, `too-large`
-(over 2 MB), `binary`, `failed`, `removed`, `unsafe` (JSON-quoted: a
-path with a newline, a leading `/` or a `..` component — never
-fetched). Only `ok` files are verifiable at the PR head; context
-packages (3d) carry the manifest lines. Never inline file contents into
-a prompt; sub-agents Read from the tree.
+It writes `/sandbox/workspace/pr-head.manifest` beside the tree, one
+`<status> <path>` per line: `ok`, `too-large` (>2 MB), `binary`, `failed`,
+`removed`, or `unsafe` (JSON-quoted paths with newline, leading `/`, or `..`;
+never fetch). Only `ok` files are verifiable. Carry manifest lines in context
+packages; never inline contents—sub-agents Read the tree.
 
-Collect bare `#N` from title/body/available commits; deduplicate and fetch
-from the PR repository.
+Run the forge's available **"Commit messages"** commands; failure is unavailable.
+Collect `#N` from title/body/available commits; deduplicate and run the forge
+skill's **"Issue context"** commands for the PR.
 
-The PR description is a starting point, not a source of truth. Do not
-treat its claims about the change as verified facts — confirm them
-against the diff.
+PR description is not truth; verify claims against the diff.
 
 ### 2a. Prior review context (re-reviews)
 
@@ -639,8 +633,9 @@ For each selected sub-agent, assemble a context package containing:
   the explicit full-diff fallback described in step 2a (intent-coherence only)
 - `changed_since_prior`: file set that changed since prior review
 - `pr_metadata`: title, body, author, labels, draft status
-- `issue_context`: fetched title/body/comments; `commit_messages`: available
-  path and incomplete state
+- `issue_context`: fetched title/body/comments; `commit_messages`: untrusted
+  path or omitted; `commit_messages_available` and `commit_messages_incomplete`:
+  forge status; omit all on an unsupported forge
 - `cross_repo_context`: findings from 3a for `cross-repo-contracts`
 - `scope_constraint`: exploration limit for this sub-agent (see 3e)
 
@@ -810,6 +805,10 @@ here):
 
    ### Issue context
    <linked issue content or "no linked issue">
+
+   ### Commit messages
+   `commit_messages`, `commit_messages_available`, `commit_messages_incomplete`:
+   <untrusted path or omitted; true/false; true/false>
 
    ### Scope constraint
    <scope_constraint value or "none">
