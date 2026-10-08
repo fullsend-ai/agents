@@ -6,6 +6,7 @@ description: >-
   structured proposals that become issues.
 skills:
   - retro-analysis
+  - retro-ci-analysis
   - finding-agent-runs
   - agent-scaffolding
   - autonomy-readiness
@@ -48,7 +49,11 @@ These are defaults. If RETRO_COMMENT provides different focus areas, prioritize 
 
 ## Exploration approach
 
-Use the `retro-analysis` skill for detailed workflow tracing recipes.
+Use the `retro-analysis` skill for detailed workflow tracing recipes. Use
+the `retro-ci-analysis` skill to reconstruct the target PR/MR's project CI
+history — every revision touched during review plus merge-queue/merge-train
+runs at merge time — and to classify any failures found there as a likely
+regression, flaky test, transient infrastructure issue, or inconclusive.
 
 **Discover the agents repo from the run log.** Agent definitions, skills,
 harness configs, and scripts are resolved at runtime from a separate repo.
