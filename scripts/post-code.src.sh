@@ -750,21 +750,119 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
+# Transient git-push classification.
+#
+# Mirrors the forge REST client's isRetryable 5xx window (HTTP 500-504)
+# plus the git-protocol phrasing GitHub emits for the same failures
+# ("remote: Internal Server Error", connection resets). Used by the
+# backoff loop below; non-fast-forward rejections are NOT transient.
+# ---------------------------------------------------------------------------
+is_transient_push_error() {
+  local output="$1"
+  echo "${output}" | grep -qiE \
+    'internal server error|HTTP[[:space:]]*50[0-4]|returned error:[[:space:]]*50[0-4]|connection reset'
+}
+
+# remote_branch_matches_head returns 0 when the remote branch already points
+# at the local HEAD commit. Used to detect a push whose success response was
+# lost to a transient transport error. A failed ls-remote counts as "no match".
+remote_branch_matches_head() {
+  local remote_sha local_sha
+  remote_sha="$(git ls-remote origin "refs/heads/${BRANCH}" 2>/dev/null | head -1 | cut -f1)" || return 1
+  local_sha="$(git rev-parse HEAD 2>/dev/null)" || return 1
+  [ -n "${remote_sha}" ] && [ "${remote_sha}" = "${local_sha}" ]
+}
+
+# git_push_with_transient_retry runs `git push "$@"` up to 3 times with
+# exponential backoff (2s, then 4s) on transient server-side errors.
+# Non-transient failures return immediately so the caller can apply
+# --force-with-lease. Sets PUSH_OUTPUT to the last git push combined
+# stdout+stderr and returns that push's exit code.
+#
+# When PUSH_VERIFY_LANDED=true, a transient failure is followed by a check
+# that the remote branch already equals local HEAD; if so the push is treated
+# as successful (the server applied it but the response was lost) instead of
+# being retried with a now-stale --force-with-lease expectation.
+PUSH_VERIFY_LANDED=false
+git_push_with_transient_retry() {
+  local max_attempts=3
+  local delay=2
+  local attempt
+  local rc=0
+  local output=""
+
+  for attempt in 1 2 3; do
+    output="$(git push "$@" 2>&1)" && rc=0 || rc=$?
+    if [ "${rc}" -eq 0 ]; then
+      PUSH_OUTPUT="${output}"
+      return 0
+    fi
+    if ! is_transient_push_error "${output}"; then
+      PUSH_OUTPUT="${output}"
+      return "${rc}"
+    fi
+    if [ "${PUSH_VERIFY_LANDED}" = "true" ] && remote_branch_matches_head; then
+      gha_echo warning "git push reported a transient error but ${BRANCH} on the remote already matches HEAD — treating as success"
+      PUSH_OUTPUT="${output}"
+      return 0
+    fi
+    if [ "${attempt}" -eq "${max_attempts}" ]; then
+      gha_echo warning "git push failed with a transient error after ${max_attempts} attempts"
+      PUSH_OUTPUT="${output}"
+      return "${rc}"
+    fi
+    gha_echo warning "git push hit a transient error (attempt ${attempt}/${max_attempts}) — retrying in ${delay}s"
+    print_sanitized_gha_log "${output}"
+    sleep "${delay}"
+    delay=$((delay * 2))
+  done
+  PUSH_OUTPUT="${output}"
+  return "${rc}"
+}
+
+# ---------------------------------------------------------------------------
+# 7b. Push, with transient-error backoff then --force-with-lease fallback.
+#
+# The --force-with-lease fallback uses the same backoff loop, with
+# PUSH_VERIFY_LANDED=true. The lease compares against the locally cached
+# remote-tracking ref, which git only advances on a push this client
+# observed succeed, so a retry after a lost success response would be
+# rejected as stale. Before each retry the loop therefore checks whether
+# the remote branch already equals local HEAD and, if so, stops with
+# success. The lease is never refreshed, so unrelated remote updates are
+# still rejected.
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
-PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+PUSH_OUTPUT=""
+PUSH_RC=0
+git_push_with_transient_retry -u origin -- "${BRANCH}" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
-  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+  if is_transient_push_error "${PUSH_OUTPUT}"; then
+    # git_push_with_transient_retry already exhausted its attempts on a
+    # transient error. Fail closed here instead of falling through to the
+    # non-fast-forward check below: GitHub's 5xx payload for a push can
+    # itself contain "rejected" phrasing (e.g. "! [remote rejected]
+    # <branch> -> <branch> (Internal Server Error)"), which would
+    # otherwise be misclassified as non-fast-forward and trigger a
+    # --force-with-lease retry instead of failing closed.
+    PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}")"
+    post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}"
+  elif echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    PLAIN_PUSH_OUTPUT="${PUSH_OUTPUT}"
     FORCE_PUSH_OUTPUT=""
-    if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+    FORCE_PUSH_RC=0
+    PUSH_VERIFY_LANDED=true
+    git_push_with_transient_retry --force-with-lease -u origin -- "${BRANCH}" && FORCE_PUSH_RC=0 || FORCE_PUSH_RC=$?
+    PUSH_VERIFY_LANDED=false
+    FORCE_PUSH_OUTPUT="${PUSH_OUTPUT}"
+    if [ "${FORCE_PUSH_RC}" -ne 0 ]; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
-      PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
+      PUSH_CATEGORY="$(categorize_push_failure "${PLAIN_PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
-      post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
+      post_fail_to_issue "${PUSH_CATEGORY}" "${PLAIN_PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}"
     fi
     print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
