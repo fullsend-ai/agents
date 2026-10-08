@@ -1594,7 +1594,10 @@ run_body_count_test "projection-strips-rebuilt-summary-line" \
 run_sticky_round_trip_test() {
   local test_name="$1"
   local json_content="$2"
-  local expected='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7}]}'
+  local expected="${3:-}"
+  if [[ -z "${expected}" ]]; then
+    expected='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7}]}'
+  fi
   local run_dir="${TMPDIR}/run-${test_name}"
   local prior_file="${run_dir}/prior-review.txt"
   local post_exit=0 old_marker
@@ -1662,6 +1665,20 @@ for sticky_case in "${STICKY_CASES[@]}"; do
     "projection-round-trips-through-pre-review-${sticky_case}" \
     "${STICKY_INPUTS[${sticky_case}]}"
 done
+
+# scope-bundling (intent-coherence) must survive the allowed_category
+# allowlist in both post-review and pre-review, the same as any other
+# dimension category — regression for the category being added to only
+# one side and silently falling back to full first-review dispatch.
+SCOPE_BUNDLING_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Fake finding: medium scope-bundling docs/plans/foo.md","findings":[{"severity":"medium","category":"scope-bundling","file":"docs/plans/foo.md","line":3,"description":"Do not project this description","remediation":"Nor this remediation"}]}'
+SCOPE_BUNDLING_PROJECTION_EXPECTED='{"version":2,"findings":[{"severity":"medium","category":"scope-bundling","file":"docs/plans/foo.md","line":3}]}'
+run_projection_test "projection-from-scope-bundling-finding" \
+  "${SCOPE_BUNDLING_INPUT}" \
+  "${SCOPE_BUNDLING_PROJECTION_EXPECTED}"
+run_sticky_round_trip_test \
+  "projection-round-trips-through-pre-review-scope-bundling" \
+  "${SCOPE_BUNDLING_INPUT}" \
+  "${SCOPE_BUNDLING_PROJECTION_EXPECTED}"
 
 UNSAFE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"low","category":"logic-error","file":"../escape.go","description":"unsafe"},{"severity":"low","category":"unknown-category","file":"safe.go","description":"unknown"}]}'
 run_no_projection_test "projection-rejects-unsafe-records" \

@@ -53,6 +53,7 @@ FIXTURE_BASE=$(yq -r '.fixture.base // "main"' "$INPUT")
 FIXTURE_HEAD=$(yq -r '.fixture.head_branch // ""' "$INPUT")
 FIXTURE_FILES=$(yq -r '.fixture.files // "[]"' "$INPUT")
 FOLLOWUP_FILES=$(yq -r '.fixture.followup_files // "[]"' "$INPUT")
+FIXTURE_COMMIT_MESSAGE=$(yq -r '.fixture.commit_message // "eval: fixture changes"' "$INPUT")
 PRIOR_REVIEW_BODY=$(yq -r '.prior_review.body // ""' "$INPUT")
 PRIOR_REVIEW_PROVENANCE=$(yq -r '.prior_review.provenance // "none"' "$INPUT")
 
@@ -151,7 +152,7 @@ case "${FORGE}:${FIXTURE_TYPE}" in
       echo "$FIXTURE_FILES" | yq -r ".[$i].content" | "$SCRIPT_DIR/write-fixture-file.sh" "$TARGET_DIR/$path"
     done
     git -C "$TARGET_DIR" add -A
-    git -C "$TARGET_DIR" commit -m "eval: fixture changes"
+    git -C "$TARGET_DIR" commit -m "$FIXTURE_COMMIT_MESSAGE"
     FIXTURE_INITIAL_SHA=$(git -C "$TARGET_DIR" rev-parse HEAD)
     git -C "$TARGET_DIR" push origin "$PR_BRANCH"
     followup_count=$(echo "$FOLLOWUP_FILES" | yq -r 'length')

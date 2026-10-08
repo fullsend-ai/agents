@@ -16,6 +16,8 @@ CODE_REVIEW="${REPO_ROOT}/skills/code-review/SKILL.md"
 GITHUB_FORGE="${REPO_ROOT}/skills/pr-review/github/SKILL.md"
 GITLAB_FORGE="${REPO_ROOT}/skills/pr-review/gitlab/SKILL.md"
 EVAL_SETUP="${REPO_ROOT}/eval/scripts/setup-fixture.sh"
+EVAL_README="${REPO_ROOT}/eval/README.md"
+EVAL_CONFIG="${REPO_ROOT}/eval/review/eval.yaml"
 EVAL_RUNNER="${REPO_ROOT}/eval/scripts/run-fullsend.sh"
 EVAL_UNMATCHED="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/input.yaml"
 EVAL_UNMATCHED_EXPECTATIONS="${REPO_ROOT}/eval/review/cases/008-rereview-unmatched-file/annotations.yaml"
@@ -259,6 +261,46 @@ assert_contains "intent re-review scope includes supplied candidates" "${SKILL}"
   'supplied remediation candidates, and the linked issue'
 assert_not_contains "commit-list cap is not a changed-files fallback" "${SKILL}" \
   ">250 commits"
+assert_contains "commit-message fetch remains available for commit-only scope bundling" "${GITHUB_FORGE}" \
+  'pulls/${PR_NUMBER}/commits?per_page=100'
+assert_not_contains "commit-message fetch avoids scanner-disallowed rm" "${GITHUB_FORGE}" \
+  'rm -f'
+assert_contains "commit-message fetch initializes state without deletion" "${GITHUB_FORGE}" \
+  ': > "$COMMIT_MESSAGES_FILE"'
+assert_contains "commit-message fetch records whether context is available" "${GITHUB_FORGE}" \
+  'COMMIT_MESSAGES_AVAILABLE_FILE=/sandbox/workspace/pr-commit-messages-available'
+assert_contains "commit-message fetch marks successful context available" "${GITHUB_FORGE}" \
+  "printf '%s\\n' true > \"\$COMMIT_MESSAGES_AVAILABLE_FILE\""
+assert_not_contains "GitLab leaves commit-message context unsupported" "${GITLAB_FORGE}" \
+  '## Commit messages'
+assert_contains "orchestrator requires forge commit-message fetch" "${SKILL}" \
+  "forge's available **\"Commit messages\"** commands"
+assert_contains "orchestrator requires forge issue-context fetch" "${SKILL}" \
+  '**"Issue context"** commands for the PR'
+assert_contains "context package names commit-message availability" "${SKILL}" \
+  '`commit_messages_available`'
+assert_contains "context template names commit-message availability" "${SKILL}" \
+  '### Commit messages'
+assert_contains "issue context collects title body and available commit references" "${SKILL}" \
+  'title/body/available commits'
+assert_contains "issue context is fetched content rather than bare issue numbers" "${SKILL}" \
+  'fetched title/body/comments'
+assert_not_contains "issue context does not fetch contributor-named repositories" "${SKILL}" \
+  'an `owner/repo#N` reference uses the named repository'
+assert_contains "issue context stays in the reviewed repository" "${GITHUB_FORGE}" \
+  'repos/${REPO_FULL_NAME}/issues/<issue-number>'
+assert_contains "eval guide documents commit-message fixtures" "${EVAL_README}" \
+  '`commit_message`'
+assert_contains "review eval schema documents commit-message fixtures" "${EVAL_CONFIG}" \
+  'commit_message (default'
+assert_contains "intent review keeps explicit authorization-scope check" "${CODE_REVIEW}" \
+  'Does the change go beyond what the linked issue authorized?'
+assert_contains "intent review keeps module-fit check" "${CODE_REVIEW}" \
+  'Does the change fit the overall design of the module/system?'
+assert_contains "intent review keeps proportional-complexity check" "${CODE_REVIEW}" \
+  'Is the complexity proportional to the value delivered?'
+assert_contains "intent review keeps simpler-alternative check" "${CODE_REVIEW}" \
+  'Are there simpler alternatives that achieve the same goal?'
 assert_contains "GitHub file-list cap remains a changed-files fallback" "${SKILL}" \
   "the step 2a fallback for a failed compare or ≥300 files"
 assert_contains "GitHub compare requires proven completeness" "${GITHUB_FORGE}" \

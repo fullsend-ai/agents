@@ -184,6 +184,9 @@ already stripped the payload.
 - Does the change fit the overall design of the module/system?
 - Is the complexity proportional to the value delivered?
 - Are there simpler alternatives that achieve the same goal?
+- **Multi-issue scope bundling:** use **medium+** `scope-bundling` for
+  2+ issue references across separate domains; recommend a split.
+  Same-domain feature-plus-tests bundling stays low.
 
 #### Style/conventions
 
