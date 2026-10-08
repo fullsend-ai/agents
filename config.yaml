@@ -2,7 +2,6 @@ version: "1"
 allowed_remote_resources:
   - "https://raw.githubusercontent.com/fullsend-ai/fullsend/"
   - "https://raw.githubusercontent.com/fullsend-ai/agents/"
-  - "https://raw.githubusercontent.com/rh-uxd/ai-helpers/"
 # This file is the workspace the functional evals run in (FULLSEND_DIR =
 # repo root), and the one local `fullsend run --fullsend-dir .` runs read.
 # Consumers configure agents through their own .fullsend/config.yaml.

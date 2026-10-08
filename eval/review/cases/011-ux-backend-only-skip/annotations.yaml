@@ -11,7 +11,6 @@ findings:
   forbidden:
     - uxd-evaluate-design-heuristics
 
-max_turns: 60
 max_cost_usd: 5.00
 
 review_expectations: |

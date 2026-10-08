@@ -38,7 +38,7 @@ relative to this file.
 | `style-conventions`    | parallel   | Repo-specific naming, error-handling idioms, API shape, code organization                                               |
 | `docs-currency`        | parallel   | Documentation staleness (follows docs-review skill inline)                                                              |
 | `cross-repo-contracts` | parallel   | API contract breakage affecting other repos (conditional)                                                               |
-| `user-experience`        | parallel   | UX design criteria — accessibility, content & microcopy, state coverage                                                  |
+| `user-experience`      | parallel   | UX design criteria — accessibility, content & microcopy, state coverage                                                 |
 | `risk-assessment`      | parallel   | Composite risk score (metadata, git history, linked issue)                                                              |
 | `challenger`           | sequential | Adversarial challenge of findings, false-positive removal, deduplication                                                |
 
@@ -209,7 +209,7 @@ Pass each dimension only its own prior findings; never pass free-text review bod
 | style-conventions    | `naming-convention`, `error-handling-idiom`, `api-shape`, `code-organization`, `doc-style`, `pattern-inconsistency`                                                                                                                                                      |
 | docs-currency        | `stale-doc`, `missing-doc`, `incorrect-doc`, `incomplete-doc`                                                                                                                                                                                                            |
 | cross-repo-contracts | `breaking-api`, `breaking-schema`, `breaking-config`, `breaking-cli`, `missing-deprecation`, `missing-version-bump`, `backward-incompatible`                                                                                                                             |
-| user-experience        | `uxd-evaluate-design-heuristics`                                                                                                                                                                                                                                          |
+| user-experience      | `uxd-evaluate-design-heuristics`                                                                                                                                                                                                                                         |
 
 #### 3a-1. Prior-finding remediation candidates
 
@@ -364,7 +364,7 @@ for severity anchoring.
 | Typo fix in README                                       | correctness, style-conventions                                                   |
 | Bug fix in auth middleware                               | correctness, security, style-conventions, intent-coherence                       |
 | New API endpoint with tests                              | correctness, security, style-conventions, cross-repo-contracts                   |
-| UI component or interaction change                       | correctness, style-conventions, user-experience, docs-currency                     |
+| UI component or interaction change                       | correctness, style-conventions, user-experience, docs-currency                  |
 | Large refactor across packages                           | correctness, style-conventions, intent-coherence, docs-currency                  |
 | CI/CD pipeline change                                    | correctness, security, style-conventions, intent-coherence                       |
 | DB migration + API change                                | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
@@ -783,7 +783,7 @@ here):
    |--------------------|--------------------------------------|
    | docs-currency      | ../docs-review/SKILL.md              |
    | risk-assessment    | ../pr-risk-assessment/SKILL.md       |
-   | user-experience      | external: fetched via WebFetch       |
+   | user-experience    | external: fetched via gh api         |
 
    **Part 4 — Context package:** the assembled context from step 3d,
    formatted as clearly labeled sections:
