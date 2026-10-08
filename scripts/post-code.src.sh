@@ -749,8 +749,113 @@ if [ -n "${REMOTE_REF_LINE}" ]; then
   fi
 fi
 
+# The code agent's own git identity (harness/code.yaml sets GIT_AUTHOR_NAME to
+# this literal for the sandbox). GIT_BOT_EMAIL alone is not sufficient to
+# identify code-agent commits: harness/fix.yaml gives the fix agent the
+# same ${GIT_BOT_EMAIL}, differing only by name (fullsend-fix). This
+# script runs on the runner, which does not inherit the sandbox's
+# GIT_AUTHOR_NAME, so the code-agent identity is hardcoded here rather than
+# read from the environment.
+CODE_AGENT_GIT_NAME="fullsend-code"
+
+# history_rewrite_preserves_remote_human_commits — 0 when every commit on
+# origin/BRANCH since it diverged from origin/TARGET_BRANCH that is NOT
+# authored by this code agent (email + name, not email alone — see
+# CODE_AGENT_GIT_NAME above) is still present in local HEAD, either as an
+# exact-SHA ancestor, or as an equivalent commit recognized by one of two
+# fallbacks:
+#   - same tree + same author identity — tolerates GitLab MR reconstruction,
+#     where local history is rebuilt from API content and gets different
+#     commit SHAs even when the tree/author content is identical.
+#   - same author identity + same patch-id — tolerates a genuine rebase,
+#     which reapplies the commit's patch onto a new base tree. The
+#     resulting commit's full tree then differs from the original whenever
+#     the new base touched other files, even though the author's own change
+#     was preserved intact; patch-id (the diff the commit introduces) is
+#     the quantity a rebase actually preserves, unlike the full tree.
+# Fail closed when the agent identity is unknown (cannot tell humans/fix-
+# agent from this code agent) or when a non-code-agent commit would be lost
+# by publishing the rewrite.
+history_rewrite_preserves_remote_human_commits() {
+  local bot remote_ref target_ref mb sha author_email author_name tree patch_id candidate candidate_name candidate_email candidate_patch_id candidate_tree
+  bot="$(signoff_bot_email)"
+  if [ -z "${bot}" ]; then
+    echo "history-rewrite: agent git identity unavailable; refusing to publish rewrite" >&2
+    return 1
+  fi
+  remote_ref="origin/${BRANCH}"
+  target_ref="origin/${TARGET_BRANCH}"
+  mb="$(git merge-base "${target_ref}" "${remote_ref}" 2>/dev/null)" || {
+    echo "history-rewrite: could not compute merge-base of ${target_ref} and ${remote_ref}" >&2
+    return 1
+  }
+  local rewrite_list
+  rewrite_list="$(git rev-list "${mb}..${remote_ref}" 2>/dev/null)" || {
+    echo "history-rewrite: could not list commits on ${remote_ref}" >&2
+    return 1
+  }
+  for sha in ${rewrite_list}; do
+    author_email="$(git log -1 --format='%ae' "${sha}" 2>/dev/null)"
+    author_name="$(git log -1 --format='%an' "${sha}" 2>/dev/null)"
+    if [ "${author_email}" != "${bot}" ] || [ "${author_name}" != "${CODE_AGENT_GIT_NAME}" ]; then
+      if git merge-base --is-ancestor "${sha}" HEAD 2>/dev/null; then
+        continue
+      fi
+      tree="$(git log -1 --format='%T' "${sha}" 2>/dev/null)"
+      if [ -n "${tree}" ]; then
+        # Candidates are restricted to the range being published
+        # (target_ref..HEAD), not all of HEAD's ancestry — same rationale
+        # as the patch-id loop below: HEAD also contains target-branch
+        # history up to the fork point, and a same-tree-and-author commit
+        # already inherited from the target branch proves nothing about
+        # whether this PR's own commit survived the rewrite.
+        # Matching is done with exact field equality rather than
+        # `grep -qF` against a bare "tree name email" string, which is an
+        # unanchored substring match.
+        while IFS=$'\t' read -r candidate_tree candidate_name candidate_email; do
+          [ -n "${candidate_tree}" ] || continue
+          [ "${candidate_tree}" = "${tree}" ] || continue
+          [ "${candidate_name}" = "${author_name}" ] || continue
+          [ "${candidate_email}" = "${author_email}" ] || continue
+          continue 2
+        done < <(git log --format='%T%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+      fi
+      patch_id="$(git show "${sha}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+      if [ -n "${patch_id}" ]; then
+        # Candidates are restricted to the range being published
+        # (target_ref..HEAD), not all of HEAD's ancestry: HEAD also
+        # contains target-branch history up to the fork point, and a
+        # same-author commit already inherited from the target branch
+        # proves nothing about whether this PR's own commit survived the
+        # rewrite. Matching is done with exact string equality on %an/%ae
+        # rather than `git log --author=`, which treats the name as an
+        # unanchored regex.
+        while IFS=$'\t' read -r candidate candidate_name candidate_email; do
+          [ -n "${candidate}" ] || continue
+          [ "${candidate_name}" = "${author_name}" ] || continue
+          [ "${candidate_email}" = "${author_email}" ] || continue
+          candidate_patch_id="$(git show "${candidate}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
+          if [ -n "${candidate_patch_id}" ] && [ "${candidate_patch_id}" = "${patch_id}" ]; then
+            continue 2
+          fi
+        done < <(git log --format='%H%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+      fi
+      echo "history-rewrite: commit ${sha} (author ${author_name} <${author_email}>) on ${remote_ref} is not an ancestor of HEAD and has no equivalent (tree+author or patch-id+author) commit in HEAD" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+
 # ---------------------------------------------------------------------------
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
+#
+# A force-push replaces origin/BRANCH with local HEAD. If a human (or the
+# fix agent) landed commits on that branch after the previous code-agent
+# push, publishing this rewrite would silently drop them — the failure
+# mode in issue #342. Fetch the remote tip so we can inspect authorship
+# (and so --force-with-lease has a valid remote-tracking baseline), then
+# refuse to force-push unless every non-code-agent commit is still in HEAD.
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
@@ -758,6 +863,30 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+    echo "Fetching remote branch ${BRANCH} before force-push..."
+    FETCH_OUTPUT="$(git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && FETCH_RC=0 || FETCH_RC=$?
+    if [ "${FETCH_RC}" -eq 0 ]; then
+      print_sanitized_gha_log "${FETCH_OUTPUT}"
+      PRESERVE_ERR=""
+      if ! PRESERVE_ERR="$(history_rewrite_preserves_remote_human_commits 2>&1)"; then
+        print_sanitized_gha_log "${PRESERVE_ERR}"
+        _preserve_detail="Refusing to force-push: a non-code-agent commit on origin/${BRANCH} is not present in local HEAD (no exact-SHA ancestor, tree+author, or patch-id+author equivalent). Human-contributed changes must be preserved.
+${PRESERVE_ERR}"
+        if [ -n "${OPEN_PR:-}" ] && declare -F forge_post_pr_comment >/dev/null; then
+          forge_post_pr_comment "${OPEN_PR}" "${_preserve_detail}" \
+            || gha_echo warning "Could not post human-commit preservation warning to PR #${OPEN_PR}"
+        fi
+        post_fail_to_issue push-rejected "${_preserve_detail}"
+      fi
+      echo "Force-push would not drop non-code-agent commits — proceeding with force-with-lease"
+    elif echo "${FETCH_OUTPUT}" | grep -qi "couldn't find remote ref"; then
+      echo "Remote branch ${BRANCH} not found — proceeding with force-with-lease"
+      print_sanitized_gha_log "${FETCH_OUTPUT}"
+    else
+      print_sanitized_gha_log "${FETCH_OUTPUT}"
+      post_fail_to_issue push-rejected \
+        "Could not fetch remote branch '${BRANCH}' before force-push: ${FETCH_OUTPUT}"
+    fi
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     FORCE_PUSH_OUTPUT=""
     if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
