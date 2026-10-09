@@ -97,6 +97,7 @@ jobs:
           event_action: ${{ github.event.action }}
           pr_author_association: ${{ github.event.pull_request.author_association }}
           pr_author_login: ${{ github.event.pull_request.user.login }}
+          label_actor_login: ${{ github.event.sender.login }}
 
   # ---------------------------------------------------------------------------
   # Detect which agents need functional testing based on changed files.

@@ -26,6 +26,10 @@ inputs:
     description: github.event.pull_request.user.login (for collaborator permission API fallback)
     required: false
     default: ""
+  label_actor_login:
+    description: github.event.sender.login (who applied the label on labeled events)
+    required: false
+    default: ""
 
 outputs:
   authorized:
@@ -52,6 +56,7 @@ runs:
         EVENT_ACTION: ${{ inputs.event_action }}
         PR_AUTHOR_ASSOCIATION: ${{ inputs.pr_author_association }}
         PR_AUTHOR_LOGIN: ${{ inputs.pr_author_login }}
+        LABEL_ACTOR_LOGIN: ${{ inputs.label_actor_login }}
       run: bash "${GITHUB_WORKSPACE}/.github/scripts/check-e2e-authorization.sh" "${PR_NUMBER}" "${REPOSITORY}"
 
     - name: Post gate comment
@@ -79,6 +84,10 @@ runs:
         case "${REASON}" in
           stale_ok_to_test)
             body+="The \`ok-to-test\` label was removed because new commits landed after it was applied. A maintainer must re-apply \`ok-to-test\` after reviewing the latest changes.
+        "
+            ;;
+          untrusted_labeler)
+            body+="The \`ok-to-test\` label was removed because it was applied by a user without write access. A maintainer with write access must re-apply \`ok-to-test\` after reviewing the latest changes.
         "
             ;;
           error)

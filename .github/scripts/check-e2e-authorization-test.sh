@@ -14,68 +14,83 @@ TMPDIR="$(mktemp -d)"
 trap 'rm -rf "${TMPDIR}"' EXIT
 
 MOCK_BIN="${TMPDIR}/bin"
-mkdir -p "${MOCK_BIN}"
+MOCK_ROLES_DIR="${TMPDIR}/roles"
+PR_JSON="${TMPDIR}/pr.json"
+EVENTS_JSON="${TMPDIR}/events.json"
 
-# Mock gh: default behavior returns CONTRIBUTOR association and no ok-to-test label.
-setup_mock_gh() {
-  cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
-#!/usr/bin/env bash
-# Default: PR endpoint returns CONTRIBUTOR with no ok-to-test label
-if [[ "$1" == "api" ]] && [[ "$2" == *"/pulls/"* ]] && [[ "$2" != *"/files"* ]]; then
-  echo '{"author_association": "CONTRIBUTOR", "labels": [], "updated_at": "2026-01-01T00:00:00Z"}'
-  exit 0
-fi
-# Collaborator permission endpoint: default to read (not write)
-if [[ "$1" == "api" ]] && [[ "$2" == *"/collaborators/"*"/permission"* ]]; then
-  echo '{"role_name": "read"}'
-  exit 0
-fi
-echo "mock-gh: unhandled call: $*" >&2
-exit 1
-MOCKEOF
-  chmod +x "${MOCK_BIN}/gh"
+mkdir -p "${MOCK_BIN}" "${MOCK_ROLES_DIR}"
+
+set_role() {
+  local login="$1"
+  local role="$2"
+  echo "${role}" > "${MOCK_ROLES_DIR}/${login}"
 }
 
-# Mock gh: the pulls endpoint fails, simulating an API error that trips the
-# script's ERR trap (reason=error).
-setup_mock_gh_failing_pulls() {
-  cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
+write_pr() {
+  local assoc="${1:-CONTRIBUTOR}"
+  local labels_json="${2:-[]}"
+  local updated_at="${3:-2026-01-01T00:00:00Z}"
+  local login="${4:-some-author}"
+  jq -n --arg assoc "${assoc}" --argjson labels "${labels_json}" --arg updated_at "${updated_at}" --arg login "${login}" \
+    '{author_association: $assoc, labels: $labels, updated_at: $updated_at, user: {login: $login}}' > "${PR_JSON}"
+}
+
+write_events() {
+  local events_json="$1"
+  echo "${events_json}" > "${EVENTS_JSON}"
+}
+
+setup_mock_gh() {
+  cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
-if [[ "$1" == "api" ]] && [[ "$2" == *"/pulls/"* ]] && [[ "$2" != *"/files"* ]]; then
-  echo "mock-gh: simulated API failure" >&2
+if [[ "\${MOCK_FAIL_PULLS:-false}" == "true" ]] && [[ "\$*" == *"/pulls/"* ]]; then
+  echo "mock-gh: simulated pulls failure" >&2
   exit 1
 fi
-echo "mock-gh: unhandled call: $*" >&2
-exit 1
-MOCKEOF
-  chmod +x "${MOCK_BIN}/gh"
-}
+if [[ "\${MOCK_FAIL_PERM:-false}" == "true" ]] && [[ "\$*" == *"/collaborators/"* ]]; then
+  echo "mock-gh: simulated permission failure" >&2
+  exit 1
+fi
 
-# Mock gh: PR already has the ok-to-test label but no labeling event, so the
-# label is treated as stale (reason=stale_ok_to_test).
-setup_mock_gh_stale_label() {
-  cat > "${MOCK_BIN}/gh" <<'MOCKEOF'
-#!/usr/bin/env bash
-if [[ "$1" == "api" ]] && [[ "$2" == *"/pulls/"* ]] && [[ "$2" != *"/files"* ]]; then
-  echo '{"author_association": "CONTRIBUTOR", "labels": [{"name": "ok-to-test"}], "updated_at": "2026-01-01T00:00:00Z"}'
-  exit 0
-fi
-if [[ "$1" == "api" ]] && [[ "$2" == *"/collaborators/"*"/permission"* ]]; then
-  echo '{"role_name": "read"}'
-  exit 0
-fi
-if [[ "$1" == "api" ]] && [[ "$2" == *"/issues/"*"/events"* ]]; then
-  echo '[]'
-  exit 0
-fi
-echo "mock-gh: unhandled call: $*" >&2
-exit 1
+case "\$*" in
+  *"/collaborators/"*"/permission"*)
+    login="\$*"
+    login="\${login#*/collaborators/}"
+    login="\${login%%/permission*}"
+    if [[ -f "${MOCK_ROLES_DIR}/\${login}" ]]; then
+      role=\$(cat "${MOCK_ROLES_DIR}/\${login}")
+    else
+      role="read"
+    fi
+    echo "{\"role_name\": \"\${role}\"}"
+    ;;
+  *"/issues/"*"/events"*)
+    if [[ -f "${EVENTS_JSON}" ]]; then
+      cat "${EVENTS_JSON}"
+    else
+      echo '[]'
+    fi
+    ;;
+  *"/pulls/"*)
+    if [[ -f "${PR_JSON}" ]]; then
+      cat "${PR_JSON}"
+    else
+      echo '{"author_association": "CONTRIBUTOR", "labels": [], "updated_at": "2026-01-01T00:00:00Z", "user": {"login": "some-author"}}'
+    fi
+    ;;
+  *DELETE*)
+    exit 0
+    ;;
+  *)
+    echo "mock-gh: unhandled call: \$*" >&2
+    exit 1
+    ;;
+esac
 MOCKEOF
   chmod +x "${MOCK_BIN}/gh"
 }
 
 run_auth() {
-  # Run the script, capture stdout, suppress stderr
   local output
   output=$(
     export PATH="${MOCK_BIN}:${PATH}"
@@ -110,53 +125,83 @@ assert_unauthorized() {
   fi
 }
 
-# --- Test cases ---
-
-# Test: trusted bot (fullsend-ai-coder[bot]) is authorized
 setup_mock_gh
+
+# --- Trusted bot tests ---
 export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
 export PR_AUTHOR_LOGIN="fullsend-ai-coder[bot]"
 output=$(run_auth 1 "test-org/test-repo")
 assert_authorized "trusted bot fullsend-ai-coder[bot] is authorized" "${output}"
 
-# Test: MEMBER association is authorized
-setup_mock_gh
+# Unknown bot is not trusted
+export PR_AUTHOR_LOGIN="some-other-bot[bot]"
+output=$(run_auth 1 "test-org/test-repo")
+assert_unauthorized "unknown bot is not trusted" "${output}"
+
+# --- Author permission tests (trust based on collaborator API, not author_association) ---
+set_role "author-write" "write"
 export PR_AUTHOR_ASSOCIATION="MEMBER"
-export PR_AUTHOR_LOGIN="some-human"
+export PR_AUTHOR_LOGIN="author-write"
 output=$(run_auth 1 "test-org/test-repo")
-assert_authorized "MEMBER association is authorized" "${output}"
+assert_authorized "author with write permission is authorized" "${output}"
 
-# Test: OWNER association is authorized
-setup_mock_gh
-export PR_AUTHOR_ASSOCIATION="OWNER"
-export PR_AUTHOR_LOGIN="some-human"
+set_role "author-maintain" "maintain"
+export PR_AUTHOR_ASSOCIATION="MEMBER"
+export PR_AUTHOR_LOGIN="author-maintain"
 output=$(run_auth 1 "test-org/test-repo")
-assert_authorized "OWNER association is authorized" "${output}"
+assert_authorized "author with maintain permission is authorized" "${output}"
 
-# Test: COLLABORATOR association is authorized
-setup_mock_gh
+set_role "author-admin" "admin"
+export PR_AUTHOR_ASSOCIATION="MEMBER"
+export PR_AUTHOR_LOGIN="author-admin"
+output=$(run_auth 1 "test-org/test-repo")
+assert_authorized "author with admin permission is authorized" "${output}"
+
+set_role "author-triage" "triage"
+export PR_AUTHOR_ASSOCIATION="MEMBER"
+export PR_AUTHOR_LOGIN="author-triage"
+output=$(run_auth 1 "test-org/test-repo")
+assert_unauthorized "author with triage permission denied (even if MEMBER)" "${output}"
+
+set_role "author-read" "read"
 export PR_AUTHOR_ASSOCIATION="COLLABORATOR"
-export PR_AUTHOR_LOGIN="some-human"
+export PR_AUTHOR_LOGIN="author-read"
 output=$(run_auth 1 "test-org/test-repo")
-assert_authorized "COLLABORATOR association is authorized" "${output}"
+assert_unauthorized "author with read permission denied (even if COLLABORATOR)" "${output}"
 
-# Test: CONTRIBUTOR association without bot login is unauthorized
-setup_mock_gh
+# External contributor without permissions denied
 export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
 export PR_AUTHOR_LOGIN="random-contributor"
 output=$(run_auth 1 "test-org/test-repo")
 assert_unauthorized "CONTRIBUTOR without bot login is unauthorized" "${output}"
 
-# Test: unknown bot is not trusted
-setup_mock_gh
-export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
-export PR_AUTHOR_LOGIN="some-other-bot[bot]"
+# --- ok-to-test and synchronize tests ---
+# Synchronize with existing ok-to-test label is invalidated
+write_pr "CONTRIBUTOR" '[{"name":"ok-to-test"}]' "2026-01-01T10:00:00Z" "random-contributor"
+write_events '[{"event":"labeled","label":{"name":"ok-to-test"},"created_at":"2026-01-01T11:00:00Z","actor":{"login":"maintainer"}}]'
+set_role "maintainer" "write"
+export EVENT_ACTION="synchronize"
+export CHECK_E2E_AUTH_DRY_RUN="true"
 output=$(run_auth 1 "test-org/test-repo")
-assert_unauthorized "unknown bot is not trusted" "${output}"
+assert_unauthorized "synchronize with existing ok-to-test invalidates approval" "${output}" "stale_ok_to_test"
+unset EVENT_ACTION CHECK_E2E_AUTH_DRY_RUN
 
-# Test: denial emits a ::warning:: annotation so it surfaces in the Checks tab
-setup_mock_gh
-export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
+# Fresh ok-to-test label by write maintainer on labeled event is authorized
+export EVENT_ACTION="labeled"
+export LABEL_ACTOR_LOGIN="maintainer"
+output=$(run_auth 1 "test-org/test-repo")
+assert_authorized "ok-to-test label by write maintainer is authorized" "${output}"
+
+# ok-to-test label applied by triage user is denied and untrusted_labeler
+set_role "triager" "triage"
+export LABEL_ACTOR_LOGIN="triager"
+export CHECK_E2E_AUTH_DRY_RUN="true"
+output=$(run_auth 1 "test-org/test-repo")
+assert_unauthorized "ok-to-test by triage user is denied as untrusted_labeler" "${output}" "untrusted_labeler"
+unset EVENT_ACTION LABEL_ACTOR_LOGIN CHECK_E2E_AUTH_DRY_RUN
+
+# --- Warning annotations & error handling ---
+write_pr "CONTRIBUTOR" '[]'
 export PR_AUTHOR_LOGIN="random-contributor"
 output=$(run_auth 1 "test-org/test-repo")
 if echo "${output}" | grep -q '::warning::'; then
@@ -166,10 +211,10 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# Test: an API failure (ERR trap, reason=error) still emits a ::warning:: annotation
-setup_mock_gh_failing_pulls
-unset PR_AUTHOR_ASSOCIATION
-export PR_AUTHOR_LOGIN="random-contributor"
+# API failure (ERR trap)
+export MOCK_FAIL_PULLS="true"
+unset PR_AUTHOR_ASSOCIATION PR_AUTHOR_LOGIN
+write_pr "NONE" '[]'
 output=$(run_auth 1 "test-org/test-repo")
 assert_unauthorized "API failure (ERR trap) is unauthorized" "${output}" "error"
 if echo "${output}" | grep -q '::warning::'; then
@@ -178,27 +223,11 @@ else
   echo "FAIL: API failure emits ::warning:: annotation — got: ${output}"
   FAILURES=$((FAILURES + 1))
 fi
+unset MOCK_FAIL_PULLS
 
-# Test: a stale ok-to-test label (reason=stale_ok_to_test) emits a ::warning:: annotation
-setup_mock_gh_stale_label
-export PR_AUTHOR_ASSOCIATION="CONTRIBUTOR"
-export PR_AUTHOR_LOGIN="random-contributor"
-export EVENT_ACTION="synchronize"
-export CHECK_E2E_AUTH_DRY_RUN="true"
-output=$(run_auth 1 "test-org/test-repo")
-assert_unauthorized "stale ok-to-test label is unauthorized" "${output}" "stale_ok_to_test"
-if echo "${output}" | grep -q '::warning::'; then
-  echo "PASS: stale ok-to-test label emits ::warning:: annotation"
-else
-  echo "FAIL: stale ok-to-test label emits ::warning:: annotation — got: ${output}"
-  FAILURES=$((FAILURES + 1))
-fi
-unset EVENT_ACTION CHECK_E2E_AUTH_DRY_RUN
-
-# Test: authorization success does not emit a ::warning:: annotation
-setup_mock_gh
+# Authorized run does not emit warning
+export PR_AUTHOR_LOGIN="author-write"
 export PR_AUTHOR_ASSOCIATION="MEMBER"
-export PR_AUTHOR_LOGIN="some-human"
 output=$(run_auth 1 "test-org/test-repo")
 if echo "${output}" | grep -q '::warning::'; then
   echo "FAIL: authorized run should not emit ::warning:: — got: ${output}"
