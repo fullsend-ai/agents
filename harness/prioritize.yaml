@@ -9,7 +9,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:61787695ada71876324447979ac26a16bc64dc7139b819151cda817937be1276
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:2b5ae4511e7679d2c6d4f5b4dedca35b3ac39e38d12e4cd86645e0495868e30a
 policy: policies/base.yaml
 providers:
   - vertex-ai
