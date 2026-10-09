@@ -1,0 +1,108 @@
+forge: github
+fixture:
+  type: issue
+  title: 'RHAI-284: Implement pod-level and model-level dashboard panels (P11-P20)'
+  body: |-
+    Implement pod-level and model-level dashboard panels (P11-P20)
+    Description
+    Add 10 new panels to the existing llm-d Perses observability dashboards, covering per-pod diagnostics (P11-P16) and per-model business metrics (P17-P20). Panels are defined as PersesDashboard custom resource entries in the kserve repo at
+    config/monitoring/llmisvc/dashboards/
+    . All panels consume existing vLLM and EPP Prometheus metrics via PromQL queries grouped by
+    k8s_pod_name
+     or
+    model_name
+     labels. No new metric collection infrastructure is required.
+    Scope
+    Pod-level panels (P11-P16):
+    P11: Per-pod request distribution -- rate of
+    kserve_vllm:num_requests_running
+     by
+    k8s_pod_name
+    , showing routing imbalance across pods in the InferencePool
+    P12: Per-pod queue depth --
+    kserve_vllm:num_requests_waiting
+     by
+    k8s_pod_name
+    P13: Per-pod KV cache usage --
+    kserve_vllm:kv_cache_usage_perc
+     by
+    k8s_pod_name
+    P14: Per-pod prefix cache hit rate -- derived from
+    kserve_vllm:prefix_cache_hits_total
+     /
+    kserve_vllm:prefix_cache_queries_total
+     by
+    k8s_pod_name
+    P15: Per-pod preemption counts --
+    kserve_vllm:num_preemptions_total
+     by
+    k8s_pod_name
+    P16: EPP pool health -- endpoint count, healthy vs. unhealthy endpoints, and scheduling decision distributions from EPP metrics on port 9090/TCP
+    Model-level panels (P17-P20):
+    P17: Per-model TTFT --
+    kserve_vllm:time_to_first_token_seconds
+     by
+    model_name
+     for SLA compliance
+    P18: Per-model error rate --
+    inference_model_request_error_total
+     by
+    model_name
+    P19: Per-model token consumption --
+    kserve_vllm:generation_tokens_total
+     and
+    kserve_vllm:prompt_tokens_total
+     by
+    model_name
+     for chargeback extraction
+    P20: Per-model traffic distribution -- request volume by
+    model_name
+    Cross-cutting:
+    Verify metric availability for all referenced vLLM metrics (port 8000/TCP
+    /metrics
+    ) and EPP metrics (port 9090/TCP
+    /metrics
+    )
+    Use the same
+    kserve_vllm:
+     metric prefix as existing P1-P10 panels
+    Leverage existing
+    $namespace
+     and
+    $model_name
+     template variables for per-model filtering
+    Validate panels render correctly with existing P1-P10 panels (regression testing)
+    Acceptance Criteria
+    Pod-level panels P11-P16 render distinct time series per
+    k8s_pod_name
+     label in a multi-pod deployment with 3+ pods
+    Model-level panels P17-P20 render distinct series per
+    model_name
+     label in a multi-model deployment with 2+ models served through separate LLMInferenceService instances
+    P11 visually exposes routing imbalance across pods in the InferencePool (suitable for troubleshooting uneven load distribution)
+    P19 per-model token consumption data is suitable for chargeback extraction by finance teams
+    All original P1-P10 panels continue to return non-error PromQL results and render the same number of time series as before the P11-P20 deployment
+    Single-model deployments: model-level panels P17-P20 display data for the single model without errors (at least one time series)
+    P16 EPP pool health panel displays endpoint status and scheduling distributions from EPP metrics on port 9090/TCP
+    Panel definitions are authored as PersesDashboard CRD entries consistent with the existing P1-P10 panel format
+    KServe team code review and merge completed
+    HLR Traceability
+    HLR-1 [P0]: Pod-level panels (P11-P16) break down vLLM metrics by individual pod within an InferencePool
+    HLR-2 [P0]: Model-level panels (P17-P20) break down latency, error rate, and token metrics by model_name label
+    HLR-4 [P1]: Per-pod request distribution (P11) visually exposes routing imbalance across pods
+    HLR-5 [P1]: Per-model token consumption (P19) suitable for chargeback extraction by finance teams
+    HLR-6 [P1]: Existing P1-P10 panels continue to render correctly after P11-P22 deployment
+    Assumptions
+    vLLM exposes
+    model_name
+     label on all standard inference metrics (confirmed via code review; set from
+    --served-model-name
+     at startup)
+    Perses dashboard framework from RHAISTRAT-1685 is deployed and available in RHOAI 3.5
+    PodMonitor resources are deployed for llm-d model server pods (established by P1-P10 framework)
+    EPP exposes scheduling and pool health metrics on port 9090/TCP
+    Risks
+    Per-model panels cannot distinguish LoRA adapters; vLLM labels all metrics with the base model name regardless of which LoRA adapter served the request. Document that per-model panels apply to separate LLMInferenceService instances.
+    KServe team review bottleneck: engage KServe team early with a consolidated PR.
+  labels:
+  - ready-to-code

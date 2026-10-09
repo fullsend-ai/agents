@@ -1,0 +1,444 @@
+name: code-rhai-eval
+description: >
+  Feature-scale cases for the fullsend code agent, built from RHAI epics
+  (AISDLC-5). Each case gives the agent an epic verbatim as the issue, against
+  the target repository as it was when the epic's first PR was accepted (or
+  today's main if none has merged yet). The agent's PR is graded without a
+  reference solution: the repo's own tests must still pass (deterministic),
+  and a model judge scores the PR against the epic's acceptance criteria,
+  with the fullsend review agent's findings as evidence. The pipeline guard in
+  eval/code stays as is. The matrix below runs the same cases and judges for
+  each coder model (one arm per model); run-fullsend.sh picks the runtime
+  from the model id (provider-prefixed ids such as openai/... run on pi,
+  bare Anthropic ids on Claude Code) unless EVAL_RUNTIME says otherwise.
+
+execution:
+  # The eval's identity for the harness (run directories, reports). The
+  # fullsend agent under test is named literally in runner.command below.
+  skill: code-rhai
+  mode: case
+  # Code agent (up to 2 x 60 min) + review agent (45 min) + tests + overhead.
+  # Local-only for now; this does not fit the 45-minute CI job.
+  timeout: 12000
+  parallelism: 1
+  max_budget_usd: 40.00
+  env:
+    EVAL_ORG: $EVAL_ORG
+    GH_TOKEN: $GH_TOKEN
+    FULLSEND_DIR: $FULLSEND_DIR
+    GOOGLE_APPLICATION_CREDENTIALS: $GOOGLE_APPLICATION_CREDENTIALS
+    ANTHROPIC_VERTEX_PROJECT_ID: $ANTHROPIC_VERTEX_PROJECT_ID
+    GOOGLE_CLOUD_PROJECT: $GOOGLE_CLOUD_PROJECT
+    CLOUD_ML_REGION: $CLOUD_ML_REGION
+    EVAL_RUNTIME: $EVAL_RUNTIME
+    EVAL_MODEL: $EVAL_MODEL
+    EVAL_EFFORT: $EVAL_EFFORT
+    # Review step overrides. Default: Claude Code runtime, Sonnet, whatever
+    # the code agent ran on, so the review is a constant across arms.
+    # EVAL_SKIP_REVIEW=1 skips the review step entirely.
+    EVAL_REVIEW_RUNTIME: $EVAL_REVIEW_RUNTIME
+    EVAL_REVIEW_MODEL: $EVAL_REVIEW_MODEL
+    EVAL_REVIEW_EFFORT: $EVAL_REVIEW_EFFORT
+    # OpenAI key for OpenAI-model arms on the pi runtime (runner-side only).
+    OPENAI_API_KEY: $OPENAI_API_KEY
+    EVAL_SKIP_REVIEW: $EVAL_SKIP_REVIEW
+    # Inner `timeout` around the code agent's fullsend run (see
+    # eval/code/eval.yaml for why it must live under execution.env).
+    EVAL_TIMEOUT: "8400"
+
+hooks:
+  before_each:
+    - command: "setup-fixture.sh"
+      timeout: 600
+      description: "Create ephemeral repo from repo/ snapshot and open the epic as an issue"
+
+  after_each:
+    - command: "capture-fixture.sh"
+      timeout: 120
+      description: "Capture issue + PR state for judges"
+    - command: "capture-pr-artifacts.sh"
+      timeout: 2400
+      on_failure: continue
+      description: "Save the PR diff and write-up; run the repo's own tests on the PR head"
+    - command: "run-review-agent.sh"
+      timeout: 3600
+      on_failure: continue
+      description: "Run the fullsend review agent on the PR (no posting) and keep its findings"
+    - command: "teardown-fixture.sh"
+      timeout: 30
+      on_failure: continue
+      description: "Delete ephemeral repo"
+
+runner:
+  type: cli
+  # {model} and {effort} are the harness placeholders: resolved from
+  # `execute.py --model/--effort` (what eval-anova passes per matrix cell, and
+  # what run-functional.sh forwards from EVAL_MODEL/EVAL_EFFORT) or, for a plain
+  # run, from models.skill below. run-fullsend.sh turns them into
+  # `fullsend run --model/--effort`, so harness/code.yaml itself stays untouched
+  # and metrics.json records both requested_model and the resolved model.
+  # Effort is passed explicitly so every arm runs at the same level; high is
+  # what harness/code.yaml sets, so the Claude arm is unchanged by it.
+  effort: high
+  command:
+    - "run-fullsend.sh"
+    - "code"            # the fullsend agent under test (not the eval name)
+    - "{workspace}"
+    - "{output_dir}"
+    - "{model}"
+    - "{effort}"
+
+models:
+  # Baseline pin for the code agent. harness/code.yaml says `model: opus`, an
+  # alias that resolves to Opus 5 where the Vertex project serves it and falls
+  # back to Opus 4.6 where it does not (the fleet projects, as of 2026-09-21).
+  # Pin the id so every project runs the same baseline. A plain run uses this;
+  # a matrix run (eval-anova) takes each model from matrix.factors.model.
+  skill: claude-opus-4-6
+  # Judge: Opus 5 on the Claude Code runner, the same judge for every arm so
+  # the arms are scored identically, and above every model it judges. On the
+  # ten artifacts of the first five-case set, Opus 5, Opus 5.5 and GPT-6 Sol
+  # agreed within one point everywhere (2026-10-07); Opus 5.5 would be
+  # preferred where the Vertex project serves it, which ours does not. The
+  # Claude Code runner also honours ANTHROPIC_BASE_URL/ANTHROPIC_API_KEY,
+  # so a gateway can be substituted from the environment.
+  judge: claude-opus-5
+
+# eval-anova matrix (agent-eval-harness >= 1.49). Single baseline cell until a
+# budget exists; total runs = conditions x cases x replications.
+matrix:
+  # One arm per coder model, same cases, same judges. claude-opus-4-6 is the
+  # fleet's code agent as it runs today; openai/gpt-6-luna is the cheaper
+  # comparison on the pi runtime.
+  factors:
+    model:
+      - claude-opus-4-6
+      - openai/gpt-6-luna
+  replications: 1
+
+dataset:
+  path: cases
+  schema: |
+    Each case directory contains (see README.md):
+    - input.yaml: the epic, verbatim, as the issue title and body.
+    - annotations.yaml: provenance (epic, repo, the PRs that show the epic was
+      done in this one repo, snapshot commit and how it was chosen),
+      regression_tests.command, judge_notes, budgets.
+    - repo/: working tree at the snapshot commit, no history.
+
+outputs:
+  - path: output
+    schema: |
+      Read by the Python check judges.
+      fixture-state.json   issue state plus PRs opened by the post-script
+      pr.json              the agent's PR metadata and description
+      agent-outcome.json   {"outcome":"pr"|"declined"|"failed"} + final-message excerpt
+      regression.json/.log the repo's own tests run on the PR head
+      review-result.json   fullsend review agent findings (review_ran, findings,
+                           risk_assessment, body, action)
+      review-metrics.json  cost/turns of the review run + agents repo commit
+      metrics.json         the code run's cost/turns/model
+  - path: judge
+    schema: |
+      Staged into the agent judge's working directory (plain text, read with
+      Read/Grep/Glob). task.md (the task description), notes.md (author notes
+      or "none"), pr.md (title, files, the agent's description), diff.patch,
+      tests.md (repo test result), review.md (review agent findings),
+      pr-head/ (full checkout of the PR head, no .git), agent-final-message.md,
+      and on a decline repo-snapshot/ (the repo as given to the agent).
+
+judges:
+  # ---- deterministic ---------------------------------------------------
+  # max_turns / max_cost are copied verbatim from
+  # eval/code/eval.yaml — keep them in sync. pr_created differs: it only
+  # counts PRs on agent/ branches.
+  - name: pr_created
+    description: >
+      Post-script must open at least one pull request on an agent/ branch
+      (end-to-end success). Other PRs on the throwaway repo, e.g. Dependabot's,
+      do not count.
+    check: |
+      import json
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      state = json.loads(raw)
+      prs = [p for p in (state.get("pull_requests") or [])
+             if str(p.get("head", "")).startswith("agent/")]
+      if not prs:
+          return False, "No agent/ pull request found — code agent/post-script did not create a PR"
+      openish = [p for p in prs if str(p.get("state", "")).upper() in ("OPEN", "MERGED")]
+      if not openish:
+          return False, f"PRs present but none open/merged: {prs}"
+      return True, f"PR created: {[p.get('url') for p in openish]}"
+
+  - name: outcome
+    description: >
+      What the run produced: a PR ("pr"), a clean stop with a stated reason
+      ("declined"), or nothing usable ("failed"). Passes for pr or declined;
+      the rationale carries the category and, for a decline, the agent's own
+      words, so a reader can see why without opening the transcript.
+    check: |
+      import json
+      raw = outputs["files"].get("output/agent-outcome.json")
+      if not raw:
+          return False, "agent-outcome.json not found — capture-pr-artifacts.sh did not run"
+      o = json.loads(raw)
+      kind = o.get("outcome")
+      if kind == "pr":
+          return True, "pr: " + str(o.get("reason"))
+      if kind == "declined":
+          return True, "declined: " + (o.get("final_message_excerpt") or "").replace("\n", " ")[:300]
+      return False, f"failed: {o.get('reason')}"
+
+  - name: regression_tests_pass
+    description: >
+      The repository's own test command (annotations.regression_tests.command)
+      must pass on the agent's PR head. Pass-to-pass, no reference needed.
+    check: |
+      import json
+      raw = outputs["files"].get("output/regression.json")
+      if not raw:
+          return False, "regression.json not found — capture-pr-artifacts.sh did not run"
+      r = json.loads(raw)
+      if r.get("not_applicable"):
+          return True, f"Not applicable: {r.get('reason')}"
+      if r.get("skipped"):
+          return True, f"Skipped: {r.get('reason')}"
+      if r.get("clone_failed"):
+          return False, "Could not clone the PR head to run tests"
+      code = r.get("exit_code")
+      if code is None:
+          return False, "No exit code recorded"
+      if r.get("timed_out"):
+          return False, f"Tests timed out after {r.get('timeout_s')}s"
+      if code != 0:
+          return False, f"Tests failed (exit {code}); see output/regression.log"
+      return True, "Repository tests pass on the PR head"
+
+  - name: review_agent_ran
+    description: >
+      The fullsend review agent produced findings for the PR (advisory: the
+      quality judge is told when this input is missing).
+    check: |
+      import json
+      raw = outputs["files"].get("output/review-result.json")
+      if not raw:
+          return False, "review-result.json not found — run-review-agent.sh did not run"
+      r = json.loads(raw)
+      if not r.get("review_ran"):
+          return False, f"Review agent did not run: {r.get('reason')}"
+      n = len(r.get("findings") or [])
+      return True, f"Review agent ran: {n} finding(s), action={r.get('action')}"
+
+  - name: max_turns
+    description: Agent must complete within the declared turn budget
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found"
+      metrics = json.loads(raw)
+      actual = metrics.get("num_turns")
+      if actual is None:
+          return False, "num_turns not present in metrics.json"
+      limit = outputs.get("annotations", {}).get("max_turns")
+      if limit is None:
+          return False, "max_turns not declared in annotations.yaml"
+      if int(actual) > int(limit):
+          return False, f"Exceeded max_turns: {actual} > {limit}"
+      return True, f"Turns OK: {actual} <= {limit}"
+
+  - name: max_cost
+    description: Agent must complete within the declared cost budget
+    check: |
+      import json
+      raw = outputs["files"].get("output/metrics.json")
+      if not raw:
+          return False, "metrics.json not found"
+      metrics = json.loads(raw)
+      actual = metrics.get("total_cost_usd")
+      if actual is None:
+          return False, "total_cost_usd not present in metrics.json"
+      limit = outputs.get("annotations", {}).get("max_cost_usd")
+      if limit is None:
+          return False, "max_cost_usd not declared in annotations.yaml"
+      if float(actual) > float(limit):
+          return False, f"Exceeded max_cost_usd: {actual} > {limit}"
+      return True, f"Cost OK: {actual} <= {limit}"
+
+  # ---- model judge -----------------------------------------------------
+  # An agent judge: Claude Code with read-only tools over the judge/ tree, so
+  # it can read the code around the change, not just the diff. The harness
+  # appends its own output contract (write ./output/score.json with rationale
+  # then score) to this prompt. samples: 1 while testing plumbing; 5 for runs
+  # whose numbers we report.
+  - name: pr_quality
+    description: >
+      Does the agent's PR deliver what the task description asked for? Scored
+      1-5 against the task's requirements by a tool-using judge that reads the
+      PR head checkout, with the repo test result and the fullsend review
+      agent's findings as evidence. No reference solution.
+    model: claude-opus-5
+    samples: 1
+    score_range: [1, 5]
+    if: "'\"outcome\":\"pr\"' in outputs['files'].get('output/agent-outcome.json', '')"
+    agent:
+      # Claude Code runner. Write is needed for the verdict file the harness
+      # contract asks for (./output/score.json); without it the verdict was
+      # lost (2026-09-25). The harness copies rather than symlinks the staged
+      # material when a judge can write, so nothing real is reachable.
+      allowed_tools: [Read, Grep, Glob, Write]
+      # An allow list only pre-approves; headless Claude Code would still let
+      # the judge shell out or fetch the web. Deny those so the judge sees
+      # only the staged judge/ directory (harness 1.49.1 ignores this key and
+      # the patched harness defaults to the same list).
+      denied_tools: [Bash, WebFetch, WebSearch, Agent]
+      inputs: [judge]
+      timeout: 1800
+      max_budget_usd: 6.00
+    prompt: |
+      You are grading a pull request written by an automated coding agent.
+      The agent was given a task description and asked to implement it in one
+      repository, in one PR. There is no reference solution: judge the PR on
+      the task description and on what you find in the repository.
+
+      Everything you need is under ./judge/ in your working directory:
+
+      - judge/task.md      the task description the agent was given
+      - judge/notes.md     notes from the case author about the fixture itself
+                           (for example a directory left out of the snapshot);
+                           usually "none"
+      - judge/pr.md        the PR title, the list of files it changed, and the
+                           description the agent wrote for it
+      - judge/diff.patch   the PR diff (a note at the end says if it was cut short)
+      - judge/pr-head/     the full repository with the PR applied; read around
+                           the changed code, its callers, and the existing tests
+      - judge/tests.md     result of running the repository's own test suite
+                           on the PR
+      - judge/review.md    findings from an independent automated code review
+                           (it read the code and the task, but not the case
+                           author's notes). Evidence to verify against the code,
+                           not a verdict: the reviewer can be wrong
+
+      Read task.md and notes.md first, then pr.md and diff.patch, then look at
+      whatever in pr-head/ you need to judge the change in context.
+
+      How to grade. Identify what the task description requires. If it lists
+      acceptance criteria, use those; otherwise derive the requirements from
+      the text. Work through them one at a time. For each, say whether the
+      change satisfies it, partly satisfies it, or does not address it, citing
+      the file that supports your call. A criterion that could only be observed
+      on a deployed system is judged from the code and tests that would make
+      it true. Where the task leaves a detail open or defers it to someone
+      else, any reasonable choice satisfies it. Then consider: does the PR stay within
+      the task's scope (no unrelated changes, no machinery the task did not
+      ask for); does it follow the conventions of the surrounding code; does
+      it add or update tests for the new behaviour; would a maintainer of this
+      repository accept it with at most minor revisions. A PR that does part
+      of the task well is worth more than one that touches everything
+      superficially.
+
+      Score:
+      1 = does not address the task, or breaks the repository (tests fail)
+      2 = addresses a minority of the requirements, or the approach is wrong
+          for the codebase
+      3 = addresses most requirements but with clear gaps (missing tests,
+          incomplete behaviour, scope creep, or a finding a maintainer would
+          block on)
+      4 = meets the requirements with minor issues a maintainer would fix in
+          review
+      5 = meets all requirements, tested, in scope, and mergeable as is
+
+      Deliver the verdict exactly as the harness contract below says: write
+      ./output/score.json with "rationale" then "score". If you are unable to
+      write a file, end your reply with that same JSON object on a line of
+      its own.
+
+  # Runs only when the agent stopped without a PR and said why. Assesses the
+  # stated reason, not the missing work: a decline can be the right call.
+  - name: decline_quality
+    description: >
+      When the agent stopped without a PR, was its stated reason valid? 1-5,
+      judged against the task description, the case notes, and the
+      repository the agent was given. Skipped when a PR exists.
+    model: claude-opus-5
+    samples: 1
+    score_range: [1, 5]
+    if: "'\"outcome\":\"declined\"' in outputs['files'].get('output/agent-outcome.json', '')"
+    agent:
+      # Claude Code runner. Write is needed for the verdict file the harness
+      # contract asks for (./output/score.json); without it the verdict was
+      # lost (2026-09-25). The harness copies rather than symlinks the staged
+      # material when a judge can write, so nothing real is reachable.
+      allowed_tools: [Read, Grep, Glob, Write]
+      # An allow list only pre-approves; headless Claude Code would still let
+      # the judge shell out or fetch the web. Deny those so the judge sees
+      # only the staged judge/ directory (harness 1.49.1 ignores this key and
+      # the patched harness defaults to the same list).
+      denied_tools: [Bash, WebFetch, WebSearch, Agent]
+      inputs: [judge]
+      timeout: 1800
+      max_budget_usd: 6.00
+    prompt: |
+      An automated coding agent was given a task description and a repository
+      and asked to implement the task in one PR. It stopped without making a
+      change and left a message explaining why. Your job is to assess the
+      reason it gave, not to do the task and not to grade what it did or did
+      not do after stopping.
+
+      Everything you need is under ./judge/ in your working directory:
+
+      - judge/task.md                 the task description the agent was given
+      - judge/notes.md                notes from the case author
+      - judge/agent-final-message.md  the agent's stated reason for stopping
+      - judge/repo-snapshot/          the repository exactly as the agent saw it
+
+      Read task.md, notes.md and the agent's message. Then assess exactly two
+      things.
+
+      1. Accuracy. Check every factual claim in the message against the task
+         and the repository: does the thing it says exists exist; does the
+         guidance it cites say what it says it says; is the information it
+         says is missing really absent from the task and the repository. List
+         each claim as verified, unsupported, or false.
+
+      2. Blocker. Taking only the verified claims, is the stated reason
+         something the agent could not resolve on its own? It counts as a
+         genuine blocker when: the task defers a decision to a named party
+         (for example a product decision) and no sensible default is
+         available; information the task requires is absent and cannot be
+         inferred from the repository; proceeding would be unsafe or would
+         contradict the task; or the repository's own instructions (AGENTS.md,
+         CONTRIBUTING.md or similar) say not to proceed in this situation.
+         Repository rules of that kind are genuine blockers, not procedure. It
+         is not a genuine blocker when the gap could have been closed with a
+         reasonable assumption the agent could have stated and proceeded under.
+
+      Out of scope, by design: whether the agent went on to write a proposal,
+      a plan, a comment or anything else after stopping; how well-written or
+      actionable the message is beyond identifying the blocker; whether a
+      different agent would have proceeded. You may mention these in the
+      rationale. They must not move the score.
+
+      Score:
+      5 = every claim verified; the reason is a genuine blocker
+      4 = the reason is a genuine blocker; one secondary claim is unsupported
+          or false, or the blocker is somewhat overstated
+      3 = a genuine blocker is mixed with a false or unsupported claim that
+          materially shapes the message, or stopping was defensible but a
+          stated assumption was available
+      2 = the main reason is unsupported or is not a genuine blocker, though
+          some claims are accurate
+      1 = the main reason is false, or no blocker exists and the agent should
+          have proceeded
+
+      Deliver the verdict exactly as the harness contract below says: write
+      ./output/score.json with "rationale" then "score". If you are unable to
+      write a file, end your reply with that same JSON object on a line of
+      its own.
+# No thresholds: this is a development eval, never a CI gate. Every judge is
+# reported per case; a run exits non-zero only when the runner itself sees an
+# infrastructure failure (a case that never reached the agent, a judge error).
+# Agent behaviour, including declines and failing repo tests, is the result,
+# not a defect of the run.

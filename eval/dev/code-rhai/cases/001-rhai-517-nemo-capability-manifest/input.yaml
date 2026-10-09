@@ -1,0 +1,71 @@
+forge: github
+fixture:
+  type: issue
+  title: 'RHAI-517: NeMo-Guardrails Capability Manifest Endpoint'
+  body: |-
+    NeMo-Guardrails Capability Manifest Endpoint
+    Description
+    Add a read-only JSON manifest endpoint to the NeMo-Guardrails fork's FastAPI server that describes the fork's identity, version, upstream divergences, fork-specific API endpoints with behavioral contracts, documentation pointers, and TrustyAI integration points. The manifest is auto-generated at server startup from FastAPI route introspection and static metadata files shipped in the container image, keeping it synchronized with the deployed version and preventing content drift.
+    Scope
+    Add a new read-only GET route at a well-known URL to the NeMo-Guardrails FastAPI server (e.g.,
+    /.well-known/ai-plugin.json
+     -- final path to be aligned with the EvalHub team on a platform Agent Discoverability contract)
+    Implement manifest content generation at server startup using FastAPI's route introspection (
+    app.openapi()
+     and registered route enumeration) combined with static metadata files
+    Ship static metadata files in the container image containing fork identity, upstream delta summary, documentation pointers, and TrustyAI integration metadata (NemoGuardrails CRD reference at
+    trustyai.opendatahub.io/v1alpha1
+    , configuration schema references for
+    MAIN_MODEL_ENGINE
+    ,
+    MAIN_MODEL_BASE_URL
+    , Authorization header forwarding)
+    The manifest JSON document includes: (1) fork identity, version, upstream NeMo-Guardrails version with divergence summary; (2) catalog of fork-specific HTTP endpoints (
+    /v1/guardrail/checks
+    ,
+    /v1/checks
+    ,
+    /v1/actions/list
+    ,
+    /v1/actions/run
+    ,
+    /v1/challenges
+    ) with methods and behavioral contracts; (3) documentation pointers; (4) TrustyAI integration via NemoGuardrails CRD; (5) configuration schema references
+    The endpoint is unauthenticated, consistent with the fork's existing no-built-in-auth model
+    No existing endpoints are modified; the manifest route is purely additive
+    Acceptance Criteria
+    Given a deployed NeMo-Guardrails fork instance, when an HTTP GET request is sent to the well-known manifest URL, then the server returns HTTP 200 with a valid JSON document containing fork identity, version, upstream delta summary, and fork-specific endpoint catalog
+    Given the manifest document, when parsed for fork-specific endpoints, then
+    /v1/guardrail/checks
+     is listed with its behavioral contract (evaluates messages against input/output rails without generating LLM responses), and
+    /v1/checks
+    ,
+    /v1/actions/list
+    ,
+    /v1/actions/run
+     are included with method and behavioral contract fields populated
+    Manifest includes documentation pointers and TrustyAI integration points (NemoGuardrails CRD reference, configuration schema for
+    MAIN_MODEL_ENGINE
+    ,
+    MAIN_MODEL_BASE_URL
+    , Authorization header forwarding)
+    Manifest content is auto-generated from FastAPI route introspection at server startup; the deployed manifest always reflects the actual registered routes
+    If manifest generation fails at startup, the server health check fails, preventing deployment of a server with a stale or broken manifest
+    The manifest endpoint is available without per-developer or per-agent configuration -- same well-known URL for all clients reaching the NeMo-Guardrails Service within the cluster
+    Given a NeMo-Guardrails fork deployed without the manifest feature (older version), when a request is sent to the well-known manifest URL, then the server returns HTTP 404
+    The manifest contains only structural metadata (endpoint paths, schemas, documentation pointers) -- no secrets, credentials, or runtime state
+    Manifest URL path aligned with EvalHub team on a platform Agent Discoverability contract before finalizing
+    HLR Traceability
+    [P0] NeMo-Guardrails fork exposes a machine-readable capability manifest at a well-known URL returning fork identity, version, upstream delta summary, and fork-specific endpoint catalog with behavioral contracts
+    [P0] Manifest includes documentation pointers and TrustyAI integration points (NemoGuardrails CRD reference, configuration schema)
+    [P1] Manifest content auto-generated from FastAPI route introspection at startup to prevent drift from deployed endpoints
+    Risks
+    Manifest content drift
+    : Mitigated by generating manifest at startup from route introspection and static metadata; health check fails if generation fails
+    Agent retrieval accuracy
+    : Mitigated by structured manifest with unambiguous endpoint descriptions and behavioral contracts; validate with at least two AI agents during acceptance testing
+    Open Questions
+    Should the manifest URL path be standardized across all RHOAI components? (Owner: Platform architecture) -- affects URL path design; EvalHub team coordination prerequisite implies alignment is expected
+    Does the manifest need to be accessible from outside the cluster? (Owner: Platform team) -- deferred to platform team decision; out of scope for initial delivery
+  labels:
+  - ready-to-code

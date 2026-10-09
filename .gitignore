@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .skillsaw-renames.json
+# eval/dev/code-rhai cases are cards; the repository tree is rebuilt by
+# eval/scripts/materialize-case.sh and never committed.
+eval/dev/code-rhai/cases/*/repo/
+eval/dev/code-rhai/cases/*/.check-regression.log
