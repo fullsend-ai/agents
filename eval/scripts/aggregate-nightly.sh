@@ -21,10 +21,13 @@
 #
 # Missing data counts as neither pass nor fail: a case or judge absent from
 # a run, a null value, or a judge with scored_cases: 0. A case that failed
-# before the agent ran (its max_cost or max_turns rationale is "metrics.json
-# not found", as on an infrastructure night) is skipped for every judge, so
-# per-run pass rates and means are computed from per_case over the cases
-# that reached the agent. Budget judges and the contract judges are not
+# before the agent ran (as on an infrastructure night) is skipped for every
+# judge, so per-run pass rates and means are computed from per_case over the
+# cases that reached the agent. The run_result.json next to each
+# summary.yaml says which cases those are, with run-functional.sh's own
+# pre_agent_failures() rule: a non-zero exit that is not a timeout (-1, 124,
+# 137) with no turns, no cost and no tokens. Without a run_result.json every
+# case counts as reached. Budget judges and the contract judges are not
 # aggregated.
 #
 # Prints one line per judge and a final "NIGHTLY VERDICT: PASS|FAIL" line.
@@ -34,7 +37,8 @@
 #   0 — PASS
 #   1 — FAIL
 #   2 — usage or input error (no summaries, more than 3, or a file that is
-#       missing, not a valid YAML mapping, or not shaped like its kind)
+#       missing, not a valid YAML mapping, or not shaped like its kind: a
+#       summary needs judges and per_case mappings)
 set -euo pipefail
 
 usage() {
@@ -54,9 +58,14 @@ shift
 SUMMARIES=("$@")
 
 command -v yq >/dev/null 2>&1 || input_error "yq is required"
+command -v jq >/dev/null 2>&1 || input_error "jq is required"
 for f in "$EVAL_YAML" "${SUMMARIES[@]}"; do
   [[ -f "$f" ]] || input_error "file not found: $f"
   yq -e 'tag == "!!map"' "$f" >/dev/null 2>&1 || input_error "not a valid YAML mapping: $f"
+done
+for f in "${SUMMARIES[@]}"; do
+  yq -e '(.judges | tag) == "!!map" and (.per_case | tag) == "!!map"' "$f" >/dev/null 2>&1 \
+    || input_error "not a summary (needs judges and per_case mappings): $f"
 done
 
 # q <expr> <file>: yq -r, exiting 2 on a read error. Only call it as a plain
@@ -77,11 +86,31 @@ lt() {
   awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 < b + 0) }'
 }
 
-# REACHED: yq prefix selecting the per_case entries whose case reached the
-# agent (no "metrics.json not found" budget-judge rationale).
+# NOT_REACHED[<summary>]: ",case,case," for the cases of that run that
+# failed before the agent ran, from the run_result.json beside it.
+declare -A NOT_REACHED=()
+for f in "${SUMMARIES[@]}"; do
+  run_result="$(dirname "$f")/run_result.json"
+  list=","
+  if [[ -f "$run_result" ]]; then
+    names="$(jq -r '.per_case // {} | to_entries[]
+      | select((.value.exit_code // 0) as $e
+        | $e != 0 and ([-1, 124, 137] | index($e) | not)
+        and ((.value.num_turns // 0) == 0)
+        and ((.value.cost_usd // 0) == 0)
+        and (([(.value.token_usage // {})[]?] | add // 0) == 0))
+      | .key' "$run_result")" || input_error "could not read $run_result"
+    while read -r name; do
+      [[ -n "$name" ]] && list+="${name},"
+    done <<< "$names"
+  fi
+  NOT_REACHED[$f]="$list"
+done
+
+# REACHED: yq prefix selecting the per_case entries of the summary whose
+# NOT_REACHED list is exported as NR.
 REACHED='.per_case // {} | to_entries[]
-  | select([.value.max_cost.rationale, .value.max_turns.rationale]
-    | any_c(. != null and (tostring | test("^metrics\\.json not found"))) | not)'
+  | select(.key as $k | strenv(NR) | contains("," + $k + ",") | not)'
 
 BEHAVIOUR_CHECKS=(finding_expectations required_labels forbidden_labels risk_label_present expected_files)
 
@@ -110,6 +139,7 @@ for check in "${BEHAVIOUR_CHECKS[@]}"; do
   declare -A false_votes=() scored=()
   run_values=()
   for s in "${SUMMARIES[@]}"; do
+    export NR="${NOT_REACHED[$s]}"
     scored_cases="$(q '.judges[strenv(J)].scored_cases // ""' "$s")"
     if [[ "$scored_cases" == "0" ]]; then
       run_values+=("n/a")
@@ -174,6 +204,7 @@ while read -r judge; do
   run_values=()
   means=()
   for s in "${SUMMARIES[@]}"; do
+    export NR="${NOT_REACHED[$s]}"
     scored_cases="$(q '.judges[strenv(J)].scored_cases // ""' "$s")"
     mean=""
     if [[ "$scored_cases" != "0" ]]; then

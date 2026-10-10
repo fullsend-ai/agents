@@ -187,12 +187,19 @@ expect "a null mean or scored_cases: 0 leaves fewer than 3 quality samples" 0 \
   '^review_quality \(min_mean 3.5\): runs 1.00 \| n/a \| n/a; insufficient history \(1 of 3 means\) -> INSUFFICIENT HISTORY$'
 
 # --- Cases that failed before the agent ran ----------------------------
-# On an infrastructure night most cases never reach the agent: their
-# budget judges say "metrics.json not found" and their other judges score
-# false or 1. Those cases must count as no data, for checks and quality.
+# On an infrastructure night most cases never reach the agent and their
+# judges score false or 1. The run_result.json beside summary.yaml says
+# which: a non-zero exit that is not a timeout, with no turns, cost or
+# tokens. Those cases are no data; a timed-out case reached the agent.
 
-cat > "${TMPDIR}/not-reached.yaml" <<'EOF'
-run_id: not-reached
+# not_reached_run <name> <exit code for 002-b> <exit code for 003-c>
+# Writes <name>/summary.yaml (001-a passes; 002-b and 003-c fail
+# required_labels and score 1 on quality) and <name>/run_result.json
+# where 002-b and 003-c have no turns, cost or tokens.
+not_reached_run() {
+  local name="$1" eb="$2" ec="$3" dir="${TMPDIR}/$1"
+  mkdir -p "$dir"
+  cat > "${dir}/summary.yaml" <<'EOF'
 judges:
   review_quality:
     mean: 2.33
@@ -202,36 +209,41 @@ judges:
     scored_cases: 3
 per_case:
   001-a:
-    max_cost:
-      rationale: 'Cost OK: 0.21 <= 0.5'
-      value: true
     required_labels:
       value: true
     review_quality:
       value: 5
   002-b:
-    max_cost:
-      rationale: metrics.json not found
-      value: false
     required_labels:
       value: false
     review_quality:
       value: 1
   003-c:
-    max_turns:
-      rationale: metrics.json not found
-      value: false
     required_labels:
       value: false
     review_quality:
       value: 1
 EOF
+  cat > "${dir}/run_result.json" <<EOF
+{"exit_code": 1, "per_case": {
+  "001-a": {"exit_code": 0, "num_turns": 9, "cost_usd": 0.2, "token_usage": {"input": 10, "output": 400}},
+  "002-b": {"exit_code": ${eb}, "num_turns": null, "cost_usd": null, "token_usage": null},
+  "003-c": {"exit_code": ${ec}, "num_turns": 0, "cost_usd": 0, "token_usage": {}}
+}}
+EOF
+  echo "${dir}/summary.yaml"
+}
 
-run_agg "$E" "$(summary r1 4 true false true)" "${TMPDIR}/not-reached.yaml" "$(summary r3 4 true true true)"
-expect "a case that failed before the agent ran is no data for a check" 0 \
+run_agg "$E" "$(summary r1 4 true false true)" "$(not_reached_run infra 1 1)" "$(summary r3 4 true true true)"
+expect "a case that failed before the agent ran is no data" 0 \
   '^required_labels \(min_pass_rate 1.0\): runs 0.67 \| 1.00 \| 1.00; nightly pass rate 1.00 over 3 case\(s\) -> PASS$' \
   '^review_quality \(min_mean 3.5\): runs 4.00 \| 5.00 \| 4.00; median 4.00 -> PASS$' \
   '^NIGHTLY VERDICT: PASS$'
+
+run_agg "$E" "$(summary r1 4 true false true)" "$(not_reached_run timeouts 124 -1)" "$(summary r3 4 true true true)"
+expect "a timed-out case reached the agent and still counts" 1 \
+  '^required_labels \(min_pass_rate 1.0\): runs 0.67 \| 0.33 \| 1.00; nightly pass rate 0.67 over 3 case\(s\), false in 2\+ runs: 002-b -> FAIL$' \
+  '^NIGHTLY VERDICT: FAIL$'
 
 # --- Step summary -------------------------------------------------------
 
@@ -275,7 +287,11 @@ expect "a summary that is not valid YAML exits 2" 2 'not a valid YAML mapping: .
 
 printf 'per_case: 7\n' > "${TMPDIR}/bad-shape.yaml"
 run_agg "$E" "$S1" "${TMPDIR}/bad-shape.yaml"
-expect "a summary whose per_case is not a mapping exits 2" 2 'could not read .*bad-shape.yaml'
+expect "a summary whose per_case is not a mapping exits 2" 2 'not a summary \(needs judges and per_case mappings\): .*bad-shape.yaml'
+
+printf '{}\n' > "${TMPDIR}/empty.yaml"
+run_agg "$E" "${TMPDIR}/empty.yaml"
+expect "an empty summary exits 2" 2 'not a summary \(needs judges and per_case mappings\): .*empty.yaml'
 
 echo ""
 if [[ $FAILURES -gt 0 ]]; then

@@ -60,29 +60,41 @@ jobs:
           RESULTS="${RUNNER_TEMP}/nightly-results"
           mkdir -p "$RESULTS"
           # This run first, then the last two completed scheduled runs on
-          # main, never this run itself (a re-run is listed as completed).
+          # main created before it, so re-running an old nightly compares it
+          # with the nights before it, never with later ones.
+          CREATED="$(gh run view "$RUN_ID" --repo "$REPO" --json createdAt --jq .createdAt)"
           PREVIOUS="$(gh run list --repo "$REPO" --workflow functional-tests-nightly.yml \
-            --branch main --event schedule --status completed --limit 3 \
-            --json databaseId --jq "[.[].databaseId | select(. != ${RUN_ID})][:2][]")"
-          RUNS="$RUN_ID $PREVIOUS"
+            --branch main --event schedule --status completed --limit 20 \
+            --json databaseId,createdAt \
+            --jq "[.[] | select(.databaseId != ${RUN_ID} and .createdAt < \"${CREATED}\")][:2][].databaseId")"
+          RUNS="$RUN_ID $(tr '\n' ' ' <<< "$PREVIOUS")"
           echo "Runs, newest first: $RUNS"
 
           failed=0
           for eval_yaml in eval/*/eval.yaml; do
             agent="$(basename "$(dirname "$eval_yaml")")"
+            name="eval-results-${agent}"
             summaries=()
             for run in $RUNS; do
+              # Absent or expired (the agent never ran, or the run is older
+              # than the 30-day retention) leaves the run out; any other
+              # error fails the job, so a lost vote is never silent.
+              count="$(gh api "repos/${REPO}/actions/runs/${run}/artifacts?name=${name}" \
+                --jq '[.artifacts[] | select(.expired | not)] | length')"
+              if [ "$count" -eq 0 ]; then
+                echo "::notice::${agent}: no ${name} artifact in run ${run}; left out"
+                continue
+              fi
               dir="${RESULTS}/${run}/${agent}"
               mkdir -p "$dir"
-              # A run without this agent's results (cancelled, or the agent
-              # never ran) is simply left out.
-              if gh run download "$run" --repo "$REPO" --name "eval-results-${agent}" --dir "$dir" >/dev/null 2>&1; then
-                # One run directory per agent; take the newest if a retry
-                # left more than one.
-                summary="$(find "$dir" -name summary.yaml -path "*/${agent}/*" | sort -r | head -n 1)"
-                if [ -n "$summary" ]; then
-                  summaries+=("$summary")
-                fi
+              gh run download "$run" --repo "$REPO" --name "$name" --dir "$dir"
+              # One run directory per agent with a summary.yaml (a retry
+              # directory has none); take the newest if there is more.
+              summary="$(find "$dir" -name summary.yaml -path "*/${agent}/*" | sort -r | head -n 1)"
+              if [ -n "$summary" ]; then
+                summaries+=("$summary")
+              else
+                echo "::notice::${agent}: run ${run} has no summary.yaml (scoring did not run); left out"
               fi
             done
             echo "::group::${agent} (${#summaries[@]} run(s))"
