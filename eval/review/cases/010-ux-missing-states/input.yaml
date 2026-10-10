@@ -1,0 +1,61 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "feat: add delete-user action to admin user management"
+  body: |
+    Adds a Delete user action to the admin user-management table so account
+    administrators can permanently remove an account without leaving the page.
+  base: main
+  files:
+    - path: package.json
+      content: |
+        {
+          "dependencies": {
+            "@patternfly/react-core": "^6.0.0"
+          }
+        }
+    - path: src/pages/Users/UserTable.tsx
+      content: |
+        import React from "react";
+        import {
+          Button,
+          Spinner,
+          Table,
+          Tbody,
+          Td,
+          Th,
+          Thead,
+          Tr,
+        } from "@patternfly/react-core";
+
+        export function UserTable({ users, loading, onDelete }) {
+          if (loading) return <Spinner aria-label="Loading users" />;
+
+          return (
+            <Table aria-label="Users">
+              <Thead>
+                <Tr>
+                  <Th>Name</Th>
+                  <Th>Email</Th>
+                  <Th>Actions</Th>
+                </Tr>
+              </Thead>
+              <Tbody>
+                {users.map((user) => (
+                  <Tr key={user.id}>
+                    <Td dataLabel="Name">{user.name}</Td>
+                    <Td dataLabel="Email">{user.email}</Td>
+                    <Td dataLabel="Actions">
+                      <Button
+                        variant="danger"
+                        onClick={() => onDelete(user.id)}
+                      >
+                        Delete user
+                      </Button>
+                    </Td>
+                  </Tr>
+                ))}
+              </Tbody>
+            </Table>
+          );
+        }

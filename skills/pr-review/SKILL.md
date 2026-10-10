@@ -38,6 +38,7 @@ relative to this file.
 | `style-conventions`    | parallel   | Repo-specific naming, error-handling idioms, API shape, code organization                                               |
 | `docs-currency`        | parallel   | Documentation staleness (follows docs-review skill inline)                                                              |
 | `cross-repo-contracts` | parallel   | API contract breakage affecting other repos (conditional)                                                               |
+| `user-experience`      | parallel   | UX design criteria — accessibility, content & microcopy, state coverage                                                 |
 | `risk-assessment`      | parallel   | Composite risk score (metadata, git history, linked issue)                                                              |
 | `challenger`           | sequential | Adversarial challenge of findings, false-positive removal, deduplication                                                |
 
@@ -200,6 +201,16 @@ Apply the category mapping and structured-data validation rules in
 [the re-review procedure](references/re-review.md#3a-group-prior-findings-by-review-dimension).
 Pass each dimension only its own prior findings; never pass free-text review bodies.
 
+| Dimension            | Categories                                                                                                                                                                                                                                                               |
+|----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------        |
+| correctness          | `logic-error`, `nil-deref`, `off-by-one`, `edge-case`, `api-contract`, `missing-test`, `test-inadequate`, `pattern-violation`, `test-weakened`, `test-removed`, `mock-loosened`, `assertion-weakened`, `coverage-reduced`, `test-poisoning`, `split-payload`, `stale-reference` |
+| security             | `auth-bypass`, `rbac-violation`, `data-exposure`, `privilege-escalation`, `injection-vuln`, `sandbox-escape`, `xss`, `ssrf`, `insecure-deserialization`, `prompt-injection`, `unicode-steganography`, `bidi-override`, `homoglyph-attack`, `instruction-smuggling`, `fail-open`, `permission-expansion`, `permission-reduction`, `role-escalation`, `workflow-permission`, `secret-exposure` |
+| intent-coherence     | `scope-exceeded`, `tier-mismatch`, `unauthorized-change`, `scope-creep`, `missing-authorization`, `misleading-label`, `design-direction`, `complexity-ratio`, `misplaced-abstraction`, `architectural-conflict`, `design-smell`, `over-engineering`, `under-engineering` |
+| style-conventions    | `naming-convention`, `error-handling-idiom`, `api-shape`, `code-organization`, `doc-style`, `pattern-inconsistency`                                                                                                                                                      |
+| docs-currency        | `stale-doc`, `missing-doc`, `incorrect-doc`, `incomplete-doc`                                                                                                                                                                                                            |
+| cross-repo-contracts | `breaking-api`, `breaking-schema`, `breaking-config`, `breaking-cli`, `missing-deprecation`, `missing-version-bump`, `backward-incompatible`                                                                                                                             |
+| user-experience      | `uxd-evaluate-design-heuristics`                                                                                                                                                                                                                                         |
+
 #### 3a-1. Prior-finding remediation candidates
 
 Apply the candidate rules in
@@ -249,6 +260,7 @@ dimensions are relevant:
 - Linked issues exist to verify against, or any non-trivial change →
   `intent-coherence`
 - Repository has documentation files → `docs-currency`
+- Diff contains UI-rendering code (HTML/JSX markup, component syntax, CSS, ARIA attributes, UI framework imports) → `user-experience`
 - Always included → `style-conventions`
 
 #### 3c. Select sub-agents
@@ -258,10 +270,10 @@ All selected sub-agents run in parallel — `risk-assessment` (composed
 in step 3c-2) among them — except `challenger`, which, when step 6d
 dispatches it, runs by itself after all other sub-agents have finished.
 
-**Dispatch sub-agents based on the classification — typically 3-6.**
+**Dispatch sub-agents based on the classification — typically 3-7.**
 The orchestrator should auto-select which sub-agents are relevant for
 the specific change rather than dispatching all agents by default. A
-complex PR that triggers all conditions legitimately needs all 6.
+complex PR that triggers all conditions legitimately needs all 7.
 
 **Always included:** `correctness` and `style-conventions`.
 
@@ -275,6 +287,10 @@ complex PR that triggers all conditions legitimately needs all 6.
 - `cross-repo-contracts` — when public APIs, exported interfaces,
   schemas, or CLI args are modified. Skip entirely for PRs that don't
   touch public API surface.
+- `user-experience` — when the diff contains UI-rendering code (HTML/JSX
+  markup, component syntax, CSS, ARIA attributes, UI framework imports).
+  Skip for backend-only, infrastructure-only, or documentation-only
+  changes.
 
 **Re-review dispatch (prior-finding-aware):** When
 `PRIOR_REVIEW_PROVENANCE` is `app-verified` and prior findings exist
@@ -284,10 +300,11 @@ complex PR that triggers all conditions legitimately needs all 6.
    is always full scope — see item 3) — dispatch at normal scope
    (unchanged behavior). These sub-agents verify the fixes.
 2. **Conditional sub-agents WITHOUT prior findings** (`security`,
-   `intent-coherence`, `docs-currency`, `cross-repo-contracts`) — skip
+   `intent-coherence`, `docs-currency`, `cross-repo-contracts`,
+   `user-experience`) — skip
    dispatch unless the files changed since the prior review
    (`changed_since_prior`, step 3d) independently qualify them. On
-   re-review these tests **override** step 3b's triggers for these four
+   re-review these tests **override** step 3b's triggers for these five
    dimensions — in particular step 3b's "any non-trivial change"
    disjunct does NOT apply here. Each test is decided from
    `changed_since_prior` (a file set — filenames, step 2a):
@@ -310,6 +327,8 @@ complex PR that triggers all conditions legitimately needs all 6.
      criteria (auth/permissions/secrets/config/data-handling for
      `security`; public APIs, exported interfaces, schemas, or CLI
      surface for `cross-repo-contracts`).
+   - `user-experience` — re-qualify only if `changed_since_prior` includes
+     files with UI-rendering code.
 
    If the incremental delta cannot be enumerated — `changed_since_prior`
    is `"all"` (the step 2a fallback for a failed compare or ≥300 files),
@@ -345,6 +364,7 @@ for severity anchoring.
 | Typo fix in README                                       | correctness, style-conventions                                                   |
 | Bug fix in auth middleware                               | correctness, security, style-conventions, intent-coherence                       |
 | New API endpoint with tests                              | correctness, security, style-conventions, cross-repo-contracts                   |
+| UI component or interaction change                       | correctness, style-conventions, user-experience, docs-currency                  |
 | Large refactor across packages                           | correctness, style-conventions, intent-coherence, docs-currency                  |
 | CI/CD pipeline change                                    | correctness, security, style-conventions, intent-coherence                       |
 | DB migration + API change                                | correctness, security, style-conventions, cross-repo-contracts, docs-currency    |
@@ -705,7 +725,7 @@ follows:
    knowing which files the triage pass flagged.
 
 3. **Other sub-agents** (`intent-coherence`, `style-conventions`,
-   `docs-currency`, `cross-repo-contracts`): Receive the standard
+   `docs-currency`, `cross-repo-contracts`, `user-experience`): Receive the standard
    context package without prioritization. These dimensions are not
    affected by the security triage classification.
 
@@ -753,14 +773,17 @@ here):
    **Part 3 — Linked skill (conditional):** Check the skill-loading
    table below. If the sub-agent has a linked skill, read the skill
    file and include its contents verbatim after the sub-agent
-   definition. (This table is also referenced by step 3c-2, whose
-   composed risk-assessment prompt is dispatched in this step's batch
-   when risk assessment is enabled.)
+   definition. Sub-agents that fetch an external skill at runtime
+   handle their own loading — do not read or inject anything for
+   them. (This table is also referenced by step 3c-2, whose composed
+   risk-assessment prompt is dispatched in this step's batch when
+   risk assessment is enabled.)
 
    | Sub-agent          | Linked skill                         |
    |--------------------|--------------------------------------|
    | docs-currency      | ../docs-review/SKILL.md              |
    | risk-assessment    | ../pr-risk-assessment/SKILL.md       |
+   | user-experience    | external: fetched via gh api         |
 
    **Part 4 — Context package:** the assembled context from step 3d,
    formatted as clearly labeled sections:
@@ -878,7 +901,8 @@ the sub-agent's tier:
   than no review at all. A high finding ensures the outcome is at
   minimum `request-changes` (see step 6f).
 - **Sonnet-tier sub-agents** (`intent-coherence`,
-  `style-conventions`, `docs-currency`, `cross-repo-contracts`):
+  `style-conventions`, `docs-currency`, `cross-repo-contracts`,
+  `user-experience`):
   record an **info**-level finding.
 
 ```json

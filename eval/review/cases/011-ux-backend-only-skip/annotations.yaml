@@ -1,0 +1,25 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: false
+
+findings:
+  required: []
+  forbidden:
+    - uxd-evaluate-design-heuristics
+
+max_cost_usd: 5.00
+
+review_expectations: |
+  Pure backend Go change: a nil-pointer fix in a repository layer with
+  a corresponding unit test. No UI files, no frontend code, no design
+  artifacts.
+
+  The user-experience sub-agent gate should detect that the diff contains
+  no UI-rendering code (no HTML/JSX markup, no CSS, no ARIA attributes,
+  no UI framework imports) and skip entirely. The
+  uxd-evaluate-design-heuristics category is forbidden — if it appears,
+  the gate is broken.

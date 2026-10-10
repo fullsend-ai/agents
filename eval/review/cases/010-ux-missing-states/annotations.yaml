@@ -1,0 +1,31 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: false
+
+findings:
+  required:
+    - uxd-evaluate-design-heuristics
+  forbidden: []
+
+max_cost_usd: 8.00
+
+review_expectations: |
+  This is a recognizable admin user-management change: a table adds a
+  destructive Delete user action. The handler runs immediately on click with
+  no confirmation, pending/disabled state, success or failure feedback, or
+  recovery path. It also handles loading but provides no empty state when the
+  user list has no rows.
+
+  The user-experience sub-agent should detect JSX markup and React imports
+  in the diff, then apply the code-evaluable dimensions from
+  uxd-evaluate-design-heuristics: state coverage (missing empty and error
+  states) and the destructive interaction rule (unconfirmed delete action
+  with no recovery feedback).
+
+  Generic review dimensions (correctness, style-conventions) may also
+  produce findings about the same issues — the user-experience findings
+  should be distinct and focused on user-facing experience gaps.
