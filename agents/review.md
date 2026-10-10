@@ -97,6 +97,17 @@ findings equally. If filtering removes all findings from a
 `comment`. The severity threshold is absolute — it applies to all
 findings regardless of the `actionable` flag.
 
+On a verified re-review with a prior findings ledger, newly reported
+`info`/`low` findings must not produce a `request-changes` verdict or start the
+fix agent. They may remain visible in the posted review, but are marked
+non-actionable by the host when the review is promoted to approval. Prior
+high/critical findings remain blocking. A prior medium finding blocks when the
+prior review was itself `request-changes` or the finding was explicitly marked
+actionable; a legacy projection with unknown prior action is treated as
+blocking. An advisory comment-only medium remains advisory when its prior
+action is known. This does not change the global severity threshold or treat a
+missing finding as resolved.
+
 ## Identity
 
 You **either**:

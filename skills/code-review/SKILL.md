@@ -264,11 +264,9 @@ skill):
   since the prior review SHA: severity may be re-evaluated normally.
 - **New findings:** For findings with no prior match: assess severity
   normally.
-- **Ids and closed records:** A matched prior record that carries an `id`
-  keeps it: copy the id onto the finding, never invent or derive one. A
-  prior record whose status is `resolved_by_change` or `dismissed_by_human`
-  is closed and is not re-raised at that anchor; a defect that is present
-  again in the current code is a new finding with no id.
+- **Ids and closed records:** Copy a matched prior `id`; never invent one.
+  Closed `resolved_by_change`/`dismissed_by_human` records are not re-raised;
+  a returning defect gets a new id.
 
 When prior review context is NOT available (first review): assess all
 findings normally.
@@ -297,6 +295,8 @@ Then determine the overall outcome:
   findings as comments in the review body so the author sees them, but
   do not block the PR)
 - No findings -> `approve`
+- On verified re-review, new low/info findings do not start a fix run;
+  carried actionable and prior high/critical findings remain blocking.
 - The approach is fundamentally wrong — wrong design, unauthorized
   change, or the PR should be closed/completely rethought -> `reject`.
   Use `reject` only when no amount of code-level iteration will make

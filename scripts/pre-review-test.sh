@@ -314,6 +314,16 @@ projection_marker() {
 
 VALID_PROJECTION='{"version":1,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7}]}'
 VALID_MARKER="$(projection_marker "${VALID_PROJECTION}")"
+APPROVED_EMPTY_PROJECTION='{"version":2,"action":"approve","findings":[]}'
+run_prior_projection_test "approved-empty-projection-retains-action" \
+  "$(projection_marker "${APPROVED_EMPTY_PROJECTION}")" \
+  "app-verified" \
+  "${APPROVED_EMPTY_PROJECTION}"
+INVALID_ACTION_PROJECTION='{"version":2,"action":"escalate","findings":[]}'
+run_prior_projection_test "invalid-prior-action-is-rejected" \
+  "$(projection_marker "${INVALID_ACTION_PROJECTION}")" \
+  "app-verified" \
+  "EMPTY"
 OLD_PROJECTION='{"version":1,"findings":[{"severity":"high","category":"auth-bypass","file":"old.go"}]}'
 OLD_MARKER="$(projection_marker "${OLD_PROJECTION}")"
 FIXTURE_PROJECTION='{"version":1,"findings":[{"severity":"medium","category":"missing-doc","file":"docs/foo.md","line":null}]}'
@@ -425,7 +435,7 @@ run_prior_projection_test "unknown-category-fails-closed" \
   "app-verified" \
   'EMPTY'
 
-V2_ID_PROJECTION='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_abc123"},{"severity":"high","category":"logic-error","file":"internal/bar.go","line":2,"id":"f_closed1"}],"dispositions":[{"id":"f_abc123","status":"open"},{"id":"f_closed1","status":"dismissed_by_human"}]}'
+V2_ID_PROJECTION='{"version":2,"action":"approve","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_abc123","actionable":true},{"severity":"high","category":"logic-error","file":"internal/bar.go","line":2,"id":"f_closed1"}],"dispositions":[{"id":"f_abc123","status":"open"},{"id":"f_closed1","status":"dismissed_by_human"}]}'
 run_prior_projection_test "v2-id-and-disposition-retained" \
   "$(projection_marker "${V2_ID_PROJECTION}")" \
   "app-verified" \
