@@ -78,6 +78,40 @@ full tier once:
 There is no run on push to `main`: the merge queue already tested that
 commit.
 
+### Nightly verdict
+
+A single run's behaviour checks and quality judges are report-only, but
+the nightly full tier can fail on them over its last 3 runs.
+`eval/scripts/aggregate-nightly.sh` takes the agent's checked-in
+`eval.yaml` and 1 to 3 runs' `summary.yaml` files, newest first:
+
+```bash
+eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
+  tonight/summary.yaml last-night/summary.yaml two-nights-ago/summary.yaml
+```
+
+- **Behaviour checks** (`finding_expectations`, `required_labels`,
+  `forbidden_labels`, `risk_label_present`, `expected_files`) with a
+  `min_pass_rate`: a case fails the check when it is `false` in at least
+  2 of the given runs. The nightly pass rate is the share of cases that
+  do not fail, and is compared with `min_pass_rate`. A flake that hits a
+  different case each night passes; a case that keeps failing does not.
+- **Quality judges** (`*_quality`) with a `min_mean`: the verdict fails
+  when the median of 3 non-null `mean` values is below `min_mean`. With
+  fewer than 3, the judge reports "insufficient history" and does not
+  fail.
+- Missing data counts as neither pass nor fail: a case or judge absent
+  from a run, a null value, or a judge with `scored_cases: 0`. The
+  budget judges and the contract judges are not aggregated; the
+  contract judges already gate every run.
+
+The script prints one line per judge with each run's value, then
+`NIGHTLY VERDICT: PASS` or `FAIL`, and appends a Markdown table to
+`GITHUB_STEP_SUMMARY` when it is set. It exits 0 on PASS, 1 on FAIL and
+2 on a usage or input error (no summaries, more than 3, or a file that
+is missing, not valid YAML or not shaped like its kind). Pass only the summaries that exist: a
+missing previous run is not an error.
+
 ### Linting cases
 
 Validate that all test cases have the required annotations before
