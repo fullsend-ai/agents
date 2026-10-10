@@ -102,10 +102,14 @@ eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
   fail.
 - Missing data counts as neither pass nor fail: a case or judge absent
   from a run, a null value, or a judge with `scored_cases: 0`. A case
-  that failed before the agent ran (its `max_cost` or `max_turns`
-  rationale is `metrics.json not found`, as on an infrastructure night)
-  is skipped for every judge, so each run's pass rate and mean are
-  computed from `per_case` over the cases that reached the agent.
+  that failed before the agent ran (as on an infrastructure night) is
+  skipped for every judge, so each run's pass rate and mean are computed
+  from `per_case` over the cases that reached the agent. The
+  `run_result.json` beside each `summary.yaml` decides this, with
+  `run-functional.sh`'s own rule: a non-zero exit that is not a timeout
+  (`-1`, `124`, `137`) with no turns, no cost and no tokens. A timed-out
+  case reached the agent and counts. Without a `run_result.json`, every
+  case counts as reached.
 - The budget judges and the contract judges are not aggregated; the
   contract judges already gate every run.
 

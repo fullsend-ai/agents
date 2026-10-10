@@ -63,10 +63,12 @@ jobs:
           # main created before it, so re-running an old nightly compares it
           # with the nights before it, never with later ones.
           CREATED="$(gh run view "$RUN_ID" --repo "$REPO" --json createdAt --jq .createdAt)"
+          # --created bounds the search itself, so the limit applies to
+          # the runs before this one, however many newer runs exist.
           PREVIOUS="$(gh run list --repo "$REPO" --workflow functional-tests-nightly.yml \
-            --branch main --event schedule --status completed --limit 20 \
-            --json databaseId,createdAt \
-            --jq "[.[] | select(.databaseId != ${RUN_ID} and .createdAt < \"${CREATED}\")][:2][].databaseId")"
+            --branch main --event schedule --status completed --created "<${CREATED}" \
+            --limit 3 --json databaseId \
+            --jq "[.[].databaseId | select(. != ${RUN_ID})][:2][]")"
           RUNS="$RUN_ID $(tr '\n' ' ' <<< "$PREVIOUS")"
           echo "Runs, newest first: $RUNS"
 
@@ -124,7 +126,9 @@ jobs:
       always() &&
       github.repository == 'fullsend-ai/agents' &&
       github.ref == 'refs/heads/main' &&
-      (needs.run.result != 'success' || needs.aggregate.result == 'failure')
+      (needs.run.result != 'success' ||
+       needs.aggregate.result == 'failure' ||
+       needs.aggregate.result == 'cancelled')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
