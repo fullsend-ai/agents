@@ -842,6 +842,88 @@ fi
 rm -rf "$ROOT"
 
 # ---------------------------------------------------------------------------
+# An agent whose every threshold is report-only (as triage and review are)
+# runs with an empty runtime thresholds map: it still passes when every case
+# passes, still fails on a case exit, and a judge error is reported without
+# failing the run or retrying scoring.
+# ---------------------------------------------------------------------------
+
+add_report_only_agent() {
+  local root="$1"
+  mkdir -p "${root}/eval/reportonlyagent/cases/001-release-case" \
+    "${root}/eval/reportonlyagent/cases/002-full-only-case"
+  cat > "${root}/eval/reportonlyagent/eval.yaml" <<'YAML'
+name: reportonlyagent-eval
+dataset:
+  path: cases
+thresholds:
+  agent_quality:
+    min_mean: 3.0
+    max_error_rate: 0.2
+  required_labels:
+    min_pass_rate: 1.0
+  finding_expectations:
+    min_pass_rate: 1.0
+YAML
+  printf 'release: true\nmax_turns: 10\n' > "${root}/eval/reportonlyagent/cases/001-release-case/annotations.yaml"
+  printf 'max_turns: 10\n' > "${root}/eval/reportonlyagent/cases/002-full-only-case/annotations.yaml"
+  echo "fixture: {}" > "${root}/eval/reportonlyagent/cases/001-release-case/input.yaml"
+  echo "fixture: {}" > "${root}/eval/reportonlyagent/cases/002-full-only-case/input.yaml"
+}
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; add_report_only_agent "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" reportonlyagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SUMMARY_1="$CLEAN_SUMMARY" 2>&1) || RC=$?
+RUNTIME_THRESHOLDS="$(yq -r '.thresholds | length' "${ROOT}/capture/last-config.yaml" 2>/dev/null || echo missing)"
+if [[ $RC -eq 0 && "$RUNTIME_THRESHOLDS" == "0" ]] && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "an agent with only report-only thresholds passes with an empty runtime thresholds map"
+else
+  fail "an agent with only report-only thresholds passes with an empty runtime thresholds map (rc=$RC, thresholds=$RUNTIME_THRESHOLDS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; add_report_only_agent "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" reportonlyagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:1:7,002-full-only-case:0:5" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "RESULT: 1 case(s) failed ==="; then
+  pass "an agent with only report-only thresholds still fails on a case exit (exit 1)"
+else
+  fail "an agent with only report-only thresholds still fails on a case exit (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; add_report_only_agent "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" reportonlyagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:1" 2>&1) || RC=$?
+if [[ $RC -eq 3 ]] && echo "$OUT" | grep -q "failed before the agent ran (setup or infrastructure, not an agent result)"; then
+  pass "an agent with only report-only thresholds still exits 3 on a repeated pre-agent failure"
+else
+  fail "an agent with only report-only thresholds still exits 3 on a repeated pre-agent failure (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; add_report_only_agent "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" reportonlyagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SUMMARY_1="$ERRORED_SUMMARY" 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 0 && "$CALLS" == "1" ]] \
+  && echo "$OUT" | grep -q "JUDGE ERROR: agent_quality errored on 2 case(s)"; then
+  pass "a judge error on a report-only judge is reported, without a scoring retry or a failed run"
+else
+  fail "a judge error on a report-only judge is reported, without a scoring retry or a failed run (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""

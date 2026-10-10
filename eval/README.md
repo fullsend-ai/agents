@@ -46,7 +46,12 @@ other judges run and are reported, but don't fail the run:
 - the `max_turns`/`max_cost` budget judges
 
 Their thresholds stay in each `eval.yaml`; `run-functional.sh` drops
-them from the runtime copy of the config only. Review has no
+them from the runtime copy of the config only. That includes a quality
+judge's `max_error_rate`, so a judge that errors (for example a 400 from
+the judge model) no longer fails the run or triggers a scoring retry: it
+shows up only as a `JUDGE ERROR` line in the log and in the summary's
+error count. A case that fails before the agent runs is still an
+infrastructure failure (exit 3). Review has no
 `max_turns` judge, because its turn count does not track the work done.
 
 If `EVAL_TIER` is unset, it defaults to `release` when running as a
