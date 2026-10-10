@@ -61,6 +61,8 @@ summary() {
       echo "  ${c}:"
       echo "    forbidden_labels:"
       echo "      value: false"
+      echo "    review_quality:"
+      echo "      value: ${mean}"
       if [[ "$v" != "-" ]]; then
         echo "    required_labels:"
         echo "      value: ${v}"
@@ -100,7 +102,7 @@ E="${TMPDIR}/eval.yaml"
 
 run_agg "$E" "$(summary r1 4 false true true)" "$(summary r2 4 true true true)" "$(summary r3 4 true true true)"
 expect "a case failing a check in 1 of 3 runs passes" 0 \
-  '^required_labels \(min_pass_rate 1.0\): runs 0.67 \| 0.67 \| 0.67; nightly pass rate 1.00 over 3 case\(s\) -> PASS$' \
+  '^required_labels \(min_pass_rate 1.0\): runs 0.67 \| 1.00 \| 1.00; nightly pass rate 1.00 over 3 case\(s\) -> PASS$' \
   '^NIGHTLY VERDICT: PASS$'
 
 run_agg "$E" "$(summary r1 4 false true true)" "$(summary r2 4 true true true)" "$(summary r3 4 false true true)"
@@ -127,7 +129,7 @@ INFRA="$(summary infra 4 false false false)"
 yq -i '.judges.required_labels.scored_cases = 0 | .judges.required_labels.pass_rate = null' "$INFRA"
 run_agg "$E" "$(summary r1 4 false true true)" "$INFRA" "$(summary r3 4 true true true)"
 expect "a run with scored_cases: 0 is ignored" 0 \
-  '^required_labels \(min_pass_rate 1.0\): runs 0.67 \| n/a \| 0.67; nightly pass rate 1.00 over 3 case\(s\) -> PASS$'
+  '^required_labels \(min_pass_rate 1.0\): runs 0.67 \| n/a \| 1.00; nightly pass rate 1.00 over 3 case\(s\) -> PASS$'
 
 run_agg "$E" "$(summary r1 4 false true null)" "$(summary r2 4 null true -)" "$(summary r3 4 - true true)"
 expect "a null or missing judge value counts as neither pass nor fail" 0 \
@@ -184,6 +186,53 @@ run_agg "$E" "$(summary r1 1 true true true)" "$(summary r2 null true true true)
 expect "a null mean or scored_cases: 0 leaves fewer than 3 quality samples" 0 \
   '^review_quality \(min_mean 3.5\): runs 1.00 \| n/a \| n/a; insufficient history \(1 of 3 means\) -> INSUFFICIENT HISTORY$'
 
+# --- Cases that failed before the agent ran ----------------------------
+# On an infrastructure night most cases never reach the agent: their
+# budget judges say "metrics.json not found" and their other judges score
+# false or 1. Those cases must count as no data, for checks and quality.
+
+cat > "${TMPDIR}/not-reached.yaml" <<'EOF'
+run_id: not-reached
+judges:
+  review_quality:
+    mean: 2.33
+    scored_cases: 3
+  required_labels:
+    pass_rate: 0.33
+    scored_cases: 3
+per_case:
+  001-a:
+    max_cost:
+      rationale: 'Cost OK: 0.21 <= 0.5'
+      value: true
+    required_labels:
+      value: true
+    review_quality:
+      value: 5
+  002-b:
+    max_cost:
+      rationale: metrics.json not found
+      value: false
+    required_labels:
+      value: false
+    review_quality:
+      value: 1
+  003-c:
+    max_turns:
+      rationale: metrics.json not found
+      value: false
+    required_labels:
+      value: false
+    review_quality:
+      value: 1
+EOF
+
+run_agg "$E" "$(summary r1 4 true false true)" "${TMPDIR}/not-reached.yaml" "$(summary r3 4 true true true)"
+expect "a case that failed before the agent ran is no data for a check" 0 \
+  '^required_labels \(min_pass_rate 1.0\): runs 0.67 \| 1.00 \| 1.00; nightly pass rate 1.00 over 3 case\(s\) -> PASS$' \
+  '^review_quality \(min_mean 3.5\): runs 4.00 \| 5.00 \| 4.00; median 4.00 -> PASS$' \
+  '^NIGHTLY VERDICT: PASS$'
+
 # --- Step summary -------------------------------------------------------
 
 STEP_SUMMARY="${TMPDIR}/step-summary.md"
@@ -193,7 +242,7 @@ OUT="$(GITHUB_STEP_SUMMARY="$STEP_SUMMARY" bash "$AGGREGATE" "$E" \
 SUMMARY_TEXT="$(cat "$STEP_SUMMARY" 2>/dev/null || true)"
 if [[ "$RC" -eq 1 ]] \
   && grep -qF '| Judge | Threshold | Run 1 (newest) | Run 2 | Run 3 | Nightly | Verdict |' <<< "$SUMMARY_TEXT" \
-  && grep -qF '| `required_labels` | min_pass_rate 1.0 | 0.67 | 0.67 | 0.67 | 0.67 | FAIL |' <<< "$SUMMARY_TEXT" \
+  && grep -qF '| `required_labels` | min_pass_rate 1.0 | 0.67 | 0.67 | 1.00 | 0.67 | FAIL |' <<< "$SUMMARY_TEXT" \
   && grep -qF '| `review_quality` | min_mean 3.5 | 3.00 | 4.00 | 5.00 | 4.00 | PASS |' <<< "$SUMMARY_TEXT" \
   && grep -qF '**NIGHTLY VERDICT: FAIL**' <<< "$SUMMARY_TEXT"; then
   pass "GITHUB_STEP_SUMMARY gets a Markdown table"

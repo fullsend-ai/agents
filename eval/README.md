@@ -97,20 +97,24 @@ eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
   do not fail, and is compared with `min_pass_rate`. A flake that hits a
   different case each night passes; a case that keeps failing does not.
 - **Quality judges** (`*_quality`) with a `min_mean`: the verdict fails
-  when the median of 3 non-null `mean` values is below `min_mean`. With
+  when the median of 3 non-null per-run means is below `min_mean`. With
   fewer than 3, the judge reports "insufficient history" and does not
   fail.
 - Missing data counts as neither pass nor fail: a case or judge absent
-  from a run, a null value, or a judge with `scored_cases: 0`. The
-  budget judges and the contract judges are not aggregated; the
+  from a run, a null value, or a judge with `scored_cases: 0`. A case
+  that failed before the agent ran (its `max_cost` or `max_turns`
+  rationale is `metrics.json not found`, as on an infrastructure night)
+  is skipped for every judge, so each run's pass rate and mean are
+  computed from `per_case` over the cases that reached the agent.
+- The budget judges and the contract judges are not aggregated; the
   contract judges already gate every run.
 
 The script prints one line per judge with each run's value, then
 `NIGHTLY VERDICT: PASS` or `FAIL`, and appends a Markdown table to
 `GITHUB_STEP_SUMMARY` when it is set. It exits 0 on PASS, 1 on FAIL and
 2 on a usage or input error (no summaries, more than 3, or a file that
-is missing, not valid YAML or not shaped like its kind). Pass only the summaries that exist: a
-missing previous run is not an error.
+is missing, not valid YAML or not shaped like its kind). Pass only the
+summaries that exist: a missing previous run is not an error.
 
 ### Linting cases
 

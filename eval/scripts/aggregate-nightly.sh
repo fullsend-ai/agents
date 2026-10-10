@@ -20,8 +20,12 @@
 # the judge reports "insufficient history" and does not fail.
 #
 # Missing data counts as neither pass nor fail: a case or judge absent from
-# a run, a null value, or a judge with scored_cases: 0. Budget judges and
-# the contract judges are not aggregated.
+# a run, a null value, or a judge with scored_cases: 0. A case that failed
+# before the agent ran (its max_cost or max_turns rationale is "metrics.json
+# not found", as on an infrastructure night) is skipped for every judge, so
+# per-run pass rates and means are computed from per_case over the cases
+# that reached the agent. Budget judges and the contract judges are not
+# aggregated.
 #
 # Prints one line per judge and a final "NIGHTLY VERDICT: PASS|FAIL" line.
 # When GITHUB_STEP_SUMMARY is set, also appends a Markdown table to it.
@@ -73,6 +77,12 @@ lt() {
   awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 < b + 0) }'
 }
 
+# REACHED: yq prefix selecting the per_case entries whose case reached the
+# agent (no "metrics.json not found" budget-judge rationale).
+REACHED='.per_case // {} | to_entries[]
+  | select([.value.max_cost.rationale, .value.max_turns.rationale]
+    | any_c(. != null and (tostring | test("^metrics\\.json not found"))) | not)'
+
 BEHAVIOUR_CHECKS=(finding_expectations required_labels forbidden_labels risk_label_present expected_files)
 
 overall="PASS"
@@ -105,19 +115,28 @@ for check in "${BEHAVIOUR_CHECKS[@]}"; do
       run_values+=("n/a")
       continue
     fi
-    rate="$(q '.judges[strenv(J)].pass_rate // "n/a"' "$s")"
-    run_values+=("$(fmt "$rate")")
-    # "<true|false> <case>" for each case whose value is a boolean.
-    votes="$(q '.per_case // {} | to_entries[]
+    # "<true|false> <case>" for each case that reached the agent and whose
+    # value is a boolean.
+    votes="$(q "${REACHED}"'
       | select((.value[strenv(J)].value | tag) == "!!bool")
       | (.value[strenv(J)].value | tostring) + " " + .key' "$s")"
+    run_true=0
+    run_total=0
     while read -r value case_name; do
       [[ -n "$case_name" ]] || continue
       scored[$case_name]=1
+      run_total=$(( run_total + 1 ))
       if [[ "$value" == "false" ]]; then
         false_votes[$case_name]=$(( ${false_votes[$case_name]:-0} + 1 ))
+      else
+        run_true=$(( run_true + 1 ))
       fi
     done <<< "$votes"
+    if [[ $run_total -eq 0 ]]; then
+      run_values+=("n/a")
+    else
+      run_values+=("$(fmt "$(awk -v t="$run_true" -v n="$run_total" 'BEGIN { print t / n }')")")
+    fi
   done
 
   total=${#scored[@]}
@@ -158,7 +177,10 @@ while read -r judge; do
     scored_cases="$(q '.judges[strenv(J)].scored_cases // ""' "$s")"
     mean=""
     if [[ "$scored_cases" != "0" ]]; then
-      mean="$(q '.judges[strenv(J)].mean | select(tag == "!!int" or tag == "!!float")' "$s")"
+      # Mean over the cases that reached the agent, from per_case.
+      values="$(q "${REACHED}"'
+        | .value[strenv(J)].value | select(tag == "!!int" or tag == "!!float")' "$s")"
+      mean="$(awk 'NF { sum += $1; n++ } END { if (n) print sum / n }' <<< "$values")"
     fi
     if [[ -n "$mean" ]]; then
       means+=("$mean")
