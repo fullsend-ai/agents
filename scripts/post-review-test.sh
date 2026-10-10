@@ -3248,6 +3248,26 @@ done
 # Risk verdict gate tests
 # ---------------------------------------------------------------------------
 
+# Builds a checkout at "${run_dir}/repo": "full", "shallow", or "not-a-repo".
+make_risk_test_repo() {
+  local run_dir="$1"
+  local mode="$2"
+  local src_repo="${run_dir}/repo-src"
+  rm -rf "${src_repo}" "${run_dir}/repo"
+  if [ "${mode}" = "not-a-repo" ]; then
+    mkdir -p "${run_dir}/repo"
+    return
+  fi
+  git init -q "${src_repo}"
+  git -C "${src_repo}" -c user.email=test@test.invalid -c user.name=test \
+    commit -q --allow-empty -m init
+  if [ "${mode}" = "shallow" ]; then
+    git clone -q --depth 1 "file://${src_repo}" "${run_dir}/repo"
+  else
+    git clone -q "file://${src_repo}" "${run_dir}/repo"
+  fi
+}
+
 run_risk_verdict_test() {
   local test_name="$1"
   local result_json="$2"
@@ -3256,11 +3276,17 @@ run_risk_verdict_test() {
   local expect_downgrade="${5:-false}"
   local expect_pattern="${6:-}"
   local expect_no_pattern="${7:-}"
+  local fetch_depth="${8:-}"
+  local repo_mode="${9:-}"
 
   local run_dir="${TMPDIR}/run-risk-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
   : > "${GH_LOG}"
+
+  if [[ -n "${repo_mode}" ]]; then
+    make_risk_test_repo "${run_dir}" "${repo_mode}"
+  fi
 
   local exit_code=0
   # shellcheck disable=SC2030,SC2031
@@ -3276,6 +3302,15 @@ run_risk_verdict_test() {
     export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
     export REVIEW_RISK_VERDICT_THRESHOLD="${threshold}"
     export MOCK_PR_FILES="README.md"
+    if [[ "${fetch_depth}" == "EMPTY" ]]; then
+      # Sentinel for an explicitly empty value ("" means leave unset).
+      export REVIEW_GIT_FETCH_DEPTH=""
+    elif [[ -n "${fetch_depth}" ]]; then
+      export REVIEW_GIT_FETCH_DEPTH="${fetch_depth}"
+    fi
+    if [[ -n "${repo_mode}" ]]; then
+      export REPO_DIR="${run_dir}/repo"
+    fi
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -3883,6 +3918,97 @@ run_risk_gated_field_test() {
   echo "PASS: ${test_name}"
 }
 run_risk_gated_field_test
+
+# ---------------------------------------------------------------------------
+# Tier 2 deepen-failure detection (#1621). RISK_SCORE_3_RESULT has no
+# "degraded" key, so any downgrade comes from the shallow check alone.
+# ---------------------------------------------------------------------------
+
+# --- Unset REVIEW_GIT_FETCH_DEPTH + shallow repo → degraded downgrade ---
+run_risk_verdict_test "risk-v-tier2-unset-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (degraded)" "" \
+  "" "shallow"
+
+# --- REVIEW_GIT_FETCH_DEPTH=0 + shallow repo → degraded downgrade ---
+run_risk_verdict_test "risk-v-tier2-zero-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (degraded)" "" \
+  "0" "shallow"
+
+# --- REVIEW_GIT_FETCH_DEPTH=1 + shallow repo → opted out, no downgrade ---
+run_risk_verdict_test "risk-v-tier2-one-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment" \
+  "1" "shallow"
+
+# --- Unset REVIEW_GIT_FETCH_DEPTH + fully-deepened repo → no downgrade ---
+run_risk_verdict_test "risk-v-tier2-unset-full" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment" \
+  "" "full"
+
+# --- Explicitly empty REVIEW_GIT_FETCH_DEPTH="" + shallow repo → no downgrade ---
+run_risk_verdict_test "risk-v-tier2-empty-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "false" \
+  "" "downgrading approve to comment" \
+  "EMPTY" "shallow"
+
+# --- Unset REVIEW_GIT_FETCH_DEPTH + not a git repo → fails closed ---
+run_risk_verdict_test "risk-v-tier2-git-error" \
+  "${RISK_SCORE_3_RESULT}" "true" "4" "true" \
+  "Risk gate triggered (degraded)" "" \
+  "" "not-a-repo"
+
+# --- Threshold 6 disables the gate even with a shallow repo ---
+run_risk_verdict_test "risk-v-tier2-threshold6-shallow" \
+  "${RISK_SCORE_3_RESULT}" "true" "6" "false" \
+  "" "downgrading approve to comment" \
+  "" "shallow"
+
+# --- tier2-deepen-failed reason appears in the posted body ---
+run_risk_verdict_tier2_body_test() {
+  local test_name="risk-v-tier2-body"
+  local run_dir="${TMPDIR}/run-risk-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${RISK_SCORE_3_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  rm -f "${TMPDIR}/last-result.json"
+  make_risk_test_repo "${run_dir}" "shallow"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="true"
+    export REVIEW_RISK_VERDICT_THRESHOLD="4"
+    export MOCK_PR_FILES="README.md"
+    export REPO_DIR="${run_dir}/repo"
+    bash "${POST_SCRIPT}"
+  ) > /dev/null 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "tier2-deepen-failed" "${TMPDIR}/last-result.json"; then
+    echo "FAIL: ${test_name} — tier2-deepen-failed reason not in posted body"
+    cat "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_verdict_tier2_body_test
 
 # --- Summary ---
 

@@ -510,10 +510,31 @@ if [ "${REVIEW_RISK_ASSESSMENT_ENABLED_RAW}" = "true" ]; then
       RISK_NOTICE+=$'> **Risk assessment missing** — risk assessment is enabled but no score was\n'
       RISK_NOTICE+=$'> produced. A human reviewer must evaluate this PR.\n'
     else
+      # Detect a failed Tier 2 deepen independently of the sub-agent, which
+      # cannot see REVIEW_GIT_FETCH_DEPTH. Unset-only default (not `:-`),
+      # mirroring pre-review.src.sh: an explicit empty value skips deepening.
+      TIER2_DEEPEN_FAILED=false
+      if [ "${REVIEW_GIT_FETCH_DEPTH-0}" = "0" ]; then
+        RISK_TARGET_DIR="${REPO_DIR:-${GITHUB_WORKSPACE:-.}/target-repo}"
+        if [ -d "${RISK_TARGET_DIR}" ]; then
+          RISK_SHALLOW_STATUS=0
+          RISK_SHALLOW_OUTPUT=$(git -C "${RISK_TARGET_DIR}" rev-parse --is-shallow-repository 2>/dev/null) || RISK_SHALLOW_STATUS=$?
+          # Only exit 0 with exactly "false" proves full history; fail closed.
+          if [ "${RISK_SHALLOW_STATUS}" -ne 0 ] || [ "${RISK_SHALLOW_OUTPUT}" != "false" ]; then
+            TIER2_DEEPEN_FAILED=true
+          fi
+        fi
+      fi
+
       RISK_HAS_DEGRADED=$(jq '.risk_assessment | has("degraded")' "${RESULT_FILE}")
       RISK_HAS_SCORE=$(jq '.risk_assessment | has("score")' "${RESULT_FILE}")
 
-      if [ "${RISK_HAS_DEGRADED}" = "true" ]; then
+      if [ "${TIER2_DEEPEN_FAILED}" = "true" ]; then
+        RISK_STATUS="degraded"
+        RISK_NOTICE=$'\n\n---\n\n'
+        RISK_NOTICE+=$'> **Risk assessment degraded** — the risk score was not fully computed\n'
+        RISK_NOTICE+="> (tier2-deepen-failed). A human reviewer must evaluate this PR."$'\n'
+      elif [ "${RISK_HAS_DEGRADED}" = "true" ]; then
         RISK_DEGRADED_REASON=$(jq -r '.risk_assessment.degraded' "${RESULT_FILE}" | tr -dc '[:print:]')
         RISK_STATUS="degraded"
         RISK_NOTICE=$'\n\n---\n\n'
