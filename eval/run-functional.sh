@@ -23,12 +23,16 @@
 #                   (fullsend run --model), e.g. google-vertex/gemini-2.5-flash
 #   EVAL_EFFORT   — effort override (fullsend run --effort)
 #   EVAL_TIER     — "full" (default) or "release".
-#                     full    — run every case, as today.
-#                     release — run only this agent's release:true case(s),
-#                               and fail only on a non-zero case exit or a
-#                               deterministic judge (not on LLM-quality
-#                               judges or the max_turns/max_cost budget
-#                               judges, which still run and report).
+#                     full    — run every case.
+#                     release — run only this agent's release:true case(s).
+#                   In both tiers the run fails only on a non-zero case exit
+#                   or a deterministic contract judge (pr_created,
+#                   new_commit, sandbox_started). LLM-quality judges
+#                   (*_quality), the live-model behaviour checks
+#                   (finding_expectations, required_labels,
+#                   forbidden_labels, risk_label_present, expected_files)
+#                   and the max_turns/max_cost budget judges still run and
+#                   report, but their thresholds are dropped at runtime.
 #                   If unset, defaults to "release" when running as a
 #                   cross-repo workflow_call under GitHub Actions
 #                   (GITHUB_ACTIONS=true and GITHUB_REPOSITORY set to
@@ -154,14 +158,16 @@ fi
 EVAL_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX.yaml")"
 
 yq_expr=".dataset.path = \"${CASES_DIR}\""
-if [[ "$EVAL_TIER" == "release" ]]; then
-  # Report-only judges in the release tier: LLM-quality judges (name ends
-  # in "_quality", e.g. review_quality/triage_quality) and the max_turns/
-  # max_cost budget judges. score.py's detect_regressions() only gates on
-  # judges with a thresholds: entry, so dropping these leaves them running
-  # and reported but out of the tier's pass/fail decision.
-  yq_expr+=' | .thresholds |= with_entries(select(.key as $k | ($k == "max_turns" or $k == "max_cost" or ($k | test("_quality$"))) | not))'
-fi
+# Report-only judges, in every tier: LLM-quality judges (name ends in
+# "_quality", e.g. review_quality/triage_quality), the live-model behaviour
+# checks (finding_expectations, required_labels, forbidden_labels,
+# risk_label_present, expected_files) and the max_turns/max_cost budget
+# judges. score.py's detect_regressions() only gates on judges with a
+# thresholds: entry, so dropping these leaves them running and reported but
+# out of the pass/fail decision. The deterministic contract judges
+# (pr_created, new_commit, sandbox_started) keep their thresholds. The
+# checked-in eval.yaml keeps every threshold; only the runtime copy drops them.
+yq_expr+=' | .thresholds |= with_entries(select(.key | test("^(finding_expectations|required_labels|forbidden_labels|risk_label_present|expected_files|max_turns|max_cost)$|_quality$") | not))'
 yq "$yq_expr" "$EVAL_YAML_SRC" > "$EVAL_YAML"
 HARNESS_DIR="${AGENT_EVAL_HARNESS_DIR:-${EVAL_DIR}/.agent-eval-harness}"
 
@@ -501,8 +507,8 @@ if [[ $score_exit -ne 0 && ${#case_failures[@]} -eq 0 && -n "$(errored_judges)" 
 fi
 
 errored="$(errored_judges)"
-# Report judge errors even when no threshold failed (e.g. the release tier,
-# which drops the *_quality thresholds), so an unscored judge is never silent.
+# Report judge errors even when no threshold failed (the *_quality
+# thresholds are dropped at runtime), so an unscored judge is never silent.
 print_judge_errors "$errored"
 
 score_verdict="pass"
