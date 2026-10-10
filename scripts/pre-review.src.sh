@@ -166,6 +166,128 @@ validate_prior_review_projection() {
   fi
 }
 
+# Fetch resolved review threads for the final pre-sandbox authorization step
+# and reduce them to exact finding ids eligible for human dismissal. Raw
+# comment text is used only on the host to extract finding-id stamps and is
+# never persisted or copied into the sandbox.
+fetch_human_dismissals() {
+  local pr_author response trusted_reviewers
+  local -a fetch_args
+
+  pr_author="$(forge_get_pr_author)"
+  if [[ -z "${pr_author}" ]]; then
+    echo "::warning::Could not determine the PR author — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  case "${FULLSEND_FORGE}" in
+    github)
+      local org app_set
+      org="${REPO%%/*}"
+      app_set="${FULLSEND_APP_SET:-}"
+      trusted_reviewers="$(jq -nc \
+        --arg org "${org}" \
+        --arg app_set "${app_set}" '
+          [
+            ($org + "-review"), ($org + "-review[bot]"),
+            "fullsend-ai-review", "fullsend-ai-review[bot]",
+            (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+          ] | unique
+        ')"
+      ;;
+    gitlab)
+      local review_actor
+      review_actor="$(_gitlab_api GET "/user" 2>/dev/null | jq -r '.username // empty' 2>/dev/null)" || review_actor=""
+      if [[ -z "${review_actor}" ]]; then
+        echo "::warning::Could not determine the GitLab review bot — human dismissals cannot be verified" >&2
+        echo '[]'
+        return 0
+      fi
+      trusted_reviewers="$(jq -nc --arg actor "${review_actor}" '[$actor]')"
+      ;;
+  esac
+
+  fetch_args=(fetch-review-threads --forge "${FULLSEND_FORGE}" --repo "${REPO}" --pr "${PR_NUMBER}")
+  if [[ "${FULLSEND_FORGE}" == "gitlab" && -n "${CI_SERVER_URL:-}" ]]; then
+    fetch_args+=(--base-url "${CI_SERVER_URL}")
+  fi
+  if ! response="$(GH_TOKEN="${REVIEW_TOKEN:-${GH_TOKEN:-}}" \
+    GITLAB_TOKEN="${REVIEW_TOKEN:-${GITLAB_TOKEN:-}}" \
+    fullsend "${fetch_args[@]}" 2>/dev/null)"; then
+    echo "::warning::Failed to fetch review threads — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  if ! jq -e 'type == "object" and (.threads | type == "array") and (.truncated == false)' \
+    <<< "${response}" >/dev/null 2>&1; then
+    echo "::warning::Review thread fetch was invalid or truncated — human dismissals cannot be verified" >&2
+    echo '[]'
+    return 0
+  fi
+
+  jq -c --arg author "${pr_author}" --arg forge "${FULLSEND_FORGE}" --argjson trusted "${trusted_reviewers}" '
+    [ .threads[]
+      | select(type == "object")
+      | select(.is_resolved == true)
+      | select(.resolved_by_type == "User")
+      | select(.resolved_by_role_verified == true)
+      | select(.resolved_by_role | IN("write", "maintain", "admin"))
+      | select((.resolved_by | ascii_downcase) != ($author | ascii_downcase))
+      | select(.comments_truncated == false)
+      | .comments[]?
+      | select(
+          if $forge == "github" then
+            (.author_type == "Bot") and
+            (.author as $login | ($trusted | map(ascii_downcase) | index($login | ascii_downcase)) != null)
+          else
+            (.author as $login | ($trusted | map(ascii_downcase) | index($login | ascii_downcase)) != null)
+          end
+        )
+      | .body
+      | scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->")
+      | .[0]
+    ] | unique
+  ' <<< "${response}" 2>/dev/null || echo '[]'
+}
+
+# Close eligible prior findings before the model sees the ledger. Only exact
+# stamped ids are authoritative. High and critical findings remain open.
+apply_human_dismissals() {
+  local prior_file="$1"
+  local dismissals tmp_file
+
+  [[ -s "${prior_file}" ]] || return 0
+  dismissals="$(fetch_human_dismissals)" || dismissals='[]'
+  if ! jq -e 'type == "array"' <<< "${dismissals}" >/dev/null 2>&1; then
+    dismissals='[]'
+  fi
+
+  tmp_file="$(mktemp "${prior_file}.dismissals.XXXXXX")"
+  if ! jq --argjson dismissals "${dismissals}" '
+    def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
+    def closed_status: IN("resolved_by_change", "dismissed_by_human");
+    ([.dispositions[]? | select(.status | closed_status) | .id]) as $closed
+    | ([.findings[] | select((.id | valid_id) and (.id as $id | $closed | index($id) == null))]) as $open
+    | ([ $open[]
+         | . as $finding
+         | select((.severity | IN("high", "critical")) | not)
+         | select($dismissals | index($finding.id) != null)
+         | {id: .id, status: "dismissed_by_human"}
+       ]) as $new
+    | if ($new | length) == 0 then .
+      else .dispositions = ([.dispositions[]? | select(.id as $id | any($new[]; .id == $id) | not)] + $new)
+      end
+  ' "${prior_file}" > "${tmp_file}"; then
+    rm -f "${tmp_file}"
+    echo "::warning::Human-dismissal matching failed — keeping prior dispositions unchanged"
+    return 0
+  fi
+
+  mv "${tmp_file}" "${prior_file}"
+}
+
 if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
   case "${PRIOR_REVIEW_PROVENANCE:-none}" in
     app-verified|bot-verified) validate_prior_review_projection "${PRIOR_REVIEW_FILE}" ;;
@@ -249,6 +371,14 @@ if [[ "${REVIEW_GIT_FETCH_DEPTH:-}" == "0" ]]; then
       echo "::warning::Cannot deepen clone — missing credentials or unsupported forge"
     fi
   fi
+fi
+
+# Fetch and apply current human-dismissal evidence only after all early exits
+# and immediately before the validated ledger is copied into the sandbox.
+if [[ -n "${PRIOR_REVIEW_FILE:-}" && -f "${PRIOR_REVIEW_FILE}" ]]; then
+  case "${PRIOR_REVIEW_PROVENANCE:-none}" in
+    app-verified|bot-verified) apply_human_dismissals "${PRIOR_REVIEW_FILE}" ;;
+  esac
 fi
 
 echo "PR #${PR_NUMBER} is open — proceeding with review agent"

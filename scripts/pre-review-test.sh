@@ -87,6 +87,19 @@ MOCKEOF
   perl -pi -e "s/DATADIR_PLACEHOLDER/${escaped_dir}/g" "${mock_bin}/gh"
 
   chmod +x "${mock_bin}/gh"
+
+  cat > "${mock_bin}/fullsend" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_REVIEW_THREADS_FAIL:-}" ]]; then
+  exit 1
+fi
+if [[ -n "${MOCK_REVIEW_THREADS_JSON:-}" ]]; then
+  printf '%s\n' "${MOCK_REVIEW_THREADS_JSON}"
+else
+  printf '%s\n' '{"threads":[],"truncated":false}'
+fi
+MOCKEOF
+  chmod +x "${mock_bin}/fullsend"
   echo "${mock_bin}"
 }
 
@@ -310,6 +323,47 @@ projection_marker() {
   printf '<!-- fullsend:review-findings-v%s:%s -->' "${version}" "${encoded}"
 }
 
+run_human_dismissal_test() {
+  local test_name="$1"
+  local prior_projection="$2"
+  local review_threads="$3"
+  local expected_jq="$4"
+  local extra_env="${5:-}"
+  local prior_file="${TMPDIR}/human-${test_name}.txt"
+  printf '%s\n' "$(projection_marker "${prior_projection}")" > "${prior_file}"
+
+  local mock_bin
+  mock_bin="$(build_mock "OPEN" "prauthor")"
+  local env_cmd=(
+    env
+    PATH="${mock_bin}:${PATH}"
+    PR_URL="https://github.com/test-org/test-repo/pull/42"
+    FULLSEND_FORGE="github"
+    REVIEW_TOKEN="fake-token"
+    GH_TOKEN="fake-token"
+    MOCK_REVIEW_THREADS_JSON="${review_threads}"
+    PRIOR_REVIEW_FILE="${prior_file}"
+    PRIOR_REVIEW_PROVENANCE="app-verified"
+  )
+  if [[ -n "${extra_env}" ]]; then
+    while IFS= read -r kv; do
+      [[ -n "${kv}" ]] && env_cmd+=("${kv}")
+    done <<< "${extra_env}"
+  fi
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${SCRIPT_DIR}/pre-review.sh" \
+    > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]] || ! jq -e "${expected_jq}" "${prior_file}" >/dev/null 2>&1; then
+    echo "FAIL: ${test_name} — human-dismissal projection mismatch"
+    cat "${prior_file}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 # --- Test cases ---
 
 VALID_PROJECTION='{"version":1,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7}]}'
@@ -430,6 +484,78 @@ run_prior_projection_test "v2-id-and-disposition-retained" \
   "$(projection_marker "${V2_ID_PROJECTION}")" \
   "app-verified" \
   "${V2_ID_PROJECTION}"
+
+HUMAN_PRIOR='{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}],"dispositions":[{"id":"f_human1","status":"open"}]}'
+VERIFIED_HUMAN_THREAD='{"threads":[{"is_resolved":true,"path":"src/foo.go","line":40,"original_line":39,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"write","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"custom-review","author_type":"Bot","author_role":"none","author_role_verified":false,"body":"<!-- finding:f_human1 --> Naming nit.","created_at":"2026-10-08T10:00:00Z"}]}],"truncated":false}'
+run_human_dismissal_test "verified-custom-app-resolver-closes-by-id" \
+  "${HUMAN_PRIOR}" "${VERIFIED_HUMAN_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"dismissed_by_human"}]' \
+  "FULLSEND_APP_SET=custom"
+
+UPPERCASE_BOT_THREAD="$(jq -c '.threads[0].comments[0].author = "CUSTOM-REVIEW"' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "bot-identity-match-is-case-insensitive" \
+  "${HUMAN_PRIOR}" "${UPPERCASE_BOT_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"dismissed_by_human"}]' \
+  "FULLSEND_APP_SET=custom"
+
+UNVERIFIED_HUMAN_THREAD="$(jq -c '.threads[0].resolved_by_role_verified = false' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "unverified-resolver-stays-open" \
+  "${HUMAN_PRIOR}" "${UNVERIFIED_HUMAN_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+READ_HUMAN_THREAD="$(jq -c '.threads[0].resolved_by_role = "read"' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "read-resolver-stays-open" \
+  "${HUMAN_PRIOR}" "${READ_HUMAN_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+ROLE_NONE_VERIFIED_THREAD="$(jq -c '.threads[0].resolved_by_role = "none"' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "verified-custom-role-without-permission-stays-open" \
+  "${HUMAN_PRIOR}" "${ROLE_NONE_VERIFIED_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+AUTHOR_HUMAN_THREAD="$(jq -c '.threads[0].resolved_by = "PRAuthor"' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "pr-author-resolver-stays-open" \
+  "${HUMAN_PRIOR}" "${AUTHOR_HUMAN_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+UNTRUSTED_BOT_THREAD="$(jq -c '.threads[0].comments[0].author = "other-review"' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "untrusted-bot-stamp-stays-open" \
+  "${HUMAN_PRIOR}" "${UNTRUSTED_BOT_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+HIGH_HUMAN_PRIOR="$(jq -c '.findings[0].severity = "high"' <<< "${HUMAN_PRIOR}")"
+run_human_dismissal_test "high-finding-stays-open" \
+  "${HIGH_HUMAN_PRIOR}" "${VERIFIED_HUMAN_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+LEGACY_HUMAN_THREAD="$(jq -c '.threads[0].line = 4 | .threads[0].original_line = 3 | .threads[0].comments[0].body = "Naming nit."' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "legacy-unstamped-thread-stays-open" \
+  "${HUMAN_PRIOR}" "${LEGACY_HUMAN_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+QUOTED_HUMAN_THREAD="$(jq -c '.threads[0].comments[0].body = "Quoted text: finding:f_human1"' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "quoted-finding-id-without-marker-stays-open" \
+  "${HUMAN_PRIOR}" "${QUOTED_HUMAN_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+TRUNCATED_HUMAN_THREADS="$(jq -c '.truncated = true' <<< "${VERIFIED_HUMAN_THREAD}")"
+run_human_dismissal_test "truncated-fetch-stays-open" \
+  "${HUMAN_PRIOR}" "${TRUNCATED_HUMAN_THREADS}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  "FULLSEND_APP_SET=custom"
+
+run_human_dismissal_test "failed-fetch-stays-open" \
+  "${HUMAN_PRIOR}" "${VERIFIED_HUMAN_THREAD}" \
+  '.dispositions == [{"id":"f_human1","status":"open"}]' \
+  $'FULLSEND_APP_SET=custom\nMOCK_REVIEW_THREADS_FAIL=1'
 
 # Legacy projections without ids receive one before the sandbox, so the
 # agent can write a disposition on the first re-review after upgrade.
@@ -611,6 +737,12 @@ if [[ "\${METHOD}" == "POST" ]]; then
   exit 0
 fi
 
+# GET /user → identity behind the review token.
+if [[ "\${URL}" == *"/user" ]]; then
+  echo '{"username":"review-bot"}'
+  exit 0
+fi
+
 # GET /merge_requests/:iid → MR metadata
 if [[ "\${URL}" == *"/merge_requests/"* ]]; then
   MR_STATE=\$(cat "${TMPDIR}/mr-state.txt")
@@ -623,6 +755,16 @@ exit 0
 MOCKEOF
 
   chmod +x "${mock_bin}/curl"
+
+  cat > "${mock_bin}/fullsend" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ -n "${MOCK_REVIEW_THREADS_JSON:-}" ]]; then
+  printf '%s\n' "${MOCK_REVIEW_THREADS_JSON}"
+else
+  printf '%s\n' '{"threads":[],"truncated":false}'
+fi
+MOCKEOF
+  chmod +x "${mock_bin}/fullsend"
   echo "${mock_bin}"
 }
 
@@ -722,6 +864,58 @@ run_gitlab_test_stdout "gitlab-no-token-proceeds" \
   "No token available" \
   0 \
   "REVIEW_TOKEN="
+
+# GitLab uses the authenticated review-token identity as its trusted bot
+# provider and the normalized resolver role from fullsend#7907.
+GITLAB_HUMAN_PRIOR='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"src/foo.go","line":4,"id":"f_gitlab1"}],"dispositions":[{"id":"f_gitlab1","status":"open"}]}'
+GITLAB_HUMAN_THREADS='{"threads":[{"is_resolved":true,"path":"src/foo.go","line":4,"original_line":3,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"maintain","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"review-bot","author_type":"Bot","author_role":"none","author_role_verified":false,"body":"<!-- finding:f_gitlab1 --> Logic issue.","created_at":"2026-10-08T10:00:00Z"}]}],"truncated":false}'
+gitlab_prior_file="${TMPDIR}/gitlab-human-prior.txt"
+printf '%s\n' "$(projection_marker "${GITLAB_HUMAN_PRIOR}")" > "${gitlab_prior_file}"
+gitlab_mock_bin="$(build_gitlab_mock "opened" "prauthor")"
+if ! env \
+  PATH="${gitlab_mock_bin}:${PATH}" \
+  PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42" \
+  FULLSEND_FORGE="gitlab" \
+  REVIEW_TOKEN="fake-gitlab-token" \
+  CI_SERVER_HOST="gitlab.com" \
+  MOCK_REVIEW_THREADS_JSON="${GITLAB_HUMAN_THREADS}" \
+  PRIOR_REVIEW_FILE="${gitlab_prior_file}" \
+  PRIOR_REVIEW_PROVENANCE="bot-verified" \
+  bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout-gitlab-human.log" 2>&1 || \
+  ! jq -e '.dispositions == [{"id":"f_gitlab1","status":"dismissed_by_human"}]' \
+    "${gitlab_prior_file}" >/dev/null 2>&1; then
+  echo "FAIL: gitlab-verified-resolver-closes-by-id"
+  cat "${gitlab_prior_file}"
+  cat "${TMPDIR}/stdout-gitlab-human.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gitlab-verified-resolver-closes-by-id"
+fi
+
+# GitLab PATs may belong to a normal User account. The authenticated /user
+# identity is trusted on GitLab even when the discussion author type is User.
+GITLAB_HUMAN_USER_THREADS="$(jq -c '.threads[0].comments[0].author_type = "User"' <<< "${GITLAB_HUMAN_THREADS}")"
+gitlab_user_prior_file="${TMPDIR}/gitlab-human-user-prior.txt"
+printf '%s\n' "$(projection_marker "${GITLAB_HUMAN_PRIOR}")" > "${gitlab_user_prior_file}"
+if ! env \
+  PATH="${gitlab_mock_bin}:${PATH}" \
+  PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42" \
+  FULLSEND_FORGE="gitlab" \
+  REVIEW_TOKEN="fake-gitlab-token" \
+  CI_SERVER_HOST="gitlab.com" \
+  MOCK_REVIEW_THREADS_JSON="${GITLAB_HUMAN_USER_THREADS}" \
+  PRIOR_REVIEW_FILE="${gitlab_user_prior_file}" \
+  PRIOR_REVIEW_PROVENANCE="bot-verified" \
+  bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout-gitlab-human-user.log" 2>&1 || \
+  ! jq -e '.dispositions == [{"id":"f_gitlab1","status":"dismissed_by_human"}]' \
+    "${gitlab_user_prior_file}" >/dev/null 2>&1; then
+  echo "FAIL: gitlab-user-resolver-closes-by-id"
+  cat "${gitlab_user_prior_file}"
+  cat "${TMPDIR}/stdout-gitlab-human-user.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gitlab-user-resolver-closes-by-id"
+fi
 
 # --- Summary ---
 

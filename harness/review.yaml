@@ -95,6 +95,7 @@ forge:
         PR_URL: "${GITHUB_PR_URL}"
         GH_TOKEN: "${GH_TOKEN}"
         FULLSEND_FORGE: github
+        FULLSEND_APP_SET: "${FULLSEND_APP_SET}"
         REVIEW_RISK_ASSESSMENT_ENABLED: "true"
         REVIEW_RISK_VERDICT_THRESHOLD: "4"
       sandbox:
