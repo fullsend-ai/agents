@@ -31,14 +31,22 @@ Results are written to `eval/runs/<agent>/<run-id>/`.
   This is what local runs, merge-queue runs, the nightly run and PRs with
   the `eval-full` label use.
 - **`release`** — runs only this agent's case(s) whose `annotations.yaml`
-  sets `release: true`, and fails only on a non-zero case exit or a
-  deterministic judge (e.g. `required_labels`, `forbidden_labels`). LLM
-  judges (name ends in `_quality`) still run and are reported, but don't
-  fail the tier. If the agent has no `release: true` case, the script
-  prints a notice and exits 0.
+  sets `release: true`. If the agent has no `release: true` case, the
+  script prints a notice and exits 0.
 
-In both tiers, the `max_turns`/`max_cost` budget judges run and report
-but gate nothing: no eval declares a threshold for them. Review has no
+Both tiers gate on the same things: a non-zero case exit (including a
+sandbox, provider or harness that would not load) and the deterministic
+contract judges `pr_created`, `new_commit` and `sandbox_started`. The
+other judges run and are reported, but don't fail the run:
+
+- LLM quality judges (name ends in `_quality`, e.g. `review_quality`,
+  `triage_quality`)
+- live-model behaviour checks: `finding_expectations`, `required_labels`,
+  `forbidden_labels`, `risk_label_present`, `expected_files`
+- the `max_turns`/`max_cost` budget judges
+
+Their thresholds stay in each `eval.yaml`; `run-functional.sh` drops
+them from the runtime copy of the config only. Review has no
 `max_turns` judge, because its turn count does not track the work done.
 
 If `EVAL_TIER` is unset, it defaults to `release` when running as a
@@ -162,6 +170,15 @@ Each case directory under `eval/<agent>/cases/` contains:
   in `EVAL_TIER=release` runs (see [Tiers](#tiers) above).
 - `repo/` (optional) — base repo contents pushed to main before the
   fixture is created
+
+Every file, endpoint, symbol and label that a case's issue or PR refers
+to must exist in its fixture repo (`repo/`, plus the PR's files) or in
+the fixture's `labels`. The expected outcome in `annotations.yaml` must
+be what a careful engineer would conclude from that repo alone: an agent
+that checks the code and finds a gap will rightly answer `needs-info`.
+When a case needs code that the shared fixture repo lacks, give the case
+its own repo under `eval/<agent>/repos/` rather than changing the shared
+one (e.g. triage cases 001 and 003).
 
 ## Lifecycle
 

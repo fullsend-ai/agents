@@ -60,6 +60,22 @@ thresholds:
     min_pass_rate: 1.0
   max_cost:
     min_pass_rate: 1.0
+  finding_expectations:
+    min_pass_rate: 1.0
+  required_labels:
+    min_pass_rate: 1.0
+  forbidden_labels:
+    min_pass_rate: 1.0
+  risk_label_present:
+    min_pass_rate: 1.0
+  expected_files:
+    min_pass_rate: 1.0
+  pr_created:
+    min_pass_rate: 1.0
+  new_commit:
+    min_pass_rate: 1.0
+  sandbox_started:
+    min_pass_rate: 1.0
 YAML
 
   cat > "${root}/eval/testagent/cases/001-release-case/annotations.yaml" <<'YAML'
@@ -372,30 +388,29 @@ fi
 rm -rf "$ROOT"
 
 # ---------------------------------------------------------------------------
-# Release tier: deterministic judges block, LLM-quality/budget judges don't
+# Both tiers: deterministic contract judges gate; LLM-quality, live-model
+# behaviour and budget judges are report-only (thresholds dropped at runtime)
 # ---------------------------------------------------------------------------
 
-run_test
-ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
-run_rf "$ROOT" testagent EVAL_TIER=release >/dev/null 2>&1 || true
-THRESHOLD_KEYS="$(yq -r '.thresholds | keys | sort | join(",")' "${ROOT}/capture/last-config.yaml")"
-if [[ "$THRESHOLD_KEYS" == "deterministic_check" ]]; then
-  pass "release tier drops quality/max_turns/max_cost from thresholds, keeps deterministic judges"
-else
-  fail "release tier drops quality/max_turns/max_cost from thresholds (got: '$THRESHOLD_KEYS')"
-fi
-rm -rf "$ROOT"
-
-run_test
-ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
-run_rf "$ROOT" testagent EVAL_TIER=full >/dev/null 2>&1 || true
-THRESHOLD_KEYS="$(yq -r '.thresholds | keys | sort | join(",")' "${ROOT}/capture/last-config.yaml")"
-if [[ "$THRESHOLD_KEYS" == "agent_quality,deterministic_check,max_cost,max_turns" ]]; then
-  pass "full tier keeps every threshold entry"
-else
-  fail "full tier keeps every threshold entry (got: '$THRESHOLD_KEYS')"
-fi
-rm -rf "$ROOT"
+for tier in full release; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+  run_rf "$ROOT" testagent EVAL_TIER="$tier" >/dev/null 2>&1 || true
+  THRESHOLD_KEYS="$(yq -r '.thresholds | keys | sort | join(",")' "${ROOT}/capture/last-config.yaml")"
+  if [[ "$THRESHOLD_KEYS" == "deterministic_check,new_commit,pr_created,sandbox_started" ]]; then
+    pass "${tier} tier drops quality/behaviour/budget judges from thresholds, keeps deterministic judges"
+  else
+    fail "${tier} tier drops quality/behaviour/budget judges from thresholds (got: '$THRESHOLD_KEYS')"
+  fi
+  run_test
+  SRC_KEYS="$(yq -r '.thresholds | keys | length' "${ROOT}/eval/testagent/eval.yaml")"
+  if [[ "$SRC_KEYS" == "12" ]]; then
+    pass "${tier} tier leaves the checked-in eval.yaml thresholds untouched"
+  else
+    fail "${tier} tier leaves the checked-in eval.yaml thresholds untouched (got ${SRC_KEYS} keys)"
+  fi
+  rm -rf "$ROOT"
+done
 
 # ---------------------------------------------------------------------------
 # False-green fix: a non-zero case exit must fail the script even when the
