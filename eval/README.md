@@ -72,7 +72,7 @@ full tier once:
 |---|---|
 | Pull request | `release`. With the `eval-full` label, `full`, from the next push or `ok-to-test` run (adding the label alone starts no run). |
 | Merge queue | `full`, on the commit that lands |
-| Nightly (`functional-tests-nightly.yml`) | `full`, every agent, report-only |
+| Nightly (`functional-tests-nightly.yml`) | `full`, every agent; each run report-only, the nightly fails on the [3-run verdict](#nightly-verdict) |
 | Manual dispatch, cross-repo `workflow_call` | the `tier` input, or the script default |
 
 There is no run on push to `main`: the merge queue already tested that

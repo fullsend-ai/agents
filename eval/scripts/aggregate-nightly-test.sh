@@ -289,6 +289,20 @@ printf 'per_case: 7\n' > "${TMPDIR}/bad-shape.yaml"
 run_agg "$E" "$S1" "${TMPDIR}/bad-shape.yaml"
 expect "a summary whose per_case is not a mapping exits 2" 2 'not a summary \(needs judges and per_case mappings\): .*bad-shape.yaml'
 
+cat > "${TMPDIR}/bad-threshold.yaml" <<'EOF'
+thresholds:
+  required_labels:
+    min_pass_rate: "high"
+  review_quality:
+    min_mean: 3.5
+EOF
+run_agg "${TMPDIR}/bad-threshold.yaml" "$S1"
+expect "a non-numeric threshold exits 2" 2 'threshold is not a number in range in .*bad-threshold.yaml: required_labels.min_pass_rate = high'
+
+printf 'thresholds:\n  required_labels:\n    min_pass_rate: 1.5\n' > "${TMPDIR}/out-of-range.yaml"
+run_agg "${TMPDIR}/out-of-range.yaml" "$S1"
+expect "a min_pass_rate above 1 exits 2" 2 'required_labels.min_pass_rate = 1.5'
+
 printf '{}\n' > "${TMPDIR}/empty.yaml"
 run_agg "$E" "${TMPDIR}/empty.yaml"
 expect "an empty summary exits 2" 2 'not a summary \(needs judges and per_case mappings\): .*empty.yaml'

@@ -36,9 +36,10 @@
 # Exit status:
 #   0 — PASS
 #   1 — FAIL
-#   2 — usage or input error (no summaries, more than 3, or a file that is
+#   2 — usage or input error (no summaries, more than 3, a file that is
 #       missing, not a valid YAML mapping, or not shaped like its kind: a
-#       summary needs judges and per_case mappings)
+#       summary needs judges and per_case mappings), or a threshold that is
+#       not a number (min_pass_rate must be in [0, 1])
 set -euo pipefail
 
 usage() {
@@ -67,6 +68,19 @@ for f in "${SUMMARIES[@]}"; do
   yq -e '(.judges | tag) == "!!map" and (.per_case | tag) == "!!map"' "$f" >/dev/null 2>&1 \
     || input_error "not a summary (needs judges and per_case mappings): $f"
 done
+
+# A threshold that is not a number would compare as 0 and always pass, so
+# reject it. "<judge> <key> <value>" for every min_pass_rate and min_mean.
+bad_thresholds="$(yq -r '.thresholds // {} | to_entries[]
+  | .key as $j | .value // {} | to_entries[]
+  | select(.key == "min_pass_rate" or .key == "min_mean")
+  | select(((.value | tag) != "!!int" and (.value | tag) != "!!float")
+    or (.key == "min_pass_rate" and (.value < 0 or .value > 1)))
+  | $j + "." + .key + " = " + (.value | tostring)' "$EVAL_YAML")" \
+  || input_error "could not read $EVAL_YAML"
+if [[ -n "$bad_thresholds" ]]; then
+  input_error "threshold is not a number in range in ${EVAL_YAML}: $(paste -sd, - <<< "$bad_thresholds")"
+fi
 
 # q <expr> <file>: yq -r, exiting 2 on a read error. Only call it as a plain
 # assignment (x="$(q ...)"): set -e then ends the script with its status,
