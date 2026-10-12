@@ -186,15 +186,19 @@ if test -z "$SKIP"; then
 fi
 if test -z "$SKIP"; then
   LAST_DEP=$(grep '^dep ' "$W/classified" | tail -1 | cut -d' ' -f2)
-  # Shell variables do not survive between calls: re-derive the head SHA here.
+  # PINNED_SHA is the step 1 head SHA (shell variables do not survive between
+  # calls). Scope only if the live head still matches it.
   HEAD_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" < /dev/null | jq -r '.head.sha // empty' 2>/dev/null)
   if test -z "$HEAD_SHA"; then SKIP="cannot determine PR head SHA"
-  else gh api "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${HEAD_SHA}" > "$W/compare.json" || SKIP="compare failed"; fi
+  elif test "$HEAD_SHA" != "${PINNED_SHA:-}"; then SKIP="PR head moved since step 1"
+  else gh api "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${PINNED_SHA}" > "$W/compare.json" || SKIP="compare failed"; fi
 fi
 if test -z "$SKIP"; then
-  jq -e '.status == "ahead" and .behind_by == 0 and (.files | length) > 0 and (.files | length) < 300
-    and all(.files[]; .patch | type == "string" and length > 0)' "$W/compare.json" >/dev/null 2>&1 \
-    || SKIP="compare incomplete (binary or oversized patch, or 300+ files)"
+  jq -e 'def safe_path: type == "string" and length > 0 and test("^[ -~]+$") and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+    .status == "ahead" and .behind_by == 0 and (.files | length) > 0 and (.files | length) < 300
+    and all(.files[]; (.patch | type == "string" and length > 0) and (.filename | safe_path)
+      and (.previous_filename == null or (.previous_filename | safe_path)))' "$W/compare.json" >/dev/null 2>&1 \
+    || SKIP="compare incomplete (binary or oversized patch, 300+ files, or unsafe path)"
 fi
 if test -z "$SKIP"; then
   jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' "$W/compare.json" > "$W/pr-diff.txt"

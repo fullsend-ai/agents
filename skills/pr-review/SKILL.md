@@ -115,8 +115,7 @@ Determine which PR to review:
 - If `PR_NUMBER` and `REPO_FULL_NAME` are set in the environment, use
   them (the harness always provides these).
 - If a PR URL was provided, extract the number and repo from the URL.
-- If none was provided, or no PR can be identified, stop and report the
-  failure rather than guessing.
+- Otherwise stop and report the failure rather than guessing.
 
 Fetch the PR head SHA using the forge-specific review skill
 (`pr-review/github` or `pr-review/gitlab`, selected by the harness

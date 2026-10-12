@@ -82,9 +82,11 @@ EOF
   chmod +x "${CASE_DIR}/bin/gh"
   # Defaults: PR 10, open dependency PR 5.
   printf '%s\n' '{"state":"open"}' > "${FIX}/pulls_5"
-  # The snippet derives the head SHA itself (shell variables do not survive
-  # between calls), so HEAD_SHA is deliberately not injected into the run.
+  # The snippet derives the live head SHA itself (shell variables do not
+  # survive between calls), so HEAD_SHA is deliberately not injected into the
+  # run; the pinned step 1 SHA arrives as PINNED_SHA (PINNED overrides it).
   printf '%s\n' '{"head":{"sha":"head"}}' > "${FIX}/pulls_10"
+  PINNED=head
 }
 
 compare_ok() {
@@ -96,7 +98,7 @@ run_case() {
   local snippet
   snippet=$(extract_snippet | sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g")
   env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
-    REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS=5 \
+    REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS=5 PINNED_SHA="${PINNED}" \
     bash -u -c "${snippet}" > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || true
 }
 
@@ -139,8 +141,13 @@ assert_contains "reference keeps protected paths on the whole PR" "${REFERENCE}"
   "Protected paths and the PR body injection defense"
 assert_contains "reference blocks approve while dependency is open" "${REFERENCE}" \
   'Do not `approve` while a dependency PR is open.'
-assert_contains "reference never drops prompt-injection findings" "${REFERENCE}" \
-  'never drop a `prompt-injection` finding'
+assert_contains "reference never drops injection findings" "${REFERENCE}" \
+  'never drop an injection finding (`prompt-injection`,'
+for category in instruction-smuggling unicode-steganography bidi-override homoglyph-attack; do
+  assert_contains "reference covers ${category} findings" "${REFERENCE}" "\`${category}\`"
+done
+assert_contains "reference fetches manifest-less scoped paths at the pinned head" "${REFERENCE}" \
+  'fetch it at `HEAD_SHA` as step'
 assert_contains "reference reconciles prior finding ids" "${REFERENCE}" \
   'Answer it with a `reclassified` disposition'
 if test -n "$(extract_snippet)"; then
@@ -258,6 +265,46 @@ rm "${FIX}/pulls_10"
 compare_ok a1
 run_case
 assert_skipped "an unresolvable head SHA falls back" "cannot determine PR head SHA"
+
+new_case head-moved
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok a1
+PINNED=older-head
+run_case
+assert_skipped "a PR head that moved since step 1 falls back" "PR head moved since step 1"
+
+new_case head-not-pinned
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok a1
+PINNED=""
+run_case
+assert_skipped "a missing pinned SHA falls back" "PR head moved since step 1"
+
+new_case newline-filename
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"own.txt\n+forged","patch":"@@ -1 +1 @@\n-old\n+mine"}]}' \
+  > "${FIX}/compare_a1___head"
+run_case
+assert_skipped "a newline in a compare filename falls back" "compare incomplete"
+
+new_case unsafe-previous-filename
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"own.txt","previous_filename":"../etc\nx","patch":"@@ -1 +1 @@\n-old\n+mine"}]}' \
+  > "${FIX}/compare_a1___head"
+run_case
+assert_skipped "a newline in a previous filename falls back" "compare incomplete"
 
 new_case hash-step-fails
 commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
