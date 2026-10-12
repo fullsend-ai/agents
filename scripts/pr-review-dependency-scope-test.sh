@@ -172,15 +172,21 @@ assert_contains "review agent keeps dependency scoping out of approval criteria"
   'scoping does not impose merge ordering or alter these approval criteria.'
 assert_contains "user docs distinguish scoped review from merge ordering" "${DOCS}" \
   'does not impose merge ordering or prevent an approval'
-assert_contains "reference never drops injection findings" "${REFERENCE}" \
-  'never drop an injection finding (`prompt-injection`,'
+assert_contains "reference never drops security findings" "${REFERENCE}" \
+  'never drop a security finding (any finding from the'
+assert_contains "reference keeps prior security findings at original severity" "${REFERENCE}" \
+  'A prior security id keeps its original severity and'
+assert_contains "reference keeps security inspection on the whole PR" "${REFERENCE}" \
+  'Still run security inspection over the whole PR'
+assert_contains "reference does not treat an open dependency as security clearance" "${REFERENCE}" \
+  'not that it was reviewed or'
 for category in instruction-smuggling unicode-steganography bidi-override homoglyph-attack; do
   assert_contains "reference covers ${category} findings" "${REFERENCE}" "\`${category}\`"
 done
 assert_contains "reference fetches manifest-less scoped paths at the pinned head" "${REFERENCE}" \
   'fetch it at `HEAD_SHA` as step'
 assert_contains "reference reconciles prior finding ids" "${REFERENCE}" \
-  'Answer it with a `reclassified` disposition'
+  'answer it with a `reclassified` disposition'
 if test -n "$(extract_snippet)"; then
   pass "GitHub forge has a dependency-scoping snippet"
 else
@@ -364,6 +370,38 @@ chmod +x "${CASE_DIR}/bin/sha256sum"
 run_case
 assert_skipped "a failed hash step falls back instead of matching" \
   "cannot compare patches of dependency commits"
+
+# --- Commit-count handling in the base fetch snippets -------------------------
+
+assert_contains "PR data fetching records the total commit count" "${GITHUB_FORGE}" \
+  'PR_COMMIT_COUNT=$(echo "$PR_DATA" | jq -r '"'"'.commits'"'"')'
+assert_contains "PR data fetching writes the commit count file" "${GITHUB_FORGE}" \
+  '"$PR_COMMIT_COUNT" > "$PR_COMMIT_COUNT_FILE"'
+assert_contains "issue context keeps the same-repository guard" "${GITHUB_FORGE}" \
+  'same-repository issue URLs; never fetch contributor-named repos.'
+
+# A complete small PR (count recorded by "PR data fetching") must not be
+# marked commit_messages_incomplete.
+extract_commit_messages_snippet() {
+  awk '
+    /^## Commit messages$/ { found = 1; next }
+    found && /^```bash$/ { code = 1; next }
+    code && /^```$/ { exit }
+    code { print }
+  ' "${GITHUB_FORGE}"
+}
+
+new_case commit-count-complete
+commits c1 > "${FIX}/pulls_10_commits_per_page_100"
+printf '%s\n' 1 > "${CASE_DIR}/workspace/pr-commit-count"
+snippet=$(extract_commit_messages_snippet | sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g")
+env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" REPO_FULL_NAME=example/repo PR_NUMBER=10 \
+  bash -u -c "${snippet}" > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || true
+if test "$(cat "${CASE_DIR}/workspace/pr-commit-messages-incomplete")" = false; then
+  pass "a complete small PR is not marked commit_messages_incomplete"
+else
+  fail "a complete small PR is not marked commit_messages_incomplete — err: $(cat "${CASE_DIR}/err")"
+fi
 
 echo
 if [[ "${FAILURES}" -gt 0 ]]; then

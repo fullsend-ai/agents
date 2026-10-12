@@ -19,6 +19,14 @@ fetching to these commands when `FULLSEND_FORGE=github`.
 PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
 HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
 IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
+# Total commit count, used by "Commit messages" below to detect the
+# commits endpoint's 250-commit fetch cap.
+PR_COMMIT_COUNT=$(echo "$PR_DATA" | jq -r '.commits')
+PR_COMMIT_COUNT_FILE=/sandbox/workspace/pr-commit-count
+case "$PR_COMMIT_COUNT" in
+  ''|*[!0-9]*) printf '%s\n' unknown > "$PR_COMMIT_COUNT_FILE" ;;
+  *) printf '%s\n' "$PR_COMMIT_COUNT" > "$PR_COMMIT_COUNT_FILE" ;;
+esac
 
 # PR files list — every page, flattened, saved for later Bash calls
 # (shell variables do not survive between calls; files do)
@@ -86,7 +94,8 @@ echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata
+# Fetch linked issue metadata from the PR repository. Step 2b resolves bare
+# `#N` and same-repository issue URLs; never fetch contributor-named repos.
 gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
 
 # Fetch issue comments
