@@ -2,7 +2,6 @@
 # eval/scripts/check-case.sh.
 source:
   epic: RHAI-503
-  epic_url: https://redhat.atlassian.net/browse/RHAI-503
   epic_summary: "Data Connect Hub Module — Connection List and Detail Views"
   sample: "sample.json (generated 2026-09-22T22:44:13.683685+00:00)"
   repo: opendatahub-io/odh-dashboard

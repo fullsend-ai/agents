@@ -2,7 +2,6 @@
 # eval/scripts/check-case.sh.
 source:
   epic: RHAI-331
-  epic_url: https://redhat.atlassian.net/browse/RHAI-331
   epic_summary: "Deprecate /v1/guardrail/checks and Align with Upstream /v1/checks Endpoint"
   sample: "sample.json (generated 2026-09-22T22:44:13.683685+00:00)"
   repo: trustyai-explainability/nemo-guardrails

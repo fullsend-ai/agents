@@ -8,6 +8,12 @@ agent's PR actually delivers an epic.
 EVAL_ORG=<user-or-org> ./eval/run-functional.sh dev/code-rhai
 ```
 
+That runs the baseline arm on every case. To run selected cases, another
+coder model or runtime, or a different review model, see
+[Model pin, arms and matrix runs](#model-pin-arms-and-matrix-runs) and
+[Local run notes](#local-run-notes); to add a case, see
+[Building cases](#building-cases).
+
 ## What a case is
 
 **The epic is the case.** The agent gets the epic's title and description,
@@ -68,7 +74,6 @@ cases/<NNN-slug>/
 ```yaml
 source:
   epic: RHAI-517
-  epic_url: https://redhat.atlassian.net/browse/RHAI-517
   epic_summary: ...
   sample: sample.json (generated 2026-09-22T22:44Z)
   repo: trustyai-explainability/nemo-guardrails
@@ -94,6 +99,12 @@ eval/scripts/build-case.sh --sample sample.json --epic RHAI-517 \
 # fill regression_tests.command
 eval/scripts/check-case.sh eval/dev/code-rhai/cases/001-rhai-517-nemo-capability-manifest
 ```
+
+The Jira key (`source.epic`) is the case's identifier; the tracker URL is not
+recorded because it needs a Red Hat login and adds nothing to the key. The
+epics used here are in Jira's Public visibility class, readable by Red Hat
+partners and customers, and the project agreed at its kickoff that their text
+can be part of this external dataset.
 
 `build-case.sh` needs a sample with descriptions (schema_version 4 or later
 from the rhai-epics sampler). It refuses epics that span repositories or lack

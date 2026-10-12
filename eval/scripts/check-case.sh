@@ -11,7 +11,8 @@ ANN="$CASE_DIR/annotations.yaml"
 for cmd in yq timeout; do command -v "$cmd" >/dev/null || { echo "ERROR: $cmd not found" >&2; exit 1; }; done
 [[ -f "$ANN" && -f "$CASE_DIR/input.yaml" ]] || { echo "ERROR: not a case dir: $CASE_DIR" >&2; exit 1; }
 # repo/ is not committed (the case is a card); rebuild it from the snapshot commit.
-[[ -d "$CASE_DIR/repo" ]] || "$(dirname "$0")/materialize-case.sh" "$CASE_DIR"
+[[ -d "$CASE_DIR/repo" ]] || "$(dirname "$0")/materialize-case.sh" "$CASE_DIR" \
+  || { echo "ERROR: could not materialize repo/ for $CASE_DIR (see above); nothing below is meaningful" >&2; exit 1; }
 fail=0
 if grep -qE 'TODO|PLACEHOLDER' "$CASE_DIR/input.yaml"; then echo "BAD  1. input.yaml still has TODO/PLACEHOLDER text"; fail=1; else echo "OK   1. input.yaml has epic text"; fi
 cmd=$(yq -r '.regression_tests.command // ""' "$ANN"); notes=$(yq -r '.judge_notes // ""' "$ANN")
@@ -20,7 +21,7 @@ if [[ "$notes" =~ TODO ]]; then echo "BAD  2. judge_notes still says TODO (leave
 if [[ -n "$cmd" && "$cmd" != "TODO" ]]; then
   tmo=$(yq -r '.test_timeout_s // 1800' "$ANN")
   WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
-  cp -a "$CASE_DIR/repo/." "$WORK/"
+  cp -a "$CASE_DIR/repo/." "$WORK/" || { echo "ERROR: could not copy repo/ to a scratch directory" >&2; exit 1; }
   rc=0; ( cd "$WORK" && timeout "$tmo" env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
       LANG="${LANG:-C.UTF-8}" TERM=dumb CI=1 bash -o pipefail -c "$cmd" ) > "$CASE_DIR/.check-regression.log" 2>&1 || rc=$?
   if [[ $rc -eq 0 ]]; then echo "OK   3. regression command passes on the bare snapshot"; rm -f "$CASE_DIR/.check-regression.log";

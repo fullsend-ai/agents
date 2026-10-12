@@ -91,10 +91,14 @@ git -c "credential.helper=${GH_CRED_HELPER}" \
   clone "https://x-access-token@github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
-# The case is a card; its repo/ tree is not committed. Rebuild it from the
-# card's snapshot commit when missing (materialize-case.sh, same PATH as
-# this hook).
-if [[ ! -d "${CASE_SOURCE_DIR}/repo" && -f "${CASE_SOURCE_DIR}/annotations.yaml" ]]; then
+# A case whose annotations name an upstream repository and a snapshot commit
+# is a card: its repo/ tree is not committed and is rebuilt here when missing
+# (materialize-case.sh, same PATH as this hook). Any other case without repo/
+# (for example the review eval's fixture-only cases) keeps the README stub
+# below, as before.
+if [[ ! -d "${CASE_SOURCE_DIR}/repo" && -f "${CASE_SOURCE_DIR}/annotations.yaml" ]] \
+   && [[ -n "$(yq -r '.source.repo // ""' "${CASE_SOURCE_DIR}/annotations.yaml")" ]] \
+   && [[ -n "$(yq -r '.source.snapshot_commit // ""' "${CASE_SOURCE_DIR}/annotations.yaml")" ]]; then
   materialize-case.sh "${CASE_SOURCE_DIR}"
 fi
 if [[ -d "${CASE_SOURCE_DIR}/repo" ]]; then

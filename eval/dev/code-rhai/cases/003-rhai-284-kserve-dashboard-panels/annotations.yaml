@@ -2,7 +2,6 @@
 # eval/scripts/check-case.sh.
 source:
   epic: RHAI-284
-  epic_url: https://redhat.atlassian.net/browse/RHAI-284
   epic_summary: "Implement pod-level and model-level dashboard panels (P11-P20)"
   sample: "sample.json (generated 2026-09-22T22:44:13.683685+00:00)"
   repo: opendatahub-io/kserve
