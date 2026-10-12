@@ -82,6 +82,17 @@ Risk score gates the review outcome when risk assessment is enabled:
 - **Downgraded reviews** receive the `requires-manual-review` outcome label
   (not `ready-for-merge`), blocking auto-merge.
 
+### Stacked and cherry-picked PRs
+
+When the PR author declares another open PR in the same repository as a
+dependency ("depends on #N", "stacked on #N") and the PR's leading commits
+are that PR's commits (same SHAs, or cherry-picks with identical patches),
+the review covers only the PR's own commits. Protected-path and PR-body
+checks still cover the whole PR. While a declared dependency PR is open the
+review never approves: it is posted as `comment` and labelled
+`requires-manual-review`. If the commits cannot be matched, the full diff is
+reviewed.
+
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `priority/high`) but these are informational — they do not control agent
 behavior.

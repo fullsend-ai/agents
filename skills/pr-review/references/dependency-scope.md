@@ -12,7 +12,8 @@ diff is reviewed.
 
 Candidates come only from the PR author: the PR body and the author's
 own comments on the PR (forge skill "Issue context" comments command
-with the PR number, filtered to the PR author's login). A candidate is
+with the PR number and `--paginate --slurp` so every page is read, then
+filtered to the PR author's login). A candidate is
 another PR **in the same repository** that the text names as a
 dependency, for example "depends on #N", "stacked on #N", "based on
 #N", "requires #N", "cherry-picked from #N", or the same wording with
@@ -40,10 +41,14 @@ The command:
   in the base branch. A closed, unmerged one lands only through this
   PR, so its code is this PR's code.
 - Marks a PR commit as a dependency commit when its SHA is in an open
-  candidate's commit list (stacked) or its `git patch-id --stable`
-  equals one of theirs (cherry-pick). A matching commit message is not
-  enough, so a cherry-pick whose conflicts were resolved differently
-  stays in scope.
+  candidate's commit list (stacked) or it is a cherry-pick: its
+  `git patch-id --stable` equals one of theirs **and** a
+  whitespace-exact hash of its changed lines does too (patch IDs ignore
+  whitespace, which can change behavior, e.g. Python indentation). A
+  matching commit message is not enough, so a cherry-pick whose
+  conflicts were resolved differently stays in scope.
+- Refuses to scope (`SKIP`) when any commit list or commit diff cannot
+  be fetched, rather than treating the failure as "no match".
 - Scopes only when the dependency commits come first, followed by at
   least one own commit, with no merge commits, fewer than 250 commits
   on either side, and a complete compare from the last dependency
@@ -63,7 +68,12 @@ Only after `SCOPED`:
 - **Context packages (3d).** `diff` already points at the own-commit
   diff. Set `changed_files` from `dep-scope/files`; keep every
   manifest line in `pr_head` so dependency files stay readable as
-  context. Add this `dependency_scope` entry to every context package,
+  context. A path in `dep-scope/files` that the manifest lacks (an own
+  commit reverting a dependency change) equals base at `HEAD_SHA`: read
+  it from `target-repo/`. Step 2a's prior-review compare spans all
+  commits, so `changed_since_prior` may list dependency paths, and its
+  `all` fallback uses the scoped `pr-diff.txt`; findings still follow
+  the Synthesis rule below. Add this `dependency_scope` entry to every context package,
   the challenger's included:
 
   > This PR carries commits `<short SHAs>` from open PR(s) `#<N>`,

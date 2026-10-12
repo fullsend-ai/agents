@@ -150,27 +150,37 @@ SKIP=""; DIFF_ACCEPT="Accept: application/vnd.github.diff"
 gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$W/own-pages.json" || SKIP="cannot list PR commits"
 jq -e 'add // [] | length > 0 and length < 250 and all(.[]; (.parents | length) == 1)' "$W/own-pages.json" >/dev/null 2>&1 \
   || SKIP="${SKIP:-PR has merge commits, no commits, or 250+ commits}"
-for d in $DEP_PRS; do
-  STATE=$(gh api "repos/${REPO_FULL_NAME}/pulls/$d" < /dev/null | jq -r '.state' 2>/dev/null)
-  if test "$STATE" != open; then echo "#$d is not open: not a dependency"; continue; fi
-  echo "$d" >> "$W/dep-prs"
-  gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/$d/commits?per_page=100" < /dev/null > "$W/dep-$d.json" || SKIP="cannot list #$d commits"
-  jq -e 'add // [] | length < 250' "$W/dep-$d.json" >/dev/null 2>&1 || SKIP="${SKIP:-#$d has 250+ commits}"
-  jq -r 'add // [] | .[].sha' "$W/dep-$d.json" >> "$W/dep-shas" 2>/dev/null
-done
+if test -z "$SKIP"; then
+  for d in $DEP_PRS; do
+    STATE=$(gh api "repos/${REPO_FULL_NAME}/pulls/$d" < /dev/null | jq -r '.state' 2>/dev/null)
+    if test "$STATE" != open; then echo "#$d is not open: not a dependency"; continue; fi
+    echo "$d" >> "$W/dep-prs"
+    gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/$d/commits?per_page=100" < /dev/null > "$W/dep-$d.json" || SKIP="${SKIP:-cannot list #$d commits}"
+    jq -e 'add // [] | length < 250' "$W/dep-$d.json" >/dev/null 2>&1 || SKIP="${SKIP:-#$d has 250+ commits}"
+    jq -r 'add // [] | .[].sha' "$W/dep-$d.json" >> "$W/dep-shas" 2>/dev/null
+  done
+fi
 test -s "$W/dep-prs" || SKIP="${SKIP:-no open dependency PR}"
+# ids <sha>: prints "<stable patch-id> <whitespace-exact hash of the +/- lines>".
+# Patch IDs only pick candidates (they ignore whitespace); a match needs both.
+ids() {
+  gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$1" < /dev/null > "$W/one.diff" || return 1
+  PID=$(git patch-id --stable < "$W/one.diff" | cut -d' ' -f1) || return 1
+  EXACT=$(grep -E '^[-+]' "$W/one.diff" | sha256sum | cut -d' ' -f1) || return 1
+  echo "$PID $EXACT"
+}
 if test -z "$SKIP"; then
   while IFS= read -r s; do
-    gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$s" < /dev/null | git patch-id --stable | cut -d' ' -f1
+    ids "$s" || SKIP="${SKIP:-cannot compare patches of dependency commits}"
   done < "$W/dep-shas" > "$W/dep-pids"
   jq -r 'add // [] | .[].sha' "$W/own-pages.json" > "$W/own-shas"
   while IFS= read -r s; do
     if grep -qxF -e "$s" "$W/dep-shas"; then echo "dep $s"; continue; fi
-    PID=$(gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$s" < /dev/null | git patch-id --stable | cut -d' ' -f1)
-    if test -n "$PID" && grep -qxF -e "$PID" "$W/dep-pids"; then echo "dep $s"; else echo "own $s"; fi
+    ID=$(ids "$s") || SKIP="${SKIP:-cannot compare patches of own commits}"
+    if test "${ID%% *}" != "" && grep -qxF -e "$ID" "$W/dep-pids"; then echo "dep $s"; else echo "own $s"; fi
   done < "$W/own-shas" > "$W/classified"
   SHAPE=$(cut -d' ' -f1 "$W/classified" | uniq | tr '\n' ' ')
-  test "$SHAPE" = "dep own " || SKIP="commits are not dependency commits followed by own commits (${SHAPE})"
+  test "$SHAPE" = "dep own " || SKIP="${SKIP:-commits are not dependency commits followed by own commits (${SHAPE})}"
 fi
 if test -z "$SKIP"; then
   LAST_DEP=$(grep '^dep ' "$W/classified" | tail -1 | cut -d' ' -f2)

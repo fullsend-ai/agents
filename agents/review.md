@@ -256,7 +256,9 @@ mutations on the runner.
   `REVIEW_RISK_VERDICT_THRESHOLD` is not `6`,
   `risk_assessment.score` is below `REVIEW_RISK_VERDICT_THRESHOLD` and
   the assessment is not degraded (when threshold is `6`, the risk
-  verdict gate is disabled and does not block approval)
+  verdict gate is disabled and does not block approval); approval is
+  also withheld while a dependency PR declared by a stacked or
+  cherry-picked PR is still open
 - `request-changes` — findings *requiring* resolution: one or more critical or
   high findings; one or more medium-severity findings identifying a
   functional bug (incorrect behavior, permission error, schema violation,

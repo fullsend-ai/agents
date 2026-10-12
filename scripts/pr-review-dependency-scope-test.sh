@@ -130,6 +130,8 @@ assert_contains "orchestrator links dependency-scope reference" "${SKILL}" \
   "(references/dependency-scope.md)"
 assert_contains "reference names the forge command" "${REFERENCE}" \
   '"Dependency-PR scoping" command'
+assert_contains "reference reads every page of author comments" "${REFERENCE}" \
+  '`--paginate --slurp`'
 assert_contains "reference keeps protected paths on the whole PR" "${REFERENCE}" \
   "Protected paths and the PR body injection defense"
 assert_contains "reference blocks approve while dependency is open" "${REFERENCE}" \
@@ -201,6 +203,34 @@ patch own.txt mine > "${FIX}/diff_commits_c3"
 run_case
 assert_skipped "a cherry-pick with a different patch stays in scope" \
   "commits are not dependency commits followed by own commits (own )"
+
+new_case whitespace-only-difference
+commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch auth.py "    check()" > "${FIX}/diff_commits_a1"
+patch auth.py "check()" > "${FIX}/diff_commits_c1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+run_case
+assert_skipped "a cherry-pick differing only in indentation stays in scope" \
+  "commits are not dependency commits followed by own commits (own )"
+
+new_case own-diff-unavailable
+commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+run_case
+assert_skipped "a commit diff that cannot be fetched falls back" \
+  "cannot compare patches of own commits"
+
+new_case dependency-diff-unavailable
+commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_c1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+run_case
+assert_skipped "a dependency diff that cannot be fetched falls back" \
+  "cannot compare patches of dependency commits"
 
 new_case binary-compare
 commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
