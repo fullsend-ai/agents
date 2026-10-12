@@ -167,6 +167,8 @@ ids() {
   gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$1" < /dev/null > "$W/one.diff" || return 1
   PID=$(git patch-id --stable < "$W/one.diff" | cut -d' ' -f1) || return 1
   EXACT=$(grep -E '^[-+]' "$W/one.diff" | sha256sum | cut -d' ' -f1) || return 1
+  # No pipefail: a failed hash step leaves an empty value, so require well-formed hashes.
+  [[ $PID =~ ^[0-9a-f]{40,64}$ && $EXACT =~ ^[0-9a-f]{64}$ ]] || return 1
   echo "$PID $EXACT"
 }
 if test -z "$SKIP"; then
@@ -184,7 +186,10 @@ if test -z "$SKIP"; then
 fi
 if test -z "$SKIP"; then
   LAST_DEP=$(grep '^dep ' "$W/classified" | tail -1 | cut -d' ' -f2)
-  gh api "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${HEAD_SHA}" > "$W/compare.json" || SKIP="compare failed"
+  # Shell variables do not survive between calls: re-derive the head SHA here.
+  HEAD_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" < /dev/null | jq -r '.head.sha // empty' 2>/dev/null)
+  if test -z "$HEAD_SHA"; then SKIP="cannot determine PR head SHA"
+  else gh api "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${HEAD_SHA}" > "$W/compare.json" || SKIP="compare failed"; fi
 fi
 if test -z "$SKIP"; then
   jq -e '.status == "ahead" and .behind_by == 0 and (.files | length) > 0 and (.files | length) < 300

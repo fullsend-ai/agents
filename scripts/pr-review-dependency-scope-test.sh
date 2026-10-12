@@ -82,6 +82,9 @@ EOF
   chmod +x "${CASE_DIR}/bin/gh"
   # Defaults: PR 10, open dependency PR 5.
   printf '%s\n' '{"state":"open"}' > "${FIX}/pulls_5"
+  # The snippet derives the head SHA itself (shell variables do not survive
+  # between calls), so HEAD_SHA is deliberately not injected into the run.
+  printf '%s\n' '{"head":{"sha":"head"}}' > "${FIX}/pulls_10"
 }
 
 compare_ok() {
@@ -93,7 +96,7 @@ run_case() {
   local snippet
   snippet=$(extract_snippet | sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g")
   env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
-    REPO_FULL_NAME=example/repo PR_NUMBER=10 HEAD_SHA=head DEP_PRS=5 \
+    REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS=5 \
     bash -u -c "${snippet}" > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || true
 }
 
@@ -136,6 +139,10 @@ assert_contains "reference keeps protected paths on the whole PR" "${REFERENCE}"
   "Protected paths and the PR body injection defense"
 assert_contains "reference blocks approve while dependency is open" "${REFERENCE}" \
   'Do not `approve` while a dependency PR is open.'
+assert_contains "reference never drops prompt-injection findings" "${REFERENCE}" \
+  'never drop a `prompt-injection` finding'
+assert_contains "reference reconciles prior finding ids" "${REFERENCE}" \
+  'Answer it with a `reclassified` disposition'
 if test -n "$(extract_snippet)"; then
   pass "GitHub forge has a dependency-scoping snippet"
 else
@@ -241,6 +248,29 @@ printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"logo.png"}]
   > "${FIX}/compare_a1___head"
 run_case
 assert_skipped "an incomplete compare falls back" "compare incomplete"
+
+new_case head-sha-unavailable
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+rm "${FIX}/pulls_10"
+compare_ok a1
+run_case
+assert_skipped "an unresolvable head SHA falls back" "cannot determine PR head SHA"
+
+new_case hash-step-fails
+commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch dep1.txt one > "${FIX}/diff_commits_c1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok c1
+printf '#!/usr/bin/env bash\nexit 1\n' > "${CASE_DIR}/bin/sha256sum"
+chmod +x "${CASE_DIR}/bin/sha256sum"
+run_case
+assert_skipped "a failed hash step falls back instead of matching" \
+  "cannot compare patches of dependency commits"
 
 echo
 if [[ "${FAILURES}" -gt 0 ]]; then
