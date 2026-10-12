@@ -86,7 +86,7 @@ EOF
   # survive between calls), so HEAD_SHA is deliberately not injected into the
   # run; the pinned step 1 SHA arrives as PINNED_SHA (PINNED overrides it).
   printf '%s\n' '{"head":{"sha":"head"}}' > "${FIX}/pulls_10"
-  PINNED=head
+  PINNED="head"
 }
 
 compare_ok() {
