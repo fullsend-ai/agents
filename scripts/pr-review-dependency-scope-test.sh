@@ -97,19 +97,27 @@ EOF
   # survive between calls), so HEAD_SHA is deliberately not injected into the
   # run; the pinned step 1 SHA arrives as PINNED_SHA (PINNED overrides it).
   printf '%s\n' '{"head":{"sha":"head"}}' > "${FIX}/pulls_10"
+  printf '%s\n' 'diff --git a/own.txt b/own.txt
+@@ -1 +1 @@
+-old
++mine' > "${FIX}/diff_compare_a1___head"
   PINNED="head"
 }
 
 compare_ok() {
   printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"own.txt","patch":"@@ -1 +1 @@\n-old\n+mine"}]}' \
     > "${FIX}/compare_$1___head"
+  printf '%s\n' 'diff --git a/own.txt b/own.txt
+@@ -1 +1 @@
+-old
++mine' > "${FIX}/diff_compare_$1___head"
 }
 
 run_case() {
   local snippet
   snippet=$(extract_snippet | sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g")
   env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
-    REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS=5 PINNED_SHA="${PINNED}" \
+    REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS="${DEP_PRS:-5}" PINNED_SHA="${PINNED}" \
     bash -u -c "${snippet}" > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || true
 }
 
@@ -178,6 +186,10 @@ assert_contains "reference keeps prior security findings at original severity" "
   'A prior security id keeps its original severity and'
 assert_contains "reference keeps security inspection on the whole PR" "${REFERENCE}" \
   'Still run security inspection over the whole PR'
+assert_contains "security dispatch uses the full PR inputs" "${REFERENCE}" \
+  'Select security dispatch from the full PR diff and full changed-file list'
+assert_contains "orchestrator gives security the full scoped-PR context" "${SKILL}" \
+  'security uses `/sandbox/workspace/pr-full-diff.txt` and the full changed-file list'
 assert_contains "reference does not treat an open dependency as security clearance" "${REFERENCE}" \
   'not that it was reviewed or'
 for category in instruction-smuggling unicode-steganography bidi-override homoglyph-attack; do
@@ -232,9 +244,43 @@ patch existing.txt remediation > "${FIX}/diff_commits_c2"
 patch unrelated.txt incidental > "${FIX}/diff_commits_c3"
 printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"existing.txt","patch":"@@ -1 +1 @@\n-old\n+remediation"},{"filename":"unrelated.txt","patch":"@@ -1 +1 @@\n-old\n+incidental"}]}' \
   > "${FIX}/compare_a1___head"
+printf '%s\n' 'diff --git a/existing.txt b/existing.txt
+@@ -1 +1 @@
+-old
++remediation
+diff --git a/unrelated.txt b/unrelated.txt
+@@ -1 +1 @@
+-old
++incidental' > "${FIX}/diff_compare_a1___head"
 run_case
 assert_scoped_incremental_diff "scoped re-review retains remediation and unrelated edits" \
   "$(printf 'dep a1\nown c2\nown c3')" existing.txt unrelated.txt
+
+# The scoped diff must preserve metadata as well as patch hunks. Otherwise a
+# content change that also flips the executable bit hides the mode change.
+new_case content-and-mode
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch script.sh mine > "${FIX}/diff_commits_c3"
+printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"script.sh","patch":"@@ -1 +1 @@\n-old\n+mine"}]}' \
+  > "${FIX}/compare_a1___head"
+printf '%s\n' 'diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+index 3367afd..3e75765
+--- a/script.sh
++++ b/script.sh
+@@ -1 +1 @@
+-old
++mine' > "${FIX}/diff_compare_a1___head"
+run_case
+if grep -q '^old mode 100644$' "${CASE_DIR}/workspace/pr-diff.txt" \
+  && grep -q '^new mode 100755$' "${CASE_DIR}/workspace/pr-diff.txt"; then
+  pass "scoped diffs retain content-and-mode changes"
+else
+  fail "scoped diffs retain content-and-mode changes — diff: $(cat "${CASE_DIR}/workspace/pr-diff.txt")"
+fi
 
 # --- Fallbacks: pr-diff.txt stays the full diff -------------------------------
 
@@ -243,6 +289,17 @@ printf '%s\n' '{"state":"closed"}' > "${FIX}/pulls_5"
 commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
 run_case
 assert_skipped "a dependency PR that is not open is ignored" "no open dependency PR"
+
+new_case malformed-dependency-number
+DEP_PRS='5 *'
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok a1
+run_case
+assert_skipped "a malformed dependency candidate falls back" "malformed dependency PR number"
+unset DEP_PRS
 
 new_case interleaved
 commits c3 c1 > "${FIX}/pulls_10_commits_per_page_100"

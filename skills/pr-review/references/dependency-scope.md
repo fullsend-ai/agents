@@ -66,6 +66,7 @@ The command:
 
 Only after `SCOPED`:
 
+- **Security dispatch (3b–3c).** Select security dispatch from the full PR diff and full changed-file list, before applying the own-commit scope to other dimensions. When selected, give the security sub-agent `pr-full-diff.txt` as its primary diff and the full changed-file list; a scoped own-commit diff cannot suppress inspection of code that this PR will merge.
 - **Context packages (3d).** `diff` already points at the own-commit
   diff. Set `changed_files` from `dep-scope/files`; keep every
   manifest line in `pr_head` so dependency files stay readable as

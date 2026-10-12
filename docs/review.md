@@ -169,6 +169,18 @@ fails closed when `CI_SERVER_HOST` is not set.
 
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
+### Stacked and cherry-picked PRs
+
+When the PR author declares another open PR in the same repository as a
+dependency ("depends on #N", "stacked on #N") and the PR's leading commits
+are that PR's commits (same SHAs, or cherry-picks with identical patches),
+the review covers only the PR's own commits. Protected-path and PR-body
+checks still cover the whole PR. Scoping changes the review evidence only:
+it does not impose merge ordering or prevent an approval under the normal
+review criteria. The review body identifies the excluded matching commits
+and their dependency PR. If the commits cannot be matched, the full diff is
+reviewed.
+
 1. **Pre-script** validates inputs and fetches PR metadata. On a re-review, it also fetches current review-thread state, applies verified human dismissals to the prior-finding ledger, and discards the raw thread content before sandbox creation.
 2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, user experience when enabled via `REVIEW_UX_ENABLED=true`, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)), so a failed validation is not retried and the review is lost. Contract change: `finding.category` in `schemas/review-result.schema.json` is a closed enum (the dimension categories in `pr-review` `references/re-review.md` plus `protected-path`, `provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`), no longer any non-empty string. Anything that produces review results must emit only these categories. The `pr-review` orchestrator remaps stray dimensional categories in step 6b to limit this risk.

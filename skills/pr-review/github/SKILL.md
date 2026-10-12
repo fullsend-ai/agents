@@ -160,7 +160,9 @@ gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?pe
 jq -e 'add // [] | length > 0 and length < 250 and all(.[]; (.parents | length) == 1)' "$W/own-pages.json" >/dev/null 2>&1 \
   || SKIP="${SKIP:-PR has merge commits, no commits, or 250+ commits}"
 if test -z "$SKIP"; then
-  for d in $DEP_PRS; do
+  read -r -a DEP_PR_LIST <<< "${DEP_PRS:-}"
+  for d in "${DEP_PR_LIST[@]}"; do
+    [[ $d =~ ^[1-9][0-9]*$ ]] || { SKIP="malformed dependency PR number"; break; }
     STATE=$(gh api "repos/${REPO_FULL_NAME}/pulls/$d" < /dev/null | jq -r '.state' 2>/dev/null)
     if test "$STATE" != open; then echo "#$d is not open: not a dependency"; continue; fi
     echo "$d" >> "$W/dep-prs"
@@ -200,7 +202,10 @@ if test -z "$SKIP"; then
   HEAD_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" < /dev/null | jq -r '.head.sha // empty' 2>/dev/null)
   if test -z "$HEAD_SHA"; then SKIP="cannot determine PR head SHA"
   elif test "$HEAD_SHA" != "${PINNED_SHA:-}"; then SKIP="PR head moved since step 1"
-  else gh api "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${PINNED_SHA}" > "$W/compare.json" || SKIP="compare failed"; fi
+  else
+    gh api "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${PINNED_SHA}" > "$W/compare.json" || SKIP="compare failed"
+    gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${PINNED_SHA}" > "$W/compare.diff" || SKIP="${SKIP:-compare diff failed}"
+  fi
 fi
 if test -z "$SKIP"; then
   jq -e 'def safe_path: type == "string" and length > 0 and test("^[ -~]+$") and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
@@ -210,7 +215,7 @@ if test -z "$SKIP"; then
     || SKIP="compare incomplete (binary or oversized patch, 300+ files, or unsafe path)"
 fi
 if test -z "$SKIP"; then
-  jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' "$W/compare.json" > "$W/pr-diff.txt"
+  cp "$W/compare.diff" "$W/pr-diff.txt"
   jq -r '.files[].filename' "$W/compare.json" > "$W/files"
   mv /sandbox/workspace/pr-diff.txt /sandbox/workspace/pr-full-diff.txt
   cp "$W/pr-diff.txt" /sandbox/workspace/pr-diff.txt
