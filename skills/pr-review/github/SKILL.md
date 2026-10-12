@@ -19,14 +19,6 @@ fetching to these commands when `FULLSEND_FORGE=github`.
 PR_DATA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}")
 HEAD_SHA=$(echo "$PR_DATA" | jq -r '.head.sha')
 IS_DRAFT=$(echo "$PR_DATA" | jq -r '.draft')
-# Total commit count, used by "Commit messages" below to detect the
-# commits endpoint's 250-commit fetch cap.
-PR_COMMIT_COUNT=$(echo "$PR_DATA" | jq -r '.commits')
-PR_COMMIT_COUNT_FILE=/sandbox/workspace/pr-commit-count
-case "$PR_COMMIT_COUNT" in
-  ''|*[!0-9]*) printf '%s\n' unknown > "$PR_COMMIT_COUNT_FILE" ;;
-  *) printf '%s\n' "$PR_COMMIT_COUNT" > "$PR_COMMIT_COUNT_FILE" ;;
-esac
 
 # PR files list — every page, flattened, saved for later Bash calls
 # (shell variables do not survive between calls; files do)
@@ -94,8 +86,7 @@ echo "pr-head: $OK of $ALL files ok in $(( FETCH_END - FETCH_START ))s"
 ## Issue context
 
 ```bash
-# Fetch linked issue metadata from the PR repository. Step 2b resolves bare
-# `#N` and same-repository issue URLs; never fetch contributor-named repos.
+# Fetch linked issue metadata
 gh api "repos/${REPO_FULL_NAME}/issues/<issue-number>" --jq '{title, body}'
 
 # Fetch issue comments
@@ -143,6 +134,62 @@ if gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits
   fi
 else
   echo "COMMIT MESSAGES FETCH FAILED — omit commit_messages from the context package; do not treat as zero commit-based issue references" >&2
+fi
+```
+
+## Dependency-PR scoping
+
+Run once, per the orchestrator's dependency-scope procedure.
+
+```bash
+# DEP_PRS: space-separated candidate PR numbers in this repo. Prints
+# "SCOPED: ..." and narrows pr-diff.txt to this PR's own commits, or
+# prints "SKIP: <reason>" and leaves pr-diff.txt as the full diff.
+W=/sandbox/workspace/dep-scope; mkdir -p "$W"; : > "$W/dep-prs"; : > "$W/dep-shas"; : > "$W/dep-pids"
+SKIP=""; DIFF_ACCEPT="Accept: application/vnd.github.diff"
+gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$W/own-pages.json" || SKIP="cannot list PR commits"
+jq -e 'add // [] | length > 0 and length < 250 and all(.[]; (.parents | length) == 1)' "$W/own-pages.json" >/dev/null 2>&1 \
+  || SKIP="${SKIP:-PR has merge commits, no commits, or 250+ commits}"
+for d in $DEP_PRS; do
+  STATE=$(gh api "repos/${REPO_FULL_NAME}/pulls/$d" < /dev/null | jq -r '.state' 2>/dev/null)
+  if test "$STATE" != open; then echo "#$d is not open: not a dependency"; continue; fi
+  echo "$d" >> "$W/dep-prs"
+  gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/$d/commits?per_page=100" < /dev/null > "$W/dep-$d.json" || SKIP="cannot list #$d commits"
+  jq -e 'add // [] | length < 250' "$W/dep-$d.json" >/dev/null 2>&1 || SKIP="${SKIP:-#$d has 250+ commits}"
+  jq -r 'add // [] | .[].sha' "$W/dep-$d.json" >> "$W/dep-shas" 2>/dev/null
+done
+test -s "$W/dep-prs" || SKIP="${SKIP:-no open dependency PR}"
+if test -z "$SKIP"; then
+  while IFS= read -r s; do
+    gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$s" < /dev/null | git patch-id --stable | cut -d' ' -f1
+  done < "$W/dep-shas" > "$W/dep-pids"
+  jq -r 'add // [] | .[].sha' "$W/own-pages.json" > "$W/own-shas"
+  while IFS= read -r s; do
+    if grep -qxF -e "$s" "$W/dep-shas"; then echo "dep $s"; continue; fi
+    PID=$(gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$s" < /dev/null | git patch-id --stable | cut -d' ' -f1)
+    if test -n "$PID" && grep -qxF -e "$PID" "$W/dep-pids"; then echo "dep $s"; else echo "own $s"; fi
+  done < "$W/own-shas" > "$W/classified"
+  SHAPE=$(cut -d' ' -f1 "$W/classified" | uniq | tr '\n' ' ')
+  test "$SHAPE" = "dep own " || SKIP="commits are not dependency commits followed by own commits (${SHAPE})"
+fi
+if test -z "$SKIP"; then
+  LAST_DEP=$(grep '^dep ' "$W/classified" | tail -1 | cut -d' ' -f2)
+  gh api "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${HEAD_SHA}" > "$W/compare.json" || SKIP="compare failed"
+fi
+if test -z "$SKIP"; then
+  jq -e '.status == "ahead" and .behind_by == 0 and (.files | length) > 0 and (.files | length) < 300
+    and all(.files[]; .patch | type == "string" and length > 0)' "$W/compare.json" >/dev/null 2>&1 \
+    || SKIP="compare incomplete (binary or oversized patch, or 300+ files)"
+fi
+if test -z "$SKIP"; then
+  jq -r '.files[] | "diff --git a/\(.previous_filename // .filename) b/\(.filename)\n\(.patch)"' "$W/compare.json" > "$W/pr-diff.txt"
+  jq -r '.files[].filename' "$W/compare.json" > "$W/files"
+  mv /sandbox/workspace/pr-diff.txt /sandbox/workspace/pr-full-diff.txt
+  cp "$W/pr-diff.txt" /sandbox/workspace/pr-diff.txt
+  OWN_N=$(grep -c '^own ' "$W/classified"); DEP_N=$(grep -c '^dep ' "$W/classified")
+  echo "SCOPED: $OWN_N own commit(s) after $LAST_DEP; $DEP_N dependency commit(s) from: $(tr '\n' ' ' < "$W/dep-prs")"
+else
+  echo "SKIP: $SKIP"
 fi
 ```
 

@@ -127,9 +127,6 @@ head SHA in the review comment and in the result JSON. This SHA pins
 the review to the exact commit evaluated. The draft status is used to
 verify any claims about whether the PR is a draft (see step 6e).
 
-If no PR can be identified, stop and report the failure rather than
-guessing.
-
 ### 2. Fetch PR context
 
 Retrieve PR metadata and the full diff using the forge-specific review
@@ -175,6 +172,10 @@ match host/repository to PR, normalize/deduplicate to `#N`, then run forge
 **"Issue context"** commands.
 
 PR description is not truth; verify claims against the diff.
+
+### 2c. Stacked PRs
+
+Follow [this procedure](references/dependency-scope.md).
 
 ### 2a. Prior review context (re-reviews)
 
