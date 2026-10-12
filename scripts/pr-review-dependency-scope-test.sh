@@ -14,6 +14,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SKILL="${REPO_ROOT}/skills/pr-review/SKILL.md"
 REFERENCE="${REPO_ROOT}/skills/pr-review/references/dependency-scope.md"
+AGENT="${REPO_ROOT}/agents/review.md"
+DOCS="${REPO_ROOT}/docs/review.md"
 GITHUB_FORGE="${REPO_ROOT}/skills/pr-review/github/SKILL.md"
 FAILURES=0
 TMP_ROOT=$(mktemp -d)
@@ -28,6 +30,15 @@ assert_contains() {
     pass "${name}"
   else
     fail "${name} — missing '${expected}' in ${file#"${REPO_ROOT}/"}"
+  fi
+}
+
+assert_not_contains() {
+  local name="$1" file="$2" text="$3"
+  if grep -qF "$text" "$file"; then
+    fail "$name — unexpectedly found: $text"
+  else
+    pass "$name"
   fi
 }
 
@@ -129,6 +140,20 @@ assert_skipped() {
   fi
 }
 
+assert_scoped_incremental_diff() {
+  local name="$1" expected_classified="$2" first_path="$3" second_path="$4"
+  local ws="${CASE_DIR}/workspace"
+  if grep -q '^SCOPED: 2 own commit(s)' "${CASE_DIR}/out" \
+    && test "$(cat "${ws}/dep-scope/classified")" = "${expected_classified}" \
+    && grep -qF "diff --git a/${first_path} b/${first_path}" "${ws}/pr-diff.txt" \
+    && grep -qF "diff --git a/${second_path} b/${second_path}" "${ws}/pr-diff.txt" \
+    && test "$(cat "${ws}/dep-scope/files")" = "$(printf '%s\n%s' "${first_path}" "${second_path}")"; then
+    pass "${name}"
+  else
+    fail "${name} — out: $(cat "${CASE_DIR}/out") err: $(cat "${CASE_DIR}/err")"
+  fi
+}
+
 # --- Wiring -----------------------------------------------------------------
 
 assert_contains "orchestrator links dependency-scope reference" "${SKILL}" \
@@ -139,8 +164,14 @@ assert_contains "reference reads every page of author comments" "${REFERENCE}" \
   '`--paginate --slurp`'
 assert_contains "reference keeps protected paths on the whole PR" "${REFERENCE}" \
   "Protected paths and the PR body injection defense"
-assert_contains "reference blocks approve while dependency is open" "${REFERENCE}" \
+assert_not_contains "reference does not make an open dependency an approval veto" "${REFERENCE}" \
   'Do not `approve` while a dependency PR is open.'
+assert_contains "reference keeps dependency scoping separate from merge policy" "${REFERENCE}" \
+  'does not impose merge ordering or change the approval criteria'
+assert_contains "review agent keeps dependency scoping out of approval criteria" "${AGENT}" \
+  'scoping does not impose merge ordering or alter these approval criteria.'
+assert_contains "user docs distinguish scoped review from merge ordering" "${DOCS}" \
+  'does not impose merge ordering or prevent an approval'
 assert_contains "reference never drops injection findings" "${REFERENCE}" \
   'never drop an injection finding (`prompt-injection`,'
 for category in instruction-smuggling unicode-steganography bidi-override homoglyph-attack; do
@@ -183,6 +214,21 @@ compare_ok a2
 run_case
 assert_scoped "stacked dependency commits are excluded" \
   "$(printf 'dep a1\ndep a2\nown c3')"
+
+# A scoped re-review must retain both a direct remediation in a dependency
+# file and an unrelated own-file edit, so the responsible reviewers see the
+# complete incremental diff rather than only the newly added file.
+new_case adversarial-rereview
+commits a1 c2 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch existing.txt dependency > "${FIX}/diff_commits_a1"
+patch existing.txt remediation > "${FIX}/diff_commits_c2"
+patch unrelated.txt incidental > "${FIX}/diff_commits_c3"
+printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"existing.txt","patch":"@@ -1 +1 @@\n-old\n+remediation"},{"filename":"unrelated.txt","patch":"@@ -1 +1 @@\n-old\n+incidental"}]}' \
+  > "${FIX}/compare_a1___head"
+run_case
+assert_scoped_incremental_diff "scoped re-review retains remediation and unrelated edits" \
+  "$(printf 'dep a1\nown c2\nown c3')" existing.txt unrelated.txt
 
 # --- Fallbacks: pr-diff.txt stays the full diff -------------------------------
 
