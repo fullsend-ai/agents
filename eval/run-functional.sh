@@ -219,7 +219,7 @@ export FULLSEND_DIR
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 RUNS_BASE="${EVAL_DIR}/runs"
 # Results are keyed by the eval's own name, not its path: an eval under a
-# subdirectory (eval/dev/<name>, run as `run-functional.sh dev/<name>`) keeps
+# subdirectory (eval/local/<name>, run as `run-functional.sh local/<name>`) keeps
 # execution.skill = <name>, which score.py joins to AGENT_EVAL_RUNS_DIR, so
 # the runner must write runs to the same place.
 RUNS_DIR="${RUNS_BASE}/$(basename "$AGENT")"
@@ -286,7 +286,7 @@ execute_run() {
   echo "=== Executing ==="
   exec_exit=0
   # Forward EVAL_MODEL/EVAL_EFFORT to the harness too, so an eval whose
-  # runner.command carries the {model}/{effort} placeholders (eval/dev/code-rhai)
+  # runner.command carries the {model}/{effort} placeholders (eval/local/code-rhai)
   # resolves them from the override instead of models.skill. Evals without
   # the placeholders (eval/code) still get the override from run-fullsend.sh's env.
   local model_args=()
@@ -307,7 +307,7 @@ execute_run() {
   # that after_each hooks populate (e.g., fixture-state.json).
   # execute.py copies stdout/stderr/input but not the outputs[*].path
   # subdirectories that after_each hooks populate (output/fixture-state.json,
-  # and eval/dev/code-rhai's judge/ tree). Copy every declared outputs path.
+  # and eval/local/code-rhai's judge/ tree). Copy every declared outputs path.
   local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name out_path
   local output_paths=()
   mapfile -t output_paths < <(yq -r '.outputs[] | .path // ""' "$config" | grep -v '^$')

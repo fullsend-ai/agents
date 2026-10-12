@@ -437,7 +437,7 @@ judges:
       ./output/score.json with "rationale" then "score". If you are unable to
       write a file, end your reply with that same JSON object on a line of
       its own.
-# No thresholds: this is a development eval, never a CI gate. Every judge is
+# No thresholds: this is a local eval, never a CI gate. Every judge is
 # reported per case; a run exits non-zero only when the runner itself sees an
 # infrastructure failure (a case that never reached the agent, a judge error).
 # Agent behaviour, including declines and failing repo tests, is the result,

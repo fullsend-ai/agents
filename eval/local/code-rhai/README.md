@@ -5,7 +5,7 @@ guard in [`eval/code/`](../code/) stays untouched; this eval asks whether the
 agent's PR actually delivers an epic.
 
 ```bash
-EVAL_ORG=<user-or-org> ./eval/run-functional.sh dev/code-rhai
+EVAL_ORG=<user-or-org> ./eval/run-functional.sh local/code-rhai
 ```
 
 That runs the baseline arm on every case. To run selected cases, another
@@ -95,9 +95,9 @@ max_cost_usd: 40.00
 ```bash
 eval/scripts/sample-to-cases.sh sample.json          # what the sample can yield
 eval/scripts/build-case.sh --sample sample.json --epic RHAI-517 \
-  --case eval/dev/code-rhai/cases/001-rhai-517-nemo-capability-manifest
+  --case eval/local/code-rhai/cases/001-rhai-517-nemo-capability-manifest
 # fill regression_tests.command
-eval/scripts/check-case.sh eval/dev/code-rhai/cases/001-rhai-517-nemo-capability-manifest
+eval/scripts/check-case.sh eval/local/code-rhai/cases/001-rhai-517-nemo-capability-manifest
 ```
 
 The Jira key (`source.epic`) is the case's identifier; the tracker URL is not
@@ -162,7 +162,7 @@ Each coder model is an arm. `matrix.factors.model` lists the arms (today
 as the cheaper comparison); the cases, the review step and the judges are the
 same for every arm. `run-fullsend.sh` picks the runtime from the model id,
 provider-prefixed ids such as `openai/...` on pi and bare Anthropic ids on
-Claude Code, unless `EVAL_RUNTIME` is set. A plain `run-functional.sh dev/code-rhai`
+Claude Code, unless `EVAL_RUNTIME` is set. A plain `run-functional.sh local/code-rhai`
 runs the baseline arm; `EVAL_MODEL=openai/gpt-6-luna` runs the other; a matrix
 run through `eval-anova` runs them all. `EVAL_REVIEW_MODEL` overrides the
 review step's model; `EVAL_SKIP_REVIEW=1` skips it.
