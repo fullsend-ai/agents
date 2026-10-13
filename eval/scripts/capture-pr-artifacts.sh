@@ -152,10 +152,18 @@ infra_fail() {
 
 no_pr() {
   no_pr_files "$1"
-  # Declined = the run finished (metrics.json exists) and the agent said why;
-  # otherwise the run failed or produced nothing readable. Only for the one
-  # path where the fixture record was read and no agent PR was in it.
-  if [[ -n "$final_msg" && -f "$run_dir/metrics.json" ]]; then
+  # Declined = the run finished CLEANLY (fullsend exited 0, metrics.json exists)
+  # and the agent said why. A run that timed out or crashed is "failed" however
+  # chatty its last message was (seen 2026-10-12: a coder that hit the sandbox
+  # time limit mid-task was classed as a decline on its last progress note).
+  # Only for the one path where the fixture record was read and no agent PR
+  # was in it.
+  run_rc=$(jq -r '.exit_code // 1' "$OUTPUT_DIR/run-status.json" 2>/dev/null || echo 1)
+  if [[ "$run_rc" != "0" ]]; then
+    reason="$1; fullsend run exited ${run_rc}$(jq -r 'if .timed_out then " (timed out)" else "" end' "$OUTPUT_DIR/run-status.json" 2>/dev/null || true)"
+    write_outcome failed "$reason"
+    echo "outcome: failed ($reason)"
+  elif [[ -n "$final_msg" && -f "$run_dir/metrics.json" ]]; then
     write_outcome declined "$1"
     # Stage the repository the agent was given so the decline judge can
     # verify claims like "this endpoint already exists".

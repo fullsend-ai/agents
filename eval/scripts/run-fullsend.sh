@@ -302,6 +302,13 @@ timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
 if [[ $rc -ne 0 ]]; then
   echo "WARNING: fullsend run exited with status $rc" >&2
 fi
+# Record how the run ended, so capture-pr-artifacts.sh can tell a clean stop
+# (a decline) from a run that timed out or crashed without opening a PR.
+# 124 is `timeout` expiring; fullsend's own iteration timeout surfaces as a
+# non-zero status from the post-script.
+jq -n --argjson rc "$rc" --arg agent "$AGENT" --arg t "$EVAL_TIMEOUT" \
+  '{agent: $agent, exit_code: $rc, timed_out: ($rc == 124), eval_timeout_s: ($t|tonumber)}' \
+  > "$OUTPUT_DIR/run-status.json" 2>/dev/null || true
 
 # Remove env file to prevent secrets from being uploaded as artifacts
 rm -f "$ENV_FILE"
