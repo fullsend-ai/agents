@@ -25,6 +25,14 @@ else
   echo "PASS: bundled-script-has-failure-reporting"
 fi
 
+if ! grep -q 'forge_push_branch' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-signed-push"
+  echo "  ${POST_SCRIPT} missing forge_push_branch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-push"
+fi
+
 if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-gitleaks-install"
   echo "  ${POST_SCRIPT} missing install_gitleaks"
@@ -1272,7 +1280,7 @@ decide_push_retry() {
     return 0
   fi
 
-  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     echo "retry:force-with-lease"
     return 0
   fi
@@ -1316,6 +1324,10 @@ run_push_retry_test "push-non-fast-forward" \
 # Rejected error → retry with --force-with-lease
 run_push_retry_test "push-rejected" \
   "1" "! [rejected] agent/42 -> agent/42 (fetch first)" "retry:force-with-lease"
+
+# GitHub's wording when the API ref update loses a race → retry with --force-with-lease
+run_push_retry_test "push-api-not-a-fast-forward" \
+  "1" "gh: Update is not a fast forward (HTTP 422)" "retry:force-with-lease"
 
 # Unknown error → fail
 run_push_retry_test "push-unexpected-error" \
@@ -2086,6 +2098,8 @@ run_numeric_validation_test "issue-number-shell-injection" "1;echo pwned" "false
 SEC_CODE_TMPDIR="$(mktemp -d)"
 SEC_CODE_MOCK_BIN="${SEC_CODE_TMPDIR}/bin"
 mkdir -p "${SEC_CODE_MOCK_BIN}"
+# Git Data API calls from forge_push_branch are served from the bare remote.
+export FAKE_GH_GIT_API="${SCRIPT_DIR}/test-fixtures/fake-gh-git-api.sh"
 
 cat > "${SEC_CODE_MOCK_BIN}/sleep" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -2136,6 +2150,7 @@ setup_sec_code_repo() {
 cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "api -X")      exec bash "${FAKE_GH_GIT_API}" "$@" ;;
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     echo ""; exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;

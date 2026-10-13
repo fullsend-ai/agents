@@ -16,6 +16,10 @@ parse_script_test_args "$@"
 
 FAILURES=0
 
+# Git Data API calls from forge_push_branch are served from the bare remote
+# by the mock gh scripts below.
+export FAKE_GH_GIT_API="${SCRIPT_DIR}/test-fixtures/fake-gh-git-api.sh"
+
 POST_SCRIPT="$(resolve_agent_script post-fix "${SCRIPT_DIR}")"
 if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_pr' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-failure-reporting"
@@ -23,6 +27,14 @@ if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_pr' "${POST_
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: bundled-script-has-failure-reporting"
+fi
+
+if ! grep -q 'forge_push_branch' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-signed-push"
+  echo "  ${POST_SCRIPT} missing forge_push_branch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-push"
 fi
 
 if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
@@ -378,7 +390,7 @@ decide_push_retry() {
     return 0
   fi
 
-  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     echo "retry:force-with-lease"
     return 0
   fi
@@ -422,6 +434,10 @@ run_push_retry_test "push-non-fast-forward" \
 # Rejected error → retry with --force-with-lease
 run_push_retry_test "push-rejected" \
   "1" "! [rejected] agent/42 -> agent/42 (fetch first)" "retry:force-with-lease"
+
+# GitHub's wording when the API ref update loses a race → retry with --force-with-lease
+run_push_retry_test "push-api-not-a-fast-forward" \
+  "1" "gh: Update is not a fast forward (HTTP 422)" "retry:force-with-lease"
 
 # Unknown error → fail
 run_push_retry_test "push-unexpected-error" \
@@ -882,6 +898,7 @@ chmod +x "${REBASE_MOCK_BIN}/sleep"
 cat > "${REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "api -X") exec bash "${FAKE_GH_GIT_API}" "$@" ;;
   "pr view")
     # Distinct --json fields are requested by different forge helpers.
     # Default mergeable=MERGEABLE so these DIFF_BASE tests never look like
@@ -1831,6 +1848,7 @@ chmod +x "${PUSH_REBASE_MOCK_BIN}/gitleaks"
 cat > "${PUSH_REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "api -X") exec bash "${FAKE_GH_GIT_API}" "$@" ;;
   "pr view")
     # Distinct --json fields are requested by different forge helpers.
     # Default mergeable=MERGEABLE so existing tests never look like a
@@ -2029,9 +2047,11 @@ run_push_rebase_matching_history_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
+  # The signed push recreates the commit on GitHub, so the remote SHA differs;
+  # the push log names the local commit each remote commit was built from.
   local pushed_f
   pushed_f="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
-  if [ "${pushed_f}" != "${local_f}" ]; then
+  if ! grep -q "Created signed commit ${pushed_f} for ${local_f}" "${stdout_log}"; then
     echo "FAIL: ${test_name} — agent commit SHA changed (rebase was not a no-op)"
     echo "  before: ${local_f}"
     echo "  after:  ${pushed_f}"
@@ -2916,6 +2936,221 @@ run_push_history_rewrite_preserves_squash_test() {
   remote_content="$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-test-fix:file.txt)"
   if [ "${remote_content}" != "f3" ]; then
     echo "FAIL: ${test_name} — remote file.txt is '${remote_content}', want 'f3'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# commit_as_published REPO EMAIL NAME MSG — a commit as the GitHub API
+# publishes it: bot author, GitHub committer, and the sandbox identity
+# NAME <EMAIL> only in the Authored-by trailer.
+commit_as_published() {
+  local repo="$1" email="$2" name="$3" msg="$4"
+  GIT_AUTHOR_NAME='fullsend-ai-coder[bot]' \
+  GIT_AUTHOR_EMAIL='1+fullsend-ai-coder[bot]@users.noreply.github.com' \
+  GIT_COMMITTER_NAME='GitHub' GIT_COMMITTER_EMAIL='noreply@github.com' \
+    git -C "${repo}" commit -q -m "${msg}" -m "Authored-by: ${name} <${email}>"
+}
+
+# seed_pr_branch BASE — bare remote at BASE/remote.git with main at "init",
+# and a clone at BASE/seed checked out on agent/99-test-fix.
+seed_pr_branch() {
+  local base="$1"
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+}
+
+# publish_pr_branch BASE — pushes the seed's branch and clones the remote to
+# BASE/repo on that branch, as the sandbox checkout.
+publish_pr_branch() {
+  local base="$1"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+}
+
+# Redo over commits published through the API: all share the bot author, so
+# only the Authored-by trailer separates the fix agent's attempts
+# (droppable) from the code agent's commit (preserved).
+run_push_history_rewrite_preserves_redo_after_signed_push_test() {
+  local test_name="push-history-rewrite-preserves-redo-after-signed-push"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+
+  seed_pr_branch "${base}"
+  echo "code" > "${base}/seed/code.txt"
+  git -C "${base}/seed" add code.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-code" "feat: code agent work"
+  local code_sha
+  code_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+  echo "bad1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: bad attempt 1"
+  echo "bad2" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: bad attempt 2"
+  publish_pr_branch "${base}"
+  git -C "${base}/repo" reset -q --hard "${code_sha}"
+  echo "redone" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  commit_as "${base}/repo" "${bot_email}" "fullsend-fix" "fix: redo from scratch"
+
+  write_history_rewritten_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "redo from scratch" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skipping rebase onto origin/agent/99-test-fix to preserve the agent history rewrite" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_content
+  remote_content="$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-test-fix:file.txt)"
+  if [ "${remote_content}" != "redone" ]; then
+    echo "FAIL: ${test_name} — remote file.txt is '${remote_content}', want 'redone'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix | grep -q "bad attempt"; then
+    echo "FAIL: ${test_name} — discarded redo commits are still on the remote"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor "${code_sha}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — the code agent's commit is no longer on the remote"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# A redo that drops a code-agent commit published through the API is still
+# refused: the bot author is shared, the Authored-by trailer is not.
+run_push_history_rewrite_refuses_lost_published_code_agent_commit_test() {
+  local test_name="push-history-rewrite-refuses-lost-published-code-agent-commit"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+
+  seed_pr_branch "${base}"
+  echo "code" > "${base}/seed/code.txt"
+  git -C "${base}/seed" add code.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-code" "feat: code agent work"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
+  local remote_tip
+  remote_tip="$(git -C "${base}/seed" rev-parse HEAD)"
+  publish_pr_branch "${base}"
+  git -C "${base}/repo" reset -q --hard origin/main
+  echo "gone" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  commit_as "${base}/repo" "${bot_email}" "fullsend-fix" "fix: redo past code agent"
+
+  write_history_rewritten_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "redo from scratch" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit when a code-agent commit would be lost"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "fullsend-code" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing fail-closed message naming the lost code-agent commit"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local after
+  after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${after}" != "${remote_tip}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved despite fail-closed rewrite"
+    echo "  want ${remote_tip}, got ${after}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# A fix-agent Authored-by trailer in a human's commit changes nothing: the
+# trailer only counts on bot-authored commits, so the redo is refused.
+run_push_history_rewrite_refuses_lost_human_commit_with_spoofed_trailer_test() {
+  local test_name="push-history-rewrite-refuses-lost-human-commit-with-spoofed-trailer"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+
+  seed_pr_branch "${base}"
+  echo "human" > "${base}/seed/human.txt"
+  git -C "${base}/seed" add human.txt
+  GIT_AUTHOR_NAME="Human" GIT_AUTHOR_EMAIL="human@example.com" \
+  GIT_COMMITTER_NAME="Human" GIT_COMMITTER_EMAIL="human@example.com" \
+    git -C "${base}/seed" commit -q -m "feat: human work" -m "Authored-by: fullsend-fix <${bot_email}>"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
+  local remote_tip
+  remote_tip="$(git -C "${base}/seed" rev-parse HEAD)"
+  publish_pr_branch "${base}"
+  git -C "${base}/repo" reset -q --hard origin/main
+  echo "gone" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  commit_as "${base}/repo" "${bot_email}" "fullsend-fix" "fix: redo past human"
+
+  write_history_rewritten_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "redo from scratch" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit when a human commit would be lost"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "author Human <human@example.com>" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing fail-closed message naming the lost human commit"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local after
+  after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${after}" != "${remote_tip}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved despite fail-closed rewrite"
+    echo "  want ${remote_tip}, got ${after}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -4135,6 +4370,9 @@ run_push_rebase_preserves_agent_rebase_after_validation_retry_test
 run_push_history_rewrite_preserves_squash_test
 run_push_history_rewrite_refuses_partial_squash_test
 run_push_history_rewrite_preserves_redo_test
+run_push_history_rewrite_preserves_redo_after_signed_push_test
+run_push_history_rewrite_refuses_lost_published_code_agent_commit_test
+run_push_history_rewrite_refuses_lost_human_commit_with_spoofed_trailer_test
 run_push_history_rewrite_ordinary_append_test
 run_push_history_rewrite_preserves_human_suffix_test
 run_push_history_rewrite_refuses_lost_human_commit_test
@@ -4169,6 +4407,7 @@ run_push_rebase_postfix_with_mergeable() {
   cat > "${conflict_mock}/gh" <<EOF
 #!/usr/bin/env bash
 case "\$1 \$2" in
+  "api -X") exec bash "\${FAKE_GH_GIT_API}" "\$@" ;;
   "pr view")
     if printf '%s' "\$*" | grep -q 'headRefName'; then
       echo 'agent/99-test-fix'
