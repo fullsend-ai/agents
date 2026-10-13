@@ -86,18 +86,6 @@ The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `priority/high`) but these are informational — they do not control agent
 behavior.
 
-### Stacked and cherry-picked PRs
-
-When the PR author declares another open PR in the same repository as a
-dependency ("depends on #N", "stacked on #N") and the PR's leading commits
-are that PR's commits (same SHAs, or cherry-picks with identical patches),
-the review covers only the PR's own commits. Protected-path and PR-body
-checks still cover the whole PR. Scoping changes the review evidence only:
-it does not impose merge ordering or prevent an approval under the normal
-review criteria. The review body identifies the excluded matching commits
-and their dependency PR. If the commits cannot be matched, the full diff is
-reviewed.
-
 ## Configuration
 
 ### Skill: `issue-labels`
@@ -169,24 +157,24 @@ fails closed when `CI_SERVER_HOST` is not set.
 
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
-### Stacked and cherry-picked PRs
-
-When the PR author declares another open PR in the same repository as a
-dependency ("depends on #N", "stacked on #N") and the PR's leading commits
-are that PR's commits (same SHAs, or cherry-picks with identical patches),
-the review covers only the PR's own commits. Protected-path and PR-body
-checks still cover the whole PR. Scoping changes the review evidence only:
-it does not impose merge ordering or prevent an approval under the normal
-review criteria. The review body identifies the excluded matching commits
-and their dependency PR. If the commits cannot be matched, the full diff is
-reviewed.
-
 1. **Pre-script** validates inputs and fetches PR metadata. On a re-review, it also fetches current review-thread state, applies verified human dismissals to the prior-finding ledger, and discards the raw thread content before sandbox creation.
 2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, user experience when enabled via `REVIEW_UX_ENABLED=true`, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)), so a failed validation is not retried and the review is lost. Contract change: `finding.category` in `schemas/review-result.schema.json` is a closed enum (the dimension categories in `pr-review` `references/re-review.md` plus `protected-path`, `provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`), no longer any non-empty string. Anything that produces review results must emit only these categories. The `pr-review` orchestrator remaps stray dimensional categories in step 6b to limit this risk.
 4. **Post-script** posts the review on the PR. On GitHub, it also resolves still-open review threads whose only comments are outdated inline comments authored by the review agent, so stale comments do not remain in the PR's unresolved-review state.
 
 On re-review, the sandbox receives a validated `fullsend:review-findings-v2` projection containing `action`, severity, category, file, optional line, id, optional `actionable`, and an `{id, status}` disposition per prior id—not prior descriptions, remediation text, rationales, evidence, or review-thread bodies. Immediately before sandbox creation, the host fetches current thread state and marks eligible findings dismissed only when a verified write-or-higher human other than the PR author resolved a thread containing a trusted review-bot comment with the exact finding-id stamp. Unstamped thread comments stay open; path and line are not used as a fallback. A legacy marker without ids is assigned one before sandbox ingress. Resolved and human-dismissed findings stay in the projection with their anchor so they are recognised and not raised again. A null file retains PR-level category context without serving as a path or severity anchor. The pre-script continues to accept v1 markers for existing comments. Only GitHub `app-verified` re-reviews use file-backed records for remediation-candidate matching.
+
+### Stacked and cherry-picked PRs
+
+On GitHub, when the PR author declares another open PR in the same repository
+as a dependency ("depends on #N", "stacked on #N") and the PR's leading
+commits are that PR's commits (same SHAs, or cherry-picks with identical
+patches), non-security review dimensions cover only the PR's own commits.
+Security inspection, protected-path checks, and PR-body defenses cover the
+whole PR. Scoping changes review evidence only: it does not impose merge
+ordering or prevent an approval under the normal review criteria. The review
+body identifies the excluded matching commits and their dependency PR. If the
+commits cannot be matched, or on GitLab, the full diff is reviewed.
 
 ## Time budget
 
