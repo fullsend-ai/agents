@@ -31,7 +31,7 @@ source:
 # checks the tree still builds, every dashboard file is valid YAML, and two
 # fast pure-Go packages pass. Measured 2026-09-25: 42 s on the bare snapshot.
 regression_tests:
-  command: "go build ./... && for f in config/monitoring/llmisvc/dashboards/*.yaml; do yq e '.' \"$f\" >/dev/null || exit 1; done && go test ./pkg/utils/... ./pkg/constants/..."
+  command: "go build ./... && python3 -c 'import sys,yaml; [list(yaml.safe_load_all(open(f))) for f in sys.argv[1:]]' config/monitoring/llmisvc/dashboards/*.yaml && go test ./pkg/utils/... ./pkg/constants/..."
 test_timeout_s: 1800
 
 # Optional, for the judges: facts about the FIXTURE the judge cannot see for

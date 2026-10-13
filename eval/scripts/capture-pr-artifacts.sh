@@ -10,8 +10,9 @@
 #                        the agent finished cleanly, opened no PR, and left a
 #                        final message (its stated reason); the judges branch
 #                        on this
-#     regression.json    {command, exit_code, timed_out, ...}
-#     regression.log     raw test output
+#     regression.json    {command, exit_code, timed_out, sandbox_failed, ...}
+#     regression.log     raw test output (run inside a throwaway OpenShell
+#                        sandbox by run-in-sandbox.sh, never on this host)
 #
 #   judge/    (staged into the agent judge's working directory, read with tools)
 #     task.md            the task description the agent was given (input.yaml)
@@ -37,7 +38,7 @@ ANNOTATIONS="${CASE_SOURCE_DIR}/annotations.yaml"
 INPUT="${CASE_SOURCE_DIR}/input.yaml"
 MAX_BYTES="${PR_DIFF_MAX_BYTES:-400000}"
 mkdir -p "$OUTPUT_DIR" "$JUDGE_DIR"
-for cmd in gh yq jq git timeout rsync; do
+for cmd in gh yq jq git timeout rsync openshell run-in-sandbox.sh; do
   command -v "$cmd" >/dev/null || { echo "ERROR: $cmd is required but not found in PATH" >&2; exit 1; }
 done
 
@@ -170,17 +171,21 @@ if [[ -z "$cmd" || "$cmd" == "TODO" ]]; then
 fi
 echo "Running regression tests: $cmd"
 rc=0
-# The PR head is agent-written code built from untrusted inputs; run it with a
-# scrubbed environment so no forge, LLM or cloud credential is in reach.
-( cd "$WORK/pr" && timeout "$tmo" env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
-    LANG="${LANG:-C.UTF-8}" TERM=dumb CI=1 bash -o pipefail -c "$cmd" ) > "$OUTPUT_DIR/regression.log" 2>&1 || rc=$?
+# The PR head is agent-written code built from untrusted inputs. It runs in a
+# throwaway OpenShell sandbox (the coder's image, registry-only network, no
+# credentials), not on this host: see run-in-sandbox.sh for what is and is
+# not isolated.
+run-in-sandbox.sh "$WORK/pr" "$cmd" "$tmo" "$OUTPUT_DIR/regression.log" || rc=$?
 timed_out=false; [[ $rc -eq 124 ]] && timed_out=true
-jq -n --arg c "$cmd" --argjson rc "$rc" --argjson to "$timed_out" --argjson t "$tmo" \
-  '{command: $c, exit_code: $rc, timed_out: $to, timeout_s: $t, log: "output/regression.log"}' > "$OUTPUT_DIR/regression.json"
+sandbox_failed=false; [[ $rc -eq 125 ]] && sandbox_failed=true
+jq -n --arg c "$cmd" --argjson rc "$rc" --argjson to "$timed_out" --argjson sf "$sandbox_failed" --argjson t "$tmo" \
+  '{command: $c, exit_code: $rc, timed_out: $to, sandbox_failed: $sf, timeout_s: $t, log: "output/regression.log"}' > "$OUTPUT_DIR/regression.json"
 {
   echo "# Repository tests on the PR head"; echo
   echo "Command: $cmd"
-  if [[ "$timed_out" == true ]]; then echo "Result: TIMED OUT after ${tmo}s"
+  echo "Run inside a throwaway OpenShell sandbox built from the coding agent's image."
+  if [[ "$sandbox_failed" == true ]]; then echo "Result: NOT RUN, the sandbox could not be set up (exit 125); this says nothing about the PR"
+  elif [[ "$timed_out" == true ]]; then echo "Result: TIMED OUT after ${tmo}s"
   elif [[ $rc -eq 0 ]]; then echo "Result: PASSED (exit 0)"
   else echo "Result: FAILED (exit $rc)"; fi
   echo; echo "Last 60 lines of output:"; echo; echo '```'; tail -60 "$OUTPUT_DIR/regression.log"; echo '```'

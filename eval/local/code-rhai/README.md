@@ -109,7 +109,8 @@ can be part of this external dataset.
 `build-case.sh` needs a sample with descriptions (schema_version 4 or later
 from the rhai-epics sampler). It refuses epics that span repositories or lack
 a description. `check-case.sh` confirms the input is real task text, the regression
-command is set and passes on the bare snapshot, and no TODO is left. The
+command is set and passes on the bare snapshot inside the same sandbox the
+eval uses, and no TODO is left. The
 human work per case is the regression command and a glance at the snapshot
 choice.
 
@@ -132,9 +133,12 @@ whose post-script opens the PR. `after_each`, in order:
 2. `capture-pr-artifacts.sh` writes `output/` (JSON for the check judges) and
    `judge/` (plain text for the agent judge: `task.md`, `notes.md`, `pr.md`,
    `diff.patch`, `tests.md`, and `pr-head/`, a full checkout of the PR head
-   without `.git`), and runs the regression command on the PR head on this
-   machine, so the toolchain must be installed here. Containerising the
-   test run is a later step.
+   without `.git`), and runs the regression command on the PR head inside a
+   throwaway OpenShell sandbox (`run-in-sandbox.sh`: the coder's image and
+   policy, the credential-free `package-registries` provider as the only
+   network, so the PR's own install scripts and tests never see this
+   machine's home directory or tokens). The command must therefore work with
+   the toolchain in the coder's image, which `check-case.sh` verifies.
 3. `run-review-agent.sh` runs `fullsend run review` on the PR with the
    post-script disabled and keeps `agent-result.json` as
    `output/review-result.json`, rendered as `judge/review.md`, plus the

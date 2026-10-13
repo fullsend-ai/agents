@@ -57,9 +57,10 @@ hooks:
       timeout: 120
       description: "Capture issue + PR state for judges"
     - command: "capture-pr-artifacts.sh"
-      timeout: 2400
+      # test_timeout_s (up to 2400) plus sandbox creation, upload and teardown.
+      timeout: 3000
       on_failure: continue
-      description: "Save the PR diff and write-up; run the repo's own tests on the PR head"
+      description: "Save the PR diff and write-up; run the repo's own tests on the PR head in a sandbox"
     - command: "run-review-agent.sh"
       timeout: 3600
       on_failure: continue
@@ -207,6 +208,8 @@ judges:
           return True, f"Skipped: {r.get('reason')}"
       if r.get("clone_failed"):
           return False, "Could not clone the PR head to run tests"
+      if r.get("sandbox_failed"):
+          return False, "Tests not run: the OpenShell sandbox could not be set up (see output/regression.log)"
       code = r.get("exit_code")
       if code is None:
           return False, "No exit code recorded"
