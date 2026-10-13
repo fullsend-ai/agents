@@ -284,16 +284,22 @@ judges:
     score_range: [1, 5]
     if: "'\"outcome\":\"pr\"' in outputs['files'].get('output/agent-outcome.json', '')"
     agent:
-      # Claude Code runner. Write is needed for the verdict file the harness
-      # contract asks for (./output/score.json); without it the verdict was
-      # lost (2026-09-25). The harness copies rather than symlinks the staged
-      # material when a judge can write, so nothing real is reachable.
-      allowed_tools: [Read, Grep, Glob, Write]
+      # Claude Code runner. The judge must write its verdict to
+      # ./output/score.json (harness contract; without write access the
+      # verdict was lost, 2026-09-25). Claude Code applies Edit(...) path
+      # rules to the Write tool and ignores Write(...) rules (checked on
+      # 2.1.292, 2026-10-13), so the write allowance is Edit(./output/**):
+      # the verdict directory only. Read(./**) keeps reads inside the staged
+      # workspace. A bare Read or Write would pre-approve absolute paths
+      # anywhere on the host; the harness's copy-not-symlink staging only
+      # blocks escapes through links.
+      allowed_tools: [Read(./**), Grep, Glob, Edit(./output/**)]
       # An allow list only pre-approves; headless Claude Code would still let
-      # the judge shell out or fetch the web. Deny those so the judge sees
-      # only the staged judge/ directory (harness 1.49.1 ignores this key and
-      # the patched harness defaults to the same list).
-      denied_tools: [Bash, WebFetch, WebSearch, Agent]
+      # the judge shell out, fetch the web or use the other editing tools.
+      # Deny those so the judge sees only the staged judge/ directory
+      # (harness 1.49.1 ignores this key; opendatahub-io/agent-eval-harness#240
+      # enforces it).
+      denied_tools: [Bash, WebFetch, WebSearch, Agent, MultiEdit, NotebookEdit]
       inputs: [judge]
       timeout: 1800
       max_budget_usd: 6.00
@@ -367,16 +373,22 @@ judges:
     score_range: [1, 5]
     if: "'\"outcome\":\"declined\"' in outputs['files'].get('output/agent-outcome.json', '')"
     agent:
-      # Claude Code runner. Write is needed for the verdict file the harness
-      # contract asks for (./output/score.json); without it the verdict was
-      # lost (2026-09-25). The harness copies rather than symlinks the staged
-      # material when a judge can write, so nothing real is reachable.
-      allowed_tools: [Read, Grep, Glob, Write]
+      # Claude Code runner. The judge must write its verdict to
+      # ./output/score.json (harness contract; without write access the
+      # verdict was lost, 2026-09-25). Claude Code applies Edit(...) path
+      # rules to the Write tool and ignores Write(...) rules (checked on
+      # 2.1.292, 2026-10-13), so the write allowance is Edit(./output/**):
+      # the verdict directory only. Read(./**) keeps reads inside the staged
+      # workspace. A bare Read or Write would pre-approve absolute paths
+      # anywhere on the host; the harness's copy-not-symlink staging only
+      # blocks escapes through links.
+      allowed_tools: [Read(./**), Grep, Glob, Edit(./output/**)]
       # An allow list only pre-approves; headless Claude Code would still let
-      # the judge shell out or fetch the web. Deny those so the judge sees
-      # only the staged judge/ directory (harness 1.49.1 ignores this key and
-      # the patched harness defaults to the same list).
-      denied_tools: [Bash, WebFetch, WebSearch, Agent]
+      # the judge shell out, fetch the web or use the other editing tools.
+      # Deny those so the judge sees only the staged judge/ directory
+      # (harness 1.49.1 ignores this key; opendatahub-io/agent-eval-harness#240
+      # enforces it).
+      denied_tools: [Bash, WebFetch, WebSearch, Agent, MultiEdit, NotebookEdit]
       inputs: [judge]
       timeout: 1800
       max_budget_usd: 6.00
