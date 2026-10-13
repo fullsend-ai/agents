@@ -171,10 +171,7 @@ as a dependency ("depends on #N", "stacked on #N") and the PR's leading
 commits are that PR's commits (same SHAs, or cherry-picks with identical
 patches), non-security review dimensions cover only the PR's own commits.
 Security inspection, protected-path checks, and PR-body defenses cover the
-whole PR. Scoping changes review evidence only: it does not impose merge
-ordering or prevent an approval under the normal review criteria. The review
-body identifies the excluded matching commits and their dependency PR. If the
-commits cannot be matched, or on GitLab, the full diff is reviewed.
+whole PR. Scoping changes review evidence only. It does not impose merge ordering or prevent an approval under the normal review criteria. The review body identifies the excluded matching commits and their dependency PR. If the commits cannot be matched, or on GitLab, the full diff is reviewed.
 
 ## Time budget
 
