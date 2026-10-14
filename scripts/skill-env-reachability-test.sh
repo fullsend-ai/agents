@@ -40,6 +40,7 @@ SANDBOX_RUNTIME_VARS=(
   FULLSEND_OUTPUT_DIR
   FULLSEND_OUTPUT_SCHEMA
   FULLSEND_ROLE
+  FULLSEND_SKILLS_DIR
   GOOGLE_APPLICATION_CREDENTIALS
   PATH
 )
@@ -131,10 +132,6 @@ declare -A KNOWN_GAPS=(
   ["github-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
   ["gitlab-forge:ISSUE_NUMBER"]="#1664 — forge skill derives ISSUE_NUMBER locally from ISSUE_URL; not in fix/retro/review/prioritize/triage env.sandbox"
   ["issue-labels/gitlab:ISSUE_NUMBER"]="#1664 — label skill derives ISSUE_NUMBER locally from ISSUE_URL; review/triage harnesses do not supply it"
-  # pr-risk-assessment scripts hard-reference the runtime-specific config
-  # dir (CLAUDE_CONFIG_DIR on claude; CODEX_HOME/PI_CODING_AGENT_DIR on
-  # codex/pi). No runtime-neutral skill path exists yet.
-  ["pr-risk-assessment:CLAUDE_CONFIG_DIR"]="#1672 — runtime-specific config dir; needs runtime-neutral skill path"
   # Skills below reference these vars as ${VAR} expansions without
   # assigning them, and no delivering harness declares them in
   # env.sandbox.
