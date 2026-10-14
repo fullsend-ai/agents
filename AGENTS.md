@@ -167,3 +167,13 @@ when identical across forges). When reviewing PRs, do not flag a
 static literal default in these blocks as hardcoded, but do flag a
 regression that replaces one of these computed passthrough values
 with a literal.
+
+## 9. Reply directly to GitHub review threads
+
+When responding to an existing inline pull request review thread, always use
+`POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies`
+with the top-level review comment ID. Do not use a review creation/submission
+operation or the GraphQL `addPullRequestReviewThreadReply` mutation for thread
+replies. Verify a finding is fixed before replying, and resolve its thread
+separately. Leave unfixed threads open. GitHub may associate a direct reply
+with a `COMMENTED` review record; do not start or submit a pending review.
