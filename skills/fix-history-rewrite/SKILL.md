@@ -85,9 +85,10 @@ runner-side forge conflict before trusting a `true` value.
 Redo/reset may rewrite only the contiguous suffix of commits at HEAD
 authored by this fix agent (`$GIT_AUTHOR_NAME` and `$GIT_AUTHOR_EMAIL`).
 On GitHub a commit the post-script has already published is authored by
-the App's bot user (name ending in `[bot]`) and carries the identity it
-was committed with in an `Authored-by: name <email>` trailer; for such a
-commit, and only such a commit, that trailer is its author.
+the App's bot user (name ending in `[bot]`, email `$GIT_AUTHOR_EMAIL`) and
+carries the identity it was committed with in a single `Authored-by: name
+<email>` trailer; for such a commit, and only such a commit, that trailer
+is its author. `scripts/authorized-range.sh` applies this rule.
 If HEAD is out-of-scope, the suffix is empty, or ownership is
 ambiguous, do not rewrite. Do not rewrite past a human-authored or
 code-agent commit.

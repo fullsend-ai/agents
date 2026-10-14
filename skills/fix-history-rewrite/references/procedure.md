@@ -162,17 +162,11 @@ range as follows:
    network policy blocks it). Record in structured output that the rewrite
    could not run because the base ref is missing, and stop the rewrite.
 3. `MERGE_BASE="$(git merge-base HEAD origin/${BASE})"`.
-4. Walk `git log --format='%H' ${MERGE_BASE}..HEAD` from newest to
-   oldest. A commit's author is `%an <%ae>`, except that when `%an` ends
-   in `[bot]` and the commit has an `Authored-by: name <email>` trailer
-   (`git log -1 --format='%(trailers:key=Authored-by,valueonly)'`), the
-   trailer is its author: on GitHub the post-script publishes commits
-   through the API, which makes the App's bot user the git author and
-   keeps the sandbox identity in that trailer. A commit is in-scope when its author
-   is `$GIT_AUTHOR_NAME <$GIT_AUTHOR_EMAIL>`. Collect the contiguous
-   suffix of in-scope commits starting at HEAD. Stop at the first
-   out-of-scope commit (human-authored, code-agent, or otherwise not this
-   fix agent).
+4. Run `scripts/authorized-range.sh origin/${BASE}` from this skill. It
+   prints `REWRITE_BASE=<sha>` and `IN_SCOPE=<n>` for the contiguous
+   suffix of commits at HEAD authored by this fix agent (the identity
+   rule is under "Fail closed" in SKILL.md), or exits non-zero with the
+   reason when HEAD is out-of-scope.
 5. The rewrite base is the parent of the oldest in-scope commit
    (`git rev-parse ${oldest}^`). If HEAD is out-of-scope, or the suffix
    is empty, fail closed: record that the authorized range could not be

@@ -102,6 +102,9 @@ remote_rev() {
   git --git-dir="${1%/repo}/remote.git" rev-parse --verify --quiet "$2"
 }
 
+# trailer_of SHA — the Authored-by trailer values of SHA in the bare repo.
+trailer_of() { git --git-dir="${bare}" log -1 --format='%(trailers:key=Authored-by,valueonly)' "$1" | sed '/^$/d'; }
+
 commit_message() {
   git --git-dir="$1" cat-file commit "$2" | sed '1,/^$/d'
 }
@@ -258,15 +261,24 @@ else
   pass "blob-sha-mismatch-aborts"
 fi
 
-# --- an unsigned response is reported but does not fail the push ----------
+# --- an unsigned response: a warning with any token, an error with the App's
 repo="$(setup_repo unverified)"
 commit_file "${repo}" "a.txt" "a" "feat: a"
 FAKE_GH_UNVERIFIED=1 push_in "${repo}" "${BRANCH}"
-if [ "${PUSH_RC}" -ne 0 ] || ! printf '%s' "${PUSH_OUT}" | grep -q "did not sign" \
+if [ "${PUSH_RC}" -ne 0 ] || ! printf '%s' "${PUSH_OUT}" | grep -q "warning: GitHub did not sign" \
    || ! remote_rev "${repo}" "refs/heads/${BRANCH}" > /dev/null; then
   fail "unverified-commit-warns" "exit ${PUSH_RC}" "${PUSH_OUT}"
 else
   pass "unverified-commit-warns"
+fi
+repo="$(setup_repo unverified-app)"
+commit_file "${repo}" "a.txt" "a" "feat: a"
+FAKE_GH_UNVERIFIED=1 PUSH_TOKEN_SOURCE=github-app push_in "${repo}" "${BRANCH}"
+if [ "${PUSH_RC}" -eq 0 ] || ! printf '%s' "${PUSH_OUT}" | grep -q "error: GitHub did not sign" \
+   || remote_rev "${repo}" "refs/heads/${BRANCH}" > /dev/null; then
+  fail "unverified-commit-fails-with-app-token" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "unverified-commit-fails-with-app-token"
 fi
 
 # --- a transient 5xx is retried ------------------------------------------
@@ -438,7 +450,6 @@ GIT_AUTHOR_NAME='fullsend-ai-coder[bot]' GIT_AUTHOR_EMAIL='1+fullsend-ai-coder[b
   git -C "${repo}" commit -q -m "fix: rebuilt before" -m "Authored-by: fullsend-fix <bot@example.com>"
 push_in "${repo}" "${BRANCH}"
 tip="$(remote_rev "${repo}" "refs/heads/${BRANCH}" || true)"
-trailer_of() { git --git-dir="${bare}" log -1 --format='%(trailers:key=Authored-by,valueonly)' "$1" | sed '/^$/d'; }
 if [ "${PUSH_RC}" -ne 0 ] || [ -z "${tip}" ] \
    || [ "$(trailer_of "${tip}~1")" != "Test <test@example.com>" ] \
    || [ "$(trailer_of "${tip}")" != "fullsend-fix <bot@example.com>" ]; then
@@ -446,6 +457,50 @@ if [ "${PUSH_RC}" -ne 0 ] || [ -z "${tip}" ] \
     "human: $(trailer_of "${tip}~1")" "bot: $(trailer_of "${tip}")"
 else
   pass "trailer-kept-only-for-bot-authors"
+fi
+
+# --- a repo-local trailer command must not run, and forged duplicate
+#     trailers must all go --------------------------------------------------
+repo="$(setup_repo trailer-cmd)"
+bare="${repo%/repo}/remote.git"
+git -C "${repo}" config trailer.authored-by.cmd "touch ${TEST_TMPDIR}/trailer-cmd-ran; printf injected"
+printf 'x\n' > "${repo}/x.txt"
+git -C "${repo}" add x.txt
+git -C "${repo}" commit -q -m "feat: x" -m "Authored-by: forged <f@x>
+authored-by: also forged <g@x>"
+push_in "${repo}" "${BRANCH}"
+tip="$(remote_rev "${repo}" "refs/heads/${BRANCH}" || true)"
+if [ "${PUSH_RC}" -ne 0 ] || [ -z "${tip}" ] || [ -e "${TEST_TMPDIR}/trailer-cmd-ran" ] \
+   || [ "$(trailer_of "${tip}")" != "Test <test@example.com>" ]; then
+  fail "trailer-cmd-ignored-and-forged-trailers-dropped" "exit ${PUSH_RC}" "${PUSH_OUT}" \
+    "trailers: $(trailer_of "${tip}")"
+else
+  pass "trailer-cmd-ignored-and-forged-trailers-dropped"
+fi
+
+# --- submodule entries are carried as commit objects, added and removed ---
+repo="$(setup_repo submodule)"
+bare="${repo%/repo}/remote.git"
+sub_sha="$(git -C "${repo}" rev-parse main)"
+git -C "${repo}" update-index --add --cacheinfo "160000,${sub_sha},vendor/sub"
+git -C "${repo}" commit -q -m "feat: add submodule"
+push_in "${repo}" "${BRANCH}"
+tip="$(remote_rev "${repo}" "refs/heads/${BRANCH}" || true)"
+if [ "${PUSH_RC}" -ne 0 ] || [ -z "${tip}" ] \
+   || [ "$(git --git-dir="${bare}" ls-tree "${tip}" vendor/sub | cut -f1)" != "160000 commit ${sub_sha}" ]; then
+  fail "submodule-entry-added" "exit ${PUSH_RC}" "${PUSH_OUT}" "$(git --git-dir="${bare}" ls-tree "${tip}" vendor/sub)"
+else
+  pass "submodule-entry-added"
+fi
+git -C "${repo}" update-index --force-remove vendor/sub
+git -C "${repo}" commit -q -m "chore: drop submodule"
+push_in "${repo}" "${BRANCH}"
+tip="$(remote_rev "${repo}" "refs/heads/${BRANCH}" || true)"
+if [ "${PUSH_RC}" -ne 0 ] || [ -z "${tip}" ] \
+   || [ "$(git --git-dir="${bare}" rev-parse "${tip}^{tree}")" != "$(git -C "${repo}" rev-parse 'HEAD^{tree}')" ]; then
+  fail "submodule-entry-removed" "exit ${PUSH_RC}" "${PUSH_OUT}"
+else
+  pass "submodule-entry-removed"
 fi
 
 # --- a branch with no commit on origin is refused -------------------------

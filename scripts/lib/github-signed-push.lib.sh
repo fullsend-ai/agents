@@ -108,7 +108,7 @@ _signed_push_commit() {
   local commit="$1"
   local entries="${_SIGNED_PUSH_DIR}/entries" payload="${_SIGNED_PUSH_DIR}/payload"
   local local_parent base_tree tree new_tree known meta path src_mode dst_mode dst_sha status
-  local parent parents author if_exists resp sha
+  local parent parents author keep resp sha reason
   local_parent="$(_signed_push_base_parent "${commit}")" || {
     echo "error: no commit on origin to build ${commit} on" >&2
     return 1
@@ -157,16 +157,19 @@ _signed_push_commit() {
   done | jq -Rn '[inputs]')"
   # The author becomes the App's bot user, so the local identity goes into
   # a trailer. A bot-authored commit came back from GitHub and keeps the
-  # trailer it was published with; any other commit's trailer is replaced,
-  # so a crafted one cannot survive a rebase.
+  # trailer it was published with; any other commit loses every Authored-by
+  # line first, so a crafted one cannot survive a rebase. interpret-trailers
+  # runs outside the checkout so a repo-local trailer.*.cmd cannot run here.
   author="$(git log -1 --format='%an <%ae>' "${commit}")"
-  case "${author}" in
-    *"[bot] <"*) if_exists=doNothing ;;
-    *) if_exists=replace ;;
-  esac
-  git cat-file commit "${commit}" | sed '1,/^$/d' \
-    | git interpret-trailers --no-divider --if-exists "${if_exists}" \
-        --trailer "Authored-by: ${author}" \
+  if [[ "${author}" == *"[bot] <"* ]]; then
+    keep=1
+  else
+    # shellcheck disable=SC2016  # awk program, not shell expansion
+    keep='tolower($0) !~ /^authored-by:/'
+  fi
+  git cat-file commit "${commit}" | sed '1,/^$/d' | awk "${keep}" \
+    | git -C "${_SIGNED_PUSH_DIR}" interpret-trailers --no-divider \
+        --if-exists doNothing --trailer "Authored-by: ${author}" \
     > "${payload}.msg" || {
     echo "error: could not read the message of ${commit}" >&2
     return 1
@@ -180,8 +183,14 @@ _signed_push_commit() {
     return 1
   fi
   if [ "$(printf '%s' "${resp}" | jq -r '.verification.verified')" != "true" ]; then
-    echo "warning: GitHub did not sign ${sha} ($(printf '%s' "${resp}" \
-      | jq -r '.verification.reason // "unknown"'))" >&2
+    reason="$(printf '%s' "${resp}" | jq -r '.verification.reason // "unknown"')"
+    # An App installation token always gets a signature; a PAT (eval
+    # harness, local runs) never does.
+    if [ "${PUSH_TOKEN_SOURCE:-}" = "github-app" ]; then
+      echo "error: GitHub did not sign ${sha} (${reason})" >&2
+      return 1
+    fi
+    echo "warning: GitHub did not sign ${sha} (${reason})" >&2
   fi
   echo "${sha}"
 }
@@ -237,7 +246,7 @@ _signed_push_update_ref() {
 # A non-fast-forward update needs --force-with-lease and, as with git, is
 # refused once origin/BRANCH differs from the remote-tracking ref.
 forge_push_branch() {
-  local rc=0
+  local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
   _SIGNED_PUSH_DIR="$(mktemp -d)"
   _SIGNED_PUSH_MAP="${_SIGNED_PUSH_DIR}/commits"
   _SIGNED_PUSH_BLOBS="${_SIGNED_PUSH_DIR}/blobs"

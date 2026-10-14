@@ -670,23 +670,24 @@ FIX_AGENT_GIT_NAME="fullsend-fix"
 # commit_author_identity SHA — prints "name<TAB>email". A commit published
 # through the GitHub API (docs/code.md "Signed commits") is authored by the
 # App's bot user and carries the sandbox identity in an `Authored-by: name
-# <email>` trailer; for such a commit, and only such a commit, the trailer
-# is the author.
+# <email>` trailer. The trailer is the author only when the git author is
+# that bot (name ending in `[bot]`, email GIT_BOT_EMAIL) and the commit
+# carries exactly one; anything else is read from the git author fields.
 commit_author_identity() {
-  local sha="$1" name email trailer
+  local sha="$1" name email trailers
   IFS=$'\t' read -r name email <<< "$(git log -1 --format='%an%x09%ae' "${sha}" 2>/dev/null)"
-  case "${name}" in
-    *"[bot]")
-      trailer="$(git log -1 --format='%(trailers:key=Authored-by,valueonly)' "${sha}" 2>/dev/null | head -1)"
-      case "${trailer}" in
+  if [[ "${name}" == *"[bot]" && "${email}" == "$(signoff_bot_email)" ]]; then
+    trailers="$(git log -1 --format='%(trailers:key=Authored-by,valueonly)' "${sha}" 2>/dev/null | sed '/^$/d')"
+    if [ "$(printf '%s\n' "${trailers}" | grep -c .)" = "1" ]; then
+      case "${trailers}" in
         *" <"*">")
-          name="${trailer% <*}"
-          email="${trailer##* <}"
+          name="${trailers% <*}"
+          email="${trailers##* <}"
           email="${email%>}"
           ;;
       esac
-      ;;
-  esac
+    fi
+  fi
   printf '%s\t%s\n' "${name}" "${email}"
 }
 
