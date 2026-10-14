@@ -204,7 +204,7 @@ response directly.
 
 1. **Run Tier 1 script:**
    ```bash
-   bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"
+   bash "${FULLSEND_SKILLS_DIR}/pr-risk-assessment/scripts/risk-tier1.sh"
    ```
    Capture KEY=VALUE output. Parse each line and store signals.
 
