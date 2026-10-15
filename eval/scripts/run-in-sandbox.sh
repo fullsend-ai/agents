@@ -85,12 +85,18 @@ remote_tar="/tmp/$(basename "$TARBALL")"
 # itself declares, plus the Go env the coder harness sets. The egress proxy
 # drops a few connections when a Go build fetches ~200 modules at once
 # ("unexpected EOF" from proxy.golang.org); a pipe-separated GOPROXY list
-# retries the same proxy, since Go falls through on any error at a '|'.
+# retries the same proxy, since Go falls through on any error at a '|'. npm
+# gets retries and fewer sockets for the same reason. Browser-binary
+# post-install downloads (Cypress, Puppeteer, Playwright) go to hosts the
+# policy does not allow and nothing in the sandbox can run a browser, so
+# they are skipped.
 q() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
 remote_script="set -e
 export PATH=/usr/local/go/bin:/sandbox/.venv/bin:/usr/local/bin:/usr/bin:/bin:/sandbox/go/bin
 export HOME=/sandbox GOPATH=/sandbox/go GOMODCACHE=/sandbox/go/pkg/mod LANG=C.UTF-8 TERM=dumb CI=1
 export GOPROXY='https://proxy.golang.org|https://proxy.golang.org|https://proxy.golang.org'
+export npm_config_fetch_retries=5 npm_config_fetch_retry_mintimeout=20000 npm_config_fetch_retry_maxtimeout=120000 npm_config_maxsockets=6
+export CYPRESS_INSTALL_BINARY=0 PUPPETEER_SKIP_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 mkdir -p /sandbox/workspace/regression && tar -xzf $(q "$remote_tar") -C /sandbox/workspace/regression
 cd /sandbox/workspace/regression
 exec bash -o pipefail -c $(q "$CMD")"
