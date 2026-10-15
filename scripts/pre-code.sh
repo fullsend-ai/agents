@@ -139,9 +139,15 @@ forge_create_label() {
 # --- Comment operations ---
 
 forge_post_issue_comment() {
-  local body="$1"
-  printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null
+  forge_post_issue_comment_at "${REPO_FULL_NAME}" "${ISSUE_NUMBER}" "$1"
+}
+
+forge_post_issue_comment_at() {
+  local repo="$1"
+  local issue_number="$2"
+  local body="$3"
+  printf '%s' "${body}" | gh issue comment "${issue_number}" \
+    --repo "${repo}" --body-file - 2>/dev/null
 }
 
 forge_post_pr_comment() {
@@ -348,6 +354,24 @@ forge_get_issue_comments() {
     return 0
   fi
   echo "${raw}" | jq -s 'add // []' 2>/dev/null || echo '[]'
+}
+
+forge_get_issue_movement_details() {
+  gh api "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}" 2>/dev/null
+}
+
+# Movement detection must distinguish an empty comment list from a failed
+# lookup. The general helper above is best-effort because other callers use
+# it for optional context; this strict variant is used only by pre-code.
+forge_get_issue_comments_strict() {
+  local raw
+  raw="$(gh api --paginate \
+    "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/comments" 2>/dev/null)" || return 1
+  if [[ -z "${raw}" ]]; then
+    printf '%s\n' '[]'
+    return 0
+  fi
+  printf '%s\n' "${raw}" | jq -s 'add // []' 2>/dev/null
 }
 
 forge_get_issue_details() {
@@ -991,6 +1015,74 @@ _pre_code_sanitize_log() {
     | sed 's/%/%25/g; s/::/%3A%3A/g'
 }
 
+# Close-and-recreate moves leave this marker on the original issue. The move
+# handler must keep the destination in the comment text using the form shown
+# below so a later /fs-code run can guide the issue to its new location.
+FULLSEND_MOVE_MARKER='<!-- fullsend:move-agent -->'
+FULLSEND_MOVE_AGENT_LOGIN='fullsend-ai-triage[bot]'
+
+extract_move_location() {
+  local body="$1"
+  printf '%s' "${body}" | sed -nE \
+    's/.*moved to `([a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+#[1-9][0-9]*)`.*/\1/p' \
+    | head -1
+}
+
+check_for_moved_issue() {
+  local issue_json state repository_url html_url target_repo target_number
+  local target_repo_normalized current_repo_normalized
+  local comments move_comment move_location
+
+  issue_json="$(forge_get_issue_movement_details)" || return 1
+  [[ -n "${issue_json}" ]] || return 1
+
+  state="$(printf '%s' "${issue_json}" | jq -r '.state // empty' 2>/dev/null || true)"
+  repository_url="$(printf '%s' "${issue_json}" | jq -r '.repository_url // empty' 2>/dev/null || true)"
+  html_url="$(printf '%s' "${issue_json}" | jq -r '.html_url // empty' 2>/dev/null || true)"
+
+  # A native GitHub transfer updates repository_url and html_url to the
+  # destination repository. Compare normalized owner/repo names because
+  # repository_url is an API URL, not the REPO_FULL_NAME format.
+  target_repo="$(printf '%s' "${repository_url}" | sed -nE 's|.*/repos/([^/]+/[^/]+)$|\1|p')"
+  target_repo_normalized="$(printf '%s' "${target_repo}" | tr '[:upper:]' '[:lower:]')"
+  current_repo_normalized="$(printf '%s' "${REPO_FULL_NAME}" | tr '[:upper:]' '[:lower:]')"
+  if [[ "${target_repo}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]] \
+    && [[ "${target_repo_normalized}" != "${current_repo_normalized}" ]]; then
+    target_number="$(forge_extract_issue_from_url "${html_url}" 2>/dev/null || true)"
+    if [[ ! "${target_number}" =~ ^[1-9][0-9]*$ ]]; then
+      # Do not guess the destination issue number. GitHub may renumber an
+      # issue during transfer, so the source number could identify an
+      # unrelated issue in the destination repository.
+      target_number="unknown"
+    fi
+    printf '%s\t%s\t%s\t%s\tnative\n' "${target_repo}" "${target_number}" "${target_repo}" "${target_number}"
+    return 0
+  fi
+
+  # A close-and-recreate move keeps the original issue in this repository.
+  # Require both the closed state and the machine marker so ordinary closed
+  # issues do not stop the code agent.
+  [[ "${state}" == "closed" ]] || return 0
+  comments="$(forge_get_issue_comments_strict)" || return 1
+  move_comment="$(printf '%s' "${comments}" | jq -r \
+    --arg marker "${FULLSEND_MOVE_MARKER}" \
+    --arg move_agent "${FULLSEND_MOVE_AGENT_LOGIN}" '
+    [.[]
+      | select((.user.login // "") == $move_agent)
+      | select((.body // "") | startswith($marker))
+      | .body
+    ] | last // empty
+  ' 2>/dev/null || true)"
+  [[ -n "${move_comment}" ]] || return 0
+
+  move_location="$(extract_move_location "${move_comment}")"
+  if [[ "${move_location}" =~ ^([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+)#([1-9][0-9]*)$ ]]; then
+    target_repo="${BASH_REMATCH[1]}"
+    target_number="${BASH_REMATCH[2]}"
+    printf '%s\t%s\t%s\t%s\tclose-recreate\n' "${target_repo}" "${target_number}" "${REPO_FULL_NAME}" "${ISSUE_NUMBER}"
+  fi
+}
+
 echo "::notice::🔗 Code target: $(_pre_code_sanitize_log "${ISSUE_URL:-}")"
 
 errors=0
@@ -1036,6 +1128,38 @@ echo "Input validation passed:"
 echo "  ISSUE_NUMBER=${ISSUE_NUMBER}"
 echo "  REPO_FULL_NAME=${REPO_FULL_NAME}"
 echo "  ISSUE_URL=${ISSUE_URL}"
+
+# A moved issue must be stopped before any existing-PR, sub-issue, or runner
+# setup work can dispatch the code agent. This currently applies to GitHub;
+# GitLab and Jira have separate move implementations in the broader epic.
+if [[ "${FULLSEND_FORGE}" == "github" ]]; then
+  if MOVE_INFO="$(check_for_moved_issue)"; then
+    :
+  else
+    echo "::error::Unable to verify whether issue ${ISSUE_NUMBER} was moved; refusing to start the code agent."
+    exit 1
+  fi
+  if [[ -n "${MOVE_INFO}" ]]; then
+    IFS=$'\t' read -r MOVE_REPO MOVE_NUMBER COMMENT_REPO COMMENT_NUMBER MOVE_KIND <<< "${MOVE_INFO}"
+    MOVE_LOCATION="${MOVE_REPO}"
+    if [[ "${MOVE_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+      MOVE_LOCATION="${MOVE_REPO}#${MOVE_NUMBER}"
+      if [[ "${MOVE_KIND}" == "native" ]]; then
+        MOVE_GUIDANCE="This issue was transferred from \`${REPO_FULL_NAME}#${ISSUE_NUMBER}\`. Run \`/fs-code\` here."
+      else
+        MOVE_GUIDANCE="This issue was moved to \`${MOVE_LOCATION}\`. Run \`/fs-code\` there instead."
+      fi
+      forge_post_issue_comment_at "${COMMENT_REPO}" "${COMMENT_NUMBER}" "${MOVE_GUIDANCE}" || true
+    else
+      echo "::warning::Issue moved to ${MOVE_REPO}, but the destination issue number is unavailable; skipping guidance comment"
+    fi
+    MOVE_LOCATION_LOG="$(_pre_code_sanitize_log "${MOVE_LOCATION}")"
+    echo "::notice::Issue moved to ${MOVE_LOCATION_LOG} — skipping code agent"
+    prescript_output "skipped" "true"
+    prescript_output "reason" "issue moved to ${MOVE_LOCATION}"
+    exit 0
+  fi
+fi
 
 # GitLab needs REPO_ENCODED and GITLAB_HOST for API calls — set them before
 # any forge function that hits the API (forge_list_prs_for_issue, labels, etc.).
