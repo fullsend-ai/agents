@@ -29,6 +29,8 @@ AGENTS_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 HARNESS="${EVAL_SANDBOX_HARNESS:-$AGENTS_ROOT/harness/code.yaml}"
 PROVIDER="${EVAL_SANDBOX_PROVIDER:-package-registries}"
 READY_TIMEOUT="${EVAL_SANDBOX_READY_TIMEOUT:-900}"
+# Memory for the test run: jest-style runners spawn a worker per CPU and the default
+# sandbox limit SIGKILLs them (odh-dashboard, 2026-10-14). Override with EVAL_SANDBOX_MEMORY.
 for c in openshell yq tar timeout; do
   command -v "$c" >/dev/null || { echo "run-in-sandbox: $c is required but not found in PATH" | tee "$LOG" >&2; exit 125; }
 done
@@ -58,6 +60,7 @@ trap cleanup EXIT
 echo "run-in-sandbox: creating $NAME from $IMAGE" >&2
 if ! openshell sandbox create --name "$NAME" --keep --no-auto-providers --no-tty \
       --from "$IMAGE" --policy "$POLICY" --provider "$PROVIDER" \
+      --memory "${EVAL_SANDBOX_MEMORY:-8Gi}" \
       --detach -- sleep infinity </dev/null >>"$LOG" 2>&1; then
   if ! openshell sandbox get "$NAME" >/dev/null 2>&1 </dev/null; then
     echo "run-in-sandbox: sandbox create failed (see $LOG)" >&2; exit 125

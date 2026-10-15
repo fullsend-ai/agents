@@ -21,7 +21,7 @@ source:
 # machine is otherwise idle. Under heavy load one test hit Jest's default 5 s
 # per-test timeout, so the timeout is raised; the suite itself passed.
 regression_tests:
-  command: "npm ci --no-audit --no-fund && cd frontend && npm run test:unit -- --testTimeout=30000"
+  command: "for i in 1 2 3; do npm ci --no-audit --no-fund && break; [ $i = 3 ] && exit 1; echo \"npm ci attempt $i failed, retrying\"; done && cd frontend && npm run test:unit -- --testTimeout=30000 --maxWorkers=2"
 test_timeout_s: 1800
 
 # Optional, for the judges: facts about the FIXTURE the judge cannot see for
