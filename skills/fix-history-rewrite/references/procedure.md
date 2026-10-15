@@ -167,15 +167,15 @@ range as follows:
    suffix of commits at HEAD authored by this fix agent (the identity
    rule is under "Fail closed" in SKILL.md), or exits non-zero with the
    reason when HEAD is out-of-scope.
-5. The rewrite base is the parent of the oldest in-scope commit
-   (`git rev-parse ${oldest}^`). If HEAD is out-of-scope, or the suffix
-   is empty, fail closed: record that the authorized range could not be
-   determined, and do not rewrite.
+5. The rewrite base is the `REWRITE_BASE` printed in step 4. If the
+   script exited non-zero, fail closed: record that the authorized range
+   could not be determined, and do not rewrite.
 
 Do not rewrite past a human-authored commit. Do not rewrite commits
 authored by the code agent (`fullsend-code` or any name other than
-`$GIT_AUTHOR_NAME`). Unrelated branch changes stay intact. When ownership
-is ambiguous, fail closed and explain the blocker in structured output.
+`$GIT_AUTHOR_NAME`, read as under "Fail closed" in SKILL.md). Unrelated
+branch changes stay intact. When ownership is ambiguous, fail closed and
+explain the blocker in structured output.
 
 ## How to redo / reset
 
