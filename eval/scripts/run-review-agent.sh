@@ -3,9 +3,15 @@
 # code agent opened, without posting anything, and keep its findings for the
 # quality judge. Runs after capture-pr-artifacts.sh and before teardown.
 #
-# The review step is held constant across arms: Claude Code runtime, Sonnet,
-# regardless of what the code agent ran on (EVAL_RUNTIME/EVAL_MODEL). Override
-# with EVAL_REVIEW_RUNTIME / EVAL_REVIEW_MODEL / EVAL_REVIEW_EFFORT.
+# The review step is held constant across arms, whatever the code agent ran on
+# (EVAL_RUNTIME/EVAL_MODEL), and it is the production review agent as the
+# agents repo configures it: the pi runtime, the parent on the `sonnet` alias,
+# and the nine persona sub-agents on the models their persona files and the
+# repo config's `subagents` block give them. Only the parent's runtime and
+# model are set here; EVAL_REVIEW_RUNTIME / EVAL_REVIEW_MODEL /
+# EVAL_REVIEW_EFFORT override them. Which concrete models the aliases become
+# is decided by the config the eval runs under (see the README, "The review
+# step"); output/review-metrics.json records what actually ran.
 #
 # Writes:
 #   output/review-result.json   the review agent's agent-result.json
@@ -57,8 +63,8 @@ mkdir -p "$REVIEW_OUT"
 rc=0
 FIXTURE_TYPE=pull_request FIXTURE_URL="$url" FIXTURE_NUMBER="$num" \
 EPHEMERAL_REPO="$EPHEMERAL_REPO" EVAL_NO_POST_SCRIPT=1 \
-EVAL_RUNTIME="${EVAL_REVIEW_RUNTIME:-}" \
-EVAL_MODEL="${EVAL_REVIEW_MODEL:-claude-sonnet-4-6}" EVAL_EFFORT="${EVAL_REVIEW_EFFORT:-}" \
+EVAL_RUNTIME="${EVAL_REVIEW_RUNTIME:-pi}" \
+EVAL_MODEL="${EVAL_REVIEW_MODEL:-sonnet}" EVAL_EFFORT="${EVAL_REVIEW_EFFORT:-}" \
 EVAL_TIMEOUT="${EVAL_REVIEW_TIMEOUT:-2700}" \
   run-fullsend.sh review "$CASE_WORKSPACE" "$REVIEW_OUT" || rc=$?
 echo "review agent run exit: $rc"

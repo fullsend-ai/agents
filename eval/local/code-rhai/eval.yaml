@@ -33,9 +33,10 @@ execution:
     EVAL_RUNTIME: $EVAL_RUNTIME
     EVAL_MODEL: $EVAL_MODEL
     EVAL_EFFORT: $EVAL_EFFORT
-    # Review step overrides. Default: Claude Code runtime, Sonnet, whatever
-    # the code agent ran on, so the review is a constant across arms.
-    # EVAL_SKIP_REVIEW=1 skips the review step entirely.
+    # Review step overrides. Unset, the review runs as production configures
+    # it (pi runtime, parent on the `sonnet` alias, personas per the repo
+    # config), the same for every arm whatever the code agent ran on; see
+    # the README, "The review step". EVAL_SKIP_REVIEW=1 skips it entirely.
     EVAL_REVIEW_RUNTIME: $EVAL_REVIEW_RUNTIME
     EVAL_REVIEW_MODEL: $EVAL_REVIEW_MODEL
     EVAL_REVIEW_EFFORT: $EVAL_REVIEW_EFFORT

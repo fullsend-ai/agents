@@ -139,11 +139,12 @@ whose post-script opens the PR. `after_each`, in order:
    network, so the PR's own install scripts and tests never see this
    machine's home directory or tokens). The command must therefore work with
    the toolchain in the coder's image, which `check-case.sh` verifies.
-3. `run-review-agent.sh` runs `fullsend run review` on the PR with the
-   post-script disabled and keeps `agent-result.json` as
+3. `run-review-agent.sh` runs `fullsend run review` on the PR, configured
+   as production runs it (see [The review step](#the-review-step)), with the
+   post-script disabled, and keeps `agent-result.json` as
    `output/review-result.json`, rendered as `judge/review.md`, plus the
-   review run's cost and the agents repo commit, so the review agent version
-   is on record.
+   review run's cost, per-model usage and the agents repo commit, so the
+   review agent version and the models that actually ran are on record.
 4. `teardown-fixture.sh` deletes the throwaway repo.
 
 The check judges read `output/`; the agent judge gets `judge/` staged into
@@ -151,6 +152,48 @@ its working directory. The review findings are evidence for the judge,
 not a verdict; the judge prompt says so. Because the review agent is itself
 under evaluation (AISDLC-24), compare judge scores with and without the
 review input on the first few cases, and keep the recorded version.
+
+## The review step
+
+The review agent is a parent plus nine persona sub-agents. The parent reads
+the PR, decides which personas the change warrants, dispatches them and
+writes the verdict; the personas carry the judgement (the `challenger` is
+the only one that may remove or downgrade a finding). There is no single
+production configuration: every repository fullsend is installed on sets its
+own in `.fullsend/config.yaml`, and they differ (the fullsend repo routes two
+more personas to Gemini than the agents repo does; a repo with no entry gets
+the harness defaults), and the external repositories the cases come from
+have none. The eval's reference is the agents repo's own entry, the repo
+that owns the review agent: since 2026-10-06 it runs the parent on the pi
+runtime on `sonnet`, with `challenger` on `opus`, `correctness` and
+`security` on `openai/gpt-6.1-sol`, `docs-currency` and `style-conventions`
+on `google-vertex/gemini-3.8-flash`, and the other personas on their
+persona-file tiers (`sonnet`, `haiku`). The aliases there mean Sonnet 5.5
+and Opus 5.5.
+
+The eval sets only the parent's runtime and model (`pi`, `sonnet`), so the
+review is the same for every arm. Everything else comes from the fullsend
+config the eval runs under, the agents repo root `config.yaml`, and that is
+where the eval deviates from production:
+
+- The repo root config pins `opus` to Sonnet 5.5 for the repo's evals (a
+  cost choice, 2026-10-03) and carries no `subagents` routing, so a run
+  that changes nothing gets a Claude-only review with the challenger on
+  Sonnet 5.5 and no GPT or Gemini personas.
+- On a developer machine whose Vertex project does not serve the 5.5
+  generation, the Claude aliases must be pinned one generation back
+  (`sonnet: claude-sonnet-5`, `opus: claude-opus-5`) or every persona call
+  fails; the production `subagents` block can be added to the eval's review
+  entry at the same time, with `OPENAI_API_KEY` in the environment for the
+  GPT personas. The local wrapper used for the recorded runs does both.
+  Reaching Claude 5.5 on EnMaaS from the pi runtime is not possible on the
+  current fullsend build (its gateway route sends a header EnMaaS rejects
+  for Claude, and a `models.json` redirect in pi's config is refused).
+
+`output/review-metrics.json` `per_model_usage` is the record of what ran: a
+persona whose model the project cannot serve shows there as requests with
+zero tokens. Runs before 2026-10-14 carried exactly that failure; their
+review evidence was a parent-only review, and their write-ups say so.
 
 ## Model pin, arms and matrix runs
 
@@ -168,8 +211,9 @@ same for every arm. `run-fullsend.sh` picks the runtime from the model id,
 provider-prefixed ids such as `openai/...` on pi and bare Anthropic ids on
 Claude Code, unless `EVAL_RUNTIME` is set. A plain `run-functional.sh local/code-rhai`
 runs the baseline arm; `EVAL_MODEL=openai/gpt-6-luna` runs the other; a matrix
-run through `eval-anova` runs them all. `EVAL_REVIEW_MODEL` overrides the
-review step's model; `EVAL_SKIP_REVIEW=1` skips it.
+run through `eval-anova` runs them all. `EVAL_REVIEW_RUNTIME` and
+`EVAL_REVIEW_MODEL` override the review parent's runtime and model (see
+[The review step](#the-review-step)); `EVAL_SKIP_REVIEW=1` skips it.
 
 Repeated trials and comparisons use the harness's `eval-anova` and
 `eval-compare` skills (agent-eval-harness 1.49 or later; the submodule here is
