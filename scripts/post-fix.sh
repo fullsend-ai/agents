@@ -120,6 +120,8 @@ GITHUB_FIX_OPS_SH_LOADED=1
 # Expected globals:
 #   REPO_FULL_NAME — owner/repo
 #   PUSH_TOKEN     — GitHub App installation token (GH_TOKEN as fallback)
+#   GIT_BOT_EMAIL  — the App bot's noreply address; only a commit it
+#                    authored keeps an existing Authored-by trailer
 # origin must carry push credentials (forge_set_push_remote) for the final
 # fetch.
 
@@ -253,12 +255,13 @@ _signed_push_commit() {
     _signed_push_mapped "${parent}"
   done | jq -Rn '[inputs]')"
   # The author becomes the App's bot user, so the local identity goes into
-  # a trailer. A bot-authored commit came back from GitHub and keeps the
-  # trailer it was published with; any other commit loses every Authored-by
-  # line first, so a crafted one cannot survive a rebase. interpret-trailers
-  # runs outside the checkout so a repo-local trailer.*.cmd cannot run here.
+  # a trailer. A commit that bot authored came back from GitHub and keeps
+  # the trailer it was published with; any other commit loses every
+  # Authored-by line first, so a crafted one cannot survive a rebase.
+  # interpret-trailers runs outside the checkout so a repo-local
+  # trailer.*.cmd cannot run here.
   author="$(git log -1 --format='%an <%ae>' "${commit}")"
-  if [[ "${author}" == *"[bot] <"* ]]; then
+  if [[ "${author}" == *"[bot] <${GIT_BOT_EMAIL:-}>" ]]; then
     keep=1
   else
     # shellcheck disable=SC2016  # awk program, not shell expansion
@@ -1445,14 +1448,41 @@ signoff_bot_email() {
   printf '%s' "${GIT_BOT_EMAIL:-${GIT_COMMITTER_EMAIL:-}}"
 }
 
+# commit_author_identity SHA — prints "name<TAB>email". A commit published
+# through the GitHub API (docs/code.md "Signed commits") is authored by the
+# App's bot user and carries the sandbox identity in an `Authored-by: name
+# <email>` trailer. The trailer is the author only when the git author is
+# that bot (name ending in `[bot]`, email GIT_BOT_EMAIL) and the commit
+# carries exactly one; anything else is read from the git author fields.
+commit_author_identity() {
+  local sha="$1" name email trailers
+  IFS=$'\t' read -r name email <<< "$(git log -1 --format='%an%x09%ae' "${sha}" 2>/dev/null)"
+  if [[ "${name}" == *"[bot]" && "${email}" == "$(signoff_bot_email)" ]]; then
+    trailers="$(git log -1 --format='%(trailers:key=Authored-by,valueonly)' "${sha}" 2>/dev/null | sed '/^$/d')"
+    if [ "$(printf '%s\n' "${trailers}" | grep -c .)" = "1" ]; then
+      case "${trailers}" in
+        *" <"*">")
+          name="${trailers% <*}"
+          email="${trailers##* <}"
+          email="${email%>}"
+          ;;
+      esac
+    fi
+  fi
+  printf '%s\t%s\n' "${name}" "${email}"
+}
+
 # signoff_is_bot_commit <sha> — 0 when the commit is in scope for rewriting.
 # Author, not committer: a rebase re-stamps the committer onto commits the
 # human wrote. Author is also what the DCO app checks when it waives bots.
+# The author comes from commit_author_identity, so a human commit the
+# GitHub API republished under the bot stays out of scope.
 signoff_is_bot_commit() {
-  local _sb_bot
+  local _sb_bot _sb_email
   _sb_bot="$(signoff_bot_email)"
   [ -z "${_sb_bot}" ] && return 0
-  [ "$(git log -1 --format='%ae' "$1" 2>/dev/null)" = "${_sb_bot}" ]
+  IFS=$'\t' read -r _ _sb_email <<< "$(commit_author_identity "$1")"
+  [ "${_sb_email}" = "${_sb_bot}" ]
 }
 
 # signoff_count_range <range> — number of in-scope commits carrying a trailer.
@@ -1480,7 +1510,7 @@ signoff_present_in_range() {
 # closed. Never touches commits below the range's base.
 signoff_strip_range() {
   local _ss_range="$1" _ss_bot _ss_tmp _ss_sed _ss_sha
-  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0
+  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0 _ss_shas=""
   _ss_bot="$(signoff_bot_email)"
   # Skip line 1 so a message whose subject IS the trailer keeps a subject.
   _ss_sed='1!{/^Signed-off-by:/d;}'
@@ -1503,6 +1533,7 @@ signoff_strip_range() {
     if [ "${_ss_in_tip}" -eq 1 ] && signoff_is_bot_commit "${_ss_sha}"; then
       _ss_tip_n=$((_ss_tip_n + 1))
       _ss_base="${_ss_sha}"
+      _ss_shas="${_ss_shas} ${_ss_sha}"
     else
       _ss_in_tip=0
       if signoff_is_bot_commit "${_ss_sha}" \
@@ -1554,19 +1585,17 @@ signoff_strip_range() {
     return 1
   fi
 
-  # The narrowed range is agent-only by construction; the author check in the
-  # filter is a second line of defence. filter-branch exports each original
-  # commit's identity, so $GIT_AUTHOR_EMAIL is the commit being rewritten. The
-  # bot address goes through the environment, not the filter text: it
-  # contains "[bot]" and "+".
+  # The narrowed range is agent-only by construction; as a second line of
+  # defence the filter rewrites only the commits the walk selected, which
+  # filter-branch names through GIT_COMMIT.
   # --first-parent (passed to the underlying rev-list, same as the walk above)
   # keeps a forge-conflict merge's second parent — historical target-branch
   # commits — out of the rewrite. Without it, filter-branch regenerates every
   # commit it is handed, including that second-parent history, which changes
   # its SHAs and breaks the merge's TRUSTED_TARGET_SHA ancestry.
-  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_BOT_EMAIL="${_ss_bot}" \
+  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_SHAS="${_ss_shas} " \
        git filter-branch -f \
-       --msg-filter 'if [ "${GIT_AUTHOR_EMAIL}" = "${SIGNOFF_BOT_EMAIL}" ]; then sed '"'${_ss_sed}'"'; else cat; fi' \
+       --msg-filter 'case "${SIGNOFF_SHAS}" in *" ${GIT_COMMIT} "*) sed '"'${_ss_sed}'"' ;; *) cat ;; esac' \
        -- --first-parent "${_ss_base}^..HEAD" >/dev/null; then
     echo "signoff-strip: git filter-branch failed" >&2
     return 1
@@ -2500,30 +2529,6 @@ fi
 # GIT_AUTHOR_NAME, so the fix-agent identity is hardcoded here rather than
 # read from the environment.
 FIX_AGENT_GIT_NAME="fullsend-fix"
-
-# commit_author_identity SHA — prints "name<TAB>email". A commit published
-# through the GitHub API (docs/code.md "Signed commits") is authored by the
-# App's bot user and carries the sandbox identity in an `Authored-by: name
-# <email>` trailer. The trailer is the author only when the git author is
-# that bot (name ending in `[bot]`, email GIT_BOT_EMAIL) and the commit
-# carries exactly one; anything else is read from the git author fields.
-commit_author_identity() {
-  local sha="$1" name email trailers
-  IFS=$'\t' read -r name email <<< "$(git log -1 --format='%an%x09%ae' "${sha}" 2>/dev/null)"
-  if [[ "${name}" == *"[bot]" && "${email}" == "$(signoff_bot_email)" ]]; then
-    trailers="$(git log -1 --format='%(trailers:key=Authored-by,valueonly)' "${sha}" 2>/dev/null | sed '/^$/d')"
-    if [ "$(printf '%s\n' "${trailers}" | grep -c .)" = "1" ]; then
-      case "${trailers}" in
-        *" <"*">")
-          name="${trailers% <*}"
-          email="${trailers##* <}"
-          email="${email%>}"
-          ;;
-      esac
-    fi
-  fi
-  printf '%s\t%s\n' "${name}" "${email}"
-}
 
 # history_rewrite_preserves_remote_human_commits — 0 when every commit on
 # origin/BRANCH since it diverged from origin/TARGET_BRANCH that is NOT

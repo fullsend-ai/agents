@@ -23,6 +23,8 @@
 # Expected globals:
 #   REPO_FULL_NAME — owner/repo
 #   PUSH_TOKEN     — GitHub App installation token (GH_TOKEN as fallback)
+#   GIT_BOT_EMAIL  — the App bot's noreply address; only a commit it
+#                    authored keeps an existing Authored-by trailer
 # origin must carry push credentials (forge_set_push_remote) for the final
 # fetch.
 
@@ -156,12 +158,13 @@ _signed_push_commit() {
     _signed_push_mapped "${parent}"
   done | jq -Rn '[inputs]')"
   # The author becomes the App's bot user, so the local identity goes into
-  # a trailer. A bot-authored commit came back from GitHub and keeps the
-  # trailer it was published with; any other commit loses every Authored-by
-  # line first, so a crafted one cannot survive a rebase. interpret-trailers
-  # runs outside the checkout so a repo-local trailer.*.cmd cannot run here.
+  # a trailer. A commit that bot authored came back from GitHub and keeps
+  # the trailer it was published with; any other commit loses every
+  # Authored-by line first, so a crafted one cannot survive a rebase.
+  # interpret-trailers runs outside the checkout so a repo-local
+  # trailer.*.cmd cannot run here.
   author="$(git log -1 --format='%an <%ae>' "${commit}")"
-  if [[ "${author}" == *"[bot] <"* ]]; then
+  if [[ "${author}" == *"[bot] <${GIT_BOT_EMAIL:-}>" ]]; then
     keep=1
   else
     # shellcheck disable=SC2016  # awk program, not shell expansion

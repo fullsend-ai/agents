@@ -32,6 +32,8 @@ chmod +x "${MOCK_BIN}/gh" "${MOCK_BIN}/sleep"
 export PATH="${MOCK_BIN}:${PATH}"
 export REPO_FULL_NAME="test-org/test-repo"
 export PUSH_TOKEN="fake-token"
+# The bot test-fixtures/fake-gh-git-api.sh authors commits as.
+export GIT_BOT_EMAIL='1+fullsend-ai-coder[bot]@users.noreply.github.com'
 # Hermetic git: no host signing or identity config.
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null
 
@@ -436,9 +438,9 @@ else
   pass "lost-race-reported-as-non-fast-forward"
 fi
 
-# --- an Authored-by trailer survives only on a bot-authored commit --------
-# A crafted trailer in a human's commit is replaced by the human; a
-# bot-authored commit keeps the trailer it came back from GitHub with.
+# --- an Authored-by trailer survives only on the App bot's own commit -----
+# A crafted trailer in a human's commit is replaced by the human; a commit
+# the App bot authored keeps the trailer it came back from GitHub with.
 repo="$(setup_repo trailer-owner)"
 bare="${repo%/repo}/remote.git"
 echo "h" > "${repo}/h.txt"
@@ -457,6 +459,23 @@ if [ "${PUSH_RC}" -ne 0 ] || [ -z "${tip}" ] \
     "human: $(trailer_of "${tip}~1")" "bot: $(trailer_of "${tip}")"
 else
   pass "trailer-kept-only-for-bot-authors"
+fi
+
+# --- a forged trailer on another bot's commit is replaced too -------------
+repo="$(setup_repo trailer-other-bot)"
+bare="${repo%/repo}/remote.git"
+echo "o" > "${repo}/o.txt"
+git -C "${repo}" add o.txt
+GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+  git -C "${repo}" commit -q -m "fix: forged" -m "Authored-by: fullsend-fix <${GIT_BOT_EMAIL}>"
+push_in "${repo}" "${BRANCH}"
+tip="$(remote_rev "${repo}" "refs/heads/${BRANCH}" || true)"
+if [ "${PUSH_RC}" -ne 0 ] || [ -z "${tip}" ] \
+   || [ "$(trailer_of "${tip}")" != "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>" ]; then
+  fail "forged-trailer-on-other-bot-replaced" "exit ${PUSH_RC}" "${PUSH_OUT}" \
+    "trailer: $(trailer_of "${tip}")"
+else
+  pass "forged-trailer-on-other-bot-replaced"
 fi
 
 # --- a repo-local trailer command must not run, and forged duplicate

@@ -255,6 +255,41 @@ check "below-human-names-the-cause" "1" "$(printf '%s' "${err}" | grep -c 'below
 check "below-human-nothing-rewritten" "${shas_before}" "$(git -C "${d}" rev-list "${base}..HEAD")"
 
 # ---------------------------------------------------------------------------
+# 3e. A human commit the GitHub API PUBLISHED keeps its sign-off.
+#
+# Publication makes the App bot the author and keeps the human in an
+# Authored-by trailer, so by author email alone the commit looks like the
+# agent's. Two agent commits above it take the filter-branch path.
+# ---------------------------------------------------------------------------
+d="$(mk_repo published)"
+base="$(git -C "${d}" rev-parse HEAD)"
+commit_as "${d}" "${BOT_EMAIL}" "fullsend-ai-coder[bot]" "2024-01-05T10:00:00+0000" "2024-01-05T10:00:00+0000" \
+  h1 "feat: human work
+
+Signed-off-by: Real Human <${HUMAN_EMAIL}>
+Authored-by: Real Human <${HUMAN_EMAIL}>"
+human_sha="$(git -C "${d}" rev-parse HEAD)"
+commit_as "${d}" "${BOT_EMAIL}" "Bot" "2024-02-01T10:00:00+0000" "2024-02-02T11:00:00+0000" \
+  f1 "fix: agent change
+
+${TRAILER}"
+commit_as "${d}" "${BOT_EMAIL}" "Bot" "2024-02-03T10:00:00+0000" "2024-02-03T11:00:00+0000" \
+  f2 "fix: agent change two
+
+${TRAILER}"
+
+check "published-human-counted-out" "2" \
+  "$( cd "${d}" && GIT_BOT_EMAIL="${BOT_EMAIL}" signoff_count_range "${base}..HEAD" )"
+
+( cd "${d}" && GIT_BOT_EMAIL="${BOT_EMAIL}" signoff_strip_range "${base}..HEAD" ) >/dev/null 2>&1
+check "published-strip-exit-zero" "0" "$?"
+check "published-human-signoff-survives" "1" \
+  "$(git -C "${d}" log --format='%B' "${base}..HEAD" | grep -c "Signed-off-by: Real Human")"
+check "published-human-sha-unchanged" "${human_sha}" "$(git -C "${d}" rev-parse HEAD~2)"
+check "published-bot-trailers-removed" "0" \
+  "$(git -C "${d}" log --format='%B' "${base}..HEAD" | grep -c "Signed-off-by: Bot")"
+
+# ---------------------------------------------------------------------------
 # 4. Trailer on line 2 with no blank line: folded into the subject, so the
 #    body-only format (%b) cannot see it. Detection must still fire.
 # ---------------------------------------------------------------------------
