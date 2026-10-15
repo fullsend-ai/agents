@@ -179,7 +179,9 @@ judges:
       What the run produced: a PR ("pr"), a clean stop with a stated reason
       ("declined"), or nothing usable ("failed"). Passes for pr or declined;
       the rationale carries the category and, for a decline, the agent's own
-      words, so a reader can see why without opening the transcript.
+      words, so a reader can see why without opening the transcript. A
+      capture or fixture failure is "failed" with infrastructure=true (and the
+      capture hook exits non-zero), never a decline, whatever the agent said.
     check: |
       import json
       raw = outputs["files"].get("output/agent-outcome.json")
@@ -191,6 +193,8 @@ judges:
           return True, "pr: " + str(o.get("reason"))
       if kind == "declined":
           return True, "declined: " + (o.get("final_message_excerpt") or "").replace("\n", " ")[:300]
+      if o.get("infrastructure"):
+          return False, f"failed (infrastructure, not the agent): {o.get('reason')}"
       return False, f"failed: {o.get('reason')}"
 
   - name: regression_tests_pass

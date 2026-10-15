@@ -9,7 +9,9 @@
 #     agent-outcome.json {"outcome":"pr"|"declined"|"failed", ...}: "declined" =
 #                        the agent finished cleanly, opened no PR, and left a
 #                        final message (its stated reason); the judges branch
-#                        on this
+#                        on this. A capture or fixture failure is "failed" with
+#                        "infrastructure": true, whatever the agent said, and
+#                        this hook then exits non-zero so the run is not clean.
 #     regression.json    {command, exit_code, timed_out, sandbox_failed, ...}
 #     regression.log     raw test output (run inside a throwaway OpenShell
 #                        sandbox by run-in-sandbox.sh, never on this host)
@@ -68,17 +70,39 @@ fi
   if [[ -n "$final_msg" ]]; then printf '%s\n' "$final_msg"; else echo "(no final message found in the transcript)"; fi
 } > "$JUDGE_DIR/agent-final-message.md"
 
-write_outcome() { # outcome reason
-  jq -n -c --arg o "$1" --arg r "$2" --arg m "$final_msg" \
-    '{outcome: $o, reason: $r, final_message_chars: ($m|length), final_message_excerpt: $m[0:400]}' \
+write_outcome() { # outcome reason [infrastructure:true|false]
+  jq -n -c --arg o "$1" --arg r "$2" --arg m "$final_msg" --argjson infra "${3:-false}" \
+    '{outcome: $o, reason: $r, infrastructure: $infra, final_message_chars: ($m|length), final_message_excerpt: $m[0:400]}' \
     > "$OUTPUT_DIR/agent-outcome.json"
 }
 
-no_pr() {
+no_pr_files() { # reason: the pr.json / pr.md / regression files every no-PR path writes
   jq -n --arg r "$1" '{pr_found: false, reason: $r}' > "$OUTPUT_DIR/pr.json"
   printf '# Pull request\n\nNo pull request was produced: %s\n' "$1" > "$JUDGE_DIR/pr.md"
+  # No PR head to test: say so explicitly, so the regression check can report
+  # "not applicable" instead of mistaking a missing file for a failed capture.
+  jq -n --arg r "$1" '{command: null, exit_code: null, not_applicable: true, reason: ("no PR: " + $r)}' \
+    > "$OUTPUT_DIR/regression.json"
+  printf '# Repository tests\n\nNot applicable: no pull request was produced.\n' > "$JUDGE_DIR/tests.md"
+}
+
+# An infrastructure or capture failure: the fixture record is missing or
+# unreadable, so nothing is known about what the agent did. Never "declined",
+# whatever final message the agent left (the decline judge would grade a
+# reason the agent never gave), and the hook exits non-zero so the harness
+# marks the case as not having run cleanly, as the eval's footer promises.
+infra_fail() {
+  no_pr_files "$1"
+  write_outcome failed "$1" true
+  echo "outcome: failed, infrastructure ($1)" >&2
+  exit 1
+}
+
+no_pr() {
+  no_pr_files "$1"
   # Declined = the run finished (metrics.json exists) and the agent said why;
-  # otherwise the run failed or produced nothing readable.
+  # otherwise the run failed or produced nothing readable. Only for the one
+  # path where the fixture record was read and no agent PR was in it.
   if [[ -n "$final_msg" && -f "$run_dir/metrics.json" ]]; then
     write_outcome declined "$1"
     # Stage the repository the agent was given so the decline judge can
@@ -89,21 +113,16 @@ no_pr() {
     write_outcome failed "$1"
     echo "outcome: failed ($1)"
   fi
-  # No PR head to test: say so explicitly, so the regression check can report
-  # "not applicable" instead of mistaking a missing file for a failed capture.
-  jq -n --arg r "$1" '{command: null, exit_code: null, not_applicable: true, reason: ("no PR: " + $r)}' \
-    > "$OUTPUT_DIR/regression.json"
-  printf '# Repository tests\n\nNot applicable: no pull request was produced.\n' > "$JUDGE_DIR/tests.md"
   exit 0
 }
-[[ -f "$STATE_FILE" ]] || no_pr "fixture-state.json missing; capture-fixture.sh did not run"
+[[ -f "$STATE_FILE" ]] || infra_fail "fixture-state.json missing; capture-fixture.sh did not run"
 # Only the agent's own PR counts: fullsend's post-script pushes agent/<issue>-<slug>
 # branches. Anything else on the throwaway repo (Dependabot, for one) is ignored.
 pr=$(jq -c '[(.pull_requests // [])[] | select(((.state|ascii_upcase) == "OPEN" or (.state|ascii_upcase) == "MERGED") and ((.head // "") | startswith("agent/")))] | first // empty' "$STATE_FILE")
 [[ -n "$pr" ]] || no_pr "no open/merged PR on an agent/ branch in fixture-state.json"
 num=$(jq -r .number <<<"$pr")
 head_ref=$(jq -r '.head // empty' <<<"$pr")
-[[ "$head_ref" =~ ^[A-Za-z0-9._/-]+$ ]] || no_pr "unexpected head ref: $head_ref"
+[[ "$head_ref" =~ ^[A-Za-z0-9._/-]+$ ]] || infra_fail "unexpected head ref: $head_ref"
 
 # PR metadata + the agent's own description.
 gh pr view "$num" --repo "$EPHEMERAL_REPO" --json number,url,title,body,headRefName,baseRefName,headRefOid,files,additions,deletions \

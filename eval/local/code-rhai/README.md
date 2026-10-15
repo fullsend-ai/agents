@@ -34,7 +34,10 @@ Every run ends in one of three outcomes, recorded by the `outcome` judge:
 `pr` (the agent opened a PR on an agent/ branch), `declined` (the agent
 finished cleanly, opened no PR, and left a message saying why), or `failed`
 (nothing usable). A decline is not a failure: whether stopping was right is
-judged on its own terms.
+judged on its own terms. A failure of the eval's own capture (the fixture
+record missing, an unreadable PR reference) is recorded as `failed` with
+`infrastructure: true`, whatever the agent's final message said, and the
+capture hook exits non-zero so the harness marks the case as not clean.
 
 1. Deterministic first: the outcome; a PR exists; the repository's own test
    command still passes on the PR head; budgets are reported.
