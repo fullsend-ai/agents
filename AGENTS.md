@@ -133,7 +133,46 @@ These fields are defined by the skill spec. A field's first appearance
 in a skill file in this repo is not a novel pattern and should not be
 flagged as a code-organization concern.
 
-## 8. Harness env var literals are not "hardcoded" mistakes
+## 8. Agent definition frontmatter
+
+Each agent definition (`agents/*.md`) begins with a YAML frontmatter
+block delimited by `---`. The following fields are recognized:
+
+- **`name`** (required) — identifier for the agent. Used by the harness
+  to match event dispatch rules to agent definitions.
+- **`description`** (required) — explains the agent's purpose and when
+  to use it. May be a single line or a YAML multi-line scalar (`>-`).
+- **`model`** (optional) — the model tier to use (e.g., `opus`,
+  `sonnet`). Omitting it inherits the harness default.
+- **`skills`** (optional) — YAML list of skill identifiers the agent
+  has access to at runtime. Each entry is a string matching a skill's
+  `name` field (see section 7). When `skills:` is non-empty and a
+  `tools:` field is present, `tools:` must include `Skill` for the
+  agent to open those skills. When `tools:` is omitted (no tool
+  restriction), skills are accessible without an explicit `Skill`
+  entry.
+- **`tools`** (optional) — comma-space-separated list of tool
+  specifiers that restricts which tools the agent may use. Omitting
+  the field entirely imposes no tool restriction. Each specifier is a
+  tool name optionally followed by parenthesized arguments that scope
+  allowed subcommands — e.g., `Bash(gh,curl,jq)` grants `Bash` but
+  only for `gh`, `curl`, and `jq`. Arguments inside parentheses are
+  comma-separated with **no spaces**. Specifiers in the list are
+  separated by **comma-space** (`, `). Examples:
+
+  ```yaml
+  # Restricted to Bash (gh, curl, jq only) and Skill
+  tools: Bash(gh,curl,jq), Skill
+
+  # Restricted to Bash (jq only), no skill access
+  tools: Bash(jq)
+  ```
+
+  The comma-space separator is required — omitting the space (e.g.,
+  `Bash(gh,curl,jq),Skill`) causes the parser to silently drop
+  subsequent tool names.
+
+## 9. Harness env var literals are not "hardcoded" mistakes
 
 A literal value in a harness `env.runner`/`env.sandbox` block (e.g.
 `REVIEW_FINDING_SEVERITY_THRESHOLD: "low"` in [`harness/review.yaml`](harness/review.yaml))
