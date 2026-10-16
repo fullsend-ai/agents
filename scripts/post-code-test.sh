@@ -57,6 +57,24 @@ else
   echo "PASS: bundled-script-has-ensure-label"
 fi
 
+# Force-push must refuse to drop non-code-agent commits on origin/BRANCH
+# (issue #342). The check is the same fail-closed helper the fix agent uses.
+if ! grep -q 'history_rewrite_preserves_remote_human_commits' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-refuses-force-push-that-drops-human-commits"
+  echo "  ${POST_SCRIPT} missing fail-closed check that remote human commits remain in HEAD"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-refuses-force-push-that-drops-human-commits"
+fi
+
+if ! grep -q 'Fetching remote branch ${BRANCH} before force-push' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-fetches-remote-branch-before-force-push"
+  echo "  ${POST_SCRIPT} missing fetch of origin/\${BRANCH} before --force-with-lease"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-fetches-remote-branch-before-force-push"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -2366,6 +2384,291 @@ else
 fi
 
 rm -rf "${SEC_CODE_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Force-push human-commit preservation (issue #342).
+#
+# The original incident: a code-agent re-run force-pushed a fresh-from-main
+# branch over an open PR that a human had added Playwright tests to, silently
+# dropping those files. These tests run the REAL post-code script against a
+# local bare remote with mock gh/gitleaks, same shape as the security tests
+# above.
+# ---------------------------------------------------------------------------
+PRESERVE_TMPDIR="$(mktemp -d)"
+PRESERVE_MOCK_BIN="${PRESERVE_TMPDIR}/bin"
+mkdir -p "${PRESERVE_MOCK_BIN}"
+
+cat > "${PRESERVE_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${PRESERVE_MOCK_BIN}/sleep"
+
+cat > "${PRESERVE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${PRESERVE_MOCK_BIN}/gitleaks"
+
+cat > "${PRESERVE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo "99"; exit 0 ;;
+  "pr view")
+    echo '{"body":"Closes #99","url":"https://github.com/test-org/test-repo/pull/99"}'
+    exit 0
+    ;;
+  "pr comment"|"issue comment")
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --body) echo "$2"; break ;;
+        *) shift ;;
+      esac
+    done
+    cat 2>/dev/null || true
+    exit 0
+    ;;
+  *) exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${PRESERVE_MOCK_BIN}/gh"
+
+PRESERVE_REAL_GIT="$(which git)"
+cat > "${PRESERVE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
+  exit 0
+fi
+exec ${PRESERVE_REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${PRESERVE_MOCK_BIN}/git"
+
+preserve_commit_as() {
+  local repo="$1" email="$2" name="$3" msg="$4"
+  GIT_AUTHOR_NAME="${name}" GIT_AUTHOR_EMAIL="${email}" \
+  GIT_COMMITTER_NAME="${name}" GIT_COMMITTER_EMAIL="${email}" \
+    git -C "${repo}" commit -q -m "${msg}"
+}
+
+preserve_ident() {
+  git -C "$1" config user.email "test@example.com"
+  git -C "$1" config user.name "Test"
+}
+
+run_preserve_postcode() {
+  local run_dir="$1"
+  local stdout_log="$2"
+  local bot_email="${3:-}"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${PRESERVE_TMPDIR}"
+    export PATH="${PRESERVE_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    unset GIT_COMMITTER_EMAIL GIT_AUTHOR_EMAIL
+    if [ -n "${bot_email}" ]; then
+      export GIT_BOT_EMAIL="${bot_email}"
+    else
+      unset GIT_BOT_EMAIL
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+  return "${exit_code}"
+}
+
+# Human added a file on the open PR branch. A fresh-from-main code-agent
+# re-run must refuse to force-push, leaving the human file on the remote.
+run_preserve_refuses_lost_human_commit_test() {
+  local test_name="force-push-refuses-lost-human-commit"
+  local base="${PRESERVE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+  local human_email="human@example.com"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  preserve_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-preserve
+  echo "agent-v1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  preserve_commit_as "${base}/seed" "${bot_email}" "fullsend-code" "fix: agent first pass"
+  echo "playwright e2e" > "${base}/seed/e2e.spec.ts"
+  git -C "${base}/seed" add e2e.spec.ts
+  preserve_commit_as "${base}/seed" "${human_email}" "Alice" "test: add playwright e2e"
+  git -C "${base}/seed" push -q -u origin agent/99-preserve
+  local remote_tip
+  remote_tip="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  preserve_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-preserve origin/main
+  echo "agent-v2" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  preserve_commit_as "${base}/repo" "${bot_email}" "fullsend-code" "fix: agent re-run"
+
+  local stdout_log="${PRESERVE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_preserve_postcode "${base}" "${stdout_log}" "${bot_email}" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit when a human commit would be lost"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qi "human-contributed changes must be preserved" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing fail-closed message about the lost human commit"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local after
+  after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-preserve)"
+  if [ "${after}" != "${remote_tip}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved despite fail-closed force-push"
+    echo "  want ${remote_tip}, got ${after}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" cat-file -e "${remote_tip}:e2e.spec.ts" 2>/dev/null; then
+    echo "FAIL: ${test_name} — human-contributed e2e.spec.ts is missing from the remote"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Re-run over a branch that only has code-agent commits: force-push is the
+# intended replace-previous-agent-work path and must still succeed.
+run_preserve_allows_agent_only_force_push_test() {
+  local test_name="force-push-allows-agent-only-rewrite"
+  local base="${PRESERVE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  preserve_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-preserve
+  echo "agent-v1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  preserve_commit_as "${base}/seed" "${bot_email}" "fullsend-code" "fix: agent first pass"
+  git -C "${base}/seed" push -q -u origin agent/99-preserve
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  preserve_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-preserve origin/main
+  echo "agent-v2" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  preserve_commit_as "${base}/repo" "${bot_email}" "fullsend-code" "fix: agent re-run"
+
+  local stdout_log="${PRESERVE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_preserve_postcode "${base}" "${stdout_log}" "${bot_email}" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — expected success when overwriting only code-agent commits"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_content
+  remote_content="$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-preserve:file.txt)"
+  if [ "${remote_content}" != "agent-v2" ]; then
+    echo "FAIL: ${test_name} — remote file.txt is '${remote_content}', want 'agent-v2'"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Fix-agent commits share GIT_BOT_EMAIL with the code agent and differ only
+# by author name. An email-only check would treat them as droppable and let
+# a code-agent re-run silently discard /fs-fix work on the same PR.
+run_preserve_refuses_lost_fix_agent_commit_test() {
+  local test_name="force-push-refuses-lost-fix-agent-commit"
+  local base="${PRESERVE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  preserve_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-preserve
+  echo "code" > "${base}/seed/code.txt"
+  git -C "${base}/seed" add code.txt
+  preserve_commit_as "${base}/seed" "${bot_email}" "fullsend-code" "feat: code agent work"
+  echo "fix-agent" > "${base}/seed/fix.txt"
+  git -C "${base}/seed" add fix.txt
+  preserve_commit_as "${base}/seed" "${bot_email}" "fullsend-fix" "fix: review findings"
+  git -C "${base}/seed" push -q -u origin agent/99-preserve
+  local remote_tip
+  remote_tip="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  preserve_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-preserve origin/main
+  echo "code-v2" > "${base}/repo/code.txt"
+  git -C "${base}/repo" add code.txt
+  preserve_commit_as "${base}/repo" "${bot_email}" "fullsend-code" "feat: code agent re-run"
+
+  local stdout_log="${PRESERVE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_preserve_postcode "${base}" "${stdout_log}" "${bot_email}" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit when a fix-agent commit would be lost"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "fullsend-fix" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing fail-closed diagnostic naming the fix-agent author"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local after
+  after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-preserve)"
+  if [ "${after}" != "${remote_tip}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved despite fail-closed force-push"
+    echo "  want ${remote_tip}, got ${after}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_preserve_refuses_lost_human_commit_test
+run_preserve_allows_agent_only_force_push_test
+run_preserve_refuses_lost_fix_agent_commit_test
+
+rm -rf "${PRESERVE_TMPDIR}"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the auto-merge decision logic from post-code.sh
