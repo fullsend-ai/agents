@@ -23,7 +23,7 @@ The review agent runs automatically when:
 
 In per-repo installs, it also triggers when the `ready-for-review` label is applied to a PR/MR.
 
-All automatic triggers require the actor to have write-level repository permission (admin, maintain, or write).
+All automatic triggers require the actor to have triage-level repository permission or higher (triage, write, maintain, or admin).
 
 It can also be triggered manually with the `/fs-review` command.
 
@@ -33,7 +33,7 @@ It can also be triggered manually with the `/fs-review` command.
 |---------|-------|--------|
 | `/fs-review` | PR comment | Triggers a review on the PR (per-repo installs only; standalone issues are ignored) |
 
-Requires write-level repository permission (admin, maintain, or write).
+Requires triage-level repository permission or higher (triage, write, maintain, or admin).
 
 The `/fs-review` command does not accept arguments.
 
