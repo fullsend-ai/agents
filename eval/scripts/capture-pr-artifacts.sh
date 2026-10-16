@@ -47,6 +47,32 @@ for cmd in gh yq jq git timeout rsync openshell run-in-sandbox.sh; do
   command -v "$cmd" >/dev/null || { echo "ERROR: $cmd is required but not found in PATH" >&2; exit 1; }
 done
 
+final_msg=""
+write_outcome() { # outcome reason [infrastructure:true|false]
+  jq -n -c --arg o "$1" --arg r "$2" --arg m "$final_msg" --argjson infra "${3:-false}" \
+    '{outcome: $o, reason: $r, infrastructure: $infra, final_message_chars: ($m|length), final_message_excerpt: $m[0:400]}' \
+    > "$OUTPUT_DIR/agent-outcome.json"
+  # The outcome is known from here on; a later failure is a gap in the
+  # artifacts, not in knowing what the agent did.
+  trap - ERR
+}
+write_marker() { # reason: the file run-functional.sh counts as a case failure
+  jq -n -c --arg r "$1" --arg h "capture-pr-artifacts.sh" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{reason: $r, hook: $h, at: $t}' > "$OUTPUT_DIR/infrastructure-failure.json"
+}
+# Anything that exits this script before an outcome is recorded is a capture
+# failure (a fixture record jq cannot parse, a gh call that errored). set -e
+# alone would leave neither an outcome nor a marker, and the harness swallows
+# the hook's exit code, so the case would read as clean. The trap routes
+# every such exit through the same two files infra_fail writes.
+on_err() { # line exit-code
+  local why="capture hook aborted at line $1 (exit $2)"
+  write_marker "$why"
+  write_outcome failed "$why" true
+  echo "outcome: failed, infrastructure ($why)" >&2
+}
+trap 'on_err "$LINENO" "$?"' ERR
+
 # Task description and author notes: always written, so the judge can read
 # them even when the run produced nothing to grade.
 {
@@ -64,7 +90,6 @@ notes=$(yq -r '.judge_notes // ""' "$ANNOTATIONS")
 # The agent's final message, whatever the runtime (extract-final-message.py
 # understands the Claude Code, pi and codex transcript shapes).
 run_dir=$(find "$OUTPUT_DIR" -maxdepth 1 -type d -name 'fs-cod-*' | head -1)
-final_msg=""
 if [[ -n "$run_dir" ]]; then
   final_msg=$(extract-final-message.py "$run_dir" 2>/dev/null || true)
 fi
@@ -72,12 +97,6 @@ fi
   echo "# The agent's final message"; echo
   if [[ -n "$final_msg" ]]; then printf '%s\n' "$final_msg"; else echo "(no final message found in the transcript)"; fi
 } > "$JUDGE_DIR/agent-final-message.md"
-
-write_outcome() { # outcome reason [infrastructure:true|false]
-  jq -n -c --arg o "$1" --arg r "$2" --arg m "$final_msg" --argjson infra "${3:-false}" \
-    '{outcome: $o, reason: $r, infrastructure: $infra, final_message_chars: ($m|length), final_message_excerpt: $m[0:400]}' \
-    > "$OUTPUT_DIR/agent-outcome.json"
-}
 
 no_pr_files() { # reason: the pr.json / pr.md / regression files every no-PR path writes
   jq -n --arg r "$1" '{pr_found: false, reason: $r}' > "$OUTPUT_DIR/pr.json"
@@ -89,17 +108,18 @@ no_pr_files() { # reason: the pr.json / pr.md / regression files every no-PR pat
   printf '# Repository tests\n\nNot applicable: no pull request was produced.\n' > "$JUDGE_DIR/tests.md"
 }
 
-# An infrastructure or capture failure: the fixture record is missing or
-# unreadable, so nothing is known about what the agent did. Never "declined",
-# whatever final message the agent left (the decline judge would grade a
-# reason the agent never gave). The harness runs after_each hooks with
-# continue-on-failure, so a non-zero exit here never reaches the run result;
-# the marker file below is what run-functional.sh counts as a case failure.
+# An infrastructure or capture failure this script can name (the fixture
+# record is missing, the PR head ref is malformed): nothing is known about
+# what the agent did. Never "declined", whatever final message the agent left
+# (the decline judge would grade a reason the agent never gave). The harness
+# runs after_each hooks with continue-on-failure, so a non-zero exit here
+# never reaches the run result; the marker file is what run-functional.sh
+# counts as a case failure. Failures this script did not anticipate reach the
+# same two files through the ERR trap above.
 infra_fail() {
   no_pr_files "$1"
+  write_marker "$1"
   write_outcome failed "$1" true
-  jq -n -c --arg r "$1" --arg h "capture-pr-artifacts.sh" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{reason: $r, hook: $h, at: $t}' > "$OUTPUT_DIR/infrastructure-failure.json"
   echo "outcome: failed, infrastructure ($1)" >&2
   exit 1
 }
