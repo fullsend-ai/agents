@@ -101,12 +101,25 @@ git -C "$WORK/src" archive "$snapshot" | tar -x -C "$CASE_DIR/repo"
 # CI workflows, and Dependabot / Renovate configs (Dependabot opened a
 # version-bump PR on a throwaway repo within minutes on 2026-09-25, and the
 # hooks mistook it for the agent's PR).
+# Never delete through a symlinked directory: every component above the
+# target must be a real directory inside the tree, or rm would act on the
+# link's target on this host (an upstream tree could ship .github as a link).
+assert_real_parents() { # root relpath
+  local cur="$1" parts c
+  IFS=/ read -ra parts <<< "$2"
+  for c in "${parts[@]:0:${#parts[@]}-1}"; do
+    cur="$cur/$c"
+    [[ -L "$cur" ]] && { echo "ERROR: refusing to delete $2: '$c' is a symlink in the upstream tree" >&2; exit 1; }
+  done
+  return 0
+}
 removed=()
 if [[ $KEEP_WORKFLOWS -eq 0 && -d "$CASE_DIR/repo/.github/workflows" ]]; then
+  assert_real_parents "$CASE_DIR/repo" .github/workflows
   rm -rf "$CASE_DIR/repo/.github/workflows"; removed+=(".github/workflows")
 fi
 for f in .github/dependabot.yml .github/dependabot.yaml .github/renovate.json .github/renovate.json5 renovate.json renovate.json5 .renovaterc .renovaterc.json; do
-  if [[ -e "$CASE_DIR/repo/$f" ]]; then rm -f "$CASE_DIR/repo/$f"; removed+=("$f"); fi
+  if [[ -e "$CASE_DIR/repo/$f" ]]; then assert_real_parents "$CASE_DIR/repo" "$f"; rm -f "$CASE_DIR/repo/$f"; removed+=("$f"); fi
 done
 removed_note="none"; [[ ${#removed[@]} -gt 0 ]] && removed_note="${removed[*]} (automation that would act on the ephemeral repo)"
 n_files=$(find "$CASE_DIR/repo" -type f | wc -l | tr -d ' ')

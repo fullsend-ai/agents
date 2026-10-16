@@ -47,14 +47,30 @@ git -C "$WORK/src" rev-parse --verify --quiet "${SNAPSHOT}^{commit}" >/dev/null 
 
 git -C "$WORK/src" archive "$SNAPSHOT" | tar -x -C "$STAGE"
 
+# Never delete through a symlinked directory: every component above the
+# target must be a real directory inside the tree, or rm would act on the
+# link's target on this host (an upstream tree could ship .github as a link).
+assert_real_parents() { # root relpath
+  local cur="$1" parts c
+  IFS=/ read -ra parts <<< "$2"
+  for c in "${parts[@]:0:${#parts[@]}-1}"; do
+    cur="$cur/$c"
+    [[ -L "$cur" ]] && { echo "ERROR: refusing to delete $2: '$c' is a symlink in the upstream tree" >&2; exit 1; }
+  done
+  return 0
+}
+
 # Automation that would act on the ephemeral repo the moment it is pushed
 # (same list as build-case.sh), then the card's own exclusions.
+assert_real_parents "$STAGE" .github/workflows
 rm -rf "$STAGE/.github/workflows"
 for f in .github/dependabot.yml .github/dependabot.yaml .github/renovate.json .github/renovate.json5 renovate.json renovate.json5 .renovaterc .renovaterc.json; do
+  assert_real_parents "$STAGE" "$f"
   rm -f "$STAGE/$f"
 done
 for p in "${EXCLUDE[@]+"${EXCLUDE[@]}"}"; do
   [[ -n "$p" && "$p" != /* && "$p" != *..* ]] || { echo "ERROR: refusing exclude path '$p'" >&2; exit 1; }
+  assert_real_parents "$STAGE" "$p"
   rm -rf "${STAGE:?}/$p"
 done
 
