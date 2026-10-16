@@ -49,7 +49,9 @@ fi
 NAME="eval-reg-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"  # openshell caps names at 19 chars
 TARBALL=$(mktemp "${TMPDIR:-/tmp}/eval-reg-XXXXXX")  # BSD mktemp wants the Xs last
 cleanup() {
+  # shellcheck disable=SC2317 # invoked indirectly via trap
   rm -f "$TARBALL"
+  # shellcheck disable=SC2317
   openshell sandbox delete "$NAME" >/dev/null 2>&1 </dev/null || true
 }
 trap cleanup EXIT
