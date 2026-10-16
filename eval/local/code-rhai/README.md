@@ -237,6 +237,12 @@ For a macOS host: `TMPDIR=/tmp`; a `GOOS=linux` fullsend build in
 `EVAL_SANDBOX_BINARY`; `--forge github` is passed by `run-fullsend.sh`. CI is
 unaffected.
 
+The regression sandbox asks for 8 GiB (`EVAL_SANDBOX_MEMORY` overrides it;
+the odh-dashboard jest workers were killed under less). `run-in-sandbox.sh`
+waits up to `EVAL_SANDBOX_READY_TIMEOUT` (900 s) for the sandbox to be Ready
+and records `sandbox_failed` after that; on this Mac a fresh sandbox has been
+Ready within a minute, with the coder image cached.
+
 Memory during judging: `judge/` is a declared output so the agent judge can
 browse it, and the harness stages declared outputs by reading every file
 into memory and writing it back into the judge's workspace, `pr-head/`

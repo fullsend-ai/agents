@@ -73,9 +73,12 @@ if ! openshell sandbox create --name "$NAME" --keep --no-auto-providers --no-tty
   fi
 fi
 deadline=$(( $(date +%s) + READY_TIMEOUT ))
-until openshell sandbox get "$NAME" 2>/dev/null </dev/null | grep -q 'Phase: Ready'; do
+# Read the whole status, then test it: `get | grep -q` under pipefail is a
+# race, since the CLI exits 101 when grep closes the pipe first, and the loop
+# then never sees Ready (2026-10-16, three runs timed out on a Ready sandbox).
+until state=$(openshell sandbox get "$NAME" 2>/dev/null </dev/null || true); [[ "$state" == *"Phase: Ready"* ]]; do
   if (( $(date +%s) > deadline )); then
-    sandbox_fail "run-in-sandbox: sandbox $NAME not Ready after ${READY_TIMEOUT}s"
+    sandbox_fail "run-in-sandbox: sandbox $NAME not Ready after ${READY_TIMEOUT}s (last status: $(printf '%s' "$state" | grep -m1 'Phase:' || echo unknown))"
   fi
   sleep 3
 done
