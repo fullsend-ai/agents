@@ -214,7 +214,7 @@ done
 # agent-written text. Refuse rather than score unconfined.
 if yq -e '[.judges[] | select(.agent.denied_tools)] | length > 0' "$EVAL_YAML_SRC" >/dev/null 2>&1; then
   harness_min="1.56.3"
-  harness_ver="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "${HARNESS_DIR}/pyproject.toml" | head -1)"
+  harness_ver="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "${HARNESS_DIR}/pyproject.toml" 2>/dev/null | head -1 || true)"
   if [[ -z "$harness_ver" ]]; then
     echo "ERROR: cannot read the agent-eval-harness version from ${HARNESS_DIR}/pyproject.toml" >&2
     exit 1
