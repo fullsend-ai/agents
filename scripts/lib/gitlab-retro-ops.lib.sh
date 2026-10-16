@@ -98,14 +98,23 @@ forge_get_comment_max_len() {
 
 # --- Labels ---
 
+# Create a label. 409 (already exists) is ignored — GitLab has no --force
+# upsert. Other failures are warned, not silent, so missing triage routing
+# is visible. The caller still proceeds to file the issue.
 forge_create_label() {
   local repo="$1" name="$2" description="$3" color="$4"
-  local repo_encoded
+  local repo_encoded err_file
   repo_encoded=$(printf '%s' "${repo}" | jq -sRr @uri)
-  _gitlab_api POST "/projects/${repo_encoded}/labels" \
+  err_file=$(mktemp)
+  if ! _gitlab_api POST "/projects/${repo_encoded}/labels" \
     --data-urlencode "name=${name}" \
     --data-urlencode "description=${description}" \
-    --data-urlencode "color=#${color}" > /dev/null 2>/dev/null || true
+    --data-urlencode "color=#${color}" >"${err_file}" 2>&1; then
+    if ! grep -qE 'error: 409\b' "${err_file}"; then
+      echo "::warning::failed to create/verify $(_gha_sanitize "${name}") label in $(_gha_sanitize "${repo}") — issue may not be routed for triage: $(_gha_sanitize "$(cat "${err_file}")")"
+    fi
+  fi
+  rm -f "${err_file}"
 }
 
 # --- Issues ---
@@ -133,6 +142,24 @@ forge_create_issue() {
     return 1
   fi
   echo "${url}"
+}
+
+# Check whether label is present on a just-created issue. Distinguishes
+# "could not read labels" from "label missing" so a view failure is not
+# reported as a dropped label. Always returns 0 — warnings are non-fatal.
+forge_verify_issue_label() {
+  local repo="$1" issue_url="$2" label="$3"
+  local issue_iid repo_encoded response rc=0
+  issue_iid=$(basename "${issue_url}")
+  repo_encoded=$(printf '%s' "${repo}" | jq -sRr @uri)
+  response=$(_gitlab_api GET "/projects/${repo_encoded}/issues/${issue_iid}" 2>&1) || rc=$?
+  if [[ ${rc} -ne 0 ]]; then
+    echo "::warning::unable to verify $(_gha_sanitize "${label}") label on $(_gha_sanitize "${issue_url}"): $(_gha_sanitize "${response}")"
+    return 0
+  fi
+  if ! echo "${response}" | jq -e --arg l "${label}" '.labels | index($l) != null' >/dev/null 2>&1; then
+    echo "::warning::$(_gha_sanitize "${label}") label not applied to $(_gha_sanitize "${issue_url}") — manual triage may be needed"
+  fi
 }
 
 # --- Comments ---
