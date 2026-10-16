@@ -8,7 +8,10 @@
 # annotations.source.snapshot_commit, then strips the same automation
 # build-case.sh strips (CI workflows, Dependabot/Renovate configs) and any
 # paths listed in annotations.source.exclude. Idempotent: a repo/ that
-# already exists is kept unless --force.
+# already exists is kept unless --force. The tree is built in a staging
+# directory beside repo/ and moved into place only when every step has
+# succeeded, so a failed build never leaves a partial repo/ that later runs
+# (setup-fixture.sh, check-case.sh) would take for a complete one.
 #
 # Usage: materialize-case.sh <case-dir> [--force]
 set -euo pipefail
@@ -29,26 +32,35 @@ SNAPSHOT=$(yq -r '.source.snapshot_commit // ""' "$ANN")
 [[ "$SNAPSHOT" =~ ^[0-9a-f]{40}$ ]] || { echo "ERROR: source.snapshot_commit must be a full sha, got '$SNAPSHOT'" >&2; exit 1; }
 mapfile -t EXCLUDE < <(yq -r '.source.exclude // [] | .[]' "$ANN")
 
-WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
+WORK=$(mktemp -d)
+STAGE=$(mktemp -d "$CASE_DIR/.repo-stage.XXXXXX")
+cleanup() {
+  # shellcheck disable=SC2317
+  rm -rf "$WORK" "$STAGE"
+}
+trap cleanup EXIT
 echo "Cloning https://github.com/${REPO}.git at ${SNAPSHOT:0:12} ..."
 git clone --quiet --filter=blob:none --no-checkout "https://github.com/${REPO}.git" "$WORK/src"
 git -C "$WORK/src" fetch --quiet origin "$SNAPSHOT" 2>/dev/null || true
 git -C "$WORK/src" rev-parse --verify --quiet "${SNAPSHOT}^{commit}" >/dev/null \
   || { echo "ERROR: commit $SNAPSHOT not found in ${REPO} (rewritten or deleted upstream?)" >&2; exit 1; }
 
-rm -rf "$CASE_DIR/repo"; mkdir -p "$CASE_DIR/repo"
-git -C "$WORK/src" archive "$SNAPSHOT" | tar -x -C "$CASE_DIR/repo"
+git -C "$WORK/src" archive "$SNAPSHOT" | tar -x -C "$STAGE"
 
 # Automation that would act on the ephemeral repo the moment it is pushed
 # (same list as build-case.sh), then the card's own exclusions.
-rm -rf "$CASE_DIR/repo/.github/workflows"
+rm -rf "$STAGE/.github/workflows"
 for f in .github/dependabot.yml .github/dependabot.yaml .github/renovate.json .github/renovate.json5 renovate.json renovate.json5 .renovaterc .renovaterc.json; do
-  rm -f "$CASE_DIR/repo/$f"
+  rm -f "$STAGE/$f"
 done
 for p in "${EXCLUDE[@]+"${EXCLUDE[@]}"}"; do
   [[ -n "$p" && "$p" != /* && "$p" != *..* ]] || { echo "ERROR: refusing exclude path '$p'" >&2; exit 1; }
-  rm -rf "$CASE_DIR/repo/$p"
+  rm -rf "${STAGE:?}/$p"
 done
+
+# Every step succeeded: replace repo/ in one move (same filesystem).
+rm -rf "$CASE_DIR/repo"
+mv "$STAGE" "$CASE_DIR/repo"
 
 n_files=$(find "$CASE_DIR/repo" -type f | wc -l | tr -d ' ')
 echo "Materialized $CASE_DIR/repo from ${REPO}@${SNAPSHOT:0:12}: ${n_files} files, $(du -sh "$CASE_DIR/repo" | cut -f1)"
