@@ -22,9 +22,9 @@
 # Exit status: the command's own exit code; 124 when the command hit the
 # timeout; 125 when the sandbox could not be created, loaded or reached (the
 # log file says why). Because a command can itself exit 124 or 125, the
-# authoritative classification is written to <log-file>.status as one word:
-# "command" (exit code is the command's), "timeout" or "sandbox". The log
-# file holds the command's combined output.
+# classification is also written to <log-file>.status as one word: "command"
+# (exit code is the command's), "timeout" or "sandbox"; callers read that
+# file, not the exit code. The log file holds the command's combined output.
 set -uo pipefail
 DIR="${1:?usage: run-in-sandbox.sh <checkout-dir> <command> <timeout-s> <log-file>}"
 CMD="${2:?command}"; TMO="${3:?timeout-s}"; LOG="${4:?log-file}"
@@ -114,16 +114,18 @@ echo \"__EVAL_RC__=\$cmd_rc\""
 # code: openshell's code is the command's only when the sandbox lived to the
 # end, and a dropped relay, an evicted sandbox or an OOM kill would otherwise
 # read as "tests failed" (while a command that itself exits 125 would read as
-# sandbox_failed). A missing sentinel means the sandbox died first.
+# sandbox_failed). A missing sentinel means the sandbox died first. Only a
+# whole line of the exact shape counts, so test output that quotes the
+# sentinel text is neither read as a status nor stripped from the log.
 echo "run-in-sandbox: running the command (timeout ${TMO}s)" >&2
 t0=$(date +%s); exec_rc=0
 timeout "$(( TMO + 60 ))" openshell sandbox exec --name "$NAME" --no-tty --timeout "$TMO" \
   -- sh -c "$remote_script" </dev/null >>"$LOG" 2>&1 || exec_rc=$?
 elapsed=$(( $(date +%s) - t0 ))
-sentinel=$(grep -o '__EVAL_RC__=[0-9]*' "$LOG" | tail -n 1)
+sentinel=$(tr -d '\r' < "$LOG" | grep -o '^__EVAL_RC__=[0-9]\{1,\}$' | tail -n 1)
 if [[ -n "$sentinel" ]]; then
   rc="${sentinel#__EVAL_RC__=}"
-  sed -i.bak '/__EVAL_RC__=/d' "$LOG" && rm -f "$LOG.bak"
+  sed -i.bak '/^__EVAL_RC__=[0-9]\{1,\}[[:cntrl:]]*$/d' "$LOG" && rm -f "$LOG.bak"
   echo command > "$STATUS"
   exit "$rc"
 fi
