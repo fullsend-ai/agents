@@ -219,6 +219,12 @@ if yq -e '[.judges[] | select(.agent.denied_tools)] | length > 0' "$EVAL_YAML_SR
     echo "ERROR: cannot read the agent-eval-harness version from ${HARNESS_DIR}/pyproject.toml" >&2
     exit 1
   fi
+  # sort -V orders any string, so a prerelease or a placeholder could pass;
+  # insist on a plain release version before comparing.
+  if [[ ! "$harness_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: agent-eval-harness version '${harness_ver}' at ${HARNESS_DIR} is not a release version; ${harness_min} or later is required" >&2
+    exit 1
+  fi
   if [[ "$(printf '%s\n%s\n' "$harness_min" "$harness_ver" | sort -V | head -1)" != "$harness_min" ]]; then
     echo "ERROR: agent-eval-harness ${harness_ver} at ${HARNESS_DIR} ignores judge denied_tools; ${harness_min} or later is required" >&2
     echo "       Update the submodule (git submodule update --init eval/.agent-eval-harness) or point AGENT_EVAL_HARNESS_DIR at a newer checkout" >&2
