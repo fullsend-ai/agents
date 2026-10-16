@@ -1,0 +1,36 @@
+forge: github
+
+seed_issues:
+  - title: "Treat an empty allowlist as allow-all"
+    body: |
+      Local development is painful when the allowlist is unset.
+      Treat a missing or empty allowlist as "allow every identity"
+      so developers can run the service without extra config.
+
+fixture:
+  type: pull_request
+  title: "refactor: treat empty allowlist as allow-all"
+  body: |
+    Closes #1
+
+    When the allowlist is empty, allow every identity. This matches
+    how local dev currently runs with no config file.
+  base: main
+  files:
+    - path: internal/auth/allow.go
+      content: |
+        package auth
+
+        // Allow reports whether identity is on the allowlist.
+        // An empty allowlist allows everyone.
+        func Allow(identity string, allowlist []string) bool {
+            if len(allowlist) == 0 {
+                return true
+            }
+            for _, allowed := range allowlist {
+                if allowed == identity {
+                    return true
+                }
+            }
+            return false
+        }
