@@ -43,11 +43,15 @@ ANNOTATIONS="${CASE_SOURCE_DIR}/annotations.yaml"
 INPUT="${CASE_SOURCE_DIR}/input.yaml"
 MAX_BYTES="${PR_DIFF_MAX_BYTES:-400000}"
 mkdir -p "$OUTPUT_DIR" "$JUDGE_DIR"
-for cmd in gh yq jq git timeout rsync openshell run-in-sandbox.sh; do
-  command -v "$cmd" >/dev/null || { echo "ERROR: $cmd is required but not found in PATH" >&2; exit 1; }
-done
 
 final_msg=""
+json_str() { # one JSON string literal, without jq (which may be the missing tool)
+  local v="$1"; v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; v="${v//$'\n'/ }"; printf '"%s"' "$v"
+}
+write_marker() { # reason: the file run-functional.sh counts as a case failure
+  printf '{"reason": %s, "hook": "capture-pr-artifacts.sh", "at": "%s"}\n' \
+    "$(json_str "$1")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUTPUT_DIR/infrastructure-failure.json"
+}
 write_outcome() { # outcome reason [infrastructure:true|false]
   jq -n -c --arg o "$1" --arg r "$2" --arg m "$final_msg" --argjson infra "${3:-false}" \
     '{outcome: $o, reason: $r, infrastructure: $infra, final_message_chars: ($m|length), final_message_excerpt: $m[0:400]}' \
@@ -55,10 +59,6 @@ write_outcome() { # outcome reason [infrastructure:true|false]
   # The outcome is known from here on; a later failure is a gap in the
   # artifacts, not in knowing what the agent did.
   trap - ERR
-}
-write_marker() { # reason: the file run-functional.sh counts as a case failure
-  jq -n -c --arg r "$1" --arg h "capture-pr-artifacts.sh" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{reason: $r, hook: $h, at: $t}' > "$OUTPUT_DIR/infrastructure-failure.json"
 }
 # Anything that exits this script before an outcome is recorded is a capture
 # failure (a fixture record jq cannot parse, a gh call that errored). set -e
@@ -72,6 +72,22 @@ on_err() { # line exit-code
   echo "outcome: failed, infrastructure ($why)" >&2
 }
 trap 'on_err "$LINENO" "$?"' ERR
+
+# A missing tool is a capture failure too, and must leave the same two files;
+# jq may be the tool that is missing, so the outcome is written by hand here.
+missing=()
+for cmd in gh yq jq git timeout rsync openshell run-in-sandbox.sh; do
+  command -v "$cmd" >/dev/null || missing+=("$cmd")
+done
+if (( ${#missing[@]} > 0 )); then
+  why="required tools not found in PATH: ${missing[*]}"
+  write_marker "$why"
+  printf '{"outcome": "failed", "reason": %s, "infrastructure": true, "final_message_chars": 0, "final_message_excerpt": ""}\n' \
+    "$(json_str "$why")" > "$OUTPUT_DIR/agent-outcome.json"
+  echo "ERROR: $why" >&2
+  echo "outcome: failed, infrastructure ($why)" >&2
+  exit 1
+fi
 
 # Task description and author notes: always written, so the judge can read
 # them even when the run produced nothing to grade.
