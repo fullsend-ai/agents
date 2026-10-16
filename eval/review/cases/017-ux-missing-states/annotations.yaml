@@ -1,0 +1,32 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: false
+
+findings:
+  required:
+    - uxd-evaluate-code-heuristics
+  forbidden: []
+
+max_cost_usd: 8.00
+
+review_expectations: |
+  This is a recognizable admin user-management change: a table adds a
+  destructive Delete user action. The handler runs immediately on click with
+  no confirmation, pending/disabled state, success or failure feedback, or
+  recovery path. It also handles loading but provides no empty state when the
+  user list has no rows, and renders a raw error object to users.
+
+  The user-experience sub-agent should apply the uxd-evaluate-code-heuristics
+  skill dimensions: state coverage (missing empty state), destructive action
+  safety (unconfirmed delete with no recovery feedback), content & microcopy
+  (raw error object displayed to users), and accessibility.
+
+  Generic review dimensions (correctness, style-conventions) may also
+  produce findings about the same issues — the user-experience findings
+  should be distinct and focused on user-facing experience gaps. UXD
+  findings for the rubric's ERROR checks should be medium severity; WARN
+  checks should be low severity.

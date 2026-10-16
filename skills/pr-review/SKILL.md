@@ -38,6 +38,7 @@ relative to this file.
 | `style-conventions`    | parallel   | Repo-specific naming, error-handling idioms, API shape, code organization                                               |
 | `docs-currency`        | parallel   | Documentation staleness (follows docs-review skill inline)                                                              |
 | `cross-repo-contracts` | parallel   | API contract breakage affecting other repos (conditional)                                                               |
+| `user-experience`      | parallel   | UX design criteria — state coverage, content & microcopy, destructive action safety, accessibility                       |
 | `risk-assessment`      | parallel   | Composite risk score (metadata, git history, linked issue)                                                              |
 | `challenger`           | sequential | Adversarial challenge of findings, false-positive removal, deduplication                                                |
 
@@ -244,6 +245,8 @@ dimensions are relevant:
 - Linked issues exist to verify against, or any non-trivial change →
   `intent-coherence`
 - Repository has documentation files → `docs-currency`
+- UI signals (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.html`, `.css`, `.scss`, or
+  JSX/ARIA/UI-framework imports in diff) → `user-experience`
 - Always included → `style-conventions`
 
 #### 3c. Select sub-agents
@@ -253,10 +256,8 @@ All selected sub-agents run in parallel — `risk-assessment` (composed
 in step 3c-2) among them — except `challenger`, which, when step 6d
 dispatches it, runs by itself after all other sub-agents have finished.
 
-**Dispatch sub-agents based on the classification — typically 3-6.**
-The orchestrator should auto-select which sub-agents are relevant for
-the specific change rather than dispatching all agents by default. A
-complex PR that triggers all conditions legitimately needs all 6.
+**Dispatch sub-agents based on the classification — typically 3-7.**
+Dispatch only relevant sub-agents; a complex PR may legitimately need all 7.
 
 **Always included:** `correctness` and `style-conventions`.
 
@@ -270,6 +271,7 @@ complex PR that triggers all conditions legitimately needs all 6.
 - `cross-repo-contracts` — when public APIs, exported interfaces,
   schemas, or CLI args are modified. Skip entirely for PRs that don't
   touch public API surface.
+- `user-experience` — when 3b UI signals match; skip backend changes.
 
 **Re-review dispatch (prior-finding-aware):** When
 `PRIOR_REVIEW_PROVENANCE` is `app-verified` and prior findings exist
@@ -279,16 +281,16 @@ complex PR that triggers all conditions legitimately needs all 6.
    is always full scope — see item 3) — dispatch at normal scope
    (unchanged behavior). These sub-agents verify the fixes.
 2. **Conditional sub-agents WITHOUT prior findings** (`security`,
-   `intent-coherence`, `docs-currency`, `cross-repo-contracts`) — skip
+   `intent-coherence`, `docs-currency`, `cross-repo-contracts`,
+   `user-experience`) — skip
    dispatch unless the files changed since the prior review
    (`changed_since_prior`, step 3d) independently qualify them. On
-   re-review these tests **override** step 3b's triggers for these four
+   re-review these tests **override** step 3b's triggers for these five
    dimensions — in particular step 3b's "any non-trivial change"
    disjunct does NOT apply here. Each test is decided from
    `changed_since_prior` (a file set — filenames, step 2a):
-   `docs-currency`, `security`, and `cross-repo-contracts` are
-   path/extension checks. `intent-coherence` consults the incremental diff and
-   issue context in its context package (step 3d).
+   `docs-currency`, `security`, `cross-repo-contracts`, and `user-experience`
+   use path/extension checks; `user-experience` uses 3b content signals.
    - `intent-coherence` — re-qualifies when `changed_since_prior` contains a
      file without an incremental patch, or when a non-empty delta contains a
      remediation candidate or a file not paired with a prior finding. Inspect
@@ -305,6 +307,7 @@ complex PR that triggers all conditions legitimately needs all 6.
      criteria (auth/permissions/secrets/config/data-handling for
      `security`; public APIs, exported interfaces, schemas, or CLI
      surface for `cross-repo-contracts`).
+   - `user-experience` — re-qualify on UI extensions from 3b.
 
    If the incremental delta cannot be enumerated — `changed_since_prior`
    is `"all"` (the step 2a fallback for a failed compare or ≥300 files),
@@ -697,7 +700,7 @@ follows:
    knowing which files the triage pass flagged.
 
 3. **Other sub-agents** (`intent-coherence`, `style-conventions`,
-   `docs-currency`, `cross-repo-contracts`): Receive the standard
+   `docs-currency`, `cross-repo-contracts`, `user-experience`): Receive the standard
    context package without prioritization. These dimensions are not
    affected by the security triage classification.
 
@@ -745,14 +748,12 @@ here):
    **Part 3 — Linked skill (conditional):** Check the skill-loading
    table below. If the sub-agent has a linked skill, read the skill
    file and include its contents verbatim after the sub-agent
-   definition. (This table is also referenced by step 3c-2, whose
-   composed risk-assessment prompt is dispatched in this step's batch
-   when risk assessment is enabled.)
+   definition. Runtime-fetching sub-agents load their own skills.
 
-   | Sub-agent          | Linked skill                         |
-   |--------------------|--------------------------------------|
-   | docs-currency      | ../docs-review/SKILL.md              |
-   | risk-assessment    | ../pr-risk-assessment/SKILL.md       |
+   | Sub-agent          | Linked skill |
+   |--------------------|--------------|
+   | docs-currency      | ../docs-review/SKILL.md |
+   | risk-assessment    | ../pr-risk-assessment/SKILL.md |
 
    **Part 4 — Context package:** the assembled context from step 3d,
    formatted as clearly labeled sections:
@@ -873,7 +874,8 @@ the sub-agent's tier:
   than no review at all. A high finding ensures the outcome is at
   minimum `request-changes` (see step 6f).
 - **Sonnet-tier sub-agents** (`intent-coherence`,
-  `style-conventions`, `docs-currency`, `cross-repo-contracts`):
+  `style-conventions`, `docs-currency`, `cross-repo-contracts`,
+  `user-experience`):
   record an **info**-level finding.
 
 ```json
