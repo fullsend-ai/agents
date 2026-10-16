@@ -471,10 +471,12 @@ for case_dir in "${case_dirs[@]}"; do
     case_failures+=("${case_name} (exit ${case_exit})")
     continue
   fi
-  # A capture hook that could not establish what the agent did (fixture record
-  # missing, unreadable PR reference) leaves this marker; the harness runs
-  # after_each hooks with continue-on-failure, so the hook's own exit code
-  # never reaches run_result.json. Count it as a case failure, not a result.
+  # Any eval's after_each hook may leave this marker ({reason, hook, at}) to
+  # say the case did not run cleanly: the hook could not establish what the
+  # agent did (code-rhai writes it when the fixture record is missing or the
+  # hook itself aborted). The harness runs after_each hooks with
+  # continue-on-failure, so the hook's own exit code never reaches
+  # run_result.json. Count the marker as a case failure, not a result.
   infra_marker="$RUN_DIR/cases/${case_name}/output/infrastructure-failure.json"
   if [[ -f "$infra_marker" ]]; then
     case_failures+=("${case_name} (capture failure: $(jq -r '.reason // "unknown"' "$infra_marker"))")
