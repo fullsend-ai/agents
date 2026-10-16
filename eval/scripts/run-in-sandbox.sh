@@ -127,14 +127,17 @@ t0=$(date +%s); exec_rc=0
 timeout "$(( TMO + 60 ))" openshell sandbox exec --name "$NAME" --no-tty --timeout "$TMO" \
   -- sh -c "$remote_script" </dev/null >>"$LOG" 2>&1 || exec_rc=$?
 elapsed=$(( $(date +%s) - t0 ))
+# A timeout outranks any sentinel: the wrapper prints its line and exits at
+# once, so a sentinel followed by a run that hit the limit was printed by the
+# command itself (test output on the PR head), not by the wrapper.
+if (( exec_rc == 124 || elapsed >= TMO )); then
+  echo "run-in-sandbox: command timed out after ${TMO}s" >>"$LOG"; echo timeout > "$STATUS"; exit 124
+fi
 sentinel=$(tr -d '\r' < "$LOG" | grep -o '^__EVAL_RC__=[0-9]\{1,\}$' | tail -n 1)
 if [[ -n "$sentinel" ]]; then
   rc="${sentinel#__EVAL_RC__=}"
   sed -i.bak '/^__EVAL_RC__=[0-9]\{1,\}[[:cntrl:]]*$/d' "$LOG" && rm -f "$LOG.bak"
   echo command > "$STATUS"
   exit "$rc"
-fi
-if (( exec_rc == 124 || elapsed >= TMO )); then
-  echo "run-in-sandbox: command timed out after ${TMO}s" >>"$LOG"; echo timeout > "$STATUS"; exit 124
 fi
 sandbox_fail "run-in-sandbox: the sandbox did not return the command's status (openshell exec exit ${exec_rc} after ${elapsed}s)"
