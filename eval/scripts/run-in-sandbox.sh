@@ -109,14 +109,16 @@ export CYPRESS_INSTALL_BINARY=0 PUPPETEER_SKIP_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSE
 mkdir -p /sandbox/workspace/regression && tar -xzf $(q "$remote_tar") -C /sandbox/workspace/regression
 cd /sandbox/workspace/regression
 cmd_rc=0; bash -o pipefail -c $(q "$CMD") || cmd_rc=\$?
-echo \"__EVAL_RC__=\$cmd_rc\""
+printf '\\n__EVAL_RC__=%s\\n' \"\$cmd_rc\""
 # The command's own status travels on a sentinel line, not in the exec exit
 # code: openshell's code is the command's only when the sandbox lived to the
 # end, and a dropped relay, an evicted sandbox or an OOM kill would otherwise
 # read as "tests failed" (while a command that itself exits 125 would read as
 # sandbox_failed). A missing sentinel means the sandbox died first. Only a
 # whole line of the exact shape counts, so test output that quotes the
-# sentinel text is neither read as a status nor stripped from the log.
+# sentinel text is neither read as a status nor stripped from the log; the
+# newline printed first keeps the sentinel on its own line when the command's
+# last output had none (at the cost of one blank line in the log when it did).
 echo "run-in-sandbox: running the command (timeout ${TMO}s)" >&2
 t0=$(date +%s); exec_rc=0
 timeout "$(( TMO + 60 ))" openshell sandbox exec --name "$NAME" --no-tty --timeout "$TMO" \
