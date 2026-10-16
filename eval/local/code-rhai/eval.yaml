@@ -180,8 +180,10 @@ judges:
       ("declined"), or nothing usable ("failed"). Passes for pr or declined;
       the rationale carries the category and, for a decline, the agent's own
       words, so a reader can see why without opening the transcript. A
-      capture or fixture failure is "failed" with infrastructure=true (and the
-      capture hook exits non-zero), never a decline, whatever the agent said.
+      capture or fixture failure is "failed" with infrastructure=true, never a
+      decline, whatever the agent said; it also leaves
+      output/infrastructure-failure.json, which run-functional.sh counts as a
+      case failure.
     check: |
       import json
       raw = outputs["files"].get("output/agent-outcome.json")
@@ -467,6 +469,7 @@ judges:
       its own.
 # No thresholds: this is a local eval, never a CI gate. Every judge is
 # reported per case; a run exits non-zero only when the runner itself sees an
-# infrastructure failure (a case that never reached the agent, a judge error).
+# infrastructure failure (a case that never reached the agent, a capture hook
+# that could not establish what the agent did, a judge error).
 # Agent behaviour, including declines and failing repo tests, is the result,
 # not a defect of the run.

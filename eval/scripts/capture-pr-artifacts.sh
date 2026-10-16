@@ -11,7 +11,10 @@
 #                        final message (its stated reason); the judges branch
 #                        on this. A capture or fixture failure is "failed" with
 #                        "infrastructure": true, whatever the agent said, and
-#                        this hook then exits non-zero so the run is not clean.
+#                        output/infrastructure-failure.json is written, which
+#                        run-functional.sh counts as a case failure (the hook's
+#                        own exit code is swallowed by the harness's
+#                        continue-on-failure hook mode).
 #     regression.json    {command, exit_code, timed_out, sandbox_failed, ...}
 #     regression.log     raw test output (run inside a throwaway OpenShell
 #                        sandbox by run-in-sandbox.sh, never on this host)
@@ -89,11 +92,14 @@ no_pr_files() { # reason: the pr.json / pr.md / regression files every no-PR pat
 # An infrastructure or capture failure: the fixture record is missing or
 # unreadable, so nothing is known about what the agent did. Never "declined",
 # whatever final message the agent left (the decline judge would grade a
-# reason the agent never gave), and the hook exits non-zero so the harness
-# marks the case as not having run cleanly, as the eval's footer promises.
+# reason the agent never gave). The harness runs after_each hooks with
+# continue-on-failure, so a non-zero exit here never reaches the run result;
+# the marker file below is what run-functional.sh counts as a case failure.
 infra_fail() {
   no_pr_files "$1"
   write_outcome failed "$1" true
+  jq -n -c --arg r "$1" --arg h "capture-pr-artifacts.sh" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{reason: $r, hook: $h, at: $t}' > "$OUTPUT_DIR/infrastructure-failure.json"
   echo "outcome: failed, infrastructure ($1)" >&2
   exit 1
 }

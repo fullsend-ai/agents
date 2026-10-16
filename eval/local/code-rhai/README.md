@@ -36,8 +36,10 @@ finished cleanly, opened no PR, and left a message saying why), or `failed`
 (nothing usable). A decline is not a failure: whether stopping was right is
 judged on its own terms. A failure of the eval's own capture (the fixture
 record missing, an unreadable PR reference) is recorded as `failed` with
-`infrastructure: true`, whatever the agent's final message said, and the
-capture hook exits non-zero so the harness marks the case as not clean.
+`infrastructure: true`, whatever the agent's final message said, and leaves
+`output/infrastructure-failure.json`, which `run-functional.sh` counts as a
+case failure in its result line and exit code (the hook's own exit code is
+swallowed by the harness's continue-on-failure hook mode).
 
 1. Deterministic first: the outcome; a PR exists; the repository's own test
    command still passes on the PR head; budgets are reported.

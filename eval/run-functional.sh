@@ -469,6 +469,15 @@ for case_dir in "${case_dirs[@]}"; do
   case_exit="$(jq -r '.exit_code // "missing"' "$run_result")"
   if [[ "$case_exit" != "0" ]]; then
     case_failures+=("${case_name} (exit ${case_exit})")
+    continue
+  fi
+  # A capture hook that could not establish what the agent did (fixture record
+  # missing, unreadable PR reference) leaves this marker; the harness runs
+  # after_each hooks with continue-on-failure, so the hook's own exit code
+  # never reaches run_result.json. Count it as a case failure, not a result.
+  infra_marker="$RUN_DIR/cases/${case_name}/output/infrastructure-failure.json"
+  if [[ -f "$infra_marker" ]]; then
+    case_failures+=("${case_name} (capture failure: $(jq -r '.reason // "unknown"' "$infra_marker"))")
   fi
 done
 mapfile -t setup_failures < <(pre_agent_failures)
