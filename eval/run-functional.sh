@@ -328,8 +328,6 @@ execute_run() {
     || exec_exit=$?
 
   # Copy output artifacts from harness workspace to runs directory.
-  # execute.py copies stdout/stderr/input but not the output/ subdirectory
-  # that after_each hooks populate (e.g., fixture-state.json).
   # execute.py copies stdout/stderr/input but not the outputs[*].path
   # subdirectories that after_each hooks populate (output/fixture-state.json,
   # and eval/local/code-rhai's judge/ tree). Copy every declared outputs path.
