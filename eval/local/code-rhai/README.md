@@ -236,3 +236,13 @@ use the same list.
 For a macOS host: `TMPDIR=/tmp`; a `GOOS=linux` fullsend build in
 `EVAL_SANDBOX_BINARY`; `--forge github` is passed by `run-fullsend.sh`. CI is
 unaffected.
+
+Memory during judging: `judge/` is a declared output so the agent judge can
+browse it, and the harness stages declared outputs by reading every file
+into memory and writing it back into the judge's workspace, `pr-head/`
+included (a full checkout, 110 MB and 11,000 files for odh-dashboard). A
+judging pass over the five cases, with two odh-dashboard checkouts, peaked at
+678 MB of resident memory (agent-eval-harness 1.56.3, 2026-10-16). That is
+fine for a local run; a repository an order of magnitude larger would not
+be. Staging by copying instead of through memory is a harness change, not an
+eval one, and is on the list to propose upstream.
