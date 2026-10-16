@@ -80,6 +80,7 @@ forge:
   github:
     providers:
       - github-ro
+      - providers/github-public-ro.yaml
     openshell:
       profiles:
         - profiles/fullsend-github-public-ro.yaml
