@@ -21,7 +21,10 @@
 #
 # Exit status: the command's own exit code; 124 when the command hit the
 # timeout; 125 when the sandbox could not be created, loaded or reached (the
-# log file says why). The log file holds the command's combined output.
+# log file says why). Because a command can itself exit 124 or 125, the
+# authoritative classification is written to <log-file>.status as one word:
+# "command" (exit code is the command's), "timeout" or "sandbox". The log
+# file holds the command's combined output.
 set -uo pipefail
 DIR="${1:?usage: run-in-sandbox.sh <checkout-dir> <command> <timeout-s> <log-file>}"
 CMD="${2:?command}"; TMO="${3:?timeout-s}"; LOG="${4:?log-file}"
@@ -31,19 +34,21 @@ PROVIDER="${EVAL_SANDBOX_PROVIDER:-package-registries}"
 READY_TIMEOUT="${EVAL_SANDBOX_READY_TIMEOUT:-900}"
 # Memory for the test run: jest-style runners spawn a worker per CPU and the default
 # sandbox limit SIGKILLs them (odh-dashboard, 2026-10-14). Override with EVAL_SANDBOX_MEMORY.
+STATUS="$LOG.status"
+sandbox_fail() { echo "$1" | tee -a "$LOG" >&2; echo sandbox > "$STATUS"; exit 125; }
+: > "$LOG"; echo sandbox > "$STATUS"   # until the command reports its own status
 for c in openshell yq tar timeout; do
-  command -v "$c" >/dev/null || { echo "run-in-sandbox: $c is required but not found in PATH" | tee "$LOG" >&2; exit 125; }
+  command -v "$c" >/dev/null || sandbox_fail "run-in-sandbox: $c is required but not found in PATH"
 done
-[[ -d "$DIR" ]] || { echo "run-in-sandbox: not a directory: $DIR" | tee "$LOG" >&2; exit 125; }
-[[ -f "$HARNESS" ]] || { echo "run-in-sandbox: harness not found: $HARNESS" | tee "$LOG" >&2; exit 125; }
+[[ -d "$DIR" ]] || sandbox_fail "run-in-sandbox: not a directory: $DIR"
+[[ -f "$HARNESS" ]] || sandbox_fail "run-in-sandbox: harness not found: $HARNESS"
 IMAGE=$(yq -r '.image // ""' "$HARNESS"); POLICY_REL=$(yq -r '.policy // ""' "$HARNESS")
-[[ -n "$IMAGE" && -n "$POLICY_REL" ]] || { echo "run-in-sandbox: $HARNESS has no image/policy" | tee "$LOG" >&2; exit 125; }
+[[ -n "$IMAGE" && -n "$POLICY_REL" ]] || sandbox_fail "run-in-sandbox: $HARNESS has no image/policy"
 POLICY="$(dirname "$HARNESS")/../$POLICY_REL"
 [[ -f "$POLICY" ]] || POLICY="$AGENTS_ROOT/$POLICY_REL"
-[[ -f "$POLICY" ]] || { echo "run-in-sandbox: policy not found: $POLICY_REL" | tee "$LOG" >&2; exit 125; }
+[[ -f "$POLICY" ]] || sandbox_fail "run-in-sandbox: policy not found: $POLICY_REL"
 if ! openshell provider get "$PROVIDER" >/dev/null 2>&1 </dev/null; then
-  echo "run-in-sandbox: OpenShell provider '$PROVIDER' is not on the gateway. fullsend creates it on the first coder run; run one, or create it from fullsend's fullsend-package-registries profile." | tee "$LOG" >&2
-  exit 125
+  sandbox_fail "run-in-sandbox: OpenShell provider '$PROVIDER' is not on the gateway. fullsend creates it on the first coder run; run one, or create it from fullsend's fullsend-package-registries profile."
 fi
 
 NAME="eval-reg-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"  # openshell caps names at 19 chars
@@ -55,7 +60,6 @@ cleanup() {
   openshell sandbox delete "$NAME" >/dev/null 2>&1 </dev/null || true
 }
 trap cleanup EXIT
-: > "$LOG"
 
 # All openshell calls take </dev/null: the CLI streams stdin to the remote
 # command, and an inherited pipe that never closes makes `exec` hang.
@@ -65,13 +69,13 @@ if ! openshell sandbox create --name "$NAME" --keep --no-auto-providers --no-tty
       --memory "${EVAL_SANDBOX_MEMORY:-8Gi}" \
       --detach -- sleep infinity </dev/null >>"$LOG" 2>&1; then
   if ! openshell sandbox get "$NAME" >/dev/null 2>&1 </dev/null; then
-    echo "run-in-sandbox: sandbox create failed (see $LOG)" >&2; exit 125
+    sandbox_fail "run-in-sandbox: sandbox create failed"
   fi
 fi
 deadline=$(( $(date +%s) + READY_TIMEOUT ))
 until openshell sandbox get "$NAME" 2>/dev/null </dev/null | grep -q 'Phase: Ready'; do
   if (( $(date +%s) > deadline )); then
-    echo "run-in-sandbox: sandbox $NAME not Ready after ${READY_TIMEOUT}s" | tee -a "$LOG" >&2; exit 125
+    sandbox_fail "run-in-sandbox: sandbox $NAME not Ready after ${READY_TIMEOUT}s"
   fi
   sleep 3
 done
@@ -79,10 +83,10 @@ done
 # Ship the checkout as one archive (openshell's own upload filters by
 # .gitignore and skips symlink targets; a tarball keeps the tree exact).
 if ! COPYFILE_DISABLE=1 tar --no-xattrs -czf "$TARBALL" -C "$DIR" . 2>>"$LOG"; then
-  echo "run-in-sandbox: could not archive $DIR" | tee -a "$LOG" >&2; exit 125
+  sandbox_fail "run-in-sandbox: could not archive $DIR"
 fi
 if ! openshell sandbox upload "$NAME" "$TARBALL" /tmp/ </dev/null >>"$LOG" 2>&1; then
-  echo "run-in-sandbox: upload to $NAME failed (see $LOG)" >&2; exit 125
+  sandbox_fail "run-in-sandbox: upload to $NAME failed"
 fi
 remote_tar="/tmp/$(basename "$TARBALL")"
 
@@ -104,10 +108,26 @@ export npm_config_fetch_retries=5 npm_config_fetch_retry_mintimeout=20000 npm_co
 export CYPRESS_INSTALL_BINARY=0 PUPPETEER_SKIP_DOWNLOAD=1 PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 mkdir -p /sandbox/workspace/regression && tar -xzf $(q "$remote_tar") -C /sandbox/workspace/regression
 cd /sandbox/workspace/regression
-exec bash -o pipefail -c $(q "$CMD")"
+cmd_rc=0; bash -o pipefail -c $(q "$CMD") || cmd_rc=\$?
+echo \"__EVAL_RC__=\$cmd_rc\""
+# The command's own status travels on a sentinel line, not in the exec exit
+# code: openshell's code is the command's only when the sandbox lived to the
+# end, and a dropped relay, an evicted sandbox or an OOM kill would otherwise
+# read as "tests failed" (while a command that itself exits 125 would read as
+# sandbox_failed). A missing sentinel means the sandbox died first.
 echo "run-in-sandbox: running the command (timeout ${TMO}s)" >&2
-rc=0
+t0=$(date +%s); exec_rc=0
 timeout "$(( TMO + 60 ))" openshell sandbox exec --name "$NAME" --no-tty --timeout "$TMO" \
-  -- sh -c "$remote_script" </dev/null >>"$LOG" 2>&1 || rc=$?
-if (( rc == 124 )); then echo "run-in-sandbox: command timed out after ${TMO}s" >>"$LOG"; fi
-exit "$rc"
+  -- sh -c "$remote_script" </dev/null >>"$LOG" 2>&1 || exec_rc=$?
+elapsed=$(( $(date +%s) - t0 ))
+sentinel=$(grep -o '__EVAL_RC__=[0-9]*' "$LOG" | tail -n 1)
+if [[ -n "$sentinel" ]]; then
+  rc="${sentinel#__EVAL_RC__=}"
+  sed -i.bak '/__EVAL_RC__=/d' "$LOG" && rm -f "$LOG.bak"
+  echo command > "$STATUS"
+  exit "$rc"
+fi
+if (( exec_rc == 124 || elapsed >= TMO )); then
+  echo "run-in-sandbox: command timed out after ${TMO}s" >>"$LOG"; echo timeout > "$STATUS"; exit 124
+fi
+sandbox_fail "run-in-sandbox: the sandbox did not return the command's status (openshell exec exit ${exec_rc} after ${elapsed}s)"

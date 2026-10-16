@@ -201,8 +201,12 @@ rc=0
 # credentials), not on this host: see run-in-sandbox.sh for what is and is
 # not isolated.
 run-in-sandbox.sh "$WORK/pr" "$cmd" "$tmo" "$OUTPUT_DIR/regression.log" || rc=$?
-timed_out=false; [[ $rc -eq 124 ]] && timed_out=true
-sandbox_failed=false; [[ $rc -eq 125 ]] && sandbox_failed=true
+# Classification comes from the runner's status file, not the exit code: a
+# test command can itself exit 124 or 125.
+status=$(cat "$OUTPUT_DIR/regression.log.status" 2>/dev/null || echo sandbox)
+timed_out=false; [[ "$status" == timeout ]] && timed_out=true
+sandbox_failed=false; [[ "$status" == sandbox ]] && sandbox_failed=true
+rm -f "$OUTPUT_DIR/regression.log.status"
 jq -n --arg c "$cmd" --argjson rc "$rc" --argjson to "$timed_out" --argjson sf "$sandbox_failed" --argjson t "$tmo" \
   '{command: $c, exit_code: $rc, timed_out: $to, sandbox_failed: $sf, timeout_s: $t, log: "output/regression.log"}' > "$OUTPUT_DIR/regression.json"
 {

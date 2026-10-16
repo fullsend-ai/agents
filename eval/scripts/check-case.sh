@@ -26,8 +26,10 @@ if [[ -n "$cmd" && "$cmd" != "TODO" ]]; then
   # Same sandbox the eval uses for the PR head, so this also proves the command
   # works with the toolchain inside the coder's image (run-in-sandbox.sh).
   rc=0; "$(dirname "$0")/run-in-sandbox.sh" "$WORK" "$cmd" "$tmo" "$CASE_DIR/.check-regression.log" || rc=$?
-  if [[ $rc -eq 0 ]]; then echo "OK   3. regression command passes on the bare snapshot (in the sandbox)"; rm -f "$CASE_DIR/.check-regression.log";
-  elif [[ $rc -eq 125 ]]; then echo "BAD  3. could not run the sandbox (log: $CASE_DIR/.check-regression.log); nothing known about the command"; fail=1;
+  status=$(cat "$CASE_DIR/.check-regression.log.status" 2>/dev/null || echo sandbox); rm -f "$CASE_DIR/.check-regression.log.status"
+  if [[ "$status" == sandbox ]]; then echo "BAD  3. could not run the sandbox (log: $CASE_DIR/.check-regression.log); nothing known about the command"; fail=1;
+  elif [[ "$status" == timeout ]]; then echo "BAD  3. regression command timed out after ${tmo}s on the bare snapshot (log: $CASE_DIR/.check-regression.log)"; fail=1;
+  elif [[ $rc -eq 0 ]]; then echo "OK   3. regression command passes on the bare snapshot (in the sandbox)"; rm -f "$CASE_DIR/.check-regression.log";
   else echo "BAD  3. regression command exit $rc on the bare snapshot (log: $CASE_DIR/.check-regression.log)"; fail=1; fi
 fi
 [[ $fail -eq 0 ]] && echo "All checks passed." || exit 1
