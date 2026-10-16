@@ -154,6 +154,15 @@ case "${1:-}" in
             > "${output_arg}/cases/${name}/run_result.json"
         fi
       done
+      # STUB_INFRA_MARKER=name:reason drops the after_each capture marker
+      # into that case's output/, as capture-pr-artifacts.sh does when it
+      # could not establish what the agent did.
+      if [[ -n "${STUB_INFRA_MARKER:-}" ]]; then
+        IFS=':' read -r mname mreason <<< "${STUB_INFRA_MARKER}"
+        mkdir -p "${output_arg}/cases/${mname}/output"
+        printf '{"reason": "%s", "hook": "stub-hook", "at": "2026-01-01T00:00:00Z"}\n' "$mreason" \
+          > "${output_arg}/cases/${mname}/output/infrastructure-failure.json"
+      fi
       # Run-level record, as execute.py writes it: per_case mirrors each
       # case's run_result.json.
       jq -n '{per_case: {}}' > "${output_arg}/run_result.json"
@@ -492,6 +501,89 @@ if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "002-full-only-case (exit missing)";
   pass "a case record with no exit_code fails the script"
 else
   fail "a case record with no exit_code fails the script (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# An after_each hook that could not establish what the agent did leaves
+# output/infrastructure-failure.json; the harness swallows the hook's exit
+# code, so the case record says exit 0. The marker alone must fail the run,
+# as an agent-side failure (exit 1), not as a setup failure (exit 3).
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_EXECUTE_EXIT=0 \
+  STUB_CASE_RESULTS="001-release-case:0:3,002-full-only-case:0:3" \
+  STUB_INFRA_MARKER="002-full-only-case:fixture-state.json missing" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "002-full-only-case (capture failure: fixture-state.json missing)" \
+  && echo "$OUT" | grep -q "1 case(s) failed to run cleanly"; then
+  pass "a case with exit 0 and an infrastructure-failure.json marker fails the script with exit 1"
+else
+  fail "a case with exit 0 and an infrastructure-failure.json marker fails the script with exit 1 (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# Judge denied_tools is only enforced by agent-eval-harness 1.56.3 and later;
+# the runner refuses to score with an older checkout, and only when the eval
+# declares denied_tools.
+add_denied_tools_judge() { # root
+  cat >> "$1/eval/testagent/eval.yaml" <<'YAML'
+judges:
+  - name: agent_quality
+    type: agent
+    agent:
+      allowed_tools: [Read]
+      denied_tools: [Bash]
+YAML
+}
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; add_denied_tools_judge "$ROOT"
+echo 'version = "1.49.1"' > "${ROOT}/eval/.agent-eval-harness/pyproject.toml"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="001-release-case:0:3,002-full-only-case:0:3" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "agent-eval-harness 1.49.1 .* ignores judge denied_tools; 1.56.3 or later is required" \
+  && [[ "$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)" == "0" ]]; then
+  pass "judge denied_tools with a pre-1.56.3 harness is refused before anything runs"
+else
+  fail "judge denied_tools with a pre-1.56.3 harness is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; add_denied_tools_judge "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="001-release-case:0:3,002-full-only-case:0:3" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "cannot read the agent-eval-harness version"; then
+  pass "judge denied_tools with no readable harness version is refused"
+else
+  fail "judge denied_tools with no readable harness version is refused (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+for ver in 1.56.3 1.56.10 2.0.0; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; add_denied_tools_judge "$ROOT"
+  echo "version = \"${ver}\"" > "${ROOT}/eval/.agent-eval-harness/pyproject.toml"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="001-release-case:0:3,002-full-only-case:0:3" 2>&1) || RC=$?
+  if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "denied_tools"; then
+    pass "judge denied_tools with harness ${ver} runs normally"
+  else
+    fail "judge denied_tools with harness ${ver} runs normally (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+echo 'version = "1.37.4"' > "${ROOT}/eval/.agent-eval-harness/pyproject.toml"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="001-release-case:0:3,002-full-only-case:0:3" 2>&1) || RC=$?
+if [[ $RC -eq 0 ]]; then
+  pass "an eval with no judge denied_tools runs on an older harness"
+else
+  fail "an eval with no judge denied_tools runs on an older harness (rc=$RC, output: $OUT)"
 fi
 rm -rf "$ROOT"
 
