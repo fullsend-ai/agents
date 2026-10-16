@@ -57,6 +57,20 @@ else
   echo "PASS: bundled-script-has-ensure-label"
 fi
 
+# Non-fast-forward retry must fetch origin/BRANCH before --force-with-lease
+# so the lease is not compared against a stale clone-time tracking ref (#409).
+if ! grep -q 'git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}"' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-fetches-before-force-with-lease"
+  echo "  ${POST_SCRIPT} missing force-update fetch of origin/\${BRANCH}"
+  FAILURES=$((FAILURES + 1))
+elif ! grep -A15 'Plain push failed (non-fast-forward)' "${POST_SCRIPT}" | grep -q 'git fetch origin'; then
+  echo "FAIL: bundled-script-fetches-before-force-with-lease"
+  echo "  ${POST_SCRIPT} fetch is not in the non-fast-forward retry path"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-fetches-before-force-with-lease"
+fi
+
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the title-rewriting logic from post-code.sh
 # so we can test it without a git repo or network access.
@@ -2366,6 +2380,234 @@ else
 fi
 
 rm -rf "${SEC_CODE_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Integration: fetch before --force-with-lease on a stale tracking ref (#409).
+#
+# A concurrent push during the agent run leaves origin/BRANCH stale. Without
+# a fetch, --force-with-lease compares against the clone-time ref and fails
+# with "stale info". With the fetch, the lease matches the current remote
+# tip and the retry publishes the agent's rewrite.
+# ---------------------------------------------------------------------------
+LEASE_TMPDIR="$(mktemp -d)"
+LEASE_MOCK_BIN="${LEASE_TMPDIR}/bin"
+mkdir -p "${LEASE_MOCK_BIN}"
+
+cat > "${LEASE_MOCK_BIN}/sleep" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${LEASE_MOCK_BIN}/sleep"
+
+cat > "${LEASE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+exit 0
+MOCKEOF
+chmod +x "${LEASE_MOCK_BIN}/gitleaks"
+
+LEASE_REAL_GIT="$(which git)"
+cat > "${LEASE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+exec ${LEASE_REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${LEASE_MOCK_BIN}/git"
+
+cat > "${LEASE_MOCK_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo "99"; exit 0 ;;
+  "pr view")
+    if [[ "$*" == *"--json body"* ]]; then
+      echo '{"body":"Closes #99"}'
+    elif [[ "$*" == *"--json url"* ]]; then
+      echo '{"url":"https://github.com/test-org/test-repo/pull/99"}'
+    else
+      echo '{}'
+    fi
+    exit 0 ;;
+  "issue comment"|"pr comment")
+    printf '%s\n' "$@"
+    cat 2>/dev/null || true
+    exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${LEASE_MOCK_BIN}/gh"
+
+_lease_dir="${LEASE_TMPDIR}/run-stale-lease"
+_lease_bare="${_lease_dir}/remote.git"
+_lease_repo="${_lease_dir}/repo"
+_lease_concurrent="${_lease_dir}/concurrent"
+mkdir -p "${_lease_dir}"
+
+${LEASE_REAL_GIT} init -q --bare -b main "${_lease_bare}"
+${LEASE_REAL_GIT} clone -q "${_lease_bare}" "${_lease_repo}"
+${LEASE_REAL_GIT} -C "${_lease_repo}" config user.email "test@example.com"
+${LEASE_REAL_GIT} -C "${_lease_repo}" config user.name "Test"
+echo "init" > "${_lease_repo}/README.md"
+${LEASE_REAL_GIT} -C "${_lease_repo}" add README.md
+${LEASE_REAL_GIT} -C "${_lease_repo}" commit -q -m "init"
+${LEASE_REAL_GIT} -C "${_lease_repo}" push -q origin main
+
+${LEASE_REAL_GIT} -C "${_lease_repo}" checkout -q -b "agent/99-stale-lease"
+echo "agent v1" > "${_lease_repo}/file.txt"
+${LEASE_REAL_GIT} -C "${_lease_repo}" add -f file.txt
+${LEASE_REAL_GIT} -C "${_lease_repo}" commit -q -m "fix: agent v1"
+${LEASE_REAL_GIT} -C "${_lease_repo}" push -q origin agent/99-stale-lease
+
+# Concurrent push while the agent still has the clone-time tracking ref.
+${LEASE_REAL_GIT} clone -q "${_lease_bare}" "${_lease_concurrent}"
+${LEASE_REAL_GIT} -C "${_lease_concurrent}" config user.email "other@example.com"
+${LEASE_REAL_GIT} -C "${_lease_concurrent}" config user.name "Other"
+${LEASE_REAL_GIT} -C "${_lease_concurrent}" checkout -q agent/99-stale-lease
+echo "concurrent" > "${_lease_concurrent}/concurrent.txt"
+${LEASE_REAL_GIT} -C "${_lease_concurrent}" add concurrent.txt
+${LEASE_REAL_GIT} -C "${_lease_concurrent}" commit -q -m "fix: concurrent push"
+${LEASE_REAL_GIT} -C "${_lease_concurrent}" push -q origin agent/99-stale-lease
+
+# Agent rewrites locally on top of v1, diverging from the concurrent tip.
+echo "agent v2" > "${_lease_repo}/file.txt"
+${LEASE_REAL_GIT} -C "${_lease_repo}" add file.txt
+${LEASE_REAL_GIT} -C "${_lease_repo}" commit -q -m "fix: agent v2"
+
+_stale_tracking="$(${LEASE_REAL_GIT} -C "${_lease_repo}" rev-parse origin/agent/99-stale-lease)"
+_remote_tip="$(${LEASE_REAL_GIT} -C "${_lease_bare}" rev-parse refs/heads/agent/99-stale-lease)"
+_lease_sanity_rc=0
+${LEASE_REAL_GIT} -C "${_lease_repo}" push --force-with-lease origin agent/99-stale-lease \
+  >/dev/null 2>&1 || _lease_sanity_rc=$?
+
+if [ "${_stale_tracking}" = "${_remote_tip}" ]; then
+  echo "FAIL: force-with-lease-fetch-refreshes-stale-tracking — tracking was not stale"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_lease_sanity_rc}" -eq 0 ]; then
+  echo "FAIL: force-with-lease-fetch-refreshes-stale-tracking — stale lease unexpectedly succeeded"
+  FAILURES=$((FAILURES + 1))
+else
+  _lease_rc=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${_lease_dir}"
+    export HOME="${LEASE_TMPDIR}"
+    export PATH="${LEASE_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    bash "${POST_SCRIPT}"
+  ) > "${LEASE_TMPDIR}/stdout-stale-lease.log" 2>&1 || _lease_rc=$?
+
+  _lease_log="${LEASE_TMPDIR}/stdout-stale-lease.log"
+  _published="$(${LEASE_REAL_GIT} -C "${_lease_bare}" log -1 --format='%s' refs/heads/agent/99-stale-lease)"
+  if [ "${_lease_rc}" -ne 0 ]; then
+    echo "FAIL: force-with-lease-fetch-refreshes-stale-tracking — expected exit 0, got ${_lease_rc}"
+    cat "${_lease_log}"
+    FAILURES=$((FAILURES + 1))
+  elif ! grep -q 'Fetching remote branch' "${_lease_log}"; then
+    echo "FAIL: force-with-lease-fetch-refreshes-stale-tracking — missing fetch before retry"
+    cat "${_lease_log}"
+    FAILURES=$((FAILURES + 1))
+  elif [ "${_published}" != "fix: agent v2" ]; then
+    echo "FAIL: force-with-lease-fetch-refreshes-stale-tracking — remote tip is '${_published}'"
+    cat "${_lease_log}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: force-with-lease-fetch-refreshes-stale-tracking"
+  fi
+fi
+
+# After the fetch refreshes the lease, a concurrent push in that window must
+# still be rejected. Wrap git fetch so a new remote commit lands before the
+# --force-with-lease retry.
+_conflict_dir="${LEASE_TMPDIR}/run-lease-conflict"
+_conflict_bare="${_conflict_dir}/remote.git"
+_conflict_repo="${_conflict_dir}/repo"
+_conflict_concurrent="${_conflict_dir}/concurrent"
+mkdir -p "${_conflict_dir}"
+
+${LEASE_REAL_GIT} init -q --bare -b main "${_conflict_bare}"
+${LEASE_REAL_GIT} clone -q "${_conflict_bare}" "${_conflict_repo}"
+${LEASE_REAL_GIT} -C "${_conflict_repo}" config user.email "test@example.com"
+${LEASE_REAL_GIT} -C "${_conflict_repo}" config user.name "Test"
+echo "init" > "${_conflict_repo}/README.md"
+${LEASE_REAL_GIT} -C "${_conflict_repo}" add README.md
+${LEASE_REAL_GIT} -C "${_conflict_repo}" commit -q -m "init"
+${LEASE_REAL_GIT} -C "${_conflict_repo}" push -q origin main
+
+${LEASE_REAL_GIT} -C "${_conflict_repo}" checkout -q -b "agent/99-lease-conflict"
+echo "agent v1" > "${_conflict_repo}/file.txt"
+${LEASE_REAL_GIT} -C "${_conflict_repo}" add -f file.txt
+${LEASE_REAL_GIT} -C "${_conflict_repo}" commit -q -m "fix: agent v1"
+${LEASE_REAL_GIT} -C "${_conflict_repo}" push -q origin agent/99-lease-conflict
+
+${LEASE_REAL_GIT} clone -q "${_conflict_bare}" "${_conflict_concurrent}"
+${LEASE_REAL_GIT} -C "${_conflict_concurrent}" config user.email "other@example.com"
+${LEASE_REAL_GIT} -C "${_conflict_concurrent}" config user.name "Other"
+${LEASE_REAL_GIT} -C "${_conflict_concurrent}" checkout -q agent/99-lease-conflict
+echo "concurrent" > "${_conflict_concurrent}/concurrent.txt"
+${LEASE_REAL_GIT} -C "${_conflict_concurrent}" add concurrent.txt
+${LEASE_REAL_GIT} -C "${_conflict_concurrent}" commit -q -m "fix: concurrent before fetch"
+${LEASE_REAL_GIT} -C "${_conflict_concurrent}" push -q origin agent/99-lease-conflict
+
+echo "agent v2" > "${_conflict_repo}/file.txt"
+${LEASE_REAL_GIT} -C "${_conflict_repo}" add file.txt
+${LEASE_REAL_GIT} -C "${_conflict_repo}" commit -q -m "fix: agent v2"
+
+cat > "${LEASE_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+if [[ "\$1" == "fetch" && "\$*" == *"+refs/heads/agent/99-lease-conflict"* ]]; then
+  ${LEASE_REAL_GIT} "\$@"
+  _fetch_rc=\$?
+  echo "post-fetch concurrent" > "${_conflict_concurrent}/after-fetch.txt"
+  ${LEASE_REAL_GIT} -C "${_conflict_concurrent}" add after-fetch.txt
+  ${LEASE_REAL_GIT} -C "${_conflict_concurrent}" commit -q -m "fix: concurrent after fetch"
+  ${LEASE_REAL_GIT} -C "${_conflict_concurrent}" push -q origin agent/99-lease-conflict
+  exit \${_fetch_rc}
+fi
+exec ${LEASE_REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${LEASE_MOCK_BIN}/git"
+
+_conflict_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_conflict_dir}"
+  export HOME="${LEASE_TMPDIR}"
+  export PATH="${LEASE_MOCK_BIN}:${PATH}"
+  export PUSH_TOKEN="fake-token"
+  export REPO_FULL_NAME="test-org/test-repo"
+  export ISSUE_NUMBER="99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="github"
+  bash "${POST_SCRIPT}"
+) > "${LEASE_TMPDIR}/stdout-lease-conflict.log" 2>&1 || _conflict_rc=$?
+
+_conflict_log="${LEASE_TMPDIR}/stdout-lease-conflict.log"
+_conflict_tip="$(${LEASE_REAL_GIT} -C "${_conflict_bare}" log -1 --format='%s' refs/heads/agent/99-lease-conflict)"
+if [ "${_conflict_rc}" -eq 0 ]; then
+  echo "FAIL: force-with-lease-still-rejects-concurrent-push — expected non-zero exit"
+  cat "${_conflict_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_conflict_tip}" = "fix: agent v2" ]; then
+  echo "FAIL: force-with-lease-still-rejects-concurrent-push — agent overwrite succeeded"
+  cat "${_conflict_log}"
+  FAILURES=$((FAILURES + 1))
+elif [ "${_conflict_tip}" != "fix: concurrent after fetch" ]; then
+  echo "FAIL: force-with-lease-still-rejects-concurrent-push — remote tip is '${_conflict_tip}'"
+  cat "${_conflict_log}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: force-with-lease-still-rejects-concurrent-push (exit ${_conflict_rc})"
+fi
+
+rm -rf "${LEASE_TMPDIR}"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the auto-merge decision logic from post-code.sh
