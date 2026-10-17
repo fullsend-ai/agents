@@ -146,12 +146,32 @@ else
   fail "no agent PR and no final message is an ordinary failure without a marker (rc=$RC, outcome=$(outcome "$WS"), out: $OUT)"
 fi
 
+# A decline needs a clean run: run-fullsend.sh records how fullsend exited in
+# output/run-status.json, and no_pr reads it before trusting the final message.
 WS=$(new_case declined '{"pull_requests":[]}'); mkdir -p "$WS/output/fs-cod-1"; touch "$WS/output/fs-cod-1/metrics.json"
+echo '{"exit_code": 0, "timed_out": false}' > "$WS/output/run-status.json"
 run_hook "$WS" "$TMP/path-all" STUB_FINAL_MSG="I stopped because the endpoint already exists."
 if [[ $RC -eq 0 && "$(outcome "$WS")" == "declined/false" && ! -e "$WS/output/infrastructure-failure.json" && -d "$WS/judge/repo-snapshot" ]]; then
   pass "no PR with a clean run and a final message is a decline, with the repo snapshot staged"
 else
   fail "no PR with a clean run and a final message is a decline (rc=$RC, outcome=$(outcome "$WS"), out: $OUT)"
+fi
+
+WS=$(new_case timed-out '{"pull_requests":[]}'); mkdir -p "$WS/output/fs-cod-1"; touch "$WS/output/fs-cod-1/metrics.json"
+echo '{"exit_code": 124, "timed_out": true}' > "$WS/output/run-status.json"
+run_hook "$WS" "$TMP/path-all" STUB_FINAL_MSG="Still working on the tests, next I will..."
+if [[ $RC -eq 0 && "$(outcome "$WS")" == "failed/false" && "$(field "$WS/output/agent-outcome.json" .reason)" == *"exited 124 (timed out)"* && ! -e "$WS/output/infrastructure-failure.json" ]]; then
+  pass "no PR after a timed-out run is a failure naming the exit, however chatty the last message"
+else
+  fail "no PR after a timed-out run is a failure naming the exit (rc=$RC, outcome=$(outcome "$WS"), reason=$(field "$WS/output/agent-outcome.json" .reason), out: $OUT)"
+fi
+
+WS=$(new_case no-status '{"pull_requests":[]}'); mkdir -p "$WS/output/fs-cod-1"; touch "$WS/output/fs-cod-1/metrics.json"
+run_hook "$WS" "$TMP/path-all" STUB_FINAL_MSG="I stopped because the endpoint already exists."
+if [[ $RC -eq 0 && "$(outcome "$WS")" == "failed/false" && ! -e "$WS/output/infrastructure-failure.json" ]]; then
+  pass "no PR with a final message but no run-status.json is a failure, not a decline"
+else
+  fail "no PR with a final message but no run-status.json is a failure, not a decline (rc=$RC, outcome=$(outcome "$WS"), out: $OUT)"
 fi
 
 WS=$(new_case dependabot '{"pull_requests":[{"number":3,"state":"OPEN","head":"dependabot/npm/x"}]}'); run_hook "$WS" "$TMP/path-all"
