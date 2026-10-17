@@ -46,16 +46,28 @@ mkdir -p "$OUTPUT_DIR" "$JUDGE_DIR"
 
 final_msg=""
 json_str() { # one JSON string literal, without jq (which may be the missing tool)
-  local v="$1"; v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; v="${v//$'\n'/ }"; printf '"%s"' "$v"
+  # Control characters are dropped or spaced rather than escaped: the values
+  # are this script's own messages, and a reader must never get invalid JSON.
+  local v; v=$(printf '%s' "$1" | tr -d '\000-\010\013\014\016-\037')
+  v="${v//\\/\\\\}"; v="${v//\"/\\\"}"; v="${v//$'\n'/ }"; v="${v//$'\t'/ }"; v="${v//$'\r'/ }"
+  printf '"%s"' "$v"
 }
 write_marker() { # reason: the file run-functional.sh counts as a case failure
   printf '{"reason": %s, "hook": "capture-pr-artifacts.sh", "at": "%s"}\n' \
     "$(json_str "$1")" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$OUTPUT_DIR/infrastructure-failure.json"
 }
 write_outcome() { # outcome reason [infrastructure:true|false]
-  jq -n -c --arg o "$1" --arg r "$2" --arg m "$final_msg" --argjson infra "${3:-false}" \
-    '{outcome: $o, reason: $r, infrastructure: $infra, final_message_chars: ($m|length), final_message_excerpt: $m[0:400]}' \
-    > "$OUTPUT_DIR/agent-outcome.json"
+  # The one writer of agent-outcome.json. jq escapes anything; the printf
+  # form exists for the case where jq is the missing tool and carries the
+  # same keys (final_msg is necessarily empty before the tool check passes).
+  if command -v jq >/dev/null; then
+    jq -n -c --arg o "$1" --arg r "$2" --arg m "$final_msg" --argjson infra "${3:-false}" \
+      '{outcome: $o, reason: $r, infrastructure: $infra, final_message_chars: ($m|length), final_message_excerpt: $m[0:400]}' \
+      > "$OUTPUT_DIR/agent-outcome.json"
+  else
+    printf '{"outcome": %s, "reason": %s, "infrastructure": %s, "final_message_chars": 0, "final_message_excerpt": ""}\n' \
+      "$(json_str "$1")" "$(json_str "$2")" "${3:-false}" > "$OUTPUT_DIR/agent-outcome.json"
+  fi
   # The outcome is known from here on; a later failure is a gap in the
   # artifacts, not in knowing what the agent did.
   trap - ERR
@@ -73,8 +85,7 @@ on_err() { # line exit-code
 }
 trap 'on_err "$LINENO" "$?"' ERR
 
-# A missing tool is a capture failure too, and must leave the same two files;
-# jq may be the tool that is missing, so the outcome is written by hand here.
+# A missing tool is a capture failure too, and must leave the same two files.
 missing=()
 for cmd in gh yq jq git timeout rsync openshell run-in-sandbox.sh; do
   command -v "$cmd" >/dev/null || missing+=("$cmd")
@@ -82,8 +93,7 @@ done
 if (( ${#missing[@]} > 0 )); then
   why="required tools not found in PATH: ${missing[*]}"
   write_marker "$why"
-  printf '{"outcome": "failed", "reason": %s, "infrastructure": true, "final_message_chars": 0, "final_message_excerpt": ""}\n' \
-    "$(json_str "$why")" > "$OUTPUT_DIR/agent-outcome.json"
+  write_outcome failed "$why" true
   echo "ERROR: $why" >&2
   echo "outcome: failed, infrastructure ($why)" >&2
   exit 1
