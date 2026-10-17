@@ -10,7 +10,7 @@ EVAL_ORG=<user-or-org> ./eval/run-functional.sh local/code-rhai
 
 That runs the baseline arm on every case. To run selected cases, another
 coder model or runtime, or a different review model, see
-[Model pin, arms and matrix runs](#model-pin-arms-and-matrix-runs) and
+[Model pin, arms and comparing them](#model-pin-arms-and-comparing-them) and
 [Local run notes](#local-run-notes); to add a case, see
 [Building cases](#building-cases).
 
@@ -200,7 +200,7 @@ persona whose model the project cannot serve shows there as requests with
 zero tokens. Runs before 2026-10-14 carried exactly that failure; their
 review evidence was a parent-only review, and their write-ups say so.
 
-## Model pin, arms and matrix runs
+## Model pin, arms and comparing them
 
 `harness/code.yaml` says `model: opus`, an alias that Claude Code resolves to
 Opus 5 where the Vertex project serves it and to Opus 4.6 where it does not
@@ -209,23 +209,31 @@ Opus 5 where the Vertex project serves it and to Opus 4.6 where it does not
 `run-fullsend.sh` turns into `fullsend run --model/--effort`, so the production
 harness file is untouched.
 
-Each coder model is an arm. `matrix.factors.model` lists the arms (today
-`claude-opus-4-6`, the fleet's code agent as it runs, and `openai/gpt-6-luna`
-as the cheaper comparison); the cases, the review step and the judges are the
-same for every arm. `run-fullsend.sh` picks the runtime from the model id,
+Each coder model is an arm; the cases, the review step and the judges are the
+same for every arm. The one supported way to run an arm is one
+`run-functional.sh` invocation: a plain `run-functional.sh local/code-rhai`
+runs the baseline pinned in `models.skill`, and `EVAL_MODEL=<model id>` runs
+another. `run-fullsend.sh` picks the runtime from the model id,
 provider-prefixed ids such as `openai/...` on pi and bare Anthropic ids on
-Claude Code, unless `EVAL_RUNTIME` is set. A plain `run-functional.sh local/code-rhai`
-runs the baseline arm; `EVAL_MODEL=openai/gpt-6-luna` runs the other; a matrix
-run through `eval-anova` runs them all. `EVAL_REVIEW_RUNTIME` and
+Claude Code, unless `EVAL_RUNTIME` is set. `EVAL_REVIEW_RUNTIME` and
 `EVAL_REVIEW_MODEL` override the review parent's runtime and model (see
 [The review step](#the-review-step)); `EVAL_SKIP_REVIEW=1` skips it.
 
-Repeated trials and comparisons use the harness's `eval-anova` and
-`eval-compare` skills (agent-eval-harness 1.49 or later; the submodule is
-pinned to v1.56.3, the first release that enforces the judges' `denied_tools`,
-and `run-functional.sh` refuses to score on anything older or on a version
-that is not a plain `N.N.N` release). `--dry-run`
-prints the grid and a cost bound without executing.
+Arms are compared after the fact with two harness skills. `eval-anova` in
+`--analyze-only` mode reads the finished runs under `eval/runs/code-rhai/`
+(grouping them by the model each run records), fits a repeated-measures
+ANOVA over the per-case composite with case as the blocking factor, and
+writes `anova.json`; `eval-compare` renders the side-by-side report and
+picks up `anova.json` when it is there. Checked on the two five-case reruns
+of 2026-10-14/15: F = 2.25, p = 0.21, not significant, as expected at that
+size. eval-anova's own executor (`orchestrate.py` without `--analyze-only`,
+driven by a `matrix:` block) is not a supported way to run this eval: it
+calls the harness scripts directly and skips everything `run-functional.sh`
+sets up, so the config declares no `matrix:` block. A fan-out over several
+arms is a loop over `run-functional.sh` invocations. The submodule is pinned
+to agent-eval-harness v1.56.3, the first release that enforces the judges'
+`denied_tools`; `run-functional.sh` refuses to score on anything older or on
+a version that is not a plain `N.N.N` release.
 
 ## Local run notes
 

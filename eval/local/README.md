@@ -22,7 +22,7 @@ samples use the harness's `eval-anova` and `eval-compare` skills.
 
 | Eval | Measures | Notes |
 |---|---|---|
-| [`code-rhai`](code-rhai/) | the code agent on feature-scale epics, graded without reference solutions | one arm per coder model (`matrix.factors.model`); see its README for the design and the case recipe |
+| [`code-rhai`](code-rhai/) | the code agent on feature-scale epics, graded without reference solutions | one arm per coder model, one `run-functional.sh` run each (`EVAL_MODEL`); see its README for the design and the case recipe |
 
 Adding one: create `eval/local/<name>/` with an `eval.yaml` and `cases/`, add a
 row here, and keep anything expensive or slow out of `eval/<agent>/`, which CI

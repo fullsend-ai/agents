@@ -7,10 +7,12 @@ description: >
   reference solution: the repo's own tests must still pass (deterministic),
   and a model judge scores the PR against the epic's acceptance criteria,
   with the fullsend review agent's findings as evidence. The pipeline guard in
-  eval/code stays as is. The matrix below runs the same cases and judges for
-  each coder model (one arm per model); run-fullsend.sh picks the runtime
-  from the model id (provider-prefixed ids such as openai/... run on pi,
-  bare Anthropic ids on Claude Code) unless EVAL_RUNTIME says otherwise.
+  eval/code stays as is. Each coder model is an arm: one run-functional.sh
+  invocation per arm (EVAL_MODEL selects it), the same cases and judges every
+  time; run-fullsend.sh picks the runtime from the model id (provider-prefixed
+  ids such as openai/... run on pi, bare Anthropic ids on Claude Code) unless
+  EVAL_RUNTIME says otherwise. Arms are compared afterwards with the harness's
+  eval-anova in --analyze-only mode and eval-compare (see the README).
 
 execution:
   # The eval's identity for the harness (run directories, reports). The
@@ -74,9 +76,8 @@ hooks:
 runner:
   type: cli
   # {model} and {effort} are the harness placeholders: resolved from
-  # `execute.py --model/--effort` (what eval-anova passes per matrix cell, and
-  # what run-functional.sh forwards from EVAL_MODEL/EVAL_EFFORT) or, for a plain
-  # run, from models.skill below. run-fullsend.sh turns them into
+  # `execute.py --model/--effort` (what run-functional.sh forwards from
+  # EVAL_MODEL/EVAL_EFFORT) or, for a plain run, from models.skill below. run-fullsend.sh turns them into
   # `fullsend run --model/--effort`, so harness/code.yaml itself stays untouched
   # and metrics.json records both requested_model and the resolved model.
   # Effort is passed explicitly so every arm runs at the same level; high is
@@ -95,7 +96,7 @@ models:
   # alias that resolves to Opus 5 where the Vertex project serves it and falls
   # back to Opus 4.6 where it does not (the fleet projects, as of 2026-09-21).
   # Pin the id so every project runs the same baseline. A plain run uses this;
-  # a matrix run (eval-anova) takes each model from matrix.factors.model.
+  # EVAL_MODEL selects another arm for a run.
   skill: claude-opus-4-6
   # Judge: Opus 5 on the Claude Code runner, the same judge for every arm so
   # the arms are scored identically, and above every model it judges. On the
@@ -106,17 +107,12 @@ models:
   # so a gateway can be substituted from the environment.
   judge: claude-opus-5
 
-# eval-anova matrix (agent-eval-harness >= 1.49). Single baseline cell until a
-# budget exists; total runs = conditions x cases x replications.
-matrix:
-  # One arm per coder model, same cases, same judges. claude-opus-4-6 is the
-  # fleet's code agent as it runs today; openai/gpt-6-luna is the cheaper
-  # comparison on the pi runtime.
-  factors:
-    model:
-      - claude-opus-4-6
-      - openai/gpt-6-luna
-  replications: 1
+# No matrix block: eval-anova's executor drives the harness scripts directly
+# and would skip everything run-functional.sh sets up (hook PATH, dataset
+# path, tokens, the harness-version guard, the capture-failure check), so it
+# is not a supported way to run this eval. Arms are run one at a time through
+# run-functional.sh and analysed together afterwards (README, "Model pin,
+# arms and comparing them").
 
 dataset:
   path: cases
@@ -181,14 +177,19 @@ judges:
       the rationale carries the category and, for a decline, the agent's own
       words, so a reader can see why without opening the transcript. A
       capture or fixture failure is "failed" with infrastructure=true, never a
-      decline, whatever the agent said; it also leaves
+      decline, whatever the agent said; it leaves
       output/infrastructure-failure.json, which run-functional.sh counts as a
-      case failure.
+      case failure, and this judge raises on it (a judge error, not a score),
+      so no path that scores these runs, run-functional.sh or the harness
+      driven directly, can count a capture failure against the agent.
     check: |
       import json
+      marker = outputs["files"].get("output/infrastructure-failure.json")
+      if marker:
+          raise RuntimeError("capture failed, not the agent: " + str(json.loads(marker).get("reason")))
       raw = outputs["files"].get("output/agent-outcome.json")
       if not raw:
-          return False, "agent-outcome.json not found — capture-pr-artifacts.sh did not run"
+          raise RuntimeError("agent-outcome.json not found: capture-pr-artifacts.sh did not run")
       o = json.loads(raw)
       kind = o.get("outcome")
       if kind == "pr":
@@ -196,7 +197,7 @@ judges:
       if kind == "declined":
           return True, "declined: " + (o.get("final_message_excerpt") or "").replace("\n", " ")[:300]
       if o.get("infrastructure"):
-          return False, f"failed (infrastructure, not the agent): {o.get('reason')}"
+          raise RuntimeError(f"capture failed, not the agent: {o.get('reason')}")
       return False, f"failed: {o.get('reason')}"
 
   - name: regression_tests_pass

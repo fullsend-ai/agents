@@ -24,7 +24,7 @@ AGENT="${1:?agent name required}"
 OUTPUT_DIR="${3:?output dir required}"
 # Optional $4/$5: the harness's {model} and {effort} placeholders. An eval that
 # puts them in runner.command (eval/local/code-rhai) gets per-run model/effort from
-# `execute.py --model/--effort`, which is how eval-anova drives matrix cells.
+# `execute.py --model/--effort`, which run-functional.sh forwards from EVAL_MODEL/EVAL_EFFORT.
 # Non-empty values win over the EVAL_MODEL/EVAL_EFFORT environment; evals that
 # omit the placeholders (eval/code) keep the environment-only behaviour.
 if [[ -n "${4:-}" ]]; then EVAL_MODEL="$4"; fi
@@ -275,7 +275,7 @@ override_args=()
 # Runtime follows the model when not set explicitly: a provider-prefixed id
 # (openai/gpt-6-luna, google-vertex/gemini-..., xai/grok-...) is a pi model,
 # since the Claude Code runtime only serves Anthropic models; a bare Anthropic
-# id keeps fullsend's default (claude). Lets one eval's matrix mix vendors.
+# id keeps fullsend's default (claude). Lets one eval's arms mix vendors.
 if [[ -z "${EVAL_RUNTIME:-}" && "${EVAL_MODEL:-}" == */* ]]; then
   EVAL_RUNTIME=pi
 fi
