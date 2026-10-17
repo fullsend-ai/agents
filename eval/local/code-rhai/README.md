@@ -223,7 +223,8 @@ run through `eval-anova` runs them all. `EVAL_REVIEW_RUNTIME` and
 Repeated trials and comparisons use the harness's `eval-anova` and
 `eval-compare` skills (agent-eval-harness 1.49 or later; the submodule is
 pinned to v1.56.3, the first release that enforces the judges' `denied_tools`,
-and `run-functional.sh` refuses to score on anything older). `--dry-run`
+and `run-functional.sh` refuses to score on anything older or on a version
+that is not a plain `N.N.N` release). `--dry-run`
 prints the grid and a cost bound without executing.
 
 ## Local run notes
