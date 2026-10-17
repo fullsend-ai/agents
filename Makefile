@@ -78,6 +78,7 @@ script-test:
 	$(call run-timed,bash scripts/provider-credentials-test.sh)
 	$(call run-timed,bash scripts/signoff-strip-test.sh)
 	$(call run-timed,bash scripts/post-code-test.sh)
+	$(call run-timed,bash scripts/public-text-scan-test.sh)
 	$(call run-timed,bash scripts/pre-review-test.sh)
 	$(call run-timed,bash scripts/pr-review-challenger-contract-test.sh)
 	$(call run-timed,bash scripts/pr-review-remediation-test.sh)

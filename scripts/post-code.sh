@@ -2512,6 +2512,25 @@ if [ -n "${GITLAB_TOKEN:-}" ]; then
   echo "::add-mask::${GITLAB_TOKEN}"
 fi
 
+# Scan optional public text with built-in rules, not repository policy.
+# A file source skips .gitleaks.toml discovery; the private working directory
+# and explicit ignore path prevent .gitleaksignore discovery. The subshell
+# keeps these overrides local to public text, leaving commit scans unchanged.
+# Return 0 for clean text, 1 for findings, other nonzero for scan/setup errors.
+scan_public_text() (
+  local scan_dir rc=0
+  scan_dir="$(mktemp -d)" || return 2
+  trap 'rm -f "${scan_dir}/text"; rmdir "${scan_dir}"' EXIT
+  unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
+  printf '%s\n' "$1" > "${scan_dir}/text" || return 2
+  cd "${scan_dir}" || return 2
+  # Suppress both streams: even scanner failures may echo sensitive input.
+  gitleaks detect --source "${scan_dir}/text" --no-git --redact \
+    --ignore-gitleaks-allow --gitleaks-ignore-path "${scan_dir}" \
+    >/dev/null 2>&1 || rc=$?
+  return "${rc}"
+)
+
 # ---------------------------------------------------------------------------
 # No-op comment helper
 #
@@ -2546,12 +2565,16 @@ post_noop_comment() {
 
   local detail_block=""
   if [ -n "${agent_context}" ]; then
-    local sanitized_context
-    sanitized_context="$(sanitize_failure_detail "${agent_context}")"
-    detail_block="
+    if ! install_gitleaks || ! scan_public_text "${agent_context}"; then
+      gha_echo warning "Agent context omitted because its secret scan did not pass"
+    else
+      local sanitized_context
+      sanitized_context="$(sanitize_failure_detail "${agent_context}")"
+      detail_block="
 
 **Agent context:**
 ${sanitized_context}"
+    fi
   fi
 
   local body
@@ -3002,15 +3025,8 @@ fi
 # never sees it, but it becomes a public PR description.
 PR_BODY_SCAN_STATUS="skipped"
 if [ -n "${PR_BODY_FROM_RESULT}" ]; then
-  PR_BODY_TMP="$(mktemp)"
-  printf '%s\n' "${PR_BODY_FROM_RESULT}" > "${PR_BODY_TMP}"
-  GL_STDERR="$(mktemp)"
   GL_RC=0
-  gitleaks detect --source "${PR_BODY_TMP}" --no-git --redact 2>"${GL_STDERR}" || GL_RC=$?
-  if [ -s "${GL_STDERR}" ]; then
-    sed 's/^/::debug::gitleaks: /' "${GL_STDERR}"
-  fi
-  rm -f "${GL_STDERR}"
+  scan_public_text "${PR_BODY_FROM_RESULT}" || GL_RC=$?
   if [ "${GL_RC}" -eq 0 ]; then
     PR_BODY_SCAN_STATUS="passed"
   elif [ "${GL_RC}" -eq 1 ]; then
@@ -3022,7 +3038,6 @@ if [ -n "${PR_BODY_FROM_RESULT}" ]; then
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="error"
   fi
-  rm -f "${PR_BODY_TMP}"
 fi
 
 extract_commit_body() {
