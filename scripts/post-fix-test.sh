@@ -5841,6 +5841,280 @@ run_push_blocked_mergeability_does_not_skip_test
 
 rm -rf "${PUSH_REBASE_TMPDIR}"
 
+# ---------------------------------------------------------------------------
+# Per-PR automatic fix budget label (issue #1680)
+# ---------------------------------------------------------------------------
+FIX_BUDGET_TMPDIR="$(mktemp -d)"
+
+# --- fix_budget_from_labels unit tests ---
+run_fix_budget_parse_test() {
+  local test_name="$1"
+  local labels="$2"
+  local bot_cap="$3"
+  local expected="$4"
+  local actual
+  # shellcheck disable=SC2030,SC2031
+  actual="$(
+    FULLSEND_FORGE=github
+    # shellcheck source=lib/fix-ops.lib.sh
+    source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+    fix_budget_from_labels "${labels}" "${bot_cap}"
+  )"
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name} — expected '${expected}', got '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_fix_budget_parse_test "fix-budget-lowers-cap" $'bug\nfullsend-fix-budget/2' 5 "2"
+run_fix_budget_parse_test "fix-budget-missing" $'bug\narea/api' 5 ""
+run_fix_budget_parse_test "fix-budget-no-labels" "" 5 ""
+run_fix_budget_parse_test "fix-budget-equal-to-cap-ignored" "fullsend-fix-budget/5" 5 ""
+run_fix_budget_parse_test "fix-budget-above-cap-ignored" "fullsend-fix-budget/9" 5 ""
+run_fix_budget_parse_test "fix-budget-zero-ignored" "fullsend-fix-budget/0" 5 ""
+run_fix_budget_parse_test "fix-budget-negative-ignored" "fullsend-fix-budget/-1" 5 ""
+run_fix_budget_parse_test "fix-budget-non-integer-ignored" "fullsend-fix-budget/two" 5 ""
+run_fix_budget_parse_test "fix-budget-leading-zero-ignored" "fullsend-fix-budget/02" 5 ""
+run_fix_budget_parse_test "fix-budget-trailing-text-ignored" "fullsend-fix-budget/2x" 5 ""
+run_fix_budget_parse_test "fix-budget-oversized-ignored" "fullsend-fix-budget/18446744073709551616" 5 ""
+run_fix_budget_parse_test "fix-budget-smallest-wins" $'fullsend-fix-budget/3\nfullsend-fix-budget/1\nfullsend-fix-budget/4' 5 "1"
+run_fix_budget_parse_test "fix-budget-invalid-mixed-with-valid" $'fullsend-fix-budget/0\nfullsend-fix-budget/3' 5 "3"
+run_fix_budget_parse_test "fix-budget-other-prefix-ignored" "my-fullsend-fix-budget/2" 5 ""
+
+# --- Shared gh mock: --json labels returns GH_MOCK_LABELS (or fails when
+# GH_MOCK_LABELS_FAIL is set); everything else is logged and succeeds with
+# no output, so mergeability reads as "unknown" (no conflict path). ---
+FIX_BUDGET_MOCK_BIN="${FIX_BUDGET_TMPDIR}/bin"
+mkdir -p "${FIX_BUDGET_MOCK_BIN}"
+cat > "${FIX_BUDGET_MOCK_BIN}/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "${GH_CALL_LOG:-/dev/null}"
+if [[ "$*" == *"--json labels"* ]]; then
+  if [ -n "${GH_MOCK_LABELS_FAIL:-}" ]; then
+    exit 1
+  fi
+  [ -n "${GH_MOCK_LABELS:-}" ] && printf '%s\n' "${GH_MOCK_LABELS}"
+fi
+exit 0
+MOCK
+chmod +x "${FIX_BUDGET_MOCK_BIN}/gh"
+
+# --- pre-fix enforcement ---
+# run_prefix_budget_test NAME TRIGGER ITERATION LABELS EXPECT_EXIT EXPECT_TEXT [LABELS_FAIL]
+run_prefix_budget_test() {
+  local test_name="$1"
+  local trigger="$2"
+  local iteration="$3"
+  local labels="$4"
+  local expect_exit="$5"
+  local expect_text="$6"
+  local labels_fail="${7:-}"
+  local base="${FIX_BUDGET_TMPDIR}/pre-${test_name}"
+  mkdir -p "${base}/workspace" "${base}/home"
+  local stdout_log="${base}/stdout.log"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export PATH="${FIX_BUDGET_MOCK_BIN}:${PATH}"
+    export HOME="${base}/home"
+    export FULLSEND_FORGE="github"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="${trigger}"
+    export FIX_ITERATION="${iteration}"
+    export ITERATION_CAP="5"
+    export ITERATION_CAP_HUMAN="10"
+    export GITHUB_WORKSPACE="${base}/workspace"
+    export GH_MOCK_LABELS="${labels}"
+    export GH_MOCK_LABELS_FAIL="${labels_fail}"
+    unset GITHUB_PATH
+    bash "${PRE_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+
+  if { [ "${expect_exit}" = "0" ] && [ "${exit_code}" -ne 0 ]; } \
+     || { [ "${expect_exit}" != "0" ] && [ "${exit_code}" -eq 0 ]; }; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local line
+  while IFS= read -r line; do
+    [ -z "${line}" ] && continue
+    if ! grep -qF -- "${line}" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — missing '${line}'"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  done <<< "${expect_text}"
+  echo "PASS: ${test_name}"
+}
+
+FB_BOT="fullsend-ai-review[bot]"
+
+run_prefix_budget_test "prefix-budget-blocks-bot-above-label" \
+  "${FB_BOT}" 3 $'area/api\nfullsend-fix-budget/2' 1 \
+  $'exceeds the per-PR automatic fix budget of 2 set by label fullsend-fix-budget/2\nA human can still direct the agent with /fs-fix (up to 10 total iterations)'
+
+run_prefix_budget_test "prefix-budget-allows-bot-at-label" \
+  "${FB_BOT}" 2 "fullsend-fix-budget/2" 0 \
+  $'lowers the automatic fix cap from 5 to 2\nFIX_ITERATION=2 of 2'
+
+run_prefix_budget_test "prefix-budget-smallest-label-wins" \
+  "${FB_BOT}" 2 $'fullsend-fix-budget/3\nfullsend-fix-budget/1' 1 \
+  "set by label fullsend-fix-budget/1"
+
+run_prefix_budget_test "prefix-budget-not-lower-than-cap-ignored" \
+  "${FB_BOT}" 5 "fullsend-fix-budget/9" 0 \
+  "FIX_ITERATION=5 of 5"
+
+run_prefix_budget_test "prefix-budget-ignored-label-keeps-bot-cap-message" \
+  "${FB_BOT}" 6 "fullsend-fix-budget/9" 1 \
+  "exceeds bot cap of 5"
+
+run_prefix_budget_test "prefix-budget-invalid-label-ignored" \
+  "${FB_BOT}" 3 "fullsend-fix-budget/0" 0 \
+  "FIX_ITERATION=3 of 5"
+
+run_prefix_budget_test "prefix-budget-human-keeps-human-cap" \
+  "alice" 3 "fullsend-fix-budget/2" 0 \
+  "FIX_ITERATION=3 of 10"
+
+run_prefix_budget_test "prefix-budget-label-read-failure-keeps-bot-cap" \
+  "${FB_BOT}" 3 "fullsend-fix-budget/2" 0 \
+  $'Could not read PR labels\nFIX_ITERATION=3 of 5' "1"
+
+# GitLab: labels come from the MR API's labels array via curl.
+run_prefix_budget_gitlab_test() {
+  local test_name="prefix-budget-gitlab-blocks-bot-above-label"
+  local base="${FIX_BUDGET_TMPDIR}/pre-${test_name}"
+  mkdir -p "${base}/bin" "${base}/workspace" "${base}/home"
+  cat > "${base}/bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+echo '{"labels":["area::api","fullsend-fix-budget/2"],"target_branch":"main","detailed_merge_status":"mergeable"}'
+MOCK
+  chmod +x "${base}/bin/curl"
+  local stdout_log="${base}/stdout.log"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export PATH="${base}/bin:${PATH}"
+    export HOME="${base}/home"
+    export FULLSEND_FORGE="gitlab"
+    export CI_SERVER_HOST="gitlab.com"
+    export GITLAB_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_NUMBER="99"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export TRIGGER_SOURCE="fullsend_review_bot"
+    export FIX_ITERATION="3"
+    export ITERATION_CAP="5"
+    export ITERATION_CAP_HUMAN="10"
+    export CI_PROJECT_DIR="${base}/workspace"
+    bash "${PRE_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+  if [ "${exit_code}" -eq 0 ] \
+     || ! grep -qF "set by label fullsend-fix-budget/2" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — exit ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_prefix_budget_gitlab_test
+
+# --- post-fix needs-human label and summary ---
+# A repo left on main makes post-fix take the NO_PUSH path, which still
+# reaches the iteration-cap warning and summary.
+# run_postfix_budget_test NAME TRIGGER ITERATION LABELS EXPECT_SUMMARY EXPECT_NEEDS_HUMAN
+run_postfix_budget_test() {
+  local test_name="$1"
+  local trigger="$2"
+  local iteration="$3"
+  local labels="$4"
+  local expect_summary="$5"
+  local expect_needs_human="$6"
+  local base="${FIX_BUDGET_TMPDIR}/post-${test_name}"
+  mkdir -p "${base}/repo" "${base}/home"
+  git init -q -b main "${base}/repo"
+  git -C "${base}/repo" config user.email "test@example.com"
+  git -C "${base}/repo" config user.name "Test"
+  git -C "${base}/repo" commit --allow-empty -q -m "init"
+  local gh_log="${base}/gh.log"
+  : > "${gh_log}"
+  local stdout_log="${base}/stdout.log"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${base}"
+    export PATH="${FIX_BUDGET_MOCK_BIN}:${PATH}"
+    export HOME="${base}/home"
+    export GH_CALL_LOG="${gh_log}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="${trigger}"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export FIX_ITERATION="${iteration}"
+    export ITERATION_CAP="5"
+    export ITERATION_CAP_HUMAN="10"
+    export GH_MOCK_LABELS="${labels}"
+    PRE_AGENT_HEAD="$(git -C "${base}/repo" rev-parse HEAD)"
+    export PRE_AGENT_HEAD
+    unset GITHUB_PATH FULLSEND_VALIDATED_ITERATION_DIR
+    bash "${POST_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF -- "${expect_summary}" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing summary '${expect_summary}'"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local labelled="no"
+  if grep -q -- '--add-label needs-human' "${gh_log}"; then
+    labelled="yes"
+  fi
+  if [ "${labelled}" != "${expect_needs_human}" ]; then
+    echo "FAIL: ${test_name} — needs-human applied: ${labelled}, expected: ${expect_needs_human}"
+    cat "${gh_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_postfix_budget_test "postfix-budget-tightens-needs-human-and-summary" \
+  "${FB_BOT}" 1 "fullsend-fix-budget/2" \
+  "Iteration: 1 of 2 (bot cap, lowered by label fullsend-fix-budget/2)" "yes"
+
+run_postfix_budget_test "postfix-budget-not-lower-than-cap-ignored" \
+  "${FB_BOT}" 3 "fullsend-fix-budget/9" \
+  "Iteration: 3 of 5 (bot cap)" "no"
+
+run_postfix_budget_test "postfix-no-budget-keeps-bot-cap" \
+  "${FB_BOT}" 3 "area/api" \
+  "Iteration: 3 of 5 (bot cap)" "no"
+
+run_postfix_budget_test "postfix-budget-human-keeps-human-cap" \
+  "alice" 3 "fullsend-fix-budget/2" \
+  "Iteration: 3 of 10 (human cap, total across bot+human)" "no"
+
+rm -rf "${FIX_BUDGET_TMPDIR}"
+
 # --- Summary ---
 
 echo ""

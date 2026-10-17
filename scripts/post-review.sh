@@ -1519,7 +1519,8 @@ REVIEW_CONTROL_LABELS=(
 )
 
 is_control_label() {
-  local label="$1"
+  # Forges match label names case-insensitively, so compare lowercased.
+  local label="${1,,}"
   for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
     if [[ "${cl}" == "${label}" ]]; then
       return 0
@@ -1527,6 +1528,10 @@ is_control_label() {
   done
   # Pipeline-managed label prefixes
   if [[ "${label}" == risk/* ]]; then
+    return 0
+  fi
+  # Maintainer-set per-PR fix budget (issue #1680)
+  if [[ "${label}" == fullsend-fix-budget/* ]]; then
     return 0
   fi
   return 1
@@ -1567,8 +1572,12 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
     LA_ACTION_SHOWN=$(_gha_sanitize "${LA_ACTION}")
     LA_LABEL_SHOWN=$(_gha_sanitize "${LA_LABEL}")
 
-    if [[ "${LA_LABEL}" == *::* || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
-      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters or a double colon"
+    # Leading/trailing whitespace is rejected: forges (notably GitLab) trim
+    # it, so " fullsend-fix-budget/2" would evade is_control_label yet still
+    # act on the real control label.
+    if [[ "${LA_LABEL}" == *::* || "${LA_LABEL}" == " "* || "${LA_LABEL}" == *" " \
+          || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters, a double colon, or leading/trailing whitespace"
       continue
     fi
 

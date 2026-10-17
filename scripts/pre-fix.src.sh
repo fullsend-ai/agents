@@ -16,6 +16,8 @@
 #   FIX_ITERATION      — current iteration count (default: 1)
 #   ITERATION_CAP      — max bot-triggered iterations (default: 5)
 #   ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
+#                      A live `fullsend-fix-budget/N` PR label can lower the
+#                      bot cap (never the human cap) for one PR.
 #   HUMAN_INSTRUCTION  — instruction text (only for human-triggered runs)
 #   FIX_CONFLICT_UPDATE_STRATEGY
 #                      — merge (default) or rebase; how to publish a
@@ -104,15 +106,38 @@ ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
 HUMAN_CAP="${ITERATION_CAP_HUMAN:-10}"
 
+if [ "${FULLSEND_FORGE:-}" = "gitlab" ] && [ -n "${PR_URL:-}" ]; then
+  # GITLAB_HOST / REPO_ENCODED are required by gitlab-fix-ops API helpers.
+  # Validation above already confirmed PR_URL matches REPO_FULL_NAME / PR_NUMBER.
+  forge_parse_pr_url "${PR_URL}"
+fi
+
+# Per-PR automatic fix budget (issue #1680): a maintainer-set
+# fullsend-fix-budget/N label can only lower the bot cap. Human /fs-fix runs
+# keep ITERATION_CAP_HUMAN. Labels are read live from the forge; if the read
+# fails the budget is ignored and the configured bot cap applies.
+FIX_BUDGET=""
 if is_bot_user "${TRIGGER_SOURCE}"; then
-  CAP="${BOT_CAP}"
+  if PR_LABELS_LIVE="$(forge_get_pr_labels "${PR_NUMBER}")"; then
+    FIX_BUDGET="$(fix_budget_from_labels "${PR_LABELS_LIVE}" "${BOT_CAP}")"
+  else
+    gha_echo warning "Could not read PR labels — any fullsend-fix-budget/N label is ignored for this run"
+  fi
+  CAP="${FIX_BUDGET:-${BOT_CAP}}"
+  if [ -n "${FIX_BUDGET}" ]; then
+    echo "Label fullsend-fix-budget/${FIX_BUDGET} lowers the automatic fix cap from ${BOT_CAP} to ${FIX_BUDGET}"
+  fi
 else
   CAP="${HUMAN_CAP}"
 fi
 
 if [[ "${ITERATION}" -gt "${CAP}" ]]; then
   if is_bot_user "${TRIGGER_SOURCE}"; then
-    gha_echo error "Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+    if [ -n "${FIX_BUDGET}" ]; then
+      gha_echo error "Fix iteration ${ITERATION} exceeds the per-PR automatic fix budget of ${CAP} set by label fullsend-fix-budget/${FIX_BUDGET}. Escalating to human."
+    else
+      gha_echo error "Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+    fi
     gha_echo error "The review→fix loop has run ${ITERATION} times without converging."
     gha_echo error "A human can still direct the agent with /fs-fix (up to ${HUMAN_CAP} total iterations)."
   else
@@ -179,12 +204,6 @@ _prefix_redact_literal_token() {
 # will see. Approval/check gating, a merely stale branch, unknown, and API
 # failures are not conflicts and must not trigger a fetch/merge/rebase.
 # ---------------------------------------------------------------------------
-if [ "${FULLSEND_FORGE:-}" = "gitlab" ] && [ -n "${PR_URL:-}" ]; then
-  # GITLAB_HOST / REPO_ENCODED are required by gitlab-fix-ops API helpers.
-  # Validation above already confirmed PR_URL matches REPO_FULL_NAME / PR_NUMBER.
-  forge_parse_pr_url "${PR_URL}"
-fi
-
 if ! fix_conflict_update_strategy_raw_is_known; then
   gha_echo warning "Unknown FIX_CONFLICT_UPDATE_STRATEGY='${FIX_CONFLICT_UPDATE_STRATEGY}' — defaulting to merge"
 fi

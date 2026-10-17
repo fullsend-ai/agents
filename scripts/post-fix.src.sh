@@ -41,7 +41,8 @@
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count
-#   ITERATION_CAP     — max iterations (default: 5)
+#   ITERATION_CAP     — max iterations (default: 5); a live
+#                       `fullsend-fix-budget/N` PR label can lower it
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging)
 #   HUMAN_INSTRUCTION — the harness-captured /fs-fix comment text (only for
 #                       human-triggered runs); used to confirm a rebase or
@@ -1223,13 +1224,30 @@ fi
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
+
+# Per-PR automatic fix budget (issue #1680): mirror pre-fix so the
+# needs-human warning and summary use the same tightened bot cap that
+# pre-fix enforces. Read live; a failed read keeps the configured cap.
+FIX_BUDGET=""
+if is_bot_user "${TRIGGER_SOURCE}"; then
+  if PR_LABELS_LIVE="$(forge_get_pr_labels "${PR_NUMBER}")"; then
+    FIX_BUDGET="$(fix_budget_from_labels "${PR_LABELS_LIVE}" "${BOT_CAP}")"
+  else
+    gha_echo warning "Could not read PR labels — any fullsend-fix-budget/N label is ignored for this run"
+  fi
+fi
+BOT_CAP="${FIX_BUDGET:-${BOT_CAP}}"
 WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 
 # The needs-human label is based on the bot cap — it signals that the
 # autonomous review→fix loop needs human direction. Human-triggered /fs-fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
-  gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  if [ -n "${FIX_BUDGET}" ]; then
+    gha_echo warning "Fix iteration ${ITERATION} is approaching the per-PR automatic fix budget of ${BOT_CAP} set by label fullsend-fix-budget/${FIX_BUDGET}"
+  else
+    gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  fi
   forge_create_label "needs-human" "Agent loop needs human intervention" "D93F0B"
   # shellcheck disable=SC2153
   forge_add_pr_label "${PR_NUMBER}" "needs-human"
@@ -1244,7 +1262,9 @@ echo "  Branch: ${BRANCH:-none}"
 echo "  PR: #${PR_NUMBER}"
 if [ "${NO_PUSH}" = "true" ]; then echo "  Pushed: no"; else echo "  Pushed: yes"; fi
 echo "  Trigger: ${TRIGGER_SOURCE}"
-if is_bot_user "${TRIGGER_SOURCE}"; then
+if is_bot_user "${TRIGGER_SOURCE}" && [ -n "${FIX_BUDGET}" ]; then
+  echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap, lowered by label fullsend-fix-budget/${FIX_BUDGET})"
+elif is_bot_user "${TRIGGER_SOURCE}"; then
   echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap)"
 else
   echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap, total across bot+human)"

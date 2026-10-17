@@ -58,6 +58,7 @@ Remove the label or use `/fs-fix` to re-engage.
 | Label | Meaning |
 |-------|---------|
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
+| `fullsend-fix-budget/N` | Lowers the automatic fix cap for this PR to `N` (a positive integer below `ITERATION_CAP`). Set by a maintainer; the review agent cannot add or remove it. A label that is not a positive integer, is oversized, or is not lower than `ITERATION_CAP` is ignored; with several valid labels the smallest `N` wins. `needs-human` and the stop message use the lowered cap. Manual `/fs-fix` commands are unchanged and keep `ITERATION_CAP_HUMAN`. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
 
 ## Configuration
@@ -302,7 +303,9 @@ instruction supports multi-line text (up to 10,000 bytes).
 
 The fix agent enforces iteration caps to prevent infinite review-fix loops:
 
-- **Automatic:** up to 5 iterations per PR (configurable).
+- **Automatic:** up to 5 iterations per PR (configurable). A maintainer can
+  lower this for a single PR with a `fullsend-fix-budget/N` label
+  ([control labels](#control-labels)).
 - **Manual (`/fs-fix`):** up to 10 total iterations per PR (configurable), shared
   across automatic and manual triggers.
 - When an automatic run is approaching its cap, the agent applies the

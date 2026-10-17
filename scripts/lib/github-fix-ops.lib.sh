@@ -84,6 +84,15 @@ forge_pr_has_merge_conflict() {
   [ "${mergeable}" = "CONFLICTING" ]
 }
 
+# forge_get_pr_labels PR_NUMBER — the PR's live label names, one per line.
+# Returns non-zero on API failure so callers can tell it apart from a PR
+# with no labels.
+forge_get_pr_labels() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json labels --jq '.labels[].name' 2>/dev/null
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {

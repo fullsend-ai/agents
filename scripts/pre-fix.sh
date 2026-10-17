@@ -17,6 +17,8 @@
 #   FIX_ITERATION      — current iteration count (default: 1)
 #   ITERATION_CAP      — max bot-triggered iterations (default: 5)
 #   ITERATION_CAP_HUMAN — max human-triggered iterations (default: 10)
+#                      A live `fullsend-fix-budget/N` PR label can lower the
+#                      bot cap (never the human cap) for one PR.
 #   HUMAN_INSTRUCTION  — instruction text (only for human-triggered runs)
 #   FIX_CONFLICT_UPDATE_STRATEGY
 #                      — merge (default) or rebase; how to publish a
@@ -122,6 +124,15 @@ forge_pr_has_merge_conflict() {
   local mergeable
   mergeable="$(forge_get_pr_merge_state "${pr_number}")" || return 1
   [ "${mergeable}" = "CONFLICTING" ]
+}
+
+# forge_get_pr_labels PR_NUMBER — the PR's live label names, one per line.
+# Returns non-zero on API failure so callers can tell it apart from a PR
+# with no labels.
+forge_get_pr_labels() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json labels --jq '.labels[].name' 2>/dev/null
 }
 
 # --- Push operations ---
@@ -370,6 +381,20 @@ forge_pr_has_merge_conflict() {
   [ "${has_conflicts}" = "true" ] && [ "${merge_status}" = "cannot_be_merged" ]
 }
 
+# forge_get_pr_labels PR_NUMBER — the MR's live label names, one per line.
+# Returns non-zero on API failure so callers can tell it apart from an MR
+# with no labels.
+forge_get_pr_labels() {
+  local pr_number="$1"
+  local json
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || return 1
+  printf '%s' "${json}" | jq -r '.labels[]? | strings'
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
@@ -516,6 +541,30 @@ is_human_history_rewrite_request() {
   is_human_squash_request "${1:-}" || is_human_reset_request "${1:-}"
 }
 
+# fix_budget_from_labels LABELS BOT_CAP — prints the per-PR automatic fix
+# budget N from a maintainer-set `fullsend-fix-budget/N` label when it
+# lowers BOT_CAP, or nothing when no label applies (issue #1680). LABELS is
+# newline-separated (forge_get_pr_labels output). A label is ignored when N
+# is not a positive integer without leading zeros, is oversized (more than
+# 9 digits, which would overflow bash arithmetic), or is not lower than
+# BOT_CAP. With several valid labels the smallest N wins. The budget only
+# ever tightens the bot cap; callers must not apply it to human runs.
+fix_budget_from_labels() {
+  local labels="${1:-}" bot_cap="${2:-}" label n best=""
+  [[ "${bot_cap}" =~ ^[0-9]{1,9}$ ]] || return 0
+  while IFS= read -r label; do
+    [[ "${label}" =~ ^fullsend-fix-budget/([1-9][0-9]{0,8})$ ]] || continue
+    n="${BASH_REMATCH[1]}"
+    [ "${n}" -lt "${bot_cap}" ] || continue
+    if [ -z "${best}" ] || [ "${n}" -lt "${best}" ]; then
+      best="${n}"
+    fi
+  done <<< "${labels}"
+  if [ -n "${best}" ]; then
+    printf '%s\n' "${best}"
+  fi
+}
+
 # fix_conflict_update_strategy — prints merge or rebase.
 # FIX_CONFLICT_UPDATE_STRATEGY is the harness-configured reconciliation
 # strategy used when the forge reports a real merge conflict (issue #1518).
@@ -617,15 +666,38 @@ ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
 HUMAN_CAP="${ITERATION_CAP_HUMAN:-10}"
 
+if [ "${FULLSEND_FORGE:-}" = "gitlab" ] && [ -n "${PR_URL:-}" ]; then
+  # GITLAB_HOST / REPO_ENCODED are required by gitlab-fix-ops API helpers.
+  # Validation above already confirmed PR_URL matches REPO_FULL_NAME / PR_NUMBER.
+  forge_parse_pr_url "${PR_URL}"
+fi
+
+# Per-PR automatic fix budget (issue #1680): a maintainer-set
+# fullsend-fix-budget/N label can only lower the bot cap. Human /fs-fix runs
+# keep ITERATION_CAP_HUMAN. Labels are read live from the forge; if the read
+# fails the budget is ignored and the configured bot cap applies.
+FIX_BUDGET=""
 if is_bot_user "${TRIGGER_SOURCE}"; then
-  CAP="${BOT_CAP}"
+  if PR_LABELS_LIVE="$(forge_get_pr_labels "${PR_NUMBER}")"; then
+    FIX_BUDGET="$(fix_budget_from_labels "${PR_LABELS_LIVE}" "${BOT_CAP}")"
+  else
+    gha_echo warning "Could not read PR labels — any fullsend-fix-budget/N label is ignored for this run"
+  fi
+  CAP="${FIX_BUDGET:-${BOT_CAP}}"
+  if [ -n "${FIX_BUDGET}" ]; then
+    echo "Label fullsend-fix-budget/${FIX_BUDGET} lowers the automatic fix cap from ${BOT_CAP} to ${FIX_BUDGET}"
+  fi
 else
   CAP="${HUMAN_CAP}"
 fi
 
 if [[ "${ITERATION}" -gt "${CAP}" ]]; then
   if is_bot_user "${TRIGGER_SOURCE}"; then
-    gha_echo error "Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+    if [ -n "${FIX_BUDGET}" ]; then
+      gha_echo error "Fix iteration ${ITERATION} exceeds the per-PR automatic fix budget of ${CAP} set by label fullsend-fix-budget/${FIX_BUDGET}. Escalating to human."
+    else
+      gha_echo error "Fix iteration ${ITERATION} exceeds bot cap of ${CAP}. Escalating to human."
+    fi
     gha_echo error "The review→fix loop has run ${ITERATION} times without converging."
     gha_echo error "A human can still direct the agent with /fs-fix (up to ${HUMAN_CAP} total iterations)."
   else
@@ -692,12 +764,6 @@ _prefix_redact_literal_token() {
 # will see. Approval/check gating, a merely stale branch, unknown, and API
 # failures are not conflicts and must not trigger a fetch/merge/rebase.
 # ---------------------------------------------------------------------------
-if [ "${FULLSEND_FORGE:-}" = "gitlab" ] && [ -n "${PR_URL:-}" ]; then
-  # GITLAB_HOST / REPO_ENCODED are required by gitlab-fix-ops API helpers.
-  # Validation above already confirmed PR_URL matches REPO_FULL_NAME / PR_NUMBER.
-  forge_parse_pr_url "${PR_URL}"
-fi
-
 if ! fix_conflict_update_strategy_raw_is_known; then
   gha_echo warning "Unknown FIX_CONFLICT_UPDATE_STRATEGY='${FIX_CONFLICT_UPDATE_STRATEGY}' — defaulting to merge"
 fi
