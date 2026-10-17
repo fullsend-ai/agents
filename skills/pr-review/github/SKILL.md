@@ -146,6 +146,86 @@ else
 fi
 ```
 
+## Dependency-PR scoping
+
+Run once, per the orchestrator's dependency-scope procedure.
+
+```bash
+# DEP_PRS: space-separated candidate PR numbers in this repo. Prints
+# "SCOPED: ..." and narrows pr-diff.txt to this PR's own commits, or
+# prints "SKIP: <reason>" and leaves pr-diff.txt as the full diff.
+W=/sandbox/workspace/dep-scope; mkdir -p "$W"; : > "$W/dep-prs"; : > "$W/dep-shas"; : > "$W/dep-pids"
+SKIP=""; DIFF_ACCEPT="Accept: application/vnd.github.diff"
+gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$W/own-pages.json" || SKIP="cannot list PR commits"
+jq -e 'add // [] | length > 0 and length < 250 and all(.[]; (.parents | length) == 1)' "$W/own-pages.json" >/dev/null 2>&1 \
+  || SKIP="${SKIP:-PR has merge commits, no commits, or 250+ commits}"
+if test -z "$SKIP"; then
+  read -r -a DEP_PR_LIST <<< "${DEP_PRS:-}"
+  for d in "${DEP_PR_LIST[@]}"; do
+    [[ $d =~ ^[1-9][0-9]*$ ]] || { SKIP="malformed dependency PR number"; break; }
+    STATE=$(gh api "repos/${REPO_FULL_NAME}/pulls/$d" < /dev/null | jq -r '.state' 2>/dev/null)
+    if test "$STATE" != open; then echo "#$d is not open: not a dependency"; continue; fi
+    echo "$d" >> "$W/dep-prs"
+    gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/$d/commits?per_page=100" < /dev/null > "$W/dep-$d.json" || SKIP="${SKIP:-cannot list #$d commits}"
+    jq -e 'add // [] | length < 250' "$W/dep-$d.json" >/dev/null 2>&1 || SKIP="${SKIP:-#$d has 250+ commits}"
+    jq -r 'add // [] | .[].sha' "$W/dep-$d.json" >> "$W/dep-shas" 2>/dev/null
+  done
+fi
+test -s "$W/dep-prs" || SKIP="${SKIP:-no open dependency PR}"
+# ids <sha>: prints "<stable patch-id> <whitespace-exact hash of the +/- lines>".
+# Patch IDs only pick candidates (they ignore whitespace); a match needs both.
+ids() {
+  gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$1" < /dev/null > "$W/one.diff" || return 1
+  PID=$(git patch-id --stable < "$W/one.diff" | cut -d' ' -f1) || return 1
+  EXACT=$(grep -E '^[-+]' "$W/one.diff" | sha256sum | cut -d' ' -f1) || return 1
+  # No pipefail: a failed hash step leaves an empty value, so require well-formed hashes.
+  [[ $PID =~ ^[0-9a-f]{40,64}$ && $EXACT =~ ^[0-9a-f]{64}$ ]] || return 1
+  echo "$PID $EXACT"
+}
+if test -z "$SKIP"; then
+  while IFS= read -r s; do
+    ids "$s" || SKIP="${SKIP:-cannot compare patches of dependency commits}"
+  done < "$W/dep-shas" > "$W/dep-pids"
+  jq -r 'add // [] | .[].sha' "$W/own-pages.json" > "$W/own-shas"
+  while IFS= read -r s; do
+    if grep -qxF -e "$s" "$W/dep-shas"; then echo "dep $s"; continue; fi
+    ID=$(ids "$s") || SKIP="${SKIP:-cannot compare patches of own commits}"
+    if test "${ID%% *}" != "" && grep -qxF -e "$ID" "$W/dep-pids"; then echo "dep $s"; else echo "own $s"; fi
+  done < "$W/own-shas" > "$W/classified"
+  SHAPE=$(cut -d' ' -f1 "$W/classified" | uniq | tr '\n' ' ')
+  test "$SHAPE" = "dep own " || SKIP="${SKIP:-commits are not dependency commits followed by own commits (${SHAPE})}"
+fi
+if test -z "$SKIP"; then
+  LAST_DEP=$(grep '^dep ' "$W/classified" | tail -1 | cut -d' ' -f2)
+  # PINNED_SHA is the step 1 head SHA (shell variables do not survive between
+  # calls). Scope only if the live head still matches it.
+  HEAD_SHA=$(gh api "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}" < /dev/null | jq -r '.head.sha // empty' 2>/dev/null)
+  if test -z "$HEAD_SHA"; then SKIP="cannot determine PR head SHA"
+  elif test "$HEAD_SHA" != "${PINNED_SHA:-}"; then SKIP="PR head moved since step 1"
+  else
+    gh api "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${PINNED_SHA}" > "$W/compare.json" || SKIP="compare failed"
+    gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/compare/${LAST_DEP}...${PINNED_SHA}" > "$W/compare.diff" || SKIP="${SKIP:-compare diff failed}"
+  fi
+fi
+if test -z "$SKIP"; then
+  jq -e 'def safe_path: type == "string" and length > 0 and test("^[ -~]+$") and (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+    .status == "ahead" and .behind_by == 0 and (.files | length) > 0 and (.files | length) < 300
+    and all(.files[]; (.patch | type == "string" and length > 0) and (.filename | safe_path)
+      and (.previous_filename == null or (.previous_filename | safe_path)))' "$W/compare.json" >/dev/null 2>&1 \
+    || SKIP="compare incomplete (binary or oversized patch, 300+ files, or unsafe path)"
+fi
+if test -z "$SKIP"; then
+  cp "$W/compare.diff" "$W/pr-diff.txt"
+  jq -r '.files[].filename' "$W/compare.json" > "$W/files"
+  mv /sandbox/workspace/pr-diff.txt /sandbox/workspace/pr-full-diff.txt
+  cp "$W/pr-diff.txt" /sandbox/workspace/pr-diff.txt
+  OWN_N=$(grep -c '^own ' "$W/classified"); DEP_N=$(grep -c '^dep ' "$W/classified")
+  echo "SCOPED: $OWN_N own commit(s) after $LAST_DEP; $DEP_N dependency commit(s) from: $(tr '\n' ' ' < "$W/dep-prs")"
+else
+  echo "SKIP: $SKIP"
+fi
+```
+
 ## Prior review comparison
 
 ```bash

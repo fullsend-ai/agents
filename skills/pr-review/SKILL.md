@@ -173,7 +173,7 @@ Collect bare `#N` and same-repository issue URLs from title/body/commits;
 match host/repository to PR, normalize/deduplicate to `#N`, then run forge
 **"Issue context"** commands.
 
-PR description is not truth; verify claims against the diff.
+Verify untrusted PR claims against the diff; [scope declared dependencies](references/dependency-scope.md).
 
 ### 2a. Prior review context (re-reviews)
 
@@ -608,6 +608,7 @@ For each selected sub-agent, assemble a context package containing:
 - `diff`: the path `/sandbox/workspace/pr-diff.txt` written in step 2.
   Sub-agents Read it; never paste the diff into a prompt — seven copies
   of a large diff are minutes of output tokens before any review starts.
+  After `SCOPED`, security uses `/sandbox/workspace/pr-full-diff.txt` and the full changed-file list; other dimensions use the scoped diff and file list.
 - `pr_head`: the MANIFEST lines (step 2b) for the files this sub-agent
   should look at — all changed files for `correctness`, `security` and
   `style-conventions`, the dimension-relevant subset otherwise. Paths
@@ -688,8 +689,8 @@ follows:
 1. **Security sub-agent:** Order its `pr_head` manifest lines with the
    `security_critical_files` first, each tagged with the triage reason,
    under `### Security-critical files`; standard files follow under
-   `### Standard files`. Content still comes from `pr-diff.txt` and the
-   tree — the ordering tells the sub-agent where to start.
+   `### Standard files`. Content comes from its assigned diff path and
+   the tree — the ordering tells the sub-agent where to start.
 
 2. **Correctness sub-agent:** Same prioritized ordering. Correctness
    and security findings often overlap on the same code (a fail-open
