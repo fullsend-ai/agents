@@ -33,8 +33,8 @@ echo "hello from the checkout" > "$TMP/co/file.txt"
 cat > "$TMP/bin/openshell" <<'STUB'
 #!/usr/bin/env bash
 # Stub openshell. STUB_ROOT holds the fake sandbox filesystem; the knobs
-# STUB_PROVIDER_RC, STUB_CREATE_RC, STUB_GET_RC and STUB_GET_PHASE drive
-# the failure cases.
+# STUB_PROVIDER_RC, STUB_CREATE_RC, STUB_GET_RC, STUB_GET_PHASE and
+# STUB_EXEC_RC drive the failure cases.
 set -uo pipefail
 case "$1 $2" in
   "provider get") exit "${STUB_PROVIDER_RC:-0}" ;;
@@ -61,7 +61,10 @@ case "$1 $2" in
     # PATH it exports.
     script="${script//\/sandbox\/workspace\/regression/$STUB_ROOT/ws}"
     script="${script//\/tmp\/eval-reg-/$STUB_ROOT/tmp/eval-reg-}"
-    timeout "$tmo" sh -c "$script" </dev/null ;;
+    timeout "$tmo" sh -c "$script" </dev/null; rc=$?
+    # STUB_EXEC_RC: the exec transport failed after the command ran (relay
+    # dropped, sandbox evicted), whatever the command printed.
+    exit "${STUB_EXEC_RC:-$rc}" ;;
   *) echo "stub openshell: unexpected args: $*" >&2; exit 2 ;;
 esac
 STUB
@@ -111,6 +114,13 @@ for code in 124 125; do
     fail "a command that itself exits $code (rc=$RC status=$STATUS)"
   fi
 done
+
+run 'echo "__EVAL_RC__=0"; exit 0' 30 STUB_EXEC_RC=1
+if [[ $RC -eq 125 && "$STATUS" == sandbox ]] && grep -q 'a status line is present but openshell exec exited 1' "$LOG"; then
+  pass "a sentinel on an exec that failed is a sandbox failure, not a result"
+else
+  fail "a sentinel on an exec that failed (rc=$RC status=$STATUS log: $(cat "$LOG"))"
+fi
 
 run 'echo "__EVAL_RC__=0"; sleep 30' 2
 if [[ $RC -eq 124 && "$STATUS" == timeout ]] && grep -qx '__EVAL_RC__=0' "$LOG" && grep -q 'timed out after 2s' "$LOG"; then
