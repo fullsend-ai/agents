@@ -26,7 +26,7 @@ gh issue list --repo OWNER/REPO --state open --search "keyword" --json number,ti
 gh issue list --repo OWNER/REPO --state all --json number,title,state --limit 100
 
 # List GitHub native sub-issues (child issues), including closed ones
-gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query='
+gh api graphql -F owner="OWNER" -F name="REPO" -F number=ISSUE_NUMBER -f query='
   query($owner: String!, $name: String!, $number: Int!) {
     repository(owner: $owner, name: $name) {
       issue(number: $number) {
@@ -48,7 +48,7 @@ gh pr list --repo OWNER/REPO --state open --json number,title,body,isDraft --lim
 gh pr list --repo OWNER/REPO --state open --search "keyword" --json number,url,title,body,isDraft,author --limit 30
 
 # Find PRs linked to an issue via closing keywords (Fixes, Closes, etc.)
-gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query='
+gh api graphql -F owner="OWNER" -F name="REPO" -F number=ISSUE_NUMBER -f query='
   query($owner: String!, $name: String!, $number: Int!) {
     repository(owner: $owner, name: $name) {
       issue(number: $number) {
@@ -58,6 +58,11 @@ gh api graphql -F owner="OWNER" -F name="REPO" -F number:=ISSUE_NUMBER -f query=
       }
     }
   }' --jq '.data.repository.issue.closedByPullRequestsReferences.nodes'
+
+# Find open PRs on the agent branch convention (agent/ISSUE_NUMBER-*);
+# does not depend on the search index
+gh pr list --repo OWNER/REPO --state open --json number,headRefName,url --limit 200 \
+  --jq '[.[] | select(.headRefName | startswith("agent/ISSUE_NUMBER-"))]'
 
 # View a specific PR
 gh pr view NUMBER --repo OWNER/REPO --json state,title,body,comments,labels,mergedAt
