@@ -101,7 +101,7 @@ fi
 
 CARD=$(new_card none '["/etc"]')
 run "$TREE" "$CARD"
-if [[ $RC -ne 0 && ! -e "$CARD/repo" && "$(stage_count "$CARD")" == 0 ]]; then
+if [[ $RC -ne 0 && ! -e "$CARD/repo" && "$(stage_count "$CARD")" == 0 && ! -e "$CARD/.repo-lock" ]]; then
   pass "a failure with no repo/ present leaves nothing behind"
 else
   fail "a failure with no repo/ present leaves nothing behind (rc=$RC, left: $(find "$CARD" -mindepth 1 -maxdepth 1 | tr '\n' ' '), out: $OUT)"
@@ -115,6 +115,23 @@ if [[ $RC -eq 0 && "$(stage_count "$CARD")" == 0 && -f "$CARD/repo/README.md" ]]
   pass "a stale .repo-stage.* from a killed run is removed before building"
 else
   fail "a stale .repo-stage.* from a killed run is removed before building (rc=$RC, stages=$(stage_count "$CARD"), out: $OUT)"
+fi
+
+# --- one build per card at a time ------------------------------------------
+CARD=$(new_card locked)
+mkdir "$CARD/.repo-lock"
+run "$TREE" "$CARD"
+if [[ $RC -ne 0 && "$OUT" == *"another materialize-case.sh run holds"* && ! -e "$CARD/repo" && -d "$CARD/.repo-lock" ]]; then
+  pass "a card another run holds is refused and left alone"
+else
+  fail "a card another run holds is refused and left alone (rc=$RC, out: $OUT)"
+fi
+rmdir "$CARD/.repo-lock"
+run "$TREE" "$CARD"
+if [[ $RC -eq 0 && -f "$CARD/repo/README.md" && ! -e "$CARD/.repo-lock" ]]; then
+  pass "the lock is taken for the build and released afterwards"
+else
+  fail "the lock is taken for the build and released afterwards (rc=$RC, left: $(find "$CARD" -mindepth 1 -maxdepth 1 | tr '\n' ' '), out: $OUT)"
 fi
 
 # --- symlinks in the upstream tree are never deleted through ---------------

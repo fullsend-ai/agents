@@ -22,6 +22,21 @@ ANN="$CASE_DIR/annotations.yaml"
 command -v yq >/dev/null || { echo "ERROR: yq not found" >&2; exit 1; }
 [[ -f "$ANN" ]] || { echo "ERROR: no annotations.yaml in $CASE_DIR" >&2; exit 1; }
 
+# One build per card at a time: the existence check, the stale-stage sweep
+# and the final move all assume nobody else is working on repo/. The lock is
+# a directory (mkdir is atomic) and goes away with this run.
+LOCK="$CASE_DIR/.repo-lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "ERROR: another materialize-case.sh run holds $LOCK; if no run is active, remove that directory and retry" >&2
+  exit 1
+fi
+WORK=""; STAGE=""
+cleanup() {
+  # shellcheck disable=SC2317 # invoked indirectly via trap
+  rm -rf "${WORK:-}" "${STAGE:-}" "$LOCK"
+}
+trap cleanup EXIT
+
 if [[ -d "$CASE_DIR/repo" && $FORCE -eq 0 ]]; then
   echo "repo/ already present in $CASE_DIR (use --force to rebuild)"; exit 0
 fi
@@ -34,14 +49,10 @@ mapfile -t EXCLUDE < <(yq -r '.source.exclude // [] | .[]' "$ANN")
 
 WORK=$(mktemp -d)
 # A run killed before its trap ran (SIGKILL, lost terminal) leaves its stage
-# behind; sweep those before making a new one. .gitignore covers the pattern.
+# behind; sweep those before making a new one (safe under the lock).
+# .gitignore covers the pattern.
 find "$CASE_DIR" -maxdepth 1 -name '.repo-stage.*' -type d -exec rm -rf {} +
 STAGE=$(mktemp -d "$CASE_DIR/.repo-stage.XXXXXX")
-cleanup() {
-  # shellcheck disable=SC2317 # invoked indirectly via trap
-  rm -rf "$WORK" "$STAGE"
-}
-trap cleanup EXIT
 echo "Cloning https://github.com/${REPO}.git at ${SNAPSHOT:0:12} ..."
 git clone --quiet --filter=blob:none --no-checkout "https://github.com/${REPO}.git" "$WORK/src"
 git -C "$WORK/src" fetch --quiet origin "$SNAPSHOT" 2>/dev/null || true

@@ -5,4 +5,5 @@ __pycache__/
 # eval/scripts/materialize-case.sh and never committed.
 eval/local/code-rhai/cases/*/repo/
 eval/local/code-rhai/cases/*/.repo-stage.*/
+eval/local/code-rhai/cases/*/.repo-lock/
 eval/local/code-rhai/cases/*/.check-regression.log
