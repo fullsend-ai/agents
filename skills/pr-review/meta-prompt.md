@@ -14,7 +14,7 @@ For each finding, return a JSON array as follows
 ```json
 {
   "severity": "critical|high|medium|low|info",
-  "category": "<dimension-specific category>",
+  "category": "<canonical taxonomy category>",
   "file": "<relative path>",
   "line": "<line number, optional>",
   "description": "<explanation>",
@@ -22,6 +22,10 @@ For each finding, return a JSON array as follows
   "actionable": true|false
 }
 ```
+
+The `category` must come from the canonical taxonomy in
+`skills/pr-review/references/re-review.md` (plus `protected-path`,
+`provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`).
 
 **Line number accuracy:** For the `line` field, cite the exact line
 number where the problematic code or text appears. After determining

@@ -853,7 +853,7 @@ of findings in the standard format:
 ```json
 {
   "severity": "critical|high|medium|low|info",
-  "category": "<dimension-specific category>",
+  "category": "<canonical taxonomy category>",
   "file": "<relative path>",
   "line": "<line number, optional>",
   "description": "<explanation>",
@@ -862,6 +862,11 @@ of findings in the standard format:
   "id": "<open prior id, else omit>"
 }
 ```
+
+The `category` must come from the canonical taxonomy in
+`skills/pr-review/references/re-review.md` (plus `protected-path`,
+`provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`).
+Other values fail schema validation.
 
 If a sub-agent fails to return findings (timeout, error, empty
 response), record a finding noting the gap. The severity depends on

@@ -223,8 +223,11 @@ readability or correctness.
 For each issue identified, record:
 
 - **Severity:** critical | high | medium | low | info
-- **Category:** e.g., `logic-error`, `auth-bypass`, `missing-test`,
-  `test-weakened`, `tier-mismatch`, `injection-pattern`,
+- **Category:** must come from the canonical taxonomy in
+  `skills/pr-review/references/re-review.md` (plus `protected-path`,
+  `provenance-warning`, `scope-authorization-implicit`,
+  `sub-agent-failure`), for example `logic-error`, `auth-bypass`,
+  `missing-test`, `test-weakened`, `tier-mismatch`, `injection-vuln`,
   `unicode-steganography`, `data-exposure`, `naming-convention`
 - **Description:** natural-language explanation of the finding
 - **Location:** relative file path and line number(s). Verify each

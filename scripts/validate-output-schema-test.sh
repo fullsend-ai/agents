@@ -326,13 +326,13 @@ run_test_custom_filename "custom-output-file-invalid" \
   "false"
 
 run_test_custom_filename "review-approve-actionable-finding-valid" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"docs","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
 run_test_custom_filename "review-finding-additional-property-rejected" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
@@ -379,7 +379,7 @@ run_test_custom_filename_output() {
 }
 
 run_test_custom_filename_output "nested-additional-property-shows-allowed" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
@@ -559,7 +559,7 @@ run_test_custom_filename "path-traversal-stripped" \
 REVIEW_SCHEMA="${SCRIPT_DIR}/../schemas/review-result.schema.json"
 
 run_test_custom_filename "review-reject-valid" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach.","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
@@ -572,7 +572,7 @@ run_test_custom_filename "review-reject-missing-findings" \
   "'findings' is a required property"
 
 run_test_custom_filename "review-reject-missing-body" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
@@ -657,7 +657,7 @@ run_test_custom_filename "review-approve-missing-head-sha" \
   "'head_sha' is a required property"
 
 run_test_custom_filename "review-reject-missing-head-sha" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","body":"Wrong approach.","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
@@ -723,7 +723,7 @@ run_test_custom_filename "review-request-changes-with-protected-path-valid" \
   "true"
 
 run_test_custom_filename "review-approve-no-protected-path-valid" \
-  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM.","findings":[{"severity":"low","category":"style","file":"main.go","description":"Minor style nit."}]}' \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM.","findings":[{"severity":"low","category":"naming-convention","file":"main.go","description":"Minor style nit."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
@@ -791,6 +791,79 @@ run_test_custom_filename "risk-additional-property-rejected" \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
+
+# --- review-result.schema.json finding category taxonomy ---
+# A category outside the projection allowlist makes post-review drop the
+# prior-findings projection, so the next review loses its ledger. The schema
+# must reject such a category before the review is posted.
+
+run_test_custom_filename "review-non-canonical-category-rejected" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"race-condition","file":"main.go","description":"Unsynchronized access."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'race-condition' is not one of"
+
+ALL_CATEGORIES_RESULT="$(jq -c '
+  ."$defs".finding.properties.category.enum
+  | {action: "comment", pr_number: 1, repo: "org/repo",
+     head_sha: "abcdef0123456789abcdef0123456789abcdef01", body: "Review.",
+     findings: map({severity: "low", category: ., file: "main.go", description: "Finding."})}
+' "${REVIEW_SCHEMA}")"
+run_test_custom_filename "review-every-listed-category-valid" \
+  "${ALL_CATEGORIES_RESULT}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+# The category taxonomy is duplicated in the schema, the pre-review and
+# post-review projection allowlists, and the re-review dimension table. All
+# copies must agree, otherwise a schema-valid finding can still break the
+# projection.
+
+# Print the quoted strings inside a jq `def <name>:` block, one per line,
+# ignoring `type == "string"` guards.
+jq_def_strings() {
+  local file="$1" name="$2"
+  awk -v def="def ${name}:" '
+    index($0, def) { found = 1 }
+    found { gsub(/type == "string"/, ""); print }
+    found && /\);/ { exit }
+  ' "${file}" | grep -oE '"[a-z-]+"' | tr -d '"' | sort
+}
+
+assert_same_set() {
+  local test_name="$1" expected="$2" actual="$3"
+  if [[ -z "${expected}" || -z "${actual}" ]]; then
+    echo "FAIL: ${test_name} — could not extract a category list"
+    FAILURES=$((FAILURES + 1))
+  elif [[ "${expected}" == "${actual}" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — category sets differ"
+    diff <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") || true
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+SCHEMA_CATEGORIES="$(jq -r '."$defs".finding.properties.category.enum[]' "${REVIEW_SCHEMA}" | sort)"
+PRE_REVIEW_ALLOWED="$(jq_def_strings "${SCRIPT_DIR}/pre-review.src.sh" allowed_category)"
+POST_REVIEW_ALLOWED="$(jq_def_strings "${SCRIPT_DIR}/post-review.src.sh" allowed_category)"
+# post-review treats these as non-dimensional; sub-agent-failure is matched
+# separately in non_dimensional_finding.
+POST_REVIEW_NON_DIMENSIONAL="$( (jq_def_strings "${SCRIPT_DIR}/post-review.src.sh" non_dimensional_category; echo "sub-agent-failure") | sort)"
+RE_REVIEW_TABLE="$(awk '
+  /^\| Dimension / { found = 1; next }
+  found && !/^\|/ { exit }
+  found { print }
+' "${SCRIPT_DIR}/../skills/pr-review/references/re-review.md" | grep -oE '`[a-z-]+`' | tr -d '`' | sort)"
+
+assert_same_set "category-allowlist-pre-matches-post" \
+  "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_ALLOWED}"
+assert_same_set "category-allowlist-matches-re-review-table" \
+  "${PRE_REVIEW_ALLOWED}" "${RE_REVIEW_TABLE}"
+assert_same_set "category-schema-enum-matches-allowlist-plus-non-dimensional" \
+  "${SCHEMA_CATEGORIES}" "$(printf '%s\n%s\n' "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_NON_DIMENSIONAL}" | sort)"
 
 # --- Summary ---
 

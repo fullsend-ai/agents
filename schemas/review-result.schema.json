@@ -118,7 +118,19 @@
       "required": ["severity", "category", "file", "description"],
       "properties": {
         "severity": { "type": "string", "enum": ["critical", "high", "medium", "low", "info"] },
-        "category": { "type": "string", "minLength": 1 },
+        "category": {
+          "type": "string",
+          "description": "Canonical dimension categories (the dimension table in skills/pr-review/references/re-review.md, mirrored by allowed_category in pre-review and post-review) plus the non-dimensional categories. Keep all copies in sync.",
+          "enum": [
+            "logic-error", "nil-deref", "off-by-one", "edge-case", "api-contract", "missing-test", "test-inadequate", "pattern-violation", "test-weakened", "test-removed", "mock-loosened", "assertion-weakened", "coverage-reduced", "test-poisoning", "split-payload", "stale-reference",
+            "auth-bypass", "rbac-violation", "data-exposure", "privilege-escalation", "injection-vuln", "sandbox-escape", "xss", "ssrf", "insecure-deserialization", "prompt-injection", "unicode-steganography", "bidi-override", "homoglyph-attack", "instruction-smuggling", "fail-open", "permission-expansion", "permission-reduction", "role-escalation", "workflow-permission", "secret-exposure",
+            "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
+            "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
+            "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
+            "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
+            "protected-path", "provenance-warning", "scope-authorization-implicit", "sub-agent-failure"
+          ]
+        },
         "file": { "type": "string", "minLength": 1 },
         "line": { "type": "integer", "minimum": 1 },
         "description": { "type": "string", "minLength": 1 },
