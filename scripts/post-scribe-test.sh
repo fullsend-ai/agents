@@ -51,6 +51,76 @@ for arg in "\$@"; do
     URL="\${arg}"
   fi
 done
+DATA=""
+PREV=""
+for arg in "\$@"; do
+  [[ "\${PREV}" == "--data" ]] && DATA="\${arg}"
+  PREV="\${arg}"
+done
+
+# Jira Cloud REST API
+if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
+  case "\${URL}" in
+    */issue/createmeta/PROJ/issuetypes\?*)
+      if [[ "\${JIRA_MOCK_PAGED_META:-}" == "1" ]]; then
+        if [[ "\${URL}" == *"startAt=0"* ]]; then
+          echo '{"issueTypes":[{"id":"10002","name":"Bug"}],"startAt":0,"total":2,"isLast":false}'
+        else
+          echo '{"issueTypes":[{"id":"10001","name":"Task"}],"startAt":1,"total":2,"isLast":true}'
+        fi
+      else
+        echo '{"issueTypes":[{"id":"10001","name":"Task"}]}'
+      fi
+      ;;
+    */issue/createmeta/PROJ/issuetypes/10001\?*)
+      if [[ "\${JIRA_MOCK_PAGED_META:-}" == "1" ]]; then
+        if [[ "\${URL}" == *"startAt=0"* ]]; then
+          echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false}],"startAt":0,"total":2,"isLast":false}'
+        else
+          echo '{"fields":[{"fieldId":"customfield_10060","required":true,"hasDefaultValue":false}],"startAt":1,"total":2,"isLast":true}'
+        fi
+      elif [[ "\${JIRA_MOCK_REQUIRED_FIELD:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"customfield_10050","required":true,"hasDefaultValue":false}]}'
+      elif [[ "\${JIRA_MOCK_NO_LABELS:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false}]}'
+      elif [[ "\${JIRA_MOCK_NO_DESCRIPTION:-}" == "1" ]]; then
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false}]}'
+      else
+        echo '{"fields":[{"fieldId":"summary","required":true,"hasDefaultValue":false},{"fieldId":"description","required":false,"hasDefaultValue":false},{"fieldId":"labels","required":false,"hasDefaultValue":false},{"fieldId":"reporter","required":true,"hasDefaultValue":true}]}'
+      fi
+      ;;
+    */search/jql)
+      if [[ "\${JIRA_MOCK_BAD_SEARCH:-}" == "html" ]]; then
+        echo '<html>maintenance</html>'
+      elif [[ "\${JIRA_MOCK_BAD_SEARCH:-}" == "no-issues" ]]; then
+        echo '{"isLast":true}'
+      elif [[ "\${JIRA_MOCK_ENDLESS:-}" == "1" ]]; then
+        echo '{"issues":[{"key":"PROJ-3","fields":{"summary":"Unrelated"}}],"nextPageToken":"more","isLast":false}'
+      elif [[ "\${DATA}" == *'添加深色模式'* ]]; then
+        if [[ "\${JIRA_MOCK_DUP_CJK:-}" == "1" ]]; then
+          echo '{"issues":[{"key":"PROJ-8","fields":{"summary":"添加深色模式"}}],"isLast":true}'
+        else
+          echo '{"issues":[],"isLast":true}'
+        fi
+      elif [[ "\${DATA}" == *'"nextPageToken":"p2"'* ]]; then
+        if [[ "\${JIRA_MOCK_DUP:-}" == "1" ]]; then
+          echo '{"issues":[{"key":"PROJ-7","fields":{"summary":"Add dark mode"}}],"isLast":true}'
+        else
+          echo '{"issues":[],"isLast":true}'
+        fi
+      else
+        echo '{"issues":[{"key":"PROJ-3","fields":{"summary":"Add dark mode toggle"}}],"nextPageToken":"p2","isLast":false}'
+      fi
+      ;;
+    */issue)
+      echo '{"id":"10100","key":"PROJ-100"}'
+      ;;
+    *)
+      exit 22
+      ;;
+  esac
+  exit 0
+fi
 
 # Note listing (comments) — return empty array
 if [[ "\${URL}" == *"/notes"* ]] && [[ " \$* " == *" GET "* ]]; then
@@ -366,6 +436,176 @@ export FULLSEND_FORGE="github"
 export SCRIBE_REPO="mock-org/mock-repo"
 unset GITLAB_TOKEN
 unset CI_SERVER_HOST
+
+# --- Jira tracker test cases (FULLSEND_FORGE=github, FULLSEND_TRACKER=jira) ---
+
+JIRA_NEW_ISSUE='{"topics":[],"new_issues":[{"title":"Add dark mode","summary":"Users want dark mode.","body":"## Problem\nNo dark mode.\n\n## Acceptance criteria\n- [ ] Toggle works","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}'
+JIRA_REJECTED_ISSUE='{"topics":[],"new_issues":[{"title":"Add dark mode","summary":"Users want dark mode.","body":"Contact jane@example.com","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}'
+JIRA_COMMENT_TOPIC='{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\nflaky tests.","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}'
+
+export FULLSEND_TRACKER="jira"
+export JIRA_BASE_URL="https://mock.atlassian.net"
+export JIRA_USER_EMAIL="bot@mock.example"
+export JIRA_TOKEN="fake-jira-token"
+export SCRIBE_JIRA_PROJECT="PROJ"
+export SCRIBE_MODE="all"
+
+# Fails if any Jira create (POST /rest/api/3/issue) or forge write happened.
+assert_no_writes() {
+  local test_name="$1"
+  if grep -qE 'rest/api/3/issue( |$)' "${CURL_LOG}" 2>/dev/null \
+    || grep -qE '^gh issue (create|comment)' "${GH_LOG}" 2>/dev/null; then
+    echo "FAIL: ${test_name} — unexpected write call"
+    cat "${CURL_LOG}" "${GH_LOG}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name} (no write calls)"
+  fi
+}
+
+run_test_stdout "jira/dry-run-validates-project" "${JIRA_NEW_ISSUE}" \
+  "[DRY RUN] Would create issue: Add dark mode"
+assert_no_writes "jira/dry-run-no-writes"
+
+run_test_stdout "jira/all-mode-skips-comments" "${JIRA_COMMENT_TOPIC}" \
+  "comments are not supported; using new_issues_only"
+assert_no_writes "jira/comment-topic-no-writes"
+
+export SCRIBE_MODE="comments_only"
+run_test_stdout "jira/comments-only-rejected" "${JIRA_COMMENT_TOPIC}" "" true
+export SCRIBE_MODE="all"
+
+export SCRIBE_DRY_RUN="false"
+run_test_stdout "jira/live-creates-issue" "${JIRA_NEW_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -E 'rest/api/3/issue( |$)' "${CURL_LOG}" | grep -qF '"project":{"key":"PROJ"}'; then
+  echo "PASS: jira/live-create-scoped-to-project"
+else
+  echo "FAIL: jira/live-create-scoped-to-project — create payload missing project PROJ"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -q '^gh issue create' "${GH_LOG}" 2>/dev/null; then
+  echo "FAIL: jira/live-no-github-issue — GitHub issue created on Jira path"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/live-no-github-issue"
+fi
+
+run_test_stdout "jira/live-content-gate-rejected" "${JIRA_REJECTED_ISSUE}" "GATE REJECTED"
+assert_no_writes "jira/content-gate-no-writes"
+
+export JIRA_MOCK_DUP="1"
+run_test_stdout "jira/live-rerun-duplicate-on-page-2-skipped" "${JIRA_NEW_ISSUE}" \
+  "SKIP: duplicate issue (already exists: https://mock.atlassian.net/browse/PROJ-7)"
+assert_no_writes "jira/duplicate-no-writes"
+unset JIRA_MOCK_DUP
+
+# Non-Latin title: the duplicate lookup must still run and find the match.
+JIRA_CJK_ISSUE="${JIRA_NEW_ISSUE//Add dark mode/添加深色模式}"
+export JIRA_MOCK_DUP_CJK="1"
+run_test_stdout "jira/live-rerun-non-latin-title-skipped" "${JIRA_CJK_ISSUE}" \
+  "SKIP: duplicate issue (already exists: https://mock.atlassian.net/browse/PROJ-8)"
+assert_no_writes "jira/non-latin-duplicate-no-writes"
+unset JIRA_MOCK_DUP_CJK
+
+# Title with no letters or digits: lookup cannot run, so refuse to create.
+JIRA_PUNCT_ISSUE="${JIRA_NEW_ISSUE//Add dark mode/!!!}"
+run_test_stdout "jira/live-no-searchable-terms-refused" "${JIRA_PUNCT_ISSUE}" "" true
+assert_no_writes "jira/no-searchable-terms-no-writes"
+
+# Page cap hit with no exact match: refuse to create.
+export JIRA_MOCK_ENDLESS="1"
+export SCRIBE_JIRA_MAX_PAGES=2
+run_test_stdout "jira/live-page-cap-refused" "${JIRA_NEW_ISSUE}" "" true
+assert_no_writes "jira/page-cap-no-writes"
+unset JIRA_MOCK_ENDLESS SCRIBE_JIRA_MAX_PAGES
+
+# Create metadata spread over two pages: page two must be read.
+export JIRA_MOCK_PAGED_META="1"
+run_test_stdout "jira/createmeta-page-two-required-field" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "requires fields scribe does not set: customfield_10060" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/createmeta-page-two-field-detected"
+else
+  echo "FAIL: jira/createmeta-page-two-field-detected"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_no_writes "jira/createmeta-page-two-no-writes"
+unset JIRA_MOCK_PAGED_META
+
+export JIRA_MOCK_REQUIRED_FIELD="1"
+run_test_stdout "jira/required-field-fails-before-create" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "requires fields scribe does not set: customfield_10050" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/required-field-error-message"
+else
+  echo "FAIL: jira/required-field-error-message"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_no_writes "jira/required-field-no-writes"
+unset JIRA_MOCK_REQUIRED_FIELD
+
+# A search response that is not JSON, or has no issues array, must not be
+# read as "no duplicate": refuse to create.
+for bad_search in html no-issues; do
+  export JIRA_MOCK_BAD_SEARCH="${bad_search}"
+  run_test_stdout "jira/live-malformed-search-${bad_search}-refused" "${JIRA_NEW_ISSUE}" \
+    "Jira duplicate check failed" true
+  if grep -qF "Jira duplicate check failed — refusing to create issue" "${TMPDIR}/stdout.log"; then
+    echo "PASS: jira/malformed-search-${bad_search}-error-message"
+  else
+    echo "FAIL: jira/malformed-search-${bad_search}-error-message"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+  assert_no_writes "jira/malformed-search-${bad_search}-no-writes"
+done
+unset JIRA_MOCK_BAD_SEARCH
+
+# Create screen without Description: fail validation before any create.
+export JIRA_MOCK_NO_DESCRIPTION="1"
+run_test_stdout "jira/no-description-field-fails-before-create" "${JIRA_NEW_ISSUE}" "" true
+if grep -qF "has no Description field" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira/no-description-field-error-message"
+else
+  echo "FAIL: jira/no-description-field-error-message"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_no_writes "jira/no-description-field-no-writes"
+unset JIRA_MOCK_NO_DESCRIPTION
+
+# Create screen without Labels: the create must omit labels.
+export JIRA_MOCK_NO_LABELS="1"
+run_test_stdout "jira/live-no-labels-field-creates-without-labels" "${JIRA_NEW_ISSUE}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -E 'rest/api/3/issue( |$)' "${CURL_LOG}" | grep -qF '"labels"'; then
+  echo "FAIL: jira/no-labels-field-payload-omits-labels — labels sent"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira/no-labels-field-payload-omits-labels"
+fi
+unset JIRA_MOCK_NO_LABELS
+
+# Labels pass the same content gates as title and body.
+JIRA_SENSITIVE_LABEL_ISSUE="${JIRA_NEW_ISSUE//\"meeting-notes\"/\"jane@example.com\"}"
+run_test_stdout "jira/live-sensitive-label-rejected" "${JIRA_SENSITIVE_LABEL_ISSUE}" "GATE REJECTED"
+assert_no_writes "jira/sensitive-label-no-writes"
+JIRA_UNICODE_LABEL_ISSUE="${JIRA_NEW_ISSUE//\"meeting-notes\"/\"notes\\u200bx\"}"
+run_test_stdout "jira/live-suspicious-unicode-label-rejected" "${JIRA_UNICODE_LABEL_ISSUE}" "GATE REJECTED"
+assert_no_writes "jira/suspicious-unicode-label-no-writes"
+export SCRIBE_DRY_RUN="true"
+
+export SCRIBE_JIRA_PROJECT="bad key"
+run_test_stdout "jira/invalid-project-key-rejected" "${JIRA_NEW_ISSUE}" "" true
+export SCRIBE_JIRA_PROJECT="PROJ"
+
+export JIRA_BASE_URL="https://jira.example.com"
+run_test_stdout "jira/non-cloud-base-url-rejected" "${JIRA_NEW_ISSUE}" "" true
+
+unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN SCRIBE_JIRA_PROJECT
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

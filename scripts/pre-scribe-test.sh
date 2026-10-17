@@ -651,6 +651,61 @@ EOF
   echo "PASS: ${test_name}"
 }
 
+# ===================================================================
+# Jira tests (FULLSEND_TRACKER=jira) — source the real tracker lib
+# ===================================================================
+test_jira_backlog_pagination() {
+  local test_name="jira/backlog-pagination"
+  local raw="${TMPDIR}/jira-raw.json" backlog="${TMPDIR}/jira-backlog.json"
+  local jira_bin="${TMPDIR}/jira-bin"
+  mkdir -p "${jira_bin}"
+
+  # Page 1 returns nextPageToken "p2"; page 2 is last.
+  cat > "${jira_bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+URL="" DATA="" PREV=""
+for arg in "$@"; do
+  [[ "${arg}" == https://* ]] && URL="${arg}"
+  [[ "${PREV}" == "--data" ]] && DATA="${arg}"
+  PREV="${arg}"
+done
+if [[ "${URL}" == */search/approximate-count ]]; then
+  echo '{"count": 3}'
+elif [[ "${DATA}" == *'"nextPageToken":"p2"'* ]]; then
+  echo '{"issues":[{"key":"PROJ-1","fields":{"summary":"Third","description":null,"labels":[]}}],"isLast":true}'
+else
+  echo '{"issues":[{"key":"PROJ-3","fields":{"summary":"First","description":{"type":"doc","version":1,"content":[{"type":"paragraph","content":[{"type":"text","text":"flaky"},{"type":"text","text":"tests"}]}]},"labels":["ci"]}},{"key":"PROJ-2","fields":{"summary":"Second","description":null,"labels":[]}}],"nextPageToken":"p2","isLast":false}'
+fi
+MOCKEOF
+  chmod +x "${jira_bin}/curl"
+
+  local out
+  if ! out=$(
+    PATH="${jira_bin}:${PATH}" \
+    JIRA_BASE_URL="https://mock.atlassian.net" JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake" SCRIBE_JIRA_PROJECT="PROJ" bash -c '
+      set -euo pipefail
+      _gha_sanitize() { printf "%s" "$1"; }
+      source "$1/lib/jira-scribe-ops.lib.sh"
+      forge_fetch_open_issues_raw "unused" "$2"
+      forge_filter_issues_to_backlog "$2" "$3"
+      echo "total=$(forge_count_paginated_total "$2") count=$(forge_get_issue_count unused)"
+    ' _ "${SCRIPT_DIR}" "${raw}" "${backlog}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — fetch failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! assert_eq "${test_name}: counts" "total=3 count=3" "${out}"; then return; fi
+  if ! assert_eq "${test_name}: keys" "PROJ-3,PROJ-2,PROJ-1" "$(jq -r 'map(.key) | join(",")' "${backlog}")"; then return; fi
+  if ! assert_eq "${test_name}: adf body" "flaky tests" "$(jq -r '.[0].body' "${backlog}")"; then return; fi
+  if ! assert_eq "${test_name}: null body" "" "$(jq -r '.[1].body' "${backlog}")"; then return; fi
+  if ! assert_eq "${test_name}: url" "https://mock.atlassian.net/browse/PROJ-3" "$(jq -r '.[0].url' "${backlog}")"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- Run tests ---
 
 # GitHub tests
@@ -669,6 +724,9 @@ test_gitlab_normalization
 test_gitlab_body_truncation
 test_gitlab_null_body
 test_gitlab_labels_milestone_preserved
+
+# Jira tests
+test_jira_backlog_pagination
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
