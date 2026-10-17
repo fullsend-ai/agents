@@ -89,7 +89,7 @@ setup:
 The retro agent reconstructs the full workflow graph — [triage](triage.md), [code](code.md), [review](review.md), [fix](fix.md), and human interactions — by fetching issue and PR timelines, agent run logs, and review threads.
 
 1. **Pre-script** gathers metadata about the originating PR or issue.
-2. **Sandbox** — the agent reads the full workflow history, identifies patterns (wasted cycles, missed context, repeated failures), and writes structured proposals. It uses the retro-analysis and finding-agent-runs skills. The agent cannot write files or edit code in the target repo.
+2. **Sandbox** — the agent reads the full workflow history, identifies patterns (wasted cycles, missed context, repeated failures), and writes structured proposals. It uses the retro-analysis, retro-ci-analysis, and finding-agent-runs skills. The retro-ci-analysis skill reconstructs the target PR/MR's project CI history — every revision touched during review plus merge-queue/merge-train runs at merge time — and classifies failures as a likely regression, flaky test, transient infrastructure issue, or inconclusive, excluding Fullsend dispatch/orchestration workflows. The agent cannot write files or edit code in the target repo.
 3. **Validation loop** — output is checked against a schema, with up to 2 retries.
 4. **Post-script** creates issues from the agent's proposals. Proposals whose titles match evidence-for patterns (e.g. "Evidence for #1234: ...") are filtered out and folded into the summary comment as evidence notes instead of being filed as issues.
 
