@@ -155,7 +155,12 @@ fi
 # The harness has inconsistent path resolution for dataset.path between
 # workspace.py (config-dir-relative) and execute.py (cwd-relative). Work
 # around this by rewriting dataset.path to an absolute path at runtime.
-EVAL_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX.yaml")"
+# BSD mktemp (macOS) only substitutes trailing X's, so a template with a
+# .yaml suffix produces the literal name eval-runtime-XXXXXX.yaml and a second
+# run fails with "File exists". Create the temp name first, then add the suffix.
+EVAL_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX")"
+EVAL_YAML="${EVAL_YAML_TMP}.yaml"
+mv "$EVAL_YAML_TMP" "$EVAL_YAML"
 
 yq_expr=".dataset.path = \"${CASES_DIR}\""
 # Report-only judges, in every tier: LLM-quality judges (name ends in
@@ -202,6 +207,31 @@ for script in "$WORKSPACE_PY" "$EXECUTE_PY" "$SCORE_PY"; do
   fi
 done
 
+# Agent judges that declare denied_tools rely on the harness passing a deny
+# list to the Claude Code runner, which agent-eval-harness does from 1.56.3
+# (opendatahub-io/agent-eval-harness#240). Older releases accept the key and
+# ignore it, so the judge would run with shell and network tools while reading
+# agent-written text. Refuse rather than score unconfined.
+if yq -e '[.judges[] | select(.agent.denied_tools)] | length > 0' "$EVAL_YAML_SRC" >/dev/null 2>&1; then
+  harness_min="1.56.3"
+  harness_ver="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "${HARNESS_DIR}/pyproject.toml" 2>/dev/null | head -1 || true)"
+  if [[ -z "$harness_ver" ]]; then
+    echo "ERROR: cannot read the agent-eval-harness version from ${HARNESS_DIR}/pyproject.toml" >&2
+    exit 1
+  fi
+  # sort -V orders any string, so a prerelease or a placeholder could pass;
+  # insist on a plain release version before comparing.
+  if [[ ! "$harness_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: agent-eval-harness version '${harness_ver}' at ${HARNESS_DIR} is not a release version; ${harness_min} or later is required" >&2
+    exit 1
+  fi
+  if [[ "$(printf '%s\n%s\n' "$harness_min" "$harness_ver" | sort -V | head -1)" != "$harness_min" ]]; then
+    echo "ERROR: agent-eval-harness ${harness_ver} at ${HARNESS_DIR} ignores judge denied_tools; ${harness_min} or later is required" >&2
+    echo "       Update the submodule (git submodule update --init eval/.agent-eval-harness) or point AGENT_EVAL_HARNESS_DIR at a newer checkout" >&2
+    exit 1
+  fi
+fi
+
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"
 
 # Default FULLSEND_DIR to the repo root (the agents repo IS the scaffold).
@@ -213,7 +243,11 @@ export FULLSEND_DIR
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 RUNS_BASE="${EVAL_DIR}/runs"
-RUNS_DIR="${RUNS_BASE}/${AGENT}"
+# Results are keyed by the eval's own name, not its path: an eval under a
+# subdirectory (eval/local/<name>, run as `run-functional.sh local/<name>`) keeps
+# execution.skill = <name>, which score.py joins to AGENT_EVAL_RUNS_DIR, so
+# the runner must write runs to the same place.
+RUNS_DIR="${RUNS_BASE}/$(basename "$AGENT")"
 RUN_DIR="${RUNS_DIR}/${RUN_ID}"
 mkdir -p "$RUN_DIR"
 
@@ -233,6 +267,19 @@ if [[ ${#case_dirs[@]} -eq 0 ]]; then
   echo "WARNING: no cases found in ${CASES_DIR} — skipping functional tests for ${AGENT}"
   exit 0
 fi
+# EVAL_CASES narrows the run to the named case directories. The same list is
+# what the retry and the final per-case check expect, so an unselected case
+# is not reported as missing.
+if [[ -n "${EVAL_CASES:-}" ]]; then
+  selected=()
+  # shellcheck disable=SC2086 # intentional word splitting on whitespace
+  for name in ${EVAL_CASES}; do
+    [[ -d "${CASES_DIR}/${name}" ]] || { echo "ERROR: EVAL_CASES names '${name}', not a directory under ${CASES_DIR}" >&2; exit 1; }
+    selected+=("${CASES_DIR}/${name}/")
+  done
+  case_dirs=("${selected[@]}")
+  echo "Selected ${#case_dirs[@]} case(s) via EVAL_CASES"
+fi
 
 # ---------------------------------------------------------------------------
 # Phases 1-2: create workspaces and execute — the harness drives case
@@ -241,12 +288,21 @@ fi
 # ---------------------------------------------------------------------------
 # execute_run <config> <run-id> <run-dir>: sets exec_exit.
 execute_run() {
-  local config="$1" run_id="$2" run_dir="$3"
+  local config="$1" run_id="$2" run_dir="$3" first_run="${4:-}"
   mkdir -p "$run_dir"
   echo "=== Creating workspaces ==="
+  # EVAL_CASES="001-foo 002-bar" limits the first run to those case
+  # directories (workspace.py --cases). A retry run is already staged with
+  # only the cases it should repeat, so it gets no --cases.
+  local case_args=()
+  if [[ "$first_run" == "first" && -n "${EVAL_CASES:-}" ]]; then
+    # shellcheck disable=SC2206 # intentional word splitting on whitespace
+    case_args=(--cases ${EVAL_CASES})
+  fi
   if ! python3 "$WORKSPACE_PY" \
     --config "$config" \
-    --run-id "$run_id"; then
+    --run-id "$run_id" \
+    "${case_args[@]+"${case_args[@]}"}"; then
     echo "ERROR: workspace.py failed for run ${run_id}" >&2
     return 1
   fi
@@ -254,6 +310,13 @@ execute_run() {
   echo ""
   echo "=== Executing ==="
   exec_exit=0
+  # Forward EVAL_MODEL/EVAL_EFFORT to the harness too, so an eval whose
+  # runner.command carries the {model}/{effort} placeholders (eval/local/code-rhai)
+  # resolves them from the override instead of models.skill. Evals without
+  # the placeholders (eval/code) still get the override from run-fullsend.sh's env.
+  local model_args=()
+  [[ -n "${EVAL_MODEL:-}" ]] && model_args+=(--model "$EVAL_MODEL")
+  [[ -n "${EVAL_EFFORT:-}" ]] && model_args+=(--effort "$EVAL_EFFORT")
   AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
     python3 "$EXECUTE_PY" \
       --workspace "/tmp/agent-eval/${run_id}" \
@@ -261,22 +324,29 @@ execute_run() {
       --config "$config" \
       --output "$run_dir" \
       --run-id "$run_id" \
+      "${model_args[@]+"${model_args[@]}"}" \
     || exec_exit=$?
 
   # Copy output artifacts from harness workspace to runs directory.
-  # execute.py copies stdout/stderr/input but not the output/ subdirectory
-  # that after_each hooks populate (e.g., fixture-state.json).
-  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name
+  # execute.py copies stdout/stderr/input but not the outputs[*].path
+  # subdirectories that after_each hooks populate (output/fixture-state.json,
+  # and eval/local/code-rhai's judge/ tree). Copy every declared outputs path.
+  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name out_path
+  local output_paths=()
+  mapfile -t output_paths < <(yq -r '.outputs[] | .path // ""' "$config" | grep -v '^$')
+  [[ ${#output_paths[@]} -eq 0 ]] && output_paths=(output)
   if [[ -d "$ws_cases" ]]; then
     for ws_case in "$ws_cases"/*/; do
       case_name=$(basename "$ws_case")
-      if [[ -d "$ws_case/output" ]]; then
-        mkdir -p "$run_dir/cases/${case_name}/output"
-        if ! cp -a "$ws_case/output/." "$run_dir/cases/${case_name}/output/"; then
-          echo "ERROR: copying ${case_name} output into ${run_dir} failed" >&2
-          return 2
+      for out_path in "${output_paths[@]}"; do
+        if [[ -d "$ws_case/$out_path" ]]; then
+          mkdir -p "$run_dir/cases/${case_name}/$out_path"
+          if ! cp -a "$ws_case/$out_path/." "$run_dir/cases/${case_name}/$out_path/"; then
+            echo "ERROR: copying ${case_name} ${out_path} into ${run_dir} failed" >&2
+            return 2
+          fi
         fi
-      fi
+      done
     done
   fi
 }
@@ -305,7 +375,7 @@ pre_agent_failures() {
   done
 }
 
-execute_run "$EVAL_YAML" "$RUN_ID" "$RUN_DIR" || exit 1
+execute_run "$EVAL_YAML" "$RUN_ID" "$RUN_DIR" first || exit 1
 
 if [[ $exec_exit -ne 0 ]]; then
   echo "WARNING: execute.py exited $exec_exit" >&2
@@ -328,7 +398,9 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
   for case_name in "${retry_cases[@]}"; do
     cp -a "${CASES_DIR}/${case_name}" "${RETRY_STAGE_DIR}/${case_name}"
   done
-  RETRY_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX.yaml")"
+  RETRY_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX")"
+  RETRY_YAML="${RETRY_YAML_TMP}.yaml"
+  mv "$RETRY_YAML_TMP" "$RETRY_YAML"
   yq ".dataset.path = \"${RETRY_STAGE_DIR}\"" "$EVAL_YAML" > "$RETRY_YAML"
   RETRY_RUN_ID="${RUN_ID}-retry"
   RETRY_RUN_DIR="${RUNS_DIR}/${RETRY_RUN_ID}"
@@ -401,6 +473,17 @@ for case_dir in "${case_dirs[@]}"; do
   case_exit="$(jq -r '.exit_code // "missing"' "$run_result")"
   if [[ "$case_exit" != "0" ]]; then
     case_failures+=("${case_name} (exit ${case_exit})")
+    continue
+  fi
+  # Any eval's after_each hook may leave this marker ({reason, hook, at}) to
+  # say the case did not run cleanly: the hook could not establish what the
+  # agent did (code-rhai writes it when the fixture record is missing or the
+  # hook itself aborted). The harness runs after_each hooks with
+  # continue-on-failure, so the hook's own exit code never reaches
+  # run_result.json. Count the marker as a case failure, not a result.
+  infra_marker="$RUN_DIR/cases/${case_name}/output/infrastructure-failure.json"
+  if [[ -f "$infra_marker" ]]; then
+    case_failures+=("${case_name} (capture failure: $(jq -r '.reason // "unknown"' "$infra_marker"))")
   fi
 done
 mapfile -t setup_failures < <(pre_agent_failures)

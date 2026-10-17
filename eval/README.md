@@ -35,9 +35,12 @@ Results are written to `eval/runs/<agent>/<run-id>/`.
   script prints a notice and exits 0.
 
 Both tiers gate on the same things: a non-zero case exit (including a
-sandbox, provider or harness that would not load) and the deterministic
-contract judges `pr_created`, `new_commit` and `sandbox_started`. The
-other judges run and are reported, but don't fail the run:
+sandbox, provider or harness that would not load), a case whose
+`after_each` hook left `output/infrastructure-failure.json` (the hook could
+not establish what the agent did; the file carries `reason`, `hook` and
+`at`), and the deterministic contract judges `pr_created`, `new_commit`
+and `sandbox_started`. The other judges run and are reported, but don't
+fail the run:
 
 - LLM quality judges (name ends in `_quality`, e.g. `review_quality`,
   `triage_quality`)
@@ -146,6 +149,12 @@ the submodule before running:
 git submodule sync eval/.agent-eval-harness
 git submodule update --init eval/.agent-eval-harness
 ```
+
+An eval whose judges declare `agent.denied_tools` needs agent-eval-harness
+1.56.3 or later (the submodule pin): `run-functional.sh` reads the version
+from the checkout's `pyproject.toml` and refuses to run unless it is a plain
+release version (`N.N.N`) at or above 1.56.3, since earlier releases accept
+the key and ignore it; prereleases and placeholders are refused too.
 
 ### GCP credentials
 
