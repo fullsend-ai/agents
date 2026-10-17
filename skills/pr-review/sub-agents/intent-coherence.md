@@ -101,6 +101,11 @@ limit — do not exceed it.
 - If the PR has a linked issue, read the issue to establish authorized
   scope. If there is no linked issue, flag a `missing-authorization`
   finding — non-trivial changes require explicit authorization.
+  When the PR also touches protected paths, the orchestrator
+  consolidates this finding into its `protected-path` finding, so
+  describe *what* lacks authorization (e.g., a new user-facing
+  control with no recorded design discussion) rather than only
+  repeating the generic "link an issue" remediation.
 
 ## Revert PR authorization
 

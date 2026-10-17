@@ -1240,6 +1240,9 @@ premise:
 2. If no sub-agent finding provides contradicting evidence, keep the
    orchestrator finding unchanged.
 
+Then read and follow [the consolidation procedure](references/finding-consolidation.md)
+to merge agreeing no-linked-issue findings.
+
 **What reconciliation does NOT do:**
 
 - It does not suppress `protected-path` findings entirely. Human
