@@ -753,14 +753,14 @@ fi
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
-PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
-  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     FORCE_PUSH_OUTPUT=""
-    if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+    if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
       PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
@@ -856,6 +856,7 @@ extract_commit_body() {
   local raw
   raw="$(git log -1 --format='%b' HEAD \
     | sed '/^Signed-off-by:/d' \
+    | sed '/^Authored-by:/d' \
     | sed '/^Closes #/d' \
     | sed '/^Related to #/d' \
     | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"

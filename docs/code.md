@@ -61,9 +61,39 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue, and skips tracking issues that have sub-issues (GitHub sub-issues or GitLab work-item children). `/fs-code --force` bypasses both checks.
 2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
-3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
+3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, publishes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 
 This separation ensures the agent never has direct write access to the repository.
+
+### Signed commits
+
+On GitHub, the post-script rebuilds each commit produced by the agent
+through the [Git Data API](https://docs.github.com/en/rest/git) with the
+App installation token, which causes GitHub to sign every commit it
+creates. The result shows as **Verified** in GitHub.
+
+Compared to `git push`:
+
+- The author becomes the App's bot user. The identity the commit was made
+  with is kept in an `Authored-by: name <email>` trailer, which the fix
+  agent and its post-script read to tell fix-agent commits from code-agent
+  and human ones.
+- The branch ref moves with a compare-and-swap, so a `--force-with-lease`
+  publish is refused when the branch moved since the post-script last
+  fetched it.
+- A signature made inside the sandbox (gitsign or SSH signing configured
+  through the harness env) is not preserved; the published commit carries
+  GitHub's signature instead. When GitHub does not sign a commit, the
+  publish fails under an App installation token and proceeds with a
+  warning under any other token, which never gets a signature.
+- Each blob not already in the parent tree or uploaded earlier in the
+  same push, plus each tree and commit, is one request against GitHub's
+  [secondary rate limit](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits)
+  (about 80 content-creating requests per minute, 500 per hour). A burst
+  is retried; a commit touching more files than the hourly limit allows
+  fails with the API's rate-limit error.
+
+On GitLab the branch is pushed with `git push`.
 
 ### Signed-off-by trailers
 

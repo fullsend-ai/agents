@@ -25,6 +25,14 @@ else
   echo "PASS: bundled-script-has-failure-reporting"
 fi
 
+if ! grep -q 'forge_push_branch' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-signed-push"
+  echo "  ${POST_SCRIPT} missing forge_push_branch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-push"
+fi
+
 if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-gitleaks-install"
   echo "  ${POST_SCRIPT} missing install_gitleaks"
@@ -907,6 +915,7 @@ count_related_to_commit_body_test() {
   local processed
   processed="$(printf '%s\n' "${raw_commit_body}" \
     | sed '/^Signed-off-by:/d' \
+    | sed '/^Authored-by:/d' \
     | sed '/^Closes #/d' \
     | sed '/^Related to #/d' \
     | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
@@ -936,6 +945,40 @@ count_related_to_commit_body_test() {
 
   echo "PASS: ${test_name}"
 }
+
+# The Authored-by trailer the signed publish adds must not reach the PR body.
+authored_by_stripped_commit_body_test() {
+  local test_name="$1"
+  local raw_commit_body="$2"
+  local processed
+  processed="$(printf '%s\n' "${raw_commit_body}" \
+    | sed '/^Signed-off-by:/d' \
+    | sed '/^Authored-by:/d' \
+    | sed '/^Closes #/d' \
+    | sed '/^Related to #/d' \
+    | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+  local actual
+  actual="$(build_pr_body "${processed}" "42" "agent/42-fix" "abc123..def456" "" "skipped" "true")"
+  if echo "${actual}" | grep -q "Authored-by"; then
+    echo "FAIL: ${test_name}"
+    echo "  PR body still carries the Authored-by trailer:"
+    echo "${actual}" | sed 's/^/    /'
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! echo "${actual}" | grep -q "Body line kept."; then
+    echo "FAIL: ${test_name}"
+    echo "  PR body lost the commit body text"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+authored_by_stripped_commit_body_test "pr-body-strips-authored-by-trailer" "Body line kept.
+
+Authored-by: fullsend-code <bot@example.com>
+Signed-off-by: Someone <s@example.com>"
 
 count_related_to_commit_body_test "single-related-to-commit-body-fallback" \
   "Partial fix for widget rendering.
@@ -1272,7 +1315,7 @@ decide_push_retry() {
     return 0
   fi
 
-  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     echo "retry:force-with-lease"
     return 0
   fi
@@ -1316,6 +1359,10 @@ run_push_retry_test "push-non-fast-forward" \
 # Rejected error → retry with --force-with-lease
 run_push_retry_test "push-rejected" \
   "1" "! [rejected] agent/42 -> agent/42 (fetch first)" "retry:force-with-lease"
+
+# GitHub's wording when the API ref update loses a race → retry with --force-with-lease
+run_push_retry_test "push-api-not-a-fast-forward" \
+  "1" "gh: Update is not a fast forward (HTTP 422)" "retry:force-with-lease"
 
 # Unknown error → fail
 run_push_retry_test "push-unexpected-error" \
@@ -2086,6 +2133,8 @@ run_numeric_validation_test "issue-number-shell-injection" "1;echo pwned" "false
 SEC_CODE_TMPDIR="$(mktemp -d)"
 SEC_CODE_MOCK_BIN="${SEC_CODE_TMPDIR}/bin"
 mkdir -p "${SEC_CODE_MOCK_BIN}"
+# Git Data API calls from forge_push_branch are served from the bare remote.
+export FAKE_GH_GIT_API="${SCRIPT_DIR}/test-fixtures/fake-gh-git-api.sh"
 
 cat > "${SEC_CODE_MOCK_BIN}/sleep" <<'MOCKEOF'
 #!/usr/bin/env bash
@@ -2136,6 +2185,7 @@ setup_sec_code_repo() {
 cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "api -X")      exec bash "${FAKE_GH_GIT_API}" "$@" ;;
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     echo ""; exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
