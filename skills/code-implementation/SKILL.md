@@ -800,21 +800,15 @@ echo "::notice::STEP 9c: Tests and linters"
 ```
 
 You MUST run both **tests** and **linters** on the code you changed.
-Both are mandatory — do not skip either one.
 
 **Run targeted tests** — only test the packages/modules you changed:
 
 - **Go:** `go test ./path/to/changed/pkg/...` for each changed package.
-  Use `go test ./...` only if changes span many packages or affect shared
-  libraries.
-- **Python:** `pytest path/to/test_file.py` or
-  `pytest tests/unit/test_module.py` for the module you changed. Run
-  `pytest` (full suite) only as a final check.
+- **Python:** `pytest path/to/test_file.py` for the module you changed.
 - **JS/TS:** `npm test -- --testPathPattern='changed-module'` or the
   framework's equivalent filter flag.
-- **Makefile targets:** If the Makefile has granular test targets (e.g.,
-  `make test-unit`, `make test-pkg PKG=./internal/foo`), prefer those
-  over `make test`.
+- **Makefile targets:** Prefer granular targets (e.g., `make test-unit`,
+  `make test-pkg PKG=./internal/foo`) over `make test`.
 
 Determine which packages to test from your changed files:
 
@@ -823,18 +817,27 @@ git diff --name-only <target-branch>
 ```
 
 Use the local `<target-branch>` ref, not `origin/<target-branch>`, for
-the reasons given in step 4. This shows all files that differ between
-the target branch and the working tree — including previously
-committed changes on the feature branch.
+the reasons given in step 4. This includes previously committed changes
+on the feature branch.
 
-Full-suite runs (`go test ./...`, `npm test`, `pytest`) are acceptable as
-a final validation after targeted tests pass, but prefer targeted runs
-first to save time and context budget.
+Run full suites (`go test ./...`, `npm test`, `pytest`) only as a final
+check after targeted tests pass.
 
 **Run the repo's lint command** — this is the lint command you identified
 in step 3 from `CLAUDE.md`, `CONTRIBUTING.md`, `Makefile`, or CI config.
 You MUST run it now. Linting is separate from pre-commit (9b) — even if
 pre-commit passed or was skipped, you still run the lint command here.
+
+If the command reads the git index (`lint-staged`, or the contributing
+guide says to stage first), `git add` the intended files by explicit
+path, then run it; never substitute a full-tree lint. On a resumed
+branch with the implementation already committed (step 4), staging
+leaves the index equal to HEAD and the linter exits 0 having checked
+nothing — that is not verification. Lint the files from
+`git diff --name-only <target-branch>` using the tool's file-list or
+diff-against-ref mode. `pre-commit run --files` counts only if its
+config runs the same lint checks as the documented command. Otherwise
+disclose in the commit message that those files were not linted.
 
 ```bash
 # Use the exact lint command discovered in step 3. Examples:
@@ -846,43 +849,34 @@ eslint src/                                       # JS/TS without npm script
 ```
 
 If the repo specifies multiple lint/format commands (e.g.,
-`ruff format && ruff check && pytest`), run all of them — not just the
-test command. Lint violations like `SIM401` or `UP038` require you to
-understand the error and rewrite your code, the same way you handle test
-failures.
+`ruff format && ruff check && pytest`), run all of them. Fix lint
+violations like `SIM401` or `UP038` the way you fix test failures.
 
 **If tests or linters fail due to missing tools or infrastructure** (not
 due to your code): try the Makefile's setup targets first (`make deps`,
-`make setup`, etc.). If the tool genuinely cannot be installed in the
-sandbox, note this in your commit message body so reviewers know what was
-not verified:
+`make setup`, etc.). If the tool cannot be installed in the sandbox,
+note what was not verified in your commit message body:
 
 > Note: <suite-name> tests could not run (<reason>). <other-suite>
 > tests passed. Manual verification of <suite-name> is required.
 
-**Do NOT silently skip tests or linters and commit as if everything
-passed.** If you cannot run the relevant test suite or lint command, you
-must disclose that.
+**Do NOT silently skip tests or linters** — always disclose that.
 
 **If tests or linters fail due to your code:**
 
 1. Read the failure output carefully. Understand the root cause.
-2. Fix the issue in your implementation. Do not weaken or skip tests.
-   For lint errors, fix the specific reported violation — do not
-   refactor unrelated code or disable the lint rule.
+2. Fix the issue in your implementation. Do not weaken or skip tests
+   or disable lint rules; fix only the reported violation.
 3. Re-run secret scan (9a), then tests and linters (9c). This consumes
    one retry iteration. **Do NOT re-run pre-commit (9b) during
    retries** — your pre-commit budget for this iteration is closed
    whether you spent it or skipped it, and RULE 2 requires you to
    disclose any hook failure in the commit message.
-4. Repeat until both tests and linters pass or the retry limit is
-   reached.
+4. Repeat until both pass or the retry limit is reached.
 
 The retry limit is read from the `MAX_RETRIES` environment variable
-(default: 1 if unset). The harness may also enforce a hard timeout
-independently — if the harness kills the session, your retry count is
-irrelevant. Prefer committing with a disclosed issue over burning time
-on additional retry iterations.
+(default: 1 if unset). The harness may also enforce a hard timeout.
+Prefer committing with a disclosed issue over extra retry iterations.
 
 If the retry limit is reached and tests or linters still fail, do not
 commit. Validate structured output, then stop:
@@ -893,10 +887,11 @@ fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
 
 **9d. Self-review**
 
-Before staging, review your own changes:
+Review the diff you will commit:
 
 ```bash
 git diff
+git diff --cached
 ```
 
 Read every line. Check for:
@@ -907,7 +902,7 @@ Read every line. Check for:
 - Secret material: `.env`, `*.pem`, `*.key`, `credentials.json`
 - Protected-path files (see agent definition for the authoritative list)
 
-If you added more than necessary, revert the extras before staging.
+If you added more than necessary, revert (and unstage) the extras.
 
 **After verification passes, proceed IMMEDIATELY to Step 10 (Commit).
 Do not produce any text summary, status update, or final response
@@ -927,7 +922,8 @@ Stage **only the files you modified or created** and commit.
 git add path/to/file1 path/to/file2
 ```
 
-Only include files you deliberately created or modified.
+Only include files you deliberately created or modified. Re-add any
+paths 9c staged so linter auto-fixes are included.
 
 **10b. Review and scan what you are committing**
 
