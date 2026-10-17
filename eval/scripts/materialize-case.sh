@@ -33,9 +33,12 @@ SNAPSHOT=$(yq -r '.source.snapshot_commit // ""' "$ANN")
 mapfile -t EXCLUDE < <(yq -r '.source.exclude // [] | .[]' "$ANN")
 
 WORK=$(mktemp -d)
+# A run killed before its trap ran (SIGKILL, lost terminal) leaves its stage
+# behind; sweep those before making a new one. .gitignore covers the pattern.
+find "$CASE_DIR" -maxdepth 1 -name '.repo-stage.*' -type d -exec rm -rf {} +
 STAGE=$(mktemp -d "$CASE_DIR/.repo-stage.XXXXXX")
 cleanup() {
-  # shellcheck disable=SC2317
+  # shellcheck disable=SC2317 # invoked indirectly via trap
   rm -rf "$WORK" "$STAGE"
 }
 trap cleanup EXIT
@@ -47,13 +50,17 @@ git -C "$WORK/src" rev-parse --verify --quiet "${SNAPSHOT}^{commit}" >/dev/null 
 
 git -C "$WORK/src" archive "$SNAPSHOT" | tar -x -C "$STAGE"
 
-# Never delete through a symlinked directory: every component above the
-# target must be a real directory inside the tree, or rm would act on the
-# link's target on this host (an upstream tree could ship .github as a link).
-assert_real_parents() { # root relpath
+# Never delete through a symlink: every component of the target, the last
+# one included, must be a real path inside the tree, or rm would act on the
+# link's target on this host (an upstream tree could ship .github as a link;
+# `rm -rf link/` with a trailing slash follows the link). The relpath must
+# already be clean: no leading or trailing slash, no empty component.
+# Kept identical to the copy in build-case.sh.
+assert_real_path() { # root relpath
   local cur="$1" parts c
+  [[ "$2" == */ || "$2" == *//* ]] && { echo "ERROR: refusing to delete $2: path must not end in / or contain //" >&2; exit 1; }
   IFS=/ read -ra parts <<< "$2"
-  for c in "${parts[@]:0:${#parts[@]}-1}"; do
+  for c in "${parts[@]}"; do
     cur="$cur/$c"
     [[ -L "$cur" ]] && { echo "ERROR: refusing to delete $2: '$c' is a symlink in the upstream tree" >&2; exit 1; }
   done
@@ -62,15 +69,16 @@ assert_real_parents() { # root relpath
 
 # Automation that would act on the ephemeral repo the moment it is pushed
 # (same list as build-case.sh), then the card's own exclusions.
-assert_real_parents "$STAGE" .github/workflows
+assert_real_path "$STAGE" .github/workflows
 rm -rf "$STAGE/.github/workflows"
 for f in .github/dependabot.yml .github/dependabot.yaml .github/renovate.json .github/renovate.json5 renovate.json renovate.json5 .renovaterc .renovaterc.json; do
-  assert_real_parents "$STAGE" "$f"
+  assert_real_path "$STAGE" "$f"
   rm -f "$STAGE/$f"
 done
 for p in "${EXCLUDE[@]+"${EXCLUDE[@]}"}"; do
   [[ -n "$p" && "$p" != /* && "$p" != *..* ]] || { echo "ERROR: refusing exclude path '$p'" >&2; exit 1; }
-  assert_real_parents "$STAGE" "$p"
+  p="${p%/}"   # a trailing slash would make rm follow a symlink
+  assert_real_path "$STAGE" "$p"
   rm -rf "${STAGE:?}/$p"
 done
 

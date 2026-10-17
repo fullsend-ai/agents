@@ -97,29 +97,33 @@ echo "Snapshot: ${snapshot} (${snapshot_date}) — ${snapshot_rule}"
 
 mkdir -p "$CASE_DIR/repo"
 git -C "$WORK/src" archive "$snapshot" | tar -x -C "$CASE_DIR/repo"
-# Automation that would act on the ephemeral repo the moment it is pushed:
-# CI workflows, and Dependabot / Renovate configs (Dependabot opened a
-# version-bump PR on a throwaway repo within minutes on 2026-09-25, and the
-# hooks mistook it for the agent's PR).
-# Never delete through a symlinked directory: every component above the
-# target must be a real directory inside the tree, or rm would act on the
-# link's target on this host (an upstream tree could ship .github as a link).
-assert_real_parents() { # root relpath
+# Never delete through a symlink: every component of the target, the last
+# one included, must be a real path inside the tree, or rm would act on the
+# link's target on this host (an upstream tree could ship .github as a link;
+# `rm -rf link/` with a trailing slash follows the link). The relpath must
+# already be clean: no leading or trailing slash, no empty component.
+# Kept identical to the copy in materialize-case.sh.
+assert_real_path() { # root relpath
   local cur="$1" parts c
+  [[ "$2" == */ || "$2" == *//* ]] && { echo "ERROR: refusing to delete $2: path must not end in / or contain //" >&2; exit 1; }
   IFS=/ read -ra parts <<< "$2"
-  for c in "${parts[@]:0:${#parts[@]}-1}"; do
+  for c in "${parts[@]}"; do
     cur="$cur/$c"
     [[ -L "$cur" ]] && { echo "ERROR: refusing to delete $2: '$c' is a symlink in the upstream tree" >&2; exit 1; }
   done
   return 0
 }
+# Automation that would act on the ephemeral repo the moment it is pushed:
+# CI workflows, and Dependabot / Renovate configs (Dependabot opened a
+# version-bump PR on a throwaway repo within minutes on 2026-09-25, and the
+# hooks mistook it for the agent's PR).
 removed=()
 if [[ $KEEP_WORKFLOWS -eq 0 && -d "$CASE_DIR/repo/.github/workflows" ]]; then
-  assert_real_parents "$CASE_DIR/repo" .github/workflows
+  assert_real_path "$CASE_DIR/repo" .github/workflows
   rm -rf "$CASE_DIR/repo/.github/workflows"; removed+=(".github/workflows")
 fi
 for f in .github/dependabot.yml .github/dependabot.yaml .github/renovate.json .github/renovate.json5 renovate.json renovate.json5 .renovaterc .renovaterc.json; do
-  if [[ -e "$CASE_DIR/repo/$f" ]]; then assert_real_parents "$CASE_DIR/repo" "$f"; rm -f "$CASE_DIR/repo/$f"; removed+=("$f"); fi
+  if [[ -e "$CASE_DIR/repo/$f" ]]; then assert_real_path "$CASE_DIR/repo" "$f"; rm -f "$CASE_DIR/repo/$f"; removed+=("$f"); fi
 done
 removed_note="none"; [[ ${#removed[@]} -gt 0 ]] && removed_note="${removed[*]} (automation that would act on the ephemeral repo)"
 n_files=$(find "$CASE_DIR/repo" -type f | wc -l | tr -d ' ')
