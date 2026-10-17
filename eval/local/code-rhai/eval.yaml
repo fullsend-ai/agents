@@ -136,6 +136,8 @@ outputs:
                            risk_assessment, body, action)
       review-metrics.json  cost/turns of the review run + agents repo commit
       metrics.json         the code run's cost/turns/model
+      run-status.json      how fullsend exited (exit_code, timed_out, eval_timeout_s);
+                           a no-PR run is "declined" only when exit_code is 0
   - path: judge
     schema: |
       Staged into the agent judge's working directory (plain text, read with

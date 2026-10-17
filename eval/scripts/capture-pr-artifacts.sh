@@ -158,8 +158,15 @@ no_pr() {
   # time limit mid-task was classed as a decline on its last progress note).
   # Only for the one path where the fixture record was read and no agent PR
   # was in it.
-  run_rc=$(jq -r '.exit_code // 1' "$OUTPUT_DIR/run-status.json" 2>/dev/null || echo 1)
-  if [[ "$run_rc" != "0" ]]; then
+  # A missing or unreadable run-status.json is "not recorded", never an
+  # invented exit code; it still rules out a decline.
+  local run_rc reason
+  run_rc=$(jq -er '.exit_code' "$OUTPUT_DIR/run-status.json" 2>/dev/null) || run_rc=""
+  if [[ -z "$run_rc" ]]; then
+    reason="$1; run status not recorded (run-status.json missing or unreadable), so the stop cannot be called a decline"
+    write_outcome failed "$reason"
+    echo "outcome: failed ($reason)"
+  elif [[ "$run_rc" != "0" ]]; then
     reason="$1; fullsend run exited ${run_rc}$(jq -r 'if .timed_out then " (timed out)" else "" end' "$OUTPUT_DIR/run-status.json" 2>/dev/null || true)"
     write_outcome failed "$reason"
     echo "outcome: failed ($reason)"

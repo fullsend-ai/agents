@@ -168,10 +168,19 @@ fi
 
 WS=$(new_case no-status '{"pull_requests":[]}'); mkdir -p "$WS/output/fs-cod-1"; touch "$WS/output/fs-cod-1/metrics.json"
 run_hook "$WS" "$TMP/path-all" STUB_FINAL_MSG="I stopped because the endpoint already exists."
-if [[ $RC -eq 0 && "$(outcome "$WS")" == "failed/false" && ! -e "$WS/output/infrastructure-failure.json" ]]; then
-  pass "no PR with a final message but no run-status.json is a failure, not a decline"
+if [[ $RC -eq 0 && "$(outcome "$WS")" == "failed/false" && "$(field "$WS/output/agent-outcome.json" .reason)" == *"run status not recorded"* && ! -e "$WS/output/infrastructure-failure.json" ]]; then
+  pass "no PR with a final message but no run-status.json is a failure saying the status was not recorded"
 else
-  fail "no PR with a final message but no run-status.json is a failure, not a decline (rc=$RC, outcome=$(outcome "$WS"), out: $OUT)"
+  fail "no PR with a final message but no run-status.json is a failure saying the status was not recorded (rc=$RC, outcome=$(outcome "$WS"), reason=$(field "$WS/output/agent-outcome.json" .reason), out: $OUT)"
+fi
+
+WS=$(new_case crashed '{"pull_requests":[]}'); mkdir -p "$WS/output/fs-cod-1"; touch "$WS/output/fs-cod-1/metrics.json"
+echo '{"exit_code": 1, "timed_out": false}' > "$WS/output/run-status.json"
+run_hook "$WS" "$TMP/path-all" STUB_FINAL_MSG="Almost there, let me just..."
+if [[ $RC -eq 0 && "$(outcome "$WS")" == "failed/false" && "$(field "$WS/output/agent-outcome.json" .reason)" == *"fullsend run exited 1" ]]; then
+  pass "no PR after a crashed run (exit 1, not timed out) is a failure naming the exit without a timeout note"
+else
+  fail "no PR after a crashed run is a failure naming the exit (rc=$RC, reason=$(field "$WS/output/agent-outcome.json" .reason), out: $OUT)"
 fi
 
 WS=$(new_case dependabot '{"pull_requests":[{"number":3,"state":"OPEN","head":"dependabot/npm/x"}]}'); run_hook "$WS" "$TMP/path-all"
