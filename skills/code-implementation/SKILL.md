@@ -455,6 +455,8 @@ Before planning, determine what kind of work this issue requires:
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
   ```
+- **Repository boundary** — external targets use `agents/code.md`'s procedure;
+  validate output and stop.
 
 ### 7. Verify the problem exists
 
@@ -1171,6 +1173,4 @@ written in step 3 must exist and be valid. Run `fullsend-check-output`
 
 ## Constraints
 
-The agent definition (`agents/code.md`) is the authoritative list of
-prohibitions. This skill does not restate them. If a step in this skill
-appears to conflict with the agent definition, the agent definition wins.
+`agents/code.md` is authoritative and wins on conflict.
