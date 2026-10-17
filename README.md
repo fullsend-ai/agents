@@ -8,7 +8,7 @@ First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) p
 |-------|-------------|---------|----------|
 | **Triage** | Assesses issue sufficiency, searches for duplicates, applies control labels | New issues, `/fs-triage` | claude, pi |
 | **Code** | Implements fixes and features following repo conventions | `ready-to-code` label, `/fs-code` | claude, pi |
-| **Review** | Dispatches parallel sub-agents across six review dimensions | PR events, `/fs-review` | claude, pi |
+| **Review** | Dispatches parallel sub-agents across seven review dimensions | PR events, `/fs-review` | claude, pi |
 | **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` | claude, pi |
 | **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` | claude, pi |
 | **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` | claude, pi |

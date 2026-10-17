@@ -2,7 +2,7 @@
 
 ![Review agent icon](icons/review.png)
 
-Code review specialist that evaluates pull requests and merge requests for correctness, security, intent alignment, style, and documentation currency.
+Code review specialist that evaluates pull requests and merge requests for correctness, security, intent alignment, style, documentation currency, and user experience.
 
 ## Setup
 
@@ -11,7 +11,7 @@ No additional setup is required beyond the standard fullsend configuration.
 ## How it helps
 
 - Every PR gets a thorough review within minutes, regardless of team availability.
-- Reviews cover security, correctness, intent & coherence, style, and docs currency — dimensions humans sometimes skip under time pressure.
+- Reviews cover security, correctness, intent & coherence, style, docs currency, and user experience, with cross-repo contract checks when applicable.
 
 ## Triggers
 
@@ -153,7 +153,7 @@ fails closed when `CI_SERVER_HOST` is not set.
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata. On a re-review, it also fetches current review-thread state, applies verified human dismissals to the prior-finding ledger, and discards the raw thread content before sandbox creation.
-2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
+2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, user experience, and optionally cross-repo contracts). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)).
 4. **Post-script** posts the review on the PR. On GitHub, it also resolves still-open review threads whose only comments are outdated inline comments authored by the review agent, so stale comments do not remain in the PR's unresolved-review state.
 

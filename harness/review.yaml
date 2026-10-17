@@ -80,6 +80,10 @@ forge:
   github:
     providers:
       - github-ro
+      - providers/github-public-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-github-public-ro.yaml
     skills:
       - skills/github-forge
       - skills/issue-labels/github
@@ -107,9 +111,11 @@ forge:
   gitlab:
     providers:
       - providers/gitlab-ro.yaml
+      - providers/github-public-ro.yaml
     openshell:
       profiles:
         - profiles/fullsend-gitlab-ro.yaml
+        - profiles/fullsend-github-public-ro.yaml
     skills:
       - skills/gitlab-forge
       - skills/issue-labels/gitlab

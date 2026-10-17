@@ -1,0 +1,27 @@
+---
+# No credentials — public repositories only.
+id: fullsend-github-public-ro
+display_name: Fullsend GitHub Public (read-only)
+description: Read-only pinned public GitHub content access for fullsend agents
+category: source_control
+endpoints:
+  - host: raw.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+    path: "/rh-uxd/ai-helpers/a609774f6adbc9ca406acb97d3ea1a2c13479dca/plugins/uxd-research/skills/uxd-evaluate-code-heuristics/SKILL.md"
+  - host: raw.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+    path: "/rh-uxd/ai-helpers/a609774f6adbc9ca406acb97d3ea1a2c13479dca/plugins/uxd-research/skills/uxd-evaluate-code-heuristics/references/evaluation-rubric.md"
+  - host: raw.githubusercontent.com
+    port: 443
+    protocol: rest
+    access: read-only
+    enforcement: enforce
+    path: "/rh-uxd/ai-helpers/a609774f6adbc9ca406acb97d3ea1a2c13479dca/plugins/uxd-research/skills/uxd-evaluate-code-heuristics/references/a11y-checklist.md"
+binaries:
+  - "**/curl"
