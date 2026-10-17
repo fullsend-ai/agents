@@ -2507,7 +2507,9 @@ run_disposition_case "approve-withheld-for-unanswered-high-prior-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '([.findings[] | select(.id == "f_hi1")] | length) == 1 and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-unanswered-high-prior-finding" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
+assert_last_result "approve-withheld-for-unanswered-high-prior-finding" \
+  '([.findings[] | select(.id == "f_hi1")] | length) == 1 and ([.findings[] | .description // "" | test("f_[A-Za-z0-9]+")] | any | not)'
 assert_disposition_stdout "approve-withheld-for-unanswered-high-prior-finding" \
   "::warning::Approval withheld: prior high/critical finding id(s) f_hi1" "present"
 
@@ -2532,7 +2534,7 @@ run_disposition_case "approve-withheld-for-explicit-open-high-prior-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-explicit-open-high-prior-finding" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
 run_disposition_case "approve-withheld-for-empty-evidence-resolved-high-prior-finding" \
   "$(jq -c '.action="approve" | .findings=[] | .dispositions=[{id:"f_hi1",status:"resolved_by_change",rationale:"Fixed.",evidence:""}]' <<< "${BASE_REVIEW}")" \
@@ -2680,7 +2682,7 @@ run_disposition_case "approve-withheld-for-human-dismissed-high-prior-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_hi1"}]}' \
   '.dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-human-dismissed-high-prior-finding" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 assert_disposition_stdout "approve-withheld-for-human-dismissed-high-prior-finding" \
   "::warning::dismissed_by_human is not accepted for high or critical prior finding id(s) f_hi1; recorded as open" "present"
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
@@ -2741,7 +2743,7 @@ run_disposition_case "approve-withheld-for-reclassified-without-finding" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-reclassified-without-finding" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 assert_disposition_stdout "approve-withheld-for-reclassified-without-finding" \
   "::warning::Reclassified prior finding id(s) f_hi1 have no current finding with that id; recorded as open" "present"
 
@@ -2768,7 +2770,7 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lo
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
 # Re-emitting an open prior high finding at high still leaves it open.
 # open is not a resolution, so approval is withheld.
@@ -2777,7 +2779,91 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-hi
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
-  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
+  '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
+
+# Finding ids never reach the posted text, whatever the model wrote: known
+# ids and minted-shaped ids are stripped from the body and from each
+# finding's description and remediation, while the ledger marker keeps them.
+run_disposition_case "posted-text-drops-finding-ids" \
+  "$(jq -c '.action="request-changes" | .body="Review\n\n### Earlier findings\n- f_hi1 (old.go:3) resolved_by_change: returns a + b\n- f_0123456789abcdef still open." | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"Same root cause as f_hi1; see f_hi1 .",remediation:"Fix f_hi1 by checking nil.",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
+assert_last_result "posted-text-drops-finding-ids" \
+  '(.body | test("f_[A-Za-z0-9]+") | not) and (.body | contains("### Earlier findings")) and (.body | contains("(old.go:3) resolved_by_change")) and (.findings[0].id == "f_hi1") and (.findings[0].description == "Same root cause as ; see  .") and (.findings[0].remediation == "Fix  by checking nil.") and ((.body | split("\n")[0]) | test("^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$"))'
+assert_disposition_stdout "posted-text-drops-finding-ids" \
+  "::warning::Removed finding id(s) f_0123456789abcdef, f_hi1 from the posted review text" "present"
+
+# Prose that merely looks id-like but is neither a known id nor a minted
+# id is left alone, so code identifiers in findings survive.
+run_disposition_case "posted-text-keeps-unrelated-f-tokens" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"Rename f_count and f_x; f_ab12 is unrelated."}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 1'
+assert_last_result "posted-text-keeps-unrelated-f-tokens" \
+  '.findings[0].description == "Rename f_count and f_x; f_ab12 is unrelated."'
+assert_disposition_stdout "posted-text-keeps-unrelated-f-tokens" \
+  "::warning::Removed finding id(s)" "absent"
+
+# Cleanup after an id removal must not rewrite unrelated whitespace in
+# code or string literals (double spaces, space before punctuation).
+run_disposition_case "posted-text-keeps-id-free-whitespace" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"if value == \"a  b\": print(\"hello , world\")"}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 1'
+assert_last_result "posted-text-keeps-id-free-whitespace" \
+  '.findings[0].description == "if value == \"a  b\": print(\"hello , world\")"'
+assert_disposition_stdout "posted-text-keeps-id-free-whitespace" \
+  "::warning::Removed finding id(s)" "absent"
+
+run_disposition_case "posted-text-scrub-preserves-nearby-literals" \
+  "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"Same as f_hi1 in value == \"a  b\"; print(\"hello , world\")",id:"f_hi1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":1,"id":"f_hi1"}]}' \
+  '(.findings | length) == 1 and (.findings[0].id == "f_hi1")'
+assert_last_result "posted-text-scrub-preserves-nearby-literals" \
+  '.findings[0].id == "f_hi1" and .findings[0].description == "Same as  in value == \"a  b\"; print(\"hello , world\")"'
+
+# Markdown wrappers around a stripped id (backticks, bold) must not remain.
+run_disposition_case "posted-text-drops-markdown-wrapped-ids" \
+  "$(jq -c --arg body "$(printf '%s' 'Review
+
+### Earlier findings
+- `f_hi1` (old.go:3) resolved_by_change
+- **f_hi1** reclassified')" '.action="request-changes" | .body=$body | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"See `f_hi1` and **f_hi1**.",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings[0].id == "f_hi1"'
+assert_last_result "posted-text-drops-markdown-wrapped-ids" \
+  '(.body | contains("### Earlier findings")) and (.body | contains("(old.go:3) resolved_by_change")) and (.body | contains("reclassified")) and (.body | contains("``") | not) and (.body | contains("**") | not) and (.body | test("f_hi1") | not) and .findings[0].description == "See  and ."'
+assert_disposition_stdout "posted-text-drops-markdown-wrapped-ids" \
+  "::warning::Removed finding id(s) f_hi1 from the posted review text" "present"
+
+# Old Earlier findings shape (- id: disposition), bold+colon, parentheses,
+# and an id at the start of a later line. List marker must not glue to ":".
+run_disposition_case "posted-text-drops-old-earlier-findings-shape" \
+  "$(jq -c --arg body "$(printf '%s' 'Review
+
+### Earlier findings
+- f_hi1: resolved_by_change, fixed
+- **f_hi1**: leftover
+resolved (f_hi1) earlier
+Line one
+f_hi1 resolved')" '.action="request-changes" | .body=$body | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+  '.findings[0].id == "f_hi1"'
+assert_last_result "posted-text-drops-old-earlier-findings-shape" \
+  '(.body | contains("### Earlier findings")) and (.body | contains("- resolved_by_change, fixed")) and (.body | contains("- leftover")) and (.body | contains("resolved  earlier")) and (.body | contains("Line one\nresolved")) and (.body | contains("-:") | not) and (.body | contains("()") | not) and (.body | test("f_hi1") | not)'
+assert_disposition_stdout "posted-text-drops-old-earlier-findings-shape" \
+  "::warning::Removed finding id(s) f_hi1 from the posted review text" "present"
+
+# A first-review supplied id is reminted; the original string in body /
+# description / remediation must still be scrubbed. Unrelated f_count stays.
+run_disposition_case "posted-text-drops-reminted-foreign-id" \
+  "$(jq -c '.action="request-changes" | .body="See f_invented1 and f_count." | .findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"Same as f_invented1; keep f_count.",remediation:"Fix f_invented1, not f_count.",id:"f_invented1"}]' <<< "${BASE_REVIEW}")" \
+  "" \
+  '(.findings | length) == 1 and (.findings[0].id != "f_invented1")'
+assert_last_result "posted-text-drops-reminted-foreign-id" \
+  '(.findings[0].id != "f_invented1") and (.body | test("f_invented1") | not) and (.body | contains("f_count")) and (.findings[0].description | test("f_invented1") | not) and (.findings[0].description | contains("f_count")) and (.findings[0].remediation | test("f_invented1") | not) and (.findings[0].remediation | contains("f_count"))'
+assert_disposition_stdout "posted-text-drops-reminted-foreign-id" \
+  "::warning::Removed finding id(s) f_invented1 from the posted review text" "present"
 
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.

@@ -1362,9 +1362,11 @@ where `[open]` = `<` + `!--` and `[close]` = `--` + `>`.
   not drop it or write "verified resolved." Never claim exhaustive
   verification of any property that requires CI or runtime validation.
 - **Earlier findings.** After open findings, add `### Earlier findings` with
-  one line per prior id resolved, reclassified, or dismissed by a human:
-  id, disposition, evidence. Skip previously closed ids and omit the heading
-  when nothing changed. Keep open findings in `### Findings`.
+  one line per prior finding resolved, reclassified, or dismissed by a human:
+  `file:line` (or file / PR-level), category, disposition, evidence. Never
+  print finding ids (`f_...`) in the body, `description`, or `remediation`;
+  ids live only in JSON `id`/`dispositions`. Skip ids closed earlier; omit
+  the heading when nothing changed.
 - **No footer.** Do not append any footer, action-hints block, or
   boilerplate after findings. The post-review pipeline appends
   action hints deterministically for the `request-changes` action

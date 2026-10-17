@@ -17,5 +17,5 @@ review_expectations: |
   high logic-error at src/add.py:2 because add returned a - b. The follow-up
   changes that line to return a + b. A good review records
   resolved_by_change for f_fixed1 with that return change as evidence, does
-  not list logic-error as an open finding, and mentions f_fixed1 under
-  Earlier findings.
+  not list logic-error as an open finding, and mentions the add.py fix under
+  Earlier findings without printing the finding id.

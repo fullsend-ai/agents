@@ -951,6 +951,14 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
 ' <<< "${PRIOR_JSON}")"
 MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< "${MINT_IDS}")"
 
+# Ids the model wrote, captured before remint. A first-review supplied id
+# is foreign and replaced below; the original string can still appear in
+# body/description/remediation and must be in the scrub set.
+SUPPLIED_FINDING_IDS="$(jq -c '
+  [ .findings[]?.id?, .dispositions[]?.id? ]
+  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
+' "${RESULT_FILE}" 2>/dev/null || echo '[]')"
+
 # Id assignment for this review. A supplied id is kept only when it is an
 # open prior id no earlier row already took and this review is not
 # resolving; a closed, resolving, foreign, or duplicate id is replaced (a
@@ -1809,7 +1817,7 @@ fi
 BLOCKING_IDS="$(jq -r '.blocking | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${BLOCKING_IDS}" && "${ACTION}" = "approve" ]]; then
   echo "::warning::Approval withheld: prior high/critical finding id(s) ${BLOCKING_IDS} are still open"
-  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) '"${BLOCKING_IDS}"$' are still open.'
+  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) are still open.'
   LEDGER_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${LEDGER_RESULT}")
   jq --arg notice "${LEDGER_NOTICE}" \
@@ -1852,7 +1860,7 @@ PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" 
         file: (.file // "N/A"),
         description: (
           if (.description | type == "string" and length > 0) then .description
-          else ("Previously reported finding " + .id + " remains open: "
+          else ("Previously reported finding remains open: "
             + .severity + " " + .category + " in " + (.file // "PR-level")
             + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end) + ".")
           end
@@ -1873,7 +1881,7 @@ if [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -gt 0 ]]; then
   fi
 fi
 PRIOR_BLOCKING_SUMMARY="$(jq -r --argjson links "${FINDING_COMMENT_LINKS}" '
-  map("- " + .id + ": " + .severity + " " + .category + " at "
+  map("- " + .severity + " " + .category + " at "
       + (.file // "PR-level")
       + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end)
       + (if ($links[.id] | type) == "string" then
@@ -2082,9 +2090,54 @@ if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
   PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
   PROJECTION_MARKER="<!-- fullsend:review-findings-v2:${PRIOR_FINDINGS_ENCODED} -->"
 fi
+# Finding ids are ledger keys, not prose. The skill tells the model not to
+# print them, and this pass makes that true regardless: every id this run
+# knows (prior ledger, current findings, dispositions) and anything shaped
+# like a minted id is removed from the visible body and from each finding's
+# description and remediation, which fullsend posts as inline comments. The
+# projection marker below and the inline stamps fullsend adds are built
+# from the JSON ids, not from this text, so they keep them.
+KNOWN_FINDING_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson supplied "${SUPPLIED_FINDING_IDS}" '
+  [ $prior.findings[]?.id?, .findings[]?.id?, .dispositions[]?.id?, $supplied[]? ]
+  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
+' "${RESULT_FILE}")"
+LEAKED_FINDING_IDS="$(jq -r --argjson known "${KNOWN_FINDING_IDS}" '
+  [ (.body // ""), (.findings[]? | .description // "", .remediation // "") ]
+  | map(select(type == "string"))
+  | map([ scan("\\bf_[A-Za-z0-9]+\\b") ] | .[])
+  | map(select(. as $id | ($known | index($id)) != null or test("^f_[0-9a-f]{16}$")))
+  | unique | join(", ")
+' "${RESULT_FILE}")"
+if [[ -n "${LEAKED_FINDING_IDS}" ]]; then
+  echo "::warning::Removed finding id(s) ${LEAKED_FINDING_IDS} from the posted review text; ids stay in the ledger only"
+fi
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
-jq --arg marker "${PROJECTION_MARKER}" '
+jq --arg marker "${PROJECTION_MARKER}" --argjson known_ids "${KNOWN_FINDING_IDS}" '
+  # Closed list of id frames only. Do not tidy unrelated whitespace.
+  def scrub_id($id):
+    gsub("(?m)^(?<pfx>[ \\t]*[-*][ \\t]+)(?:\\*\\*|`)?" + $id + "(?:\\*\\*|`)?[ \\t]*:[ \\t]*"; .pfx)
+    | gsub("\\[" + $id + "\\]\\([^)]*\\)"; "")
+    | gsub("`" + $id + "`"; "")
+    | gsub("\\*\\*" + $id + "\\*\\*"; "")
+    | gsub("\\(" + $id + "\\)"; "")
+    | gsub("(?m)^" + $id + "\\b[ \\t]*"; "")
+    | gsub("\\b" + $id + "\\b"; "");
+  def scrub_ids:
+    if type != "string" then . else
+      reduce $known_ids[] as $id (.; scrub_id($id))
+      | scrub_id("f_[0-9a-f]{16}")
+    end;
+    .body |= scrub_ids
+  | if (.findings | type) == "array" then
+      .findings |= map(
+        .description |= scrub_ids
+        | if (.description | type) == "string" and (.description | length) == 0
+          then .description = "Previously reported finding remains open." else . end
+        | if has("remediation") then .remediation |= scrub_ids else . end
+      )
+    else . end
+  |
   # pre-review ends the current section at the first line containing a
   # history delimiter, so any copy in the agent body would hide the marker.
   def strip_reserved:
