@@ -147,6 +147,19 @@ git submodule sync eval/.agent-eval-harness
 git submodule update --init eval/.agent-eval-harness
 ```
 
+The eval scripts are written against the harness version the submodule pins
+(1.56.3, the first release that confines agent judges with a deny list), so
+`run-functional.sh` checks two things before every run and refuses rather
+than score with an older harness: the checkout it uses (`AGENT_EVAL_HARNESS_DIR`
+may point at another clone, for example a newer one while developing) and the
+`agent_eval` library `python3` imports (which comes from wherever `pip` last
+installed it, and need not be the checkout). Each must be a plain release
+version (`N.N.N`) at or above the pin; a newer clone is fine, prereleases and
+placeholders are refused. For an old checkout, update the submodule or point
+`AGENT_EVAL_HARNESS_DIR` at a newer one; for a stale or foreign library,
+`pip install -e eval/.agent-eval-harness` so `python3` imports the checkout's
+library.
+
 ### GCP credentials
 
 A GCP service account with Vertex AI access is required for model
