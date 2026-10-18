@@ -202,6 +202,82 @@ for script in "$WORKSPACE_PY" "$EXECUTE_PY" "$SCORE_PY"; do
   fi
 done
 
+# The eval scripts are written against the harness version the submodule
+# pins, and from 1.56.3 the harness also confines agent judges with a deny
+# list. Neither the checkout in use nor the agent_eval library python3 imports
+# has to be the submodule: AGENT_EVAL_HARNESS_DIR can point at another clone
+# (a developer running against a newer harness), and the library comes from
+# wherever pip last installed it (a stale install, or an editable install of
+# an older clone, as happened on a developer machine). Require both to be at
+# least the pinned version, and refuse otherwise rather than run with
+# behaviour the scripts were not written for. Checked for every eval; it says
+# nothing about judges, so it cannot drift from how the harness treats them.
+harness_version() { # file: prints the version in a pyproject.toml, or nothing
+  sed -n 's/^version = "\([^"]*\)"/\1/p' "$1" 2>/dev/null | head -1 || true
+}
+pinned_ver="$(harness_version "${EVAL_DIR}/.agent-eval-harness/pyproject.toml")"
+if [[ -z "$pinned_ver" ]]; then
+  echo "ERROR: cannot read the pinned agent-eval-harness version from ${EVAL_DIR}/.agent-eval-harness/pyproject.toml" >&2
+  echo "       Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness" >&2
+  exit 1
+fi
+# require_at_least_pin <what> <version> <hint>: exits 1 unless <version> is a
+# plain release version (N.N.N) at or above the pinned one. sort -V orders any
+# string, so a prerelease or a placeholder could otherwise pass.
+require_at_least_pin() {
+  local what="$1" ver="$2" hint="$3"
+  if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: ${what} is version '${ver}', not a release version; this repo pins agent-eval-harness ${pinned_ver}" >&2
+    echo "       ${hint}" >&2
+    exit 1
+  fi
+  if [[ "$(printf '%s\n%s\n' "$pinned_ver" "$ver" | sort -V | head -1)" != "$pinned_ver" ]]; then
+    echo "ERROR: ${what} is version ${ver}, older than the agent-eval-harness ${pinned_ver} this repo pins" >&2
+    echo "       ${hint}" >&2
+    exit 1
+  fi
+}
+harness_ver="$(harness_version "${HARNESS_DIR}/pyproject.toml")"
+if [[ -z "$harness_ver" ]]; then
+  echo "ERROR: cannot read the agent-eval-harness version from ${HARNESS_DIR}/pyproject.toml" >&2
+  exit 1
+fi
+require_at_least_pin "the agent-eval-harness checkout at ${HARNESS_DIR}" "$harness_ver" \
+  "Update the submodule (git submodule update --init eval/.agent-eval-harness), or point AGENT_EVAL_HARNESS_DIR at a checkout of ${pinned_ver} or later"
+# The library's own version: from the pyproject.toml beside its package when it
+# is an editable install of some checkout, else from the installed
+# distribution's metadata.
+lib_info="$(python3 -c '
+import agent_eval, os
+pkg = os.path.dirname(os.path.realpath(agent_eval.__file__))
+ver = ""
+try:
+    with open(os.path.join(os.path.dirname(pkg), "pyproject.toml")) as f:
+        for line in f:
+            if line.startswith("version = \""):
+                ver = line.split("\"")[1]
+                break
+except OSError:
+    pass
+if not ver:
+    try:
+        import importlib.metadata
+        ver = importlib.metadata.version("agent-eval-harness")
+    except Exception:
+        pass
+print(ver)
+print(pkg)
+' 2>/dev/null || true)"
+lib_ver="${lib_info%%$'\n'*}"
+lib_path="${lib_info#*$'\n'}"
+if [[ -z "$lib_ver" ]]; then
+  echo "ERROR: cannot determine the version of the agent_eval library python3 imports (from ${lib_path:-an unknown location})" >&2
+  echo "       Install it from the checkout: pip install -e ${HARNESS_DIR}" >&2
+  exit 1
+fi
+require_at_least_pin "the agent_eval library python3 imports (from ${lib_path})" "$lib_ver" \
+  "Install the library from the checkout: pip install -e ${HARNESS_DIR}"
+
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"
 
 # Default FULLSEND_DIR to the repo root (the agents repo IS the scaffold).
