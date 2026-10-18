@@ -180,6 +180,7 @@ calls during both execution and scoring.
 |----------|-------------|
 | `FULLSEND_DIR` | Path to the fullsend scaffold directory. Defaults to the repo root. |
 | `EVAL_TIMEOUT` | Runner timeout in seconds. Defaults to `1800` (30 min). |
+| `EVAL_REPO_VISIBILITY` | Visibility of the ephemeral repos `setup-fixture.sh` creates: `private` (default since 2026-09-25; Dependabot opened PRs on public throwaway repos) or `public`. The CI evals use the default. |
 | `EVAL_RUNTIME` | Run every case under this runtime (`claude` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
 | `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |
 | `EVAL_EFFORT` | Effort override via `fullsend run --effort`. |
