@@ -1194,10 +1194,14 @@ fi
 
 # Append a machine-readable projection only when every schema-validated finding
 # can be represented safely. A lossy projection could turn a failed sub-agent
-# into an apparently clean dimension on the next re-review. Low-severity
-# challenger failures are non-dimensional and retain the pre-challenger findings.
-# A dimension failure the severity filter removed (Sonnet-tier failures are
-# recorded at info) must still suppress the projection.
+# into an apparently clean dimension on the next re-review. Challenger failures
+# are non-dimensional and retain the pre-challenger findings. They are told
+# apart by the failed sub-agent's name, which the pr-review skill puts at the
+# start of the description ("The challenger sub-agent did not return
+# findings: ..."), never by severity. Every other sub-agent-failure, at any
+# severity and including one that names no sub-agent, suppresses the
+# projection, even when the severity filter removed it (Sonnet-tier failures
+# are recorded at info).
 #
 # The projection is the ledger: every current finding plus every prior
 # finding not re-emitted, each with its id, and one {id, status} per prior
@@ -1235,9 +1239,11 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
     type == "string" and IN(
       "protected-path", "provenance-warning", "scope-authorization-implicit"
     );
+  def challenger_failure:
+    .category == "sub-agent-failure" and
+    (.description | type == "string" and startswith("The challenger sub-agent did not return findings:"));
   def non_dimensional_finding:
-    (.category | non_dimensional_category) or
-    (.category == "sub-agent-failure" and .severity == "low");
+    (.category | non_dimensional_category) or challenger_failure;
   def projectable:
     (.category | type == "string" and allowed_category) and (.file == "N/A" or (.file | safe_path));
   def closed_status: IN("resolved_by_change", "dismissed_by_human");

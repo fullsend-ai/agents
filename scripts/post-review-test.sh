@@ -1744,13 +1744,20 @@ LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo
 run_no_projection_test "projection-omits-mixed-sub-agent-failure" \
   "${LOSSY_FAILURE_PROJECTION_INPUT}"
 
+# A dimension failure recorded at low is still a dimension failure: severity
+# must not make it look like a challenger skip.
+LOW_LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","description":"kept before this fix"},{"severity":"low","category":"sub-agent-failure","file":"N/A","description":"The style-conventions sub-agent did not return findings: timeout"}]}'
+run_no_projection_test "projection-omits-mixed-low-sub-agent-failure" \
+  "${LOW_LOSSY_FAILURE_PROJECTION_INPUT}"
+
 # A skipped/failed challenger retains the dimensional findings; a failed
-# safety-critical dimension must still suppress the entire projection.
-CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"challenger time budget", actionable:false}]' <<< "${PROJECTION_INPUT}")"
+# dimension, or a failure that names no sub-agent, must still suppress the
+# entire projection at any severity.
+CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"The challenger sub-agent did not return findings: time budget: 500s remaining. Using pre-challenger finding set.", actionable:false}]' <<< "${PROJECTION_INPUT}")"
 for projection_forge in github gitlab; do
   run_projection_test "projection-keeps-findings-with-challenger-failure-${projection_forge}" \
     "${CHALLENGER_FAILURE_INPUT}" "${PROJECTION_EXPECTED}" "${projection_forge}"
-  for failure_severity in info medium high critical; do
+  for failure_severity in info low medium high critical; do
     DIMENSION_FAILURE_INPUT="$(jq --arg severity "${failure_severity}" '.findings += [{severity:$severity, category:"sub-agent-failure", file:"N/A", description:"dimension failed", actionable:false}]' <<< "${CHALLENGER_FAILURE_INPUT}")"
     run_no_projection_test "projection-blocks-${failure_severity}-failure-with-challenger-${projection_forge}" \
       "${DIMENSION_FAILURE_INPUT}" "${projection_forge}"
