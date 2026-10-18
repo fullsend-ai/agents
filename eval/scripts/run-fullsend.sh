@@ -53,8 +53,21 @@ EVAL_GH_WORKSPACE=$(mktemp -d)
 TARGET_DIR="${EVAL_GH_WORKSPACE}/target-repo"
 # Username comes from the helper; URL userinfo is lost when curl strips it from the effective URL.
 GH_CRED_HELPER='!f(){ echo "username=x-access-token"; echo "password=${GH_TOKEN}"; };f'
-git -c "credential.helper=${GH_CRED_HELPER}" \
-  clone "https://github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
+# GitHub occasionally resets the connection mid-clone (curl 56); retry.
+cloned=0
+for attempt in 1 2 3; do
+  rm -rf "$TARGET_DIR"
+  if git -c "credential.helper=${GH_CRED_HELPER}" \
+       clone "https://github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"; then
+    cloned=1; break
+  fi
+  echo "WARNING: clone attempt ${attempt} failed; retrying in $((attempt * 10))s" >&2
+  sleep $((attempt * 10))
+done
+if [[ $cloned -ne 1 ]]; then
+  echo "ERROR: could not clone ${EPHEMERAL_REPO} after 3 attempts" >&2
+  exit 1
+fi
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
 # Fix must run on the PR's actual head branch (post-script pushes
@@ -227,13 +240,19 @@ install -m 0600 /dev/null "$ENV_FILE"
     emit_env "PRIOR_REVIEW_PROVENANCE" "${PRIOR_REVIEW_PROVENANCE:-}"
   fi
 
+  # OpenAI key for the pi/codex runtimes. fullsend keeps it on the runner and
+  # hands the sandbox a placeholder (ADR 0092); it never enters the sandbox.
+  [[ -n "${OPENAI_API_KEY:-}" ]] && emit_env "OPENAI_API_KEY" "${OPENAI_API_KEY}"
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"
   [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]        && emit_env "GOOGLE_CLOUD_PROJECT" "${GOOGLE_CLOUD_PROJECT}"
   [[ -n "${CLOUD_ML_REGION:-}" ]]             && emit_env "CLOUD_ML_REGION" "${CLOUD_ML_REGION}"
   [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]] && emit_env "GOOGLE_APPLICATION_CREDENTIALS" "${GOOGLE_APPLICATION_CREDENTIALS}"
 } > "$ENV_FILE"
 
-FULLSEND_BIN="$(command -v fullsend)"
+# The binary copied into the sandbox must be Linux; on a macOS host point
+# EVAL_SANDBOX_BINARY at a GOOS=linux build (CI runs on Linux and uses the
+# host binary as before).
+FULLSEND_BIN="${EVAL_SANDBOX_BINARY:-$(command -v fullsend)}"
 EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 
 mkdir -p "$OUTPUT_DIR"
@@ -247,8 +266,14 @@ override_args=()
 [[ -n "${EVAL_MODEL:-}" ]] && override_args+=(--model "$EVAL_MODEL")
 [[ -n "${EVAL_EFFORT:-}" ]] && override_args+=(--effort "$EVAL_EFFORT")
 
+# Forge detection falls back to CI env vars (GITHUB_ACTIONS/GITLAB_CI), so a
+# local run resolves no forge and pre-code.sh fails on an empty
+# FULLSEND_FORGE. Pass it explicitly; --forge takes precedence everywhere.
+EVAL_FORGE="${EVAL_FORGE:-github}"
+
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
+  --forge "$EVAL_FORGE" \
   --fullsend-dir "${FULLSEND_DIR}" \
   --target-repo "$TARGET_DIR" \
   --env-file "$ENV_FILE" \
