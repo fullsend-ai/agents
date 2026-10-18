@@ -143,10 +143,14 @@ case "${FIXTURE_TYPE}" in
       '[.comments[] | {author: .author.login, body: .body, created_at: .createdAt}]')
     # Code agent post-script opens exactly one PR today; --limit 1 is enough.
     # Raise the limit (or filter by headRefName) if a future case opens multiple.
-    # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
+    # gh pr list is best-effort so a transient API blip still yields fixture-state.json,
+    # but the failure is recorded (pull_requests_error) so a consumer can tell an
+    # empty list it could not fetch from a repo that has no PRs.
+    prs_error=""
     if ! prs_json=$(retry_cmd gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 1 \
       --json number,title,url,state,headRefName,baseRefName); then
-      echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO}; recording pull_requests=[]" >&2
+      prs_error="gh pr list failed for ${EPHEMERAL_REPO} after retries"
+      echo "WARNING: ${prs_error}; recording pull_requests=[] with pull_requests_error" >&2
       prs_json='[]'
     fi
     if [[ -z "$prs_json" ]]; then
@@ -180,6 +184,7 @@ case "${FIXTURE_TYPE}" in
       --argjson issue "$issue_json" \
       --argjson comments "$comments_json" \
       --argjson pull_requests "$prs_with_files" \
+      --arg pull_requests_error "$prs_error" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
@@ -189,7 +194,8 @@ case "${FIXTURE_TYPE}" in
         assignees: [($issue.assignees // [])[] | .login],
         milestone: ($issue.milestone.title // null),
         comments: $comments,
-        pull_requests: $pull_requests
+        pull_requests: $pull_requests,
+        pull_requests_error: (if $pull_requests_error == "" then null else $pull_requests_error end)
       }' > "$STATE_FILE"
     ;;
 
