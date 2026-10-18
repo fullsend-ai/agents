@@ -155,6 +155,8 @@ assert_scoped_incremental_diff() {
     && test "$(cat "${ws}/dep-scope/classified")" = "${expected_classified}" \
     && grep -qF "diff --git a/${first_path} b/${first_path}" "${ws}/pr-diff.txt" \
     && grep -qF "diff --git a/${second_path} b/${second_path}" "${ws}/pr-diff.txt" \
+    && grep -qF '+remediation' "${ws}/pr-diff.txt" \
+    && grep -qF '+unrelated-after' "${ws}/pr-diff.txt" \
     && test "$(cat "${ws}/dep-scope/files")" = "$(printf '%s\n%s' "${first_path}" "${second_path}")"; then
     pass "${name}"
   else
@@ -234,20 +236,31 @@ assert_scoped "stacked dependency commits are excluded" \
   "$(printf 'dep a1\ndep a2\nown c3')"
 
 # A scoped re-review must retain both a direct remediation in a dependency
-# file and an unrelated own-file edit, so the responsible reviewers see the
-# complete incremental diff rather than only the newly added file.
+# file, an unrelated edit in that file, and an unrelated own-file edit, so
+# the responsible reviewers see the complete incremental diff.
 new_case adversarial-rereview
 commits a1 c2 c3 > "${FIX}/pulls_10_commits_per_page_100"
 commits a1 > "${FIX}/pulls_5_commits_per_page_100"
 patch existing.txt dependency > "${FIX}/diff_commits_a1"
-patch existing.txt remediation > "${FIX}/diff_commits_c2"
-patch unrelated.txt incidental > "${FIX}/diff_commits_c3"
-printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"existing.txt","patch":"@@ -1 +1 @@\n-old\n+remediation"},{"filename":"unrelated.txt","patch":"@@ -1 +1 @@\n-old\n+incidental"}]}' \
-  > "${FIX}/compare_a1___head"
 printf '%s\n' 'diff --git a/existing.txt b/existing.txt
-@@ -1 +1 @@
+--- a/existing.txt
++++ b/existing.txt
+@@ -1,3 +1,3 @@
 -old
 +remediation
+ unchanged
+-unrelated-before
++unrelated-after' > "${FIX}/diff_commits_c2"
+patch unrelated.txt incidental > "${FIX}/diff_commits_c3"
+printf '%s\n' '{"status":"ahead","behind_by":0,"files":[{"filename":"existing.txt","patch":"@@ -1,3 +1,3 @@\n-old\n+remediation\n unchanged\n-unrelated-before\n+unrelated-after"},{"filename":"unrelated.txt","patch":"@@ -1 +1 @@\n-old\n+incidental"}]}' \
+  > "${FIX}/compare_a1___head"
+printf '%s\n' 'diff --git a/existing.txt b/existing.txt
+@@ -1,3 +1,3 @@
+-old
++remediation
+ unchanged
+-unrelated-before
++unrelated-after
 diff --git a/unrelated.txt b/unrelated.txt
 @@ -1 +1 @@
 -old
@@ -335,6 +348,18 @@ patch auth.py "check()" > "${FIX}/diff_commits_c1"
 patch own.txt mine > "${FIX}/diff_commits_c3"
 run_case
 assert_skipped "a cherry-pick differing only in indentation stays in scope" \
+  "commits are not dependency commits followed by own commits (own )"
+
+new_case final-newline-difference
+commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch dep1.txt one > "${FIX}/diff_commits_c1"
+printf '\\ No newline at end of file\n' >> "${FIX}/diff_commits_c1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok c1
+run_case
+assert_skipped "a cherry-pick differing only in final newline stays in scope" \
   "commits are not dependency commits followed by own commits (own )"
 
 new_case own-diff-unavailable

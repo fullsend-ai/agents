@@ -172,12 +172,12 @@ if test -z "$SKIP"; then
   done
 fi
 test -s "$W/dep-prs" || SKIP="${SKIP:-no open dependency PR}"
-# ids <sha>: prints "<stable patch-id> <whitespace-exact hash of the +/- lines>".
+# ids <sha>: prints "<stable patch-id> <exact hash of changed lines and newline markers>".
 # Patch IDs only pick candidates (they ignore whitespace); a match needs both.
 ids() {
   gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$1" < /dev/null > "$W/one.diff" || return 1
   PID=$(git patch-id --stable < "$W/one.diff" | cut -d' ' -f1) || return 1
-  EXACT=$(grep -E '^[-+]' "$W/one.diff" | sha256sum | cut -d' ' -f1) || return 1
+  EXACT=$(grep -E '^([-+]|\\ No newline at end of file)' "$W/one.diff" | sha256sum | cut -d' ' -f1) || return 1
   # No pipefail: a failed hash step leaves an empty value, so require well-formed hashes.
   [[ $PID =~ ^[0-9a-f]{40,64}$ && $EXACT =~ ^[0-9a-f]{64}$ ]] || return 1
   echo "$PID $EXACT"

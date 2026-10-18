@@ -44,8 +44,9 @@ The command:
 - Marks a PR commit as a dependency commit when its SHA is in an open
   candidate's commit list (stacked) or it is a cherry-pick: its
   `git patch-id --stable` equals one of theirs **and** a
-  whitespace-exact hash of its changed lines does too (patch IDs ignore
-  whitespace, which can change behavior, e.g. Python indentation). A
+  exact hash of its changed lines and final-newline markers does too
+  (patch IDs ignore whitespace and final-newline markers, which can
+  change behavior, e.g. Python indentation). A
   matching commit message is not enough, so a cherry-pick whose
   conflicts were resolved differently stays in scope.
 - Refuses to scope (`SKIP`) when any commit list or commit diff cannot
