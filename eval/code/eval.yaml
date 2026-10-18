@@ -131,7 +131,9 @@ outputs:
   - path: output
     schema: |
       fixture-state.json: Captured GitHub issue state plus any PRs opened
-      by the code post-script. Contains: state, labels, comments, pull_requests.
+      by the code post-script. Contains: state, labels, comments, pull_requests,
+      pull_requests_fetch_failed (true when the PR lookup failed; then
+      pull_requests is null and PR existence is unknown).
 
 # ---------------------------------------------------------------------------
 # Judges
@@ -149,6 +151,8 @@ judges:
       if not raw:
           return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
       state = json.loads(raw)
+      if state.get("pull_requests_fetch_failed"):
+          return False, "Infrastructure failure: gh pr list lookup failed — PR existence unknown (not evidence the agent created no PR)"
       prs = state.get("pull_requests") or []
       if not prs:
           return False, "No pull requests found — code agent/post-script did not create a PR"
@@ -168,6 +172,8 @@ judges:
       expected = outputs.get("annotations", {}).get("expected_files") or []
       if not expected:
           return True, "No expected_files declared"
+      if state.get("pull_requests_fetch_failed"):
+          return False, "Infrastructure failure: gh pr list lookup failed — PR existence and changed files unknown"
       # Filter to OPEN/MERGED like pr_created — a closed/superseded PR's
       # files shouldn't count toward "the fix landed" any more than it
       # counts as PR creation succeeding.
