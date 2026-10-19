@@ -2723,6 +2723,28 @@ run_disposition_case "projection-dismissal-other-file-same-line-mints" \
 run_disposition_case "projection-dismissal-does-not-cover-high-row" \
   "$(redismiss_review a.go high)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
 
+# Runner safety signals are never covered by a dismissal: they mint, stay in
+# the posted result, and the dismissed id stays closed.
+for safety_category in protected-path sub-agent-failure; do
+  run_disposition_case "projection-dismissal-does-not-cover-${safety_category}-row" \
+    "$(jq -c --arg c "${safety_category}" '.findings[0].category = $c' <<< "$(redismiss_review a.go low)")" \
+    "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+  assert_last_result "projection-dismissal-does-not-cover-${safety_category}-row" \
+    "$(printf '(.findings | length) == 1 and .findings[0].category == "%s" and .findings[0].id != "f_old"' "${safety_category}")"
+done
+
+# Suppression that empties the findings must not leave a blocking verdict:
+# reject and request-changes are downgraded to comment, never posted as-is.
+for blocking_action in reject request-changes; do
+  run_disposition_case "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    "$(jq -c --arg a "${blocking_action}" '.action = $a' <<< "$(redismiss_review a.go low)")" \
+    "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+  assert_last_result "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    '.findings == null and (.action | IN("reject", "request-changes") | not)'
+  assert_disposition_stdout "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    "All findings removed by human dismissal — downgrading '${blocking_action}' to 'comment'" "present"
+done
+
 # The dismissed line changed (thread outdated, line null): a new id.
 MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0] |= (.line = null | .isOutdated = true)' <<< "$(thread_json alice a.go 10 "<!-- finding:f_old --> Logic nit.")")"
 export MOCK_REVIEW_THREADS_JSON

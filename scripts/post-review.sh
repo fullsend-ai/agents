@@ -971,7 +971,8 @@ fi
 # and still has a line. GitHub reports a thread's current line and nulls it
 # once a push changes that line (the thread goes outdated). GitLab keeps the
 # line the note was written on, so it cannot show the line is unchanged and
-# gets no anchors.
+# gets no anchors. A finding with no line (file-level or PR-level) has nothing
+# to anchor, so it gets no anchor either and still mints on a category change.
 DISMISSED_ANCHORS='[]'
 if [[ "${FULLSEND_FORGE}" = "github" ]]; then
   DISMISSED_ANCHORS="$(jq -c --argjson dismissals "${HUMAN_DISMISSALS}" '
@@ -986,13 +987,19 @@ if [[ "${FULLSEND_FORGE}" = "github" ]]; then
   ' <<< "${PRIOR_LEDGER}")"
 fi
 
+# Set when every finding is dropped before the severity filter (dismissal
+# suppression below or the severity filter itself); read by the re-review gates.
+REREVIEW_FILTERED_TO_ZERO=false
+REREVIEW_FILTER_ORIGINAL_ACTION=""
+
 # Id assignment for this review. A supplied id is kept only when it is an
 # open prior id no earlier row already took and this review is not
 # resolving; a closed, resolving, foreign, or duplicate id is replaced (a
 # reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
 # category match at the exact line; else the human-dismissed id anchored at
 # the row's exact file and line, whatever the category, unless the row is
-# high or critical (a dismissal never covers those); else the only open
+# high or critical or a runner safety signal (protected-path or
+# sub-agent-failure); a dismissal never covers those; else the only open
 # candidate at that place (a shifted line must not create a second ledger
 # entry). Do not copy an id this review is closing. A missing file (null or
 # N/A) is not a place, so those rows mint instead of inheriting. Otherwise
@@ -1039,6 +1046,7 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                 | ([ $dismissed[]
                      | select(.id as $pid | $taken | index($pid) == null)
                      | select(($f.severity | IN("high", "critical")) | not)
+                     | select(($f.category | IN("protected-path", "sub-agent-failure")) | not)
                      | select(.file == ($f.file | anchor_file) and .line == ($f.line | anchor_line))
                    ]) as $dismissed_here
                 | if ($exact | length) == 1 then {id: $exact[0].id, mint_i: $state.mint_i}
@@ -1072,6 +1080,20 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       | if (.findings | length) == 0 then del(.findings) else . end
     ' "${RESULT_FILE}" > "${REDISMISSED_RESULT}"
     mv "${REDISMISSED_RESULT}" "${RESULT_FILE}"
+    # Suppression that empties the findings leaves a blocking verdict with no
+    # findings. Downgrade it to comment as the severity filter does, and record
+    # it so the re-review gates see the filtered-to-zero state.
+    if ! jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
+      REREVIEW_FILTERED_TO_ZERO=true
+      REREVIEW_FILTER_ORIGINAL_ACTION="$(jq -r '.action' "${RESULT_FILE}")"
+      if [[ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
+        echo "All findings removed by human dismissal — downgrading '${REREVIEW_FILTER_ORIGINAL_ACTION}' to 'comment'"
+        REDISMISSED_DOWNGRADE="$(mktemp)"
+        CLEANUP_FILES+=("${REDISMISSED_DOWNGRADE}")
+        jq '.action = "comment"' "${RESULT_FILE}" > "${REDISMISSED_DOWNGRADE}"
+        mv "${REDISMISSED_DOWNGRADE}" "${RESULT_FILE}"
+      fi
+    fi
   fi
 fi
 
@@ -1153,8 +1175,6 @@ severity_rank() {
 
 EFFECTIVE_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD}"
 threshold_rank=$(severity_rank "$EFFECTIVE_FINDING_SEVERITY_THRESHOLD")
-REREVIEW_FILTERED_TO_ZERO=false
-REREVIEW_FILTER_ORIGINAL_ACTION=""
 
 if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
