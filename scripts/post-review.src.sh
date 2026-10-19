@@ -203,7 +203,7 @@ if [[ "${FULLSEND_FORGE}" = "github" ]]; then
       | first($dismissals[]?
           | select(.path == $p.file and (.line | type) == "number")
           | select(any(.finding_ids[]?; . == $p.id))) as $t
-      | {id: $p.id, file: $p.file, line: $t.line}
+      | {id: $p.id, file: $p.file, line: $t.line, severity: $p.severity}
     ]
   ' <<< "${PRIOR_LEDGER}")"
 fi
@@ -219,8 +219,9 @@ REREVIEW_FILTER_ORIGINAL_ACTION=""
 # reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
 # category match at the exact line; else the human-dismissed id anchored at
 # the row's exact file and line, whatever the category, unless the row is
-# high or critical or a runner safety signal (protected-path or
-# sub-agent-failure); a dismissal never covers those; else the only open
+# high or critical, a runner safety signal (protected-path or
+# sub-agent-failure), or more severe than the dismissed finding; a dismissal
+# never covers those; else the only open
 # candidate at that place (a shifted line must not create a second ledger
 # entry). Do not copy an id this review is closing. A missing file (null or
 # N/A) is not a place, so those rows mint instead of inheriting. Otherwise
@@ -232,6 +233,7 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
     def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
     def anchor_line: if type == "number" then . else null end;
     def anchor_file: if . == "N/A" or . == null then null else . end;
+    def sev_rank: if type == "string" then ({"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4})[.] // 99 else 99 end;
     def closed_status: IN("resolved_by_change", "dismissed_by_human");
     def resolving:
       (.status | closed_status)
@@ -268,6 +270,7 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                      | select(.id as $pid | $taken | index($pid) == null)
                      | select(($f.severity | IN("high", "critical")) | not)
                      | select(($f.category | IN("protected-path", "sub-agent-failure")) | not)
+                     | select((($f.severity | sev_rank) <= (.severity | sev_rank)) and ((.severity | sev_rank) < 99))
                      | select(.file == ($f.file | anchor_file) and .line == ($f.line | anchor_line))
                    ]) as $dismissed_here
                 | if ($exact | length) == 1 then {id: $exact[0].id, mint_i: $state.mint_i}

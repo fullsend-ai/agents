@@ -2723,6 +2723,21 @@ run_disposition_case "projection-dismissal-other-file-same-line-mints" \
 run_disposition_case "projection-dismissal-does-not-cover-high-row" \
   "$(redismiss_review a.go high)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
 
+# A row more severe than the dismissed finding is never covered by it: a
+# dismissed low must not hide a new medium concern at the same unchanged line.
+run_disposition_case "projection-dismissal-does-not-cover-more-severe-row" \
+  "$(redismiss_review a.go medium)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+assert_last_result "projection-dismissal-does-not-cover-more-severe-row" \
+  '(.findings | length) == 1 and .findings[0].severity == "medium" and .findings[0].id != "f_old"'
+assert_disposition_stdout "projection-dismissal-does-not-cover-more-severe-row" \
+  "not raised again" "absent"
+
+# A row no more severe than the dismissed finding is still covered.
+run_disposition_case "projection-dismissal-covers-less-severe-row" \
+  "$(redismiss_review a.go info)" "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-covers-less-severe-row" \
+  '.findings == null and .action == "comment"'
+
 # Runner safety signals are never covered by a dismissal: they mint, stay in
 # the posted result, and the dismissed id stays closed.
 for safety_category in protected-path sub-agent-failure; do
