@@ -2745,6 +2745,15 @@ for blocking_action in reject request-changes; do
     "All findings removed by human dismissal — downgrading '${blocking_action}' to 'comment'" "present"
 done
 
+# A prior reject is a human-decision hold: when dismissal suppression empties
+# the findings, the posted action stays comment and is not promoted to approve.
+run_disposition_case "projection-dismissal-prior-reject-hold-stays-comment" \
+  "$(jq -c '.action = "request-changes"' <<< "$(redismiss_review a.go low)")" \
+  '{"version":2,"action":"reject","findings":[{"severity":"low","category":"logic-error","file":"a.go","line":10,"id":"f_old"}],"dispositions":[{"id":"f_old","status":"dismissed_by_human"}]}' \
+  "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-prior-reject-hold-stays-comment" \
+  '.findings == null and .action == "comment"'
+
 # The dismissed line changed (thread outdated, line null): a new id.
 MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0] |= (.line = null | .isOutdated = true)' <<< "$(thread_json alice a.go 10 "<!-- finding:f_old --> Logic nit.")")"
 export MOCK_REVIEW_THREADS_JSON

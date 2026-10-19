@@ -1197,6 +1197,8 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
       || ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
            && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
                 || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) \
+           && "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" \
+           && "${PRIOR_REJECT_HOLD}" != "true" \
            && "${DOWNGRADED}" = "false" ) ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
       && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
