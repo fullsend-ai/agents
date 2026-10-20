@@ -131,12 +131,13 @@ if ! git -C "$TARGET_DIR" diff --cached --quiet; then
     echo "WARNING: EVAL_REPO_VISIBILITY=${EVAL_REPO_VISIBILITY}: the snapshot will be visible beyond the eval account; local git hooks run on this commit" >&2
     git -C "$TARGET_DIR" commit -m "eval: initial content"
   fi
-  # Large snapshots (100 MB+, 10k+ files) fail their first HTTPS push with
-  # "curl 55 Send failure: Broken pipe" at git's default post buffer. Raise it
-  # and retry a few times before giving up.
+  # Large snapshots (100 MB+, 10k+ files) have failed their first HTTPS push
+  # with "curl 55 Send failure: Broken pipe"; retry a few times before giving
+  # up. No git transport settings are changed: GitHub speaks chunked HTTP/1.1,
+  # and git's docs say raising http.postBuffer is not a fix for push failures.
   push_ok=0
   for attempt in 1 2 3; do
-    if git -C "$TARGET_DIR" -c http.postBuffer=1048576000 -c http.lowSpeedLimit=0 push origin HEAD; then
+    if git -C "$TARGET_DIR" push origin HEAD; then
       push_ok=1; break
     fi
     echo "WARNING: push attempt ${attempt} failed; retrying in $((attempt * 10))s" >&2
