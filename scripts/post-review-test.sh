@@ -2683,6 +2683,104 @@ assert_last_result "approve-withheld-for-human-dismissed-high-prior-finding" \
   '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1"))'
 assert_disposition_stdout "approve-withheld-for-human-dismissed-high-prior-finding" \
   "::warning::dismissed_by_human is not accepted for high or critical prior finding id(s) f_hi1; recorded as open" "present"
+
+# A human dismissal survives a category rename on an unchanged line: the row
+# at the dismissed file:line takes the dismissed id, is not posted, and the
+# ledger keeps the one closed entry. Unchanged means the verified dismissal
+# thread still has a line; GitHub nulls it once a push changes that line.
+REDISMISS_PRIOR='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":10,"id":"f_old"}],"dispositions":[{"id":"f_old","status":"dismissed_by_human"}]}'
+REDISMISS_KEPT='.findings == [{"severity":"low","category":"logic-error","file":"a.go","line":10,"id":"f_old"}] and .dispositions == [{id: "f_old", status: "dismissed_by_human"}]'
+redismiss_minted() {
+  # $1 file of the current row
+  printf '([.findings[] | select(.id == "f_old" and .file == "a.go" and .category == "logic-error")] | length) == 1 and ([.findings[] | select(.file == "%s" and .category == "code-organization" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "dismissed_by_human"}]' "$1"
+}
+redismiss_review() {
+  # $1 file  $2 severity
+  jq -c --arg file "$1" --arg sev "$2" '.findings=[{severity:$sev,category:"code-organization",file:$file,line:10,description:"d"}]' <<< "${BASE_REVIEW}"
+}
+MOCK_REVIEW_THREADS_JSON="$(thread_json alice a.go 10 "<!-- finding:f_old --> Logic nit.")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-dismissal-holds-across-category-change" \
+  "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-holds-across-category-change" \
+  '.findings == null and .action == "comment"'
+assert_disposition_stdout "projection-dismissal-holds-across-category-change" \
+  "::notice::Finding(s) on an unchanged human-dismissed line keep dismissed id(s) f_old; not raised again" "present"
+
+# Only the re-raised row is held back; other findings are still posted.
+run_disposition_case "projection-dismissal-holds-other-findings-posted" \
+  "$(jq -c '.findings += [{severity:"low",category:"stale-doc",file:"docs/x.md",line:1,description:"d"}]' <<< "$(redismiss_review a.go low)")" \
+  "${REDISMISS_PRIOR}" \
+  '([.findings[] | select(.id == "f_old")] | length) == 1 and ([.findings[] | select(.file == "docs/x.md")] | length) == 1 and (.findings | length) == 2'
+assert_last_result "projection-dismissal-holds-other-findings-posted" \
+  '(.findings | length) == 1 and .findings[0].file == "docs/x.md"'
+
+# A different file at the same line is another place: it mints.
+run_disposition_case "projection-dismissal-other-file-same-line-mints" \
+  "$(redismiss_review b.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted b.go)"
+
+# A high or critical row is never covered by a dismissal: it mints.
+run_disposition_case "projection-dismissal-does-not-cover-high-row" \
+  "$(redismiss_review a.go high)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+
+# A row more severe than the dismissed finding is never covered by it: a
+# dismissed low must not hide a new medium concern at the same unchanged line.
+run_disposition_case "projection-dismissal-does-not-cover-more-severe-row" \
+  "$(redismiss_review a.go medium)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+assert_last_result "projection-dismissal-does-not-cover-more-severe-row" \
+  '(.findings | length) == 1 and .findings[0].severity == "medium" and .findings[0].id != "f_old"'
+assert_disposition_stdout "projection-dismissal-does-not-cover-more-severe-row" \
+  "not raised again" "absent"
+
+# A row no more severe than the dismissed finding is still covered.
+run_disposition_case "projection-dismissal-covers-less-severe-row" \
+  "$(redismiss_review a.go info)" "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-covers-less-severe-row" \
+  '.findings == null and .action == "comment"'
+
+# Runner safety signals are never covered by a dismissal: they mint, stay in
+# the posted result, and the dismissed id stays closed.
+for safety_category in protected-path sub-agent-failure; do
+  run_disposition_case "projection-dismissal-does-not-cover-${safety_category}-row" \
+    "$(jq -c --arg c "${safety_category}" '.findings[0].category = $c' <<< "$(redismiss_review a.go low)")" \
+    "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+  assert_last_result "projection-dismissal-does-not-cover-${safety_category}-row" \
+    "$(printf '(.findings | length) == 1 and .findings[0].category == "%s" and .findings[0].id != "f_old"' "${safety_category}")"
+done
+
+# Suppression that empties the findings must not leave a blocking verdict:
+# reject and request-changes are downgraded to comment, never posted as-is.
+for blocking_action in reject request-changes; do
+  run_disposition_case "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    "$(jq -c --arg a "${blocking_action}" '.action = $a' <<< "$(redismiss_review a.go low)")" \
+    "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+  assert_last_result "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    '.findings == null and (.action | IN("reject", "request-changes") | not)'
+  assert_disposition_stdout "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    "All findings removed by human dismissal — downgrading '${blocking_action}' to 'comment'" "present"
+done
+
+# A prior reject is a human-decision hold: when dismissal suppression empties
+# the findings, the posted action stays comment and is not promoted to approve.
+run_disposition_case "projection-dismissal-prior-reject-hold-stays-comment" \
+  "$(jq -c '.action = "request-changes"' <<< "$(redismiss_review a.go low)")" \
+  '{"version":2,"action":"reject","findings":[{"severity":"low","category":"logic-error","file":"a.go","line":10,"id":"f_old"}],"dispositions":[{"id":"f_old","status":"dismissed_by_human"}]}' \
+  "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-prior-reject-hold-stays-comment" \
+  '.findings == null and .action == "comment"'
+
+# The dismissed line changed (thread outdated, line null): a new id.
+MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0] |= (.line = null | .isOutdated = true)' <<< "$(thread_json alice a.go 10 "<!-- finding:f_old --> Logic nit.")")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-dismissal-changed-line-mints" \
+  "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+assert_disposition_stdout "projection-dismissal-changed-line-mints" \
+  "not raised again" "absent"
+
+# No verified dismissal thread: nothing shows the line is unchanged, so mint.
+unset MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-dismissal-unverified-thread-mints" \
+  "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
 
 # GitLab dismissals use the authenticated review-token identity. A normal
@@ -2730,6 +2828,13 @@ run_gitlab_disposition_case() {
 run_gitlab_disposition_case "gitlab-dismissed-by-human-closes-by-id" \
   "${DISMISSED_REVIEW}" "${DISMISSED_PRIOR}" \
   '([.dispositions[] | select(.id == "f_human1" and .status == "dismissed_by_human")] | length) == 1'
+
+# GitLab keeps the line a note was written on, so it cannot show the
+# dismissed line is unchanged: a category rename there still mints.
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.path = "a.go" | .line = 10 | .comments[0].body = "<!-- finding:f_old --> Logic issue.")' <<< "${GITLAB_HUMAN_DISMISSAL_RESPONSE}")"
+export MOCK_REVIEW_THREADS_RESPONSE
+run_gitlab_disposition_case "gitlab-dismissal-category-change-mints" \
+  "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
 unset MOCK_REVIEW_THREADS_RESPONSE MOCK_GITLAB_REVIEW_ACTOR
 
 # A reclassified disposition with no current finding carrying that id is

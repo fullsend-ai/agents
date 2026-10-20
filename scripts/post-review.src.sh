@@ -172,22 +172,68 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
 ' <<< "${PRIOR_JSON}")"
 MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< "${MINT_IDS}")"
 
+# Human dismissals are the runner's to verify, not the model's to assert:
+# a dismissed_by_human disposition counts only against a resolved review
+# thread from an eligible reviewer (not the PR author, write or above).
+# Fetched once, and only when the model used that status or, on GitHub, a
+# prior human-dismissed finding has a line its thread may still anchor.
+HUMAN_DISMISSALS='[]'
+if jq -e '[.dispositions[]? | select(type == "object" and .status == "dismissed_by_human")] | length > 0' "${RESULT_FILE}" >/dev/null 2>&1 \
+    || { [[ "${FULLSEND_FORGE}" = "github" ]] \
+         && jq -e '[.closed[] | select(.status == "dismissed_by_human" and (.line | type) == "number")] | length > 0' <<< "${PRIOR_LEDGER}" >/dev/null 2>&1; }; then
+  HUMAN_DISMISSALS="$(forge_get_human_dismissals)" || HUMAN_DISMISSALS='[]'
+  if ! jq -e 'type == "array"' <<< "${HUMAN_DISMISSALS}" >/dev/null 2>&1; then
+    HUMAN_DISMISSALS='[]'
+  fi
+fi
+
+# Where a prior human-dismissed finding still sits unchanged: its verified
+# dismissal thread carries the finding's exact stamp, is on the same file,
+# and still has a line. GitHub reports a thread's current line and nulls it
+# once a push changes that line (the thread goes outdated). GitLab keeps the
+# line the note was written on, so it cannot show the line is unchanged and
+# gets no anchors. A finding with no line (file-level or PR-level) has nothing
+# to anchor, so it gets no anchor either and still mints on a category change.
+DISMISSED_ANCHORS='[]'
+if [[ "${FULLSEND_FORGE}" = "github" ]]; then
+  DISMISSED_ANCHORS="$(jq -c --argjson dismissals "${HUMAN_DISMISSALS}" '
+    [ .closed[]
+      | select(.status == "dismissed_by_human" and (.file | type) == "string")
+      | . as $p
+      | first($dismissals[]?
+          | select(.path == $p.file and (.line | type) == "number")
+          | select(any(.finding_ids[]?; . == $p.id))) as $t
+      | {id: $p.id, file: $p.file, line: $t.line, severity: $p.severity}
+    ]
+  ' <<< "${PRIOR_LEDGER}")"
+fi
+
+# Set when every finding is dropped before the severity filter (dismissal
+# suppression below or the severity filter itself); read by the re-review gates.
+REREVIEW_FILTERED_TO_ZERO=false
+REREVIEW_FILTER_ORIGINAL_ACTION=""
+
 # Id assignment for this review. A supplied id is kept only when it is an
 # open prior id no earlier row already took and this review is not
 # resolving; a closed, resolving, foreign, or duplicate id is replaced (a
 # reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
-# category match: the exact line first, else the only candidate at that
-# place (a shifted line must not create a second ledger entry). Do not copy
-# an id this review is closing. A missing file (null or N/A) is not a
-# place, so those rows mint instead of inheriting. Otherwise mint.
-# Supplied open ids of later rows are reserved for them.
+# category match at the exact line; else the human-dismissed id anchored at
+# the row's exact file and line, whatever the category, unless the row is
+# high or critical, a runner safety signal (protected-path or
+# sub-agent-failure), or more severe than the dismissed finding; a dismissal
+# never covers those; else the only open
+# candidate at that place (a shifted line must not create a second ledger
+# entry). Do not copy an id this review is closing. A missing file (null or
+# N/A) is not a place, so those rows mint instead of inheriting. Otherwise
+# mint. Supplied open ids of later rows are reserved for them.
 if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   ID_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${ID_RESULT}")
-  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" '
+  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" --argjson dismissed "${DISMISSED_ANCHORS}" '
     def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
     def anchor_line: if type == "number" then . else null end;
     def anchor_file: if . == "N/A" or . == null then null else . end;
+    def sev_rank: if type == "string" then ({"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4})[.] // 99 else 99 end;
     def closed_status: IN("resolved_by_change", "dismissed_by_human");
     def resolving:
       (.status | closed_status)
@@ -220,7 +266,15 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                      | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category)
                    ]) as $same_place
                 | ([ $same_place[] | select((.line | anchor_line) == ($f.line | anchor_line)) ]) as $exact
+                | ([ $dismissed[]
+                     | select(.id as $pid | $taken | index($pid) == null)
+                     | select(($f.severity | IN("high", "critical")) | not)
+                     | select(($f.category | IN("protected-path", "sub-agent-failure")) | not)
+                     | select((($f.severity | sev_rank) <= (.severity | sev_rank)) and ((.severity | sev_rank) < 99))
+                     | select(.file == ($f.file | anchor_file) and .line == ($f.line | anchor_line))
+                   ]) as $dismissed_here
                 | if ($exact | length) == 1 then {id: $exact[0].id, mint_i: $state.mint_i}
+                  elif ($dismissed_here | length) > 0 then {id: $dismissed_here[0].id, mint_i: $state.mint_i}
                   elif ($same_place | length) == 1 then {id: $same_place[0].id, mint_i: $state.mint_i}
                   elif ($mints[$state.mint_i] | valid_id | not) then error("ran out of finding ids")
                   else {id: $mints[$state.mint_i], mint_i: ($state.mint_i + 1)}
@@ -234,6 +288,37 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       )
   ' "${RESULT_FILE}" > "${ID_RESULT}"
   mv "${ID_RESULT}" "${RESULT_FILE}"
+
+  # A row that took a human-dismissed id raises that finding again on a line
+  # no push has changed. The dismissal holds: keep the id closed in the
+  # ledger and do not post the row or let it count toward the verdict.
+  REDISMISSED_IDS="$(jq -r --argjson dismissed "${DISMISSED_ANCHORS}" '
+    [ .findings[] | .id | select(. as $id | any($dismissed[]; .id == $id)) ] | join(", ")
+  ' "${RESULT_FILE}")"
+  if [[ -n "${REDISMISSED_IDS}" ]]; then
+    echo "::notice::Finding(s) on an unchanged human-dismissed line keep dismissed id(s) ${REDISMISSED_IDS}; not raised again"
+    REDISMISSED_RESULT="$(mktemp)"
+    CLEANUP_FILES+=("${REDISMISSED_RESULT}")
+    jq --argjson dismissed "${DISMISSED_ANCHORS}" '
+      .findings |= map(select(.id as $id | any($dismissed[]; .id == $id) | not))
+      | if (.findings | length) == 0 then del(.findings) else . end
+    ' "${RESULT_FILE}" > "${REDISMISSED_RESULT}"
+    mv "${REDISMISSED_RESULT}" "${RESULT_FILE}"
+    # Suppression that empties the findings leaves a blocking verdict with no
+    # findings. Downgrade it to comment as the severity filter does, and record
+    # it so the re-review gates see the filtered-to-zero state.
+    if ! jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
+      REREVIEW_FILTERED_TO_ZERO=true
+      REREVIEW_FILTER_ORIGINAL_ACTION="$(jq -r '.action' "${RESULT_FILE}")"
+      if [[ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
+        echo "All findings removed by human dismissal — downgrading '${REREVIEW_FILTER_ORIGINAL_ACTION}' to 'comment'"
+        REDISMISSED_DOWNGRADE="$(mktemp)"
+        CLEANUP_FILES+=("${REDISMISSED_DOWNGRADE}")
+        jq '.action = "comment"' "${RESULT_FILE}" > "${REDISMISSED_DOWNGRADE}"
+        mv "${REDISMISSED_DOWNGRADE}" "${RESULT_FILE}"
+      fi
+    fi
+  fi
 fi
 
 # A legacy projection may have valid findings but no prior verdict. Do not
@@ -314,8 +399,6 @@ severity_rank() {
 
 EFFECTIVE_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD}"
 threshold_rank=$(severity_rank "$EFFECTIVE_FINDING_SEVERITY_THRESHOLD")
-REREVIEW_FILTERED_TO_ZERO=false
-REREVIEW_FILTER_ORIGINAL_ACTION=""
 
 if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
@@ -920,18 +1003,6 @@ else
 fi
 
 
-# Human dismissals are the runner's to verify, not the model's to assert:
-# a dismissed_by_human disposition counts only against a resolved review
-# thread from an eligible reviewer (not the PR author, write or above).
-# Fetched once, and only when the model used that status.
-HUMAN_DISMISSALS='[]'
-if jq -e '[.dispositions[]? | select(type == "object" and .status == "dismissed_by_human")] | length > 0' "${RESULT_FILE}" >/dev/null 2>&1; then
-  HUMAN_DISMISSALS="$(forge_get_human_dismissals)" || HUMAN_DISMISSALS='[]'
-  if ! jq -e 'type == "array"' <<< "${HUMAN_DISMISSALS}" >/dev/null 2>&1; then
-    HUMAN_DISMISSALS='[]'
-  fi
-fi
-
 # Ledger accounting. Each open prior id gets one effective status, decided
 # here and used by both the approval guard and the projection:
 #   resolved_by_change  — rationale and evidence given.
@@ -1129,6 +1200,8 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
       || ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
            && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
                 || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) \
+           && "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" \
+           && "${PRIOR_REJECT_HOLD}" != "true" \
            && "${DOWNGRADED}" = "false" ) ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
       && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
