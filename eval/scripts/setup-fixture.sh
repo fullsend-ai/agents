@@ -67,15 +67,32 @@ FIXTURE_BODY=${FIXTURE_BODY//\$\{REPO_URL\}/https://github.com/${EPHEMERAL_REPO}
 # Private by default: the fixture is a copy of someone else's repository under
 # the eval user's account, and public copies get picked up by secret scanners
 # (Red Hat InfoSec flagged an upstream sample TLS key in a kserve snapshot on
-# 2026-09-25). EVAL_REPO_VISIBILITY=public restores the old behaviour.
+# 2026-09-25). EVAL_REPO_VISIBILITY=public restores the old behaviour; the
+# value is checked here, before anything is created, since gh would otherwise
+# reject a typo as an unknown flag on every attempt of the retry loop below.
+EVAL_REPO_VISIBILITY="${EVAL_REPO_VISIBILITY:-private}"
+case "$EVAL_REPO_VISIBILITY" in
+  private|public|internal) ;;
+  *)
+    echo "ERROR: EVAL_REPO_VISIBILITY must be private, public or internal, not '${EVAL_REPO_VISIBILITY}'" >&2
+    exit 1
+    ;;
+esac
 # GitHub's API occasionally resets the connection; retry the create.
 created=0
 for attempt in 1 2 3; do
-  if gh repo create "$EPHEMERAL_REPO" "--${EVAL_REPO_VISIBILITY:-private}" --description "Ephemeral eval repo (auto-deleted)"; then
+  if gh repo create "$EPHEMERAL_REPO" "--${EVAL_REPO_VISIBILITY}" --description "Ephemeral eval repo (auto-deleted)"; then
     created=1; break
   fi
   # A retry after a half-created repo would collide; check before retrying.
-  if gh repo view "$EPHEMERAL_REPO" >/dev/null 2>&1; then created=1; break; fi
+  # Reuse it only with the visibility this run asked for: the snapshot must
+  # not land in a repository more visible than requested.
+  existing="$(gh repo view "$EPHEMERAL_REPO" --json visibility -q .visibility 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+  if [[ -n "$existing" ]]; then
+    if [[ "$existing" == "$EVAL_REPO_VISIBILITY" ]]; then created=1; break; fi
+    echo "ERROR: ${EPHEMERAL_REPO} already exists with visibility ${existing}, not ${EVAL_REPO_VISIBILITY}; refusing to reuse it" >&2
+    exit 1
+  fi
   echo "WARNING: gh repo create attempt ${attempt} failed; retrying in $((attempt * 5))s" >&2
   sleep $((attempt * 5))
 done
@@ -100,11 +117,21 @@ fi
 
 git -C "$TARGET_DIR" add -A
 if ! git -C "$TARGET_DIR" diff --cached --quiet; then
-  # The snapshot is a mechanical copy of an upstream repository into a
-  # throwaway fixture. A developer's global git hooks (e.g. a secret scanner
-  # configured via core.hooksPath) are for their own commits and have blocked
-  # this step on upstream sample data, so they are bypassed for this commit only.
-  git -C "$TARGET_DIR" -c core.hooksPath=/dev/null commit --no-verify -m "eval: initial content"
+  if [[ "$EVAL_REPO_VISIBILITY" == "private" ]]; then
+    # The snapshot is a mechanical copy of an upstream repository into a
+    # private throwaway fixture. A developer's global git hooks (e.g. a secret
+    # scanner configured via core.hooksPath) have blocked this step on upstream
+    # sample data, so they are bypassed for this commit only.
+    git -C "$TARGET_DIR" -c core.hooksPath=/dev/null commit --no-verify -m "eval: initial content"
+  else
+    # A public or internal snapshot is the case the private default exists to
+    # prevent (upstream sample secrets visible beyond the eval account), so the
+    # developer's hooks, a secret scanner among them, stay on as the last local
+    # check before the snapshot is published. A hook that refuses fails the
+    # case, which is the right outcome.
+    echo "WARNING: EVAL_REPO_VISIBILITY=${EVAL_REPO_VISIBILITY}: the snapshot will be visible beyond the eval account; local git hooks run on this commit" >&2
+    git -C "$TARGET_DIR" commit -m "eval: initial content"
+  fi
   # Large snapshots (100 MB+, 10k+ files) fail their first HTTPS push with
   # "curl 55 Send failure: Broken pipe" at git's default post buffer. Raise it
   # and retry a few times before giving up.
