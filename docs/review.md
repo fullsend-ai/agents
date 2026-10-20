@@ -50,7 +50,9 @@ These labels reflect the review outcome and are updated after each review.
 
 Each review run on an open PR removes `ready-for-merge` before the review
 starts, including runs skipped by `REVIEW_SKIP_AUTHORS`. The label comes back
-only when that run approves the current head.
+only when that run approves the current head. The same step dismisses the
+review bot's own approval (a GitHub APPROVED review or a GitLab MR approval),
+leaving other reviewers' approvals in place.
 
 When the review agent requests changes (without rejecting), no outcome label is
 applied — the `pull_request_review` event triggers the [fix agent](fix.md) directly.

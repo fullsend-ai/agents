@@ -90,6 +90,34 @@ forge_close_pr() {
     --comment "${comment}" || true
 }
 
+# Dismisses APPROVED reviews submitted by REVIEW_TOKEN's own login and prints
+# each dismissed review id. The login comes from GraphQL viewer, which also
+# works for app installation tokens (e.g. "<app>[bot]"). Returns 1 when the
+# login or the reviews cannot be read, 2 when any dismissal fails.
+forge_dismiss_own_approvals() {
+  local message="$1"
+  local login reviews ids id rc=0
+  local -a id_list
+  login=$(GH_TOKEN="${REVIEW_TOKEN}" gh api graphql -f query='query { viewer { login } }' \
+    --jq '.data.viewer.login' 2>/dev/null) || return 1
+  [[ -n "${login}" && "${login}" != "null" ]] || return 1
+  reviews=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate 2>/dev/null) || return 1
+  ids=$(jq -rs --arg login "${login}" \
+    '.[][] | select(.state == "APPROVED" and .user.login == $login) | .id' <<< "${reviews}") || return 1
+  mapfile -t id_list <<< "${ids}"
+  for id in "${id_list[@]}"; do
+    [[ -n "${id}" ]] || continue
+    if GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${id}/dismissals" \
+      -X PUT -f message="${message}" --silent 2>/dev/null; then
+      echo "${id}"
+    else
+      rc=2
+    fi
+  done
+  return "${rc}"
+}
+
 # --- Comments ---
 
 forge_post_comment() {

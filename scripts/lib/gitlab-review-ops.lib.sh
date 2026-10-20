@@ -151,6 +151,24 @@ forge_close_pr() {
     --data-urlencode "state_event=close" > /dev/null 2>/dev/null || true
 }
 
+# A review-bot approval is a real MR approval on GitLab, so revoke it when
+# REVIEW_TOKEN's own user (GET /user) is among the approvers, and print that
+# username. /unapprove takes no message, so $1 is unused here. Returns 1 when
+# the user or the approvals cannot be read, 2 when the unapprove fails.
+forge_dismiss_own_approvals() {
+  local user_json user approvals approved
+  user_json=$(_gitlab_api GET "/user" 2>/dev/null) || return 1
+  user=$(jq -r '.username // empty' <<< "${user_json}") || return 1
+  [[ -n "${user}" ]] || return 1
+  approvals=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/approvals" 2>/dev/null) || return 1
+  approved=$(jq -r --arg user "${user}" \
+    'any(.approved_by[]?; .user.username == $user)' <<< "${approvals}") || return 1
+  [[ "${approved}" == "true" ]] || return 0
+  _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/unapprove" \
+    > /dev/null 2>&1 || return 2
+  echo "${user}"
+}
+
 # --- Comments (notes in GitLab) ---
 
 forge_post_comment() {

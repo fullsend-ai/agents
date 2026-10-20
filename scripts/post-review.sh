@@ -143,6 +143,34 @@ forge_close_pr() {
     --comment "${comment}" || true
 }
 
+# Dismisses APPROVED reviews submitted by REVIEW_TOKEN's own login and prints
+# each dismissed review id. The login comes from GraphQL viewer, which also
+# works for app installation tokens (e.g. "<app>[bot]"). Returns 1 when the
+# login or the reviews cannot be read, 2 when any dismissal fails.
+forge_dismiss_own_approvals() {
+  local message="$1"
+  local login reviews ids id rc=0
+  local -a id_list
+  login=$(GH_TOKEN="${REVIEW_TOKEN}" gh api graphql -f query='query { viewer { login } }' \
+    --jq '.data.viewer.login' 2>/dev/null) || return 1
+  [[ -n "${login}" && "${login}" != "null" ]] || return 1
+  reviews=$(GH_TOKEN="${REVIEW_TOKEN}" gh api \
+    "repos/${REPO}/pulls/${PR_NUMBER}/reviews?per_page=100" --paginate 2>/dev/null) || return 1
+  ids=$(jq -rs --arg login "${login}" \
+    '.[][] | select(.state == "APPROVED" and .user.login == $login) | .id' <<< "${reviews}") || return 1
+  mapfile -t id_list <<< "${ids}"
+  for id in "${id_list[@]}"; do
+    [[ -n "${id}" ]] || continue
+    if GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/pulls/${PR_NUMBER}/reviews/${id}/dismissals" \
+      -X PUT -f message="${message}" --silent 2>/dev/null; then
+      echo "${id}"
+    else
+      rc=2
+    fi
+  done
+  return "${rc}"
+}
+
 # --- Comments ---
 
 forge_post_comment() {
@@ -646,6 +674,24 @@ forge_close_pr() {
   # Then close the MR
   _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
     --data-urlencode "state_event=close" > /dev/null 2>/dev/null || true
+}
+
+# A review-bot approval is a real MR approval on GitLab, so revoke it when
+# REVIEW_TOKEN's own user (GET /user) is among the approvers, and print that
+# username. /unapprove takes no message, so $1 is unused here. Returns 1 when
+# the user or the approvals cannot be read, 2 when the unapprove fails.
+forge_dismiss_own_approvals() {
+  local user_json user approvals approved
+  user_json=$(_gitlab_api GET "/user" 2>/dev/null) || return 1
+  user=$(jq -r '.username // empty' <<< "${user_json}") || return 1
+  [[ -n "${user}" ]] || return 1
+  approvals=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/approvals" 2>/dev/null) || return 1
+  approved=$(jq -r --arg user "${user}" \
+    'any(.approved_by[]?; .user.username == $user)' <<< "${approvals}") || return 1
+  [[ "${approved}" == "true" ]] || return 0
+  _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/unapprove" \
+    > /dev/null 2>&1 || return 2
+  echo "${user}"
 }
 
 # --- Comments (notes in GitLab) ---

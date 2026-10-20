@@ -86,6 +86,19 @@ elif [[ "$1" == "issue" && "$2" == "comment" ]]; then
 elif [[ "$1" == "api" && " $* " == *" -X DELETE "* && -n "${MOCK_LABEL_DELETE_ERR:-}" ]]; then
   echo "${MOCK_LABEL_DELETE_ERR}" >&2
   exit 1
+elif [[ "$1" == "api" && "$2" == "graphql" && "$*" == *"viewer"* ]]; then
+  [[ -n "${MOCK_VIEWER_FAIL:-}" ]] && exit 1
+  # Output after --jq '.data.viewer.login'.
+  echo "${MOCK_VIEWER_LOGIN:-review-bot[bot]}"
+  exit 0
+elif [[ "$1" == "api" && "$2" == */reviews/*/dismissals ]]; then
+  [[ -n "${MOCK_DISMISS_FAIL:-}" ]] && exit 1
+  exit 0
+elif [[ "$1" == "api" && "$2" == */pulls/*/reviews* ]]; then
+  [[ -n "${MOCK_REVIEWS_FAIL:-}" ]] && exit 1
+  # MOCK_REVIEWS_JSON: REST reviews array for the PR.
+  echo "${MOCK_REVIEWS_JSON:-[]}"
+  exit 0
 fi
 MOCKEOF
 
@@ -786,6 +799,76 @@ run_test_gh_call "skip-author-still-removes-ready-for-merge" \
   "REVIEW_SKIP_AUTHORS=app/renovate
 MOCK_PR_LABELS=ready-for-merge"
 
+# 19. Review bot's APPROVED review → dismissed at review start
+BOT_APPROVED_REVIEWS='[{"id":101,"state":"APPROVED","user":{"login":"review-bot[bot]"}}]'
+run_test_gh_call "bot-approval-dismissed" \
+  "OPEN" "some-human" \
+  "gh api repos/test-org/test-repo/pulls/42/reviews/101/dismissals -X PUT -f message=Superseded: new review run started" \
+  0 \
+  "MOCK_REVIEWS_JSON=${BOT_APPROVED_REVIEWS}"
+
+run_test_stdout "bot-approval-dismissed-notice" \
+  "OPEN" "some-human" \
+  "::notice::Dismissed the review bot's stale approval on PR #42 at review start" \
+  0 \
+  "MOCK_REVIEWS_JSON=${BOT_APPROVED_REVIEWS}"
+
+# 20. APPROVED review by another user → left alone
+run_test_no_gh_call "other-user-approval-not-dismissed" \
+  "OPEN" "some-human" \
+  "/dismissals" \
+  0 \
+  'MOCK_REVIEWS_JSON=[{"id":103,"state":"APPROVED","user":{"login":"some-maintainer"}}]'
+
+# 21. Bot reviews that are not APPROVED → left alone
+run_test_no_gh_call "bot-non-approval-not-dismissed" \
+  "OPEN" "some-human" \
+  "/dismissals" \
+  0 \
+  'MOCK_REVIEWS_JSON=[{"id":102,"state":"COMMENTED","user":{"login":"review-bot[bot]"}},{"id":104,"state":"DISMISSED","user":{"login":"review-bot[bot]"}},{"id":105,"state":"CHANGES_REQUESTED","user":{"login":"review-bot[bot]"}}]'
+
+# 22. No reviews → no dismissal call
+run_test_no_gh_call "no-reviews-no-dismissal" \
+  "OPEN" "some-human" \
+  "/dismissals" \
+  0 \
+  "MOCK_REVIEWS_JSON=[]"
+
+# 23. Dismissal fails → warning, no success notice, review still proceeds
+run_test_stdout "bot-approval-dismiss-failure-warns" \
+  "OPEN" "some-human" \
+  "::warning::Failed to dismiss the review bot's stale approval on PR #42" \
+  0 \
+  "MOCK_REVIEWS_JSON=${BOT_APPROVED_REVIEWS}
+MOCK_DISMISS_FAIL=1"
+if grep -qF "::notice::Dismissed the review bot's stale approval" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: bot-approval-dismiss-failure-no-notice — success notice printed after a failed dismissal"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bot-approval-dismiss-failure-no-notice"
+fi
+
+# 24. Reviews or bot login cannot be read → warning, no dismissal call
+run_test_stdout "reviews-read-failure-warns" \
+  "OPEN" "some-human" \
+  "::warning::Could not read the review bot's approvals on PR #42" \
+  0 \
+  "MOCK_REVIEWS_FAIL=1"
+
+run_test_no_gh_call "viewer-read-failure-no-dismissal" \
+  "OPEN" "some-human" \
+  "/dismissals" \
+  0 \
+  "MOCK_REVIEWS_JSON=${BOT_APPROVED_REVIEWS}
+MOCK_VIEWER_FAIL=1"
+if grep -qF "::warning::Could not read the review bot's approvals on PR #42" "${TMPDIR}/stdout.log"; then
+  echo "PASS: viewer-read-failure-warns"
+else
+  echo "FAIL: viewer-read-failure-warns — no warning when the bot login cannot be read"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # ---------------------------------------------------------------------------
 # GitLab forge pre-review tests
 # ---------------------------------------------------------------------------
@@ -821,6 +904,11 @@ for arg in "\$@"; do
   PREV="\${arg}"
 done
 
+# POST /unapprove → revoke the token user's approval
+if [[ "\${METHOD}" == "POST" && "\${URL}" == *"/unapprove" && -n "\${MOCK_UNAPPROVE_FAIL:-}" ]]; then
+  exit 22
+fi
+
 # POST /notes → success (skip comment)
 if [[ "\${METHOD}" == "POST" ]]; then
   echo '{"id":1}'
@@ -830,6 +918,12 @@ fi
 # GET /user → identity behind the review token.
 if [[ "\${URL}" == *"/user" ]]; then
   echo '{"username":"review-bot"}'
+  exit 0
+fi
+
+# GET /merge_requests/:iid/approvals → current approvers
+if [[ "\${URL}" == *"/approvals" ]]; then
+  echo "{\"approved_by\":\${MOCK_MR_APPROVED_BY_JSON:-[]}}"
   exit 0
 fi
 
@@ -979,6 +1073,56 @@ for gitlab_labels in '["ready-for-merge"]' '["ready-for-review"]'; do
     gitlab_test="gitlab-open-mr-without-label-no-remove"
     grep -qF "remove_labels=" "${TMPDIR}/curl-calls.log" && gitlab_ok=0 || gitlab_ok=1
   fi
+  if [[ ${gitlab_ok} -eq 1 ]]; then
+    echo "PASS: ${gitlab_test}"
+  else
+    echo "FAIL: ${gitlab_test}"
+    cat "${TMPDIR}/curl-calls.log"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+
+# GitLab: the review bot's MR approval is revoked; another user's is left
+# alone; a failed unapprove warns without a success notice.
+for gitlab_case in bot other fail; do
+  case "${gitlab_case}" in
+    bot|fail) gitlab_approvers='[{"user":{"id":7,"username":"review-bot"}}]' ;;
+    other) gitlab_approvers='[{"user":{"id":8,"username":"some-maintainer"}}]' ;;
+  esac
+  gitlab_unapprove_fail=""
+  [[ "${gitlab_case}" == "fail" ]] && gitlab_unapprove_fail=1
+  gitlab_mock_bin="$(build_gitlab_mock "opened" "some-user")"
+  env \
+    PATH="${gitlab_mock_bin}:${PATH}" \
+    PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42" \
+    FULLSEND_FORGE="gitlab" \
+    REVIEW_TOKEN="fake-gitlab-token" \
+    CI_SERVER_HOST="gitlab.com" \
+    MOCK_MR_APPROVED_BY_JSON="${gitlab_approvers}" \
+    MOCK_UNAPPROVE_FAIL="${gitlab_unapprove_fail}" \
+    bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout.log" 2>&1 && gitlab_rc=0 || gitlab_rc=$?
+  gitlab_ok=0
+  case "${gitlab_case}" in
+    bot)
+      gitlab_test="gitlab-bot-approval-revoked"
+      [[ ${gitlab_rc} -eq 0 ]] \
+        && grep -F -- "--request POST" "${TMPDIR}/curl-calls.log" | grep -qF "/merge_requests/42/unapprove" \
+        && grep -qF "::notice::Dismissed the review bot's stale approval on PR #42" "${TMPDIR}/stdout.log" \
+        && gitlab_ok=1
+      ;;
+    other)
+      gitlab_test="gitlab-other-user-approval-kept"
+      [[ ${gitlab_rc} -eq 0 ]] && ! grep -qF "/unapprove" "${TMPDIR}/curl-calls.log" && gitlab_ok=1
+      ;;
+    fail)
+      gitlab_test="gitlab-unapprove-failure-warns"
+      [[ ${gitlab_rc} -eq 0 ]] \
+        && grep -qF "::warning::Failed to dismiss the review bot's stale approval on PR #42" "${TMPDIR}/stdout.log" \
+        && ! grep -qF "::notice::Dismissed the review bot's stale approval" "${TMPDIR}/stdout.log" \
+        && gitlab_ok=1
+      ;;
+  esac
   if [[ ${gitlab_ok} -eq 1 ]]; then
     echo "PASS: ${gitlab_test}"
   else
