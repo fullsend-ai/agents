@@ -860,6 +860,142 @@ ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
 # ---------------------------------------------------------------------------
+# config.base.yaml layering tests (#1728)
+# create_issues resolves overlay (config.yaml) over base (config.base.yaml):
+# an overlay that sets create_issues replaces the base value as a whole
+# (explicit empty lists included); otherwise the base value is inherited.
+# These use the per-repo .fullsend/ layout.
+# ---------------------------------------------------------------------------
+
+# setup_layered_workspace <name> <overlay-yaml|none> <base-yaml|none> [root]
+# The optional fourth argument "root" places the files directly in the
+# workspace root instead of under .fullsend/.
+setup_layered_workspace() {
+  local ws="${TMPDIR}/layered-$1"
+  local dir="${ws}/.fullsend"
+  if [[ "${4:-}" == "root" ]]; then
+    dir="${ws}"
+  fi
+  mkdir -p "${dir}"
+  if [[ "$2" != "none" ]]; then
+    printf '%s\n' "$2" > "${dir}/config.yaml"
+  fi
+  if [[ "$3" != "none" ]]; then
+    printf '%s\n' "$3" > "${dir}/config.base.yaml"
+  fi
+  export GITHUB_WORKSPACE="${ws}"
+}
+
+LAYER_SPARSE='version: "1"'
+LAYER_ALLOWS_DISALLOWED_ORG='version: "1"
+create_issues:
+  allow_targets:
+    orgs:
+      - disallowed-org'
+LAYER_ALLOWS_REPO_ONLY='version: "1"
+create_issues:
+  allow_targets:
+    repos:
+      - allowed-org/allowed-repo'
+LAYER_EMPTY_TARGETS='version: "1"
+create_issues:
+  allow_targets:
+    orgs: []
+    repos: []'
+LAYER_INVALID='create_issues: ['
+
+# Base-only target with a sparse overlay: inherited from the base.
+setup_layered_workspace "base-only" "${LAYER_SPARSE}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test "layered-base-only-target-filed" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create"
+
+# Base file with no overlay at all: still inherited.
+setup_layered_workspace "base-no-overlay" "none" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test "layered-base-without-overlay-filed" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create"
+
+# Overlay declares its own create_issues: it replaces the base whole.
+setup_layered_workspace "overlay-override" "${LAYER_ALLOWS_REPO_ONLY}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_no_gh_call "layered-overlay-override-base-target-skipped" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+run_test "layered-overlay-override-overlay-target-filed" \
+  "${FIXTURE_REPO_ALLOWLIST_TARGET}" \
+  "gh issue create"
+
+# Overlay with explicit empty lists: base targets are not inherited.
+setup_layered_workspace "overlay-empty" "${LAYER_EMPTY_TARGETS}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_no_gh_call "layered-overlay-empty-lists-skipped" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# No base file: a sparse overlay allows no cross-repo targets (unchanged).
+setup_layered_workspace "no-base" "${LAYER_SPARSE}" "none"
+run_test_no_gh_call "layered-no-base-sparse-overlay-skipped" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# Invalid base YAML fails closed even when the overlay allows the target.
+setup_layered_workspace "invalid-base" "${LAYER_ALLOWS_DISALLOWED_ORG}" "${LAYER_INVALID}"
+run_test_no_gh_call "layered-invalid-base-fails-closed" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create" \
+  "::warning::cannot parse config.base.yaml"
+
+# Invalid overlay YAML fails closed even when the base allows the target.
+setup_layered_workspace "invalid-overlay" "${LAYER_INVALID}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_no_gh_call "layered-invalid-overlay-fails-closed" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create" \
+  "::warning::cannot parse config.yaml"
+
+# Root-level layout: a base file with no overlay is inherited (no fallback to
+# .fullsend/ when config.base.yaml sits in the workspace root).
+setup_layered_workspace "root-base-only" "none" "${LAYER_ALLOWS_DISALLOWED_ORG}" root
+run_test "layered-root-base-without-overlay-filed" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create"
+setup_layered_workspace "root-base-sparse-overlay" "${LAYER_SPARSE}" "${LAYER_ALLOWS_DISALLOWED_ORG}" root
+run_test "layered-root-base-sparse-overlay-filed" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create"
+
+# A null overlay create_issues (null value, ~, or a bare key) is treated as
+# unset, so the base value is inherited.
+for null_form in 'create_issues: null' 'create_issues: ~' 'create_issues:'; do
+  setup_layered_workspace "null-overlay" "version: \"1\"
+${null_form}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+  run_test "layered-null-overlay-inherits-base (${null_form})" \
+    "${FIXTURE_DISALLOWED_TARGET}" \
+    "gh issue create"
+done
+
+# An empty-object overlay create_issues is non-null, so it replaces the base.
+setup_layered_workspace "empty-object-overlay" 'version: "1"
+create_issues: {}' "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_no_gh_call "layered-empty-object-overlay-replaces-base" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# The originating repo stays allowed when the configuration is invalid.
+setup_layered_workspace "invalid-base-originating" "${LAYER_SPARSE}" "${LAYER_INVALID}"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://github.com/unlisted-org/originating-repo/pull/10"
+run_test "layered-invalid-base-originating-allowed" \
+  "${FIXTURE_ORIGINATING_REPO_TARGET}" \
+  "gh issue create"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+# shellcheck disable=SC2031 # GITHUB_WORKSPACE exported for subshell test run
+export GITHUB_WORKSPACE="${WORKSPACE}"
+
+# ---------------------------------------------------------------------------
 # FULLSEND_VALIDATED_ITERATION_DIR tests
 # Verify that when FULLSEND_VALIDATED_ITERATION_DIR is set, the script reads
 # from that directory instead of scanning iteration-*/output.
