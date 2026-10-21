@@ -156,12 +156,13 @@ Run once, per the orchestrator's dependency-scope procedure.
 # prints "SKIP: <reason>" and leaves pr-diff.txt as the full diff.
 W=/sandbox/workspace/dep-scope; mkdir -p "$W"; : > "$W/dep-prs"; : > "$W/dep-shas"; : > "$W/dep-pids"
 SKIP=""; DIFF_ACCEPT="Accept: application/vnd.github.diff"
+# DEP_PRS comes from untrusted PR text; split it without pathname expansion.
+set -f
 gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$W/own-pages.json" || SKIP="cannot list PR commits"
 jq -e 'add // [] | length > 0 and length < 250 and all(.[]; (.parents | length) == 1)' "$W/own-pages.json" >/dev/null 2>&1 \
   || SKIP="${SKIP:-PR has merge commits, no commits, or 250+ commits}"
 if test -z "$SKIP"; then
-  read -r -a DEP_PR_LIST <<< "${DEP_PRS:-}"
-  for d in "${DEP_PR_LIST[@]}"; do
+  for d in ${DEP_PRS:-}; do
     [[ $d =~ ^[1-9][0-9]*$ ]] || { SKIP="malformed dependency PR number"; break; }
     STATE=$(gh api "repos/${REPO_FULL_NAME}/pulls/$d" < /dev/null | jq -r '.state' 2>/dev/null)
     if test "$STATE" != open; then echo "#$d is not open: not a dependency"; continue; fi
@@ -179,7 +180,8 @@ ids() {
   PID=$(git patch-id --stable < "$W/one.diff" | cut -d' ' -f1) || return 1
   EXACT=$(grep -E '^([-+]|\\ No newline at end of file)' "$W/one.diff" | sha256sum | cut -d' ' -f1) || return 1
   # No pipefail: a failed hash step leaves an empty value, so require well-formed hashes.
-  [[ $PID =~ ^[0-9a-f]{40,64}$ && $EXACT =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$PID" | grep -Eqx '[0-9a-f]{40,64}' || return 1
+  printf '%s\n' "$EXACT" | grep -Eqx '[0-9a-f]{64}' || return 1
   echo "$PID $EXACT"
 }
 if test -z "$SKIP"; then

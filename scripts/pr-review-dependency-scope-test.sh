@@ -75,7 +75,7 @@ commits() {
 new_case() {
   CASE_DIR="${TMP_ROOT}/$1"
   FIX="${CASE_DIR}/fixtures"
-  mkdir -p "${CASE_DIR}/bin" "${FIX}" "${CASE_DIR}/workspace"
+  mkdir -p "${CASE_DIR}/bin" "${FIX}" "${CASE_DIR}/run" "${CASE_DIR}/workspace"
   printf '%s\n' "full pr diff" > "${CASE_DIR}/workspace/pr-diff.txt"
   cat > "${CASE_DIR}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
@@ -116,9 +116,9 @@ compare_ok() {
 run_case() {
   local snippet
   snippet=$(extract_snippet | sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g")
-  env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
+  (cd "${CASE_DIR}/run" && env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
     REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS="${DEP_PRS:-5}" PINNED_SHA="${PINNED}" \
-    bash -u -c "${snippet}" > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || true
+    bash -u -c "${snippet}") > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || true
 }
 
 assert_scoped() {
@@ -201,6 +201,10 @@ assert_contains "reference fetches manifest-less scoped paths at the pinned head
   'fetch it at `HEAD_SHA` as step'
 assert_contains "reference reconciles prior finding ids" "${REFERENCE}" \
   'answer it with a `reclassified` disposition'
+assert_not_contains "GitHub scope command avoids scanner-rejected here-strings" "${GITHUB_FORGE}" \
+  'read -r -a DEP_PR_LIST <<<'
+assert_not_contains "GitHub scope command avoids scanner-rejected compound regex checks" "${GITHUB_FORGE}" \
+  '[[ $PID =~ ^[0-9a-f]{40,64}$ && $EXACT =~ ^[0-9a-f]{64}$ ]]'
 if test -n "$(extract_snippet)"; then
   pass "GitHub forge has a dependency-scoping snippet"
 else
@@ -312,6 +316,18 @@ patch own.txt mine > "${FIX}/diff_commits_c3"
 compare_ok a1
 run_case
 assert_skipped "a malformed dependency candidate falls back" "malformed dependency PR number"
+unset DEP_PRS
+
+new_case globbed-dependency-number
+DEP_PRS='*'
+touch "${CASE_DIR}/run/5"
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok a1
+run_case
+assert_skipped "dependency candidates are not pathname-expanded" "malformed dependency PR number"
 unset DEP_PRS
 
 new_case interleaved
