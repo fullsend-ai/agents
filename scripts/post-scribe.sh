@@ -169,6 +169,9 @@ forge_run_url() {
 #   SCRIBE_REPO    — GitLab project path (group/project)
 #   GITLAB_TOKEN   — GitLab personal/project access token
 #   CI_SERVER_HOST — GitLab CI predefined variable (set by runner)
+#   CI_SERVER_URL  — GitLab CI predefined variable; origin for API requests
+#                    and links, including any non-default port (falls back
+#                    to https://${CI_SERVER_HOST} when unset)
 
 [[ -n "${GITLAB_SCRIBE_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_SCRIBE_OPS_SH_LOADED=1
@@ -182,6 +185,9 @@ GITLAB_SCRIBE_OPS_SH_LOADED=1
 # variable set automatically by the runner.
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
+#
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
 #
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
@@ -209,6 +215,35 @@ _validate_gitlab_host() {
     return 1
   fi
 }
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
+    return 1
+  fi
+}
 # END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
@@ -216,13 +251,14 @@ _gitlab_api() {
   shift
   local endpoint="$1"
   shift
-  # Scribe has no input URL to cross-reference — validates CI_SERVER_HOST format only.
-  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  # Scribe has no input URL to cross-reference — uses the trusted CI origin.
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
-    "https://${CI_SERVER_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@"
 }
 
@@ -392,9 +428,9 @@ forge_create_issue() {
 
 # Return the base URL for linking to issues.
 forge_issue_url_base() {
-  local repo="$1"
-  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
-  echo "https://${CI_SERVER_HOST}/${repo}/-/issues"
+  local repo="$1" origin
+  origin=$(_gitlab_trusted_origin) || return 1
+  echo "${origin}/${repo}/-/issues"
 }
 
 # Return the CI run/job URL for notifications.
@@ -402,8 +438,9 @@ forge_run_url() {
   if [[ -n "${CI_JOB_URL:-}" ]]; then
     echo "${CI_JOB_URL}"
   else
-    _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
-    echo "https://${CI_SERVER_HOST}/${1}"
+    local origin
+    origin=$(_gitlab_trusted_origin) || return 1
+    echo "${origin}/${1}"
   fi
 }
 # END bundled: lib/gitlab-scribe-ops.lib.sh

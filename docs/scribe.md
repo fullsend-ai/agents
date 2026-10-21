@@ -105,9 +105,12 @@ Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 
 ### GitLab host validation
 
-`gitlab-scribe-ops.lib.sh` uses `CI_SERVER_HOST`, a GitLab CI predefined
-variable set automatically by the runner, as the API host. Validation fails
-closed when `CI_SERVER_HOST` is not set.
+`gitlab-scribe-ops.lib.sh` uses `CI_SERVER_URL`, a GitLab CI predefined
+variable set automatically by the runner, as the origin for API requests and
+generated issue/run links, so a non-default HTTPS port is preserved. It falls
+back to `https://${CI_SERVER_HOST}` when `CI_SERVER_URL` is unset. Validation
+fails closed when `CI_SERVER_HOST` is not set, when `CI_SERVER_URL` is not an
+HTTPS origin, or when its host does not match `CI_SERVER_HOST`.
 
 ## How the agent works
 

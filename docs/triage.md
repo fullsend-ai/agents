@@ -211,6 +211,13 @@ allowed.
 a GitLab CI predefined variable set automatically by the runner. Validation
 fails closed when `CI_SERVER_HOST` is not set.
 
+The trusted origin (scheme, host, and optional port) comes from
+`CI_SERVER_URL`, falling back to `https://${CI_SERVER_HOST}` when it is unset.
+Before any token is sent, the issue URL's origin must match it exactly, so
+self-managed instances on a non-default HTTPS port (for example
+`https://gitlab.example.com:8443`) work, while a mismatched port or a
+non-HTTPS origin is rejected. API requests use the trusted origin.
+
 ## Multi-forge support
 
 The triage agent supports GitHub, GitLab, and Jira (Cloud only). The forge is

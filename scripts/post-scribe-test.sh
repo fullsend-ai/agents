@@ -361,6 +361,79 @@ run_test "gitlab/live-mode-creates-issue" \
   "mock-group%2Fmock-project/issues"
 export SCRIBE_DRY_RUN="true"
 
+# --- GitLab self-managed origin with a non-default HTTPS port (#1732) ---
+# API requests and generated links must keep the port from CI_SERVER_URL.
+
+export CI_SERVER_URL="https://ce.example.test:34881"
+export CI_SERVER_HOST="ce.example.test"
+export SCRIBE_DRY_RUN="false"
+export GITHUB_STEP_SUMMARY="${TMPDIR}/step-summary.md"
+: > "${GITHUB_STEP_SUMMARY}"
+run_test "gitlab/custom-port-api-url-keeps-port" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "https://ce.example.test:34881/api/v4/projects/mock-group%2Fmock-project/issues/42/notes"
+if grep -qF "](https://ce.example.test:34881/mock-group/mock-project/-/issues/42)" "${GITHUB_STEP_SUMMARY}"; then
+  echo "PASS: gitlab/custom-port-step-summary-link-keeps-port"
+else
+  echo "FAIL: gitlab/custom-port-step-summary-link-keeps-port — issue link missing port"
+  cat "${GITHUB_STEP_SUMMARY}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset GITHUB_STEP_SUMMARY
+
+# Non-HTTPS CI_SERVER_URL fails closed before any API call.
+export CI_SERVER_URL="http://ce.example.test:34881"
+run_test "gitlab/non-https-ci-server-url-rejected" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "" "true"
+if ! grep -qF "CI_SERVER_URL is not an HTTPS origin" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: gitlab/non-https-ci-server-url-error — expected error not found"
+  cat "${TMPDIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF "/api/v4/" "${CURL_LOG}"; then
+  echo "FAIL: gitlab/non-https-ci-server-url-no-api-call — API was called"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: gitlab/non-https-ci-server-url-no-api-call"
+fi
+export SCRIBE_DRY_RUN="true"
+
+# Link builders, exercised directly from the GitLab scribe lib.
+run_scribe_link_test() {
+  local test_name="$1" expected="$2"
+  shift 2
+  local actual
+  actual=$(bash -c 'source "$1"; shift; "$@"' _ "${SCRIPT_DIR}/lib/gitlab-scribe-ops.lib.sh" "$@" 2>&1) || true
+  if [[ "${actual}" != "${expected}" ]]; then
+    echo "FAIL: ${test_name} — expected '${expected}', got '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+export CI_SERVER_URL="https://ce.example.test:34881"
+run_scribe_link_test "gitlab/issue-url-base-keeps-port" \
+  "https://ce.example.test:34881/mock-group/mock-project/-/issues" \
+  forge_issue_url_base "mock-group/mock-project"
+run_scribe_link_test "gitlab/run-url-fallback-keeps-port" \
+  "https://ce.example.test:34881/mock-group/mock-project" \
+  forge_run_url "mock-group/mock-project"
+
+# CI_SERVER_URL host that does not match CI_SERVER_HOST is rejected.
+export CI_SERVER_URL="https://evil.example.test:34881"
+run_scribe_link_test "gitlab/issue-url-base-host-mismatch-rejected" \
+  "ERROR: GitLab host 'evil.example.test' does not match CI_SERVER_HOST" \
+  forge_issue_url_base "mock-group/mock-project"
+
+# Standard-port regression: no CI_SERVER_URL falls back to CI_SERVER_HOST.
+unset CI_SERVER_URL
+export CI_SERVER_HOST="gitlab.com"
+run_scribe_link_test "gitlab/issue-url-base-default-port" \
+  "https://gitlab.com/mock-group/mock-project/-/issues" \
+  forge_issue_url_base "mock-group/mock-project"
+
 # Restore GitHub defaults for any subsequent test additions
 export FULLSEND_FORGE="github"
 export SCRIBE_REPO="mock-org/mock-repo"

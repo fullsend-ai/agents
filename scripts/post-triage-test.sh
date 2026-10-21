@@ -1934,6 +1934,50 @@ run_gitlab_test "gitlab-close-issue-api-error-fails" \
   "true"
 rm -f "${MOCK_CURL_CLOSE_FAIL}"
 
+# --- GitLab self-managed origin with a non-default HTTPS port (#1732) ---
+
+export CI_SERVER_URL="https://ce.example.test:34881"
+export CI_SERVER_HOST="ce.example.test"
+export ISSUE_URL="https://ce.example.test:34881/test-group/test-project/-/issues/42"
+run_gitlab_test "gitlab-custom-port-api-url-keeps-port" \
+  '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+  "https://ce.example.test:34881/api/v4/projects/test-group%2Ftest-project/issues/42/notes"
+
+gitlab_origin_rejected() {
+  local test_name="$1" issue_url="$2" expected_error="$3"
+  ISSUE_URL="${issue_url}" run_gitlab_test "${test_name}" \
+    '{"action":"question","reasoning":"issue is asking a question","comment":"Based on the docs, this is not currently supported."}' \
+    "" "true"
+  if ! grep -qF -- "${expected_error}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected error '${expected_error}' not found"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  elif [[ -s "${CURL_LOG}" ]]; then
+    echo "FAIL: ${test_name} — curl was called before origin validation"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+gitlab_origin_rejected "gitlab-custom-port-mismatched-port-fails" \
+  "https://ce.example.test:8443/test-group/test-project/-/issues/42" \
+  "does not match CI server origin"
+gitlab_origin_rejected "gitlab-custom-port-missing-port-fails" \
+  "https://ce.example.test/test-group/test-project/-/issues/42" \
+  "does not match CI server origin"
+gitlab_origin_rejected "gitlab-custom-port-http-scheme-fails" \
+  "http://ce.example.test:34881/test-group/test-project/-/issues/42" \
+  "does not match expected GitLab pattern"
+
+export CI_SERVER_URL="http://ce.example.test:34881"
+gitlab_origin_rejected "gitlab-non-https-ci-server-url-fails" \
+  "https://ce.example.test:34881/test-group/test-project/-/issues/42" \
+  "CI_SERVER_URL is not an HTTPS origin"
+
+unset CI_SERVER_URL
+export CI_SERVER_HOST="gitlab.com"
+export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+
 # ---------------------------------------------------------------------------
 # Jira tracker tests
 # Verify that post-triage.sh works correctly with FULLSEND_TRACKER=jira.

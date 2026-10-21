@@ -9,6 +9,9 @@
 #   SCRIBE_REPO    — GitLab project path (group/project)
 #   GITLAB_TOKEN   — GitLab personal/project access token
 #   CI_SERVER_HOST — GitLab CI predefined variable (set by runner)
+#   CI_SERVER_URL  — GitLab CI predefined variable; origin for API requests
+#                    and links, including any non-default port (falls back
+#                    to https://${CI_SERVER_HOST} when unset)
 
 [[ -n "${GITLAB_SCRIBE_OPS_SH_LOADED:-}" ]] && return 0
 GITLAB_SCRIBE_OPS_SH_LOADED=1
@@ -21,13 +24,14 @@ _gitlab_api() {
   shift
   local endpoint="$1"
   shift
-  # Scribe has no input URL to cross-reference — validates CI_SERVER_HOST format only.
-  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  # Scribe has no input URL to cross-reference — uses the trusted CI origin.
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
-    "https://${CI_SERVER_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@"
 }
 
@@ -197,9 +201,9 @@ forge_create_issue() {
 
 # Return the base URL for linking to issues.
 forge_issue_url_base() {
-  local repo="$1"
-  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
-  echo "https://${CI_SERVER_HOST}/${repo}/-/issues"
+  local repo="$1" origin
+  origin=$(_gitlab_trusted_origin) || return 1
+  echo "${origin}/${repo}/-/issues"
 }
 
 # Return the CI run/job URL for notifications.
@@ -207,7 +211,8 @@ forge_run_url() {
   if [[ -n "${CI_JOB_URL:-}" ]]; then
     echo "${CI_JOB_URL}"
   else
-    _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
-    echo "https://${CI_SERVER_HOST}/${1}"
+    local origin
+    origin=$(_gitlab_trusted_origin) || return 1
+    echo "${origin}/${1}"
   fi
 }

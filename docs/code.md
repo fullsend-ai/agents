@@ -65,6 +65,24 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 This separation ensures the agent never has direct write access to the repository.
 
+When the fix belongs in another repository, the agent reports the upstream
+repository, file, and required change without making a commit or restructuring
+this repository. On GitHub/GitLab source issues, the no-PR path sanitizes
+`pr_body`, keeps only its last 30 lines by default, and posts it as "Agent
+context" under a generic "No PR created — agent determined no changes needed"
+notice with retry guidance. Keep escalation text under 25 lines, put the
+repository, file, and required change first, and omit the normal PR template.
+External-tracker runs (such as Jira) emit only a generic notice; the upstream
+explanation remains in the agent's final message in the run transcript.
+
+If the target is referenced by a pinned SHA and the upstream fix has not
+landed in a newer commit reachable from the intended upstream reference, the
+escalation should name the current pin and say this repository will need a
+follow-up pin bump. Once the fix is merged and verified in a newer commit
+reachable from the intended upstream reference, the agent can bump the pin
+here in a normal PR, even when the issue did not separately ask for that bump.
+An explicit request to change the reference itself also receives a normal PR.
+
 ### Signed-off-by trailers
 
 Agents must not sign off their commits — DCO is a human attestation, and the

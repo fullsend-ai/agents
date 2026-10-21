@@ -300,7 +300,8 @@ and `Glob` to inspect project configuration:
    and prompts (skip HTML comments). If no visible sections remain after
    stripping comments, treat it as no template found. You will structure
    the `pr_body` field in step 10d to match template sections — the
-   post-script uses `pr_body` as the PR description.
+   post-script uses `pr_body` as the PR description. For a repository-boundary
+   no-commit escalation, follow the compact output in `agents/code.md` instead.
 
 From these files, determine:
 
@@ -1173,6 +1174,4 @@ written in step 3 must exist and be valid. Run `fullsend-check-output`
 
 ## Constraints
 
-The agent definition (`agents/code.md`) is the authoritative list of
-prohibitions. This skill does not restate them. If a step in this skill
-appears to conflict with the agent definition, the agent definition wins.
+`agents/code.md` is authoritative and wins on conflict.
