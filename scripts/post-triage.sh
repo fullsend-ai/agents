@@ -1160,17 +1160,37 @@ CONFIG_FILE="${WORKSPACE}/config.yaml"
 if [[ ! -f "${CONFIG_FILE}" ]]; then
   CONFIG_FILE="${WORKSPACE}/.fullsend/config.yaml"
 fi
+# A configuration preset (config.base.yaml) sits beside the overlay. As in
+# fullsend's layered config, an overlay that sets create_issues replaces the
+# base value as a whole object (explicit empty lists included); otherwise
+# create_issues is inherited from the base.
+BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
 
 ALLOWED_ORGS=""
 ALLOWED_REPOS=""
 ALLOWED_JIRA_PROJECTS=""
-if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
   echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
 fi
-if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
-  ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_JIRA_PROJECTS=$(yq -r '.create_issues.allow_targets.jira_projects // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+if command -v yq &>/dev/null; then
+  ALLOW_TARGETS_FILE=""
+  for layer_file in "${CONFIG_FILE}" "${BASE_CONFIG_FILE}"; do
+    [[ -f "${layer_file}" ]] || continue
+    # Fail closed: an unparseable layer disables cross-repo issue creation.
+    if ! layer_sets_create_issues=$(yq -r '.create_issues != null' "${layer_file}" 2>/dev/null); then
+      echo "::warning::cannot parse $(basename "${layer_file}") — cross-repo issue creation disabled"
+      ALLOW_TARGETS_FILE=""
+      break
+    fi
+    if [[ -z "${ALLOW_TARGETS_FILE}" && "${layer_sets_create_issues}" == "true" ]]; then
+      ALLOW_TARGETS_FILE="${layer_file}"
+    fi
+  done
+  if [[ -n "${ALLOW_TARGETS_FILE}" ]]; then
+    ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${ALLOW_TARGETS_FILE}" 2>/dev/null || true)
+    ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${ALLOW_TARGETS_FILE}" 2>/dev/null || true)
+    ALLOWED_JIRA_PROJECTS=$(yq -r '.create_issues.allow_targets.jira_projects // [] | .[]' "${ALLOW_TARGETS_FILE}" 2>/dev/null || true)
+  fi
 fi
 
 is_target_allowed() {

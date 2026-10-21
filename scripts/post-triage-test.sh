@@ -80,7 +80,8 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
 # Mock yq: parse the test config.yaml for create_issues.allow_targets.
-# Handles the two queries used by post-triage.sh's is_target_allowed().
+# Handles the queries used by post-triage.sh's is_target_allowed() and the
+# config.base.yaml layer selection (.create_issues != null).
 cat > "${MOCK_BIN}/yq" <<'YQEOF'
 #!/usr/bin/env bash
 FILTER="$2"
@@ -88,7 +89,14 @@ FILE="$3"
 if [[ ! -f "${FILE}" ]]; then
   exit 1
 fi
+# Simulate yq's parse error for the invalid-YAML layer fixture.
+if grep -qxF 'create_issues: [' "${FILE}"; then
+  exit 1
+fi
 case "${FILTER}" in
+  '.create_issues != null')
+    if grep -q '^create_issues:' "${FILE}"; then echo true; else echo false; fi
+    ;;
   # Each block selects the key's range, then strips the "      - " prefix in a
   # second pass. Nested `{ ... { ... } }` blocks are a GNU sed extension that
   # BSD/macOS sed rejects outright ("extra characters at the end of } command"),
@@ -359,6 +367,105 @@ unset GITHUB_WORKSPACE
 run_test "prerequisites-no-github-workspace-fallback" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[{"url":"https://github.com/other-org/other-repo/issues/99"}],"create":[]},"comment":"This issue is blocked on an upstream dependency."}' \
   "gh issue comment 42 --repo test-org/test-repo --body-file -"
+export GITHUB_WORKSPACE="${WORKSPACE}"
+
+# --- config.base.yaml layering tests (#1728) ---
+# create_issues resolves overlay (config.yaml) over base (config.base.yaml):
+# an overlay that sets create_issues replaces the base value as a whole
+# (explicit empty lists included); otherwise the base value is inherited.
+# These use the per-repo .fullsend/ layout.
+
+# setup_layered_workspace <name> <overlay-yaml|none> <base-yaml|none>
+setup_layered_workspace() {
+  local ws="${TMPDIR}/layered-$1"
+  mkdir -p "${ws}/.fullsend"
+  if [[ "$2" != "none" ]]; then
+    printf '%s\n' "$2" > "${ws}/.fullsend/config.yaml"
+  fi
+  if [[ "$3" != "none" ]]; then
+    printf '%s\n' "$3" > "${ws}/.fullsend/config.base.yaml"
+  fi
+  export GITHUB_WORKSPACE="${ws}"
+}
+
+LAYER_SPARSE='version: "1"'
+LAYER_ALLOWS_DISALLOWED_ORG='version: "1"
+create_issues:
+  allow_targets:
+    orgs:
+      - disallowed-org'
+LAYER_ALLOWS_REPO_ONLY='version: "1"
+create_issues:
+  allow_targets:
+    repos:
+      - allowed-org/allowed-repo'
+LAYER_EMPTY_TARGETS='version: "1"
+create_issues:
+  allow_targets:
+    orgs: []
+    repos: []'
+LAYER_INVALID='create_issues: ['
+
+PREREQ_DISALLOWED_TARGET='{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"disallowed-org/other-repo","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}'
+PREREQ_ALLOWED_REPO_TARGET='{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"allowed-org/allowed-repo","title":"Need X","body":"We need X."}]},"comment":"Blocked on upstream work."}'
+PREREQ_SOURCE_REPO_TARGET='{"action":"prerequisites","reasoning":"needs local fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/test-repo","title":"Need Z","body":"We need Z."}]},"comment":"Blocked on local work."}'
+
+# Base-only target with a sparse overlay: inherited from the base.
+setup_layered_workspace "base-only" "${LAYER_SPARSE}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test "layered-base-only-target-created" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "gh issue create --repo disallowed-org/other-repo"
+
+# Base file with no overlay at all: still inherited.
+setup_layered_workspace "base-no-overlay" "none" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test "layered-base-without-overlay-created" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "gh issue create --repo disallowed-org/other-repo"
+
+# Overlay declares its own create_issues: it replaces the base whole.
+setup_layered_workspace "overlay-override" "${LAYER_ALLOWS_REPO_ONLY}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_stdout "layered-overlay-override-base-target-skipped" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+run_test "layered-overlay-override-overlay-target-created" \
+  "${PREREQ_ALLOWED_REPO_TARGET}" \
+  "gh issue create --repo allowed-org/allowed-repo"
+
+# Overlay with explicit empty lists: base targets are not inherited.
+setup_layered_workspace "overlay-empty" "${LAYER_EMPTY_TARGETS}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_stdout "layered-overlay-empty-lists-skipped" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# No base file: a sparse overlay allows no cross-repo targets (unchanged).
+setup_layered_workspace "no-base" "${LAYER_SPARSE}" "none"
+run_test_stdout "layered-no-base-sparse-overlay-skipped" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# Invalid base YAML fails closed even when the overlay allows the target.
+setup_layered_workspace "invalid-base" "${LAYER_ALLOWS_DISALLOWED_ORG}" "${LAYER_INVALID}"
+run_test_stdout "layered-invalid-base-warns" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "::warning::cannot parse config.base.yaml"
+run_test_stdout "layered-invalid-base-fails-closed" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# Invalid overlay YAML fails closed even when the base allows the target.
+setup_layered_workspace "invalid-overlay" "${LAYER_INVALID}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_stdout "layered-invalid-overlay-warns" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "::warning::cannot parse config.yaml"
+run_test_stdout "layered-invalid-overlay-fails-closed" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
+
+# The source repository stays allowed when the configuration is invalid.
+setup_layered_workspace "invalid-base-source" "${LAYER_SPARSE}" "${LAYER_INVALID}"
+run_test "layered-invalid-base-source-repo-created" \
+  "${PREREQ_SOURCE_REPO_TARGET}" \
+  "gh issue create --repo test-org/test-repo"
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
 run_test "in-progress-posts-sticky-comment" \
