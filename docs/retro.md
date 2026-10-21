@@ -61,6 +61,12 @@ for prerequisite issues. Proposals targeting repos outside the allowlist
 are skipped with a warning and surfaced in the summary comment so they
 can be filed manually.
 
+The allowlist may also be inherited from a `config.base.yaml` preset that
+sits beside `config.yaml`. If `config.yaml` sets `create_issues`, it
+replaces the base value as a whole object (explicit empty lists
+included); otherwise `create_issues` is inherited from `config.base.yaml`.
+An unparseable config file disables cross-repo issue creation.
+
 The originating repo (where the PR that triggered the retro lives) is
 always implicitly allowed.
 

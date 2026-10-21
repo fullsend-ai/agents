@@ -374,7 +374,7 @@ echo "Originating: ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
 # at the forge-specific workspace directory by the reusable workflow.
 CONFIG_WORKSPACE="$(forge_get_config_workspace)"
 CONFIG_FILE="${CONFIG_WORKSPACE}/config.yaml"
-if [[ ! -f "${CONFIG_FILE}" ]]; then
+if [[ ! -f "${CONFIG_FILE}" && ! -f "${CONFIG_WORKSPACE}/config.base.yaml" ]]; then
   # Per-repo mode: config is under .fullsend/
   CONFIG_FILE="${CONFIG_WORKSPACE}/.fullsend/config.yaml"
 fi

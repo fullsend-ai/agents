@@ -52,7 +52,7 @@ These labels are managed by the triage agent based on its assessment of the issu
 | `completed` | The work described in the issue is done (all child issues closed, addressing PRs/MRs merged, acceptance criteria met). The issue is closed with reason "completed". Distinct from `not-planned` (rejected) and from `in-progress` (open PR/MR still in flight). |
 | `pr-open` | An open PR or merge request already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR/MR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR/MR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR/MR is closed without merging: nothing re-triages on PR/MR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
-The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `create_issues.allow_targets` in config.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
+The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `create_issues.allow_targets` in config.yaml or inherited from config.base.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.
@@ -202,6 +202,12 @@ Cross-repo issue creation for prerequisites is governed by
 targeting repos outside the allowlist are skipped with a warning and
 surfaced in the summary comment so they can be filed manually.
 
+The allowlist may also be inherited from a `config.base.yaml` preset that
+sits beside `config.yaml`. If `config.yaml` sets `create_issues`, it
+replaces the base value as a whole object (explicit empty lists
+included); otherwise `create_issues` is inherited from `config.base.yaml`.
+An unparseable config file disables cross-repo issue creation.
+
 The source repo (where the triaged issue lives) is always implicitly
 allowed.
 
@@ -249,8 +255,10 @@ same transition name if your Jira workflow doesn't distinguish between them.
 
 Cross-project issue creation for Jira prerequisites is gated by a
 `create_issues.allow_targets.jira_projects` list of Jira project keys in
-`config.yaml`, alongside the existing `orgs`/`repos` keys used for
-GitHub/GitLab. The issue's own project is always implicitly allowed.
+`config.yaml` (or inherited from `config.base.yaml`; see
+[Issue filing allowlist](#issue-filing-allowlist)), alongside the existing
+`orgs`/`repos` keys used for GitHub/GitLab. The issue's own project is
+always implicitly allowed.
 
 Jira Server/Data Center (self-hosted) is out of scope — only Jira Cloud hosts
 (`*.atlassian.net`) are supported.

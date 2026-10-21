@@ -114,7 +114,7 @@ tracker_remove_label "triaged"
 
 WORKSPACE="${GITHUB_WORKSPACE:-${CI_PROJECT_DIR:-/tmp}}"
 CONFIG_FILE="${WORKSPACE}/config.yaml"
-if [[ ! -f "${CONFIG_FILE}" ]]; then
+if [[ ! -f "${CONFIG_FILE}" && ! -f "${WORKSPACE}/config.base.yaml" ]]; then
   CONFIG_FILE="${WORKSPACE}/.fullsend/config.yaml"
 fi
 # A configuration preset (config.base.yaml) sits beside the overlay. As in

@@ -95,7 +95,20 @@ if grep -qxF 'create_issues: [' "${FILE}"; then
 fi
 case "${FILTER}" in
   '.create_issues != null')
-    if grep -q '^create_issues:' "${FILE}"; then echo true; else echo false; fi
+    # Mirror yq: null is an absent key, a null/~ value, or a bare key with no
+    # indented children; anything else (including `{}`) is non-null.
+    CI_VALUE=$(sed -n 's/^create_issues:[[:space:]]*//p' "${FILE}")
+    case "${CI_VALUE}" in
+      null|'~'|'')
+        if [[ -z "${CI_VALUE}" ]] \
+          && grep -A1 '^create_issues:' "${FILE}" | tail -n 1 | grep -q '^[[:space:]]'; then
+          echo true
+        else
+          echo false
+        fi
+        ;;
+      *) echo true ;;
+    esac
     ;;
   # Each block selects the key's range, then strips the "      - " prefix in a
   # second pass. Nested `{ ... { ... } }` blocks are a GNU sed extension that
@@ -375,15 +388,21 @@ export GITHUB_WORKSPACE="${WORKSPACE}"
 # (explicit empty lists included); otherwise the base value is inherited.
 # These use the per-repo .fullsend/ layout.
 
-# setup_layered_workspace <name> <overlay-yaml|none> <base-yaml|none>
+# setup_layered_workspace <name> <overlay-yaml|none> <base-yaml|none> [root]
+# The optional fourth argument "root" places the files directly in the
+# workspace root instead of under .fullsend/.
 setup_layered_workspace() {
   local ws="${TMPDIR}/layered-$1"
-  mkdir -p "${ws}/.fullsend"
+  local dir="${ws}/.fullsend"
+  if [[ "${4:-}" == "root" ]]; then
+    dir="${ws}"
+  fi
+  mkdir -p "${dir}"
   if [[ "$2" != "none" ]]; then
-    printf '%s\n' "$2" > "${ws}/.fullsend/config.yaml"
+    printf '%s\n' "$2" > "${dir}/config.yaml"
   fi
   if [[ "$3" != "none" ]]; then
-    printf '%s\n' "$3" > "${ws}/.fullsend/config.base.yaml"
+    printf '%s\n' "$3" > "${dir}/config.base.yaml"
   fi
   export GITHUB_WORKSPACE="${ws}"
 }
@@ -466,6 +485,34 @@ setup_layered_workspace "invalid-base-source" "${LAYER_SPARSE}" "${LAYER_INVALID
 run_test "layered-invalid-base-source-repo-created" \
   "${PREREQ_SOURCE_REPO_TARGET}" \
   "gh issue create --repo test-org/test-repo"
+
+# Root-level layout: a base file with no overlay is inherited (no fallback to
+# .fullsend/ when config.base.yaml sits in the workspace root).
+setup_layered_workspace "root-base-only" "none" "${LAYER_ALLOWS_DISALLOWED_ORG}" root
+run_test "layered-root-base-without-overlay-created" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "gh issue create --repo disallowed-org/other-repo"
+setup_layered_workspace "root-base-sparse-overlay" "${LAYER_SPARSE}" "${LAYER_ALLOWS_DISALLOWED_ORG}" root
+run_test "layered-root-base-sparse-overlay-created" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "gh issue create --repo disallowed-org/other-repo"
+
+# A null overlay create_issues (null value, ~, or a bare key) is treated as
+# unset, so the base value is inherited.
+for null_form in 'create_issues: null' 'create_issues: ~' 'create_issues:'; do
+  setup_layered_workspace "null-overlay" "version: \"1\"
+${null_form}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+  run_test "layered-null-overlay-inherits-base (${null_form})" \
+    "${PREREQ_DISALLOWED_TARGET}" \
+    "gh issue create --repo disallowed-org/other-repo"
+done
+
+# An empty-object overlay create_issues is non-null, so it replaces the base.
+setup_layered_workspace "empty-object-overlay" 'version: "1"
+create_issues: {}' "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_stdout "layered-empty-object-overlay-replaces-base" \
+  "${PREREQ_DISALLOWED_TARGET}" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
 run_test "in-progress-posts-sticky-comment" \

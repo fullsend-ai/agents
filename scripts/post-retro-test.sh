@@ -867,15 +867,21 @@ export GITHUB_WORKSPACE="${WORKSPACE}"
 # These use the per-repo .fullsend/ layout.
 # ---------------------------------------------------------------------------
 
-# setup_layered_workspace <name> <overlay-yaml|none> <base-yaml|none>
+# setup_layered_workspace <name> <overlay-yaml|none> <base-yaml|none> [root]
+# The optional fourth argument "root" places the files directly in the
+# workspace root instead of under .fullsend/.
 setup_layered_workspace() {
   local ws="${TMPDIR}/layered-$1"
-  mkdir -p "${ws}/.fullsend"
+  local dir="${ws}/.fullsend"
+  if [[ "${4:-}" == "root" ]]; then
+    dir="${ws}"
+  fi
+  mkdir -p "${dir}"
   if [[ "$2" != "none" ]]; then
-    printf '%s\n' "$2" > "${ws}/.fullsend/config.yaml"
+    printf '%s\n' "$2" > "${dir}/config.yaml"
   fi
   if [[ "$3" != "none" ]]; then
-    printf '%s\n' "$3" > "${ws}/.fullsend/config.base.yaml"
+    printf '%s\n' "$3" > "${dir}/config.base.yaml"
   fi
   export GITHUB_WORKSPACE="${ws}"
 }
@@ -947,6 +953,35 @@ run_test_no_gh_call "layered-invalid-overlay-fails-closed" \
   "${FIXTURE_DISALLOWED_TARGET}" \
   "gh issue create" \
   "::warning::cannot parse config.yaml"
+
+# Root-level layout: a base file with no overlay is inherited (no fallback to
+# .fullsend/ when config.base.yaml sits in the workspace root).
+setup_layered_workspace "root-base-only" "none" "${LAYER_ALLOWS_DISALLOWED_ORG}" root
+run_test "layered-root-base-without-overlay-filed" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create"
+setup_layered_workspace "root-base-sparse-overlay" "${LAYER_SPARSE}" "${LAYER_ALLOWS_DISALLOWED_ORG}" root
+run_test "layered-root-base-sparse-overlay-filed" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create"
+
+# A null overlay create_issues (null value, ~, or a bare key) is treated as
+# unset, so the base value is inherited.
+for null_form in 'create_issues: null' 'create_issues: ~' 'create_issues:'; do
+  setup_layered_workspace "null-overlay" "version: \"1\"
+${null_form}" "${LAYER_ALLOWS_DISALLOWED_ORG}"
+  run_test "layered-null-overlay-inherits-base (${null_form})" \
+    "${FIXTURE_DISALLOWED_TARGET}" \
+    "gh issue create"
+done
+
+# An empty-object overlay create_issues is non-null, so it replaces the base.
+setup_layered_workspace "empty-object-overlay" 'version: "1"
+create_issues: {}' "${LAYER_ALLOWS_DISALLOWED_ORG}"
+run_test_no_gh_call "layered-empty-object-overlay-replaces-base" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'disallowed-org/other-repo'"
 
 # The originating repo stays allowed when the configuration is invalid.
 setup_layered_workspace "invalid-base-originating" "${LAYER_SPARSE}" "${LAYER_INVALID}"
