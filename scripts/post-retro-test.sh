@@ -51,9 +51,23 @@ if [[ "$1" == "label" && "$2" == "create" ]]; then
   exit 0
 fi
 
-# Issue creation calls — return a fake issue URL.
+# Issue creation calls — return a fake issue URL, or fail when the --repo
+# value matches GH_MOCK_ISSUE_FAIL_REPO ("*" fails every repo).
 if [[ "$1" == "issue" && "$2" == "create" ]]; then
-  echo "https://github.com/test-org/target-repo/issues/99"
+  ISSUE_REPO=""
+  prev=""
+  for arg in "$@"; do
+    if [[ "${prev}" == "--repo" ]]; then
+      ISSUE_REPO="${arg}"
+    fi
+    prev="${arg}"
+  done
+  if [[ -n "${GH_MOCK_ISSUE_FAIL_REPO:-}" ]] && \
+     [[ "${GH_MOCK_ISSUE_FAIL_REPO}" == "*" || "${GH_MOCK_ISSUE_FAIL_REPO}" == "${ISSUE_REPO}" ]]; then
+    echo "GraphQL: Could not resolve to a Repository with the name '${ISSUE_REPO}'. (repository)" >&2
+    exit 1
+  fi
+  echo "https://github.com/${ISSUE_REPO}/issues/99"
   exit 0
 fi
 
@@ -111,6 +125,12 @@ fi
 
 # Issue creation — return a fake issue URL
 if [[ "${URL}" == *"/issues" ]] && [[ " $* " == *" POST "* || " $* " == *" -X POST "* ]] && [[ "${URL}" != *"/notes" ]]; then
+  # CURL_MOCK_ISSUE_FAIL_PROJECT fails creation only for the matching
+  # URL-encoded project path, so later proposals can still succeed.
+  if [[ -n "${CURL_MOCK_ISSUE_FAIL_PROJECT:-}" && "${URL}" == *"/projects/${CURL_MOCK_ISSUE_FAIL_PROJECT}/issues" ]]; then
+    echo "curl: (22) The requested URL returned error: 404" >&2
+    exit 22
+  fi
   case "${CURL_MOCK_ISSUE_FAIL:-}" in
     null-url)
       echo '{"iid": 99}'
@@ -129,6 +149,12 @@ fi
 
 # Comment posting (notes) — controlled by CURL_MOCK_COMMENT_FAIL
 if [[ "${URL}" == *"/notes" ]] && [[ " $* " == *" POST "* || " $* " == *" -X POST "* ]]; then
+  # Save the note body (passed as body@<file>) so tests can inspect it.
+  for arg in "$@"; do
+    if [[ "${arg}" == body@* && -n "${CURL_BODY_LOG:-}" ]]; then
+      cat "${arg#body@}" >> "${CURL_BODY_LOG}"
+    fi
+  done
   case "${CURL_MOCK_COMMENT_FAIL:-}" in
     403)
       echo "curl: (22) The requested URL returned error: 403" >&2
@@ -162,11 +188,13 @@ chmod +x "${MOCK_BIN}/curl"
 # Mock sed is not needed — we use the real sed.
 
 GH_STDIN_LOG="${TMPDIR}/gh-stdin.log"
+CURL_BODY_LOG="${TMPDIR}/curl-body.log"
 
 export PATH="${MOCK_BIN}:${PATH}"
 export GH_LOG="${GH_LOG}"
 export CURL_LOG="${CURL_LOG}"
 export GH_STDIN_LOG="${GH_STDIN_LOG}"
+export CURL_BODY_LOG="${CURL_BODY_LOG}"
 export ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export GH_TOKEN="fake-token"
 # shellcheck disable=SC2031 # FULLSEND_FORGE exported for subshell test runs
@@ -422,6 +450,30 @@ FIXTURE_NO_PROPOSALS='{
   "proposals": []
 }'
 
+# Fixture: two allowed proposals — the first targets a repo where issue
+# creation fails (via GH_MOCK_ISSUE_FAIL_REPO), the second succeeds.
+FIXTURE_CREATE_FAIL_THEN_OK='{
+  "summary": "The retro analysis found two improvement opportunities.",
+  "proposals": [
+    {
+      "target_repo": "test-org/unavailable-repo",
+      "title": "Proposal in unavailable repo",
+      "what_happened": "Something happened.",
+      "what_could_go_better": "It could go better.",
+      "proposed_change": "Change it.",
+      "validation_criteria": "It works."
+    },
+    {
+      "target_repo": "test-org/target-repo",
+      "title": "Proposal in available repo",
+      "what_happened": "Something else happened.",
+      "what_could_go_better": "It could also go better.",
+      "proposed_change": "Change it too.",
+      "validation_criteria": "It also works."
+    }
+  ]
+}'
+
 run_test() {
   local test_name="$1"
   local json_content="$2"
@@ -650,6 +702,77 @@ run_test_stdout_absent() {
   echo "PASS: ${test_name}"
 }
 
+# run_create_fail_case NAME FIXTURE MOCK_VAR MOCK_VALUE [COMMENT_FAIL]
+# Runs the post-script with the issue-creation failure mock variable
+# MOCK_VAR set to MOCK_VALUE for this run only, and the summary comment
+# mock set to COMMENT_FAIL (default: succeed). Leaves stdout.log, GH_LOG,
+# GH_STDIN_LOG, CURL_LOG and CURL_BODY_LOG for the assertions that follow,
+# and stores the script's exit code in CREATE_FAIL_EXIT.
+run_create_fail_case() {
+  local test_name="$1"
+  local json_content="$2"
+  local mock_var="$3"
+  local mock_value="$4"
+  local comment_fail="${5:-}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  : > "${GH_STDIN_LOG}"
+  : > "${CURL_LOG}"
+  : > "${CURL_BODY_LOG}"
+  # shellcheck disable=SC2031 # mock controls exported for subshell test run
+  export GH_MOCK_COMMENT_FAIL="${comment_fail}" CURL_MOCK_COMMENT_FAIL="${comment_fail}" CURL_MOCK_ISSUE_FAIL=""
+
+  CREATE_FAIL_EXIT=0
+  (cd "${run_dir}" && env "${mock_var}=${mock_value}" bash "${POST_SCRIPT}") \
+    > "${TMPDIR}/stdout.log" 2>&1 || CREATE_FAIL_EXIT=$?
+}
+
+# assert_create_fail_exit NAME [EXPECT_FAILURE] — the last
+# run_create_fail_case exited 0 (or non-zero when EXPECT_FAILURE is "true").
+assert_create_fail_exit() {
+  if [[ "${2:-false}" == "true" ]]; then
+    if [[ ${CREATE_FAIL_EXIT} -eq 0 ]]; then
+      echo "FAIL: $1 — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: $1 (expected failure, got exit code ${CREATE_FAIL_EXIT})"
+    return
+  fi
+  if [[ ${CREATE_FAIL_EXIT} -ne 0 ]]; then
+    echo "FAIL: $1 — exit code ${CREATE_FAIL_EXIT}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: $1"
+}
+
+# assert_file_contains NAME FILE PATTERN — fixed-string PATTERN is in FILE.
+assert_file_contains() {
+  if ! grep -qF -- "$3" "$2"; then
+    echo "FAIL: $1 — expected '$3' in $(basename "$2")"
+    cat "$2"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: $1"
+}
+
+# assert_file_lacks NAME FILE PATTERN — fixed-string PATTERN is not in FILE.
+assert_file_lacks() {
+  if grep -qF -- "$3" "$2"; then
+    echo "FAIL: $1 — unexpected '$3' in $(basename "$2")"
+    cat "$2"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: $1"
+}
+
 # ===========================================================================
 # GitHub test cases (FULLSEND_FORGE=github)
 # ===========================================================================
@@ -860,6 +983,71 @@ ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
 # ---------------------------------------------------------------------------
+# Issue-creation failure tests
+# A failed forge_create_issue is non-fatal: remaining proposals are still
+# attempted, the summary is still posted, and failed proposals are listed
+# separately from filed ones (never as issue links).
+# ---------------------------------------------------------------------------
+
+# First creation fails, second succeeds.
+run_create_fail_case "create-fail-then-ok" \
+  "${FIXTURE_CREATE_FAIL_THEN_OK}" \
+  GH_MOCK_ISSUE_FAIL_REPO "test-org/unavailable-repo"
+assert_create_fail_exit "create-fail-then-ok-exit-zero"
+assert_file_contains "create-fail-then-ok-error-logged" "${TMPDIR}/stdout.log" \
+  "::warning::Failed to create issue in test-org/unavailable-repo for proposal[0] (Proposal in unavailable repo)"
+assert_file_contains "create-fail-then-ok-later-attempted" "${GH_LOG}" \
+  "gh issue create --repo test-org/target-repo"
+assert_file_contains "create-fail-then-ok-summary-posted" "${GH_LOG}" \
+  "repos/test-org/test-repo/issues/10/comments"
+assert_file_contains "create-fail-then-ok-success-linked" "${GH_STDIN_LOG}" \
+  "- [Proposal in available repo](https://github.com/test-org/target-repo/issues/99)"
+assert_file_contains "create-fail-then-ok-failed-section" "${GH_STDIN_LOG}" \
+  "### Proposals not filed (issue creation failed)"
+assert_file_contains "create-fail-then-ok-failed-listed" "${GH_STDIN_LOG}" \
+  "- **Proposal in unavailable repo** (\`test-org/unavailable-repo\`)"
+assert_file_lacks "create-fail-then-ok-failed-not-linked" "${GH_STDIN_LOG}" \
+  "[Proposal in unavailable repo]("
+
+# All creations fail: summary still posted, failures logged, no filed links.
+run_create_fail_case "create-all-fail" \
+  "${FIXTURE_CREATE_FAIL_THEN_OK}" \
+  GH_MOCK_ISSUE_FAIL_REPO "*"
+assert_create_fail_exit "create-all-fail-exit-zero"
+assert_file_contains "create-all-fail-first-logged" "${TMPDIR}/stdout.log" \
+  "::warning::Failed to create issue in test-org/unavailable-repo for proposal[0]"
+assert_file_contains "create-all-fail-second-logged" "${TMPDIR}/stdout.log" \
+  "::warning::Failed to create issue in test-org/target-repo for proposal[1]"
+assert_file_contains "create-all-fail-summary-posted" "${GH_LOG}" \
+  "repos/test-org/test-repo/issues/10/comments"
+assert_file_lacks "create-all-fail-no-filed-section" "${GH_STDIN_LOG}" \
+  "### Proposals filed"
+assert_file_contains "create-all-fail-both-listed" "${GH_STDIN_LOG}" \
+  "- **Proposal in available repo** (\`test-org/target-repo\`)"
+
+# Allowlist gate still applies: a disallowed target is skipped (never
+# attempted) and reported as skipped, not as a creation failure.
+run_create_fail_case "create-fail-allowlist-preserved" \
+  "${FIXTURE_MIXED_TARGETS}" \
+  GH_MOCK_ISSUE_FAIL_REPO "*"
+assert_create_fail_exit "create-fail-allowlist-preserved-exit-zero"
+assert_file_lacks "create-fail-allowlist-preserved-not-attempted" "${GH_LOG}" \
+  "gh issue create --repo disallowed-org/other-repo"
+assert_file_contains "create-fail-allowlist-preserved-skipped" "${GH_STDIN_LOG}" \
+  "Proposals skipped (target repo not allowed)"
+assert_file_contains "create-fail-allowlist-preserved-failed" "${GH_STDIN_LOG}" \
+  "- **Fix allowed repo issue** (\`test-org/target-repo\`)"
+
+# Summary-posting errors stay fatal even after a creation failure.
+run_create_fail_case "create-fail-comment-500" \
+  "${FIXTURE_CREATE_FAIL_THEN_OK}" \
+  GH_MOCK_ISSUE_FAIL_REPO "test-org/unavailable-repo" \
+  "500"
+assert_create_fail_exit "create-fail-comment-500-fatal" "true"
+assert_file_contains "create-fail-comment-500-error" "${TMPDIR}/stdout.log" \
+  "ERROR: failed to post summary comment"
+
+# ---------------------------------------------------------------------------
 # FULLSEND_VALIDATED_ITERATION_DIR tests
 # Verify that when FULLSEND_VALIDATED_ITERATION_DIR is set, the script reads
 # from that directory instead of scanning iteration-*/output.
@@ -1065,6 +1253,30 @@ GL_FIXTURE_DISALLOWED_TARGET='{
       "what_could_go_better": "Add structured logging.",
       "proposed_change": "Add log fields.",
       "validation_criteria": "Logs contain expected fields."
+    }
+  ]
+}'
+
+# GitLab fixture: two allowed proposals — the first targets a project where
+# issue creation fails (via CURL_MOCK_ISSUE_FAIL_PROJECT), the second succeeds.
+GL_FIXTURE_CREATE_FAIL_THEN_OK='{
+  "summary": "The retro analysis found two improvement opportunities.",
+  "proposals": [
+    {
+      "target_repo": "test-group/unavailable-project",
+      "title": "Proposal in unavailable project",
+      "what_happened": "Something happened.",
+      "what_could_go_better": "It could go better.",
+      "proposed_change": "Change it.",
+      "validation_criteria": "It works."
+    },
+    {
+      "target_repo": "test-group/target-project",
+      "title": "Proposal in available project",
+      "what_happened": "Something else happened.",
+      "what_could_go_better": "It could also go better.",
+      "proposed_change": "Change it too.",
+      "validation_criteria": "It also works."
     }
   ]
 }'
@@ -1359,21 +1571,69 @@ run_gl_test "gl-comment-422-fatal" \
   "true" \
   "422"
 
-# GitLab: issue creation returns response without web_url — should fail.
-run_gl_test "gl-issue-null-web-url-fatal" \
+# GitLab: issue creation returns response without web_url — reported,
+# but non-fatal.
+run_gl_test "gl-issue-null-web-url-non-fatal" \
   "${GL_FIXTURE_ONE_PROPOSAL}" \
   "GitLab API error: unexpected response from issue creation" \
-  "true" \
+  "false" \
   "" \
   "null-url"
 
-# GitLab: issue creation HTTP error (curl fails) — should fail.
-run_gl_test "gl-issue-api-error-fatal" \
+# GitLab: issue creation HTTP error (curl fails) — reported, but non-fatal.
+run_gl_test "gl-issue-api-error-non-fatal" \
   "${GL_FIXTURE_ONE_PROPOSAL}" \
   "GitLab API error: issue creation failed" \
-  "true" \
+  "false" \
   "" \
   "api-error"
+
+# GitLab: first creation fails, second succeeds — later proposal attempted,
+# summary posted, failure listed separately from the filed link.
+run_create_fail_case "gl-create-fail-then-ok" \
+  "${GL_FIXTURE_CREATE_FAIL_THEN_OK}" \
+  CURL_MOCK_ISSUE_FAIL_PROJECT "test-group%2Funavailable-project"
+assert_create_fail_exit "gl-create-fail-then-ok-exit-zero"
+assert_file_lacks "gl-create-fail-then-ok-no-gh" "${GH_LOG}" "gh "
+assert_file_contains "gl-create-fail-then-ok-error-logged" "${TMPDIR}/stdout.log" \
+  "::warning::Failed to create issue in test-group/unavailable-project for proposal[0] (Proposal in unavailable project)"
+assert_file_contains "gl-create-fail-then-ok-later-attempted" "${CURL_LOG}" \
+  "/projects/test-group%2Ftarget-project/issues"
+assert_file_contains "gl-create-fail-then-ok-summary-posted" "${CURL_LOG}" \
+  "/merge_requests/10/notes"
+assert_file_contains "gl-create-fail-then-ok-success-linked" "${CURL_BODY_LOG}" \
+  "- [Proposal in available project](https://gitlab.com/test-group/target-project/-/issues/99)"
+assert_file_contains "gl-create-fail-then-ok-failed-section" "${CURL_BODY_LOG}" \
+  "### Proposals not filed (issue creation failed)"
+assert_file_contains "gl-create-fail-then-ok-failed-listed" "${CURL_BODY_LOG}" \
+  "- **Proposal in unavailable project** (\`test-group/unavailable-project\`)"
+assert_file_lacks "gl-create-fail-then-ok-failed-not-linked" "${CURL_BODY_LOG}" \
+  "[Proposal in unavailable project]("
+
+# GitLab: all creations fail — summary still posted, failures logged.
+run_create_fail_case "gl-create-all-fail" \
+  "${GL_FIXTURE_CREATE_FAIL_THEN_OK}" \
+  CURL_MOCK_ISSUE_FAIL "api-error"
+assert_create_fail_exit "gl-create-all-fail-exit-zero"
+assert_file_contains "gl-create-all-fail-first-logged" "${TMPDIR}/stdout.log" \
+  "::warning::Failed to create issue in test-group/unavailable-project for proposal[0]"
+assert_file_contains "gl-create-all-fail-second-logged" "${TMPDIR}/stdout.log" \
+  "::warning::Failed to create issue in test-group/target-project for proposal[1]"
+assert_file_contains "gl-create-all-fail-summary-posted" "${CURL_LOG}" \
+  "/merge_requests/10/notes"
+assert_file_lacks "gl-create-all-fail-no-filed-section" "${CURL_BODY_LOG}" \
+  "### Proposals filed"
+assert_file_contains "gl-create-all-fail-both-listed" "${CURL_BODY_LOG}" \
+  "- **Proposal in available project** (\`test-group/target-project\`)"
+
+# GitLab: summary-posting errors stay fatal even after a creation failure.
+run_create_fail_case "gl-create-fail-comment-500" \
+  "${GL_FIXTURE_CREATE_FAIL_THEN_OK}" \
+  CURL_MOCK_ISSUE_FAIL_PROJECT "test-group%2Funavailable-project" \
+  "500"
+assert_create_fail_exit "gl-create-fail-comment-500-fatal" "true"
+assert_file_contains "gl-create-fail-comment-500-error" "${TMPDIR}/stdout.log" \
+  "ERROR: failed to post summary comment"
 
 # GitLab: verify curl calls hit expected API endpoints (not just exit code).
 # Catches regressions in URL construction that the mock would silently accept.

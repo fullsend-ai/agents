@@ -146,6 +146,7 @@ ISSUE_LINKS=""
 EVIDENCE_NOTES=""
 FILTERED_COUNT=0
 SKIPPED_TARGETS=""
+FAILED_PROPOSALS=""
 if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
   for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
@@ -199,9 +200,14 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     SAFE_TITLE=$(_gha_sanitize "${TITLE}")
     echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
+    # A failed creation is non-fatal: record it, keep filing the remaining
+    # proposals, and report it in the summary comment.
     if ! ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage"); then
-      echo "ERROR: failed to create issue in ${TARGET_REPO}: ${ISSUE_URL}" >&2
-      exit 1
+      SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
+      echo "::warning::Failed to create issue in ${TARGET_REPO} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
+      FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${TARGET_REPO}\`)"
+      continue
     fi
 
     echo "Created: ${ISSUE_URL}"
@@ -224,6 +230,9 @@ fi
 COMMENT="${SUMMARY}"
 if [[ -n "${ISSUE_LINKS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals filed\n\n%s' "${COMMENT}" "${ISSUE_LINKS}")
+fi
+if [[ -n "${FAILED_PROPOSALS}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals not filed (issue creation failed)\n\nFile manually; see the post-retro logs for the error:\n%s' "${COMMENT}" "${FAILED_PROPOSALS}")
 fi
 if [[ -n "${EVIDENCE_NOTES}" ]]; then
   COMMENT=$(printf '%s\n\n### Evidence notes (not filed as issues)\n%s' "${COMMENT}" "${EVIDENCE_NOTES}")
