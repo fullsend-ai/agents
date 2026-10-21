@@ -14,6 +14,13 @@
 #   FULLSEND_DIR    — path to the fullsend scaffold directory
 #   EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT — optional per-run overrides,
 #                     passed as fullsend run --runtime/--model/--effort
+#   EVAL_FORGE      — optional forge passed as fullsend run --forge (default
+#                     github; a local run otherwise resolves no forge)
+#   EVAL_SANDBOX_BINARY — optional path of the Linux fullsend binary copied
+#                     into the sandbox (default: the fullsend on PATH); set it
+#                     on a macOS host
+#   OPENAI_API_KEY  — optional; passed through to fullsend run for the pi and
+#                     codex runtimes when set
 #   GH_TOKEN        — GitHub token
 #   FIXTURE_URL     — URL of the fixture (issue or PR)
 #   FIXTURE_TYPE    — "issue" or "pull_request"
@@ -61,8 +68,10 @@ for attempt in 1 2 3; do
        clone "https://github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"; then
     cloned=1; break
   fi
-  echo "WARNING: clone attempt ${attempt} failed; retrying in $((attempt * 10))s" >&2
-  sleep $((attempt * 10))
+  if [[ $attempt -lt 3 ]]; then
+    echo "WARNING: clone attempt ${attempt} failed; retrying in $((attempt * 10))s" >&2
+    sleep $((attempt * 10))
+  fi
 done
 if [[ $cloned -ne 1 ]]; then
   echo "ERROR: could not clone ${EPHEMERAL_REPO} after 3 attempts" >&2
