@@ -30,8 +30,15 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 #        Real `gh api` has no `--arg` flag, so the mock rejects it too.
 build_mock() {
   local graphql_output="$1"
+  local issue_output="${2:-}"
+  local comments_output="${3:-[]}"
+  local failure_mode="${4:-}"
   local mock_bin="${TMPDIR}/bin"
   local gh_log="${TMPDIR}/gh-calls.log"
+
+  if [[ -z "${issue_output}" ]]; then
+    issue_output='{"state":"open","repository_url":"https://api.github.com/repos/test-org/test-repo","html_url":"https://github.com/test-org/test-repo/issues/42"}'
+  fi
 
   rm -rf "${mock_bin}"
   mkdir -p "${mock_bin}"
@@ -39,11 +46,16 @@ build_mock() {
 
   # Write the GraphQL output to a file so the mock can read it.
   printf '%s' "${graphql_output}" > "${TMPDIR}/graphql-output.txt"
+  printf '%s' "${issue_output}" > "${TMPDIR}/issue-output.txt"
+  printf '%s' "${comments_output}" > "${TMPDIR}/comments-output.txt"
 
   cat > "${mock_bin}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 CALL_LOG="LOGFILE_PLACEHOLDER"
 PR_OUTPUT="OUTPUT_PLACEHOLDER"
+ISSUE_OUTPUT="ISSUE_OUTPUT_PLACEHOLDER"
+COMMENTS_OUTPUT="COMMENTS_OUTPUT_PLACEHOLDER"
+FAILURE_MODE="FAILURE_MODE_PLACEHOLDER"
 
 echo "gh $*" >> "${CALL_LOG}"
 
@@ -72,10 +84,24 @@ if [[ "$1" == "api" && "$2" == "graphql" ]]; then
 elif [[ "$1" == "label" ]]; then
   exit 0
 elif [[ "$1" == "api" ]]; then
-  exit 0
+  API_URL=""
+  for arg in "$@"; do
+    if [[ "${arg}" == repos/* ]]; then
+      API_URL="${arg}"
+    fi
+  done
+  if [[ "${API_URL}" == */comments ]]; then
+    [[ "${FAILURE_MODE}" == "comments" ]] && exit 1
+    cat "${COMMENTS_OUTPUT}"
+  elif [[ "${API_URL}" == repos/*/issues/* ]]; then
+    [[ "${FAILURE_MODE}" == "issue" ]] && exit 1
+    cat "${ISSUE_OUTPUT}"
+  else
+    exit 0
+  fi
 elif [[ "$1" == "issue" && "$2" == "comment" ]]; then
   # Consume stdin (body-file reads from stdin)
-  cat > /dev/null
+  cat > "${CALL_LOG}.body"
   exit 0
 fi
 MOCKEOF
@@ -84,7 +110,12 @@ MOCKEOF
   # but this is a generated mock — not repo source code).
   local escaped_log="${gh_log//\//\\/}"
   local escaped_out="${TMPDIR//\//\\/}\/graphql-output.txt"
+  local escaped_issue_out="${TMPDIR//\//\\/}\/issue-output.txt"
+  local escaped_comments_out="${TMPDIR//\//\\/}\/comments-output.txt"
   perl -pi -e "s/LOGFILE_PLACEHOLDER/${escaped_log}/g" "${mock_bin}/gh"
+  perl -pi -e "s/ISSUE_OUTPUT_PLACEHOLDER/${escaped_issue_out}/g" "${mock_bin}/gh"
+  perl -pi -e "s/COMMENTS_OUTPUT_PLACEHOLDER/${escaped_comments_out}/g" "${mock_bin}/gh"
+  perl -pi -e "s/FAILURE_MODE_PLACEHOLDER/${failure_mode}/g" "${mock_bin}/gh"
   perl -pi -e "s/OUTPUT_PLACEHOLDER/${escaped_out}/g" "${mock_bin}/gh"
 
   chmod +x "${mock_bin}/gh"
@@ -800,7 +831,188 @@ run_test_prescript_output() {
   echo "PASS: ${test_name}"
 }
 
+# Run a moved/closed issue through the full pre-script skip protocol and
+# inspect both the guidance comment target and the protocol output.
+run_move_test() {
+  local test_name="$1"
+  local issue_json="$2"
+  local comments_json="$3"
+  local expected_location="$4"
+  local expected_comment_call="$5"
+  local expected_stdout="$6"
+  local failure_mode="${7:-}"
+  local expected_exit="${8:-0}"
+  local expected_comment_body="${9:-}"
+
+  local mock_bin
+  mock_bin="$(build_mock "${EMPTY_GQL_JSON}" "${issue_json}" "${comments_json}" "${failure_mode}")"
+  local gh_log="${TMPDIR}/gh-calls.log"
+  local proto_out="${TMPDIR}/prescript-output-${test_name}.txt"
+  local gh_output="${TMPDIR}/github-output-${test_name}.txt"
+  : > "${proto_out}"
+  : > "${gh_output}"
+
+  local env_cmd=(
+    env -u CODE_FORCE -u COMMENT_BODY
+    PATH="${mock_bin}:${PATH}"
+    ISSUE_NUMBER="42"
+    REPO_FULL_NAME="test-org/test-repo"
+    GITHUB_ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+    FULLSEND_FORGE="github"
+    GH_TOKEN="fake-token"
+    GITHUB_OUTPUT="${gh_output}"
+    FULLSEND_PRESCRIPT_OUTPUT="${proto_out}"
+  )
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expected_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expected_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -s "${gh_output}" ]]; then
+    echo "FAIL: ${test_name} — unexpected GITHUB_OUTPUT writes"
+    cat "${gh_output}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local expected_protocol=""
+  if [[ -n "${expected_location}" ]]; then
+    expected_protocol="skipped=true
+reason=issue moved to ${expected_location}
+"
+  fi
+  if ! diff <(printf '%s' "${expected_protocol}") "${proto_out}" > "${TMPDIR}/protocol-${test_name}.diff" 2>&1; then
+    echo "FAIL: ${test_name} — protocol output mismatch"
+    cat "${TMPDIR}/protocol-${test_name}.diff"
+    echo "stdout:"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    echo "gh calls:"
+    cat "${gh_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_comment_call}" ]]; then
+    if ! grep -qF "${expected_comment_call}" "${TMPDIR}/gh-calls.log"; then
+      echo "FAIL: ${test_name} — expected guidance comment call not found"
+      cat "${TMPDIR}/gh-calls.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  elif grep -qF "gh issue comment" "${TMPDIR}/gh-calls.log"; then
+    echo "FAIL: ${test_name} — unexpected guidance comment call"
+    cat "${TMPDIR}/gh-calls.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_location}" && -n "${expected_comment_call}" ]]; then
+    expected_comment_body="${expected_comment_body:-This issue was moved to \`${expected_location}\`. Run \`/fs-code\` there instead.}"
+  fi
+  if [[ -n "${expected_comment_body}" ]] \
+    && ! grep -qF "${expected_comment_body}" "${gh_log}.body"; then
+    echo "FAIL: ${test_name} — guidance comment body mismatch"
+    cat "${gh_log}.body" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_stdout}" ]] \
+    && ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ ${expected_exit} -ne 0 ]]; then
+    echo "PASS: ${test_name}"
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 NL=$'\n'
+
+NATIVE_TRANSFER_ISSUE_JSON='{"state":"open","repository_url":"https://api.github.com/repos/org/new-repo","html_url":"https://github.com/org/new-repo/issues/42"}'
+NATIVE_TRANSFER_MISSING_NUMBER_ISSUE_JSON='{"state":"open","repository_url":"https://api.github.com/repos/org/new-repo"}'
+NATIVE_TRANSFER_CASE_ONLY_ISSUE_JSON='{"state":"open","repository_url":"https://api.github.com/repos/TEST-ORG/TEST-REPO","html_url":"https://github.com/TEST-ORG/TEST-REPO/issues/42"}'
+CLOSE_RECREATE_ISSUE_JSON='{"state":"closed","repository_url":"https://api.github.com/repos/test-org/test-repo","html_url":"https://github.com/test-org/test-repo/issues/42"}'
+CLOSE_RECREATE_COMMENTS_JSON='[{"user":{"login":"fullsend-ai-triage[bot]"},"body":"<!-- fullsend:move-agent -->\nThis issue was moved to `org/new-repo#123`."}]'
+CLOSE_RECREATE_UNTRUSTED_COMMENTS_JSON='[{"user":{"login":"human-dev"},"body":"<!-- fullsend:move-agent -->\nThis issue was moved to `org/forged-repo#999`."}]'
+NORMAL_CLOSED_ISSUE_JSON='{"state":"closed","repository_url":"https://api.github.com/repos/test-org/test-repo","html_url":"https://github.com/test-org/test-repo/issues/42"}'
+NORMAL_CLOSED_COMMENTS_JSON='[{"body":"This issue was closed as completed."}]'
+
+run_move_test "native-transfer-skips-code-agent" \
+  "${NATIVE_TRANSFER_ISSUE_JSON}" \
+  "[]" \
+  "org/new-repo#42" \
+  "gh issue comment 42 --repo org/new-repo --body-file -" \
+  "Issue moved to org/new-repo#42" \
+  "" \
+  "" \
+  "This issue was transferred from \`test-org/test-repo#42\`. Run \`/fs-code\` here."
+
+run_move_test "native-transfer-case-only-difference-proceeds" \
+  "${NATIVE_TRANSFER_CASE_ONLY_ISSUE_JSON}" \
+  "[]" \
+  "" \
+  "" \
+  "No existing human PRs found"
+
+run_move_test "native-transfer-missing-number-skips-comment" \
+  "${NATIVE_TRANSFER_MISSING_NUMBER_ISSUE_JSON}" \
+  "[]" \
+  "org/new-repo" \
+  "" \
+  "destination issue number is unavailable"
+
+run_move_test "close-recreate-skips-code-agent" \
+  "${CLOSE_RECREATE_ISSUE_JSON}" \
+  "${CLOSE_RECREATE_COMMENTS_JSON}" \
+  "org/new-repo#123" \
+  "gh issue comment 42 --repo test-org/test-repo --body-file -" \
+  "Issue moved to org/new-repo#123"
+
+run_move_test "close-recreate-untrusted-marker-ignored" \
+  "${CLOSE_RECREATE_ISSUE_JSON}" \
+  "${CLOSE_RECREATE_UNTRUSTED_COMMENTS_JSON}" \
+  "" \
+  "" \
+  "No existing human PRs found"
+
+run_move_test "normally-closed-issue-proceeds" \
+  "${NORMAL_CLOSED_ISSUE_JSON}" \
+  "${NORMAL_CLOSED_COMMENTS_JSON}" \
+  "" \
+  "" \
+  "No existing human PRs found"
+
+run_move_test "issue-lookup-failure-aborts" \
+  "${NATIVE_TRANSFER_ISSUE_JSON}" \
+  "[]" \
+  "" \
+  "" \
+  "Unable to verify whether issue 42 was moved" \
+  "issue" \
+  1
+
+run_move_test "comment-lookup-failure-aborts" \
+  "${CLOSE_RECREATE_ISSUE_JSON}" \
+  "[]" \
+  "" \
+  "" \
+  "Unable to verify whether issue 42 was moved" \
+  "comments" \
+  1
 
 # Existing human PR → skipped=true with a single-line reason naming the PR.
 run_test_prescript_output "protocol-skip-on-existing-pr" \
