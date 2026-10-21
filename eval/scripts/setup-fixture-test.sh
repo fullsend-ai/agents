@@ -57,7 +57,8 @@ STUBEOF
   cat > "${root}/bin/git" <<'STUBEOF'
 #!/usr/bin/env bash
 # Stub git: records every call with its -C / -c options, fakes a clone and
-# reports staged changes so the snapshot commit runs.
+# reports staged changes so the snapshot commit runs. STUB_PUSH_FAILURES makes
+# the first N pushes fail.
 set -euo pipefail
 echo "$*" >> "${CAPTURE_DIR}/git-calls.log"
 while [[ $# -gt 0 ]]; do
@@ -70,6 +71,10 @@ case "${1:-}" in
   clone) mkdir -p "${@: -1}" ;;
   diff) exit 1 ;;
   rev-parse) echo 0123456789abcdef0123456789abcdef01234567 ;;
+  push)
+    n=$(( $(cat "${CAPTURE_DIR}/push-calls" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "${CAPTURE_DIR}/push-calls"
+    [[ $n -gt ${STUB_PUSH_FAILURES:-0} ]] || exit 1 ;;
   *) exit 0 ;;
 esac
 STUBEOF
@@ -111,7 +116,7 @@ ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
 RC=0
 OUT=$(run_sf "$ROOT" EVAL_REPO_VISIBILITY=privte 2>&1) || RC=$?
 if [[ $RC -eq 1 ]] \
-  && echo "$OUT" | grep -q "EVAL_REPO_VISIBILITY must be private, public or internal, not 'privte'" \
+  && echo "$OUT" | grep -q "EVAL_REPO_VISIBILITY must be private or public, not 'privte'" \
   && ! gh_calls "$ROOT" | grep -q "repo create"; then
   pass "an unknown EVAL_REPO_VISIBILITY is refused before gh repo create"
 else
@@ -126,30 +131,41 @@ OUT=$(run_sf "$ROOT" 2>&1) || RC=$?
 if [[ $RC -eq 0 ]] \
   && gh_calls "$ROOT" | grep -q "^repo create testorg/eval-case-deadbeef --private " \
   && git_calls "$ROOT" | grep -q -- "-c core.hooksPath=/dev/null commit --no-verify -m eval: initial content" \
+  && git_calls "$ROOT" | grep -q -- "-c core.hooksPath=/dev/null push origin HEAD" \
   && ! echo "$OUT" | grep -q "WARNING" \
   && grep -q 'FIXTURE_NUMBER: "7"' "${ROOT}/ws/.hook-outputs.yaml"; then
-  pass "by default the repo is private and the snapshot commit bypasses local git hooks"
+  pass "by default the repo is private and the snapshot commit and push bypass local git hooks"
 else
-  fail "by default the repo is private and the snapshot commit bypasses local git hooks (rc=$RC, output: $OUT)"
+  fail "by default the repo is private and the snapshot commit and push bypass local git hooks (rc=$RC, output: $OUT)"
 fi
 rm -rf "$ROOT"
 
-# --- public and internal keep the developer's hooks and warn ---
-for vis in public internal; do
-  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
-  RC=0
-  OUT=$(run_sf "$ROOT" EVAL_REPO_VISIBILITY="$vis" 2>&1) || RC=$?
-  if [[ $RC -eq 0 ]] \
-    && gh_calls "$ROOT" | grep -q "^repo create testorg/eval-case-deadbeef --${vis} " \
-    && git_calls "$ROOT" | grep -q -- " commit -m eval: initial content" \
-    && ! git_calls "$ROOT" | grep -qE "hooksPath|no-verify" \
-    && echo "$OUT" | grep -q "WARNING: EVAL_REPO_VISIBILITY=${vis}: the snapshot will be visible beyond the eval account; local git hooks run on this commit"; then
-    pass "EVAL_REPO_VISIBILITY=${vis} keeps local git hooks on the snapshot commit and warns"
-  else
-    fail "EVAL_REPO_VISIBILITY=${vis} keeps local git hooks on the snapshot commit and warns (rc=$RC, output: $OUT)"
-  fi
-  rm -rf "$ROOT"
-done
+# --- public keeps the developer's hooks on the commit and the push, and warns ---
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_sf "$ROOT" EVAL_REPO_VISIBILITY=public 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] \
+  && gh_calls "$ROOT" | grep -q "^repo create testorg/eval-case-deadbeef --public " \
+  && git_calls "$ROOT" | grep -q -- " commit -m eval: initial content" \
+  && git_calls "$ROOT" | grep -q -- " push origin HEAD" \
+  && ! git_calls "$ROOT" | grep -qE "hooksPath|no-verify" \
+  && echo "$OUT" | grep -q "WARNING: EVAL_REPO_VISIBILITY=public: the snapshot will be published under the eval account; local git hooks run on this commit and its push"; then
+  pass "EVAL_REPO_VISIBILITY=public keeps local git hooks on the snapshot commit and push, and warns"
+else
+  fail "EVAL_REPO_VISIBILITY=public keeps local git hooks on the snapshot commit and push, and warns (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# --- internal is not an accepted value ---
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_sf "$ROOT" EVAL_REPO_VISIBILITY=internal 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "must be private or public, not 'internal'" && ! gh_calls "$ROOT" | grep -q "repo create"; then
+  pass "EVAL_REPO_VISIBILITY=internal is refused before gh repo create"
+else
+  fail "EVAL_REPO_VISIBILITY=internal is refused before gh repo create (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
 
 # --- A half-created repo is reused when its visibility matches ---
 ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
@@ -185,10 +201,39 @@ OUT=$(run_sf "$ROOT" STUB_CREATE_RC=1 2>&1) || RC=$?
 if [[ $RC -eq 1 ]] \
   && echo "$OUT" | grep -q "could not create testorg/eval-case-deadbeef after 3 attempts" \
   && [[ "$(gh_calls "$ROOT" | grep -c "^repo create ")" == "3" ]] \
-  && [[ "$(sleep_calls "$ROOT" | tr '\n' ' ')" == "sleep 5 sleep 10 sleep 15 " ]]; then
-  pass "three failed creates with no existing repo give up after the documented backoff"
+  && [[ "$(sleep_calls "$ROOT" | tr '\n' ' ')" == "sleep 5 sleep 10 " ]]; then
+  pass "three failed creates with no existing repo give up after two backoffs, with no sleep after the last"
 else
-  fail "three failed creates with no existing repo give up after the documented backoff (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
+  fail "three failed creates with no existing repo give up after two backoffs, with no sleep after the last (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
+fi
+rm -rf "$ROOT"
+
+# --- The snapshot push is retried, with the hook setting of the commit ---
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_sf "$ROOT" STUB_PUSH_FAILURES=2 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] \
+  && [[ "$(git_calls "$ROOT" | grep -c -- "-c core.hooksPath=/dev/null push origin HEAD")" == "3" ]] \
+  && [[ "$(sleep_calls "$ROOT" | tr '\n' ' ')" == "sleep 10 sleep 20 " ]] \
+  && echo "$OUT" | grep -q "WARNING: push attempt 2 failed; retrying in 20s" \
+  && gh_calls "$ROOT" | grep -q "^issue create "; then
+  pass "a push that fails twice is retried with backoff and the run continues"
+else
+  fail "a push that fails twice is retried with backoff and the run continues (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
+fi
+rm -rf "$ROOT"
+
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_sf "$ROOT" STUB_PUSH_FAILURES=3 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "could not push the snapshot to testorg/eval-case-deadbeef after 3 attempts" \
+  && [[ "$(git_calls "$ROOT" | grep -c " push origin HEAD")" == "3" ]] \
+  && [[ "$(sleep_calls "$ROOT" | tr '\n' ' ')" == "sleep 10 sleep 20 " ]] \
+  && ! gh_calls "$ROOT" | grep -q "^issue create "; then
+  pass "three failed pushes give up with no sleep after the last and nothing created afterwards"
+else
+  fail "three failed pushes give up with no sleep after the last and nothing created afterwards (rc=$RC, output: $OUT, sleeps: $(sleep_calls "$ROOT" | tr '\n' ' '))"
 fi
 rm -rf "$ROOT"
 
