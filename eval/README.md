@@ -180,10 +180,13 @@ calls during both execution and scoring.
 |----------|-------------|
 | `FULLSEND_DIR` | Path to the fullsend scaffold directory. Defaults to the repo root. |
 | `EVAL_TIMEOUT` | Runner timeout in seconds. Defaults to `1800` (30 min). |
-| `EVAL_REPO_VISIBILITY` | Visibility of the ephemeral repos `setup-fixture.sh` creates: `private` (default since 2026-09-25; Dependabot opened PRs on public throwaway repos, and secret scanners flagged upstream sample keys in public snapshots), `public` or `internal`; any other value is an error before anything is created. The snapshot commit bypasses the developer's local git hooks only for `private`; for `public` or `internal` the hooks (a secret scanner, for one) run and the script warns. The CI evals use the default. |
+| `EVAL_REPO_VISIBILITY` | Visibility of the ephemeral repos `setup-fixture.sh` creates: `private` (the default: a fixture is a throwaway copy of someone else's repository, and a public copy is indexed, scanned and acted on by automation as if it were meant to be published) or `public`; any other value is an error before anything is created. The snapshot commit and push bypass the developer's local git hooks only for `private`; for `public` the hooks (a secret scanner, for one) run and the script warns. The CI evals use the default. |
 | `EVAL_RUNTIME` | Run every case under this runtime (`claude` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
 | `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |
 | `EVAL_EFFORT` | Effort override via `fullsend run --effort`. |
+| `EVAL_FORGE` | Forge passed to `fullsend run --forge`. Defaults to `github`; a local run otherwise resolves no forge and fullsend's pre-code step fails. CI auto-detects it. |
+| `EVAL_SANDBOX_BINARY` | Path of the Linux `fullsend` binary copied into the sandbox. Defaults to the `fullsend` on PATH; set it on a macOS host, where that binary cannot run in the sandbox. |
+| `OPENAI_API_KEY` | Passed through to `fullsend run` for the pi and codex runtimes when set (kept on the runner per ADR 0092). |
 | `EVAL_TIER` | `full` or `release` — see [Tiers](#tiers) above. Defaults to `release` under a cross-repo Actions `workflow_call`, `full` otherwise. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account key file for Vertex AI. |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project ID for Anthropic Vertex. |
