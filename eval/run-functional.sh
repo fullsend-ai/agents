@@ -155,7 +155,12 @@ fi
 # The harness has inconsistent path resolution for dataset.path between
 # workspace.py (config-dir-relative) and execute.py (cwd-relative). Work
 # around this by rewriting dataset.path to an absolute path at runtime.
-EVAL_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX.yaml")"
+# BSD mktemp (macOS) only substitutes trailing X's, so a template with a
+# .yaml suffix produces the literal name eval-runtime-XXXXXX.yaml and a second
+# run fails with "File exists". Create the temp name first, then add the suffix.
+EVAL_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX")"
+EVAL_YAML="${EVAL_YAML_TMP}.yaml"
+mv "$EVAL_YAML_TMP" "$EVAL_YAML"
 
 yq_expr=".dataset.path = \"${CASES_DIR}\""
 # Report-only judges, in every tier: LLM-quality judges (name ends in
@@ -201,6 +206,82 @@ for script in "$WORKSPACE_PY" "$EXECUTE_PY" "$SCORE_PY"; do
     exit 1
   fi
 done
+
+# The eval scripts are written against the harness version the submodule
+# pins, and from 1.56.3 the harness also confines agent judges with a deny
+# list. Neither the checkout in use nor the agent_eval library python3 imports
+# has to be the submodule: AGENT_EVAL_HARNESS_DIR can point at another clone
+# (a developer running against a newer harness), and the library comes from
+# wherever pip last installed it (a stale install, or an editable install of
+# an older clone, as happened on a developer machine). Require both to be at
+# least the pinned version, and refuse otherwise rather than run with
+# behaviour the scripts were not written for. Checked for every eval; it says
+# nothing about judges, so it cannot drift from how the harness treats them.
+harness_version() { # file: prints the version in a pyproject.toml, or nothing
+  sed -n 's/^version = "\([^"]*\)"/\1/p' "$1" 2>/dev/null | head -1 || true
+}
+pinned_ver="$(harness_version "${EVAL_DIR}/.agent-eval-harness/pyproject.toml")"
+if [[ -z "$pinned_ver" ]]; then
+  echo "ERROR: cannot read the pinned agent-eval-harness version from ${EVAL_DIR}/.agent-eval-harness/pyproject.toml" >&2
+  echo "       Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness" >&2
+  exit 1
+fi
+# require_at_least_pin <what> <version> <hint>: exits 1 unless <version> is a
+# plain release version (N.N.N) at or above the pinned one. sort -V orders any
+# string, so a prerelease or a placeholder could otherwise pass.
+require_at_least_pin() {
+  local what="$1" ver="$2" hint="$3"
+  if [[ ! "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "ERROR: ${what} is version '${ver}', not a release version; this repo pins agent-eval-harness ${pinned_ver}" >&2
+    echo "       ${hint}" >&2
+    exit 1
+  fi
+  if [[ "$(printf '%s\n%s\n' "$pinned_ver" "$ver" | sort -V | head -1)" != "$pinned_ver" ]]; then
+    echo "ERROR: ${what} is version ${ver}, older than the agent-eval-harness ${pinned_ver} this repo pins" >&2
+    echo "       ${hint}" >&2
+    exit 1
+  fi
+}
+harness_ver="$(harness_version "${HARNESS_DIR}/pyproject.toml")"
+if [[ -z "$harness_ver" ]]; then
+  echo "ERROR: cannot read the agent-eval-harness version from ${HARNESS_DIR}/pyproject.toml" >&2
+  exit 1
+fi
+require_at_least_pin "the agent-eval-harness checkout at ${HARNESS_DIR}" "$harness_ver" \
+  "Update the submodule (git submodule update --init eval/.agent-eval-harness), or point AGENT_EVAL_HARNESS_DIR at a checkout of ${pinned_ver} or later"
+# The library's own version: from the pyproject.toml beside its package when it
+# is an editable install of some checkout, else from the installed
+# distribution's metadata.
+lib_info="$(python3 -c '
+import agent_eval, os
+pkg = os.path.dirname(os.path.realpath(agent_eval.__file__))
+ver = ""
+try:
+    with open(os.path.join(os.path.dirname(pkg), "pyproject.toml")) as f:
+        for line in f:
+            if line.startswith("version = \""):
+                ver = line.split("\"")[1]
+                break
+except OSError:
+    pass
+if not ver:
+    try:
+        import importlib.metadata
+        ver = importlib.metadata.version("agent-eval-harness")
+    except Exception:
+        pass
+print(ver)
+print(pkg)
+' 2>/dev/null || true)"
+lib_ver="${lib_info%%$'\n'*}"
+lib_path="${lib_info#*$'\n'}"
+if [[ -z "$lib_ver" ]]; then
+  echo "ERROR: cannot determine the version of the agent_eval library python3 imports (from ${lib_path:-an unknown location})" >&2
+  echo "       Install it from the checkout: pip install -e ${HARNESS_DIR}" >&2
+  exit 1
+fi
+require_at_least_pin "the agent_eval library python3 imports (from ${lib_path})" "$lib_ver" \
+  "Install the library from the checkout: pip install -e ${HARNESS_DIR}"
 
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"
 
@@ -264,19 +345,26 @@ execute_run() {
     || exec_exit=$?
 
   # Copy output artifacts from harness workspace to runs directory.
-  # execute.py copies stdout/stderr/input but not the output/ subdirectory
-  # that after_each hooks populate (e.g., fixture-state.json).
-  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name
+  # execute.py copies stdout/stderr/input but not the outputs[*].path
+  # subdirectories that after_each hooks populate (output/fixture-state.json
+  # today; an eval that declares more paths needs them copied too). Copy every
+  # declared outputs path, defaulting to output/ when none is declared.
+  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name out_path
+  local output_paths=()
+  mapfile -t output_paths < <(yq -r '.outputs[] | .path // ""' "$config" | grep -v '^$')
+  [[ ${#output_paths[@]} -eq 0 ]] && output_paths=(output)
   if [[ -d "$ws_cases" ]]; then
     for ws_case in "$ws_cases"/*/; do
       case_name=$(basename "$ws_case")
-      if [[ -d "$ws_case/output" ]]; then
-        mkdir -p "$run_dir/cases/${case_name}/output"
-        if ! cp -a "$ws_case/output/." "$run_dir/cases/${case_name}/output/"; then
-          echo "ERROR: copying ${case_name} output into ${run_dir} failed" >&2
-          return 2
+      for out_path in "${output_paths[@]}"; do
+        if [[ -d "$ws_case/$out_path" ]]; then
+          mkdir -p "$run_dir/cases/${case_name}/$out_path"
+          if ! cp -a "$ws_case/$out_path/." "$run_dir/cases/${case_name}/$out_path/"; then
+            echo "ERROR: copying ${case_name} ${out_path} into ${run_dir} failed" >&2
+            return 2
+          fi
         fi
-      fi
+      done
     done
   fi
 }
@@ -328,7 +416,9 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
   for case_name in "${retry_cases[@]}"; do
     cp -a "${CASES_DIR}/${case_name}" "${RETRY_STAGE_DIR}/${case_name}"
   done
-  RETRY_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX.yaml")"
+  RETRY_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX")"
+  RETRY_YAML="${RETRY_YAML_TMP}.yaml"
+  mv "$RETRY_YAML_TMP" "$RETRY_YAML"
   yq ".dataset.path = \"${RETRY_STAGE_DIR}\"" "$EVAL_YAML" > "$RETRY_YAML"
   RETRY_RUN_ID="${RUN_ID}-retry"
   RETRY_RUN_DIR="${RUNS_DIR}/${RETRY_RUN_ID}"

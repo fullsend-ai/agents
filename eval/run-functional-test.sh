@@ -95,6 +95,8 @@ YAML
   : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/workspace.py"
   : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/execute.py"
   : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/score.py"
+  # The submodule's own version is the minimum run-functional.sh enforces.
+  echo 'version = "1.56.3"' > "${root}/eval/.agent-eval-harness/pyproject.toml"
 
   mkdir -p "${root}/bin" "${root}/capture"
 
@@ -116,6 +118,16 @@ done
 [[ -n "$config_arg" ]] && cp "$config_arg" "${CAPTURE_DIR}/last-config.yaml"
 
 if [[ "${1:-}" == "-c" ]]; then
+  if [[ "${2:-}" == *agent_eval.__file__* ]]; then
+    # The library-version probe: prints the imported agent_eval's version and
+    # package path. By default mirror an editable install of the fixture's
+    # harness checkout; STUB_AGENT_EVAL_VERSION / STUB_AGENT_EVAL_PATH fake
+    # another install (an empty version fakes one that cannot be read).
+    harness="${CAPTURE_DIR}/../eval/.agent-eval-harness"
+    ver="${STUB_AGENT_EVAL_VERSION-$(sed -n 's/^version = "\([^"]*\)"/\1/p' "${harness}/pyproject.toml" 2>/dev/null | head -1)}"
+    printf '%s\n%s\n' "$ver" "${STUB_AGENT_EVAL_PATH-${harness}/agent_eval}"
+    exit 0
+  fi
   # `python3 -c "import agent_eval"` probe — pretend it is installed.
   exit 0
 fi
@@ -492,6 +504,147 @@ if [[ $RC -ne 0 ]] && echo "$OUT" | grep -q "002-full-only-case (exit missing)";
   pass "a case record with no exit_code fails the script"
 else
   fail "a case record with no exit_code fails the script (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
+# Harness version gate: the checkout in use and the agent_eval library python3
+# imports must both be plain release versions at or above the submodule pin,
+# for every eval. AGENT_EVAL_HARNESS_DIR may point at another checkout.
+# ---------------------------------------------------------------------------
+RUN="STUB_CASE_RESULTS=001-release-case:0:3,002-full-only-case:0:3"
+other_harness() { # root version: a second checkout for AGENT_EVAL_HARNESS_DIR
+  mkdir -p "$1/other-harness/skills/eval-run/scripts"
+  : > "$1/other-harness/skills/eval-run/scripts/workspace.py"
+  : > "$1/other-harness/skills/eval-run/scripts/execute.py"
+  : > "$1/other-harness/skills/eval-run/scripts/score.py"
+  [[ -z "$2" ]] || echo "version = \"$2\"" > "$1/other-harness/pyproject.toml"
+}
+no_execute() { [[ "$(cat "$1/capture/execute-calls" 2>/dev/null || echo 0)" == "0" ]]; }
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+rm "${ROOT}/eval/.agent-eval-harness/pyproject.toml"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "cannot read the pinned agent-eval-harness version" && no_execute "$ROOT"; then
+  pass "an uninitialised submodule (no pinned version) is refused before anything runs"
+else
+  fail "an uninitialised submodule (no pinned version) is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" 1.49.1
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "checkout at ${ROOT}/other-harness is version 1.49.1, older than the agent-eval-harness 1.56.3 this repo pins" \
+  && echo "$OUT" | grep -q "point AGENT_EVAL_HARNESS_DIR at a checkout of 1.56.3 or later" \
+  && no_execute "$ROOT"; then
+  pass "a checkout older than the pin is refused before anything runs"
+else
+  fail "a checkout older than the pin is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# The minimum is the pin itself, not a number written into the script.
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" 1.57.0
+echo 'version = "1.60.0"' > "${ROOT}/eval/.agent-eval-harness/pyproject.toml"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "is version 1.57.0, older than the agent-eval-harness 1.60.0 this repo pins" && no_execute "$ROOT"; then
+  pass "the minimum follows the submodule pin"
+else
+  fail "the minimum follows the submodule pin (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+for ver in 1.56.3 1.56.10 2.0.0; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" "$ver"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+  if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "this repo pins"; then
+    pass "a checkout at ${ver} (at or above the pin) runs normally"
+  else
+    fail "a checkout at ${ver} (at or above the pin) runs normally (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+for ver in unknown 1.56.3rc1 2.0; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" "$ver"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+  if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "is version '${ver}', not a release version" && no_execute "$ROOT"; then
+    pass "a checkout at '${ver}' is refused as not a release version"
+  else
+    fail "a checkout at '${ver}' is refused as not a release version (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" ""
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "cannot read the agent-eval-harness version from ${ROOT}/other-harness/pyproject.toml" && no_execute "$ROOT"; then
+  pass "a checkout with no readable version is refused"
+else
+  fail "a checkout with no readable version is refused (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# The library python3 imports is checked on the same terms; which checkout or
+# install it comes from is not.
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" \
+  STUB_AGENT_EVAL_VERSION=1.37.4 STUB_AGENT_EVAL_PATH=/usr/lib/python3/site-packages/agent_eval 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "agent_eval library python3 imports (from /usr/lib/python3/site-packages/agent_eval) is version 1.37.4, older than the agent-eval-harness 1.56.3 this repo pins" \
+  && echo "$OUT" | grep -q "pip install -e ${ROOT}/eval/.agent-eval-harness" \
+  && no_execute "$ROOT"; then
+  pass "a stale agent_eval install beside a current checkout is refused before anything runs"
+else
+  fail "a stale agent_eval install beside a current checkout is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" STUB_AGENT_EVAL_VERSION=1.56.3rc1 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "agent_eval library python3 imports .* is version '1.56.3rc1', not a release version" && no_execute "$ROOT"; then
+  pass "a prerelease agent_eval install is refused as not a release version"
+else
+  fail "a prerelease agent_eval install is refused as not a release version (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" STUB_AGENT_EVAL_VERSION= STUB_AGENT_EVAL_PATH=/opt/somewhere/agent_eval 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "cannot determine the version of the agent_eval library python3 imports (from /opt/somewhere/agent_eval)" && no_execute "$ROOT"; then
+  pass "an agent_eval install of unknown version is refused"
+else
+  fail "an agent_eval install of unknown version is refused (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" STUB_AGENT_EVAL_VERSION=1.57.0 STUB_AGENT_EVAL_PATH=/home/dev/agent-eval-harness/agent_eval 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "this repo pins"; then
+  pass "a newer agent_eval install from another checkout runs normally"
+else
+  fail "a newer agent_eval install from another checkout runs normally (rc=$RC, output: $OUT)"
 fi
 rm -rf "$ROOT"
 

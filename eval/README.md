@@ -147,6 +147,19 @@ git submodule sync eval/.agent-eval-harness
 git submodule update --init eval/.agent-eval-harness
 ```
 
+The eval scripts are written against the harness version the submodule pins
+(1.56.3, the first release that confines agent judges with a deny list), so
+`run-functional.sh` checks two things before every run and refuses rather
+than score with an older harness: the checkout it uses (`AGENT_EVAL_HARNESS_DIR`
+may point at another clone, for example a newer one while developing) and the
+`agent_eval` library `python3` imports (which comes from wherever `pip` last
+installed it, and need not be the checkout). Each must be a plain release
+version (`N.N.N`) at or above the pin; a newer clone is fine, prereleases and
+placeholders are refused. For an old checkout, update the submodule or point
+`AGENT_EVAL_HARNESS_DIR` at a newer one; for a stale or foreign library,
+`pip install -e eval/.agent-eval-harness` so `python3` imports the checkout's
+library.
+
 ### GCP credentials
 
 A GCP service account with Vertex AI access is required for model
@@ -167,9 +180,13 @@ calls during both execution and scoring.
 |----------|-------------|
 | `FULLSEND_DIR` | Path to the fullsend scaffold directory. Defaults to the repo root. |
 | `EVAL_TIMEOUT` | Runner timeout in seconds. Defaults to `1800` (30 min). |
+| `EVAL_REPO_VISIBILITY` | Visibility of the ephemeral repos `setup-fixture.sh` creates: `private` (the default: a fixture is a throwaway copy of someone else's repository, and a public copy is indexed, scanned and acted on by automation as if it were meant to be published) or `public`; any other value is an error before anything is created. The snapshot commit and push bypass the developer's local git hooks only for `private`; for `public` the hooks (a secret scanner, for one) run and the script warns. The CI evals use the default. |
 | `EVAL_RUNTIME` | Run every case under this runtime (`claude` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
 | `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |
 | `EVAL_EFFORT` | Effort override via `fullsend run --effort`. |
+| `EVAL_FORGE` | Forge passed to `fullsend run --forge`. Defaults to `github`; a local run otherwise resolves no forge and fullsend's pre-code step fails. CI auto-detects it. |
+| `EVAL_SANDBOX_BINARY` | Path of the Linux `fullsend` binary copied into the sandbox. Defaults to the `fullsend` on PATH; set it on a macOS host, where that binary cannot run in the sandbox. |
+| `OPENAI_API_KEY` | Passed through to `fullsend run` for the pi and codex runtimes when set (kept on the runner per ADR 0092). |
 | `EVAL_TIER` | `full` or `release` — see [Tiers](#tiers) above. Defaults to `release` under a cross-repo Actions `workflow_call`, `full` otherwise. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account key file for Vertex AI. |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project ID for Anthropic Vertex. |
