@@ -106,6 +106,7 @@ script-test:
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
 	$(call run-timed,bash .github/scripts/vouch-check-test.sh)
+	$(call run-timed,cd harness/triggertest && go test -count=1 ./...)
 
 test: script-test
 

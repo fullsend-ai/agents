@@ -19,6 +19,29 @@ providers:
 role: review
 slug: fullsend-ai-review
 
+# CEL dispatch trigger (docs/guides/user/cel-triggers-reference.md in
+# fullsend). Mirrors the review routing in fullsend's reusable-dispatch.yml:
+# a PR/MR opened, pushed to, or marked ready; the ready-for-review label added
+# to a PR/MR; or a /fs-review comment on a PR/MR. Authorization stays with the
+# platform gate, so this expression has no role checks. The comment arm keeps
+# the dispatch workflow's human-commenter rule. A GitHub PR comment arrives as
+# a work_item with entity.linked_change_proposal set; state.change_proposal is
+# absent there when the PR lookup fails, so it is not used as the PR signal.
+# harness/trigger_test.go evaluates this against the NormalizedEvent fixtures.
+trigger: >
+  (event.entity.kind == "change_proposal"
+    && event.transition.kind in ["opened", "synchronized", "marked_ready"])
+  || (event.entity.kind == "change_proposal"
+    && event.transition.kind == "label_changed"
+    && event.transition.label.name == "ready-for-review"
+    && event.transition.label.action == "added")
+  || (event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
+    && event.transition.comment.command == "/fs-review"
+    && event.actor.kind == "human"
+    && (event.entity.kind == "change_proposal"
+        || has(event.entity.linked_change_proposal)))
+
 skills:
   - skills/pr-review
   - skills/code-review
