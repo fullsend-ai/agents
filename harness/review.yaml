@@ -27,7 +27,7 @@ slug: fullsend-ai-review
 # the dispatch workflow's human-commenter rule. A GitHub PR comment arrives as
 # a work_item with entity.linked_change_proposal set; state.change_proposal is
 # absent there when the PR lookup fails, so it is not used as the PR signal.
-# harness/trigger_test.go evaluates this against the NormalizedEvent fixtures.
+# harness/triggertest/trigger_test.go evaluates this against the NormalizedEvent fixtures.
 trigger: >
   (event.entity.kind == "change_proposal"
     && event.transition.kind in ["opened", "synchronized", "marked_ready"])
