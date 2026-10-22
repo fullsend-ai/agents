@@ -18,6 +18,28 @@ providers:
 role: retro
 slug: fullsend-ai-retro
 
+# CEL dispatch trigger (docs/guides/user/cel-triggers-reference.md in
+# fullsend). Matches the event selection of the retro routing in fullsend's
+# reusable-dispatch.yml: a PR closed, merged or not; or a /fs-retro comment
+# from a human on an issue or a PR/MR. Authorization stays with the platform
+# gate, so this expression has no role checks: /fs-retro needs write, and the
+# close arm has no actor check because fullsend's authorization contract lets
+# any closer start a retro (its lifecycle-close exception). The gate does not
+# grant that exception on the CEL path yet; until it does, only a closer with
+# write access starts a retro there. Discussion and Jira comments never
+# reached the retro routing, so the comment arm leaves them out.
+# harness/triggertest/trigger_test.go evaluates this against the
+# NormalizedEvent fixtures.
+trigger: >
+  (event.entity.kind == "change_proposal"
+    && event.transition.kind in ["closed", "merged"])
+  || (event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
+    && event.transition.comment.command == "/fs-retro"
+    && event.actor.kind == "human"
+    && event.source.system in ["github", "gitlab"]
+    && event.entity.kind in ["work_item", "change_proposal"])
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env

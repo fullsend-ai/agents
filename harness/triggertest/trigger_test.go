@@ -106,16 +106,42 @@ func sub(t *testing.T, m map[string]any, key string) map[string]any {
 	return v
 }
 
-func TestReviewTrigger(t *testing.T) {
-	prg := compileTrigger(t, loadTrigger(t, filepath.Join("..", "review.yaml")))
-	dir := fixturesDir(t)
+// triggerCase evaluates a harness trigger against a fixture, optionally
+// edited first.
+type triggerCase struct {
+	name    string
+	fixture string
+	edit    func(t *testing.T, ev map[string]any)
+	want    bool
+}
 
-	cases := []struct {
-		name    string
-		fixture string
-		edit    func(t *testing.T, ev map[string]any)
-		want    bool
-	}{
+func runTriggerCases(t *testing.T, harnessFile string, cases []triggerCase) {
+	t.Helper()
+	prg := compileTrigger(t, loadTrigger(t, filepath.Join("..", harnessFile)))
+	dir := fixturesDir(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := loadFixture(t, dir, tc.fixture)
+			if tc.edit != nil {
+				tc.edit(t, ev)
+			}
+			out, _, err := prg.Eval(map[string]any{"event": ev})
+			if err != nil {
+				t.Fatalf("evaluating trigger: %v", err)
+			}
+			got, ok := out.Value().(bool)
+			if !ok {
+				t.Fatalf("trigger result is %T, not bool", out.Value())
+			}
+			if got != tc.want {
+				t.Errorf("trigger = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReviewTrigger(t *testing.T) {
+	runTriggerCases(t, "review.yaml", []triggerCase{
 		{name: "PR opened", fixture: "pr-opened.json", want: true},
 		{name: "fork PR opened", fixture: "pr-opened-fork.json", want: true},
 		{name: "PR synchronized", fixture: "pr-synchronized.json", want: true},
@@ -268,44 +294,154 @@ func TestReviewTrigger(t *testing.T) {
 		{name: "MR merged", fixture: "gitlab-mr-merged.json", want: false},
 		{name: "review requested changes", fixture: "review-changes-requested.json", want: false},
 		{name: "issue opened", fixture: "issue-opened.json", want: false},
-	}
+	})
+}
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ev := loadFixture(t, dir, tc.fixture)
-			if tc.edit != nil {
-				tc.edit(t, ev)
-			}
-			out, _, err := prg.Eval(map[string]any{"event": ev})
-			if err != nil {
-				t.Fatalf("evaluating trigger: %v", err)
-			}
-			got, ok := out.Value().(bool)
-			if !ok {
-				t.Fatalf("trigger result is %T, not bool", out.Value())
-			}
-			if got != tc.want {
-				t.Errorf("trigger = %v, want %v", got, tc.want)
-			}
-		})
-	}
+func TestRetroTrigger(t *testing.T) {
+	runTriggerCases(t, "retro.yaml", []triggerCase{
+		{name: "PR closed", fixture: "pr-closed.json", want: true},
+		{
+			name:    "PR merged",
+			fixture: "pr-closed.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "merged"
+			},
+			want: true,
+		},
+		{
+			name:    "PR closed by a bot",
+			fixture: "pr-closed.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				actor := sub(t, ev, "actor")
+				actor["kind"] = "bot"
+				actor["role"] = "none"
+			},
+			want: true,
+		},
+		{
+			name:    "PR closed by its read-only author",
+			fixture: "pr-closed.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				actor := sub(t, ev, "actor")
+				actor["role"] = "read"
+				actor["is_entity_author"] = true
+			},
+			want: true,
+		},
+		{name: "MR merged", fixture: "gitlab-mr-merged.json", want: true},
+		{
+			name:    "/fs-retro comment on a PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-retro comment on an issue",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+				delete(sub(t, ev, "entity"), "linked_change_proposal")
+				delete(sub(t, ev, "state"), "change_proposal")
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-retro comment on an MR",
+			fixture: "gitlab-mr-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				ev["transition"] = map[string]any{
+					"kind":    "comment_added",
+					"comment": map[string]any{"command": "/fs-retro", "body": "/fs-retro"},
+				}
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-retro comment by a bot",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-retro comment edited on a PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "comment_edited"
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-retro comment on a Jira issue",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-retro comment on a discussion",
+			fixture: "discussion-fs-vouch-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "comment")["command"] = "/fs-retro"
+			},
+			want: false,
+		},
+		{
+			name:    "comment without a command",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				delete(sub(t, sub(t, ev, "transition"), "comment"), "command")
+			},
+			want: false,
+		},
+		{name: "/fs-fix comment on a PR", fixture: "fs-fix-comment.json", want: false},
+		{
+			name:    "issue closed",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "closed"
+			},
+			want: false,
+		},
+		{
+			name:    "PR reopened",
+			fixture: "pr-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "reopened"
+			},
+			want: false,
+		},
+		{name: "PR opened", fixture: "pr-opened.json", want: false},
+		{name: "PR synchronized", fixture: "pr-synchronized.json", want: false},
+		{name: "review requested changes", fixture: "review-changes-requested.json", want: false},
+		{name: "ready-to-code label added to an issue", fixture: "ready-to-code-labeled.json", want: false},
+		{name: "issue opened", fixture: "issue-opened.json", want: false},
+	})
 }
 
 // Dispatch skips an agent whose trigger errors (for example on a missing
-// key), so the trigger must evaluate cleanly on every fixture shape.
-func TestReviewTriggerEvaluatesOnEveryFixture(t *testing.T) {
-	prg := compileTrigger(t, loadTrigger(t, filepath.Join("..", "review.yaml")))
+// key), so every trigger must evaluate cleanly on every fixture shape.
+func TestTriggersEvaluateOnEveryFixture(t *testing.T) {
 	dir := fixturesDir(t)
 	files, err := filepath.Glob(filepath.Join(dir, "*.json"))
 	if err != nil || len(files) == 0 {
 		t.Fatalf("listing fixtures in %s: %v", dir, err)
 	}
-	for _, f := range files {
-		t.Run(filepath.Base(f), func(t *testing.T) {
-			ev := loadFixture(t, dir, filepath.Base(f))
-			if _, _, err := prg.Eval(map[string]any{"event": ev}); err != nil {
-				t.Errorf("evaluating trigger: %v", err)
-			}
-		})
+	for _, harnessFile := range []string{"review.yaml", "retro.yaml"} {
+		prg := compileTrigger(t, loadTrigger(t, filepath.Join("..", harnessFile)))
+		for _, f := range files {
+			t.Run(harnessFile+"/"+filepath.Base(f), func(t *testing.T) {
+				ev := loadFixture(t, dir, filepath.Base(f))
+				if _, _, err := prg.Eval(map[string]any{"event": ev}); err != nil {
+					t.Errorf("evaluating trigger: %v", err)
+				}
+			})
+		}
 	}
 }
