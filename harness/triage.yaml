@@ -18,6 +18,34 @@ providers:
 role: triage
 slug: fullsend-ai-triage
 
+# CEL dispatch trigger (docs/guides/user/cel-triggers-reference.md in
+# fullsend). Matches the event selection of the triage routing in fullsend's
+# reusable-dispatch.yml: an issue opened or edited by a human; the
+# ready-for-triage label added to an issue, by a human or a bot (post-triage
+# labels the sub-issues it creates); or a /fs-triage comment from a human on
+# an issue, a PR or an MR (a GitHub PR comment arrives as a work_item, a
+# GitLab MR note as a change_proposal). Authorization stays with the platform
+# gate, so this expression has no role checks. The human guard on opened,
+# edited and /fs-triage keeps the triage bot's own sub-issues, edits and
+# comments from triaging again once the gate recognizes fullsend bots;
+# post-triage already avoids issue edits for the same reason. The expression
+# is forge-neutral, so a Jira poller that dispatches triage also matches Jira
+# issues opened or edited. harness/triggertest/trigger_test.go evaluates this
+# against the NormalizedEvent fixtures.
+trigger: >
+  (event.entity.kind == "work_item"
+    && event.transition.kind in ["opened", "edited"]
+    && event.actor.kind == "human")
+  || (event.entity.kind == "work_item"
+    && event.transition.kind == "label_changed"
+    && event.transition.label.name == "ready-for-triage"
+    && event.transition.label.action == "added")
+  || (event.entity.kind in ["work_item", "change_proposal"]
+    && event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
+    && event.transition.comment.command == "/fs-triage"
+    && event.actor.kind == "human")
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env

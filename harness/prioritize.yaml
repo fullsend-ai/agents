@@ -18,6 +18,23 @@ providers:
 role: prioritize
 slug: fullsend-ai-prioritize
 
+# CEL dispatch trigger (docs/guides/user/cel-triggers-reference.md in
+# fullsend). Matches the event selection of the prioritize routing in
+# fullsend's reusable-dispatch.yml: a /fs-prioritize comment from a human on
+# an issue, a PR or an MR (a GitHub PR comment arrives as a work_item, a
+# GitLab MR note as a change_proposal). The scheduled scoring path dispatches
+# reusable-prioritize.yml directly and never reaches this trigger.
+# Authorization stays with the platform gate, so this expression has no role
+# checks.
+# harness/triggertest/trigger_test.go evaluates this against the
+# NormalizedEvent fixtures.
+trigger: >
+  event.entity.kind in ["work_item", "change_proposal"]
+    && event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
+    && event.transition.comment.command == "/fs-prioritize"
+    && event.actor.kind == "human"
+
 host_files:
   - src: env/gcp-vertex.env
     dest: /sandbox/workspace/.env.d/gcp-vertex.env

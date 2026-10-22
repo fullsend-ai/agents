@@ -425,6 +425,245 @@ func TestRetroTrigger(t *testing.T) {
 	})
 }
 
+func setCommand(t *testing.T, ev map[string]any, command string) {
+	t.Helper()
+	sub(t, sub(t, ev, "transition"), "comment")["command"] = command
+}
+
+func setLabel(ev map[string]any, name, action string) {
+	ev["transition"] = map[string]any{
+		"kind":  "label_changed",
+		"label": map[string]any{"name": name, "action": action},
+	}
+}
+
+// toMRNote turns a GitHub PR comment fixture into the GitLab MR-note shape:
+// a change_proposal entity without linked_change_proposal.
+func toMRNote(t *testing.T, ev map[string]any) {
+	t.Helper()
+	entity := sub(t, ev, "entity")
+	entity["kind"] = "change_proposal"
+	delete(entity, "linked_change_proposal")
+	sub(t, ev, "source")["system"] = "gitlab"
+}
+
+func TestTriageTrigger(t *testing.T) {
+	runTriggerCases(t, "triage.yaml", []triggerCase{
+		{name: "issue opened", fixture: "issue-opened.json", want: true},
+		{
+			name:    "issue edited",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "edited"
+			},
+			want: true,
+		},
+		{
+			name:    "issue opened by a bot",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: false,
+		},
+		{
+			name:    "issue edited by a bot",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "edited"
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: false,
+		},
+		{
+			name:    "issue reopened",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "reopened"
+			},
+			want: false,
+		},
+		{
+			name:    "issue opened with source.system jira",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "source")["system"] = "jira"
+				sub(t, ev, "entity")["key"] = "PROJ-1"
+			},
+			want: true,
+		},
+		{
+			name:    "ready-for-triage label added to an issue by a bot",
+			fixture: "ready-to-code-labeled.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "label")["name"] = "ready-for-triage"
+			},
+			want: true,
+		},
+		{
+			name:    "ready-for-triage label added to an issue by a human",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setLabel(ev, "ready-for-triage", "added")
+			},
+			want: true,
+		},
+		{
+			name:    "ready-for-triage label removed from an issue",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setLabel(ev, "ready-for-triage", "removed")
+			},
+			want: false,
+		},
+		{
+			name:    "ready-for-triage label added to a PR",
+			fixture: "pr-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setLabel(ev, "ready-for-triage", "added")
+			},
+			want: false,
+		},
+		{name: "ready-to-code label added to an issue", fixture: "ready-to-code-labeled.json", want: false},
+		{name: "/fs-triage comment on a Jira issue", fixture: "jira-fs-triage-comment.json", want: true},
+		{
+			name:    "/fs-triage comment on a PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-triage")
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-triage comment on an issue",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-triage")
+				delete(sub(t, ev, "entity"), "linked_change_proposal")
+				delete(sub(t, ev, "state"), "change_proposal")
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-triage comment by a bot",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-triage comment on an MR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-triage")
+				toMRNote(t, ev)
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-triage comment edited",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-triage")
+				sub(t, ev, "transition")["kind"] = "comment_edited"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-triage comment on a discussion",
+			fixture: "discussion-fs-vouch-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-triage")
+			},
+			want: false,
+		},
+		{
+			name:    "comment without a command",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				delete(sub(t, sub(t, ev, "transition"), "comment"), "command")
+			},
+			want: false,
+		},
+		{name: "/fs-fix comment on a PR", fixture: "fs-fix-comment.json", want: false},
+		{name: "PR opened", fixture: "pr-opened.json", want: false},
+		{name: "MR opened", fixture: "gitlab-mr-opened.json", want: false},
+		{name: "PR closed", fixture: "pr-closed.json", want: false},
+		{name: "review requested changes", fixture: "review-changes-requested.json", want: false},
+	})
+}
+
+func TestPrioritizeTrigger(t *testing.T) {
+	runTriggerCases(t, "prioritize.yaml", []triggerCase{
+		{
+			name:    "/fs-prioritize comment on an issue",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-prioritize")
+				delete(sub(t, ev, "entity"), "linked_change_proposal")
+				delete(sub(t, ev, "state"), "change_proposal")
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-prioritize comment on a PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-prioritize")
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-prioritize comment on a Jira issue",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-prioritize")
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-prioritize comment on an MR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-prioritize")
+				toMRNote(t, ev)
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-prioritize comment by a bot",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-prioritize")
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-prioritize comment edited",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-prioritize")
+				sub(t, ev, "transition")["kind"] = "comment_edited"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-prioritize comment on a discussion",
+			fixture: "discussion-fs-vouch-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-prioritize")
+			},
+			want: false,
+		},
+		{name: "/fs-triage comment on a Jira issue", fixture: "jira-fs-triage-comment.json", want: false},
+		{name: "issue opened", fixture: "issue-opened.json", want: false},
+		{name: "ready-to-code label added to an issue", fixture: "ready-to-code-labeled.json", want: false},
+		{name: "PR opened", fixture: "pr-opened.json", want: false},
+	})
+}
+
 // Dispatch skips an agent whose trigger errors (for example on a missing
 // key), so every trigger must evaluate cleanly on every fixture shape.
 func TestTriggersEvaluateOnEveryFixture(t *testing.T) {
@@ -433,10 +672,19 @@ func TestTriggersEvaluateOnEveryFixture(t *testing.T) {
 	if err != nil || len(files) == 0 {
 		t.Fatalf("listing fixtures in %s: %v", dir, err)
 	}
-	for _, harnessFile := range []string{"review.yaml", "retro.yaml"} {
-		prg := compileTrigger(t, loadTrigger(t, filepath.Join("..", harnessFile)))
+	harnessFiles, err := filepath.Glob(filepath.Join("..", "*.yaml"))
+	if err != nil {
+		t.Fatalf("listing harness files: %v", err)
+	}
+	tested := 0
+	for _, harnessFile := range harnessFiles {
+		if !hasTrigger(t, harnessFile) {
+			continue
+		}
+		tested++
+		prg := compileTrigger(t, loadTrigger(t, harnessFile))
 		for _, f := range files {
-			t.Run(harnessFile+"/"+filepath.Base(f), func(t *testing.T) {
+			t.Run(filepath.Base(harnessFile)+"/"+filepath.Base(f), func(t *testing.T) {
 				ev := loadFixture(t, dir, filepath.Base(f))
 				if _, _, err := prg.Eval(map[string]any{"event": ev}); err != nil {
 					t.Errorf("evaluating trigger: %v", err)
@@ -444,4 +692,22 @@ func TestTriggersEvaluateOnEveryFixture(t *testing.T) {
 			})
 		}
 	}
+	if tested == 0 {
+		t.Fatal("no harness file in harness/ declares a trigger")
+	}
+}
+
+func hasTrigger(t *testing.T, harnessFile string) bool {
+	t.Helper()
+	data, err := os.ReadFile(harnessFile)
+	if err != nil {
+		t.Fatalf("reading %s: %v", harnessFile, err)
+	}
+	var h struct {
+		Trigger string `yaml:"trigger"`
+	}
+	if err := yaml.Unmarshal(data, &h); err != nil {
+		t.Fatalf("parsing %s: %v", harnessFile, err)
+	}
+	return strings.TrimSpace(h.Trigger) != ""
 }
