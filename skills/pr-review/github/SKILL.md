@@ -155,7 +155,8 @@ Run once, per the orchestrator's dependency-scope procedure.
 # "SCOPED: ..." and narrows pr-diff.txt to this PR's own commits, or
 # prints "SKIP: <reason>" and leaves pr-diff.txt as the full diff.
 W=/sandbox/workspace/dep-scope; mkdir -p "$W"; : > "$W/dep-prs"; : > "$W/dep-shas"; : > "$W/dep-pids"
-SKIP=""; DIFF_ACCEPT="Accept: application/vnd.github.diff"
+SKIP=""
+DIFF_ACCEPT="Accept: application/vnd.github.diff"
 # DEP_PRS comes from untrusted PR text; split it without pathname expansion.
 set -f
 gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/${PR_NUMBER}/commits?per_page=100" > "$W/own-pages.json" || SKIP="cannot list PR commits"
@@ -221,7 +222,8 @@ if test -z "$SKIP"; then
   jq -r '.files[].filename' "$W/compare.json" > "$W/files"
   mv /sandbox/workspace/pr-diff.txt /sandbox/workspace/pr-full-diff.txt
   cp "$W/pr-diff.txt" /sandbox/workspace/pr-diff.txt
-  OWN_N=$(grep -c '^own ' "$W/classified"); DEP_N=$(grep -c '^dep ' "$W/classified")
+  OWN_N=$(grep -c '^own ' "$W/classified")
+  DEP_N=$(grep -c '^dep ' "$W/classified")
   echo "SCOPED: $OWN_N own commit(s) after $LAST_DEP; $DEP_N dependency commit(s) from: $(tr '\n' ' ' < "$W/dep-prs")"
 else
   echo "SKIP: $SKIP"
