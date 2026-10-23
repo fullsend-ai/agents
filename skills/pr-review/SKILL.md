@@ -268,7 +268,7 @@ Dispatch only relevant sub-agents; a complex PR may legitimately need all 7.
 - `cross-repo-contracts` — when public APIs, exported interfaces,
   schemas, or CLI args are modified. Skip entirely for PRs that don't
   touch public API surface.
-- `user-experience` — when enabled and 3b signals match; skip backend changes.
+- `user-experience` — when 3b signals match.
 
 **Re-review dispatch (prior-finding-aware):** When
 `PRIOR_REVIEW_PROVENANCE` is `app-verified` and prior findings exist

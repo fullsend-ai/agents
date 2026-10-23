@@ -1542,6 +1542,15 @@ ${FAILED_CREATES}"
         WORKFLOW_BLOCKED=true
       fi
     fi
+    # Clear stale category labels from a prior triage run so a re-categorized
+    # issue never carries two conflicting category labels (#1725). These are
+    # control labels, so label_actions cannot remove them. Skip the current
+    # category's own label to avoid remove/re-add churn.
+    for category_label in bug documentation feature; do
+      if [[ "${category_label}" != "${CATEGORY}" ]]; then
+        tracker_remove_label "${category_label}"
+      fi
+    done
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."

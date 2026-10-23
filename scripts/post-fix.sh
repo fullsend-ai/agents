@@ -42,7 +42,8 @@
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count
-#   ITERATION_CAP     — max iterations (default: 5)
+#   ITERATION_CAP     — max iterations (default: 5); a live
+#                       `fullsend-fix-budget/N` PR label can lower it
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging)
 #   HUMAN_INSTRUCTION — the harness-captured /fs-fix comment text (only for
 #                       human-triggered runs); used to confirm a rebase or
@@ -162,6 +163,15 @@ forge_pr_has_merge_conflict() {
   [ "${mergeable}" = "CONFLICTING" ]
 }
 
+# forge_get_pr_labels PR_NUMBER — the PR's live label names, one per line.
+# Returns non-zero on API failure so callers can tell it apart from a PR
+# with no labels.
+forge_get_pr_labels() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json labels --jq '.labels[].name' 2>/dev/null
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
@@ -207,7 +217,7 @@ forge_post_pr_comment() {
   local body="$2"
   gh pr comment "${pr_number}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null
+    --body "${body}"
 }
 
 # --- Workspace operations ---
@@ -440,6 +450,20 @@ forge_pr_has_merge_conflict() {
   [ "${has_conflicts}" = "true" ] && [ "${merge_status}" = "cannot_be_merged" ]
 }
 
+# forge_get_pr_labels PR_NUMBER — the MR's live label names, one per line.
+# Returns non-zero on API failure so callers can tell it apart from an MR
+# with no labels.
+forge_get_pr_labels() {
+  local pr_number="$1"
+  local json
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || return 1
+  printf '%s' "${json}" | jq -r '.labels[]? | strings'
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
@@ -490,7 +514,7 @@ forge_post_pr_comment() {
   local mr_iid="$1"
   local body="$2"
   _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 # --- Workspace operations ---
@@ -586,6 +610,30 @@ is_human_history_rewrite_request() {
   is_human_squash_request "${1:-}" || is_human_reset_request "${1:-}"
 }
 
+# fix_budget_from_labels LABELS BOT_CAP — prints the per-PR automatic fix
+# budget N from a maintainer-set `fullsend-fix-budget/N` label when it
+# lowers BOT_CAP, or nothing when no label applies (issue #1680). LABELS is
+# newline-separated (forge_get_pr_labels output). A label is ignored when N
+# is not a positive integer without leading zeros, is oversized (more than
+# 9 digits, which would overflow bash arithmetic), or is not lower than
+# BOT_CAP. With several valid labels the smallest N wins. The budget only
+# ever tightens the bot cap; callers must not apply it to human runs.
+fix_budget_from_labels() {
+  local labels="${1:-}" bot_cap="${2:-}" label n best=""
+  [[ "${bot_cap}" =~ ^[0-9]{1,9}$ ]] || return 0
+  while IFS= read -r label; do
+    [[ "${label}" =~ ^fullsend-fix-budget/([1-9][0-9]{0,8})$ ]] || continue
+    n="${BASH_REMATCH[1]}"
+    [ "${n}" -lt "${bot_cap}" ] || continue
+    if [ -z "${best}" ] || [ "${n}" -lt "${best}" ]; then
+      best="${n}"
+    fi
+  done <<< "${labels}"
+  if [ -n "${best}" ]; then
+    printf '%s\n' "${best}"
+  fi
+}
+
 # fix_conflict_update_strategy — prints merge or rebase.
 # FIX_CONFLICT_UPDATE_STRATEGY is the harness-configured reconciliation
 # strategy used when the forge reports a real merge conflict (issue #1518).
@@ -622,6 +670,133 @@ fix_conflict_update_strategy_raw_is_known() {
 
 [[ -n "${POST_FAILURE_REPORT_SH_LOADED:-}" ]] && return 0
 POST_FAILURE_REPORT_SH_LOADED=1
+
+# shellcheck source=forge-transient-retry.lib.sh
+# BEGIN bundled: lib/forge-transient-retry.lib.sh
+# forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
+#
+# Usage:
+#   forge_retry_transient cmd [args...]
+#
+# On success, prints the command's stdout. On failure, prints the command's
+# combined output to stderr so callers (and workflow logs) can diagnose.
+# Retries only when the output looks like a transient 5xx or timeout.
+#
+# Environment:
+#   FORGE_TRANSIENT_RETRY_ATTEMPTS   — default 3
+#   FORGE_TRANSIENT_RETRY_BASE_DELAY — default 2 (seconds; doubles each retry)
+
+# shellcheck shell=bash
+
+[[ -n "${FORGE_TRANSIENT_RETRY_SH_LOADED:-}" ]] && return 0
+FORGE_TRANSIENT_RETRY_SH_LOADED=1
+
+forge_is_transient_error() {
+  local text="$1"
+  local lower
+  lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
+
+  if echo "${lower}" | grep -qE \
+    'http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
+    return 0
+  fi
+  if echo "${lower}" | grep -qE \
+    'internal server error|service unavailable|bad gateway|gateway timeout'; then
+    return 0
+  fi
+  if echo "${lower}" | grep -qE \
+    'context deadline exceeded|connection reset|i/o timeout|operation timed out|timed out'; then
+    return 0
+  fi
+  # Go net/http (gh) and curl timeout diagnostics that carry no other marker.
+  # Specific phrases only: a bare "timeout" would match branch names such as
+  # "agent/42-fix-webhook-timeout".
+  if echo "${lower}" | grep -qE \
+    'tls handshake timeout|ssl connection timeout|timeout awaiting response headers|connection timeout after|client\.timeout exceeded'; then
+    return 0
+  fi
+  return 1
+}
+
+_forge_retry_notice() {
+  local msg="$1"
+  # Always stderr so success stdout (e.g. a PR URL) stays clean.
+  if declare -F gha_echo >/dev/null 2>&1; then
+    gha_echo warning "${msg}" >&2
+  else
+    echo "${msg}" >&2
+  fi
+}
+
+# Sanitize captured command output before it reaches the runner log.
+# Secret redaction (tokens/PEMs) comes from sanitize_failure_detail when
+# post-failure-report.lib.sh is loaded. Whether or not it is, the same
+# order-safe escaping runs as the final step on every path: the shared
+# sanitizers delete "%0A"/"::" piecemeal, and a nested payload such as
+# ":%0%0AA:error" can reassemble into a live "::error" command after one
+# deletion pass. Escaping instead of deleting avoids that — "%" is escaped
+# first and then "::", so no sequence of the escaped output can form "::",
+# "%0A" or "%0D". ANSI escapes and other control characters are dropped
+# (newline and tab kept).
+_forge_retry_sanitize() {
+  local text="$1"
+  if declare -F sanitize_failure_detail >/dev/null 2>&1; then
+    # max_lines=0 disables truncation — this is diagnostic log output, not a
+    # length-limited PR comment.
+    text="$(sanitize_failure_detail "${text}" 0)"
+  fi
+  text="$(printf '%s' "${text}" | LC_ALL=C tr -d '\000-\010\013-\037\177')"
+  text="${text//%/%25}"
+  text="${text//::/%3A%3A}"
+  printf '%s' "${text}"
+}
+
+# Run a command, retrying transient 5xx/timeout failures with exponential
+# backoff (2s, 4s, 8s by default). Non-transient failures return immediately.
+forge_retry_transient() {
+  local max_attempts="${FORGE_TRANSIENT_RETRY_ATTEMPTS:-3}"
+  local delay="${FORGE_TRANSIENT_RETRY_BASE_DELAY:-2}"
+  local attempt=1
+  local outfile errfile rc combined
+
+  outfile=$(mktemp)
+  errfile=$(mktemp)
+  # shellcheck disable=SC2064
+  trap "rm -f '${outfile}' '${errfile}'" RETURN
+
+  while [ "${attempt}" -le "${max_attempts}" ]; do
+    : >"${outfile}"
+    : >"${errfile}"
+    rc=0
+    "$@" >"${outfile}" 2>"${errfile}" || rc=$?
+
+    if [ "${rc}" -eq 0 ]; then
+      cat "${outfile}"
+      return 0
+    fi
+
+    combined=$(cat "${outfile}" "${errfile}")
+    if [ "${attempt}" -lt "${max_attempts}" ] && forge_is_transient_error "${combined}"; then
+      _forge_retry_notice \
+        "Transient forge error (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
+      sleep "${delay}"
+      delay=$((delay * 2))
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    local sanitized_combined
+    sanitized_combined="$(_forge_retry_sanitize "${combined}")"
+    printf '%s' "${sanitized_combined}" >&2
+    if [ -n "${sanitized_combined}" ]; then
+      printf '\n' >&2
+    fi
+    return "${rc}"
+  done
+
+  return 1
+}
+# END bundled: lib/forge-transient-retry.lib.sh
 
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
@@ -916,6 +1091,124 @@ _post_failure_ensure_token() {
   fi
 }
 
+# Create the last-resort label directly against the forge API. Deliberately
+# does not call forge_create_label: that helper swallows errors
+# (`2>/dev/null || true` on every forge), so we would never know whether the
+# label actually got created. A create failure here is non-fatal (the label
+# may already exist), but it must be visible, not silently eaten.
+_post_failure_create_label() {
+  local label="$1"
+  local description="$2"
+
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [ -z "${REPO_ENCODED:-}" ]; then
+      return 1
+    fi
+    if declare -F _gitlab_code_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_code_api POST "/projects/${REPO_ENCODED}/labels" \
+        --data-urlencode "name=${label}" \
+        --data-urlencode "description=${description}" \
+        --data-urlencode "color=#B60205" >/dev/null
+      return $?
+    fi
+    if declare -F _gitlab_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_api POST "/projects/${REPO_ENCODED}/labels" \
+        --data-urlencode "name=${label}" \
+        --data-urlencode "description=${description}" \
+        --data-urlencode "color=#B60205" >/dev/null
+      return $?
+    fi
+    return 1
+  fi
+
+  forge_retry_transient gh label create "${label}" --repo "${REPO_FULL_NAME}" \
+    --description "${description}" --color "B60205" --force >/dev/null
+}
+
+# Apply the last-resort label directly against the forge API and report the
+# real exit status. Deliberately does not call forge_add_label or
+# forge_add_pr_label: those helpers are the best-effort production paths
+# (github-code-ops.lib.sh / gitlab-code-ops.lib.sh / github-fix-ops.lib.sh /
+# gitlab-fix-ops.lib.sh) and unconditionally swallow forge errors
+# (`2>/dev/null || true`), so a failure during the same outage that already
+# failed the retried comment would go unnoticed no matter how it's wrapped.
+# Always go straight to the direct API calls below, wrapped in
+# forge_retry_transient, so a persistent failure is actually surfaced.
+_post_failure_add_label() {
+  local label="$1"
+  local target="$2"
+  local number="$3"
+
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [ -z "${REPO_ENCODED:-}" ]; then
+      return 1
+    fi
+    local endpoint
+    if [ "${target}" = "pr" ]; then
+      endpoint="/projects/${REPO_ENCODED}/merge_requests/${number}"
+    else
+      endpoint="/projects/${REPO_ENCODED}/issues/${number}"
+    fi
+    if declare -F _gitlab_code_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_code_api PUT "${endpoint}" \
+        --data-urlencode "add_labels=${label}" >/dev/null
+      return $?
+    fi
+    if declare -F _gitlab_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_api PUT "${endpoint}" \
+        --data-urlencode "add_labels=${label}" >/dev/null
+      return $?
+    fi
+    return 1
+  fi
+
+  if [ "${target}" = "pr" ]; then
+    forge_retry_transient gh pr edit "${number}" --repo "${REPO_FULL_NAME}" \
+      --add-label "${label}" >/dev/null
+    return $?
+  fi
+  forge_retry_transient gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels" \
+    -f "labels[]=${label}" --silent
+}
+
+# Last-resort discoverability when even the retried failure comment fails.
+# A label survives when every comment attempt is swallowed by a forge outage.
+_post_failure_apply_failed_label() {
+  local label="$1"
+  local target="${2:-issue}"
+  local number description
+
+  if [ "${target}" = "pr" ]; then
+    number="${PR_NUMBER:-}"
+    description="Fix agent post-script failed"
+  else
+    number="${ISSUE_NUMBER:-}"
+    description="Code agent post-script failed"
+  fi
+
+  if [ -z "${number}" ] || [ -z "${REPO_FULL_NAME:-}" ]; then
+    gha_echo warning "Cannot apply last-resort ${label} label (missing issue/PR number or repo)"
+    return 1
+  fi
+
+  gha_echo warning "Applying last-resort ${label} label so the failure is discoverable"
+
+  if ! _post_failure_create_label "${label}" "${description}"; then
+    gha_echo warning "Failed to create last-resort ${label} label (may already exist)"
+  fi
+
+  if _post_failure_add_label "${label}" "${target}" "${number}"; then
+    return 0
+  fi
+
+  # `number` may be the unvalidated raw env value on this path; escape it
+  # order-safely (not delete-based) before it reaches a workflow-command line.
+  local log_number
+  log_number="$(_forge_retry_sanitize "${number}")"
+  gha_echo warning "Failed to apply last-resort ${label} label to ${target} #${log_number}"
+  return 1
+}
+
 report_post_failure_to_issue() {
   local exit_code="${1:-$?}"
   local safe_issue_number
@@ -948,14 +1241,16 @@ report_post_failure_to_issue() {
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
   if declare -F forge_post_issue_comment >/dev/null 2>&1; then
-    if ! forge_post_issue_comment "${body}"; then
+    if ! forge_retry_transient forge_post_issue_comment "${body}"; then
       gha_echo warning "Failed to post error comment to issue #${safe_issue_number}"
+      _post_failure_apply_failed_label "code-agent-failed" "issue" || true
     fi
   else
-    if ! gh issue comment "${ISSUE_NUMBER}" \
+    if ! forge_retry_transient gh issue comment "${ISSUE_NUMBER}" \
       --repo "${REPO_FULL_NAME}" \
-      --body "${body}" 2>/dev/null; then
-      gha_echo warning "Failed to post error comment to issue #${safe_issue_number} (check issues:write on PUSH_TOKEN)"
+      --body "${body}"; then
+      gha_echo warning "Failed to post error comment to issue #${safe_issue_number}"
+      _post_failure_apply_failed_label "code-agent-failed" "issue" || true
     fi
   fi
 }
@@ -983,14 +1278,16 @@ report_post_failure_to_pr() {
 
   gha_echo warning "Posting failure comment to PR #${safe_pr_number}..."
   if declare -F forge_post_pr_comment >/dev/null 2>&1; then
-    if ! forge_post_pr_comment "${PR_NUMBER}" "${body}"; then
+    if ! forge_retry_transient forge_post_pr_comment "${PR_NUMBER}" "${body}"; then
       gha_echo warning "Failed to post error comment to PR #${safe_pr_number}"
+      _post_failure_apply_failed_label "fix-agent-failed" "pr" || true
     fi
   else
-    if ! gh pr comment "${PR_NUMBER}" \
+    if ! forge_retry_transient gh pr comment "${PR_NUMBER}" \
       --repo "${REPO_FULL_NAME}" \
-      --body "${body}" 2>/dev/null; then
-      gha_echo warning "Failed to post error comment to PR #${safe_pr_number} (check pull-requests:write on PUSH_TOKEN)"
+      --body "${body}"; then
+      gha_echo warning "Failed to post error comment to PR #${safe_pr_number}"
+      _post_failure_apply_failed_label "fix-agent-failed" "pr" || true
     fi
   fi
 }
@@ -2723,7 +3020,7 @@ fi
 # the note on its own so the rewrite still leaves a trace on the PR.
 signoff_note_fallback() {
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
-    forge_post_pr_comment "${PR_NUMBER}" \
+    forge_retry_transient forge_post_pr_comment "${PR_NUMBER}" \
       "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)." \
       || gha_echo warning "Could not post the Signed-off-by strip note to PR #${PR_NUMBER}"
   fi
@@ -2767,13 +3064,30 @@ fi
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
+
+# Per-PR automatic fix budget (issue #1680): mirror pre-fix so the
+# needs-human warning and summary use the same tightened bot cap that
+# pre-fix enforces. Read live; a failed read keeps the configured cap.
+FIX_BUDGET=""
+if is_bot_user "${TRIGGER_SOURCE}"; then
+  if PR_LABELS_LIVE="$(forge_get_pr_labels "${PR_NUMBER}")"; then
+    FIX_BUDGET="$(fix_budget_from_labels "${PR_LABELS_LIVE}" "${BOT_CAP}")"
+  else
+    gha_echo warning "Could not read PR labels — any fullsend-fix-budget/N label is ignored for this run"
+  fi
+fi
+BOT_CAP="${FIX_BUDGET:-${BOT_CAP}}"
 WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 
 # The needs-human label is based on the bot cap — it signals that the
 # autonomous review→fix loop needs human direction. Human-triggered /fs-fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
-  gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  if [ -n "${FIX_BUDGET}" ]; then
+    gha_echo warning "Fix iteration ${ITERATION} is approaching the per-PR automatic fix budget of ${BOT_CAP} set by label fullsend-fix-budget/${FIX_BUDGET}"
+  else
+    gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  fi
   forge_create_label "needs-human" "Agent loop needs human intervention" "D93F0B"
   # shellcheck disable=SC2153
   forge_add_pr_label "${PR_NUMBER}" "needs-human"
@@ -2788,7 +3102,9 @@ echo "  Branch: ${BRANCH:-none}"
 echo "  PR: #${PR_NUMBER}"
 if [ "${NO_PUSH}" = "true" ]; then echo "  Pushed: no"; else echo "  Pushed: yes"; fi
 echo "  Trigger: ${TRIGGER_SOURCE}"
-if is_bot_user "${TRIGGER_SOURCE}"; then
+if is_bot_user "${TRIGGER_SOURCE}" && [ -n "${FIX_BUDGET}" ]; then
+  echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap, lowered by label fullsend-fix-budget/${FIX_BUDGET})"
+elif is_bot_user "${TRIGGER_SOURCE}"; then
   echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap)"
 else
   echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap, total across bot+human)"

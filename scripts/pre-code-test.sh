@@ -1119,6 +1119,40 @@ run_gitlab_prescript_output_test "protocol-empty-on-gitlab-api-failure" \
   "" \
   0
 
+# --- Regression: forge_retry_transient must be defined for every forge ---
+# The pre-code scripts call forge_retry_transient outside the forge-specific
+# libs (GitLab MR creation, skip comments). The helper used to be bundled only
+# inside the github) arm of the code-ops dispatcher, so under
+# FULLSEND_FORGE=gitlab it was undefined ("command not found").
+for forge in github gitlab; do
+  test_name="code-ops-defines-forge-retry-transient-${forge}"
+  if (
+    export SCRIPT_DIR FULLSEND_FORGE="${forge}" CI_SERVER_HOST="gitlab.example.com"
+    # shellcheck source=lib/code-ops.lib.sh
+    source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
+    declare -F forge_retry_transient >/dev/null
+  ); then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — forge_retry_transient not defined after sourcing code-ops.lib.sh"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+
+# Bundled mode: the helper must be bundled before the forge dispatch (i.e.
+# before the forge-specific libs), not nested inside a single forge arm.
+for bundle in pre-code.sh pre-code-jira.sh; do
+  test_name="bundle-loads-forge-retry-transient-before-forge-dispatch-${bundle}"
+  retry_line=$(grep -n '^# BEGIN bundled: lib/forge-transient-retry.lib.sh' "${SCRIPT_DIR}/${bundle}" | head -1 | cut -d: -f1)
+  gh_line=$(grep -n '^# BEGIN bundled: lib/github-code-ops.lib.sh' "${SCRIPT_DIR}/${bundle}" | head -1 | cut -d: -f1)
+  if [[ -z "${retry_line}" || -z "${gh_line}" ]] || (( retry_line >= gh_line )); then
+    echo "FAIL: ${test_name} — retry lib not bundled ahead of forge-specific libs (retry=${retry_line:-none}, github=${gh_line:-none})"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}"
+  fi
+done
+
 # --- Summary ---
 
 echo ""

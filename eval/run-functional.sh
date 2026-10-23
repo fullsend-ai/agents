@@ -494,6 +494,34 @@ print_judge_errors() {
   done <<< "$1"
 }
 
+# score.py prints only per-judge aggregates (a pass rate, a mean), so name
+# the case behind each one from summary.yaml, sorted by case then judge: a
+# boolean judge that returned false is a failed check, shown with its
+# rationale; a judge with an `error` entry gave no verdict, so it is a judge
+# error, never a failed check. Covers report-only judges too, and decides
+# nothing: the exit code is still set from score.py's result below.
+print_case_results() {
+  [[ -f "$SUMMARY_YAML" ]] || return 0
+  local kind case_id judge reason label
+  # jq's @tsv escapes tabs and newlines, so each record is one line.
+  while IFS=$'\t' read -r kind case_id judge reason; do
+    if [[ "$kind" == "error" ]]; then
+      label="CASE JUDGE ERROR"
+    else
+      label="CASE CHECK FAILED"
+    fi
+    reason="${reason:0:300}"
+    echo "${label}: [$(log_safe "$judge")] $(log_safe "$case_id"): $(log_safe "${reason:-(no reason recorded)}")" >&2
+  done < <(yq -o=json '.per_case // {}' "$SUMMARY_YAML" 2>/dev/null | jq -r '
+             to_entries | sort_by(.key)[] | .key as $c
+             | .value | select(type == "object") | to_entries | sort_by(.key)[]
+             | select(.value | type == "object")
+             | if .value.error != null then ["error", $c, .key, (.value.error | tostring)]
+               elif .value.value == false then ["fail", $c, .key, (.value.rationale // "" | tostring)]
+               else empty end
+             | @tsv' 2>/dev/null || true)
+}
+
 score_exit=0
 run_score || score_exit=$?
 # One retry when a judge errored and nothing else has already decided the
@@ -510,6 +538,7 @@ errored="$(errored_judges)"
 # Report judge errors even when no threshold failed (the *_quality
 # thresholds are dropped at runtime), so an unscored judge is never silent.
 print_judge_errors "$errored"
+print_case_results
 
 score_verdict="pass"
 if [[ $score_exit -ne 0 ]]; then

@@ -9,7 +9,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:9d23e266e53dcedaa5f6a727901bb2ccb37922e9752173a4328be9f447063ce7
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:136e41031681bad84d28a1f25e0f26fdf2deaababd820c2487033db475e2c87c
 policy: policies/base.yaml
 readonly_repo: true
 providers:
@@ -18,6 +18,33 @@ providers:
 
 role: review
 slug: fullsend-ai-review
+
+# CEL dispatch trigger (docs/guides/user/cel-triggers-reference.md in
+# fullsend). Matches the event selection of the review routing in fullsend's
+# reusable-dispatch.yml: a PR opened, pushed to, or marked ready; the
+# ready-for-review label added to a PR, by a human or a bot; or a /fs-review
+# comment from a human on a PR/MR. GitLab dispatch only emits MR opened and
+# MR notes, so on GitLab this fires on MR opened and /fs-review only.
+# Authorization stays with the platform gate, so this expression has no role
+# checks; who may trigger a review differs from the dispatch workflow until
+# the gate's per-harness threshold lands. A GitHub PR comment arrives as a
+# work_item with entity.linked_change_proposal set; state.change_proposal is
+# absent there when the PR lookup fails, so it is not used as the PR signal.
+# harness/triggertest/trigger_test.go evaluates this against the
+# NormalizedEvent fixtures.
+trigger: >
+  (event.entity.kind == "change_proposal"
+    && event.transition.kind in ["opened", "synchronized", "marked_ready"])
+  || (event.entity.kind == "change_proposal"
+    && event.transition.kind == "label_changed"
+    && event.transition.label.name == "ready-for-review"
+    && event.transition.label.action == "added")
+  || (event.transition.kind == "comment_added"
+    && has(event.transition.comment.command)
+    && event.transition.comment.command == "/fs-review"
+    && event.actor.kind == "human"
+    && (event.entity.kind == "change_proposal"
+        || has(event.entity.linked_change_proposal)))
 
 skills:
   - skills/pr-review
@@ -60,12 +87,14 @@ env:
   # override these keys via harness `base:` composition.
   runner:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
+    REVIEW_UX_ENABLED: "true"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.gitignore,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
   sandbox:
     REVIEW_FINDING_SEVERITY_THRESHOLD: "low"
-    # UXD is opt-in; set true in a harness overlay to enable it.
-    REVIEW_UX_ENABLED: "false"
+    # UXD runs by default; set false in both runner and sandbox sections of a
+    # harness overlay to opt out.
+    REVIEW_UX_ENABLED: "true"
     REVIEW_PROTECTED_PATHS: ".claude/,.cursor/,.pi/,.gitattributes,.gitignore,.github/,.pre-commit-config.yaml,AGENTS.md,agents/,api-servers/,CLAUDE.md,CODEOWNERS,Containerfile,Dockerfile,harness/,images/,plugins/,policies/,profiles/,providers/,scripts/,skills/"
     REPO_FULL_NAME: "${REPO_FULL_NAME}"
     PRIOR_REVIEW_SHA: "${PRIOR_REVIEW_SHA}"

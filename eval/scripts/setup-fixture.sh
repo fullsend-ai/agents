@@ -67,6 +67,18 @@ FIXTURE_BODY=${FIXTURE_BODY//\$\{REPO_URL\}/https://github.com/${EPHEMERAL_REPO}
 gh repo create "$EPHEMERAL_REPO" --public --description "Ephemeral eval repo (auto-deleted)"
 echo "Created repo: $EPHEMERAL_REPO"
 
+# Record the repo for teardown-fixture.sh before anything else can fail.
+# The harness collects .hook-outputs.yaml only after this hook succeeds;
+# when a later step fails, the file stays in CASE_WORKSPACE and
+# teardown-fixture.sh reads it from there to delete the repo. The full
+# file written at the end replaces this one.
+cat > "$CASE_WORKSPACE/.hook-outputs.yaml" <<YAML
+env:
+  EPHEMERAL_REPO: "${EPHEMERAL_REPO}"
+data:
+  ephemeral_repo: "${EPHEMERAL_REPO}"
+YAML
+
 TARGET_DIR=$(mktemp -d)
 # Username comes from the helper; URL userinfo is lost when curl strips it from the effective URL.
 GH_CRED_HELPER='!f(){ echo "username=x-access-token"; echo "password=${GH_TOKEN}"; };f'

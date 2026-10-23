@@ -58,3 +58,10 @@ repos:
         language: script
         files: ^(eval/measurements/|eval/lint-measurements)
         pass_filenames: false
+      - id: lint-release-cases
+        name: lint eval release-tier coverage
+        entry: python3 eval/lint-release-cases.py
+        language: python
+        additional_dependencies: [PyYAML==6.0.3]
+        always_run: true
+        pass_filenames: false

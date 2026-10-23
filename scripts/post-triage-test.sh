@@ -621,6 +621,38 @@ run_test_no_pattern "label-actions-all-refused-no-reason" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","label_actions":{"reason":"Should not appear.","actions":[{"action":"add","label":"ready-to-code"}]}}' \
   "Should not appear."
 
+# Re-categorization must clear stale category labels from a prior triage run,
+# since label_actions cannot remove control labels (#1725). The current
+# category's own label must not be removed.
+CATEGORY_BUG_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash on save","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_save_crash"},"comment":"## Triage Summary\n\nThis is ready."}'
+CATEGORY_DOCS_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Update docs","severity":"low","category":"documentation","problem":"Outdated docs","root_cause_hypothesis":"Not updated","reproduction_steps":["step 1"],"environment":"Linux","impact":"Contributors","recommended_fix":"Update README","proposed_test_case":"test_docs"},"comment":"## Triage Summary\n\nThis is a documentation issue."}'
+CATEGORY_FEATURE_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Add dark mode","severity":"medium","category":"feature","problem":"No dark mode","root_cause_hypothesis":"Not implemented","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add theme toggle","proposed_test_case":"test_dark_mode"},"comment":"## Triage Summary\n\nThis is a feature.","label_actions":{"reason":"Reporter asked for bug label removal.","actions":[{"action":"remove","label":"bug"},{"action":"add","label":"feature"}]}}'
+CATEGORY_PERF_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Slow query","severity":"medium","category":"performance","problem":"Slow","root_cause_hypothesis":"Missing index","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Add index","proposed_test_case":"test_query_speed"},"comment":"## Triage Summary\n\nThis is a performance issue."}'
+CATEGORY_OTHER_FIXTURE='{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Misc","severity":"low","category":"other","problem":"Misc","root_cause_hypothesis":"Unclear","reproduction_steps":["step 1"],"environment":"Linux","impact":"Some","recommended_fix":"Investigate","proposed_test_case":"test_misc"},"comment":"## Triage Summary\n\nMisc."}'
+CATEGORY_LABEL_DELETE="gh api repos/test-org/test-repo/issues/42/labels"
+
+for pair in "bug:${CATEGORY_BUG_FIXTURE}" "documentation:${CATEGORY_DOCS_FIXTURE}" "feature:${CATEGORY_FEATURE_FIXTURE}" "performance:${CATEGORY_PERF_FIXTURE}" "other:${CATEGORY_OTHER_FIXTURE}"; do
+  category="${pair%%:*}"
+  fixture="${pair#*:}"
+  for label in bug documentation feature; do
+    if [[ "${label}" == "${category}" ]]; then
+      run_test_no_pattern "sufficient-${category}-keeps-${label}-label" \
+        "${fixture}" \
+        "${CATEGORY_LABEL_DELETE}/${label} -X DELETE --silent"
+    else
+      run_test "sufficient-${category}-clears-stale-${label}-label" \
+        "${fixture}" \
+        "${CATEGORY_LABEL_DELETE}/${label} -X DELETE --silent"
+    fi
+  done
+done
+
+# The control-label guard still refuses agent label_actions on category labels;
+# the post-script performs the cleanup itself.
+run_test_stdout "sufficient-feature-label-actions-remove-bug-still-refused" \
+  "${CATEGORY_FEATURE_FIXTURE}" \
+  "::warning::Refused to remove control label 'bug' -- control labels are managed by the triage pipeline"
+
 # run_test_label_order verifies that a pattern appears AFTER another pattern
 # in the gh call log (i.e., ordering of API calls).
 run_test_label_order() {

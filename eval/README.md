@@ -50,7 +50,11 @@ them from the runtime copy of the config only. That includes a quality
 judge's `max_error_rate`, so a judge that errors (for example a 400 from
 the judge model) no longer fails the run or triggers a scoring retry: it
 shows up only as a `JUDGE ERROR` line in the log and in the summary's
-error count. A case that fails before the agent runs is still an
+error count. After scoring, every check that failed on a case is logged
+as `CASE CHECK FAILED: [<judge>] <case>: <reason>`, and every judge that
+gave a case no verdict as `CASE JUDGE ERROR: [<judge>] <case>: <error>`,
+gating or report-only alike; these lines change no exit code. A case
+that fails before the agent runs is still an
 infrastructure failure (exit 3). Review has no
 `max_turns` judge, because its turn count does not track the work done.
 
@@ -128,7 +132,23 @@ running:
 ```bash
 bash eval/lint-cases.sh <agent>
 bash eval/lint-measurements.sh
+python3 eval/lint-release-cases.py
 ```
+
+Every agent with an `eval/*/eval.yaml` must have at least one case with
+boolean `release: true` in its `annotations.yaml`. This lint is intentionally
+stricter than the runner's text comparison: the runner also selects a quoted
+`release: "true"`, but the lint rejects that string. Lowercase YAML boolean
+`true` counts, including the explicitly tagged `release: !!bool true` form.
+Aliases and duplicate release keys do not establish coverage. An annotation
+with a top-level merge key is rejected even alongside a literal release marker;
+the lint does not emulate the runner’s merge precedence.
+The release coverage lint runs in pre-commit and CI, including when the last
+release case is deleted. It requires Python 3 and PyYAML (`python3 -m pip install PyYAML==6.0.3`);
+pre-commit installs its own dependency. The offline fixture tests also require yq. Run them with
+`bash eval/lint-release-cases-test.sh`; they also run in `make script-test`.
+The script-test CI job installs PyYAML for these tests. The runtime skip
+behavior described under [Tiers](#tiers) is unchanged.
 
 ## Prerequisites
 

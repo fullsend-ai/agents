@@ -37,6 +37,8 @@ NOTE: the Agent tool MUST ONLY be invoked with prompts read from
   pipeline mode.
 - `FULLSEND_FORGE` — the forge type (`github` or `gitlab`). Set by
   the harness forge section.
+- `REVIEW_UX_ENABLED` — controls UX dispatch and findings; defaults to `true`,
+  and `false` disables both.
 - `PRIOR_REVIEW_SHA` — the commit SHA that the prior review
   evaluated. Empty on first review.
 - `PRIOR_REVIEW_PROVENANCE` — result of provenance validation on

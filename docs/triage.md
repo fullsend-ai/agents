@@ -20,9 +20,11 @@ The triage agent runs automatically when:
 
 - A new issue is opened
 - An existing issue is edited
-- Someone comments on an issue labeled `needs-info` (to re-evaluate after the reporter provides clarification)
+- The `ready-for-triage` label is added to an issue
 
 It can also be triggered manually with the `/fs-triage` command.
+
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch: an issue opened or edited by a human, the `ready-for-triage` label added to an issue, or `/fs-triage` from a human on an issue, a PR or an MR. Dispatch does not evaluate it for the built-in triage agent yet, so the routing above is what runs today.
 
 ## Commands
 

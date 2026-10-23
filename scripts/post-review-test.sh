@@ -349,7 +349,8 @@ REVIEW_CONTROL_LABELS=(
 )
 
 is_control_label() {
-  local label="$1"
+  # Forges match label names case-insensitively, so compare lowercased.
+  local label="${1,,}"
   for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
     if [[ "${cl}" == "${label}" ]]; then
       return 0
@@ -357,6 +358,10 @@ is_control_label() {
   done
   # Pipeline-managed label prefixes
   if [[ "${label}" == risk/* ]]; then
+    return 0
+  fi
+  # Maintainer-set per-PR fix budget (issue #1680)
+  if [[ "${label}" == fullsend-fix-budget/* ]]; then
     return 0
   fi
   return 1
@@ -399,6 +404,15 @@ run_control_label_test "risk-moderate-is-control" "risk/moderate" "true"
 run_control_label_test "risk-elevated-is-control" "risk/elevated" "true"
 run_control_label_test "risk-high-is-control" "risk/high" "true"
 run_control_label_test "risk-critical-is-control" "risk/critical" "true"
+
+# Maintainer-set fix-budget labels should be control labels (issue #1680)
+run_control_label_test "fix-budget-is-control" "fullsend-fix-budget/2" "true"
+run_control_label_test "fix-budget-invalid-n-is-control" "fullsend-fix-budget/abc" "true"
+
+# Control-label matching is case-insensitive (forge label names are)
+run_control_label_test "mixed-case-fix-budget-is-control" "Fullsend-fix-budget/2" "true"
+run_control_label_test "mixed-case-ready-for-merge-is-control" "Ready-for-merge" "true"
+run_control_label_test "mixed-case-risk-high-is-control" "Risk/high" "true"
 
 # Non-control labels should NOT be recognized
 run_control_label_test "area-api-not-control" "area/api" "false"
@@ -981,6 +995,56 @@ run_label_test "label-actions-applied" \
 run_label_test_stdout "label-actions-control-label-refused" \
   '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"ready-for-merge"}]}}' \
   "::warning::Refused to add control label 'ready-for-merge'"
+
+# Fix-budget label is maintainer-controlled (issue #1680): the review agent
+# can neither add nor remove it, and no label API call is made for it.
+run_label_test_stdout "label-actions-fix-budget-add-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tighten loop.","actions":[{"action":"add","label":"fullsend-fix-budget/2"}]}}' \
+  "::warning::Refused to add control label 'fullsend-fix-budget/2'"
+run_label_test_no_pattern "label-actions-fix-budget-add-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tighten loop.","actions":[{"action":"add","label":"fullsend-fix-budget/2"}]}}' \
+  "labels[]=fullsend-fix-budget/2"
+run_label_test_stdout "label-actions-fix-budget-remove-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"fullsend-fix-budget/2"}]}}' \
+  "::warning::Refused to remove control label 'fullsend-fix-budget/2'"
+run_label_test_no_pattern "label-actions-fix-budget-remove-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"fullsend-fix-budget/2"}]}}' \
+  "fullsend-fix-budget%2F2"
+
+# Control-label matching is case-insensitive: mixed-case variants are refused
+# too, and no label API call is made for them.
+run_label_test_stdout "label-actions-fix-budget-mixed-case-add-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tighten loop.","actions":[{"action":"add","label":"Fullsend-fix-budget/2"}]}}' \
+  "::warning::Refused to add control label 'Fullsend-fix-budget/2'"
+run_label_test_no_pattern "label-actions-fix-budget-mixed-case-add-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tighten loop.","actions":[{"action":"add","label":"Fullsend-fix-budget/2"}]}}' \
+  "labels[]=Fullsend-fix-budget/2"
+run_label_test_stdout "label-actions-fix-budget-mixed-case-remove-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"Fullsend-fix-budget/2"}]}}' \
+  "::warning::Refused to remove control label 'Fullsend-fix-budget/2'"
+run_label_test_no_pattern "label-actions-fix-budget-mixed-case-remove-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"Fullsend-fix-budget/2"}]}}' \
+  "Fullsend-fix-budget%2F2"
+# Leading/trailing whitespace is refused: GitLab trims it, so a padded
+# fullsend-fix-budget/N removal would otherwise reach the real control label.
+run_label_test_stdout "label-actions-fix-budget-leading-space-remove-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":" fullsend-fix-budget/2"}]}}' \
+  "::warning::Refused label ' fullsend-fix-budget/2'"
+run_label_test_no_pattern "label-actions-fix-budget-leading-space-remove-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":" fullsend-fix-budget/2"}]}}' \
+  "fullsend-fix-budget%2F2"
+run_label_test_stdout "label-actions-fix-budget-trailing-space-remove-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"fullsend-fix-budget/2 "}]}}' \
+  "::warning::Refused label 'fullsend-fix-budget/2 '"
+run_label_test_no_pattern "label-actions-fix-budget-trailing-space-remove-no-api-call" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Loosen loop.","actions":[{"action":"remove","label":"fullsend-fix-budget/2 "}]}}' \
+  "fullsend-fix-budget%2F2"
+run_label_test_stdout "label-actions-mixed-case-ready-for-merge-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"Ready-for-merge"}]}}' \
+  "::warning::Refused to add control label 'Ready-for-merge'"
+run_label_test_stdout "label-actions-mixed-case-risk-high-refused" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM","label_actions":{"reason":"Tried to set control label.","actions":[{"action":"add","label":"Risk/high"}]}}' \
+  "::warning::Refused to add control label 'Risk/high'"
 
 # Non-existent label skipped — label "bug" is not in mock label list
 run_label_test_stdout "label-actions-nonexistent-label-skipped" \
@@ -1845,6 +1909,7 @@ run_rereview_gate_case() {
   local expected_exit="${12:-0}"
   local mock_files_fail="${13:-}"
   local result_check="${14:-}"
+  local ux_enabled="${15:-true}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   local prior_file="${run_dir}/prior.json"
@@ -1867,6 +1932,7 @@ run_rereview_gate_case() {
     export MOCK_PR_FILES="${mock_files}"
     export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
     export REVIEW_RISK_VERDICT_THRESHOLD="${risk_threshold}"
+    export REVIEW_UX_ENABLED="${ux_enabled}"
     if [[ -n "${mock_files_fail}" ]]; then
       export MOCK_PR_FILES_FAIL="${mock_files_fail}"
     fi
@@ -4796,6 +4862,207 @@ run_risk_verdict_tier2_body_test() {
   echo "PASS: ${test_name}"
 }
 run_risk_verdict_tier2_body_test
+
+# ---------------------------------------------------------------------------
+# UX feature-flag tests. The post-script is the executable enforcement point;
+# the sandbox skill uses the same env value to avoid dispatching UX at all.
+# ---------------------------------------------------------------------------
+run_ux_flag_test() {
+  local test_name="$1"
+  local flag_value="$2"
+  local expected_ux_count="$3"
+  local expected_logic_count="$4"
+  local expected_action="$5"
+  local expected_exit="${6:-0}"
+  local json_content="${7:-}"
+  local expected_ledger_action="${8:-}"
+  local run_dir="${TMPDIR}/run-ux-${test_name}"
+  local exit_code=0
+
+  mkdir -p "${run_dir}/iteration-1/output"
+  if [[ -n "${json_content}" ]]; then
+    printf '%s' "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  else
+    cat > "${run_dir}/iteration-1/output/agent-result.json" <<'EOF'
+{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"medium","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}
+EOF
+  fi
+  rm -f "${TMPDIR}/last-result.json"
+
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    if [[ "${flag_value}" == "unset" ]]; then
+      unset REVIEW_UX_ENABLED
+    else
+      export REVIEW_UX_ENABLED="${flag_value}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-ux-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${exit_code}" -ne "${expected_exit}" ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expected_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout-ux-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${expected_exit}" -ne 0 ]]; then
+    if [[ ! -f "${TMPDIR}/last-result.json" ]] || \
+       ! jq -e '.action == "failure" and .reason == "tool-failure"' "${TMPDIR}/last-result.json" >/dev/null 2>&1; then
+      echo "FAIL: ${test_name} — expected a posted tool-failure result"
+      [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+    return
+  fi
+
+  local actual_ux_count actual_logic_count actual_action
+  actual_ux_count="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${TMPDIR}/last-result.json")"
+  actual_logic_count="$(jq '[.findings[]? | select(.category == "logic-error")] | length' "${TMPDIR}/last-result.json")"
+  actual_action="$(jq -r '.action' "${TMPDIR}/last-result.json")"
+  if [[ "${actual_ux_count}" != "${expected_ux_count}" || "${actual_logic_count}" != "${expected_logic_count}" || "${actual_action}" != "${expected_action}" ]]; then
+    echo "FAIL: ${test_name} — UX flag filtering mismatch"
+    jq . "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${expected_ledger_action}" ]]; then
+    local marker encoded actual_ledger_action
+    marker="$(jq -r '.body // ""' "${TMPDIR}/last-result.json" | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
+    encoded="${marker#<!-- fullsend:review-findings-v2:}"
+    encoded="${encoded% -->}"
+    actual_ledger_action="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -r '.action // empty' 2>/dev/null || true)"
+    if [[ "${actual_ledger_action}" != "${expected_ledger_action}" ]]; then
+      echo "FAIL: ${test_name} — expected ledger action ${expected_ledger_action}, got ${actual_ledger_action}"
+      [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_ux_flag_test "default-on" "unset" "1" "1" "request-changes"
+run_ux_flag_test "explicit-on" "true" "1" "1" "request-changes"
+run_ux_flag_test "explicit-off" "false" "0" "1" "request-changes"
+run_ux_flag_test "invalid-value" "yes" "0" "0" "" 1
+
+# Opting out must not change a blocking verdict when no UX finding was
+# removed, or when the remaining non-UX finding still justifies it.
+run_ux_flag_test "opt-out-no-ux-request-changes-low" "false" "0" "1" "request-changes" 0 \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
+run_ux_flag_test "opt-out-no-ux-reject-low" "false" "0" "1" "reject" 0 \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
+run_ux_flag_test "opt-out-no-ux-request-changes-empty" "false" "0" "0" "request-changes" 0 \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[]}'
+run_ux_flag_test "opt-out-actionable-low-remains-blocking" "false" "0" "1" "request-changes" 0 \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Actionable logic issue","actionable":true}]}'
+run_ux_flag_test "opt-out-ux-only-request-changes-becomes-comment" "false" "0" "0" "comment" 0 \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"}]}'
+run_ux_flag_test "opt-out-ux-only-reject-becomes-comment" "false" "0" "0" "comment" 0 \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"}]}'
+run_ux_flag_test "opt-out-ux-reject-with-low-logic-becomes-comment" "false" "0" "1" "comment" 0 \
+  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"critical","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}' \
+  comment
+
+# Opting out excludes prior UX rows from blocking calculations without
+# deleting their open/closed history from the next ledger projection.
+run_ux_optout_ledger_history_test() {
+  local test_name="ux-optout-preserves-ledger-history"
+  local run_dir="${TMPDIR}/run-${test_name}"
+  local prior_file="${run_dir}/prior.json"
+  local exit_code=0
+  local marker encoded
+  mkdir -p "${run_dir}/iteration-1/output"
+  printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
+    > "${run_dir}/iteration-1/output/agent-result.json"
+  printf '%s' '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxopen"},{"severity":"low","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":20,"id":"f_uxdismissed"}],"dispositions":[{"id":"f_uxopen","status":"open"},{"id":"f_uxdismissed","status":"dismissed_by_human"}]}' \
+    > "${prior_file}"
+  rm -f "${TMPDIR}/last-result.json"
+
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_RISK_ASSESSMENT_ENABLED="false"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES="src/main.go"
+    export REVIEW_UX_ENABLED="false"
+    export PRIOR_REVIEW_FILE="${prior_file}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  marker="$(jq -r '.body // ""' "${TMPDIR}/last-result.json" 2>/dev/null | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
+  encoded="${marker#<!-- fullsend:review-findings-v2:}"
+  encoded="${encoded% -->}"
+  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action // empty' "${TMPDIR}/last-result.json" 2>/dev/null || true)" != "approve" ]] || \
+     ! printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -e '.findings | map(select(.id == "f_uxopen" or .id == "f_uxdismissed")) | length == 2' >/dev/null 2>&1 || \
+     ! printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -e '.dispositions | any(.[]; .id == "f_uxdismissed" and .status == "dismissed_by_human")' >/dev/null 2>&1; then
+    echo "FAIL: ${test_name} — opted-out UX history was dropped or remained blocking"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+
+  # Re-enabling UX must make the retained open UX finding blocking again.
+  local reenabled_prior="${run_dir}/prior-reenabled.json"
+  printf '%s' "$(printf '%s' "${encoded}" | base64 --decode)" > "${reenabled_prior}"
+  mkdir -p "${run_dir}/iteration-2/output"
+  printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
+    > "${run_dir}/iteration-2/output/agent-result.json"
+  rm -f "${TMPDIR}/last-result.json"
+  exit_code=0
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_URL="https://github.com/test-org/test-repo/pull/99"
+    export FULLSEND_FORGE="github"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_PROTECTED_PATHS=""
+    export MOCK_PR_FILES="src/main.go"
+    export REVIEW_UX_ENABLED="true"
+    export PRIOR_REVIEW_FILE="${reenabled_prior}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}-reenabled.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action // empty' "${TMPDIR}/last-result.json" 2>/dev/null || true)" != "request-changes" ]] || \
+     ! jq -r '.body // ""' "${TMPDIR}/last-result.json" 2>/dev/null | grep -qF "Approval withheld"; then
+    echo "FAIL: ${test_name} — re-enabled UX did not restore the retained blocker"
+    cat "${TMPDIR}/stdout-${test_name}-reenabled.log"
+    [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name} (re-enabled blocker)"
+}
+run_ux_optout_ledger_history_test
+
+run_rereview_gate_case "ux-optout-clears-prior-blocker" \
+  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_ux1"}]}' \
+  "approve" "Review" "No disposition recorded" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length == 0' "false"
+
+run_ux_flag_test "opt-out-recomputes-verdict" "false" "0" "1" "comment" 0 \
+  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
 
 # --- Summary ---
 

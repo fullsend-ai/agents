@@ -95,15 +95,19 @@ script-test:
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash hack/lint-agent-docs-test.sh)
 	$(call run-timed,bash eval/lint-measurements-test.sh)
+	$(call run-timed,bash eval/lint-release-cases-test.sh)
 	$(call run-timed,bash .github/scripts/check-e2e-authorization-test.sh)
 	$(call run-timed,bash .github/scripts/select-eval-agents-test.sh)
 	$(call run-timed,python3 scripts/process-fix-result-test.py)
 	$(call run-timed,bash eval/scripts/scrub-eval-results-test.sh)
 	$(call run-timed,bash eval/scripts/write-fixture-file-test.sh)
+	$(call run-timed,bash eval/scripts/setup-fixture-test.sh)
+	$(call run-timed,bash eval/scripts/teardown-fixture-test.sh)
 	$(call run-timed,bash eval/scripts/aggregate-nightly-test.sh)
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
 	$(call run-timed,bash .github/scripts/vouch-check-test.sh)
+	$(call run-timed,test "$(SCRIPT_TEST_TARGET)" = bundled || (cd harness/triggertest && GOWORK=off GOFLAGS= go test -count=1 ./...))
 
 test: script-test
 

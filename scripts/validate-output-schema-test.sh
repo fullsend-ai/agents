@@ -866,6 +866,80 @@ assert_same_set "category-allowlist-matches-re-review-table" \
 assert_same_set "category-schema-enum-matches-allowlist-plus-non-dimensional" \
   "${SCHEMA_CATEGORIES}" "$(printf '%s\n%s\n' "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_NON_DIMENSIONAL}" | sort)"
 
+# --- Retro result schema (schemas/retro-result.schema.json) ---
+# related_issues is OPTIONAL in the schema: a missing or quantity-deficient
+# receipt must skip only its own proposal in post-retro, not fail whole-result
+# validation and drop valid siblings and the summary (the retro validation loop
+# is all-or-nothing with no feedback). Receipt quantity/uniqueness is enforced
+# by the post-retro gate (see post-retro-test.sh), not here. The schema still
+# rejects a structurally wrong receipt (non-array searched, non-string items).
+SCHEMA="${SCRIPT_DIR}/../schemas/retro-result.schema.json"
+
+run_test "retro-valid-proposal-with-receipt" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[123],"note":"n"}}]}' \
+  "true"
+
+run_test "retro-valid-receipt-empty-found" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[]}}]}' \
+  "true"
+
+# found may mix a bare integer (target_repo) with a qualified owner/repo#N
+# string (cross-repo canonical).
+run_test "retro-valid-found-qualified-cross-repo-ref" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[1234,"fullsend-ai/fullsend#1887"]}}]}' \
+  "true"
+
+# A malformed found entry (bare #N string, not owner/repo#N) is rejected.
+run_test "retro-found-bare-hash-string-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"found":["#1887"]}}]}' \
+  "false"
+
+# found accepts a nested GitLab group/subgroup/project#N reference.
+run_test "retro-found-nested-gitlab-group-ref" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"found":["group/subgroup/project#12"]}}]}' \
+  "true"
+
+# A large receipt must NOT fail whole-result validation (no maxItems): the
+# non-poisoning design requires a big found/searched to pass the schema and be
+# handled by the post-retro gate, not reject the whole result.
+run_test "retro-large-receipt-passes-schema" \
+  "$(python3 -c '
+import json
+found=list(range(1,31))
+searched=["phrase %d" % i for i in range(1,21)]
+print(json.dumps({"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":searched,"found":found}}]}))')" \
+  "true"
+
+# Missing receipt passes the schema (optional) — the post-retro gate skips it.
+run_test "retro-missing-related-issues-passes-schema" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v"}]}' \
+  "true"
+
+# Quantity-deficient receipts pass the schema (gate enforces quantity) so that a
+# weak receipt skips only its own proposal rather than failing the whole result.
+run_test "retro-single-search-phrase-passes-schema" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["only one phrase"]}}]}' \
+  "true"
+
+run_test "retro-duplicate-search-phrases-pass-schema" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["same phrase","same phrase"]}}]}' \
+  "true"
+
+# A structurally wrong receipt still fails the schema: searched must be an array.
+run_test "retro-searched-not-array-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":"a single string"}}]}' \
+  "false"
+
+# searched items must be strings.
+run_test "retro-searched-non-string-items-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":[1,2]}}]}' \
+  "false"
+
+# An unknown key in related_issues is rejected (additionalProperties:false).
+run_test "retro-related-issues-unknown-key-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"bogus":1}}]}' \
+  "false"
+
 # --- Summary ---
 
 echo ""

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Tests for run-functional.sh's tier selection, release-tier case
-# filtering/gating, the non-zero-case-exit ("false green") fix, and the
-# judge-error classification (infrastructure vs quality regression).
+# filtering/gating, the non-zero-case-exit ("false green") fix, the
+# judge-error classification (infrastructure vs quality regression), and
+# the per-case attribution of failed checks and judge errors.
 #
 # Every invocation of the script under test runs with `env -i` and a
 # minimal stub PATH: a per-test bin/ directory stubs python3 (standing in
@@ -842,6 +843,139 @@ fi
 rm -rf "$ROOT"
 
 # ---------------------------------------------------------------------------
+# Per-case attribution: each failed check and each judge error is named by
+# case and judge from summary.yaml (score.py prints only aggregates), with
+# the judge's rationale or error, without changing the exit code. The saved
+# summary below has score.py's shape: aggregates under judges:, and one
+# value/rationale/judge_type (or error) per case and judge under per_case:.
+# ---------------------------------------------------------------------------
+
+SAVED_SUMMARY='judges:
+  max_turns:
+    pass_rate: 0.5
+    mean: 0.5
+    errored_cases: 0
+    scored_cases: 2
+  pr_created:
+    pass_rate: 0.5
+    mean: 0.5
+    errored_cases: 0
+    scored_cases: 2
+  agent_quality:
+    pass_rate: null
+    mean: 4.0
+    errored_cases: 1
+    scored_cases: 1
+per_case:
+  002-full-only-case:
+    max_turns:
+      value: false
+      rationale: "Exceeded max_turns: 12 > 10"
+      judge_type: check
+    pr_created:
+      value: true
+      rationale: "PR #7 created"
+      judge_type: check
+    agent_quality:
+      value: 4
+      rationale: "Solid triage"
+      judge_type: llm
+    expected_files:
+      value: null
+      rationale: "Skipped: condition false"
+      judge_type: check
+  001-release-case:
+    max_turns:
+      value: true
+      rationale: "Turns OK: 8 <= 10"
+      judge_type: check
+    pr_created:
+      value: false
+      rationale: "No PR was created"
+      judge_type: check
+    agent_quality:
+      value: null
+      error: "Error code: 400 - prompt is too long"
+      judge_type: llm
+'
+SAVED_REGRESSION_OUT='\n  REGRESSIONS: 1 detected\n    [pr_created] pass_rate: >= 1.0 -> 0.5\n'
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$SAVED_SUMMARY" STUB_SCORE_OUT_1="$SAVED_REGRESSION_OUT" \
+  STUB_SUMMARY_2="$SAVED_SUMMARY" STUB_SCORE_OUT_2="$SAVED_REGRESSION_OUT" 2>&1) || RC=$?
+CASE_LINES="$(echo "$OUT" | grep '^CASE ' || true)"
+EXPECTED_LINES='CASE JUDGE ERROR: [agent_quality] 001-release-case: Error code: 400 - prompt is too long
+CASE CHECK FAILED: [pr_created] 001-release-case: No PR was created
+CASE CHECK FAILED: [max_turns] 002-full-only-case: Exceeded max_turns: 12 > 10'
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "RESULT: quality regression (score.py exited 1)" \
+  && [[ "$CASE_LINES" == "$EXPECTED_LINES" ]]; then
+  pass "a regression names each failed check and judge error by case and judge, with its reason, sorted, and still exits 1"
+else
+  fail "a regression names each failed check and judge error by case and judge, with its reason, sorted, and still exits 1 (rc=$RC, case lines: '$CASE_LINES', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="1,1" \
+  STUB_SUMMARY_1="$ERRORED_SUMMARY" STUB_SCORE_OUT_1="$QUALITY_REGRESSION_OUT" \
+  STUB_SUMMARY_2="$ERRORED_SUMMARY" STUB_SCORE_OUT_2="$QUALITY_REGRESSION_OUT" 2>&1) || RC=$?
+if [[ $RC -eq 3 ]] && echo "$OUT" | grep -q "RESULT: judge infrastructure error (not a quality regression)" \
+  && echo "$OUT" | grep -qF "CASE JUDGE ERROR: [agent_quality] 001-release-case: Error code: 400" \
+  && echo "$OUT" | grep -qF "CASE JUDGE ERROR: [agent_quality] 002-full-only-case: Error code: 400" \
+  && ! echo "$OUT" | grep -q "CASE CHECK FAILED"; then
+  pass "an errored judge is named per case as a judge error, not a failed check, and still exits 3"
+else
+  fail "an errored judge is named per case as a judge error, not a failed check, and still exits 3 (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$CLEAN_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "^CASE "; then
+  pass "passing, numeric and skipped judge results print no per-case lines"
+else
+  fail "passing, numeric and skipped judge results print no per-case lines (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+NO_REASON_SUMMARY='per_case:\n  001-release-case:\n    max_turns:\n      value: false\n      judge_type: check\n'
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$NO_REASON_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && echo "$OUT" | grep -qF "CASE CHECK FAILED: [max_turns] 001-release-case: (no reason recorded)"; then
+  pass "a failed check with no rationale says so"
+else
+  fail "a failed check with no rationale says so (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+INJ_CHECK_SUMMARY='per_case:\n  001-release-case:\n    max_turns:\n      value: false\n      rationale: "over\\n::add-mask::secret\\r\\n::set-env name=X::y\\tend"\n      judge_type: check\n'
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" GITHUB_ACTIONS=true \
+  STUB_SCORE_EXITS="0" STUB_SUMMARY_1="$INJ_CHECK_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && echo "$OUT" | grep -q "CASE CHECK FAILED: \[max_turns\] 001-release-case: over" \
+  && ! echo "$OUT" | grep -qE '^::(add-mask|set-env)'; then
+  pass "a failed check's rationale stays on one line and cannot start a workflow command"
+else
+  fail "a failed check's rationale stays on one line and cannot start a workflow command (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
 # An agent whose every threshold is report-only (as triage and review are)
 # runs with an empty runtime thresholds map: it still passes when every case
 # passes, still fails on a case exit, and a judge error is reported without
@@ -920,6 +1054,21 @@ if [[ $RC -eq 0 && "$CALLS" == "1" ]] \
   pass "a judge error on a report-only judge is reported, without a scoring retry or a failed run"
 else
   fail "a judge error on a report-only judge is reported, without a scoring retry or a failed run (rc=$RC, calls=$CALLS, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; add_report_only_agent "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" reportonlyagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK" \
+  STUB_SUMMARY_1="$SAVED_SUMMARY" STUB_SCORE_OUT_1='\n  REGRESSIONS: 0\n' 2>&1) || RC=$?
+CALLS="$(cat "${ROOT}/capture/score-calls" 2>/dev/null || echo 0)"
+if [[ $RC -eq 0 && "$CALLS" == "1" ]] && echo "$OUT" | grep -q "RESULT: All phases complete" \
+  && echo "$OUT" | grep -qF "CASE CHECK FAILED: [max_turns] 002-full-only-case: Exceeded max_turns: 12 > 10" \
+  && echo "$OUT" | grep -qF "CASE JUDGE ERROR: [agent_quality] 001-release-case: Error code: 400 - prompt is too long"; then
+  pass "a failed report-only check is named by case without failing the run"
+else
+  fail "a failed report-only check is named by case without failing the run (rc=$RC, calls=$CALLS, output: $OUT)"
 fi
 rm -rf "$ROOT"
 

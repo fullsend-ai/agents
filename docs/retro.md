@@ -20,6 +20,8 @@ The retro agent runs automatically when a PR is closed (merged or not).
 
 It can also be triggered manually with the `/fs-retro` command.
 
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch that selects the same events on GitHub: a PR closed (merged or not), or a `/fs-retro` comment from a human on an issue or PR. Dispatch does not evaluate it for the built-in retro agent yet, so the routing above is what runs today.
+
 ## Commands
 
 | Command | Where | Effect |

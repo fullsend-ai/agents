@@ -393,7 +393,7 @@ ${detail_block}
 
 Retry with \`/fs-code\` if appropriate."
 
-  if ! forge_post_issue_comment "${body}"; then
+  if ! forge_retry_transient forge_post_issue_comment "${body}"; then
     gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
   fi
 }
@@ -788,7 +788,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
 
   # This path exits before the PR body is assembled, so the note goes here.
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
-    forge_post_pr_comment "${EXISTING_PR_NUM}" \
+    forge_retry_transient forge_post_pr_comment "${EXISTING_PR_NUM}" \
       "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
       || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
   fi
@@ -977,9 +977,14 @@ if ! PR_URL=$(forge_create_pr \
   "${PR_BODY}" 2>"${PR_CREATE_STDERR}"); then
   PR_CREATE_OUTPUT="$(cat "${PR_CREATE_STDERR}")"
   rm -f "${PR_CREATE_STDERR}"
+  print_sanitized_gha_log "${PR_CREATE_OUTPUT}"
   post_fail_to_issue pr-creation-failed "${PR_CREATE_OUTPUT}"
 fi
+PR_CREATE_OUTPUT="$(cat "${PR_CREATE_STDERR}")"
 rm -f "${PR_CREATE_STDERR}"
+if [ -n "${PR_CREATE_OUTPUT}" ]; then
+  print_sanitized_gha_log "${PR_CREATE_OUTPUT}"
+fi
 
 echo "PR created: ${PR_URL}"
 forge_write_output "pr_url" "${PR_URL}"

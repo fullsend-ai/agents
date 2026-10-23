@@ -55,7 +55,7 @@ Run all agent shell script test suites from the repo root:
 make test
 ```
 
-This is an alias for `make script-test`, which runs the `scripts/*-test.sh` suites. CI also runs `make check-bundle` and executes `make script-test` twice (source and bundled modes) via `.github/workflows/script-test.yml`.
+This is an alias for `make script-test`, which runs the `scripts/*-test.sh` suites. It also runs the Go test in `harness/triggertest`, which checks the CEL `trigger:` expressions in `harness/` against fullsend's NormalizedEvent fixtures; it needs Go and either network access or a module cache that already holds the pinned fullsend version. CI also runs `make check-bundle` and executes `make script-test` twice (source and bundled modes) via `.github/workflows/script-test.yml`.
 
 The live behaviour suite runs the isolated dev scenarios described in
 [`docs/behaviour-testing.md`](docs/behaviour-testing.md):

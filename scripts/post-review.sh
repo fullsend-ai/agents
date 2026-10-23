@@ -882,6 +882,17 @@ forge_parse_pr_url
 
 echo "::add-mask::${REVIEW_TOKEN}"
 
+REVIEW_UX_ENABLED_RAW="${REVIEW_UX_ENABLED:-true}"
+case "${REVIEW_UX_ENABLED_RAW}" in
+  true|false) ;;
+  *)
+    echo "::error::REVIEW_UX_ENABLED='$(_gha_sanitize "${REVIEW_UX_ENABLED_RAW}")' is invalid (expected 'true' or 'false')"
+    echo '{"action":"failure","reason":"tool-failure"}' | \
+      forge_post_review -
+    exit 1
+    ;;
+esac
+
 # Temp file cleanup: accumulate files to remove on exit so later traps
 # don't overwrite earlier ones.
 CLEANUP_FILES=()
@@ -943,6 +954,40 @@ if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
 fi
 
 echo "Using result: ${RESULT_FILE}"
+# The sandbox prompt skips this dimension when the flag is false. Keep the
+# runner authoritative too: remove any UX findings before severity filtering,
+# ledger accounting, or posting if a model dispatched the dimension anyway.
+REREVIEW_UX_ORIGINAL_ACTION=""
+UX_DISABLED=false
+if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" ]]; then
+  UX_DISABLED=true
+  UX_DISABLED_RESULT="$(mktemp)"
+  CLEANUP_FILES+=("${UX_DISABLED_RESULT}")
+  UX_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
+  UX_FINDINGS_BEFORE="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${RESULT_FILE}")"
+  jq --argjson removed "${UX_FINDINGS_BEFORE}" '
+    if (.findings | type) == "array" then
+      .findings |= map(select(.category != "uxd-evaluate-code-heuristics"))
+      | if $removed > 0 and (.action == "request-changes" or .action == "reject") then
+          if ([.findings[]?
+               | select((.severity | IN("medium", "high", "critical"))
+                        or (.actionable // false))] | length) == 0 then
+            .action = "comment"
+          else .
+          end
+        else .
+        end
+      | if (.findings | length) == 0 then del(.findings) else . end
+    else . end
+  ' "${RESULT_FILE}" > "${UX_DISABLED_RESULT}"
+  RESULT_FILE="${UX_DISABLED_RESULT}"
+  if [[ "${UX_FINDINGS_BEFORE}" -gt 0 ]] \
+      && [[ "${UX_ORIGINAL_ACTION}" = "request-changes" || "${UX_ORIGINAL_ACTION}" = "reject" ]] \
+      && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
+    REREVIEW_UX_ORIGINAL_ACTION="${UX_ORIGINAL_ACTION}"
+  fi
+  echo "User-experience findings suppressed (REVIEW_UX_ENABLED=false)"
+fi
 # The severity filter below can drop an info-level sub-agent-failure. Keep the
 # unfiltered result so the projection still sees every failed dimension.
 UNFILTERED_RESULT_FILE="${RESULT_FILE}"
@@ -990,7 +1035,7 @@ MINT_IDS="$(
 # Prior ledger: give legacy prior findings (written before ids existed) an id
 # so they enter the ledger instead of vanishing, and split prior ids into
 # open and closed. Minted ids used here are removed from the pool below.
-PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
+PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" --argjson ux_disabled "${UX_DISABLED}" '
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
   def closed_status: IN("resolved_by_change", "dismissed_by_human");
   ([ (.dispositions // [])[] | select(type == "object" and (.id | valid_id) and (.status | type == "string")) ]) as $disp
@@ -1005,7 +1050,9 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
       closed: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
                 | select($d != null and ($d.status | closed_status)) | . + {status: $d.status} ],
       open_ids: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
-                  | select($d == null or ($d.status | closed_status | not)) | .id ],
+                  | select($d == null or ($d.status | closed_status | not))
+                  | select(($ux_disabled | not) or .category != "uxd-evaluate-code-heuristics")
+                  | .id ],
       used_mints: $r.mint_i
     }
 ' <<< "${PRIOR_JSON}")"
@@ -1222,14 +1269,25 @@ if [[ "${REREVIEW_BLOCKING_RANK}" -lt "$(severity_rank medium)" ]]; then
   REREVIEW_BLOCKING_RANK="$(severity_rank medium)"
 fi
 REREVIEW_CURRENT_MEDIUM_PLUS_COUNT="$(jq -r '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${UNFILTERED_RESULT_FILE}")"
+rereview_action_can_promote() {
+  [[ "$1" = "request-changes" ]] && return 0
+  [[ "$1" = "comment" ]] || return 1
+  if [[ "${REREVIEW_FILTERED_TO_ZERO}" = "true" ]] \
+      && [[ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" || \
+           "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
+    return 0
+  fi
+  if [[ "${REREVIEW_UX_ORIGINAL_ACTION}" = "request-changes" || \
+        "${REREVIEW_UX_ORIGINAL_ACTION}" = "reject" ]]; then
+    return 0
+  fi
+  return 1
+}
 if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]] \
     && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
     && [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
     && [[ "${PRIOR_REJECT_HOLD}" != "true" ]] \
-    && [[ "${ACTION}" = "request-changes" || \
-         ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
-           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
-                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) ) ]]; then
+    && rereview_action_can_promote "${ACTION}"; then
   REREVIEW_SAFETY_CANDIDATE=true
   ACTION="approve"
 fi
@@ -1587,7 +1645,8 @@ REVIEW_CONTROL_LABELS=(
 )
 
 is_control_label() {
-  local label="$1"
+  # Forges match label names case-insensitively, so compare lowercased.
+  local label="${1,,}"
   for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
     if [[ "${cl}" == "${label}" ]]; then
       return 0
@@ -1595,6 +1654,10 @@ is_control_label() {
   done
   # Pipeline-managed label prefixes
   if [[ "${label}" == risk/* ]]; then
+    return 0
+  fi
+  # Maintainer-set per-PR fix budget (issue #1680)
+  if [[ "${label}" == fullsend-fix-budget/* ]]; then
     return 0
   fi
   return 1
@@ -1635,8 +1698,12 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
     LA_ACTION_SHOWN=$(_gha_sanitize "${LA_ACTION}")
     LA_LABEL_SHOWN=$(_gha_sanitize "${LA_LABEL}")
 
-    if [[ "${LA_LABEL}" == *::* || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
-      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters or a double colon"
+    # Leading/trailing whitespace is rejected: forges (notably GitLab) trim
+    # it, so " fullsend-fix-budget/2" would evade is_control_label yet still
+    # act on the real control label.
+    if [[ "${LA_LABEL}" == *::* || "${LA_LABEL}" == " "* || "${LA_LABEL}" == *" " \
+          || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters, a double colon, or leading/trailing whitespace"
       continue
     fi
 
@@ -1972,14 +2039,10 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
     RESULT_FILE="${HOLD_RESULT}"
     ACTION="comment"
     DOWNGRADED=true
-  elif [[ "${ACTION}" = "request-changes" \
-      || ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
-           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
-                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) \
-           && "${DOWNGRADED}" = "false" ) ]] \
+  elif rereview_action_can_promote "${ACTION}" \
+      && [[ "${DOWNGRADED}" = "false" ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
-      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
-      && [[ "${DOWNGRADED}" = "false" ]]; then
+      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]]; then
     echo "New findings on a re-review are low/info only — changing '${ACTION}' to 'approve'"
     REREVIEW_RESULT=$(mktemp)
     CLEANUP_FILES+=("${REREVIEW_RESULT}")

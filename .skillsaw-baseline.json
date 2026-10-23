@@ -93,6 +93,15 @@
       "severity": "warning",
       "value": 3910,
       "baseline_mode": "ceiling"
+    },
+    {
+      "fingerprint": "22073290a7e46a35",
+      "rule_id": "context-budget",
+      "file_path": "skills/retro-analysis/SKILL.md",
+      "message": "Estimated 3,797 tokens exceeds skill warn limit of 3,000",
+      "severity": "warning",
+      "value": 3797,
+      "baseline_mode": "ceiling"
     }
   ]
 }
