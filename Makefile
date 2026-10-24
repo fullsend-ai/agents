@@ -96,6 +96,7 @@ script-test:
 	$(call run-timed,bash scripts/validate-code-output-test.sh)
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash hack/lint-agent-docs-test.sh)
+	$(call run-timed,bash hack/lint-gh-api-syntax-test.sh)
 	$(call run-timed,bash eval/lint-measurements-test.sh)
 	$(call run-timed,bash eval/lint-release-cases-test.sh)
 	$(call run-timed,bash .github/scripts/check-e2e-authorization-test.sh)
