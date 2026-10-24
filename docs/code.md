@@ -84,6 +84,21 @@ reachable from the intended upstream reference, the agent can bump the pin
 here in a normal PR, even when the issue did not separately ask for that bump.
 An explicit request to change the reference itself also receives a normal PR.
 
+Agent-authored PR/MR descriptions, and optional "Agent context" in no-PR issue
+comments, are secret-scanned before publication. The description is scanned
+after trailer removal and normalization, whether it came from the agent's
+`pr_body` or the commit-body fallback. These text scans use the scanner's
+built-in rules in a private temporary directory, ignore inline
+`gitleaks:allow` markers, and disregard `GITLEAKS_CONFIG`,
+`GITLEAKS_CONFIG_TOML`, and repository ignore files. Existing commit-history
+scans keep their repository policy and inspect patch content; they do not scan
+commit subjects or bodies, and PR/MR titles are likewise published without a
+text scan. If a text scan finds a secret or cannot complete, the issue comment
+omits optional context, and the PR/MR description uses a generic fallback. A
+rejected PR body falls back to the normalized commit body only if that text
+passes the same scan. Raw text-scan diagnostics are not logged.
+Jira-source no-PR runs still emit only their existing generic notice.
+
 ### Signed-off-by trailers
 
 Agents must not sign off their commits — DCO is a human attestation, and the

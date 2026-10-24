@@ -690,7 +690,7 @@ post_fail_to_pr() {
 #   resolve_platform   — detect OS/arch and print a platform key (e.g. linux_x64)
 #   gitleaks_sha256    — print the SHA-256 checksum for a given platform key
 #   verify_checksum    — verify a file against an expected SHA-256 hash
-#   install_gitleaks   — download, verify, and install the gitleaks binary
+#   install_gitleaks   — select the expected version or checksum-install it; export GITLEAKS_BIN
 #
 # Uses case statements (not declare -A / mapfile) so the script runs on
 # bash 3.2 (macOS system bash).
@@ -753,7 +753,31 @@ verify_checksum() {
 }
 
 install_gitleaks() {
-  if command -v gitleaks >/dev/null 2>&1; then
+  local install_dir="${HOME}/.local/bin"
+  local installed_version path_bin path_dir
+  path_bin="$(command -v gitleaks 2>/dev/null || true)"
+  case "${path_bin}" in
+    /*) ;;
+    "") ;;
+    *) path_bin="${PWD}/${path_bin}" ;;
+  esac
+
+  if [ -n "${path_bin}" ] && [ -x "${path_bin}" ] \
+    && installed_version="$("${path_bin}" version 2>/dev/null)" \
+    && [ "${installed_version}" = "${GITLEAKS_VERSION}" ]; then
+    GITLEAKS_BIN="${path_bin}"
+    export GITLEAKS_BIN
+    path_dir="${path_bin%/*}"
+    export PATH="${path_dir}:${PATH}"
+    return 0
+  fi
+
+  GITLEAKS_BIN="${install_dir}/gitleaks"
+  if [ -x "${GITLEAKS_BIN}" ] \
+    && installed_version="$("${GITLEAKS_BIN}" version 2>/dev/null)" \
+    && [ "${installed_version}" = "${GITLEAKS_VERSION}" ]; then
+    export GITLEAKS_BIN
+    export PATH="${install_dir}:${PATH}"
     return 0
   fi
 
@@ -765,19 +789,27 @@ install_gitleaks() {
     echo "::error::No gitleaks checksum for platform: ${platform}" >&2
     return 1
   fi
-  mkdir -p "${HOME}/.local/bin"
+  mkdir -p "${install_dir}"
   tarball="$(mktemp)"
   if ! curl -fsSL \
        "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${platform}.tar.gz" \
        -o "${tarball}" \
      || ! verify_checksum "${tarball}" "${checksum}" \
-     || ! tar xzf "${tarball}" -C "${HOME}/.local/bin" gitleaks; then
+     || ! tar xzf "${tarball}" -C "${install_dir}" gitleaks; then
     rm -f "${tarball}"
     echo "::error::Failed to download and verify gitleaks v${GITLEAKS_VERSION} (${platform})" >&2
     return 1
   fi
   rm -f "${tarball}"
-  export PATH="${HOME}/.local/bin:${PATH}"
+
+  if ! installed_version="$("${GITLEAKS_BIN}" version 2>/dev/null)" \
+    || [ "${installed_version}" != "${GITLEAKS_VERSION}" ]; then
+    echo "::error::Installed gitleaks does not report expected version ${GITLEAKS_VERSION}" >&2
+    return 1
+  fi
+
+  export GITLEAKS_BIN
+  export PATH="${install_dir}:${PATH}"
 }
 # END bundled: lib/gitleaks-install.lib.sh
 # shellcheck source=lib/precommit-gate.lib.sh
