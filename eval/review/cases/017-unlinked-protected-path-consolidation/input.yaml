@@ -1,0 +1,66 @@
+forge: github
+fixture:
+  type: pull_request
+  title: "feat: add per-PR fix budget knob"
+  body: |
+    Adds a per-PR fix budget so the fix agent stops after a configurable
+    number of runs on the same pull request. The default stays at 3 and
+    can be raised with the FIX_PR_BUDGET harness variable.
+  base: main
+  files:
+    - path: harness/fix.yaml
+      content: |
+        agent: agents/fix.md
+        model: sonnet
+        timeout_minutes: 30
+
+        env:
+          runner:
+            FIX_MAX_ITERATIONS: "3"
+            FIX_PR_BUDGET: "3"
+    - path: scripts/lib/fix-budget.lib.sh
+      content: |
+        #!/usr/bin/env bash
+        # Per-PR fix budget helpers. Sourced by post-fix.sh.
+
+        # fix_budget_limit prints the configured per-PR fix budget.
+        fix_budget_limit() {
+          local limit="${FIX_PR_BUDGET:-3}"
+          if ! [[ "${limit}" =~ ^[0-9]+$ ]]; then
+            echo "fix-budget: FIX_PR_BUDGET must be a non-negative integer" >&2
+            return 1
+          fi
+          echo "${limit}"
+        }
+
+        # fix_budget_used prints how many fix runs already ran on the PR,
+        # counted from the fix agent's status comments.
+        fix_budget_used() {
+          local pr="${1:?pr number required}"
+          gh pr view "${pr}" --json comments \
+            --jq '[.comments[] | select(.body | contains("<!-- fix-run -->"))] | length'
+        }
+
+        # fix_budget_exhausted returns 0 when the PR has no budget left.
+        fix_budget_exhausted() {
+          local pr="${1:?pr number required}"
+          local used limit
+          used="$(fix_budget_used "${pr}")"
+          limit="$(fix_budget_limit)"
+          [[ "${used}" -ge "${limit}" ]]
+        }
+    - path: scripts/post-fix.sh
+      content: |
+        #!/usr/bin/env bash
+        # Push the fix agent's commits back to the PR branch.
+        set -euo pipefail
+
+        # shellcheck source=lib/fix-budget.lib.sh
+        source "$(dirname "$0")/lib/fix-budget.lib.sh"
+
+        if fix_budget_exhausted "${PR_NUMBER:?}"; then
+          echo "Fix budget exhausted for PR #${PR_NUMBER}; not pushing." >&2
+          exit 0
+        fi
+
+        git push origin "HEAD:${PR_BRANCH:?}"
