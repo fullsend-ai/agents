@@ -33,6 +33,12 @@ Every changed line in your diff must trace directly to the issue scope.
 If your changes make existing code unused, remove the dead code. Do not
 remove pre-existing dead code the issue does not mention.
 
+A PR that adds a new user-facing control or changes files under the
+review protected paths (`REVIEW_PROTECTED_PATHS` in
+[`harness/review.yaml`](harness/review.yaml)) requires a linked issue
+where a maintainer agreed the change is wanted; when drafting such a PR
+without one, tell the human to open that issue first.
+
 ## 4. Commit message format
 
 Use [Conventional Commits](https://www.conventionalcommits.org/). The commit
