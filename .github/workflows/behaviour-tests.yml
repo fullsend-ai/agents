@@ -356,6 +356,10 @@ jobs:
           TEST_ACTOR_WRITE_PAT: ${{ secrets.AGENTS_BT_ACTOR_WRITE_PAT }}
           TEST_ACTOR_TRIAGE_PAT: ${{ secrets.AGENTS_BT_ACTOR_TRIAGE_PAT }}
           TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.AGENTS_BT_ACTOR_OUTSIDER_PAT }}
+          # The suite writes failed-scenario debug logs and workflow-run logs
+          # here; slot repos are deleted at teardown, so they are lost
+          # otherwise. Redacted and uploaded by the steps below.
+          BEHAVIOUR_ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
         shell: bash
         run: |
           required=(
@@ -370,4 +374,74 @@ jobs:
               exit 1
             fi
           done
-          make behaviour-test
+          mkdir -p "$BEHAVIOUR_ARTIFACT_DIR"
+          make behaviour-test 2>&1 | tee "$BEHAVIOUR_ARTIFACT_DIR/behaviour-test.log"
+
+      - name: Check out redaction script
+        if: always() && steps.changes.outputs.relevant != 'false'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Pinned here, not taken from go.mod: go.mod comes from the PR head,
+          # and PR-head code must not control artifact redaction (see
+          # fullsend#5221). Bump this sha deliberately, like an action pin,
+          # and at least when go.mod moves past it, so redaction keeps up
+          # with what the suite writes into the artifact dir.
+          repository: fullsend-ai/fullsend
+          ref: 10adac08026bb3fd7a2410b80dc2c57148c17c48
+          sparse-checkout: scripts/redact-behaviour-artifacts.sh
+          path: .behaviour-redact
+          persist-credentials: false
+
+      - name: Redact secrets from behaviour debug artifacts
+        id: redact
+        if: always() && steps.changes.outputs.relevant != 'false'
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/behaviour-artifacts
+          TEST_FULLSEND_PEM: ${{ secrets.AGENTS_BT_FULLSEND_PEM }}
+          TEST_TRIAGE_PEM: ${{ secrets.AGENTS_BT_TRIAGE_PEM }}
+          TEST_CODER_PEM: ${{ secrets.AGENTS_BT_CODER_PEM }}
+          TEST_REVIEW_PEM: ${{ secrets.AGENTS_BT_REVIEW_PEM }}
+          TEST_RETRO_PEM: ${{ secrets.AGENTS_BT_RETRO_PEM }}
+          TEST_PRIORITIZE_PEM: ${{ secrets.AGENTS_BT_PRIORITIZE_PEM }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.AGENTS_BT_CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.AGENTS_BT_CLOUDFLARE_API_TOKEN }}
+          TEST_ACTOR_WRITE_PAT: ${{ secrets.AGENTS_BT_ACTOR_WRITE_PAT }}
+          TEST_ACTOR_TRIAGE_PAT: ${{ secrets.AGENTS_BT_ACTOR_TRIAGE_PAT }}
+          TEST_ACTOR_OUTSIDER_PAT: ${{ secrets.AGENTS_BT_ACTOR_OUTSIDER_PAT }}
+          E2E_GCP_PROJECT_ID: ${{ secrets.AGENTS_BT_E2E_GCP_PROJECT_ID }}
+          E2E_GCP_WIF_PROVIDER: ${{ secrets.AGENTS_BT_E2E_GCP_WIF_PROVIDER }}
+          E2E_GCP_SERVICE_ACCOUNT: ${{ secrets.AGENTS_BT_E2E_GCP_SERVICE_ACCOUNT }}
+        # Clean environment so variables the PR head set (LD_PRELOAD,
+        # BASH_ENV, PATH) cannot affect redaction by accident. The trust
+        # boundary is the gate job: authorized PR code already sees these
+        # secrets during the test step.
+        run: |
+          exec /usr/bin/env -i \
+            PATH=/usr/bin:/bin \
+            LC_ALL=C \
+            HOME="${{ runner.temp }}" \
+            ARTIFACT_DIR="${ARTIFACT_DIR}" \
+            TEST_FULLSEND_PEM="${TEST_FULLSEND_PEM}" \
+            TEST_TRIAGE_PEM="${TEST_TRIAGE_PEM}" \
+            TEST_CODER_PEM="${TEST_CODER_PEM}" \
+            TEST_REVIEW_PEM="${TEST_REVIEW_PEM}" \
+            TEST_RETRO_PEM="${TEST_RETRO_PEM}" \
+            TEST_PRIORITIZE_PEM="${TEST_PRIORITIZE_PEM}" \
+            CLOUDFLARE_ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID}" \
+            CLOUDFLARE_API_TOKEN="${CLOUDFLARE_API_TOKEN}" \
+            TEST_ACTOR_WRITE_PAT="${TEST_ACTOR_WRITE_PAT}" \
+            TEST_ACTOR_TRIAGE_PAT="${TEST_ACTOR_TRIAGE_PAT}" \
+            TEST_ACTOR_OUTSIDER_PAT="${TEST_ACTOR_OUTSIDER_PAT}" \
+            E2E_GCP_PROJECT_ID="${E2E_GCP_PROJECT_ID}" \
+            E2E_GCP_WIF_PROVIDER="${E2E_GCP_WIF_PROVIDER}" \
+            E2E_GCP_SERVICE_ACCOUNT="${E2E_GCP_SERVICE_ACCOUNT}" \
+            /usr/bin/bash "${{ github.workspace }}/.behaviour-redact/scripts/redact-behaviour-artifacts.sh"
+
+      - name: Upload behaviour debug artifacts
+        if: always() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/behaviour-artifacts/
+          if-no-files-found: ignore
+          retention-days: 5
