@@ -24,9 +24,9 @@ models:
 agents:
   - source: harness/triage.yaml
     model: sonnet
-  - source: harness/code.yaml
+  - source: eval/harness/code.yaml
     model: sonnet
-  - source: harness/fix.yaml
+  - source: eval/harness/fix.yaml
     model: sonnet
   - source: eval/harness/review.yaml
     model: sonnet

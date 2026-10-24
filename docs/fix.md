@@ -72,6 +72,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
+| `GITHUB_SIGNED_COMMITS` | `false` | `true` publishes the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](code.md#signed-commits)); anything else keeps `git push`. Set in the `forge.github` block of `harness/fix.yaml`; override via `base:` composition. |
 | `FIX_CONFLICT_UPDATE_STRATEGY` | `merge` | How the fix agent updates a PR/MR when the forge reports a **real** merge conflict: `merge` (default; creates a merge commit and preserves history) or `rebase` (replays the PR onto the target; the post-script force-pushes with `--force-with-lease`). Blocked/behind/unknown mergeability is never treated as a conflict. Override via `base:` composition. |
 
 ### Skill: `fix-review`
@@ -103,7 +104,7 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 1. **Pre-script** validates inputs, checks the iteration cap (preventing infinite fix loops), and — when the forge reports a real merge conflict — fetches the latest target branch into the sandbox checkout.
 2. **Sandbox** — the agent inspects forge mergeability, reconciles a reported conflict, reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** pushes the commit and posts a summary comment on the PR.
+4. **Post-script** publishes the commit (on GitHub through the API when `GITHUB_SIGNED_COMMITS` is `true`, so it is signed — see [Signed commits](code.md#signed-commits)) and posts a summary comment on the PR.
 
 ### Signed-off-by trailers
 
@@ -196,6 +197,10 @@ These two requests have different scopes:
 - **Redo/reset** only discards and re-implements the contiguous suffix of
   commits the fix agent itself authored. Human-authored commits and the
   original code-agent commits below that suffix are preserved untouched.
+  On GitHub, when commits are published through the API and so authored
+  by the App's bot user, the author is the `Authored-by` trailer the
+  publish adds (see
+  [Signed commits](code.md#signed-commits)).
 
 If the redo/reset range cannot be determined — HEAD is not a fix-agent
 commit, or ownership is mixed in a way that is ambiguous — the agent

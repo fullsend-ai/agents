@@ -265,6 +265,28 @@ run_categorize_push_test "categorize-generic-push-rejected" \
   "error: failed to push some refs: non-fast-forward" \
   "push-rejected"
 
+run_categorize_push_test "categorize-api-non-fast-forward-rejected" \
+  "gh: Update is not a fast forward (HTTP 422)" \
+  "push-rejected"
+
+run_categorize_push_test "categorize-api-rule-violation-rejected" \
+  "gh: Repository rule violations found (HTTP 422)" \
+  "push-rejected"
+
+run_categorize_push_test "categorize-signed-push-moved-branch-rejected" \
+  "error: origin/agent/1-x moved from 1111111 to 2222222 (non-fast-forward)" \
+  "push-rejected"
+
+# The same refusal GitHub gives git push, as gh prints it for the API path
+# (REST and the updateRefs mutation).
+run_categorize_push_test "categorize-api-workflow-permission" \
+  "gh: refusing to allow a GitHub App to create or update workflow \`.github/workflows/ci.yml\` without \`workflows\` permission (HTTP 422)" \
+  "push-workflow-permission"
+
+run_categorize_push_test "categorize-graphql-workflow-permission" \
+  "GraphQL: refusing to allow a GitHub App to create or update workflow \`.github/workflows/ci.yml\` without \`workflows\` permission (updateRefs)" \
+  "push-workflow-permission"
+
 run_categorize_push_test "categorize-unexpected-push-failed" \
   "fatal: repository 'org/missing' not found" \
   "push-failed"

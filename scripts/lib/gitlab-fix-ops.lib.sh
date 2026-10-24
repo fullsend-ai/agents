@@ -164,6 +164,13 @@ forge_set_push_remote() {
     "https://oauth2:${token}@${GITLAB_HOST}/${REPO_FULL_NAME}.git"
 }
 
+# forge_push_branch BRANCH [--force-with-lease] — plain git push.
+forge_push_branch() {
+  local branch="$1"
+  shift
+  git push "$@" -u origin -- "${branch}"
+}
+
 forge_setup_push_token() {
   local token="$1"
   # shellcheck disable=SC2031
