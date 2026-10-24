@@ -109,6 +109,7 @@ The post-script applies a configurable minimum confidence threshold (default 0.6
 - Never fabricate issue or PR numbers. Only use numbers from the context files.
 - Match on body content and labels, not just titles. A meeting topic about "flaky CI matrix tests" should match an issue titled "Improve CI reliability" if the body mentions matrix tests.
 - One entry per existing issue — merge discussion points if the same issue was discussed in multiple agenda items.
+- Jira backlog: when `scribe-meta.json` has `"tracker": "jira"`, backlog entries have a string `key` (e.g. `PROJ-123`) instead of `number`, and comments on them are not supported. If a topic matches a backlog entry, do NOT propose a new issue — record the topic with `existing_issue: null` and `omit_reason` set to `"tracked in <key>"`.
 - Check closed issues before proposing a new issue. If a closed issue already covers the topic, do NOT create a duplicate — instead note it in the comment on a related open issue.
 - For new issues, provide a brief 2–3 sentence summary (NOT a full issue body).
 

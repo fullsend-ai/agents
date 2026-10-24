@@ -15,6 +15,9 @@
 #   GH_TOKEN       — GitHub token (when FULLSEND_FORGE=github)
 #   GITLAB_TOKEN   — GitLab token (when FULLSEND_FORGE=gitlab)
 #
+# Jira backlog (FULLSEND_TRACKER=jira): see lib/jira-scribe-ops.lib.sh for
+# JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_TOKEN, SCRIBE_JIRA_PROJECT.
+#
 # Optional env vars:
 #   SCRIBE_NAME_FILTER    — substring filter on doc names
 #   SCRIBE_LOOKBACK_HOURS — how far back to search (default: 3)
@@ -33,6 +36,9 @@ if [[ -n "${GH_TOKEN:-}" ]]; then
 fi
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
+fi
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  echo "::add-mask::${JIRA_TOKEN}"
 fi
 
 WORK_DIR="${RUNNER_TEMP:-/tmp}/scribe-workspace"
@@ -221,7 +227,8 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --argjson closed_count "${CLOSED_COUNT}" \
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    --arg tracker "${FULLSEND_TRACKER}" \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, tracker: $tracker, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
@@ -357,10 +364,12 @@ jq -n \
   --argjson closed_count "${CLOSED_COUNT}" \
   --argjson pr_count "${PR_COUNT}" \
   --argjson doc_path_count "${DOC_PATH_COUNT}" \
+  --arg tracker "${FULLSEND_TRACKER}" \
   '{
     cutoff_date: $cutoff,
     notes_url: $notes_url,
     repo: $repo,
+    tracker: $tracker,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
     open_issue_total: $open_total,

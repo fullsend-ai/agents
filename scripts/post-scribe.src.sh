@@ -13,6 +13,10 @@
 #   GH_TOKEN       — GitHub token (when FULLSEND_FORGE=github)
 #   GITLAB_TOKEN   — GitLab token (when FULLSEND_FORGE=gitlab)
 #
+# Jira issue creation (FULLSEND_TRACKER=jira): new issues are created in
+# SCRIBE_JIRA_PROJECT; comments are not supported. See
+# lib/jira-scribe-ops.lib.sh for the required JIRA_* variables.
+#
 # Optional env vars:
 #   SCRIBE_MODE              — "all" (default), "comments_only", "new_issues_only"
 #   SCRIBE_SLACK_WEBHOOK_URL — Slack incoming webhook for notification (skip if unset)
@@ -34,6 +38,9 @@ if [[ -n "${GH_TOKEN:-}" ]]; then
 fi
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
+fi
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  echo "::add-mask::${JIRA_TOKEN}"
 fi
 
 # ============================================================
@@ -68,6 +75,18 @@ case "${SCRIBE_MODE}" in
     exit 1
     ;;
 esac
+# Jira: existing_issue is a numeric forge issue number, so comments on Jira
+# issues are not supported yet. Only new issues are written.
+if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+  if [[ "${SCRIBE_MODE}" == "comments_only" ]]; then
+    echo "ERROR: SCRIBE_MODE=comments_only is not supported with FULLSEND_TRACKER=jira (comments are not supported)"
+    exit 1
+  fi
+  if [[ "${SCRIBE_MODE}" == "all" ]]; then
+    echo "::notice::FULLSEND_TRACKER=jira — comments are not supported; using new_issues_only"
+    SCRIBE_MODE="new_issues_only"
+  fi
+fi
 echo "Mode: ${SCRIBE_MODE}"
 
 # Find the agent result JSON — prefer the validated iteration when set.
@@ -378,6 +397,15 @@ else
   echo "Processing ${NEW_COUNT} new issue proposals..."
 fi
 
+# Jira: fail before any create call if the configured project/issue type
+# needs required fields scribe does not set.
+if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${NEW_COUNT}" -gt 0 ]]; then
+  if ! tracker_validate_create; then
+    echo "ERROR: Jira project validation failed — no issues created"
+    exit 1
+  fi
+fi
+
 for i in $(seq 0 $((NEW_COUNT - 1))); do
   # Read public_safe FIRST — if false, suppress all content from logs
   PUBLIC_SAFE=$(jq -r ".new_issues[${i}].public_safe" "${RESULT_FILE}")
@@ -407,13 +435,15 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   fi
 
   # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}"; then
+  # Labels are model-produced free text (Jira creates them on the fly), so
+  # they pass the same gates as the title and body.
+  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}" || contains_sensitive "${LABELS}"; then
     gate_reject "${TITLE}" "contains sensitive content"
     continue
   fi
 
   # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}"; then
+  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}" || contains_suspicious_unicode "${LABELS}"; then
     gate_reject "${TITLE}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
@@ -455,6 +485,18 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
     echo "    [DRY RUN] Body length: ${BODY_LEN} chars"
     NEW_ISSUE_URLS+=("")
   else
+    # Jira rerun protection: skip if an issue with the same summary exists.
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then
+        echo "ERROR: Jira duplicate check failed — refusing to create issue"
+        exit 1
+      fi
+      if [[ -n "${EXISTING_URL}" ]]; then
+        echo "    SKIP: duplicate issue (already exists: ${EXISTING_URL})"
+        unset 'NEW_ISSUE_TITLES[-1]'
+        continue
+      fi
+    fi
     ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}")
     echo "    Created: ${ISSUE_URL}"
     NEW_ISSUE_URLS+=("${ISSUE_URL}")
