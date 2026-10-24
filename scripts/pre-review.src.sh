@@ -258,6 +258,19 @@ if grep -qxF "ready-for-merge" <<< "${PR_LABELS}"; then
   fi
 fi
 
+# Likewise dismiss the review bot's own stale approval now, not only when
+# post-review finishes. Reviews by other users are left alone.
+DISMISS_RC=0
+DISMISSED_APPROVALS="$(forge_dismiss_own_approvals "Superseded: new review run started")" || DISMISS_RC=$?
+if [[ -n "${DISMISSED_APPROVALS}" ]]; then
+  echo "::notice::Dismissed the review bot's stale approval on PR #${PR_NUMBER} at review start"
+fi
+if [[ ${DISMISS_RC} -eq 1 ]]; then
+  echo "::warning::Could not read the review bot's approvals on PR #${PR_NUMBER} — stale approval not dismissed"
+elif [[ ${DISMISS_RC} -ne 0 ]]; then
+  echo "::warning::Failed to dismiss the review bot's stale approval on PR #${PR_NUMBER}"
+fi
+
 # ---------------------------------------------------------------------------
 # Check author skip list — exit early if PR author is in REVIEW_SKIP_AUTHORS
 # ---------------------------------------------------------------------------
