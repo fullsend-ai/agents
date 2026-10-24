@@ -24,6 +24,8 @@ Use the data-fetching commands from your forge-specific skill to retrieve the is
 
 If the command fails, write a JSON error result and stop.
 
+If the sandbox refuses the request — its SSRF protection, network policy, or command scanner denies it (for example, the host resolves to a private address the policy does not authorize) — the denial is final. Stop fetching. Make no further requests to that host. Do not retry with an alternate URL, host or IP form, header, curl option, environment variable, or wrapping shell. Do not continue as if you had read the issue. Write no `agent-result.json`, skip `fullsend-check-output`, and end with a short message stating that the issue could not be read because the sandbox denied the request, naming the host. The missing result file makes the post-script fail the run without applying a triage decision. A forge error such as an HTTP 5xx is not a policy denial; handle it with the rule above.
+
 ## Step 2: Gather context and find related work
 
 Extract the project/repo identifier from `ISSUE_URL`.

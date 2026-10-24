@@ -35,6 +35,13 @@ Do not put the token back on the command line or wrap the request in another
 shell to get it past the scanner. If a request is still blocked, report that
 you could not read the data. Do not continue as if you had read it.
 
+The same applies when the sandbox's SSRF protection or network policy denies
+a request, for example because `GITLAB_HOST` resolves to a private address the
+policy does not authorize. A denial is final. Make no further requests to that
+host. Do not retry with an alternate URL, host or IP form, header, curl option,
+or environment variable. Report that the request was denied and follow your
+agent's instructions for denied requests.
+
 When you have made your last GitLab request, scrub the token in its own Bash
 call: `: > /tmp/gitlab-api.curlrc`. If you need another request after that,
 run the setup command again.

@@ -59,6 +59,9 @@ export SCRIPT_TEST_TARGET
 BEHAVIOUR_TEST_EXEC ?= $(CURDIR)/scripts/run-behaviour-test-exec.sh
 BEHAVIOUR_TEST_TAGS ?= behaviour
 BEHAVIOUR_GOFLAGS ?=
+# applier-branch-namespace gates behaviour/features/code/branch-namespace.feature,
+# whose assertions need this repo's post-code branch-namespace enforcement.
+BEHAVIOUR_CAPABILITIES ?= applier-branch-namespace
 
 script-test:
 	$(call run-timed,bash scripts/bundle-sh-test.sh)
@@ -112,4 +115,4 @@ script-test:
 test: script-test
 
 behaviour-test:
-	go test -v -count=1 -timeout 40m -tags "$(BEHAVIOUR_TEST_TAGS)" $(BEHAVIOUR_GOFLAGS) -exec "$(BEHAVIOUR_TEST_EXEC)" ./behaviour
+	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -v -count=1 -timeout 40m -tags "$(BEHAVIOUR_TEST_TAGS)" $(BEHAVIOUR_GOFLAGS) -exec "$(BEHAVIOUR_TEST_EXEC)" ./behaviour
