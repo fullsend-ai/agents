@@ -65,3 +65,8 @@ repos:
         additional_dependencies: [PyYAML==6.0.3]
         always_run: true
         pass_filenames: false
+      - id: check-dco-signoff
+        name: check DCO sign-off matches git author
+        entry: .github/scripts/check-dco-signoff.sh
+        language: script
+        stages: [commit-msg]
