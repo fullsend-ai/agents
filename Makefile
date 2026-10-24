@@ -84,6 +84,7 @@ script-test:
 	$(call run-timed,bash scripts/pre-review-test.sh)
 	$(call run-timed,bash scripts/pr-review-challenger-contract-test.sh)
 	$(call run-timed,bash scripts/pr-review-remediation-test.sh)
+	$(call run-timed,bash scripts/pr-review-dependency-scope-test.sh)
 	$(call run-timed,bash scripts/post-review-test.sh)
 	$(call run-timed,bash scripts/risk-tier1-test.sh)
 	$(call run-timed,bash scripts/post-fix-test.sh)
