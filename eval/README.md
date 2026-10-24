@@ -23,6 +23,41 @@ script runs three phases:
 
 Results are written to `eval/runs/<agent>/<run-id>/`.
 
+### Artifact layout
+
+A case that fails before the agent runs (a non-zero exit that is not a
+timeout, with no turns, cost or tokens) is retried once. A run with a
+retry leaves these directories:
+
+```
+eval/runs/<agent>/
+├── <run-id>/
+│   ├── run_result.json, summary.yaml, score.log
+│   ├── cases/<case>/                # scored: the attempt that counts
+│   └── first-attempt/cases/<case>/  # a retried case's original attempt
+└── <run-id>-retry/                  # the retry's own run directory
+    └── cases/<case>/
+```
+
+- **`<run-id>/cases/`** is what scoring (`score.py`), the case-failure
+  checks and the exit code read. When the retry produced output for a
+  case, that case's directory holds the retry's results, and its record
+  in the run-level `run_result.json` is replaced to match.
+- **`<run-id>/first-attempt/cases/<case>/`** holds the first attempt of
+  each case that the retry replaced, moved there unchanged. It is not
+  scored and has no run-level files of its own. It exists only when a
+  retry replaced a case: a run with no retries, a retry that could not
+  start or whose output could not be copied, or a case the retry left no
+  output for, leaves the first attempt in `cases/` and creates no
+  `first-attempt/`. If the first attempt cannot be moved aside (the move
+  fails, or `first-attempt/cases/<case>` already exists), it stays in
+  `cases/` and the retry's results for that case are not used.
+- **`<run-id>-retry/`** is the retry run's own output, as `execute.py`
+  wrote it. Scoring does not read it.
+
+CI scrubs and uploads all of `eval/runs/`, so every directory above is
+in the uploaded artifact.
+
 ### Tiers
 
 `EVAL_TIER` selects how many cases run and what gates the result:
