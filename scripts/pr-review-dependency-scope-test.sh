@@ -164,6 +164,20 @@ assert_scoped_incremental_diff() {
   fi
 }
 
+assert_scoped_with_classification() {
+  local name="$1" summary="$2" expected_classified="$3"
+  local ws="${CASE_DIR}/workspace"
+  if grep -qF "SCOPED: ${summary}" "${CASE_DIR}/out" \
+    && test "$(cat "${ws}/pr-full-diff.txt")" = "full pr diff" \
+    && grep -qF '+mine' "${ws}/pr-diff.txt" \
+    && test "$(cat "${ws}/dep-scope/files")" = "own.txt" \
+    && test "$(cat "${ws}/dep-scope/classified")" = "${expected_classified}"; then
+    pass "${name}"
+  else
+    fail "${name} — out: $(cat "${CASE_DIR}/out") err: $(cat "${CASE_DIR}/err")"
+  fi
+}
+
 # --- Wiring -----------------------------------------------------------------
 
 assert_contains "orchestrator links dependency-scope reference" "${SKILL}" \
@@ -238,6 +252,52 @@ compare_ok a2
 run_case
 assert_scoped "stacked dependency commits are excluded" \
   "$(printf 'dep a1\ndep a2\nown c3')"
+
+# A matching SHA is sufficient for an empty dependency commit.
+new_case empty-exact-dependency-commit
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+: > "${FIX}/diff_commits_a1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok a1
+run_case
+assert_scoped "an empty exact-SHA dependency commit still scopes" \
+  "$(printf 'dep a1\nown c3')"
+
+# A successfully fetched empty diff without an exact-SHA match is not a
+# patch candidate and must not disable scoping for other matching commits.
+new_case empty-unmatched-dependency-commit
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 e0 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+: > "${FIX}/diff_commits_e0"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok a1
+run_case
+assert_scoped "an unmatched empty dependency diff does not disable scoping" \
+  "$(printf 'dep a1\nown c3')"
+
+# A successful empty own diff has no patch ID, but the commit remains own.
+new_case empty-own-commit
+commits a1 c2 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+: > "${FIX}/diff_commits_c2"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok a1
+run_case
+assert_scoped_with_classification "an empty own commit stays in scoped history" \
+  "2 own commit(s)" "$(printf 'dep a1\nown c2\nown c3')"
+
+# Exact-SHA dependency matches do not require a diff retrieval.
+new_case exact-sha-without-diff
+commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok a1
+run_case
+assert_scoped "an exact-SHA dependency match needs no patch-ID fetch" \
+  "$(printf 'dep a1\nown c3')"
 
 # A scoped re-review must retain both a direct remediation in a dependency
 # file, an unrelated edit in that file, and an unrelated own-file edit, so

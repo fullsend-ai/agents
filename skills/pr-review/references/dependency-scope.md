@@ -42,15 +42,20 @@ The command:
   in the base branch. A closed, unmerged one lands only through this
   PR, so its code is this PR's code.
 - Marks a PR commit as a dependency commit when its SHA is in an open
-  candidate's commit list (stacked) or it is a cherry-pick: its
-  `git patch-id --stable` equals one of theirs **and** a
+  candidate's commit list (stacked), without needing to fetch that
+  commit's diff, or it is a cherry-pick: its `git patch-id --stable`
+  equals one of theirs **and** a
   exact hash of its changed lines and final-newline markers does too
   (patch IDs ignore whitespace and final-newline markers, which can
   change behavior, e.g. Python indentation). A
   matching commit message is not enough, so a cherry-pick whose
-  conflicts were resolved differently stays in scope.
-- Refuses to scope (`SKIP`) when any commit list or commit diff cannot
-  be fetched, rather than treating the failure as "no match".
+  conflicts were resolved differently stays in scope. A successfully
+  fetched diff with no patch ID (such as an empty or metadata-only
+  commit) cannot establish a patch match and is treated as an own
+  commit.
+- Refuses to scope (`SKIP`) when any required commit list, diff fetch,
+  or patch-ID calculation fails, rather than treating the failure as
+  "no match".
 - Scopes only when the dependency commits come first, followed by at
   least one own commit, with no merge commits, fewer than 250 commits
   on either side, and a complete compare, with safe file paths, from

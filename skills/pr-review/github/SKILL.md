@@ -175,10 +175,13 @@ if test -z "$SKIP"; then
 fi
 test -s "$W/dep-prs" || SKIP="${SKIP:-no open dependency PR}"
 # ids <sha>: prints "<stable patch-id> <exact hash of changed lines and newline markers>".
-# Patch IDs only pick candidates (they ignore whitespace); a match needs both.
+# It prints nothing for a fetched diff with no patch ID; that commit is not a
+# patch-match candidate.
 ids() {
   gh api -H "$DIFF_ACCEPT" "repos/${REPO_FULL_NAME}/commits/$1" < /dev/null > "$W/one.diff" || return 1
-  PID=$(git patch-id --stable < "$W/one.diff" | cut -d' ' -f1) || return 1
+  PID=$(git patch-id --stable < "$W/one.diff") || return 1
+  PID=${PID%% *}
+  test -n "$PID" || return 0
   EXACT=$(grep -E '^([-+]|\\ No newline at end of file)' "$W/one.diff" | sha256sum | cut -d' ' -f1) || return 1
   # No pipefail: a failed hash step leaves an empty value, so require well-formed hashes.
   printf '%s\n' "$PID" | grep -Eqx '[0-9a-f]{40,64}' || return 1
@@ -186,10 +189,14 @@ ids() {
   echo "$PID $EXACT"
 }
 if test -z "$SKIP"; then
-  while IFS= read -r s; do
-    ids "$s" || SKIP="${SKIP:-cannot compare patches of dependency commits}"
-  done < "$W/dep-shas" > "$W/dep-pids"
   jq -r 'add // [] | .[].sha' "$W/own-pages.json" > "$W/own-shas"
+  while IFS= read -r s; do
+    # Exact SHAs establish identity without a patch diff. This also lets an
+    # empty exact-SHA commit match even though git patch-id emits no output.
+    if grep -qxF -e "$s" "$W/own-shas"; then continue; fi
+    ID=$(ids "$s") || SKIP="${SKIP:-cannot compare patches of dependency commits}"
+    if test -n "$ID"; then echo "$ID"; fi
+  done < "$W/dep-shas" > "$W/dep-pids"
   while IFS= read -r s; do
     if grep -qxF -e "$s" "$W/dep-shas"; then echo "dep $s"; continue; fi
     ID=$(ids "$s") || SKIP="${SKIP:-cannot compare patches of own commits}"
