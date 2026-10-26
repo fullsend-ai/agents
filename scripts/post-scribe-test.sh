@@ -299,6 +299,31 @@ run_test_content_suppressed "github/sensitive-new-issue-label-suppressed" \
   "content gate: sensitive content" \
   "bob@example.com"
 
+# Unbounded fields (labels, omit_reason) larger than the pipe buffer must still
+# be scanned in full: a detector whose reader exits early must not report
+# "clean" because the writer was killed by SIGPIPE. The match sits on the first
+# line and the padding is many short lines (JSON \n escapes, ~600KB decoded —
+# well past both the pipe buffer and grep's read buffer), so an early-exiting
+# reader stops before the writer has finished.
+PADDING="$(printf 'a\\n%.0s' $(seq 1 300000))"
+# JSON escape for U+200B (zero-width space), decoded by jq in the post-script.
+ZWSP_ESCAPE="$(printf '%s%s' '\' 'u200b')"
+
+run_test_content_suppressed "github/oversized-omit-reason-sensitive-suppressed" \
+  '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"bob@example.com\n'"${PADDING}"'"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
+  "content gate: sensitive content" \
+  "bob@example.com"
+
+run_test_content_suppressed "github/oversized-omit-reason-unicode-suppressed" \
+  '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"Hidden'"${ZWSP_ESCAPE}"'directive\n'"${PADDING}"'"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
+  "content gate: suspicious Unicode" \
+  "Hidden"
+
+run_test_content_suppressed "github/oversized-label-sensitive-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Rollout followup","summary":"Rollout.","body":"## Problem\nRollout.","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes","bob@example.com\n'"${PADDING}"'"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "bob@example.com"
+
 run_test_stdout "github/code-block-rejected" \
   '{"topics":[{"topic":"Config change","summary":"**Meeting update — 2026-04-28**\n\nUse ```yaml\nkey: value\n``` in the workflow.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
   "contains code block"

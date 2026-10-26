@@ -558,31 +558,28 @@ fi
 echo "Confidence threshold: ${MIN_CONFIDENCE}"
 REJECTED=0
 
+# The detectors feed their input via here-strings rather than `echo | grep -q`:
+# with pipefail, an early-exiting reader makes the writer die of SIGPIPE on
+# large inputs, the pipeline fails, and the helper wrongly reports "clean".
 contains_sensitive() {
   local text="$1"
   # GitHub PATs, AWS access keys, private keys
-  echo "${text}" \
-    | grep -qEi '(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}|\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b|-----BEGIN.*(PRIVATE KEY)' \
+  grep -qEi '(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}|\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b|-----BEGIN.*(PRIVATE KEY)' <<<"${text}" \
     && return 0
   # Email addresses
-  echo "${text}" \
-    | grep -qE '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b' \
+  grep -qE '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b' <<<"${text}" \
     && return 0
   # SSN
-  echo "${text}" \
-    | grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' \
+  grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<<"${text}" \
     && return 0
   # Slack webhooks
-  echo "${text}" \
-    | grep -qE 'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+' \
+  grep -qE 'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+' <<<"${text}" \
     && return 0
   # JWTs
-  echo "${text}" \
-    | grep -qE '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b' \
+  grep -qE '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b' <<<"${text}" \
     && return 0
   # Generic key=value secrets
-  echo "${text}" \
-    | grep -qEi '(api[_-]?key|token|secret|password|bearer)[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+/-]{20,}' \
+  grep -qEi '(api[_-]?key|token|secret|password|bearer)[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+/-]{20,}' <<<"${text}" \
     && return 0
   return 1
 }
@@ -590,8 +587,7 @@ contains_sensitive() {
 contains_suspicious_unicode() {
   local text="$1"
   # Tag characters (U+E0000–E007F), zero-width chars, BOM, bidi overrides/isolates
-  echo "${text}" \
-    | perl -e 'binmode(STDIN, q(:encoding(UTF-8))); while (<STDIN>) { if (/[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/) { exit 0 } } exit 1' \
+  perl -e 'binmode(STDIN, q(:encoding(UTF-8))); while (<STDIN>) { if (/[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/) { exit 0 } } exit 1' <<<"${text}" \
     && return 0
   return 1
 }
