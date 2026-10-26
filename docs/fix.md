@@ -1,3 +1,7 @@
+---
+description: How the fullsend fix agent reads PR review feedback, implements targeted fixes, runs tests and linters, and commits the result.
+---
+
 # Fix Agent
 
 ![Fix agent icon](icons/coder.png)
@@ -53,10 +57,37 @@ command. The text gives you direct control over what to fix:
 further automatic fix runs. Manual `/fs-fix` commands still work.
 Remove the label or use `/fs-fix` to re-engage.
 
+For **PRs authored by the fullsend code agent** (`fullsend-ai-coder[bot]`), or
+by the configured app-set coder (`${FULLSEND_APP_SET}-coder[bot]`), automatic
+fixing happens with no extra setup — the fix agent responds to review feedback
+out of the box. In `gh pr view --json author` output, the configured coder is
+identified as `app/${FULLSEND_APP_SET}-coder` and must also have
+`.author.is_bot == true`. PRs from other bots (e.g., Renovate) require the
+`fullsend-fix` label; without it, the bot-triggered fix run is dispatched but
+the eligibility check exits early with a warning.
+
+For **human-authored PRs**, the fix agent will not auto-fix review feedback
+unless you opt in by adding the `fullsend-fix` label. This prevents the agent
+from pushing commits to your branch without your consent. You can still use
+`/fs-fix` at any time regardless of the label — the label only controls
+automatic (bot-triggered) runs.
+
+**GitLab scope note:** on GitLab, the dispatch router enforces the
+`fullsend-no-fix` stop valve for the changes-requested MR-note path. The
+`fullsend-fix` opt-in gate for human-authored and non-coder-bot MRs — enforced
+on GitHub by
+[`check-fix-eligibility.sh`](https://github.com/fullsend-ai/fullsend/blob/main/.github/scripts/check-fix-eligibility.sh) —
+is not yet implemented for GitLab: the router does not currently have
+enough MR-author identity information to distinguish the fullsend code
+agent from other authors. Until that parity lands, bot-triggered fix
+runs on GitLab MRs are gated only by `fullsend-no-fix`, not by
+`fullsend-fix`.
+
 ## Control labels
 
 | Label | Meaning |
 |-------|---------|
+| `fullsend-fix` | Enables automatic bot-triggered fix runs on human-authored PRs and PRs from bots other than the fullsend code agent. Without this label, the fix agent only runs when explicitly invoked via `/fs-fix`. PRs authored by `fullsend-ai-coder[bot]` are always eligible without this label. **GitLab:** not yet enforced — see the scope note above. |
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
 | `fullsend-fix-budget/N` | Lowers the automatic fix cap for this PR to `N` (a positive integer below `ITERATION_CAP`). Set by a maintainer; the review agent cannot add or remove it. A label that is not a positive integer, is oversized, or is not lower than `ITERATION_CAP` is ignored; with several valid labels the smallest `N` wins. `needs-human` and the stop message use the lowered cap. Manual `/fs-fix` commands are unchanged and keep `ITERATION_CAP_HUMAN`. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
@@ -74,6 +105,63 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
 | `GITHUB_SIGNED_COMMITS` | `false` | `true` publishes the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](code.md#signed-commits)); anything else keeps `git push`. Set in the `forge.github` block of `harness/fix.yaml`; override via `base:` composition. |
 | `FIX_CONFLICT_UPDATE_STRATEGY` | `merge` | How the fix agent updates a PR/MR when the forge reports a **real** merge conflict: `merge` (default; creates a merge commit and preserves history) or `rebase` (replays the PR onto the target; the post-script force-pushes with `--force-with-lease`). Blocked/behind/unknown mergeability is never treated as a conflict. Override via `base:` composition. |
+
+### Image and network policy synchronization
+
+By default, the fix and [code agent](code.md) use the same upstream container
+image and the same shared sandbox policy (`policies/base.yaml` in
+[fullsend-ai/agents](https://github.com/fullsend-ai/agents)). They are
+separate harnesses, though — you can override each independently when
+their needs diverge. For example, the code agent's Jira overlay adds the
+`jira-ro` provider for Jira-sourced issues, while the fix agent works
+from PR feedback and has no Jira access. Note that under `base:`
+composition a child harness's `providers:` list is appended to the
+base's — you can add providers to one harness only, but you cannot
+remove a provider the base defines; that requires a full harness
+without `base:`.
+
+> **Warning:** If you customize image, `policy:`, or `providers:` on only one
+> agent by mistake, the other may fail with no obvious reason (for example, a
+> package manager or registry endpoint allowed in code but not fix).
+
+**Recommended configuration**
+
+If you want both agents to share one behavior set — one place to edit image,
+policy, providers, and runner scripts — put the same overrides in both harness
+files in your repo's `.fullsend/` directory:
+
+```yaml
+# .fullsend/harness/code.yaml  (register as source: harness/code.yaml in config.yaml)
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/code.yaml#sha256=<sha256sum>
+image: ghcr.io/your-org/your-fullsend-image@sha256:…
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - package-registries
+
+# .fullsend/harness/fix.yaml  (register as source: harness/fix.yaml in config.yaml)
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/fix.yaml#sha256=<sha256sum>
+image: ghcr.io/your-org/your-fullsend-image@sha256:…
+policy: policies/base.yaml   # same file — edit once, both agents use it
+providers:
+  - vertex-ai
+  - package-registries
+```
+
+Keep the shared policy at `.fullsend/policies/base.yaml`. The policy file
+defines non-network sandbox restrictions only — filesystem access, landlock, and
+process identity. Network access is controlled through `providers:` profiles
+listed in the harness (see the
+[fullsend architecture docs](https://fullsend.sh/docs/architecture#agent-sandbox)
+for details on provider-backed policy composition) — when unifying
+configuration, keep the `providers:` additions the same on both harnesses
+too (each list is appended to its base harness's providers, so the
+effective sets may still differ if the bases differ). The
+same pattern applies to `pre_script` and `post_script` when you want a single
+place to maintain runner-side behavior.
+
+See [Customizing Agents](https://fullsend.sh/docs/guides/user/customizing-agents)
+for harness composition.
 
 ### Skill: `fix-review`
 
@@ -326,6 +414,34 @@ selects the platform at runtime via `FULLSEND_FORGE`. On GitHub, the agent
 uses `gh` for API access; on GitLab, it uses `curl` against the REST API.
 Scripts dispatch forge-specific operations through `fix-ops.lib.sh`, and
 forge-specific skills provide the appropriate CLI recipes.
+
+On GitLab, dispatch pipelines run from the repository default branch, so
+the fix job fetches the MR source SHA into `target-repo/` and points
+`--target-repo` there before `fullsend run`. Trusted `.fullsend/` config
+continues to be read from the default-branch working tree. Fetching the
+source branch without checking it out is not sufficient: the sandbox
+inherits the runner checkout, and the agent cannot recover the reviewed
+revision from inside the sandbox.
+
+**GitLab fork and cross-project MRs:** the job-level fork gate (`IS_FORK`)
+still denies both the **code** and **fix** agents outright on a
+fork/cross-project dispatch. Code opens a new MR against the target
+project and has no analogous validated source revision to check out.
+Fix is denied for a different reason: although the pre-script
+(`checkout-mr-source.sh`) already resolves the MR's source project,
+branch, and head SHA through `fullsend resolve-mr-source` (never
+trusting the job's `IS_FORK` pipeline variable or any other unverified
+CI variable), fetches and checks out that exact revision — fetching
+from the source project even when it differs from the target project —
+and runs a pre-push safety gate, `fullsend check-protected-branch`,
+against the resolved source project and branch before the fix agent
+ever runs, the runner-side post-script that actually pushes the
+resulting fix commit still targets this job's own project and branch
+rather than the validated source project. A validated checkout alone is
+not enough to make a fork/cross-project fix dispatch safe to publish, so
+the `IS_FORK` gate stays in place for `fix` until a source-targeted
+publish path ships in a follow-up PR
+([fullsend-ai/fullsend#7814](https://github.com/fullsend-ai/fullsend/pull/7814)).
 
 ### GitLab-specific variables
 

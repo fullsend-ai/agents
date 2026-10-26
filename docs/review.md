@@ -1,3 +1,7 @@
+---
+description: How the fullsend review agent evaluates pull requests for correctness, security, intent alignment, style, and documentation currency.
+---
+
 # Review Agent
 
 ![Review agent icon](icons/review.png)
@@ -29,6 +33,25 @@ It can also be triggered manually with the `/fs-review` command.
 
 The harness also declares a CEL `trigger:` for fullsend's harness dispatch that selects the same events on GitHub (on GitLab, MR opened and `/fs-review` only). Dispatch does not evaluate it for the built-in review agent yet, so the routing above is what runs today.
 
+On GitLab, opening an MR triggers automatic review through the
+[ADR 0125](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0125-gitlab-hybrid-webhook-poller-dispatch.md) webhook fast
+path. `fullsend repos install` provisions a project webhook with merge-request
+events enabled. Each event starts a dispatcher pipeline on the protected default
+branch, which dispatches review without waiting for a poll. Provisioning is
+deferred until the dispatcher and its scripts are on the default branch, the
+default branch is protected, and `no_one_allowed` is verified. A repository
+whose scaffold merge request is still open therefore relies on the poller alone
+once the scaffold is merged to a protected default branch. Until then neither
+path dispatches, because the poll jobs also require a protected ref. The
+[ADR 0067](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0067-gitlab-cron-polling-event-dispatch.md) cron poller stays
+in place as the reconciliation backstop. When a webhook delivery is missed or
+the fast path is not provisioned, review fires once the poller sees an MR whose
+`created_at` is newer than the watermark (up to one poll interval of delay).
+Native `merge_request_event` pipeline dispatch was removed.
+Push-to-open-MR (GitHub `synchronize`) is not auto-detected on GitLab: the
+poller does not detect it, and the webhook dispatcher rejects merge request
+updates. Comment `/fs-review` to re-review after new commits.
+
 ## Commands
 
 | Command | Where | Effect |
@@ -38,6 +61,24 @@ The harness also declares a CEL `trigger:` for fullsend's harness dispatch that 
 Requires write-level repository permission (admin, maintain, or write).
 
 The `/fs-review` command does not accept arguments.
+
+If a built-in GitHub review run is cancelled while its commit is still the
+pull request HEAD, its GitHub status comment identifies that commit and directs
+maintainers to review or retry with `/fs-review` before merging. If a newer
+commit superseded the cancelled review, the comment directs maintainers to
+check the new HEAD's review status without suggesting `/fs-review`, which could
+cancel an in-progress review for that HEAD. If the current HEAD cannot be
+verified, the comment omits retry guidance. Status comments routed to Jira omit
+this GitHub-only guidance.
+
+The reviewed commit comes from the explicit workflow input or the PR event's
+`pull_request.head.sha`; GitHub's generic `GITHUB_SHA` can identify a merge or
+base commit and is not used to decide whether a cancelled review was superseded.
+
+GitHub review submissions, including `commented` reviews with an empty summary,
+continue through normal routing. An empty summary can still accompany
+substantive inline review comments, so custom triggers receive the complete
+review event.
 
 ## Control labels
 
@@ -56,6 +97,15 @@ only when that run approves the current head.
 
 When the review agent requests changes (without rejecting), no outcome label is
 applied — the `pull_request_review` event triggers the [fix agent](fix.md) directly.
+On GitLab, which has no equivalent native review event, the review bot posts
+an MR note with the hidden `<!-- fullsend:changes-requested -->` marker; the
+webhook fast path, with the scheduled poller as reconciliation backstop,
+retains that bot-authored note and the dispatch router routes it to fix. Both
+paths retain the note when its author is the registered Analyst bot user, so
+fix dispatches automatically even in distinct-role installations where the
+Analyst and Poller are different identities. Fork merge requests are blocked from automatic fix runs,
+matching GitHub. Comment-only reviews do not carry the marker and do not
+dispatch fix.
 
 Stale outcome labels from prior review runs are removed before the new one is
 applied.
@@ -94,19 +144,21 @@ behavior.
 
 The review agent includes the `issue-labels` skill to discover your repo's
 labels and apply them to PRs during review. This is the same skill used by the
-[triage agent](triage.md) — overloading it affects both agents.
+[triage agent](triage.md).
+
+To **extend**, add a uniquely named skill in `.agents/skills/` and symlink
+`.claude/skills` to `.agents/skills` so it is discoverable by both fullsend
+and local agent tooling. A same-named `issue-labels` skill in that directory
+is shadowed by the built-in version and is ignored.
 
 The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`,
 `skills/issue-labels/gitlab/SKILL.md`, and `skills/issue-labels/jira/SKILL.md`),
 registered under `forge.<platform>.skills` in the harness. To overload the
-built-in skill, create your own skill in
-`.agents/skills/issue-labels/github/SKILL.md` and symlink `.claude/skills` to
-`.agents/skills` so it's discoverable by both fullsend and local agent tooling.
-At the org level, override via `base:` composition (ADR 0045) — inherit the
-upstream harness and replace the forge-specific skill entry under
-`forge.<platform>.skills` with your own path whose basename matches the built-in
-(`github`, `gitlab`, or `jira`), so `mergeSkills` dedupes by basename
-(fullsend-ai/fullsend #5409) and yours wins.
+built-in skill, override via `base:` composition (ADR 0045) — inherit the
+upstream harness and replace the
+forge-specific skill entry under `forge.<platform>.skills` with your own path
+whose basename matches the built-in (`github`, `gitlab`, or `jira`), so `mergeSkills`
+dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
 The older `customized/skills/issue-labels/SKILL.md` overlay in the org
 `.fullsend` config repo is deprecated by ADR 0064.
 
