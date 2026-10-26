@@ -174,6 +174,54 @@ run_test_stdout() {
   echo "PASS: ${test_name}"
 }
 
+# run_test_content_suppressed — run the post-script and assert that stdout
+# contains the expected pattern and never contains the forbidden value.
+run_test_content_suppressed() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local forbidden_stdout="$4"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  : > "${CURL_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "${forbidden_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — forbidden value '${forbidden_stdout}' found in stdout"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Gate rejections: 1" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected the item to be counted as rejected"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- GitHub test cases (FULLSEND_FORGE=github) ---
 
 run_test_missing_dry_run() {
@@ -207,7 +255,49 @@ run_test_stdout "github/public-safe-false-rejected" \
 
 run_test_stdout "github/sensitive-email-rejected" \
   '{"topics":[{"topic":"Contact follow-up","summary":"**Meeting update — 2026-04-28**\n\nReach out at alice@example.com.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
-  "contains sensitive content"
+  "content gate: sensitive content"
+
+# Content gates must run before every gate that prints the title/topic,
+# so a low-confidence proposal with sensitive content is never printed.
+run_test_content_suppressed "github/low-confidence-sensitive-topic-suppressed" \
+  '{"topics":[{"topic":"Ping alice@example.com","summary":"**Meeting update — 2026-04-28**\n\nFollow up.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.2,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "alice@example.com"
+
+run_test_content_suppressed "github/low-confidence-sensitive-summary-suppressed" \
+  '{"topics":[{"topic":"Payroll followup","summary":"**Meeting update — 2026-04-28**\n\nSSN 123-45-6789.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.2,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "Payroll followup"
+
+run_test_content_suppressed "github/invalid-issue-unicode-topic-suppressed" \
+  '{"topics":[{"topic":"Hidden\u200bdirective","summary":"**Meeting update — 2026-04-28**\n\nFollow up.","existing_issue":"abc","confidence":0.2,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "content gate: suspicious Unicode" \
+  "Hidden"
+
+run_test_content_suppressed "github/omitted-sensitive-topic-suppressed" \
+  '{"topics":[{"topic":"Ping alice@example.com","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"not actionable"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
+  "content gate: sensitive content" \
+  "alice@example.com"
+
+run_test_content_suppressed "github/low-confidence-sensitive-new-issue-title-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Email bob@example.com about rollout","summary":"Rollout.","body":"## Problem\nRollout.\n\n## Related\nSource: [Meeting notes](https://docs.google.com/document/d/abc123)","confidence":0.2,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "bob@example.com"
+
+run_test_content_suppressed "github/low-confidence-sensitive-new-issue-body-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Rollout followup","summary":"Rollout.","body":"## Problem\nContact bob@example.com.\n\n## Related\nSource: [Meeting notes](https://docs.google.com/document/d/abc123)","confidence":0.2,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "Rollout followup"
+
+run_test_content_suppressed "github/invalid-confidence-unicode-new-issue-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Hidden\u202edirective","summary":"Rollout.","body":"## Problem\nRollout.","confidence":"invalid","public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: suspicious Unicode" \
+  "Hidden"
+
+run_test_content_suppressed "github/sensitive-new-issue-label-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Rollout followup","summary":"Rollout.","body":"## Problem\nRollout.","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes","bob@example.com"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "bob@example.com"
 
 run_test_stdout "github/code-block-rejected" \
   '{"topics":[{"topic":"Config change","summary":"**Meeting update — 2026-04-28**\n\nUse ```yaml\nkey: value\n``` in the workflow.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
@@ -330,7 +420,7 @@ run_test_stdout "gitlab/dedup-merges-duplicate-issues" \
 
 run_test_stdout "gitlab/sensitive-email-rejected" \
   '{"topics":[{"topic":"Contact follow-up","summary":"**Meeting update — 2026-04-28**\n\nReach out at alice@example.com.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
-  "contains sensitive content"
+  "content gate: sensitive content"
 
 run_test_stdout "gitlab/code-block-rejected" \
   '{"topics":[{"topic":"Config change","summary":"**Meeting update — 2026-04-28**\n\nUse ```yaml\nkey: value\n``` in the workflow.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \

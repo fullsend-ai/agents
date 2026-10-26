@@ -699,6 +699,20 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   ISSUE_NUM=$(jq -r ".topics[${i}].existing_issue // empty" "${RESULT_FILE}")
   OMIT=$(jq -r ".topics[${i}].omit_reason // empty" "${RESULT_FILE}")
 
+  # Content gates run before any gate or log line that prints the topic,
+  # and reject without echoing it.
+  # Gate: sensitive content (deterministic PII/secret patterns)
+  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}" || contains_sensitive "${OMIT}"; then
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "sensitive content (PII, secrets)"
+    continue
+  fi
+
+  # Gate: suspicious Unicode (prompt injection defense)
+  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}" || contains_suspicious_unicode "${OMIT}"; then
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "suspicious Unicode (potential prompt injection)"
+    continue
+  fi
+
   if [[ -n "${OMIT}" ]]; then
     echo "  OMITTED: [$(_gha_sanitize "${TOPIC}")] — $(_gha_sanitize "${OMIT}")"
     continue
@@ -725,18 +739,6 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   fi
   if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
     gate_reject "${TOPIC}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
-    continue
-  fi
-
-  # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}"; then
-    gate_reject "${TOPIC}" "contains sensitive content (PII, secrets)"
-    continue
-  fi
-
-  # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}"; then
-    gate_reject "${TOPIC}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -819,6 +821,20 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   CONFIDENCE=$(jq -r ".new_issues[${i}].confidence" "${RESULT_FILE}")
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
 
+  # Content gates run before any gate that prints the title, and reject
+  # without echoing it.
+  # Gate: sensitive content (deterministic PII/secret patterns)
+  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}" || contains_sensitive "${LABELS}"; then
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "sensitive content"
+    continue
+  fi
+
+  # Gate: suspicious Unicode (prompt injection defense)
+  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}" || contains_suspicious_unicode "${LABELS}"; then
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "suspicious Unicode (potential prompt injection)"
+    continue
+  fi
+
   # Gate: confidence
   if ! is_valid_confidence "${CONFIDENCE}"; then
     gate_reject "${TITLE}" "invalid confidence value"
@@ -826,18 +842,6 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   fi
   if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
     gate_reject "${TITLE}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
-    continue
-  fi
-
-  # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}"; then
-    gate_reject "${TITLE}" "contains sensitive content"
-    continue
-  fi
-
-  # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}"; then
-    gate_reject "${TITLE}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
