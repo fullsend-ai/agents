@@ -307,7 +307,7 @@ run_test_content_suppressed "github/sensitive-new-issue-label-suppressed" \
 # reader stops before the writer has finished.
 PADDING="$(printf 'a\\n%.0s' $(seq 1 300000))"
 # JSON escape for U+200B (zero-width space), decoded by jq in the post-script.
-ZWSP_ESCAPE="$(printf '%s%s' '\' 'u200b')"
+ZWSP_ESCAPE="\\u200b"
 
 run_test_content_suppressed "github/oversized-omit-reason-sensitive-suppressed" \
   '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"bob@example.com\n'"${PADDING}"'"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
