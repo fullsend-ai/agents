@@ -1,3 +1,7 @@
+---
+description: How the fullsend prioritize agent scores GitHub issues with the RICE framework and produces ranked, reasoned priority scores.
+---
+
 # Prioritize Agent
 
 ![Prioritize agent icon](icons/prioritize.png)
@@ -36,6 +40,10 @@ The `/fs-prioritize` command does not accept arguments. It scores the issue
 using the current content, comments, and any available `customer-research`
 skill data.
 
+Project board configuration is optional for on-demand runs. Without a project
+number, the agent still posts the RICE score and reasoning comment but skips
+the project board update.
+
 ## Control labels
 
 The prioritize agent does not apply or consume control labels. It reads the
@@ -65,6 +73,353 @@ your-repo/
 This gives the prioritize agent concrete data to distinguish between "one user
 wants this" (Reach 0.25) and "three strategic accounts have filed support cases
 about it" (Reach 2.0), instead of guessing from the issue text alone.
+
+### Scheduled scoring
+
+The prioritize agent can be triggered automatically by a scheduler workflow
+that polls a GitHub Project board for unscored issues. This scheduler
+is **not managed by fullsend** — it is bespoke org-level automation that you
+create manually in a repository of your choice.
+
+#### Prerequisites
+
+- A GitHub Projects (v2) board with numeric **RICE Reach**, **RICE Impact**,
+  **RICE Confidence**, **RICE Effort**, and **RICE Score** fields — the
+  scoring run resolves all five and fails if any is missing. Run
+  `scripts/setup-prioritize.sh` to create them if they do not
+  exist. The script is not installed into target repos; find it in the
+  fullsend source tree at
+  `internal/scaffold/fullsend-repo/scripts/setup-prioritize.sh`.
+- `prioritize.yml` installed in every target repo (handled by `repos install`).
+- The scheduler passes `project_number` to each target repo's
+  `prioritize.yml` thin caller via `workflow_dispatch` input. If the input
+  is not provided, the thin caller falls back to
+  `vars.FULLSEND_PROJECT_NUMBER` (repo or org-level variable).
+- The following variables and secrets set on the repo that hosts the scheduler:
+
+| Variable / Secret | Type | Required | Description |
+|-------------------|------|----------|-------------|
+| `FULLSEND_PRIORITIZE_CLIENT_ID` | Variable | Yes | Client ID of the GitHub App with project board and issue read access (`organization_projects: write`, `issues: read`) |
+| `FULLSEND_PRIORITIZE_APP_PRIVATE_KEY` | Secret | Yes | Private key for the prioritize GitHub App |
+| `FULLSEND_FULLSEND_CLIENT_ID` | Variable | Yes | Client ID of the GitHub App with cross-repo dispatch access (`actions: write`) |
+| `FULLSEND_FULLSEND_APP_PRIVATE_KEY` | Secret | Yes | Private key for the fullsend GitHub App |
+
+> **Note:** This example mints tokens directly from GitHub App private keys
+> stored as secrets on the scheduler repo. It only works for self-owned Apps
+> whose private keys you hold — orgs using fullsend's shared hosted Apps
+> (where keys live only with the central mint,
+> [ADR 0029](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0029-central-token-mint-secretless-fullsend.md))
+> cannot follow this guide as-is and need a scheduler variant that requests
+> tokens from the mint. Minting directly also grants each token the App's full
+> installation permissions instead of the minimum the mint enforces; the
+> `permission-*` inputs on the token steps below narrow the scope.
+
+#### Example workflow
+
+Create this as `.github/workflows/prioritize-scheduler.yml` in your
+`{org}/.fullsend` repo. Replace `<your-project-number>`, `<your-repos>`,
+and `<your-runner>` with your org-specific values.
+
+The scheduler uses two GitHub App tokens, kept separate for
+least-privilege: the **prioritize** app has only project board and issue
+read access (`organization_projects: write`, `issues: read`) and the
+**fullsend** app has cross-repo
+workflow dispatch (`actions: write`). Combining them into a single app
+would give every per-repo prioritize run more permissions than it needs.
+See the
+[Role Permissions Matrix](https://fullsend.sh/docs/guides/infrastructure/infrastructure-reference#role-permissions-matrix)
+for the full permission breakdown.
+
+All operational configuration (project number, target repos, score field,
+thresholds) is self-contained in the workflow file via `||` fallback
+expressions — the only repository variables and secrets needed are the
+GitHub App credentials listed in Prerequisites above. Input descriptions
+document the defaults; the `||` fallbacks in the `env` block and the
+`repositories` field are the single source of truth (input `default`
+values only apply to `workflow_dispatch`, not `schedule` triggers).
+
+```yaml
+---
+name: Prioritize Scheduler
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+    inputs:
+      project_number:
+        description: "GitHub Project number to poll (default: <your-project-number>)"
+        required: false
+        type: string
+      repos:
+        description: "Comma-separated repo names to dispatch to (default: <your-repos>)"
+        required: false
+        type: string
+      score_field:
+        description: "Project board field name for the RICE score (default: RICE Score)"
+        required: false
+        type: string
+      workflow:
+        description: "Workflow filename to dispatch on target repos (default: prioritize.yml)"
+        required: false
+        type: string
+      stale_threshold:
+        description: "Re-score issues whose RICE score is older than this (default: 7d)"
+        required: false
+        type: string
+      wip_limit:
+        description: "Max number of prioritize jobs to dispatch (default: 5)"
+        required: false
+        type: number
+
+concurrency:
+  group: fullsend-prioritize-scheduler
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Find and dispatch issues for RICE scoring
+    runs-on: <your-runner>
+    timeout-minutes: 5
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4  # pin to SHA per your org policy
+
+      - name: Generate prioritize token (project board access)
+        id: prioritize-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FULLSEND_PRIORITIZE_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_PRIORITIZE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-organization-projects: write
+          permission-issues: read
+
+      - name: Generate fullsend token (cross-repo dispatch)
+        id: dispatch-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.FULLSEND_FULLSEND_CLIENT_ID }}
+          private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ inputs.repos || '<your-repos>' }}
+          permission-actions: write
+
+      - name: Find issues and dispatch prioritize runs
+        env:
+          GH_TOKEN: ${{ steps.prioritize-token.outputs.token }}
+          DISPATCH_TOKEN: ${{ steps.dispatch-token.outputs.token }}
+          ORG: ${{ github.repository_owner }}
+          REPOS: ${{ inputs.repos || '<your-repos>' }}
+          PROJECT_NUMBER: ${{ inputs.project_number || '<your-project-number>' }}
+          SCORE_FIELD: ${{ inputs.score_field || 'RICE Score' }}
+          STALE_THRESHOLD: ${{ inputs.stale_threshold || '7d' }}
+          WORKFLOW: ${{ inputs.workflow || 'prioritize.yml' }}
+          WIP_LIMIT: ${{ inputs.wip_limit || '5' }}
+        run: |
+          set -euo pipefail
+
+          # Parse stale threshold into seconds
+          parse_threshold() {
+            local val="${1%[dh]}"
+            local unit="${1: -1}"
+            if [[ -z "${val}" || ! "${val}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "ERROR: invalid threshold '${1}' (use Nd or Nh, e.g. 7d)" >&2; exit 1
+            fi
+            case "${unit}" in
+              d) echo $(( val * 86400 )) ;;
+              h) echo $(( val * 3600 )) ;;
+              *) echo "ERROR: unsupported threshold unit '${unit}' (use Nd or Nh)" >&2; exit 1 ;;
+            esac
+          }
+          THRESHOLD_SECONDS=$(parse_threshold "${STALE_THRESHOLD}")
+
+          # Comma-separated repo names -> JSON array
+          REPOS_JSON=$(echo "${REPOS}" | jq -R 'split(",") | map(gsub("^ +| +$"; ""))')
+
+          # Fetch project metadata
+          PROJECT_ID=$(gh project view "${PROJECT_NUMBER}" \
+            --owner "${ORG}" --format json | jq -r '.id')
+
+          if [[ -z "${PROJECT_ID}" || "${PROJECT_ID}" == "null" ]]; then
+            echo "ERROR: Failed to fetch project ${PROJECT_NUMBER}."
+            exit 1
+          fi
+
+          # Validate the score field exists (field-list defaults to 30 fields).
+          if ! gh project field-list "${PROJECT_NUMBER}" \
+            --owner "${ORG}" --format json --limit 100 \
+            | jq -e --arg sf "${SCORE_FIELD}" \
+              '[.fields[] | select(.name == $sf)] | length > 0' > /dev/null; then
+            echo "ERROR: '${SCORE_FIELD}' field not found on project."
+            echo "Run scripts/setup-prioritize.sh to create it."
+            exit 1
+          fi
+
+          # Paginate through all project items (100 per page).
+          ALL_ITEMS="[]"
+          CURSOR=""
+          while true; do
+            CURSOR_ARG=""
+            if [[ -n "${CURSOR}" ]]; then
+              CURSOR_ARG="-f cursor=${CURSOR}"
+            fi
+            PAGE=$(gh api graphql -f query='
+              query($projectId: ID!, $scoreField: String!, $cursor: String) {
+                node(id: $projectId) {
+                  ... on ProjectV2 {
+                    items(first: 100, after: $cursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes {
+                        # Fetch the score field by name — fieldValues(first: N)
+                        # could miss it on boards with many fields.
+                        fieldValueByName(name: $scoreField) {
+                          ... on ProjectV2ItemFieldNumberValue {
+                            updatedAt
+                          }
+                        }
+                        content { ... on Issue { url number state } }
+                      }
+                    }
+                  }
+                }
+              }' -f projectId="${PROJECT_ID}" -f scoreField="${SCORE_FIELD}" ${CURSOR_ARG})
+
+            ALL_ITEMS=$(echo "${ALL_ITEMS}" | jq \
+              --argjson page "$(echo "${PAGE}" \
+                | jq '[.data.node.items.nodes[]]')" \
+              '. + $page')
+
+            HAS_NEXT=$(echo "${PAGE}" \
+              | jq -r '.data.node.items.pageInfo.hasNextPage')
+            if [[ "${HAS_NEXT}" != "true" ]]; then
+              break
+            fi
+            CURSOR=$(echo "${PAGE}" \
+              | jq -r '.data.node.items.pageInfo.endCursor')
+          done
+
+          # Find unscored open issues. Only issues in the configured org and
+          # target repos can be dispatched, so filter them out here — before
+          # WIP_LIMIT is applied — so undispatchable items don't occupy slots
+          # and starve eligible issues.
+          UNSCORED=$(echo "${ALL_ITEMS}" | jq -r \
+            --arg org "${ORG}" \
+            --argjson repos "${REPOS_JSON}" '
+            [.[]
+             | select(.content.state == "OPEN")
+             | select(.content.url != null)
+             | select(.content.url as $u
+                      | [$repos[] as $r
+                        | $u | startswith("https://github.com/" + $org + "/" + $r + "/issues/")]
+                      | any)
+             | select(.fieldValueByName == null)
+             | {url: .content.url, number: .content.number}
+            ]')
+
+          # Find issues with stale scores. Checked on every poll so a steady
+          # stream of new issues doesn't starve re-scoring.
+          NOW_EPOCH=$(date +%s)
+          STALE=$(echo "${ALL_ITEMS}" | jq -r \
+            --arg org "${ORG}" \
+            --argjson repos "${REPOS_JSON}" \
+            --argjson threshold "${THRESHOLD_SECONDS}" \
+            --argjson now "${NOW_EPOCH}" '
+            [.[]
+             | select(.content.state == "OPEN")
+             | select(.content.url != null)
+             | select(.content.url as $u
+                      | [$repos[] as $r
+                        | $u | startswith("https://github.com/" + $org + "/" + $r + "/issues/")]
+                      | any)
+             | {
+                 url: .content.url,
+                 number: .content.number,
+                 updatedAt: .fieldValueByName.updatedAt
+               }
+             | select(.updatedAt != null)
+             | select(($now - (.updatedAt | fromdateiso8601)) > $threshold)
+            ]
+            | sort_by(.updatedAt)')
+
+          UNSCORED_COUNT=$(echo "${UNSCORED}" | jq 'length')
+          STALE_COUNT=$(echo "${STALE}" | jq 'length')
+          if [[ $((UNSCORED_COUNT + STALE_COUNT)) -eq 0 ]]; then
+            echo "No unscored or stale issues found. Nothing to do."
+            exit 0
+          fi
+          echo "Found ${UNSCORED_COUNT} unscored and ${STALE_COUNT} stale issue(s) to dispatch."
+
+          # Dispatch unscored issues first, then stale (oldest-first), up to
+          # WIP_LIMIT dispatches per poll.
+          CANDIDATES=$(echo "${UNSCORED}" | jq \
+            --argjson stale "${STALE}" --argjson limit "${WIP_LIMIT}" \
+            '. + $stale | .[:$limit]')
+
+          DISPATCHED=0
+          FAILED=0
+
+          for row in $(echo "${CANDIDATES}" | jq -c '.[]'); do
+            ISSUE_URL=$(echo "${row}" | jq -r '.url')
+            ISSUE_NUMBER=$(echo "${row}" | jq -r '.number')
+            SOURCE_REPO="${ISSUE_URL#https://github.com/}"
+            SOURCE_REPO="${SOURCE_REPO%%/issues/*}"
+
+            # Skip repos with an active scoring run — re-dispatching an issue
+            # whose run is still in progress would cancel it (the target
+            # workflow cancels in-progress runs for the same issue) before it
+            # writes the score. The API does not expose which issue a run was
+            # dispatched for, so this skips the whole repo; on single-repo
+            # boards that serializes scoring to roughly one issue per run
+            # duration. The check fails closed: if the run list cannot be
+            # fetched, the script exits rather than dispatching blindly.
+            ACTIVE_RUNS=$(GH_TOKEN="${DISPATCH_TOKEN}" gh run list \
+              --repo "${SOURCE_REPO}" --workflow "${WORKFLOW}" \
+              --json status \
+              --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+            if [[ "${ACTIVE_RUNS}" -gt 0 ]]; then
+              echo "Skipping ${SOURCE_REPO}#${ISSUE_NUMBER} — scoring run already active."
+              continue
+            fi
+
+            EVENT_PAYLOAD=$(jq -n \
+              --arg url "${ISSUE_URL}" \
+              --argjson number "${ISSUE_NUMBER}" \
+              '{issue: {html_url: $url, number: $number}}')
+
+            echo "Dispatching prioritize for ${SOURCE_REPO}#${ISSUE_NUMBER}..."
+
+            if GH_TOKEN="${DISPATCH_TOKEN}" gh workflow run "${WORKFLOW}" \
+              --repo "${SOURCE_REPO}" \
+              -f event_type="schedule" \
+              -f source_repo="${SOURCE_REPO}" \
+              -f event_payload="${EVENT_PAYLOAD}" \
+              -f project_number="${PROJECT_NUMBER}"; then
+              DISPATCHED=$((DISPATCHED + 1))
+            else
+              echo "::warning::Failed to dispatch for ${ISSUE_URL}"
+              FAILED=$((FAILED + 1))
+            fi
+          done
+
+          echo "Dispatched ${DISPATCHED} prioritize run(s), ${FAILED} failed."
+```
+
+The scheduler dispatches `prioritize.yml` to `${SOURCE_REPO}` (the repo that
+owns the issue), not to the scheduler's own repo. The `repos` input (passed
+to `create-github-app-token` via the `repositories` field) must list every
+target repo so the generated token has sufficient scope for cross-repo
+dispatch.
+
+On every poll, the scheduler also selects **stale scores** — issues whose
+RICE Score field was last updated longer ago than
+`stale_threshold` (default: 7 days). Stale issues are re-dispatched for
+re-scoring, sorted oldest-first. Unscored issues are dispatched first,
+then stale ones, up to `wip_limit` total.
+
 
 ### Variables
 
