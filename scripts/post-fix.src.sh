@@ -671,7 +671,8 @@ FIX_AGENT_GIT_NAME="fullsend-fix"
 # history_rewrite_preserves_remote_human_commits — 0 when every commit on
 # origin/BRANCH since it diverged from origin/TARGET_BRANCH that is NOT
 # authored by this fix agent (email + name, not email alone — see
-# FIX_AGENT_GIT_NAME above) is still present in local HEAD, either as an
+# FIX_AGENT_GIT_NAME above; author per commit_author_identity) is still
+# present in local HEAD, either as an
 # exact-SHA ancestor, or as an equivalent commit recognized by one of two
 # fallbacks:
 #   - same tree + same author identity — tolerates GitLab MR reconstruction,
@@ -712,8 +713,7 @@ history_rewrite_preserves_remote_human_commits() {
     return 1
   }
   for sha in $(git rev-list "${mb}..${remote_ref}" 2>/dev/null || true); do
-    author_email="$(git log -1 --format='%ae' "${sha}" 2>/dev/null)"
-    author_name="$(git log -1 --format='%an' "${sha}" 2>/dev/null)"
+    IFS=$'\t' read -r author_name author_email <<< "$(commit_author_identity "${sha}")"
     if [ "${author_email}" != "${bot}" ] || [ "${author_name}" != "${FIX_AGENT_GIT_NAME}" ]; then
       if git merge-base --is-ancestor "${sha}" HEAD 2>/dev/null; then
         continue
@@ -730,13 +730,14 @@ history_rewrite_preserves_remote_human_commits() {
         # Matching is done with exact field equality rather than
         # `grep -qF` against a bare "tree name email" string, which is an
         # unanchored substring match.
-        while IFS=$'\t' read -r candidate_tree candidate_name candidate_email; do
+        while IFS=$'\t' read -r candidate candidate_tree; do
           [ -n "${candidate_tree}" ] || continue
           [ "${candidate_tree}" = "${tree}" ] || continue
+          IFS=$'\t' read -r candidate_name candidate_email <<< "$(commit_author_identity "${candidate}")"
           [ "${candidate_name}" = "${author_name}" ] || continue
           [ "${candidate_email}" = "${author_email}" ] || continue
           continue 2
-        done < <(git log --format='%T%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+        done < <(git log --format='%H%x09%T' "${target_ref}..HEAD" 2>/dev/null)
       fi
       patch_id="$(git show "${sha}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
       if [ -n "${patch_id}" ]; then
@@ -749,8 +750,9 @@ history_rewrite_preserves_remote_human_commits() {
         # survived the rewrite. Matching is done with exact string
         # equality on %an/%ae rather than `git log --author=`, which
         # treats the name as an unanchored regex.
-        while IFS=$'\t' read -r candidate candidate_name candidate_email; do
+        while IFS= read -r candidate; do
           [ -n "${candidate}" ] || continue
+          IFS=$'\t' read -r candidate_name candidate_email <<< "$(commit_author_identity "${candidate}")"
           [ "${candidate_name}" = "${author_name}" ] || continue
           [ "${candidate_email}" = "${author_email}" ] || continue
           candidate_patch_id="$(git show "${candidate}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
@@ -758,7 +760,7 @@ history_rewrite_preserves_remote_human_commits() {
             HISTORY_REWRITE_PATCH_ID_ONLY_MATCH=true
             continue 2
           fi
-        done < <(git log --format='%H%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+        done < <(git log --format='%H' "${target_ref}..HEAD" 2>/dev/null)
       fi
       echo "history-rewrite: commit ${sha} (author ${author_name} <${author_email}>) on ${remote_ref} is not an ancestor of HEAD and has no equivalent (tree+author or patch-id+author) commit in HEAD" >&2
       return 1
@@ -1129,14 +1131,14 @@ ${REBASE_OUTPUT}"
   # force-with-lease is safe: it still rejects if someone else pushed in
   # the meantime.
   echo "Pushing branch ${BRANCH}..."
-  PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+  PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
   print_sanitized_gha_log "${PUSH_OUTPUT}"
 
   if [ "${PUSH_RC}" -ne 0 ]; then
-    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
       gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
       FORCE_PUSH_OUTPUT=""
-      if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+      if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
         print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
         PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"

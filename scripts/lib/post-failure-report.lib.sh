@@ -179,7 +179,7 @@ categorize_push_failure() {
   fi
 
   if echo "${push_output}" | grep -qiE \
-    'non-fast-forward|rejected|fetch first|protected branch|GH006|permission denied'; then
+    'non-fast-forward|rejected|fetch first|protected branch|GH006|permission denied|not a fast forward|rule violations'; then
     echo "push-rejected"
     return 0
   fi

@@ -13,6 +13,9 @@
 #   REVIEW_SKIP_AUTHORS — comma-separated author list to skip
 #   PRIOR_REVIEW_FILE   — prior sticky review body; rewritten to validated JSON
 #   PRIOR_REVIEW_PROVENANCE — authenticated provenance for the prior review
+#
+# A closed/merged PR or a REVIEW_SKIP_AUTHORS author writes skipped=true via
+# the pre-script output protocol, so fullsend run stops before the sandbox.
 set -euo pipefail
 
 : "${PR_URL:?PR_URL must be set}"
@@ -20,6 +23,34 @@ set -euo pipefail
 
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/prescript-output.lib.sh
+# BEGIN bundled: lib/prescript-output.lib.sh
+# prescript-output.lib.sh — Write pre-script output protocol lines.
+#
+# The pre-script output protocol (fullsend docs/normative/prescript-output/v1,
+# fullsend-ai/fullsend#4718) is the contract between `fullsend run` and a
+# harness pre-script: the CLI exports FULLSEND_PRESCRIPT_OUTPUT naming a
+# file, and the script appends key=value lines to it — `skipped=true` (plus
+# an optional `reason`) stops the run before sandbox creation. Under a CLI
+# that predates the protocol the variable is unset and writes are skipped,
+# so the run proceeds — the protocol's version-skew contract.
+#
+# Source from a pre-script .src.sh:
+#   source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
+
+# shellcheck shell=bash
+
+[[ -n "${PRESCRIPT_OUTPUT_SH_LOADED:-}" ]] && return 0
+PRESCRIPT_OUTPUT_SH_LOADED=1
+
+# prescript_output KEY VALUE — append a protocol line, if the CLI
+# supports the protocol. Values must be single-line (protocol grammar).
+prescript_output() {
+  if [[ -n "${FULLSEND_PRESCRIPT_OUTPUT:-}" ]]; then
+    printf '%s=%s\n' "$1" "$2" >> "${FULLSEND_PRESCRIPT_OUTPUT}"
+  fi
+}
+# END bundled: lib/prescript-output.lib.sh
 # shellcheck source=lib/review-ops.lib.sh
 # BEGIN bundled: lib/review-ops.lib.sh
 # shellcheck shell=bash
@@ -1080,6 +1111,8 @@ The \`/fs-review\` command only reviews open PRs/MRs.
 
   forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
+  prescript_output "skipped" "true"
+  prescript_output "reason" "PR #${PR_NUMBER} is already ${STATE_LOWER}"
   exit 0
 fi
 
@@ -1117,6 +1150,8 @@ if [[ -n "${REVIEW_SKIP_AUTHORS:-}" ]]; then
 
         forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
+        prescript_output "skipped" "true"
+        prescript_output "reason" "PR author ${_SAFE_AUTHOR} is in REVIEW_SKIP_AUTHORS"
         exit 0
       fi
     done

@@ -301,6 +301,13 @@ forge_set_push_remote() {
     "https://oauth2:${token}@${GITLAB_HOST}/${REPO_FULL_NAME}.git"
 }
 
+# forge_push_branch BRANCH [--force-with-lease] — plain git push.
+forge_push_branch() {
+  local branch="$1"
+  shift
+  git push "$@" -u origin -- "${branch}"
+}
+
 forge_check_remote_branch() {
   local branch="$1"
   git ls-remote origin "refs/heads/${branch}" 2>/dev/null | head -1 || true

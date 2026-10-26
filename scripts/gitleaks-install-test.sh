@@ -142,6 +142,76 @@ run_verify_test "verify-valid-checksum" "${KNOWN_CONTENT}" "${KNOWN_HASH}" "yes"
 run_verify_test "verify-invalid-checksum" "${KNOWN_CONTENT}" "0000000000000000000000000000000000000000000000000000000000000000" "no"
 
 # ---------------------------------------------------------------------------
+# install_gitleaks tests — verify the pinned version before selecting a binary
+# ---------------------------------------------------------------------------
+run_install_version_test() {
+  local test_name="$1"
+  local installed_version="$2"
+  local path_version="$3"
+  local expect_success="$4"
+  local expected_source="$5"
+  local expected_bin tmpdir rc=0 prior_home prior_path prior_gitleaks_bin command_path
+  tmpdir="$(mktemp -d)"
+  mkdir -p "${tmpdir}/bin" "${tmpdir}/home/.local/bin"
+  cat > "${tmpdir}/bin/gitleaks" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = version ]; then echo "${path_version}"; else exit 0; fi
+EOF
+  cat > "${tmpdir}/home/.local/bin/gitleaks" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = version ]; then echo "${installed_version}"; else exit 0; fi
+EOF
+  cat > "${tmpdir}/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+  chmod +x "${tmpdir}/bin/gitleaks" "${tmpdir}/home/.local/bin/gitleaks" "${tmpdir}/bin/curl"
+
+  prior_home="${HOME}"
+  prior_path="${PATH}"
+  prior_gitleaks_bin="${GITLEAKS_BIN:-}"
+  HOME="${tmpdir}/home"
+  PATH="${tmpdir}/bin:${PATH}"
+  export HOME PATH
+  install_gitleaks >/dev/null 2>&1 || rc=$?
+  command_path="$(command -v gitleaks 2>/dev/null || true)"
+  HOME="${prior_home}"
+  PATH="${prior_path}"
+  export HOME PATH
+  if [ "${expected_source}" = path ]; then
+    expected_bin="${tmpdir}/bin/gitleaks"
+  else
+    expected_bin="${tmpdir}/home/.local/bin/gitleaks"
+  fi
+  if [ "${expect_success}" = yes ]; then
+    if [ "${rc}" -ne 0 ] \
+      || [ "${GITLEAKS_BIN:-}" != "${expected_bin}" ] \
+      || [ "${command_path}" != "${expected_bin}" ]; then
+      echo "FAIL: ${test_name} — rc=${rc}, GITLEAKS_BIN='${GITLEAKS_BIN:-}', command='${command_path}'"
+      FAILURES=$((FAILURES + 1))
+    else
+      echo "PASS: ${test_name}"
+    fi
+  elif [ "${rc}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — accepted wrong-version PATH binary"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}"
+  fi
+  if [ -n "${prior_gitleaks_bin}" ]; then
+    GITLEAKS_BIN="${prior_gitleaks_bin}"
+    export GITLEAKS_BIN
+  else
+    unset GITLEAKS_BIN
+  fi
+  rm -rf "${tmpdir}"
+}
+
+run_install_version_test "install-uses-pinned-local-binary" "${GITLEAKS_VERSION}" "0.0.0" yes local
+run_install_version_test "install-uses-version-matched-path-binary" "" "${GITLEAKS_VERSION}" yes path
+run_install_version_test "install-rejects-wrong-version-path-binary" "" "0.0.0" no none
+
+# ---------------------------------------------------------------------------
 # Version drift guard — GITLEAKS_VERSION must be consistent
 # ---------------------------------------------------------------------------
 for script in post-code post-fix; do

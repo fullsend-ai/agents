@@ -57,7 +57,9 @@ Feature: Review post-script outcomes
 
   # Every closed pull request dispatches retro, so its trigger is off. A
   # reject is submitted as changes requested, so fullsend-no-fix keeps fix
-  # from running too.
+  # from running too. On a second /fs-review of the closed pull request,
+  # pre-review.sh posts "Review skipped" and signals the skip, so no sandbox
+  # starts and post-review.sh never runs; the footer shows pre-review posted.
   Scenario: A rejecting review closes the pull request
     Given the repository agents are configured with:
       """
@@ -75,6 +77,11 @@ Feature: Review post-script outcomes
     And the review agent submitted "changes_requested"
     And the pull request has been closed
     And the pull request has label "rejected"
+    When the write actor posts "/fs-review" on the pull request
+    Then the harness "review" workflow completes successfully
+    And the harness "review" run was skipped by its pre-script
+    And a comment on the pull request contains "Review skipped — this PR is already **closed**."
+    And a comment on the pull request contains "pre-review check"
 
   # scripts/ is a protected path prefix in harness/review.yaml.
   Scenario: An approval of a protected path is downgraded to manual review

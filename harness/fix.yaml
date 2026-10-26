@@ -116,6 +116,10 @@ forge:
       runner:
         PR_NUMBER: "${PR_NUMBER}"
         FULLSEND_FORGE: github
+        # "true" publishes the branch through the Git Data API so GitHub
+        # signs the commits (docs/code.md "Signed commits"); anything else
+        # is a plain git push. Override per repo via base: composition.
+        GITHUB_SIGNED_COMMITS: "false"
       sandbox:
         PR_NUMBER: "${PR_NUMBER}"
         FULLSEND_FORGE: github

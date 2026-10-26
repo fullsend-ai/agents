@@ -59,8 +59,8 @@ github.com/fullsend-ai/fullsend v0.43.1-0.20260930180729-d8cbb97441de h1:yufKdB+
 github.com/fullsend-ai/fullsend v0.43.1-0.20260930180729-d8cbb97441de/go.mod h1:SvkCf92NuXHtoZIvPneK/53V/DZiv6a12goYMShXg+4=
 github.com/fullsend-ai/fullsend v0.44.1-0.20261002204052-e9690f26438e h1:kvsGNfoF+Ajd/+VsuYtrkQ+UZ8PQkmRyEGBHQl/zJtE=
 github.com/fullsend-ai/fullsend v0.44.1-0.20261002204052-e9690f26438e/go.mod h1:SvkCf92NuXHtoZIvPneK/53V/DZiv6a12goYMShXg+4=
-github.com/fullsend-ai/fullsend v0.50.1-0.20261024120522-6d925afefb5b h1:sLE+ZnXtqZG8zWfRVVYSNi5tfHkVgJvQlZ0OPCykARw=
-github.com/fullsend-ai/fullsend v0.50.1-0.20261024120522-6d925afefb5b/go.mod h1:2IhkiZArCxeGI/EoQ0W5NRJqTKu59Su6ZgGNDJPmhDM=
+github.com/fullsend-ai/fullsend v0.50.1-0.20261024212938-3ea9dd1b82e4 h1:OiobtIkLqYePfXvLDR/y2dC0mwoU0qc0PcvR12dbjp8=
+github.com/fullsend-ai/fullsend v0.50.1-0.20261024212938-3ea9dd1b82e4/go.mod h1:2IhkiZArCxeGI/EoQ0W5NRJqTKu59Su6ZgGNDJPmhDM=
 github.com/go-errors/errors v1.5.1 h1:ZwEMSLRCapFLflTpT7NKaAc7ukJ8ZPEjzlxt8rPN8bk=
 github.com/go-errors/errors v1.5.1/go.mod h1:sIVyrIiJhuEF+Pj9Ebtd6P/rEYROXFi3BopGUQ5a5Og=
 github.com/go-logr/logr v1.2.2/go.mod h1:jdQByPbusPIv2/zmleS9BjJVeZ6kBagPoEUsqbVz/1A=

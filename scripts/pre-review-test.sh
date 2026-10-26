@@ -786,6 +786,130 @@ run_test_gh_call "skip-author-still-removes-ready-for-merge" \
   "REVIEW_SKIP_AUTHORS=app/renovate
 MOCK_PR_LABELS=ready-for-merge"
 
+# --- Pre-script output protocol tests (fullsend-ai/fullsend#4718) ---
+# Contract: fullsend docs/normative/prescript-output/v1. Closed/merged PRs
+# and skipped authors write skipped=true (plus reason=...) to
+# FULLSEND_PRESCRIPT_OUTPUT so fullsend run stops before sandbox creation;
+# every proceed path leaves the file empty (absent skipped means proceed).
+
+# Helper: run pre-review.sh with FULLSEND_PRESCRIPT_OUTPUT set and assert
+# the protocol file's exact content ("" = must stay empty).
+run_test_prescript_output() {
+  local test_name="$1"
+  local pr_state="$2"
+  local pr_author="$3"
+  local expected_content="$4"
+  local expect_exit="$5"
+  local extra_env="${6:-}"
+
+  local mock_bin
+  mock_bin="$(build_mock "${pr_state}" "${pr_author}")"
+  local proto_out="${TMPDIR}/prescript-output.txt"
+  : > "${proto_out}"
+
+  local env_cmd=(
+    env -u FULLSEND_PRESCRIPT_OUTPUT
+    PATH="${mock_bin}:${PATH}"
+    PR_NUMBER="42"
+    REPO_FULL_NAME="test-org/test-repo"
+    PR_URL="https://github.com/test-org/test-repo/pull/42"
+    FULLSEND_FORGE="github"
+    REVIEW_TOKEN="fake-token"
+    GH_TOKEN="fake-token"
+    FULLSEND_PRESCRIPT_OUTPUT="${proto_out}"
+  )
+
+  if [[ -n "${extra_env}" ]]; then
+    while IFS= read -r kv; do
+      [[ -n "${kv}" ]] && env_cmd+=("${kv}")
+    done <<< "${extra_env}"
+  fi
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${SCRIPT_DIR}/pre-review.sh" \
+    > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! diff <(printf '%s' "${expected_content}") "${proto_out}" > "${TMPDIR}/proto-diff.log" 2>&1; then
+    echo "FAIL: ${test_name} — protocol output mismatch"
+    cat "${TMPDIR}/proto-diff.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+NL=$'\n'
+
+# Closed or merged PR → skipped=true with a single-line reason.
+for closed_state in MERGED CLOSED; do
+  run_test_prescript_output "protocol-skip-on-${closed_state,,}-pr" \
+    "${closed_state}" "some-human" \
+    "skipped=true${NL}reason=PR #42 is already ${closed_state,,}${NL}" \
+    0
+done
+
+# Author in skip list → skipped=true with a single-line reason.
+run_test_prescript_output "protocol-skip-on-skip-author" \
+  "OPEN" "app/renovate" \
+  "skipped=true${NL}reason=PR author app/renovate is in REVIEW_SKIP_AUTHORS${NL}" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=app/renovate,app/dependabot"
+
+# Case and whitespace variants still match; the reason names the PR author.
+run_test_prescript_output "protocol-skip-on-skip-author-case-whitespace" \
+  "OPEN" "App/Renovate" \
+  "skipped=true${NL}reason=PR author App/Renovate is in REVIEW_SKIP_AUTHORS${NL}" \
+  0 \
+  "REVIEW_SKIP_AUTHORS= app/renovate , app/dependabot "
+
+# Open PR, author not listed → file stays empty.
+run_test_prescript_output "protocol-empty-on-open-pr" \
+  "OPEN" "some-human" \
+  "" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=app/renovate"
+
+# No token → state check skipped, run proceeds → file stays empty.
+run_test_prescript_output "protocol-empty-on-no-token" \
+  "MERGED" "some-human" \
+  "" \
+  0 \
+  "REVIEW_TOKEN="
+
+# Old-CLI guard (fails open by design, see the protocol's Version skew
+# section): FULLSEND_PRESCRIPT_OUTPUT unset → the skip paths must not crash
+# under set -u; they still comment and exit 0.
+for unset_case in "closed-pr|CLOSED|some-human|" "skip-author|OPEN|app/renovate|REVIEW_SKIP_AUTHORS=app/renovate"; do
+  IFS='|' read -r unset_label unset_state unset_author unset_env <<< "${unset_case}"
+  unset_mock_bin="$(build_mock "${unset_state}" "${unset_author}")"
+  unset_exit=0
+  env -u FULLSEND_PRESCRIPT_OUTPUT \
+    PATH="${unset_mock_bin}:${PATH}" \
+    PR_URL="https://github.com/test-org/test-repo/pull/42" \
+    FULLSEND_FORGE="github" \
+    REVIEW_TOKEN="fake-token" \
+    GH_TOKEN="fake-token" \
+    ${unset_env:+"${unset_env}"} \
+    bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout.log" 2>&1 || unset_exit=$?
+  unset_name="protocol-unset-env-old-cli-${unset_label}"
+  if [[ ${unset_exit} -ne 0 ]] || ! grep -qF -- "skipping review" "${TMPDIR}/stdout.log" \
+    || ! grep -qF -- "gh issue comment 42" "${TMPDIR}/gh-calls.log"; then
+    echo "FAIL: ${unset_name} — expected exit 0 with skip notice and comment (exit ${unset_exit})"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${unset_name}"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # GitLab forge pre-review tests
 # ---------------------------------------------------------------------------
