@@ -1,0 +1,7 @@
+agent: agents/fix.md
+model: sonnet
+timeout_minutes: 30
+
+env:
+  runner:
+    FIX_MAX_ITERATIONS: "3"

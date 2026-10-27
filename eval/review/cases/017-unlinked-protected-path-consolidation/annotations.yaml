@@ -1,0 +1,31 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+
+findings:
+  required:
+    - protected-path
+  forbidden:
+    - missing-authorization
+
+max_cost_usd: 3.75
+
+review_expectations: |
+  The PR adds a new user-facing control (a per-PR fix budget knob) by
+  changing harness/fix.yaml and scripts/ — both protected paths — with
+  40+ changed lines and no linked issue or recorded design decision.
+
+  The protected-path rule raises a high [protected-path] finding
+  because no issue authorizes the change. The intent-coherence
+  sub-agent also flags the missing authorization for this non-trivial
+  diff, but both findings share the same premise and remediation
+  ("link or open an authorizing issue"). A good review consolidates
+  them (SKILL.md 6e-1): exactly one authorization-related finding,
+  [protected-path] at high severity, whose description folds in the
+  extra context (a new user-facing control with no design discussion)
+  and gives a single remediation. A review that also reports a
+  separate [missing-authorization] finding for the same missing issue
+  misses the point of this case.
