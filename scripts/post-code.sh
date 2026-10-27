@@ -1995,9 +1995,15 @@ forge_create_label() {
 # --- Comment operations ---
 
 forge_post_issue_comment() {
-  local body="$1"
-  printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file -
+  forge_post_issue_comment_at "${REPO_FULL_NAME}" "${ISSUE_NUMBER}" "$1"
+}
+
+forge_post_issue_comment_at() {
+  local repo="$1"
+  local issue_number="$2"
+  local body="$3"
+  printf '%s' "${body}" | gh issue comment "${issue_number}" \
+    --repo "${repo}" --body-file - 2>/dev/null
 }
 
 forge_post_pr_comment() {
@@ -2204,6 +2210,28 @@ forge_get_issue_comments() {
     return 0
   fi
   echo "${raw}" | jq -s 'add // []' 2>/dev/null || echo '[]'
+}
+
+forge_get_issue_movement_details() {
+  # Keep the response status and headers so pre-code can distinguish a
+  # successful lookup from a 404 that may indicate a transfer to a repository
+  # the source-repository token cannot read. GitHub CLI follows transfer
+  # redirects; a readable destination is returned as a 200 response body.
+  gh api --include "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}" 2>/dev/null || true
+}
+
+# Movement detection must distinguish an empty comment list from a failed
+# lookup. The general helper above is best-effort because other callers use
+# it for optional context; this strict variant is used only by pre-code.
+forge_get_issue_comments_strict() {
+  local raw
+  raw="$(gh api --paginate \
+    "repos/${REPO_FULL_NAME}/issues/${ISSUE_NUMBER}/comments" 2>/dev/null)" || return 1
+  if [[ -z "${raw}" ]]; then
+    printf '%s\n' '[]'
+    return 0
+  fi
+  printf '%s\n' "${raw}" | jq -s 'add // []' 2>/dev/null
 }
 
 forge_get_issue_details() {
