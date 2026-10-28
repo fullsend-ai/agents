@@ -1102,6 +1102,42 @@ if [[ "${FULLSEND_FORGE}" = "github" ]]; then
   ' <<< "${PRIOR_LEDGER}")"
 fi
 
+# Where each open prior finding sits now, from the review agent's stamped
+# inline threads (resolved or not). The <!-- finding:f_... --> stamp on a
+# review-bot comment binds that thread to the id, and GitHub moves the
+# thread's line with the code and nulls it once a push changes that line.
+# The same review-thread fetch and stamp match as forge_get_human_dismissals;
+# only comments from the review bot count, so a reply cannot forge a stamp.
+# A failed or truncated fetch maps nothing. GitLab keeps the line a note was
+# written on, so it gets no map.
+STAMPED_THREADS='[]'
+if [[ "${FULLSEND_FORGE}" = "github" ]] \
+    && jq -e '.open_ids | length > 0' <<< "${PRIOR_LEDGER}" >/dev/null 2>&1; then
+  if STAMPED_THREADS_RESPONSE="$(GH_TOKEN="${REVIEW_TOKEN:-${GH_TOKEN:-}}" \
+      fullsend fetch-review-threads --forge github --repo "${REPO}" --pr "${PR_NUMBER}" 2>/dev/null)" \
+    && STAMPED_THREADS="$(jq -ce --arg org "${REPO%%/*}" --arg app_set "${FULLSEND_APP_SET:-}" '
+      ([ ($org + "-review"), ($org + "-review[bot]"),
+         "fullsend-ai-review", "fullsend-ai-review[bot]",
+         (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+       ] | map(ascii_downcase)) as $trusted
+      | select(type == "object" and (.threads | type == "array") and .truncated == false)
+      | [ .threads[]
+          | select(type == "object" and (.path | type) == "string")
+          | . as $t
+          | $t.comments[]?
+          | select(.author_type == "Bot")
+          | select(((.author // "") | ascii_downcase) as $a | ($trusted | index($a)) != null)
+          | (.body // "" | scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->") | .[0]) as $id
+          | {id: $id, path: $t.path, line: (if ($t.line | type) == "number" then $t.line else null end)}
+        ] | unique
+    ' <<< "${STAMPED_THREADS_RESPONSE}" 2>/dev/null)"; then
+    :
+  else
+    echo "::warning::Review thread fetch failed or was truncated — finding ids are not mapped to their threads"
+    STAMPED_THREADS='[]'
+  fi
+fi
+
 # Set when every finding is dropped before the severity filter (dismissal
 # suppression below or the severity filter itself); read by the re-review gates.
 REREVIEW_FILTERED_TO_ZERO=false
@@ -1115,15 +1151,19 @@ REREVIEW_FILTER_ORIGINAL_ACTION=""
 # the row's exact file and line, whatever the category, unless the row is
 # high or critical, a runner safety signal (protected-path or
 # sub-agent-failure), or more severe than the dismissed finding; a dismissal
-# never covers those; else the only open
-# candidate at that place (a shifted line must not create a second ledger
-# entry). Do not copy an id this review is closing. A missing file (null or
-# N/A) is not a place, so those rows mint instead of inheriting. Otherwise
-# mint. Supplied open ids of later rows are reserved for them.
+# never covers those. Otherwise mint. The exact line is where the id's
+# stamped thread sits now (STAMPED_THREADS), so a shifted line keeps its id;
+# a stamped id whose every thread is outdated has no line and mints. An id
+# with no stamped thread is matched at its recorded line. Do not copy an id
+# this review is closing, unless its stamped thread sits at the row: that
+# concern is still present and its id stays open. Never copy an id only
+# because it is the one prior finding with that file and category. A missing
+# file (null or N/A) is not a place, so those rows mint instead of
+# inheriting. Supplied open ids of later rows are reserved for them.
 if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   ID_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${ID_RESULT}")
-  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" --argjson dismissed "${DISMISSED_ANCHORS}" '
+  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" --argjson dismissed "${DISMISSED_ANCHORS}" --argjson stamped "${STAMPED_THREADS}" '
     def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
     def anchor_line: if type == "number" then . else null end;
     def anchor_file: if . == "N/A" or . == null then null else . end;
@@ -1140,7 +1180,18 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
     ($prior.open_ids) as $open
     | ([ (.dispositions // [])[] | select(resolving or reclassified) | .id | select(valid_id) ]) as $closing
     | ([ (.dispositions // [])[] | select(resolving) | .id | select(valid_id) ]) as $resolving_ids
-    | ([ $prior.findings[] | select(.id as $pid | $open | index($pid) != null) ]) as $open_findings
+    | ([ $prior.findings[] | select(.id as $pid | $open | index($pid) != null)
+         | .id as $pid
+         | ([ $stamped[] | select(.id == $pid) ]) as $threads
+         | if ($threads | length) == 0 then
+             . + {mapped: false,
+                  places: (if (.file | anchor_file) != null and (.line | anchor_line) != null
+                           then [{file: (.file | anchor_file), line: (.line | anchor_line)}] else [] end)}
+           else
+             . + {mapped: true,
+                  places: [ $threads[] | select(.line != null) | {file: .path, line} ] | unique}
+           end
+       ]) as $open_findings
     | (.findings // []) as $rows
     | .findings = (
         reduce range(0; ($rows | length)) as $i (
@@ -1155,11 +1206,12 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
               else
                 ([ $rows[($i + 1):][] | .id | select(valid_id) | select(. as $x | $open | index($x) != null) ]) as $reserved
                 | ([ $open_findings[]
-                     | select(.id as $pid | ($taken + $reserved + $closing) | index($pid) == null)
-                     | select((.file | anchor_file) != null and ($f.file | anchor_file) != null)
-                     | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category)
-                   ]) as $same_place
-                | ([ $same_place[] | select((.line | anchor_line) == ($f.line | anchor_line)) ]) as $exact
+                     | select(.id as $pid | ($taken + $reserved) | index($pid) == null)
+                     | select(.mapped or (.id as $pid | $closing | index($pid) == null))
+                     | select(.category == $f.category)
+                     | select(($f.file | anchor_file) != null and ($f.line | anchor_line) != null)
+                     | select(any(.places[]; .file == ($f.file | anchor_file) and .line == ($f.line | anchor_line)))
+                   ]) as $exact
                 | ([ $dismissed[]
                      | select(.id as $pid | $taken | index($pid) == null)
                      | select(($f.severity | IN("high", "critical")) | not)
@@ -1169,7 +1221,6 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                    ]) as $dismissed_here
                 | if ($exact | length) == 1 then {id: $exact[0].id, mint_i: $state.mint_i}
                   elif ($dismissed_here | length) > 0 then {id: $dismissed_here[0].id, mint_i: $state.mint_i}
-                  elif ($same_place | length) == 1 then {id: $same_place[0].id, mint_i: $state.mint_i}
                   elif ($mints[$state.mint_i] | valid_id | not) then error("ran out of finding ids")
                   else {id: $mints[$state.mint_i], mint_i: ($state.mint_i + 1)}
                   end
@@ -1229,7 +1280,8 @@ CURRENT_SETTLED_IDS="$(jq -c '
      | select(
          ($d.status == "resolved_by_change"
           and ($d.rationale | type == "string" and length > 0)
-          and ($d.evidence | type == "string" and length > 0))
+          and ($d.evidence | type == "string" and length > 0)
+          and ($current_ids | index($d.id) == null))
          or ($d.status == "reclassified"
           and ($d.rationale | type == "string" and length > 0)
           and ($d.evidence | type == "string" and length > 0)
@@ -1919,7 +1971,10 @@ fi
 
 # Ledger accounting. Each open prior id gets one effective status, decided
 # here and used by both the approval guard and the projection:
-#   resolved_by_change  — rationale and evidence given.
+#   resolved_by_change  — rationale and evidence given, and no current
+#                         finding carries the id. A finding at the id's
+#                         stamped thread keeps the id, so the concern is
+#                         still present and the id stays open.
 #   reclassified        — rationale and evidence given, and this review
 #                         re-emits a finding with the same id (at its new
 #                         severity or category, below threshold or not).
@@ -1965,7 +2020,9 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
       | (($prior.findings | map(select(.id == $id)) | first) // {id: $id}) as $f
       | ($given | map(select(.id == $id)) | last) as $got
       | if $got == null then {id: $id, status: "open", why: "unanswered"}
-        elif $got.status == "resolved_by_change" and ($got | supported) then {id: $id, status: "resolved_by_change"}
+        elif $got.status == "resolved_by_change" and ($got | supported) then
+          if ($current_ids | index($id)) != null then {id: $id, status: "open", why: "resolved-still-reported"}
+          else {id: $id, status: "resolved_by_change"} end
         elif $got.status == "reclassified" and ($got | supported) then
           if ($current_ids | index($id)) != null then {id: $id, status: "reclassified"}
           else {id: $id, status: "open", why: "reclassified-without-finding"} end
@@ -1981,6 +2038,7 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
       effective: [ $effective[] | {id, status} ],
       unanswered: [ $effective[] | select(.why == "unanswered") | .id ],
       reclassified_without_finding: [ $effective[] | select(.why == "reclassified-without-finding") | .id ],
+      resolved_still_reported: [ $effective[] | select(.why == "resolved-still-reported") | .id ],
       dismissed_high: [ $effective[] | select(.why == "dismissed-high") | .id ],
       dismissed_unverified: [ $effective[] | select(.why == "dismissed-unverified") | .id ],
       blocking: [ $prior.findings[]
@@ -1999,6 +2057,10 @@ fi
 RECLASSIFIED_WITHOUT_FINDING_IDS="$(jq -r '.reclassified_without_finding | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${RECLASSIFIED_WITHOUT_FINDING_IDS}" ]]; then
   echo "::warning::Reclassified prior finding id(s) ${RECLASSIFIED_WITHOUT_FINDING_IDS} have no current finding with that id; recorded as open"
+fi
+RESOLVED_STILL_REPORTED_IDS="$(jq -r '.resolved_still_reported | join(", ")' <<< "${LEDGER_REPORT}")"
+if [[ -n "${RESOLVED_STILL_REPORTED_IDS}" ]]; then
+  echo "::warning::Prior finding id(s) ${RESOLVED_STILL_REPORTED_IDS} marked resolved_by_change are still reported at their review thread; recorded as open"
 fi
 DISMISSED_HIGH_IDS="$(jq -r '.dismissed_high | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${DISMISSED_HIGH_IDS}" ]]; then

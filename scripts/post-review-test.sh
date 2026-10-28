@@ -2545,12 +2545,13 @@ run_disposition_case "projection-foreign-supplied-id-is-reminted" \
   "" \
   '(.findings | length) == 1 and .findings[0].id != "f_invented1" and (.findings[0].id | test("^f_[A-Za-z0-9]+$"))'
 
-# A shifted line still copies the prior id when file and category identify
-# one prior finding, so an edit above the finding does not duplicate it.
-run_disposition_case "projection-copies-prior-id-across-line-shift" \
+# Being the only prior finding with that file and category is not enough to
+# copy an id: with no stamped thread to show where it moved, a row on
+# another line mints and the prior id stays open where it was.
+run_disposition_case "projection-line-shift-without-stamped-thread-mints" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:9,description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_shift1"}]}' \
-  '.findings == [{"severity":"low","category":"logic-error","file":"internal/foo.go","id":"f_shift1","line":9}] and .dispositions == [{id: "f_shift1", status: "open"}]'
+  '([.findings[] | select(.id == "f_shift1" and .line == 7)] | length) == 1 and ([.findings[] | select(.line == 9 and .id != "f_shift1" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_shift1", status: "open"}]'
 
 # A missing file is not a place: a PR-level finding must not inherit the
 # prior id of another PR-level finding in the same category.
@@ -2851,6 +2852,72 @@ run_disposition_case "projection-dismissal-unverified-thread-mints" \
   "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
 
+# A stamped GitHub thread maps its finding id to where the finding sits now.
+# GitHub moves the thread's line with the code, so a finding that shifted
+# from line 202 to 218 keeps its id, and only one active entry remains.
+SHIFT_PRIOR='{"version":2,"findings":[{"severity":"low","category":"api-contract","file":"docs/p.md","line":202,"id":"f_old"}]}'
+SHIFT_KEPT='.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":218}] and .dispositions == [{id: "f_old", status: "open"}]'
+shift_review() {
+  # $1 line of the current row
+  jq -c --argjson line "$1" '.findings=[{severity:"low",category:"api-contract",file:"docs/p.md",line:$line,description:"d"}]' <<< "${BASE_REVIEW}"
+}
+shift_minted() {
+  # $1 line of the current row; f_old stays open at its recorded line
+  printf '([.findings[] | select(.id == "f_old" and .line == 202)] | length) == 1 and ([.findings[] | select(.line == %s and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]' "$1"
+}
+two_threads() {
+  jq -sc '(.[0].data.repository.pullRequest.reviewThreads.nodes += .[1].data.repository.pullRequest.reviewThreads.nodes) | .[0]' <<< "$1$2"
+}
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-stamped-thread-line-shift-keeps-id" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+assert_last_result "projection-stamped-thread-line-shift-keeps-id" \
+  '(.findings | length) == 1 and .findings[0].id == "f_old" and .findings[0].line == 218'
+
+# Same file and category on a line the thread is not at: another finding.
+# It mints and f_old stays open at its recorded line.
+run_disposition_case "projection-stamped-thread-other-line-same-category-mints" \
+  "$(shift_review 240)" "${SHIFT_PRIOR}" "$(shift_minted 240)"
+
+# The model closing a still-present concern with unrelated evidence: the row
+# at the stamped thread keeps f_old, which stays open, and nothing mints.
+run_disposition_case "projection-stamped-thread-resolve-unrelated-evidence-stays-open" \
+  "$(jq -c '.dispositions=[{id:"f_old",status:"resolved_by_change",rationale:"Addressed.",evidence:"Token example updated"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+assert_disposition_stdout "projection-stamped-thread-resolve-unrelated-evidence-stays-open" \
+  "::warning::Prior finding id(s) f_old marked resolved_by_change are still reported at their review thread; recorded as open" "present"
+
+# A reclassification at the shifted line stays on f_old.
+run_disposition_case "projection-stamped-thread-reclassified-keeps-id" \
+  "$(jq -c '.findings[0].severity = "info" | .dispositions=[{id:"f_old",status:"reclassified",rationale:"Only a wording issue.",evidence:"docs/p.md:218 is prose"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"info","category":"api-contract","file":"docs/p.md","id":"f_old","line":218}] and .dispositions == [{id: "f_old", status: "reclassified"}]'
+
+# Every stamped thread is outdated: GitHub cannot say where the finding is,
+# so even a row at the recorded line mints.
+MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0] |= (.line = null | .isOutdated = true)' <<< "$(thread_json "" docs/p.md 202 "<!-- finding:f_old --> Contract issue." false)")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-outdated-stamped-thread-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" '([.findings[] | select(.id == "f_old")] | length) == 1 and ([.findings[] | select(.line == 202 and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+
+# A stamp in a comment the review agent did not write maps nothing.
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Same thing." false false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-forged-thread-stamp-mints" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "$(shift_minted 218)"
+
+# A resolve and a human dismissal of other findings stay on their own ids
+# while the shifted finding keeps f_old.
+MOCK_REVIEW_THREADS_JSON="$(two_threads "$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)" "$(thread_json alice src/foo.go 4 "<!-- finding:f_human1 --> Naming nit.")")"
+export MOCK_REVIEW_THREADS_JSON
+export MOCK_PR_AUTHOR="prauthor"
+run_disposition_case "projection-stamped-thread-keeps-other-dispositions" \
+  "$(jq -c '.dispositions=[{id:"f_done1",status:"resolved_by_change",rationale:"Fixed.",evidence:"src/add.go now returns a + b"},{id:"f_human1",status:"dismissed_by_human",rationale:"Reviewer resolved it.",evidence:"alice resolved the src/foo.go:4 thread"}]' <<< "$(shift_review 218)")" \
+  '{"version":2,"findings":[{"severity":"low","category":"api-contract","file":"docs/p.md","line":202,"id":"f_old"},{"severity":"low","category":"api-contract","file":"docs/p.md","line":50,"id":"f_done1"},{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}]}' \
+  '([.findings[] | select(.id == "f_old" and .line == 218)] | length) == 1 and (.findings | length) == 3 and (.dispositions | sort_by(.id)) == [{id: "f_done1", status: "resolved_by_change"}, {id: "f_human1", status: "dismissed_by_human"}, {id: "f_old", status: "open"}]'
+unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
+
 # GitLab dismissals use the authenticated review-token identity. A normal
 # User author type is valid for PAT-backed review comments.
 GITLAB_HUMAN_DISMISSAL_RESPONSE='{"threads":[{"is_resolved":true,"path":"src/foo.go","line":4,"original_line":3,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"maintain","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"review-bot","author_type":"User","body":"<!-- finding:f_human1 --> Logic issue."}]}],"truncated":false}'
@@ -2903,6 +2970,13 @@ MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.path = "a.go" | .line = 
 export MOCK_REVIEW_THREADS_RESPONSE
 run_gitlab_disposition_case "gitlab-dismissal-category-change-mints" \
   "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+
+# GitLab cannot map a stamped thread to where its finding moved, so a row on
+# a shifted line mints, fail closed, and the prior id stays open.
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.is_resolved = false | .path = "docs/p.md" | .line = 202 | .comments[0].body = "<!-- finding:f_old --> Contract issue.")' <<< "${GITLAB_HUMAN_DISMISSAL_RESPONSE}")"
+export MOCK_REVIEW_THREADS_RESPONSE
+run_gitlab_disposition_case "gitlab-unmappable-thread-line-shift-mints" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "$(shift_minted 218)"
 unset MOCK_REVIEW_THREADS_RESPONSE MOCK_GITLAB_REVIEW_ACTOR
 
 # A reclassified disposition with no current finding carrying that id is
