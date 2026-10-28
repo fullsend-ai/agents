@@ -259,7 +259,9 @@ mutations on the runner.
   `risk_assessment.score` is below `REVIEW_RISK_VERDICT_THRESHOLD` and
   the assessment is not degraded (when threshold is `6`, the risk
   verdict gate is disabled and does not block approval). Dependency
-  scoping does not impose merge ordering or alter these approval criteria.
+  scoping requires verified current-head upstream approval and complete
+  dependency coverage; otherwise review the full diff. It does not impose
+  merge ordering or alter these approval criteria.
 - `request-changes` — findings *requiring* resolution: one or more critical or
   high findings; one or more medium-severity findings identifying a
   functional bug (incorrect behavior, permission error, schema violation,

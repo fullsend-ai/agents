@@ -79,7 +79,18 @@ new_case() {
   printf '%s\n' "full pr diff" > "${CASE_DIR}/workspace/pr-diff.txt"
   cat > "${CASE_DIR}/bin/gh" <<'EOF'
 #!/usr/bin/env bash
-prefix=""; path=""
+prefix=""; path=""; number=""
+for arg in "$@"; do
+  case "$arg" in number=*) number="${arg#number=}" ;; esac
+done
+if test "$2" = graphql; then
+  if test -f "${FIXTURES}/graphql_${number}.next" && test -f "${FIXTURES}/graphql_${number}.seen"; then
+    cat "${FIXTURES}/graphql_${number}.next"; exit 0
+  fi
+  touch "${FIXTURES}/graphql_${number}.seen"
+  cat "${FIXTURES}/graphql_${number}" 2>/dev/null || exit 1
+  exit 0
+fi
 for arg in "$@"; do
   case "${arg}" in
     *vnd.github.diff) prefix="diff_" ;;
@@ -87,6 +98,11 @@ for arg in "$@"; do
   esac
 done
 key="${prefix}$(printf '%s' "${path#repos/example/repo/}" | tr '/?=.' '____')"
+if test "$key" = pulls_10 && test -f "${FIXTURES}/${key}.next"; then
+  count=$(cat "${FIXTURES}/${key}.count" 2>/dev/null || echo 0)
+  count=$((count + 1)); echo "$count" > "${FIXTURES}/${key}.count"
+  if test "$count" -ge 3; then cat "${FIXTURES}/${key}.next"; exit 0; fi
+fi
 test -f "${FIXTURES}/${key}" || exit 1
 cat "${FIXTURES}/${key}"
 EOF
@@ -96,7 +112,7 @@ EOF
   # The snippet derives the live head SHA itself (shell variables do not
   # survive between calls), so HEAD_SHA is deliberately not injected into the
   # run; the pinned step 1 SHA arrives as PINNED_SHA (PINNED overrides it).
-  printf '%s\n' '{"head":{"sha":"head"}}' > "${FIX}/pulls_10"
+  printf '%s\n' '{"head":{"sha":"head"},"base":{"ref":"main","sha":"base"}}' > "${FIX}/pulls_10"
   printf '%s\n' 'diff --git a/own.txt b/own.txt
 @@ -1 +1 @@
 -old
@@ -114,11 +130,58 @@ compare_ok() {
 }
 
 run_case() {
-  local snippet
+  local snippet dep_head run_pin own_head key net_count
+  own_head=$(jq -r 'add | last.sha // "head"' "${FIX}/pulls_10_commits_per_page_100" 2>/dev/null || echo head)
+  run_pin="$PINNED"
+  if test "$run_pin" = head; then run_pin="$own_head"; fi
+  if test -f "${FIX}/pulls_10"; then
+    jq --arg sha "$own_head" 'if .head.sha == "head" then .head.sha = $sha else . end' "${FIX}/pulls_10" > "${FIX}/own-meta"
+    mv "${FIX}/own-meta" "${FIX}/pulls_10"
+  fi
+  # Fixture compare endpoints use a readable head placeholder.
+  for key in "${FIX}"/*___head; do
+    if test -f "$key" && test "$key" != "${key%head}${own_head}"; then cp "$key" "${key%head}${own_head}"; fi
+  done
+  # Default approved current-head dependency; individual cases override it.
+  if ! test -f "${FIX}/graphql_5"; then
+    dep_head=$(jq -r 'add | last.sha // "a1"' "${FIX}/pulls_5_commits_per_page_100" 2>/dev/null || echo a1)
+    jq -n --arg head "$dep_head" --arg state "$(jq -r '.state | ascii_upcase' "${FIX}/pulls_5")" \
+      '{data:{repository:{pullRequest:{state:$state,isDraft:false,baseRefName:"main",baseRefOid:"base",headRefOid:$head,
+        author:{login:"author"},reviewDecision:"APPROVED",latestReviews:{pageInfo:{hasNextPage:false},nodes:[
+          {state:"APPROVED",authorCanPushToRepository:true,author:{login:"maintainer"},commit:{oid:$head}}]}}}}}' \
+      > "${FIX}/graphql_5"
+  fi
+  # Raw net compares for cherry-pick fixtures; these remain distinct API
+  # responses so negative cases can supply a different aggregate patch.
+  local own_prefix sha dep_net own_net
+  dep_head=$(jq -r '.data.repository.pullRequest.headRefOid' "${FIX}/graphql_5")
+  own_prefix=$(jq -r 'add | .[-2].sha // "none"' "${FIX}/pulls_10_commits_per_page_100" 2>/dev/null || echo none)
+  dep_net="${FIX}/diff_compare_base___${dep_head}"
+  own_net="${FIX}/diff_compare_base___${own_prefix}"
+  net_count=$(jq 'add | length' "${FIX}/pulls_5_commits_per_page_100" 2>/dev/null || echo 0)
+  for key in "$dep_head" "$own_prefix"; do
+    if ! test -f "${FIX}/compare_base___${key}"; then
+      jq -n --argjson count "$net_count" '{status:"ahead",behind_by:0,total_commits:$count,files:[{filename:"dep.txt",patch:"@@ -1 +1 @@\n-old\n+new"}]}' \
+        > "${FIX}/compare_base___${key}"
+    fi
+  done
+  if ! test -f "$dep_net"; then
+    : > "$dep_net"
+    while read -r sha; do
+      if test -f "${FIX}/diff_commits_${sha}"; then cat "${FIX}/diff_commits_${sha}" >> "$dep_net"; fi
+    done < <(jq -r 'add | .[].sha' "${FIX}/pulls_5_commits_per_page_100" 2>/dev/null || true)
+  fi
+  if ! test -f "$own_net"; then
+    : > "$own_net"
+    while read -r sha; do
+      if test -f "${FIX}/diff_commits_${sha}"; then cat "${FIX}/diff_commits_${sha}" >> "$own_net"; fi
+    done < <(jq -r 'add | .[:-1][].sha' "${FIX}/pulls_10_commits_per_page_100" 2>/dev/null || true)
+  fi
   snippet=$(extract_snippet | sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g")
+  CASE_RC=0
   (cd "${CASE_DIR}/run" && env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
-    REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS="${DEP_PRS:-5}" PINNED_SHA="${PINNED}" \
-    bash -u -c "${snippet}") > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || true
+    REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS="${DEP_PRS:-5}" PINNED_SHA="${run_pin}" \
+    bash -u -c "${snippet}") > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || CASE_RC=$?
 }
 
 assert_scoped() {
@@ -193,7 +256,7 @@ assert_not_contains "reference does not make an open dependency an approval veto
 assert_contains "reference keeps dependency scoping separate from merge policy" "${REFERENCE}" \
   'does not impose merge ordering or change the approval criteria'
 assert_contains "review agent keeps dependency scoping out of approval criteria" "${AGENT}" \
-  'scoping does not impose merge ordering or alter these approval criteria.'
+  'merge ordering or alter these approval criteria.'
 assert_contains "user docs distinguish scoped review from merge ordering" "${DOCS}" \
   'does not impose merge ordering or prevent an approval'
 assert_contains "reference never drops security findings" "${REFERENCE}" \
@@ -207,7 +270,7 @@ assert_contains "security dispatch uses the full PR inputs" "${REFERENCE}" \
 assert_contains "orchestrator gives security the full scoped-PR context" "${SKILL}" \
   'security uses `/sandbox/workspace/pr-full-diff.txt` and the full changed-file list'
 assert_contains "reference does not treat an open dependency as security clearance" "${REFERENCE}" \
-  'not that it was reviewed or'
+  'not that its defects were fixed or dismissed'
 for category in instruction-smuggling unicode-steganography bidi-override homoglyph-attack; do
   assert_contains "reference covers ${category} findings" "${REFERENCE}" "\`${category}\`"
 done
@@ -267,15 +330,15 @@ assert_scoped "an empty exact-SHA dependency commit still scopes" \
 # A successfully fetched empty diff without an exact-SHA match is not a
 # patch candidate and must not disable scoping for other matching commits.
 new_case empty-unmatched-dependency-commit
-commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 e0 c3 > "${FIX}/pulls_10_commits_per_page_100"
 commits a1 e0 > "${FIX}/pulls_5_commits_per_page_100"
 patch dep1.txt one > "${FIX}/diff_commits_a1"
 : > "${FIX}/diff_commits_e0"
 patch own.txt mine > "${FIX}/diff_commits_c3"
-compare_ok a1
+compare_ok e0
 run_case
-assert_scoped "an unmatched empty dependency diff does not disable scoping" \
-  "$(printf 'dep a1\nown c3')"
+assert_scoped "an empty dependency tail matched by SHA does not disable scoping" \
+  "$(printf 'dep a1\ndep e0\nown c3')"
 
 # A successful empty own diff has no patch ID, but the commit remains own.
 new_case empty-own-commit
@@ -528,6 +591,193 @@ chmod +x "${CASE_DIR}/bin/sha256sum"
 run_case
 assert_skipped "a failed hash step falls back instead of matching" \
   "cannot compare patches of dependency commits"
+
+# --- Review provenance, complete history, and retry safety --------------------
+
+setup_stack() {
+  new_case "$1"
+  commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+  commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+  patch dep1.txt one > "${FIX}/diff_commits_a1"
+  patch own.txt mine > "${FIX}/diff_commits_c3"
+  compare_ok a1
+  # Populate defaults before modifying review metadata, without running code.
+  jq -n '{data:{repository:{pullRequest:{state:"OPEN",isDraft:false,baseRefName:"main",baseRefOid:"base",headRefOid:"a1",
+    author:{login:"author"},reviewDecision:"APPROVED",latestReviews:{pageInfo:{hasNextPage:false},nodes:[
+      {state:"APPROVED",authorCanPushToRepository:true,author:{login:"maintainer"},commit:{oid:"a1"}}]}}}}}' \
+    > "${FIX}/graphql_5"
+}
+
+for variant in unapproved stale dismissed requested draft base self readonly incomplete; do
+  setup_stack "review-${variant}"
+  case "$variant" in
+    unapproved) filter='.data.repository.pullRequest.reviewDecision = "REVIEW_REQUIRED"' ;;
+    stale) filter='.data.repository.pullRequest.latestReviews.nodes[0].commit.oid = "old"' ;;
+    dismissed) filter='.data.repository.pullRequest.latestReviews.nodes[0].state = "DISMISSED"' ;;
+    requested) filter='.data.repository.pullRequest.reviewDecision = "CHANGES_REQUESTED"' ;;
+    draft) filter='.data.repository.pullRequest.isDraft = true' ;;
+    base) filter='.data.repository.pullRequest.baseRefName = "other"' ;;
+    self) filter='.data.repository.pullRequest.latestReviews.nodes[0].author.login = "author"' ;;
+    readonly) filter='.data.repository.pullRequest.latestReviews.nodes[0].authorCanPushToRepository = false' ;;
+    incomplete) filter='.data.repository.pullRequest.latestReviews.pageInfo.hasNextPage = true' ;;
+  esac
+  jq "$filter" "${FIX}/graphql_5" > "${FIX}/modified"
+  mv "${FIX}/modified" "${FIX}/graphql_5"
+  run_case
+  assert_skipped "${variant} dependency cannot suppress ordinary review" "dependency #5 is not verified at its current head"
+done
+
+for variant in later-revert partial-prefix; do
+  setup_stack "$variant"
+  commits a1 a2 > "${FIX}/pulls_5_commits_per_page_100"
+  if test "$variant" = later-revert; then
+    printf '%s\n' 'diff --git a/dep1.txt b/dep1.txt
+--- a/dep1.txt
++++ b/dep1.txt
+@@ -1 +1 @@
+-one
++old' > "${FIX}/diff_commits_a2"
+  else
+    patch dep1.txt changed-again > "${FIX}/diff_commits_a2"
+  fi
+  jq '.data.repository.pullRequest.headRefOid = "a2" | .data.repository.pullRequest.latestReviews.nodes[0].commit.oid = "a2"' \
+    "${FIX}/graphql_5" > "${FIX}/modified"
+  mv "${FIX}/modified" "${FIX}/graphql_5"
+  run_case
+  assert_skipped "${variant} cannot exclude a historical dependency prefix" "excluded prefix is not a complete dependency"
+done
+
+new_case reordered-cherry-picks
+commits c2 c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 a2 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch dep2.txt two > "${FIX}/diff_commits_a2"
+patch dep1.txt one > "${FIX}/diff_commits_c1"
+patch dep2.txt two > "${FIX}/diff_commits_c2"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+compare_ok c1
+run_case
+assert_skipped "reordered dependency cherry-picks fall back" "excluded prefix is not a complete dependency"
+
+new_case different-net-change
+commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch dep1.txt one > "${FIX}/diff_commits_c1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+# Same per-commit fingerprints, but aggregate targets a different block.
+patch dep1.txt one | sed 's/@@ -1 +1 @@/@@ -20 +20 @@/' > "${FIX}/diff_compare_base___c1"
+compare_ok c1
+run_case
+assert_skipped "matching commit IDs cannot override different net changes" "excluded prefix is not a complete dependency"
+
+setup_stack commit-list-moved
+commits a1 other > "${FIX}/pulls_10_commits_per_page_100"
+printf '%s\n' '{"head":{"sha":"c3"},"base":{"ref":"main","sha":"base"}}' > "${FIX}/pulls_10"
+PINNED=c3
+run_case
+assert_skipped "a commit list from another head falls back" "PR commit list does not end at pinned head"
+
+setup_stack retarget-during-scope
+printf '%s\n' '{"head":{"sha":"c3"},"base":{"ref":"other","sha":"base"}}' > "${FIX}/pulls_10.next"
+run_case
+assert_skipped "retargeting during scope falls back" "PR head or base moved during scoping"
+
+setup_stack approval-withdrawn
+jq '.data.repository.pullRequest.reviewDecision = "REVIEW_REQUIRED"' "${FIX}/graphql_5" > "${FIX}/graphql_5.next"
+run_case
+assert_skipped "withdrawn upstream approval falls back" "dependency review or head moved during scoping"
+
+new_case incomplete-net-compare
+commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+patch dep1.txt one > "${FIX}/diff_commits_a1"
+patch dep1.txt one > "${FIX}/diff_commits_c1"
+patch own.txt mine > "${FIX}/diff_commits_c3"
+jq -n '{status:"ahead",behind_by:0,total_commits:1,files:[range(300)|{filename:"dep.txt",patch:"+new"}]}' > "${FIX}/compare_base___a1"
+compare_ok c1
+run_case
+assert_skipped "an incomplete net compare cannot prove equivalence" "excluded prefix is not a complete dependency"
+
+for operation in sed paste; do
+  new_case "failed-${operation}-net-compare"
+  commits c1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+  commits a1 > "${FIX}/pulls_5_commits_per_page_100"
+  patch dep1.txt one > "${FIX}/diff_commits_a1"
+  patch dep1.txt one > "${FIX}/diff_commits_c1"
+  patch own.txt mine > "${FIX}/diff_commits_c3"
+  patch dep1.txt one | sed 's/@@ -1 +1 @@/@@ -20 +20 @@/' > "${FIX}/diff_compare_base___c1"
+  compare_ok c1
+  printf '#!/usr/bin/env bash\nexit 1\n' > "${CASE_DIR}/bin/${operation}"
+  chmod +x "${CASE_DIR}/bin/${operation}"
+  run_case
+  if ! grep -q '^SCOPED:' "${CASE_DIR}/out" \
+    && test "$(cat "${CASE_DIR}/workspace/pr-diff.txt")" = "full pr diff"; then
+    pass "failed ${operation} cannot prove net-change equivalence"
+  else
+    fail "failed ${operation} cannot prove net-change equivalence"
+  fi
+done
+
+for operation in cp mv; do
+  setup_stack "failed-publish-${operation}"
+  # Fail only at publication, after the full backup has been preserved.
+  cat > "${CASE_DIR}/bin/${operation}" <<EOF
+#!/usr/bin/env bash
+case "\$*" in *publish.diff*) exit 1 ;; esac
+exec /bin/${operation} "\$@"
+EOF
+  chmod +x "${CASE_DIR}/bin/${operation}"
+  run_case
+  if ! grep -q '^SCOPED:' "${CASE_DIR}/out" \
+    && test "$(cat "${CASE_DIR}/workspace/pr-diff.txt")" = "full pr diff" \
+    && test "$(cat "${CASE_DIR}/workspace/pr-full-diff.txt")" = "full pr diff"; then
+    pass "failed publication ${operation} preserves both full diffs"
+  else
+    fail "failed publication ${operation} preserves both full diffs"
+  fi
+done
+
+setup_stack retry-provenance
+run_case
+rm "${CASE_DIR}/workspace/dep-scope/full-head"
+run_case
+if test "$CASE_RC" -ne 0 && ! grep -q '^SCOPED:' "${CASE_DIR}/out" \
+  && test "$(cat "${CASE_DIR}/workspace/pr-full-diff.txt")" = "full pr diff"; then
+  pass "missing retry provenance aborts before dispatch"
+else
+  fail "missing retry provenance aborts before dispatch"
+fi
+
+setup_stack retry
+run_case
+assert_scoped "first scope preserves full security diff" "$(printf 'dep a1\nown c3')"
+run_case
+assert_scoped "retry preserves full security diff" "$(printf 'dep a1\nown c3')"
+# On a retry whose verification fails, the ordinary diff must be full again.
+jq '.data.repository.pullRequest.reviewDecision = "REVIEW_REQUIRED"' "${FIX}/graphql_5" > "${FIX}/modified"
+mv "${FIX}/modified" "${FIX}/graphql_5"
+run_case
+if grep -q '^SKIP:' "${CASE_DIR}/out" \
+  && test "$(cat "${CASE_DIR}/workspace/pr-full-diff.txt")" = "full pr diff" \
+  && test "$(cat "${CASE_DIR}/workspace/pr-diff.txt")" = "full pr diff"; then
+  pass "a failed retry restores full ordinary and security review"
+else
+  fail "a failed retry restores full ordinary and security review"
+fi
+
+for operation in cp mv; do
+  setup_stack "failed-${operation}"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "${CASE_DIR}/bin/${operation}"
+  chmod +x "${CASE_DIR}/bin/${operation}"
+  run_case
+  if ! grep -q '^SCOPED:' "${CASE_DIR}/out" \
+    && test "$(cat "${CASE_DIR}/workspace/pr-diff.txt")" = "full pr diff"; then
+    pass "failed ${operation} cannot report scoped success"
+  else
+    fail "failed ${operation} cannot report scoped success"
+  fi
+done
 
 # --- Commit-count handling in the base fetch snippets -------------------------
 

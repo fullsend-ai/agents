@@ -38,9 +38,12 @@ has no command: review the full diff.
 
 The command:
 
-- Ignores candidates that are not open. A merged dependency is already
-  in the base branch. A closed, unmerged one lands only through this
-  PR, so its code is this PR's code.
+- Ignores closed or merged candidates. Every open candidate must be
+  non-draft, target the same base branch, and have `reviewDecision=APPROVED`
+  plus a current-head approval from someone other than its author who can
+  push to the repository. Stale, dismissed, missing, incomplete, or failed
+  review evidence means `SKIP`. Recheck the dependency snapshot before
+  publishing the scoped diff.
 - Marks a PR commit as a dependency commit when its SHA is in an open
   candidate's commit list (stacked), without needing to fetch that
   commit's diff, or it is a cherry-pick: its `git patch-id --stable`
@@ -56,17 +59,34 @@ The command:
 - Refuses to scope (`SKIP`) when any required commit list, diff fetch,
   or patch-ID calculation fails, rather than treating the failure as
   "no match".
+- Requires the excluded prefix to cover **one complete candidate**, in
+  order, ending at its recorded head. Exact-SHA stacks must match its entire
+  commit list. Cherry-picks must match every commit in order and the raw net
+  diff from each PR's base to the excluded boundary must be identical after
+  removing only `index` lines. Both net compares must report complete usable
+  patches for fewer than 300 files, no behind commits, and the expected
+  commit count. Context, hunk locations, whitespace, and file
+  operations remain significant; binary net diffs are rejected. Prefixes
+  omitting later changes or reverts, reordered picks, and incomplete unions
+  fall back to the full diff.
 - Scopes only when the dependency commits come first, followed by at
   least one own commit, with no merge commits, fewer than 250 commits
   on either side, and a complete compare, with safe file paths, from
   the last dependency commit to `PINNED_SHA`.
-- On success prints `SCOPED`, moves the full diff to
+- On success prints `SCOPED`, preserves the pinned full diff in
   `/sandbox/workspace/pr-full-diff.txt`, writes the own-commit diff to
   `/sandbox/workspace/pr-diff.txt`, the own-commit file list to
   `/sandbox/workspace/dep-scope/files`, and one `dep <sha>` or
   `own <sha>` line per PR commit to
   `/sandbox/workspace/dep-scope/classified`. Otherwise prints
-  `SKIP: <reason>` and leaves `pr-diff.txt` as the full diff.
+  `SKIP: <reason>` and leaves `pr-diff.txt` as the full diff. File operations
+  are checked and replacement is atomic. A retry restores the immutable full
+  diff before recomputing scope, including when verification now fails.
+  A nonzero exit means stop review: restore failure or missing/mismatched
+  backup provenance requires refetching the pinned full inputs before dispatch.
+  Never interpret an earlier `SCOPED` result as success for a failed retry.
+  The initial head and commit-list tail must match `PINNED_SHA`; recheck the
+  current PR's head and base snapshot immediately before publication.
 
 ## 3. Apply the scope
 
@@ -85,8 +105,9 @@ Only after `SCOPED`:
   the challenger's included:
 
   > This PR carries commits `<short SHAs>` from open PR(s) `#<N>`,
-  > which are reviewed there. Review only `pr-diff.txt`;
-  > `pr-full-diff.txt` is context. Do not raise findings on code those
+  > whose complete matching changes have a verified approval at dependency
+  > head `<SHA>`. Non-security dimensions review `pr-diff.txt`; security
+  > reviews `pr-full-diff.txt`. Do not raise findings on code those
   > commits introduced unless this PR's own changes make it wrong.
   > Still run security inspection over the whole PR and report security
   > findings (vulnerabilities, auth or access-control bypass, secret
@@ -101,14 +122,13 @@ Only after `SCOPED`:
   `security` dimension, including `prompt-injection`,
   `instruction-smuggling`, `unicode-steganography`, `bidi-override`,
   `homoglyph-attack`: an open dependency PR and matching SHAs or patches
-  show only that the commit is duplicated, not that it was reviewed or
-  that its defects were fixed or dismissed), and never drop an open prior
+  show only that the commit is duplicated, not that its defects were fixed or dismissed), and never drop an open prior
   finding id (next bullet).
 - **Prior findings (re-review).** An open prior id whose cited code is
   now excluded cannot simply vanish: the ledger would carry it as open
   indefinitely. Unless it is a security finding (categories above),
   answer it with a `reclassified` disposition whose `rationale` says the
-  code now belongs to dependency PR `#<N>` and is reviewed there, and
+  code matches the complete dependency PR `#<N>` approved at head `<SHA>`, and
   emit the finding with the same id at severity `info` (the row
   `re-review.md` describes: kept in the ledger, absent from the posted
   review). A prior security id keeps its original severity and
@@ -123,4 +143,5 @@ Only after `SCOPED`:
   Apply the normal outcome rules to the reviewed PR.
 - **Review body (7).** Add one line above the findings:
   "Scoped to N own commit(s); M commit(s) matching open PR #X were
-  excluded and are reviewed there: `<short SHAs>`."
+  excluded; complete dependency changes verified approved at head `<SHA>`:
+  `<short SHAs>`." Include this line even when there are no findings.

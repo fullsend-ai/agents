@@ -168,12 +168,22 @@ On re-review, the sandbox receives a validated `fullsend:review-findings-v2` pro
 
 ### Stacked and cherry-picked PRs
 
-On GitHub, when the PR author declares another open PR in the same repository
-as a dependency ("depends on #N", "stacked on #N") and the PR's leading
-commits are that PR's commits (same SHAs, or cherry-picks with identical
-patches), non-security review dimensions cover only the PR's own commits.
-Security inspection, protected-path checks, and PR-body defenses cover the
-whole PR. Scoping changes review evidence only. It does not impose merge ordering or prevent an approval under the normal review criteria. The review body identifies the excluded matching commits and their dependency PR. If the commits cannot be matched, or on GitLab, the full diff is reviewed.
+On GitHub, the author can declare an open PR in the same repository as a
+dependency ("depends on #N", "stacked on #N"). Scoping requires a non-draft
+dependency targeting the same base, with a verified current-head approval
+from another reviewer with write access and an approved repository review
+decision. The excluded prefix must cover that dependency's complete ordered
+history: exact SHAs for stacks, or matching patches plus an identical net
+diff for cherry-picks. Prefixes omitting later changes or reverts, reordered
+picks, and unverifiable matches receive a full review.
+
+Only after verification do non-security dimensions review the PR's own
+commits. Security inspection, protected-path checks, and PR-body defenses
+cover the whole PR. Retries preserve the pinned full diff and restore full
+review when verification fails; an unrecoverable artifact error stops the
+review. Scoping does not impose merge ordering or prevent an approval under
+the normal review criteria. The review body identifies the excluded commits,
+dependency PR, and approved head. GitLab continues to review the full diff.
 
 ## Time budget
 
