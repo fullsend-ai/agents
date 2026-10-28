@@ -63,9 +63,16 @@ concurrency:
         || github.repository != 'fullsend-ai/agents'
         && format('functional-call-{0}', github.run_id)
         || format('{0}-{1}', github.workflow, github.ref) }}
+  # A labeled run queues behind the PR's in-progress run instead of
+  # cancelling it. Most label runs only mirror the previous verdict (see
+  # check-rollup-result.sh), so cancelling the run that produces that
+  # verdict leaves them nothing to mirror (#1161). Same rule as
+  # behaviour-tests.yml.
   cancel-in-progress: >-
-    ${{ github.event_name == 'pull_request_target'
-        || github.ref != 'refs/heads/main' }}
+    ${{ (github.event_name == 'pull_request_target'
+        && github.event.action != 'labeled')
+        || (github.event_name != 'pull_request_target'
+        && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
