@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests for run-functional.sh's tier selection, release-tier case
 # filtering/gating, the non-zero-case-exit ("false green") fix, the
-# judge-error classification (infrastructure vs quality regression), and
-# the per-case attribution of failed checks and judge errors.
+# judge-error classification (infrastructure vs quality regression), the
+# per-case attribution of failed checks and judge errors, and the
+# preservation of a retried case's first attempt.
 #
 # Every invocation of the script under test runs with `env -i` and a
 # minimal stub PATH: a per-test bin/ directory stubs python3 (standing in
@@ -132,10 +133,12 @@ echo "$*" >> "${CAPTURE_DIR}/python3-calls.log"
 
 config_arg=""
 output_arg=""
+run_id_arg=""
 prev=""
 for a in "$@"; do
   [[ "$prev" == "--config" ]] && config_arg="$a"
   [[ "$prev" == "--output" ]] && output_arg="$a"
+  [[ "$prev" == "--run-id" ]] && run_id_arg="$a"
   prev="$a"
 done
 [[ -n "$config_arg" ]] && cp "$config_arg" "${CAPTURE_DIR}/last-config.yaml"
@@ -162,7 +165,12 @@ case "${1:-}" in
     # tokens, the record carries token_usage.input, the given turns (default
     # 0) and cost_usd 0 (an agent cut off before its totals). With turns
     # only, it carries num_turns and a cost (the agent ran). With neither,
-    # both are null (the case failed before the agent ran).
+    # both are null (the case failed before the agent ran). Each case also
+    # gets attempt.txt: "retry" when the run id ends in -retry, else "first".
+    # With STUB_COPY_FAIL_<N> set, call N's output/ copy into the runs dir
+    # fails (run-functional.sh's execute_run returns 2). With
+    # STUB_PRESERVED_EXISTS_<N> set, call N (a retry) pre-creates the first
+    # run's first-attempt/cases/<case> dir.
     en=$(( $(cat "${CAPTURE_DIR}/execute-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$en" > "${CAPTURE_DIR}/execute-calls"
     results_var="STUB_CASE_RESULTS_${en}"
@@ -181,6 +189,28 @@ case "${1:-}" in
         else
           printf '{"exit_code": %s, "num_turns": null, "cost_usd": null}\n' "$code" \
             > "${output_arg}/cases/${name}/run_result.json"
+        fi
+        if [[ "$run_id_arg" == *-retry ]]; then
+          echo retry > "${output_arg}/cases/${name}/attempt.txt"
+        else
+          echo first > "${output_arg}/cases/${name}/attempt.txt"
+        fi
+        copy_fail_var="STUB_COPY_FAIL_${en}"
+        if [[ -n "${!copy_fail_var:-}" ]]; then
+          # A workspace output/ dir to copy, and a regular file where the
+          # copy's destination directory should be.
+          ws_out="/tmp/agent-eval/${run_id_arg}/cases/${name}/output"
+          mkdir -p "$ws_out"
+          echo state > "${ws_out}/fixture-state.json"
+          echo "/tmp/agent-eval/${run_id_arg}" >> "${CAPTURE_DIR}/ws-dirs"
+          : > "${output_arg}/cases/${name}/output"
+        fi
+        preserved_var="STUB_PRESERVED_EXISTS_${en}"
+        if [[ -n "${!preserved_var:-}" ]]; then
+          # Occupy the first run's first-attempt/cases/<case> slot.
+          occupied="${output_arg%-retry}/first-attempt/cases/${name}"
+          mkdir -p "$occupied"
+          echo earlier > "${occupied}/occupant.txt"
         fi
       done
       # Run-level record, as execute.py writes it: per_case mirrors each
@@ -877,6 +907,140 @@ if [[ $RC -eq 0 && "$MERGED" == '{"case":{"exit_code":0,"num_turns":4},"exit_cod
   pass "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed"
 else
   fail "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed (rc=$RC, merged='$MERGED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
+# A retried case's first attempt is preserved under
+# <run-dir>/first-attempt/cases/<case>, outside cases/ so it is never scored,
+# and only when the retry replaced it.
+# ---------------------------------------------------------------------------
+
+# main_run_dir <root>: the testagent run dir that is not the -retry one.
+main_run_dir() {
+  local d
+  for d in "$1"/eval/runs/testagent/*/; do
+    [[ "$d" == *-retry/ ]] && continue
+    echo "${d%/}"
+    return
+  done
+}
+
+# entries <dir>: the names in <dir>, each followed by a comma ("" if none).
+entries() {
+  local e out=""
+  shopt -s nullglob dotglob
+  for e in "$1"/*; do out+="$(basename "$e"),"; done
+  shopt -u nullglob dotglob
+  echo "$out"
+}
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+KEPT="$(cat "${RD}/first-attempt/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+KEPT_EXIT="$(jq -r '.exit_code' "${RD}/first-attempt/cases/001-release-case/run_result.json" 2>/dev/null || true)"
+TOP="$(entries "${RD}/first-attempt")"
+KEPT_CASES="$(entries "${RD}/first-attempt/cases")"
+if [[ $RC -eq 0 && "$SCORED" == "retry" && "$KEPT" == "first" && "$KEPT_EXIT" == "1" \
+      && "$TOP" == "cases," && "$KEPT_CASES" == "001-release-case," ]] \
+  && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "a retry that succeeds is scored from cases/, and the first attempt is kept in first-attempt/cases/"
+else
+  fail "a retry that succeeds is scored from cases/, and the first attempt is kept in first-attempt/cases/ (rc=$RC, scored='$SCORED', kept='$KEPT', kept_exit='$KEPT_EXIT', top='$TOP', kept_cases='$KEPT_CASES', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:1" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+KEPT="$(cat "${RD}/first-attempt/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "retry" && "$KEPT" == "first" ]] \
+  && echo "$OUT" | grep -q "RESULT: 1 case(s) failed before the agent ran (setup or infrastructure, not an agent result)"; then
+  pass "a retry that fails again keeps both attempts and still exits 3"
+else
+  fail "a retry that fails again keeps both attempts and still exits 3 (rc=$RC, scored='$SCORED', kept='$KEPT', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" \
+  STUB_WORKSPACE_EXITS="0,1" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "first" && ! -e "${RD}/first-attempt" ]] \
+  && echo "$OUT" | grep -q "the retry could not start; keeping the first attempt's results"; then
+  pass "a retry that cannot start leaves the first attempt in cases/ and creates no first-attempt/"
+else
+  fail "a retry that cannot start leaves the first attempt in cases/ and creates no first-attempt/ (rc=$RC, scored='$SCORED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" \
+  STUB_COPY_FAIL_2=1 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "first" && ! -e "${RD}/first-attempt" ]] \
+  && echo "$OUT" | grep -q "the retry ran but its output could not be copied; keeping the first attempt's results"; then
+  pass "a retry whose output copy fails leaves the first attempt in cases/ and creates no first-attempt/"
+else
+  fail "a retry whose output copy fails leaves the first attempt in cases/ and creates no first-attempt/ (rc=$RC, scored='$SCORED', output: $OUT)"
+fi
+while IFS= read -r ws; do
+  [[ "$ws" == /tmp/agent-eval/*-retry ]] && rm -rf "$ws"
+done < <(cat "${ROOT}/capture/ws-dirs" 2>/dev/null || true)
+rmdir /tmp/agent-eval 2>/dev/null || true
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" \
+  STUB_PRESERVED_EXISTS_2=1 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+OCCUPANT="$(cat "${RD}/first-attempt/cases/001-release-case/occupant.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "first" && "$OCCUPANT" == "earlier" ]] \
+  && echo "$OUT" | grep -q "first-attempt/cases/001-release-case already exists; keeping the first attempt of 001-release-case in cases/"; then
+  pass "an occupied first-attempt/cases/<case> keeps the first attempt in cases/ and skips the retry"
+else
+  fail "an occupied first-attempt/cases/<case> keeps the first attempt in cases/ and skips the retry (rc=$RC, scored='$SCORED', occupant='$OCCUPANT', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:0:5,002-full-only-case:0:5" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+RUN_DIRS="$(entries "${ROOT}/eval/runs/testagent")"
+CASE_DIRS="$(entries "${RD}/cases")"
+if [[ $RC -eq 0 && "$RUN_DIRS" == "$(basename "$RD")," && "$CASE_DIRS" == "001-release-case,002-full-only-case," && ! -e "${RD}/first-attempt" ]]; then
+  pass "a run with no retries creates no first-attempt/ dir"
+else
+  fail "a run with no retries creates no first-attempt/ dir (rc=$RC, run_dirs=$RUN_DIRS, cases='$CASE_DIRS', output: $OUT)"
 fi
 rm -rf "$ROOT"
 
