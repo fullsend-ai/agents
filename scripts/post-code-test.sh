@@ -983,7 +983,7 @@ count_related_to_commit_body_test() {
     | sed '/^Authored-by:/d' \
     | sed '/^Closes #/d' \
     | sed '/^Related to #/d' \
-    | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+    | sed -e ':a' -e '/^\n*$/{' -e '$d' -e 'N' -e 'ba' -e '}')"
   processed="$(echo "${processed}" | awk '
     /^$/           { if (buf) print buf; print; buf=""; next }
     /^[-*#>]|^  /  { if (buf) print buf; buf=""; print; next }

@@ -3844,7 +3844,7 @@ extract_commit_body() {
     | sed '/^Authored-by:/d' \
     | sed '/^Closes #/d' \
     | sed '/^Related to #/d' \
-    | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+    | sed -e ':a' -e '/^\n*$/{' -e '$d' -e 'N' -e 'ba' -e '}')"
   echo "${raw}" | awk '
     /^$/           { if (buf) print buf; print; buf=""; next }
     /^[-*#>]|^  /  { if (buf) print buf; buf=""; print; next }
