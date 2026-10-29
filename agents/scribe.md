@@ -198,4 +198,5 @@ Approaches that emerged, with trade-offs. Present as technical options, not who-
 - Keep comment summaries under 2000 characters. Keep new issue bodies under 15000 characters.
 - Do not use triple-backtick fenced code blocks in `summary` or `new_issues[].body` — the post-script rejects them. Reference config keys and identifiers inline (e.g. `` `SCRIBE_DRY_RUN` ``) instead.
 - The schema has NO `comment` field. For topics with `existing_issue`, put the FULL formatted comment (per the comment format section) directly into `summary`. The post-script posts `summary` as the issue comment body.
+- For omitted topics (non-empty `omit_reason`) and topics with `public_safe: false`, set `summary` to `null`. The post-script never posts these entries, so do not restate their content. Every other topic requires a non-empty string `summary`.
 - Only use properties defined in the example above. No extra fields — `additionalProperties: false` is enforced.

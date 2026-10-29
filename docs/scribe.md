@@ -272,7 +272,7 @@ The **post-script** deduplicates topics, applies confidence and public-safety ga
 
 The agent produces JSON validated against `schemas/scribe-result.schema.json`:
 
-- `topics[]` — discussion topics mapped to existing issues (comment body in `summary`)
+- `topics[]` — discussion topics mapped to existing issues (comment body in `summary`; `null` for omitted or `public_safe: false` topics, which are never posted)
 - `new_issues[]` — proposals for issues not yet in the backlog
 - `stats` — counts for observability
 
