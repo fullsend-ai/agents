@@ -127,15 +127,41 @@ curl --fail --silent --show-error \
   | jq '[.[] | {iid: .iid, state: .state, web_url: .web_url}]'
 # The closing system note ("closed via merge request !N" or "closed via commit
 # <sha>" is a real fix) and the closing comment: the last non-system note at or
-# before closed_at, preferring the user who closed the issue.
-curl --fail --silent --show-error \
-  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-  "https://${GITLAB_HOST}/api/v4/projects/<candidate-project-encoded>/issues/<candidate-iid>/notes?sort=asc&order_by=created_at&per_page=100" \
-  | jq --arg at "<closed_at>" --arg by "<closed_by>" '
-      ([.[] | select((.system | not) and .created_at <= $at)]) as $notes
-      | {closing_system_note: ([.[] | select(.system and (.body | startswith("closed")))] | last | .body?),
-         closing_comment: ((([$notes[] | select(.author.username == $by)] | last) // ($notes | last))
-           | if . then {author: .author.username, created_at: .created_at, body: .body} else null end)}'
+# before closed_at by the user who closed the issue or by a project member with
+# the Developer role or higher (access level 30+), whichever is chronologically
+# last. Page through every note first so a long thread cannot cut off the
+# closure evidence, then look up each commenter's access level; a lookup that
+# fails counts as no access. Only a note flagged maintainer is an authoritative
+# rejection; a closer without that role yields non-authoritative context.
+cand=<candidate-project-encoded>
+iid=<candidate-iid>
+notes_file=$(mktemp)
+page=1
+while :; do
+  batch=$(curl --fail --silent --show-error \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    "https://${GITLAB_HOST}/api/v4/projects/${cand}/issues/${iid}/notes?sort=asc&order_by=created_at&per_page=100&page=${page}")
+  printf '%s\n' "${batch}" >> "${notes_file}"
+  test "$(printf '%s' "${batch}" | jq length)" -eq 100 || break
+  page=$((page + 1))
+done
+levels='{}'
+for uid in $(jq -s -r --arg at "<closed_at>" \
+    '[.[][] | select((.system | not) and .created_at <= $at) | .author.id] | unique | .[]' "${notes_file}"); do
+  lvl=$(curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    "https://${GITLAB_HOST}/api/v4/projects/${cand}/members/all/${uid}" | jq '.access_level // 0')
+  levels=$(printf '%s' "${levels}" | jq --arg u "${uid}" --argjson l "${lvl}" '. + {($u): $l}')
+done
+jq -s --arg at "<closed_at>" --arg by "<closed_by>" --argjson levels "${levels}" '
+    add as $all
+    | def level: $levels[(.author.id | tostring)] // 0;
+      {closing_system_note: ([$all[] | select(.system and (.body | startswith("closed")))] | last | .body?),
+       closing_comment: ([$all[] | select((.system | not) and .created_at <= $at)
+           | select(.author.username == $by or level >= 30)]
+         | last
+         | if . then {author: .author.username, access_level: level,
+                      maintainer: (level >= 30), created_at: .created_at, body: .body}
+           else null end)}' "${notes_file}"
 
 # Follow a duplicate chain to its canonical. Prefer the structured link
 # (_links.closed_as_duplicate_of, added in gitlab!89375) from the projection

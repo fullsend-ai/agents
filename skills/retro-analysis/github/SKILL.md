@@ -108,17 +108,22 @@ gh api \
 
 # Closed-candidate recipe: run on every closed same-topic hit from either pass.
 # The search API returns no comments and no closing PR, and state_reason alone
-# cannot tell a fix from a rejection recorded as COMPLETED. This returns the
+# cannot tell a fix from a rejection recorded as completed. This returns the
 # closer (a merged PR or a commit is a real fix), PRs linked to the issue, and
 # the closing comment: the last comment at or before closure by the user who
-# closed it or by a maintainer.
-gh api graphql -f query='
-  query($owner: String!, $name: String!, $number: Int!) {
+# closed it or by a maintainer. Comments are paged forward in full, so a long
+# thread cannot hide the closing comment. The result carries the author's
+# association and a maintainer flag; only a maintainer's comment is an
+# authoritative rejection (see the closed-issue rules in the parent skill).
+# The timeline window holds closed events and other items; the jq keeps the
+# last closed event.
+gh api graphql --paginate --slurp -f query='
+  query($owner: String!, $name: String!, $number: Int!, $endCursor: String) {
     repository(owner: $owner, name: $name) {
       issue(number: $number) {
         stateReason
         closedAt
-        timelineItems(itemTypes: [CLOSED_EVENT], last: 1) {
+        timelineItems(last: 100) {
           nodes {
             ... on ClosedEvent {
               actor { login }
@@ -133,22 +138,29 @@ gh api graphql -f query='
         closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
           nodes { number merged url }
         }
-        comments(last: 20) {
+        comments(first: 100, after: $endCursor) {
+          pageInfo { hasNextPage endCursor }
           nodes { author { login } authorAssociation createdAt body }
         }
       }
     }
   }' -f owner=<owner> -f name=<repo> -F number=<candidate-number> \
-  --jq '.data.repository.issue
-    | .closedAt as $at
-    | (.timelineItems.nodes[0] // {}) as $ev
-    | {stateReason, closedAt, closedBy: $ev.actor.login, closer: $ev.closer,
-       linkedPullRequests: .closedByPullRequestsReferences.nodes,
-       closingComment: ([.comments.nodes[]
+  | jq '.[0].data.repository.issue as $i
+    | $i.closedAt as $at
+    | ([$i.timelineItems.nodes[] | select(has("closer"))] | last // {}) as $ev
+    | def maintainer: (.authorAssociation // "" | ascii_downcase)
+        | IN("owner", "member", "collaborator");
+      {stateReason: $i.stateReason, closedAt: $at,
+       closedBy: $ev.actor.login, closer: $ev.closer,
+       linkedPullRequests: $i.closedByPullRequestsReferences.nodes,
+       closingComment: ([.[].data.repository.issue.comments.nodes[]
          | select($at != null and .createdAt <= $at)
-         | select(.author.login == $ev.actor.login
-             or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")))]
-         | last | if . then {author: .author.login, createdAt, body} else null end)}'
+         | select(.author.login == $ev.actor.login or maintainer)]
+         | last
+         | if . then {author: .author.login,
+                      authorAssociation: .authorAssociation,
+                      maintainer: maintainer, createdAt, body}
+           else null end)}'
 
 # Follow a duplicate chain to its canonical. GitHub's native "close as duplicate"
 # stores the canonical as structured data (GraphQL Issue.duplicateOf), NOT as
