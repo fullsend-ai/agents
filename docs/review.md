@@ -287,6 +287,8 @@ If this agent needs to reach hosts beyond the defaults, see the
 
 Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, each sub-agent runs with its own model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for a sub-agent.
 
+**Codex** is not a supported runtime for review yet. The `pr-review` skill dispatches native Codex children only when the runtime note lists registered sub-agent roles, which depends on [fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970); this section changes after a live review run on Codex is linked here. The skill passes no `model`: the runner binds each child's model from `agents[].subagents`, or its run-level default.
+
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 
 ## Source
