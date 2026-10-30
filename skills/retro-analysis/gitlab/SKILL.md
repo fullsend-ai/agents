@@ -126,13 +126,14 @@ curl --fail --silent --show-error \
   "https://${GITLAB_HOST}/api/v4/projects/<candidate-project-encoded>/issues/<candidate-iid>/closed_by" \
   | jq '[.[] | {iid: .iid, state: .state, web_url: .web_url}]'
 # The closing system note ("closed via merge request !N" or "closed via commit
-# <sha>" is a real fix) and the closing comment: the last non-system note at or
-# before closed_at by the user who closed the issue or by a project member with
-# the Developer role or higher (access level 30+), whichever is chronologically
-# last. Page through every note first so a long thread cannot cut off the
-# closure evidence, then look up each commenter's access level; a lookup that
-# fails counts as no access. Only a note flagged maintainer is an authoritative
-# rejection; a closer without that role yields non-authoritative context.
+# <sha>" is a real fix) and two notes at or before closed_at: closing_comment,
+# the last non-system note by a project member with the Developer role or higher
+# (access level 30+), and closer_comment, the last non-system note by the user
+# who closed the issue. Only closing_comment is an authoritative rejection;
+# closer_comment is context only and never replaces it. Page through every note
+# first so a long thread cannot cut off the closure evidence, then look up each
+# commenter's access level; a lookup that fails, returns nothing, or returns
+# non-numeric output counts as no access (level 0) without stopping the recipe.
 cand=<candidate-project-encoded>
 iid=<candidate-iid>
 notes_file=$(mktemp)
@@ -148,16 +149,21 @@ done
 levels='{}'
 for uid in $(jq -s -r --arg at "<closed_at>" \
     '[.[][] | select((.system | not) and .created_at <= $at) | .author.id] | unique | .[]' "${notes_file}"); do
-  lvl=$(curl --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
-    "https://${GITLAB_HOST}/api/v4/projects/${cand}/members/all/${uid}" | jq '.access_level // 0')
+  lvl=$(curl --fail --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    "https://${GITLAB_HOST}/api/v4/projects/${cand}/members/all/${uid}" | jq '.access_level // 0' 2>/dev/null || true)
+  printf '%s' "${lvl}" | grep -Eq '^[0-9]+$' || lvl=0
   levels=$(printf '%s' "${levels}" | jq --arg u "${uid}" --argjson l "${lvl}" '. + {($u): $l}')
 done
 jq -s --arg at "<closed_at>" --arg by "<closed_by>" --argjson levels "${levels}" '
     add as $all
     | def level: $levels[(.author.id | tostring)] // 0;
       {closing_system_note: ([$all[] | select(.system and (.body | startswith("closed")))] | last | .body?),
-       closing_comment: ([$all[] | select((.system | not) and .created_at <= $at)
-           | select(.author.username == $by or level >= 30)]
+       closing_comment: ([$all[] | select((.system | not) and .created_at <= $at and level >= 30)]
+         | last
+         | if . then {author: .author.username, access_level: level,
+                      maintainer: true, created_at: .created_at, body: .body}
+           else null end),
+       closer_comment: ([$all[] | select((.system | not) and .created_at <= $at and .author.username == $by)]
          | last
          | if . then {author: .author.username, access_level: level,
                       maintainer: (level >= 30), created_at: .created_at, body: .body}
