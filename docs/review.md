@@ -48,9 +48,17 @@ in place as the reconciliation backstop. When a webhook delivery is missed or
 the fast path is not provisioned, review fires once the poller sees an MR whose
 `created_at` is newer than the watermark (up to one poll interval of delay).
 Native `merge_request_event` pipeline dispatch was removed.
-Push-to-open-MR (GitHub `synchronize`) is not auto-detected on GitLab: the
-poller does not detect it, and the webhook dispatcher rejects merge request
-updates. Comment `/fs-review` to re-review after new commits.
+A push to an open MR (GitHub `synchronize`) also triggers automatic review,
+through the poller only, so expect up to one poll interval of delay. The
+webhook dispatcher rejects merge request updates. GitLab records a new diff
+version on each push. When the newest version moves the MR head and was
+created after the watermark, the poller dispatches review for that head.
+Dispatch is keyed on the head SHA, so later polls that see the same head do
+not review it again. Diff versions do not record who pushed, so the poller
+cannot authorize the pusher. It therefore reviews pushes only to
+same-project MRs, where any pusher already has project push access. A push
+to a fork MR is not reviewed automatically, and re-review of fork MR pushes
+is currently unsupported (the router also denies slash commands on fork MRs).
 
 ## Commands
 
@@ -151,14 +159,14 @@ To **extend**, add a uniquely named skill in `.agents/skills/` and symlink
 and local agent tooling. A same-named `issue-labels` skill in that directory
 is shadowed by the built-in version and is ignored.
 
-The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`,
-`skills/issue-labels/gitlab/SKILL.md`, and `skills/issue-labels/jira/SKILL.md`),
-registered under `forge.<platform>.skills` in the harness. To overload the
-built-in skill, override via `base:` composition (ADR 0045) — inherit the
-upstream harness and replace the
-forge-specific skill entry under `forge.<platform>.skills` with your own path
-whose basename matches the built-in (`github`, `gitlab`, or `jira`), so `mergeSkills`
-dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
+The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`
+and `skills/issue-labels/gitlab/SKILL.md`), registered under
+`forge.<platform>.skills` in the harness. To override the built-in skill,
+use `base:` composition (ADR 0045) — inherit the upstream harness and add
+your own skill to the child harness's `skills:` list (top level, or in the
+child's own forge-conditioned overlay). `mergeSkills` dedupes by the
+SKILL.md `name:` (fullsend-ai/fullsend #5408), so your replacement must
+declare `name: issue-labels` to take the built-in's place.
 The older `customized/skills/issue-labels/SKILL.md` overlay in the org
 `.fullsend` config repo is deprecated by ADR 0064.
 
