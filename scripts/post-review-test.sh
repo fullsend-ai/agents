@@ -2880,6 +2880,30 @@ assert_last_result "projection-stamped-thread-line-shift-keeps-id" \
 run_disposition_case "projection-stamped-thread-other-line-same-category-mints" \
   "$(shift_review 240)" "${SHIFT_PRIOR}" "$(shift_minted 240)"
 
+# A supplied open id is only kept on a row in the file the id sits in. A row
+# in another file that supplies f_old is a different finding: it mints, and
+# f_old stays open where its stamped thread is.
+run_disposition_case "projection-supplied-id-in-other-file-mints" \
+  "$(jq -c '.findings[0].file = "docs/other.md" | .findings[0].id = "f_old"' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md")] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
+
+# The same holds with no stamped thread: the recorded file is the check.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+unset MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-supplied-id-in-other-file-unmapped-mints" \
+  "$(jq -c '.findings[0].file = "docs/other.md" | .findings[0].id = "f_old"' <<< "$(shift_review 202)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md")] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# A supplied id on a line the model is off by, in the right file, is kept.
+run_disposition_case "projection-supplied-id-off-by-line-same-file-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 219)")" \
+  "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":219}] and .dispositions == [{id: "f_old", status: "open"}]'
+
 # The model closing a still-present concern with unrelated evidence: the row
 # at the stamped thread keeps f_old, which stays open, and nothing mints.
 run_disposition_case "projection-stamped-thread-resolve-unrelated-evidence-stays-open" \

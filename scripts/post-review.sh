@@ -1144,8 +1144,10 @@ REREVIEW_FILTERED_TO_ZERO=false
 REREVIEW_FILTER_ORIGINAL_ACTION=""
 
 # Id assignment for this review. A supplied id is kept only when it is an
-# open prior id no earlier row already took and this review is not
-# resolving; a closed, resolving, foreign, or duplicate id is replaced (a
+# open prior id no earlier row already took, this review is not resolving,
+# and the row is in the file the id sits in (its stamped thread's file, else
+# its recorded file): a row in another file is a different finding and mints,
+# while a line the model is off by is tolerated; a closed, resolving, foreign, or duplicate id is replaced (a
 # reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
 # category match at the exact line; else the human-dismissed id anchored at
 # the row's exact file and line, whatever the category, unless the row is
@@ -1185,10 +1187,12 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
          | ([ $stamped[] | select(.id == $pid) ]) as $threads
          | if ($threads | length) == 0 then
              . + {mapped: false,
+                  files: [(.file | anchor_file)],
                   places: (if (.file | anchor_file) != null and (.line | anchor_line) != null
                            then [{file: (.file | anchor_file), line: (.line | anchor_line)}] else [] end)}
            else
              . + {mapped: true,
+                  files: [ $threads[] | .path ] | unique,
                   places: [ $threads[] | select(.line != null) | {file: .path, line} ] | unique}
            end
        ]) as $open_findings
@@ -1202,6 +1206,7 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
           | (
               if ($f.id | valid_id) and ($open | index($f.id)) != null and ($taken | index($f.id)) == null
                  and ($resolving_ids | index($f.id)) == null
+                 and ([ $open_findings[] | select(.id == $f.id) | select(.files | index($f.file | anchor_file) != null) ] | length) > 0
               then {id: $f.id, mint_i: $state.mint_i}
               else
                 ([ $rows[($i + 1):][] | .id | select(valid_id) | select(. as $x | $open | index($x) != null) ]) as $reserved
