@@ -1162,11 +1162,14 @@ gate_reject_content() {
 # ============================================================
 # If the LLM produces multiple entries for the same issue despite being asked
 # not to, merge them: combine summaries, keep the highest confidence, keep
-# public_safe=false if any entry is unsafe.
+# public_safe=false if any entry is unsafe. Omitted entries (non-empty
+# omit_reason) are never merged, so they cannot suppress or add content to
+# an actionable comment.
 DEDUP_FILE="${RESULT_FILE}.deduped"
 jq --argjson max_len "${MAX_COMMENT_LEN}" '
+  def mergeable: .existing_issue != null and ((.omit_reason // "") == "");
   .topics as $all |
-  ($all | map(select(.existing_issue != null)) | group_by(.existing_issue) |
+  ($all | map(select(mergeable)) | group_by(.existing_issue) |
     map(
       if length == 1 then .[0]
       else
@@ -1181,7 +1184,7 @@ jq --argjson max_len "${MAX_COMMENT_LEN}" '
         else . end
     )
   ) as $merged |
-  ($all | map(select(.existing_issue == null))) as $rest |
+  ($all | map(select(mergeable | not))) as $rest |
   . + {topics: ($merged + $rest)}
 ' "${RESULT_FILE}" > "${DEDUP_FILE}"
 

@@ -370,6 +370,33 @@ export SCRIBE_DRY_RUN="false"
 run_test "github/live-mode-uses-paginate-for-idempotency" \
   '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
   "api --paginate repos/mock-org/mock-repo/issues/42/comments"
+
+# Omitted and unsafe topics carry summary: null (issue #1838). They must
+# never cause writes, and must not suppress a valid actionable topic.
+run_test "github/omitted-and-unsafe-null-summary-no-writes" \
+  '{"topics":[{"topic":"Low-confidence aside","summary":null,"existing_issue":42,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"},{"topic":"Unsafe topic","summary":null,"existing_issue":43,"new_issue_title":null,"confidence":0.9,"public_safe":false,"public_safe_category":"hr","omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":2,"existing_matched":0,"new_proposed":0,"omitted":2}}' \
+  "OMITTED: [Low-confidence aside]"
+if grep -qF "issue comment" "${GH_LOG}"; then
+  echo "FAIL: github/omitted-and-unsafe-null-summary-no-writes — omitted/unsafe topic posted a comment"
+  FAILURES=$((FAILURES + 1))
+fi
+if ! grep -qF "content gate: hr" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: github/omitted-and-unsafe-null-summary-no-writes — unsafe topic not rejected by content gate"
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_test "github/mixed-omitted-unsafe-actionable-one-write" \
+  '{"topics":[{"topic":"Low-confidence aside","summary":null,"existing_issue":42,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"},{"topic":"Unsafe topic","summary":null,"existing_issue":43,"new_issue_title":null,"confidence":0.9,"public_safe":false,"public_safe_category":"hr","omit_reason":null},{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\nPoint A.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"new_issue_title":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null},{"topic":"Omitted with placeholder","summary":"OMITTED_CONTENT_MARKER","existing_issue":42,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":4,"existing_matched":1,"new_proposed":0,"omitted":3}}' \
+  "gh issue comment 42 --repo mock-org/mock-repo --body-file -"
+MIXED_COMMENTS=$(grep -cF "issue comment" "${GH_LOG}" || true)
+if [[ "${MIXED_COMMENTS}" -ne 1 ]]; then
+  echo "FAIL: github/mixed-omitted-unsafe-actionable-one-write — expected 1 comment, got ${MIXED_COMMENTS}"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "Dedup: merged" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: github/mixed-omitted-unsafe-actionable-one-write — omitted topic was merged into actionable topic"
+  FAILURES=$((FAILURES + 1))
+fi
 export SCRIBE_DRY_RUN="true"
 
 # ---------------------------------------------------------------------------
