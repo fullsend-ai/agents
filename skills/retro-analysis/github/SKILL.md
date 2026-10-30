@@ -95,7 +95,7 @@ gh api \
 # this proposal routes to, and not org:, which reaches private/unrelated repos).
 # No is:open — the close-reason rules (duplicate / not planned / completed) must
 # apply across layers, so this returns closed issues too, with state_reason and
-# closed_at projected for the 30-day not-planned rule.
+# closed_at projected. Run the closed-candidate recipe below on each closed hit.
 gh api \
   "search/issues?q=<subsystem+or+root-cause+keywords>+repo:fullsend-ai/fullsend+repo:<agents-repo>+repo:$REPO_FULL_NAME+is:issue&per_page=20" \
   --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
@@ -105,6 +105,50 @@ gh api \
 gh api \
   "search/issues?q=<fix+keywords>+repo:<target_repo>+is:issue+is:closed&per_page=20" \
   --jq '.items[] | {repo: (.repository_url | sub(".*/repos/"; "")), number: .number, title: .title, state: .state, state_reason: .state_reason, closed_at: .closed_at, url: .html_url, body: .body}'
+
+# Closed-candidate recipe: run on every closed same-topic hit from either pass.
+# The search API returns no comments and no closing PR, and state_reason alone
+# cannot tell a fix from a rejection recorded as COMPLETED. This returns the
+# closer (a merged PR or a commit is a real fix), PRs linked to the issue, and
+# the closing comment: the last comment at or before closure by the user who
+# closed it or by a maintainer.
+gh api graphql -f query='
+  query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) {
+      issue(number: $number) {
+        stateReason
+        closedAt
+        timelineItems(itemTypes: [CLOSED_EVENT], last: 1) {
+          nodes {
+            ... on ClosedEvent {
+              actor { login }
+              closer {
+                __typename
+                ... on PullRequest { number merged url }
+                ... on Commit { oid url }
+              }
+            }
+          }
+        }
+        closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
+          nodes { number merged url }
+        }
+        comments(last: 20) {
+          nodes { author { login } authorAssociation createdAt body }
+        }
+      }
+    }
+  }' -f owner=<owner> -f name=<repo> -F number=<candidate-number> \
+  --jq '.data.repository.issue
+    | .closedAt as $at
+    | (.timelineItems.nodes[0] // {}) as $ev
+    | {stateReason, closedAt, closedBy: $ev.actor.login, closer: $ev.closer,
+       linkedPullRequests: .closedByPullRequestsReferences.nodes,
+       closingComment: ([.comments.nodes[]
+         | select($at != null and .createdAt <= $at)
+         | select(.author.login == $ev.actor.login
+             or (.authorAssociation | IN("OWNER", "MEMBER", "COLLABORATOR")))]
+         | last | if . then {author: .author.login, createdAt, body} else null end)}'
 
 # Follow a duplicate chain to its canonical. GitHub's native "close as duplicate"
 # stores the canonical as structured data (GraphQL Issue.duplicateOf), NOT as

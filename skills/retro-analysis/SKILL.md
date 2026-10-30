@@ -128,7 +128,7 @@ Dispatch a subagent to run your forge-specific skill's search commands, **two pa
 1. **Fix-keyed** — keywords from the proposed change, in the proposal's `target_repo`.
 2. **Root-cause-keyed** — keywords for the affected subsystem or failure mechanism, independent of how the proposal frames the fix. A root-cause fix and a symptom workaround describe the same problem in different words; only this pass catches that. **Search this pass across every repo the localization rules can route a proposal to** — platform (`fullsend-ai/fullsend`), the discovered agents repo, and the source repo — because a symptom fix and its root cause can land in different layers. Scope to those named repos, never an org/group-wide search (it reaches private and unrelated sibling repos). See your forge skill for the exact multi-repo query.
 
-The subagent must return each candidate's **repo**, number, title, state, **and body** (or a substantial excerpt of the problem statement and proposed change) — judging overlap from titles alone misses differently-worded duplicates, and the repo is needed to record a cross-repo match as `owner/repo#N` rather than a bare `#N`.
+The subagent must return each candidate's **repo**, number, title, state, **and body** (or a substantial excerpt of the problem statement and proposed change) — judging overlap from titles alone misses differently-worded duplicates, and the repo is needed to record a cross-repo match as `owner/repo#N` rather than a bare `#N`. For each **closed** same-topic candidate from any search, it must also return the **closing comment** (last maintainer comment at or before closure, verbatim) and any merged PR or commit that closed or is linked to it — see your forge skill's closed-candidate recipe.
 
 **Evaluation criteria** (apply these yourself, not the subagent):
 
@@ -136,9 +136,10 @@ The subagent must return each candidate's **repo**, number, title, state, **and 
 - **Skip the proposal** if an open issue proposes the same or substantially overlapping change; reference it in your summary instead.
 - **Closed issues — keyed on close reason, not a flat window:**
   - *duplicate* (any age): follow the chain to the canonical. Prefer the **structured duplicate link** the forge records for a native "close as duplicate" (GitHub `Issue.duplicateOf` via GraphQL; GitLab `_links.closed_as_duplicate_of`) — it is not in the candidate's text. Only when that link is absent, fall back to the candidate's own body and comments for a "duplicate of #X" reference (the duplicate points to the canonical, not the reverse — a search for issues that merely mention the candidate's number will not find it). Fetch the canonical directly, following further duplicate links if it is itself closed as a duplicate, and note its repo — the canonical may live in another layer. Skip and reference the canonical if it is open.
-  - *not planned*: skip if closed within 30 days — a maintainer already rejected it.
-  - *completed with a merged fix*: if the symptom **recurred after the merge**, keep the proposal as a regression referencing the old issue and fix PR; otherwise skip.
-  - *completed without a real fix*: keep the proposal, reference the old issue.
+  - *not planned* (any age): a maintainer rejected it — skip. Elapsed time is not new evidence: re-propose only if circumstances changed since closure, and state in `what_could_go_better` what changed and how it answers the closing comment.
+  - *completed with a merged fix* (a merged PR or commit closed or is linked to it): if the symptom **recurred after the merge**, keep the proposal as a regression referencing the old issue and fix PR; otherwise skip.
+  - *completed without a real fix, closing comment rejects the change* (disagrees, won't fix, not doing this, declining): a rejection the forge recorded as completed — apply the *not planned* rule. Quote the closing comment in `summary` and flag the mislabeled close reason for a human to correct.
+  - *completed without a real fix or rejection*: keep the proposal, reference the old issue.
 - **Include the proposal** only if no existing issue covers it, or it meaningfully refines an existing one.
 
 **Record the receipt.** `related_issues` holds the search phrases run and the candidates considered. Record a candidate as a bare integer when it is in the proposal's `target_repo`, or as the fully-qualified `owner/repo#N` string when it is not — a bare `#N` renders as a link into `target_repo` and would point at the wrong issue. It is small in practice — searches usually return zero relevant candidates.

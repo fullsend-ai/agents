@@ -102,13 +102,40 @@ curl --fail --silent --show-error \
 #   - _links.closed_as_duplicate_of present  -> duplicate (structured link)
 #   - a `duplicate` / `not-planned` / `completed` label (applied by fullsend
 #     triage)                                 -> that reason
-#   - otherwise                               -> unknown; the not-planned
-#     (30-day) and completed rules are best-effort and should be skipped rather
-#     than guessed. closed_at is still available for the 30-day window.
+#   - otherwise                               -> unknown; do not guess a
+#     reason from the state alone.
+# Whatever the label, run the closed-candidate recipe below on every closed
+# same-topic hit: with no close reason, the closing note is the main signal for
+# a rejection, and a merged closing MR or a closing commit is the real-fix signal.
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<keywords>&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, closed_as_duplicate_of: ._links.closed_as_duplicate_of, web_url: .web_url, description: .description}'
+
+# Closed-candidate recipe: run on every closed same-topic hit from any pass.
+# Use the candidate's own project path (encoded) — it may be a layer project,
+# not the target. The search returns no notes and no closing MR. closed_at and
+# closed_by identify the closure:
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/<candidate-project-encoded>/issues/<candidate-iid>" \
+  | jq '{iid: .iid, state: .state, closed_at: .closed_at, closed_by: .closed_by.username, labels: .labels}'
+# Merge requests that close the issue on merge; a merged one is a real fix:
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/<candidate-project-encoded>/issues/<candidate-iid>/closed_by" \
+  | jq '[.[] | {iid: .iid, state: .state, web_url: .web_url}]'
+# The closing system note ("closed via merge request !N" or "closed via commit
+# <sha>" is a real fix) and the closing comment: the last non-system note at or
+# before closed_at, preferring the user who closed the issue.
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/<candidate-project-encoded>/issues/<candidate-iid>/notes?sort=asc&order_by=created_at&per_page=100" \
+  | jq --arg at "<closed_at>" --arg by "<closed_by>" '
+      ([.[] | select((.system | not) and .created_at <= $at)]) as $notes
+      | {closing_system_note: ([.[] | select(.system and (.body | startswith("closed")))] | last | .body?),
+         closing_comment: ((([$notes[] | select(.author.username == $by)] | last) // ($notes | last))
+           | if . then {author: .author.username, created_at: .created_at, body: .body} else null end)}'
 
 # Follow a duplicate chain to its canonical. Prefer the structured link
 # (_links.closed_as_duplicate_of, added in gitlab!89375) from the projection
