@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # skill-env-reachability-test.sh — Verify that every SKILL.md file
 # references only env vars reachable from its delivering harness's
-# env.sandbox (or from sandbox runtime injection / provider credentials).
+# env.sandbox, sandbox runtime injection, provider credentials, or
+# documented per-invocation inputs.
 #
 # For each harness file, extract the union of all env.sandbox keys
 # (top-level, forge blocks, and overlays), then extract all skill
@@ -64,6 +65,8 @@ NON_ENV_TOKENS=(
   PRIVATE POST TOKEN MATCH NO_MATCH FETCH PARSE DIFF ENDPOINT
   # Git concepts
   HEAD SHA BRANCH COMMITS COMMIT MANIFEST
+  # Review procedure output markers
+  SCOPED FAILURE APPROVED CHANGES_REQUESTED CLOSED MERGED OPEN GIT
   # File / directory / product names
   AGENTS CLAUDE CONTRIBUTING README SKILL TODO FILL STEP
   SYSTEM HARD CURLRC FILES WORK MESSAGES
@@ -97,22 +100,23 @@ SKILL_LOCAL_VARS=(
   COMMIT_MESSAGES_AVAILABLE_FILE COMMIT_MESSAGES_FILE
   COMMIT_MESSAGES_INCOMPLETE_FILE COMMITS_FILE
   COMPARE_COMPLETE_FILTER COMPARE_FILE COMPARE_INCOMPLETE_FILE
-  DEFAULT_BRANCH DEPENDENCY_FILES_CHANGED
+  BASE_SHA DEFAULT_BRANCH DEP_BASE DEP_HEAD DEP_N DEPENDENCY_FILES_CHANGED
+  DIFF_ACCEPT
   DISPATCH_ENCODED DISPATCH_REPO DISPATCH_REPO_ENCODED
-  ELAPSED FEATURE_X_ENABLED
+  ELAPSED EXACT FEATURE_X_ENABLED
   FETCH_END FETCH_START FILE_COUNT FILES_CHANGED GITLAB_HOST
   HEAD_PIPELINE_ID HEAD_PIPELINE_SHA HEAD_SHA
   IID INCOMPLETE_COMPARE INCREMENTAL_DIFF
   IS_DRAFT ISSUE_KEY
-  JOB_ID LINE_COUNT LINES_CHANGED LOGIN_SELECT
+  JOB_ID LAST_DEP LINE_COUNT LINES_CHANGED LOGIN_SELECT
   MERGE_BASE_FILE MR_DATA MR_IID MR_JSON MR_SHA
-  NOW NUMBER OLD_NAME ORG OTHER OTHER_PROJECT_ID
+  NET_COMPLETE NET_N NOW NUMBER OLD_NAME ORG OTHER OTHER_PROJECT_ID OWN_N
   OTHERPROJ OWNER PIPELINE_ID PKG POLL_INTERVAL
-  PR_COMMIT_COUNT PR_COMMIT_COUNT_FILE PR_DATA PR_HEAD PRBODY
+  PID PR_COMMIT_COUNT PR_COMMIT_COUNT_FILE PR_DATA PR_HEAD PRBODY
   PR_NUMBER_OR_URL PROJECT_KEY PROTECTED_PATH_COUNT
   REMAINING REPO REPO_ENCODED REVIEW_BODY_FILE REVIEW_COMMENT
   REVIEW_SUB_AGENT_TRUE RUN_FALLBACK RUN_ID
-  SECURITY_SENSITIVE_COUNT TARGET_ENCODED TEST_FILE_RATIO
+  SECURITY_SENSITIVE_COUNT SHAPE SKIP STATE TARGET_ENCODED TEST_FILE_RATIO
 )
 
 # ---------------------------------------------------------------------------
@@ -143,6 +147,13 @@ declare -A KNOWN_GAPS=(
   ["gitlab-forge:MR_IID"]="#1665 review — referenced without assignment or harness delivery"
   ["fix-review/github:RUN_ID"]="#1665 review — referenced without assignment or harness delivery"
   ["fix-review/gitlab:JOB_ID"]="#1665 review — referenced without assignment or harness delivery"
+)
+
+# Per-invocation inputs — supplied by the caller of the documented procedure,
+# not static values from the delivering harness's env.sandbox.
+declare -A CALLER_INPUTS=(
+  ["pr-review/github:DEP_PRS"]="dependency-scope procedure"
+  ["pr-review/github:PINNED_SHA"]="dependency-scope procedure"
 )
 
 # ---------------------------------------------------------------------------
@@ -395,6 +406,9 @@ for harness in "${HARNESS_FILES[@]}"; do
 
       # Check known gaps
       gap_key="${skill_name}:${var}"
+      if [[ -n "${CALLER_INPUTS[$gap_key]+x}" ]]; then
+        continue
+      fi
       if [[ -n "${KNOWN_GAPS[$gap_key]+x}" ]]; then
         assert_warn "${skill_name}/${harness_name}" "${var} unreachable (tracked: ${KNOWN_GAPS[$gap_key]})"
         local_pass=false

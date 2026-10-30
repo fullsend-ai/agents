@@ -172,6 +172,25 @@ The review agent follows the same pre-script / sandbox / post-script pipeline as
 
 On re-review, the sandbox receives a validated `fullsend:review-findings-v2` projection containing `action`, severity, category, file, optional line, id, optional `actionable`, and an `{id, status}` disposition per prior id—not prior descriptions, remediation text, rationales, evidence, or review-thread bodies. Immediately before sandbox creation, the host fetches current thread state and marks eligible findings dismissed only when a verified write-or-higher human other than the PR author resolved a thread containing a trusted review-bot comment with the exact finding-id stamp. Unstamped thread comments stay open; path and line are not used as a fallback. A legacy marker without ids is assigned one before sandbox ingress. Resolved and human-dismissed findings stay in the projection with their anchor so they are recognised and not raised again. A null file retains PR-level category context without serving as a path or severity anchor. The pre-script continues to accept v1 markers for existing comments. Only GitHub `app-verified` re-reviews use file-backed records for remediation-candidate matching.
 
+### Stacked and cherry-picked PRs
+
+On GitHub, the author can declare an open PR in the same repository as a
+dependency ("depends on #N", "stacked on #N"). Scoping requires a non-draft
+dependency targeting the same base, with a verified current-head approval
+from another reviewer with write access and an approved repository review
+decision. The excluded prefix must cover that dependency's complete ordered
+history: exact SHAs for stacks, or matching patches plus an identical net
+diff for cherry-picks. Prefixes omitting later changes or reverts, reordered
+picks, and unverifiable matches receive a full review.
+
+Only after verification do non-security dimensions review the PR's own
+commits. Security inspection, protected-path checks, and PR-body defenses
+cover the whole PR. Retries preserve the pinned full diff and restore full
+review when verification fails; an unrecoverable artifact error stops the
+review. Scoping does not impose merge ordering or prevent an approval under
+the normal review criteria. The review body identifies the excluded commits,
+dependency PR, and approved head. GitLab continues to review the full diff.
+
 ## Time budget
 
 The runner gives the sandbox `timeout_minutes` (45 in
