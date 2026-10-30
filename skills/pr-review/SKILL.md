@@ -832,19 +832,19 @@ here):
      `timeout_ms` ≤ 120000; `date +%s` after each spawn and timed-out
      wait. A denied spawn: the note's rule.
 
-**Start every selected sub-agent**; no dispatch limit drops one.
+**Start every selected sub-agent.**
 
 - **Claude Code and pi:** all Agent calls in a single message; leave
   `run_in_background` unset (`false` blocks until all return). Wait
   for all; apply the Time budget checkpoint as each returns.
 - **Codex roster:** at most four open. Start up to four, `correctness`
-  and `security` first. Before each wait, run the Time budget
-  checkpoint: under 240 s, close all; if any selected had not finished,
-  write the `time-budget` failure. `wait_agent` on one, collect,
-  `close_agent` it, start the next; repeat until all are closed. On a
-  final state (`agents/review.md`), close it and apply the failure
-  fallback (3c-1 item 6, 3c-2, step 5, 6d item 4). Any other timed-out
-  wait is no result: call it again on the next open child.
+  and `security` first. Before each wait, check the Time budget: under
+  240 s, close all and collect; if any selected is unfinished, write
+  the `time-budget` failure. `wait_agent` on one, collect, `close_agent`
+  it, start the next; repeat until all are closed. On a final state
+  (`agents/review.md`), close it; collect a `completed` message, else
+  apply the failure fallback (3c-1 item 6, 3c-2, step 5, 6d item 4). Any
+  other timed-out wait: call it again on the next open child.
 
 ### 5. Collect findings
 
@@ -988,7 +988,7 @@ ticker.** With `TIMEOUT_SECONDS` set and `REMAINING` under 600 (Time
 budget section), skip the challenger: keep the merged finding set from
 6a–6c, record the item-4 `low` finding with the reason `time budget:
 <n>s remaining`, and continue to 6e. On Codex, recheck before each
-wait: under 240, close it and apply item 4.
+wait: under 240, close it; with no `completed` message, apply item 4.
 
 1. Compose the spawn prompt from:
 

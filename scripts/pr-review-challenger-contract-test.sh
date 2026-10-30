@@ -125,6 +125,9 @@ assert_contains "challenger failure preserves the original findings" \
 assert_contains "challenger failure is non-actionable" \
   '"actionable": false'
 
+assert_contains "Codex recheck keeps a challenger result from close_agent" \
+  'close it; with no `completed` message, apply item 4.'
+
 CHALLENGER_SCHEMA="$(printf '%s\n' "$(cat "${CHALLENGER}")" | tr '\n' ' ' | tr -s ' ')"
 TARGET="${CHALLENGER_SCHEMA}"
 assert_contains "removed_findings schema emits original_category" \
