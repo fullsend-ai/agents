@@ -151,14 +151,14 @@ To **extend**, add a uniquely named skill in `.agents/skills/` and symlink
 and local agent tooling. A same-named `issue-labels` skill in that directory
 is shadowed by the built-in version and is ignored.
 
-The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`,
-`skills/issue-labels/gitlab/SKILL.md`, and `skills/issue-labels/jira/SKILL.md`),
-registered under `forge.<platform>.skills` in the harness. To overload the
-built-in skill, override via `base:` composition (ADR 0045) — inherit the
-upstream harness and replace the
-forge-specific skill entry under `forge.<platform>.skills` with your own path
-whose basename matches the built-in (`github`, `gitlab`, or `jira`), so `mergeSkills`
-dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
+The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`
+and `skills/issue-labels/gitlab/SKILL.md`), registered under
+`forge.<platform>.skills` in the harness. To override the built-in skill,
+use `base:` composition (ADR 0045) — inherit the upstream harness and add
+your own skill to the child harness's `skills:` list (top level, or in the
+child's own forge-conditioned overlay). `mergeSkills` dedupes by the
+SKILL.md `name:` (fullsend-ai/fullsend #5408), so your replacement must
+declare `name: issue-labels` to take the built-in's place.
 The older `customized/skills/issue-labels/SKILL.md` overlay in the org
 `.fullsend` config repo is deprecated by ADR 0064.
 

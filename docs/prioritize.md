@@ -99,7 +99,7 @@ create manually in a repository of your choice.
 
 | Variable / Secret | Type | Required | Description |
 |-------------------|------|----------|-------------|
-| `FULLSEND_PRIORITIZE_CLIENT_ID` | Variable | Yes | Client ID of the GitHub App with project board and issue read access (`organization_projects: write`, `issues: read`) |
+| `FULLSEND_PRIORITIZE_CLIENT_ID` | Variable | Yes | Client ID of the GitHub App with project board and issue read access (`organization_projects: read`, `issues: read`) |
 | `FULLSEND_PRIORITIZE_APP_PRIVATE_KEY` | Secret | Yes | Private key for the prioritize GitHub App |
 | `FULLSEND_FULLSEND_CLIENT_ID` | Variable | Yes | Client ID of the GitHub App with cross-repo dispatch access (`actions: write`) |
 | `FULLSEND_FULLSEND_APP_PRIVATE_KEY` | Secret | Yes | Private key for the fullsend GitHub App |
@@ -122,7 +122,7 @@ and `<your-runner>` with your org-specific values.
 
 The scheduler uses two GitHub App tokens, kept separate for
 least-privilege: the **prioritize** app has only project board and issue
-read access (`organization_projects: write`, `issues: read`) and the
+read access (`organization_projects: read`, `issues: read`) and the
 **fullsend** app has cross-repo
 workflow dispatch (`actions: write`). Combining them into a single app
 would give every per-repo prioritize run more permissions than it needs.
@@ -130,7 +130,7 @@ See the
 [Role Permissions Matrix](https://fullsend.sh/docs/guides/infrastructure/infrastructure-reference#role-permissions-matrix)
 for the full permission breakdown.
 
-All operational configuration (project number, target repos, score field,
+All operational configuration (project number, target repos,
 thresholds) is self-contained in the workflow file via `||` fallback
 expressions — the only repository variables and secrets needed are the
 GitHub App credentials listed in Prerequisites above. Input descriptions
@@ -153,10 +153,6 @@ on:
         type: string
       repos:
         description: "Comma-separated repo names to dispatch to (default: <your-repos>)"
-        required: false
-        type: string
-      score_field:
-        description: "Project board field name for the RICE score (default: RICE Score)"
         required: false
         type: string
       workflow:
@@ -186,21 +182,21 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4  # pin to SHA per your org policy
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
       - name: Generate prioritize token (project board access)
         id: prioritize-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.FULLSEND_PRIORITIZE_CLIENT_ID }}
           private-key: ${{ secrets.FULLSEND_PRIORITIZE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
-          permission-organization-projects: write
+          permission-organization-projects: read
           permission-issues: read
 
       - name: Generate fullsend token (cross-repo dispatch)
         id: dispatch-token
-        uses: actions/create-github-app-token@v3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.FULLSEND_FULLSEND_CLIENT_ID }}
           private-key: ${{ secrets.FULLSEND_FULLSEND_APP_PRIVATE_KEY }}
@@ -215,7 +211,6 @@ jobs:
           ORG: ${{ github.repository_owner }}
           REPOS: ${{ inputs.repos || '<your-repos>' }}
           PROJECT_NUMBER: ${{ inputs.project_number || '<your-project-number>' }}
-          SCORE_FIELD: ${{ inputs.score_field || 'RICE Score' }}
           STALE_THRESHOLD: ${{ inputs.stale_threshold || '7d' }}
           WORKFLOW: ${{ inputs.workflow || 'prioritize.yml' }}
           WIP_LIMIT: ${{ inputs.wip_limit || '5' }}
@@ -236,6 +231,10 @@ jobs:
             esac
           }
           THRESHOLD_SECONDS=$(parse_threshold "${STALE_THRESHOLD}")
+
+          # The scheduler only reads the board; the dispatched scoring run
+          # writes the score with its own token.
+          SCORE_FIELD="RICE Score"  # must match the field the scoring run writes
 
           # Comma-separated repo names -> JSON array
           REPOS_JSON=$(echo "${REPOS}" | jq -R 'split(",") | map(gsub("^ +| +$"; ""))')
@@ -353,11 +352,12 @@ jobs:
           fi
           echo "Found ${UNSCORED_COUNT} unscored and ${STALE_COUNT} stale issue(s) to dispatch."
 
-          # Dispatch unscored issues first, then stale (oldest-first), up to
-          # WIP_LIMIT dispatches per poll.
+          # Dispatch up to WIP_LIMIT issues per poll, alternating between
+          # unscored and stale (oldest-first) so neither queue starves the
+          # other while the backlog is large.
           CANDIDATES=$(echo "${UNSCORED}" | jq \
             --argjson stale "${STALE}" --argjson limit "${WIP_LIMIT}" \
-            '. + $stale | .[:$limit]')
+            '([.[:$limit], $stale[:$limit]]) | transpose | flatten | map(select(. != null)) | .[:$limit]')
 
           DISPATCHED=0
           FAILED=0
@@ -417,8 +417,9 @@ dispatch.
 On every poll, the scheduler also selects **stale scores** — issues whose
 RICE Score field was last updated longer ago than
 `stale_threshold` (default: 7 days). Stale issues are re-dispatched for
-re-scoring, sorted oldest-first. Unscored issues are dispatched first,
-then stale ones, up to `wip_limit` total.
+re-scoring, sorted oldest-first. Up to `wip_limit` issues are dispatched
+per poll, alternating between unscored and stale so neither queue
+starves the other.
 
 
 ### Variables
