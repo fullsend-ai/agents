@@ -69,6 +69,9 @@ concurrency:
   # produces that verdict leaves them nothing to mirror (#1161). ok-to-test
   # is the label run that tests, so it still cancels: if it queued, a later
   # label could replace it while it waited, and the tests would never run.
+  # The same replacement can still hit a push run: if a label arrives while
+  # that run is pending behind a run that is still cancelling, the label run
+  # takes its place and fails closed with no verdict to mirror (#1854).
   cancel-in-progress: >-
     ${{ (github.event_name == 'pull_request_target'
         && (github.event.action != 'labeled'
