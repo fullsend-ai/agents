@@ -1,3 +1,7 @@
+---
+description: How the fullsend triage agent inspects new GitHub issues, assesses information sufficiency, asks clarifying questions, and produces a structured triage decision.
+---
+
 # Triage Agent
 
 ![Triage agent icon](icons/triage.png)
@@ -32,8 +36,25 @@ The harness also declares a CEL `trigger:` for fullsend's harness dispatch: an i
 |---------|-------|--------|
 | `/fs-triage` | Issue comment | Runs triage on the issue |
 
+Requires triage-level repository permission or higher (triage, write,
+maintain, or admin). Mutation stages such as `/fs-code` still
+require write or higher.
+
 The `/fs-triage` command does not accept arguments — it re-evaluates the issue
 using current content, comments, and any prior triage analysis.
+
+On GitLab, the triage-level rule above does not apply. The GitLab agent
+job requires the event actor to hold Developer access or higher
+([ADR 0054](https://github.com/fullsend-ai/fullsend/blob/main/docs/ADRs/0054-require-authorization-on-all-agent-dispatch-paths.md)),
+so automatic issue-open triage runs only for issues opened by Developer, Maintainer, or
+Owner members. The webhook fast path normally starts the dispatch; if a
+delivery is missed, events-mode cron polling recovers the issue open
+(for issues created after the poller's discovery watermark and its persisted
+issue-open cutoff) and dispatches it with the same authorization rule. When a
+Reporter, Guest, or non-member opens an issue, the
+webhook (or the polling backstop) still starts a dispatch, but the agent job exits successfully
+without running triage. A Developer-or-higher member can then comment
+`/fs-triage` on the issue to start triage.
 
 ## Control labels
 
@@ -67,22 +88,23 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 ### Skill: `issue-labels`
 
 The triage agent includes a built-in `issue-labels` skill that discovers your
-repo's labels and applies them opportunistically during triage. You can replace
-it with your own version to encode your team's labeling knowledge directly in
-the skill, keeping it out of `AGENTS.md` (where it would bloat context for
+repo's labels and applies them opportunistically during triage, keeping your
+team's labeling knowledge out of `AGENTS.md` (where it would bloat context for
 every agent).
 
-The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`,
-`skills/issue-labels/gitlab/SKILL.md`, and
-`skills/issue-labels/jira/SKILL.md`), registered under
-`forge.<platform>.skills` in the harness. To overload the built-in skill,
-create your own skill in `.agents/skills/issue-labels/github/SKILL.md` and
-symlink `.claude/skills` to `.agents/skills` so it's discoverable by both
-fullsend and local agent tooling. At the org level, override via `base:`
-composition (ADR 0045) — inherit the upstream harness and replace the
-forge-specific skill entry under `forge.<platform>.skills` with your own path
-whose basename matches the built-in (`github`, `gitlab`, or `jira`), so `mergeSkills`
-dedupes by basename (fullsend-ai/fullsend #5409) and yours wins.
+To **extend** the agent, add a uniquely named skill in `.agents/skills/` and
+symlink `.claude/skills` to `.agents/skills` so it is discoverable by both
+fullsend and local agent tooling. A same-named `issue-labels` skill in that
+directory is shadowed by the built-in version and is ignored.
+
+The upstream skill has per-forge variants (`skills/issue-labels/github/SKILL.md`
+and `skills/issue-labels/gitlab/SKILL.md`), registered under the per-forge
+`overlays[]` entries' `skills:` lists in the harness. To override the built-in
+skill, use `base:` composition (ADR 0045) — inherit the upstream harness and
+add your own skill to the child harness's `skills:` list (top level, or in the
+child's own forge-conditioned overlay). `mergeSkills` dedupes by the
+SKILL.md `name:` (fullsend-ai/fullsend #5408), so your replacement must
+declare `name: issue-labels` to take the built-in's place.
 The older `customized/skills/issue-labels/SKILL.md` overlay in the org
 `.fullsend` config repo (and the per-repo `.fullsend/customized/skills/...`
 equivalent) is deprecated by ADR 0064.
@@ -200,9 +222,37 @@ triage should still classify issues but must not flood the coding queue.
 ### Issue filing allowlist
 
 Cross-repo issue creation for prerequisites is governed by
-`create_issues.allow_targets` in `config.yaml`. Prerequisite issues
-targeting repos outside the allowlist are skipped with a warning and
-surfaced in the summary comment so they can be filed manually.
+`create_issues.allow_targets` in `config.yaml`:
+
+```yaml
+create_issues:
+  allow_targets:
+    orgs:
+      - my-org
+    repos:
+      - upstream-org/specific-repo
+```
+
+**Defaults:** A fresh GitHub installation without a preset or explicit `create_issues`
+setting permits `fullsend-ai/fullsend` and `fullsend-ai/agents` as upstream
+targets. Fresh GitLab installations have an explicit empty cross-project
+allowlist; configure any additional projects on the GitLab host explicitly.
+The repository the agent runs in is always allowed, so it needs no
+entry. Existing installations retain their configured permissions on upgrade.
+
+**When to expand the allowlist:** If your project depends on libraries or services
+in other GitHub orgs and you want the triage agent to automatically file
+prerequisite issues there, add those orgs or repos to `allow_targets`.
+
+**When to restrict the allowlist:** If you don't want agents creating issues
+outside your org, remove entries. If `allow_targets` is empty, cross-repository
+prerequisite creation is disabled — the source repository remains implicitly
+allowed (see below), and the agent will still identify
+the dependency and include a draft issue body in its comment for a human to
+file manually.
+
+Prerequisite issues targeting repos outside the allowlist are skipped with a
+warning and surfaced in the summary comment so they can be filed manually.
 
 The source repo (where the triaged issue lives) is always implicitly
 allowed.

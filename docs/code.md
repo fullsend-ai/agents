@@ -1,3 +1,7 @@
+---
+description: How the fullsend code agent implements triaged GitHub issues following repository conventions, runs tests and linters, and commits to a feature branch.
+---
+
 # Code Agent
 
 ![Code agent icon](icons/coder.png)
@@ -59,6 +63,63 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `FULLSEND_APP_SET` | GitHub App identity prefix for custom deployments. The pre-script derives the bot/coder bot logins (`<prefix>[bot]` / `<prefix>-coder[bot]`) excluded from the existing-PR check, so PRs opened by a custom coder bot aren't misclassified as human PRs. | `"fullsend-ai"` | Any GitHub App identity prefix |
 | `GITHUB_SIGNED_COMMITS` | Set to `"true"` to publish the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](#signed-commits)); anything else keeps `git push`. The default is set in the GitHub overlay of `harness/code.yaml` (and `harness/fix.yaml` for the fix agent); override per repo via `base:` composition. | `"false"` | `"true"`, `"false"` |
 
+### Image and network policy synchronization
+
+By default, the code and [fix agent](fix.md) use the same upstream container
+image and the same shared sandbox policy (`policies/base.yaml` in
+[fullsend-ai/agents](https://github.com/fullsend-ai/agents)). They are
+separate harnesses, though — you can override each independently when
+their needs diverge. For example, the code agent's Jira overlay adds the
+`jira-ro` provider for Jira-sourced issues, while the fix agent works
+from PR feedback and has no Jira access. Note that under `base:`
+composition a child harness's `providers:` list is appended to the
+base's — you can add providers to one harness only, but you cannot
+remove a provider the base defines; that requires a full harness
+without `base:`.
+
+> **Warning:** If you customize image, `policy:`, or `providers:` on only one
+> agent by mistake, the other may fail with no obvious reason (for example, a
+> package manager or registry endpoint allowed in code but not fix).
+
+**Recommended configuration**
+
+If you want both agents to share one behavior set — one place to edit image,
+policy, providers, and runner scripts — put the same overrides in both harness
+files in your repo's `.fullsend/` directory:
+
+```yaml
+# .fullsend/harness/code.yaml  (register as source: harness/code.yaml in config.yaml)
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/code.yaml#sha256=<sha256sum>
+image: ghcr.io/your-org/your-fullsend-image@sha256:…
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - package-registries
+
+# .fullsend/harness/fix.yaml  (register as source: harness/fix.yaml in config.yaml)
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/fix.yaml#sha256=<sha256sum>
+image: ghcr.io/your-org/your-fullsend-image@sha256:…
+policy: policies/base.yaml   # same file — edit once, both agents use it
+providers:
+  - vertex-ai
+  - package-registries
+```
+
+Keep the shared policy at `.fullsend/policies/base.yaml`. The policy file
+defines non-network sandbox restrictions only — filesystem access, landlock, and
+process identity. Network access is controlled through `providers:` profiles
+listed in the harness (see the
+[fullsend architecture docs](https://fullsend.sh/docs/architecture#agent-sandbox)
+for details on provider-backed policy composition) — when unifying
+configuration, keep the `providers:` additions the same on both harnesses
+too (each list is appended to its base harness's providers, so the
+effective sets may still differ if the bases differ). The
+same pattern applies to `pre_script` and `post_script` when you want a single
+place to maintain runner-side behavior.
+
+See [Customizing Agents](https://fullsend.sh/docs/guides/user/customizing-agents)
+for harness composition.
+
 ## How the agent works
 
 The code agent follows a three-phase pipeline: pre-script, sandbox execution, post-script.
@@ -101,6 +162,7 @@ omits optional context, and the PR/MR description uses a generic fallback. A
 rejected PR body falls back to the normalized commit body only if that text
 passes the same scan. Raw text-scan diagnostics are not logged.
 Jira-source no-PR runs still emit only their existing generic notice.
+
 
 ### Signed commits
 
