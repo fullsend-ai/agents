@@ -61,7 +61,9 @@ BEHAVIOUR_TEST_TAGS ?= behaviour
 BEHAVIOUR_GOFLAGS ?=
 # applier-branch-namespace gates behaviour/features/code/branch-namespace.feature,
 # whose assertions need this repo's post-code branch-namespace enforcement.
-BEHAVIOUR_CAPABILITIES ?= applier-branch-namespace
+# review-skill-overrides gates behaviour/features/review/custom-persona.feature,
+# which needs the pinned fullsend to stage skill file overrides.
+BEHAVIOUR_CAPABILITIES ?= applier-branch-namespace,review-skill-overrides
 
 script-test:
 	$(call run-timed,bash scripts/bundle-sh-test.sh)

@@ -10,9 +10,8 @@ Feature: Review personas come from the staged skill files
   The scenario runs a real model on the claude runtime. It needs a
   fullsend version that stages skill file overrides and writes the
   persona manifest, so it is gated behind the review-skill-overrides
-  capability until the pinned fullsend module includes that support
-  (enable with BEHAVIOUR_CAPABILITIES=review-skill-overrides). When
-  enabling it, pin the overlay's base: to an agents commit that includes
+  capability, which the Makefile enables by default, so it runs in CI.
+  The overlay's base: is pinned to an agents commit that includes
   persona selection, with the #sha256= of that harness file, as remote
   harness resources require.
 
@@ -33,7 +32,7 @@ Feature: Review personas come from the staged skill files
     And the repository runtime is "claude"
     And a custom harness "review" with:
       """
-      base: https://raw.githubusercontent.com/fullsend-ai/agents/main/harness/review.yaml
+      base: https://raw.githubusercontent.com/fullsend-ai/agents/d3566f0121a05d2ac8d642c1a96b7488d12fde4c/harness/review.yaml#sha256=c6db342731181835bf1f006cf9fda21e84e0771995d8436b4465d2ce26bb95bc
       skills:
         - skills/pr-review:
             sub-agents/behaviour-canary.md: agents/behaviour-canary.md
