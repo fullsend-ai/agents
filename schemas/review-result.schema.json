@@ -144,6 +144,10 @@
           "type": "string",
           "pattern": "^f_[a-zA-Z0-9]+$",
           "description": "Stable id copied from the prior projection. Omit on a new finding; the post-script assigns f_ plus random hex. Do not derive it from the file, line, or text."
+        },
+        "dimension": {
+          "type": "string",
+          "description": "Name of the pr-review persona that produced the finding. Orchestrator-only findings set the persona they concern or omit it. When the runner's persona manifest exists, the post-script drops a new finding whose dimension is not a staged persona."
         }
       },
       "additionalProperties": false

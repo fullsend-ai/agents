@@ -4,6 +4,11 @@ description: >-
   Adversarially challenges review findings, removes false positives,
   deduplicates across dimensions, and produces an adjudicated finding list.
 model: opus
+when: >-
+  Steps 6a-6c produce a non-empty finding set after withholding
+  sub-agent-failure findings.
+role: synthesis
+failure_severity: low
 tools: Read, Grep, Glob
 permissionMode: dontAsk
 background: false

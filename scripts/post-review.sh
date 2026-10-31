@@ -22,6 +22,12 @@
 #                                       approve actions; default supplied by
 #                                       harness/review.yaml
 #
+# Optional environment variables:
+#   FULLSEND_PERSONAS_FILE            — runner-written persona manifest; when
+#                                       it is a valid version 1 manifest, new
+#                                       findings from unstaged dimensions are
+#                                       dropped
+#
 # Exit codes:
 #   0 — review posted
 #   1 — error (review not posted, fallback comment posted, or the agent
@@ -881,17 +887,6 @@ forge_parse_pr_url
 
 echo "::add-mask::${REVIEW_TOKEN}"
 
-REVIEW_UX_ENABLED_RAW="${REVIEW_UX_ENABLED:-true}"
-case "${REVIEW_UX_ENABLED_RAW}" in
-  true|false) ;;
-  *)
-    echo "::error::REVIEW_UX_ENABLED='$(_gha_sanitize "${REVIEW_UX_ENABLED_RAW}")' is invalid (expected 'true' or 'false')"
-    echo '{"action":"failure","reason":"tool-failure"}' | \
-      forge_post_review -
-    exit 1
-    ;;
-esac
-
 # Temp file cleanup: accumulate files to remove on exit so later traps
 # don't overwrite earlier ones.
 CLEANUP_FILES=()
@@ -953,40 +948,6 @@ if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
 fi
 
 echo "Using result: ${RESULT_FILE}"
-# The sandbox prompt skips this dimension when the flag is false. Keep the
-# runner authoritative too: remove any UX findings before severity filtering,
-# ledger accounting, or posting if a model dispatched the dimension anyway.
-REREVIEW_UX_ORIGINAL_ACTION=""
-UX_DISABLED=false
-if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" ]]; then
-  UX_DISABLED=true
-  UX_DISABLED_RESULT="$(mktemp)"
-  CLEANUP_FILES+=("${UX_DISABLED_RESULT}")
-  UX_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
-  UX_FINDINGS_BEFORE="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${RESULT_FILE}")"
-  jq --argjson removed "${UX_FINDINGS_BEFORE}" '
-    if (.findings | type) == "array" then
-      .findings |= map(select(.category != "uxd-evaluate-code-heuristics"))
-      | if $removed > 0 and (.action == "request-changes" or .action == "reject") then
-          if ([.findings[]?
-               | select((.severity | IN("medium", "high", "critical"))
-                        or (.actionable // false))] | length) == 0 then
-            .action = "comment"
-          else .
-          end
-        else .
-        end
-      | if (.findings | length) == 0 then del(.findings) else . end
-    else . end
-  ' "${RESULT_FILE}" > "${UX_DISABLED_RESULT}"
-  RESULT_FILE="${UX_DISABLED_RESULT}"
-  if [[ "${UX_FINDINGS_BEFORE}" -gt 0 ]] \
-      && [[ "${UX_ORIGINAL_ACTION}" = "request-changes" || "${UX_ORIGINAL_ACTION}" = "reject" ]] \
-      && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
-    REREVIEW_UX_ORIGINAL_ACTION="${UX_ORIGINAL_ACTION}"
-  fi
-  echo "User-experience findings suppressed (REVIEW_UX_ENABLED=false)"
-fi
 # The severity filter below can drop an info-level sub-agent-failure. Keep the
 # unfiltered result so the projection still sees every failed dimension.
 UNFILTERED_RESULT_FILE="${RESULT_FILE}"
@@ -1034,7 +995,7 @@ MINT_IDS="$(
 # Prior ledger: give legacy prior findings (written before ids existed) an id
 # so they enter the ledger instead of vanishing, and split prior ids into
 # open and closed. Minted ids used here are removed from the pool below.
-PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" --argjson ux_disabled "${UX_DISABLED}" '
+PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
   def closed_status: IN("resolved_by_change", "dismissed_by_human");
   ([ (.dispositions // [])[] | select(type == "object" and (.id | valid_id) and (.status | type == "string")) ]) as $disp
@@ -1050,7 +1011,6 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" --argjson ux_disabled "${UX_
                 | select($d != null and ($d.status | closed_status)) | . + {status: $d.status} ],
       open_ids: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
                   | select($d == null or ($d.status | closed_status | not))
-                  | select(($ux_disabled | not) or .category != "uxd-evaluate-code-heuristics")
                   | .id ],
       used_mints: $r.mint_i
     }
@@ -1212,6 +1172,66 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       fi
     fi
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Drop findings from dimensions the runner did not stage. The runner writes a
+# persona manifest (FULLSEND_PERSONAS_FILE) listing the pr-review personas it
+# staged from the trusted base config. A new finding is dropped only when the
+# manifest exists and parses as version 1, the finding names a dimension, that
+# dimension is not a staged persona, and the finding does not carry an open
+# prior id. Without a manifest (an older runner) nothing is dropped, and a
+# finding with no dimension is always kept. Runs after id assignment so a row
+# answering an open prior id keeps it; prior dispositions are never touched.
+# ---------------------------------------------------------------------------
+REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION=""
+STAGED_PERSONAS=""
+if [[ -n "${FULLSEND_PERSONAS_FILE:-}" && -f "${FULLSEND_PERSONAS_FILE}" ]]; then
+  if ! STAGED_PERSONAS="$(jq -ce '
+      select(type == "object" and .version == 1 and (.personas | type) == "array"
+             and all(.personas[]; type == "object" and (.name | type) == "string"))
+      | [.personas[].name]
+    ' "${FULLSEND_PERSONAS_FILE}" 2>/dev/null)"; then
+    STAGED_PERSONAS=""
+    echo "::warning::Persona manifest is not a valid version 1 manifest; no findings dropped by dimension"
+  fi
+fi
+if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
+  DIMENSION_DROP_COUNT="$(jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
+    [ .findings[]
+      | select((.dimension | type) == "string")
+      | select(.dimension as $d | $staged | index($d) == null)
+      | select(.id as $id | $prior.open_ids | index($id) == null) ]
+    | length
+  ' "${RESULT_FILE}")"
+  if [[ "${DIMENSION_DROP_COUNT}" -gt 0 ]]; then
+    DIMENSION_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
+    DIMENSION_DROP_RESULT="$(mktemp)"
+    CLEANUP_FILES+=("${DIMENSION_DROP_RESULT}")
+    jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
+      .findings |= map(select(
+        (.dimension | type) != "string"
+        or (.dimension as $d | $staged | index($d) != null)
+        or (.id as $id | $prior.open_ids | index($id) != null)
+      ))
+      | if .action == "request-changes" or .action == "reject" then
+          if ([.findings[]
+               | select((.severity | IN("medium", "high", "critical"))
+                        or (.actionable // false))] | length) == 0 then
+            .action = "comment"
+          else .
+          end
+        else .
+        end
+      | if (.findings | length) == 0 then del(.findings) else . end
+    ' "${RESULT_FILE}" > "${DIMENSION_DROP_RESULT}"
+    mv "${DIMENSION_DROP_RESULT}" "${RESULT_FILE}"
+    if [[ "${DIMENSION_ORIGINAL_ACTION}" = "request-changes" || "${DIMENSION_ORIGINAL_ACTION}" = "reject" ]] \
+        && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
+      REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION="${DIMENSION_ORIGINAL_ACTION}"
+    fi
+  fi
+  echo "Dropped ${DIMENSION_DROP_COUNT} finding(s) from dimensions not staged by the runner"
 fi
 
 # A legacy projection may have valid findings but no prior verdict. Do not
@@ -1380,8 +1400,8 @@ rereview_action_can_promote() {
            "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
     return 0
   fi
-  if [[ "${REREVIEW_UX_ORIGINAL_ACTION}" = "request-changes" || \
-        "${REREVIEW_UX_ORIGINAL_ACTION}" = "reject" ]]; then
+  if [[ "${REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION}" = "request-changes" || \
+        "${REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION}" = "reject" ]]; then
     return 0
   fi
   return 1
@@ -2280,7 +2300,8 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       file: (if .file == "N/A" then null else .file end),
       id
     } + (if (.line | type) == "number" then {line} else {} end)
-      + (if (.actionable | type) == "boolean" then {actionable} else {} end);
+      + (if (.actionable | type) == "boolean" then {actionable} else {} end)
+      + (if (.dimension | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) then {dimension} else {} end);
   def is_closed($accounted; $id):
     [$accounted[] | select(.id == $id and (.status | closed_status))] | length > 0;
   (.findings // []) as $findings
