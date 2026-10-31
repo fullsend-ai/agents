@@ -119,9 +119,28 @@ The review agent runs one sub-agent per review area, called a persona. You can t
 
 #### Before you start
 
-You need a fullsend version that stages skill file overrides.
+You need a fullsend release that applies skill file overrides from a `base:` overlay.
 
-You make every change in one file: a harness overlay at `.fullsend/review.yaml`. The overlay starts from the stock review harness with `base:` and then lists your changes under `skills:`. Each example below is a complete overlay you can copy.
+You work in two files:
+
+- `.fullsend/config.yaml` registers your overlay. You change it once.
+- `.fullsend/review.yaml` is the overlay. You make every persona change here.
+
+First, register the overlay in `.fullsend/config.yaml`. The overlay has no effect until you do.
+
+```yaml
+# .fullsend/config.yaml (add to your existing file)
+agents:
+  - name: review
+    source: review.yaml
+allowed_remote_resources:
+  - https://raw.githubusercontent.com/fullsend-ai/agents/
+```
+
+- `source` is relative to `.fullsend/`.
+- The `allowed_remote_resources` entry must cover the `base:` URL in your overlay.
+
+Then write the overlay. It starts from the stock review harness with `base:` and then lists your changes under `skills:`. Each example below is a complete overlay you can copy.
 
 To get the `<SHA>` and `<sha256sum>` values, follow [Custom sandbox image — How to configure](code.md#how-to-configure) and use `harness/review.yaml` in place of `harness/code.yaml`. See also [AGENTS.md §7](../AGENTS.md#7-skill-resolution).
 
@@ -158,15 +177,29 @@ Then create the persona file at `.fullsend/personas/rbac-review.md`:
 ```markdown
 ---
 name: rbac-review
-description: Checks that role and permission changes grant no more access than the PR needs.
+description: Reviews Kubernetes RBAC manifests for over-broad grants.
 role: dimension
-when: Changes touch roles, permissions, policies, or access-control config.
-categories: [rbac-violation, privilege-escalation]
+when: >-
+  The diff adds or changes a Kubernetes RBAC manifest (Role, ClusterRole,
+  RoleBinding or ClusterRoleBinding), or YAML with `rules:` holding `verbs:`.
+categories:
+  - rbac-violation
+  - privilege-escalation
 failure_severity: medium
 ---
 
-Review the diff for role, permission, and policy changes.
-Report each grant that is wider than the change requires.
+# RBAC review
+
+You review only Kubernetes RBAC manifests in the diff. Each changed Role or ClusterRole rule must grant only the resources and verbs the change needs.
+
+Raise a finding when a rule:
+
+- uses `*` in `verbs`, `resources` or `apiGroups`;
+- grants `escalate`, `bind` or `impersonate`;
+- grants write verbs on `secrets`, `roles`, `clusterroles`, `rolebindings` or `clusterrolebindings`;
+- binds a ClusterRole cluster-wide where a namespaced RoleBinding would do.
+
+Use category `privilege-escalation` for escalate/bind/impersonate or for writes to RBAC objects, and `rbac-violation` for the other cases. Point at the file and line of the rule. Say which narrower grant fixes it.
 ```
 
 #### Replace a persona
@@ -189,9 +222,13 @@ Keep `name: security` in your file, so the name still matches `sub-agents/securi
 - `role: dimension` makes the persona selectable. A persona without it never runs as a review area.
 - `when` is what the agent matches against the diff. Write the kinds of change that should trigger the persona.
 - `always: true` runs the persona on every review, whatever the diff. Use it instead of `when` for checks you always want.
-- `categories` must come from the closed `category` list in [`schemas/review-result.schema.json`](../schemas/review-result.schema.json). The result schema rejects any other value, and the review fails validation.
+- `categories` must come from the closed `category` list in [`schemas/review-result.schema.json`](../schemas/review-result.schema.json). Values outside the list are ignored for that persona. A finding whose category is outside the list fails schema validation, so the review fails.
 - `failure_severity` sets the severity of the `sub-agent-failure` finding the agent records when the persona fails to return findings. It decides how much a failed persona run counts in the verdict.
+- A dimension persona's `failure_severity` is used only when it is `medium`, `high` or `critical`. Any other value records the failure at `info`, so a failed run of that persona does not hold back the verdict.
+- If your runtime cannot register a persona (for example, its model is not served), the agent still runs it as a generic sub-agent with the persona's prompt, on the agent's default model. Your persona still reviews the diff, but not on the model it asked for.
+- If another persona reports the same issue on the same line, the findings are merged and keep the higher-severity persona's `dimension`. This way one problem shows up as one finding.
 - Keep `correctness` staged. Without it, the review fails with reason `missing-context`, because correctness is the one area every review needs.
+- Do not disable `risk-assessment` this way. Without it, every verdict becomes a comment, so bot approvals stop. To turn the risk assessment off, set `REVIEW_RISK_ASSESSMENT_ENABLED` (see [Variables](#variables)).
 - Findings from a persona that was not staged are removed after the run, except high and critical findings, which are always kept. This stops a stray persona from adding noise, but never hides a serious problem.
 - Disabling a persona mid-PR does not clear its open high findings; re-enable it for one review round to let it verify the fix, or push the fix before disabling.
 
@@ -199,55 +236,78 @@ The runner fixes the persona list for each run from your trusted base configurat
 
 #### What you will see
 
-Output below will be replaced with a real run before merge.
+The output below comes from a real run on a test pull request that added a ClusterRole. The run used the `rbac-review` persona above.
 
-The runner writes a persona manifest and puts its path in `FULLSEND_PERSONAS_FILE`. Your persona appears in the `personas` list:
+When the runner applies your overlay, the job log shows this line. It means your override lines were applied to the stock skill. The long cache path is shortened to `…` here.
+
+```text
+harness: skill ".fullsend/skills/pr-review" has no SKILL.md; applying its file overrides to base skill "…/pr-review"
+```
+
+The runner then writes a persona manifest and puts its path in `FULLSEND_PERSONAS_FILE`. The real file lists every staged persona. This excerpt shows only yours:
 
 ```json
 {
   "version": 1,
   "personas": [
-    {"name": "rbac-review", "skill": "pr-review", "path": "sub-agents/rbac-review.md",
-     "origin": "<set by the runner>", "sha256": "<sha256 of your file>",
-     "description": "Checks that role and permission changes grant no more access than the PR needs.",
-     "role": "dimension",
-     "when": "Changes touch roles, permissions, policies, or access-control config.",
-     "categories": ["rbac-violation", "privilege-escalation"], "failure_severity": "medium"}
+    {
+      "name": "rbac-review",
+      "skill": "pr-review",
+      "path": "sub-agents/rbac-review.md",
+      "origin": "added",
+      "sha256": "28cfe8274887cf6af8260579578d2c6e68b458f3cc782ed8552985c49abe7e49",
+      "description": "Reviews Kubernetes RBAC manifests for over-broad grants.",
+      "role": "dimension",
+      "when": "The diff adds or changes a Kubernetes RBAC manifest (Role, ClusterRole, RoleBinding or ClusterRoleBinding), or YAML with `rules:` holding `verbs:`.",
+      "categories": ["rbac-violation", "privilege-escalation"],
+      "failure_severity": "medium"
+    }
   ],
-  "removed": [{"skill": "pr-review", "path": "sub-agents/user-experience.md"}]
+  "removed": []
 }
 ```
 
-Each finding in the review result names the persona that produced it in `dimension`:
+`origin` tells you where a persona came from. It is `upstream` for a stock persona, `override` for one you replaced, and `added` for one you added.
+
+After a run with the [Disable a persona](#disable-a-persona) example, `removed` lists the persona you turned off:
+
+```json
+"removed": [{"skill": "pr-review", "path": "sub-agents/user-experience.md"}]
+```
+
+Each finding in the review result names the persona that produced it in `dimension`. This finding is from the final review result of the run:
 
 ```json
 {
-  "severity": "medium",
+  "severity": "critical",
   "category": "rbac-violation",
-  "file": "deploy/role.yaml",
-  "line": 12,
-  "description": "The new role grants write access to all secrets in the namespace.",
-  "remediation": "Limit the rule to the one secret the job reads.",
+  "file": "deploy/rbac.yaml",
+  "line": 8,
+  "dimension": "rbac-review",
   "actionable": true,
-  "dimension": "rbac-review"
+  "description": "The rule on `configmaps` and `secrets` uses the wildcard verb `*` and is granted cluster-wide. ...",
+  "remediation": "Replace the ClusterRole/ClusterRoleBinding with a Role/RoleBinding in the `reports` namespace. ..."
 }
 ```
 
-When post-review removes findings from a persona that was not staged, the job log shows one warning line. The log uses the word dimension for a persona:
+See [Rules](#rules) for how `dimension` is set when two personas report the same issue.
+
+After the disable example run, the job log showed this warning. It appears only when a finding came from a persona you removed. The log uses the word dimension for a persona. High and critical findings are never dropped.
 
 ```text
-::warning::Dropped 2 finding(s) from dimensions the runner did not stage: user-experience (2)
+::warning::Dropped 1 finding(s) from dimensions the runner did not stage: user-experience (1)
 ```
 
 #### If it goes wrong
 
 | You see | Cause | Fix |
 |---|---|---|
-| `::warning::Persona manifest is not a valid version 1 manifest; no findings dropped by dimension` | The manifest the runner wrote lists no personas, is not valid JSON, or is not version 1. | If it lists no personas, nothing is wrong: the agent reads the skill's own persona files instead. Otherwise, check your fullsend version. Until it is fixed, no findings are removed. |
+| `::warning::Persona manifest is not a valid version 1 manifest; no findings dropped by dimension` | The manifest the runner wrote lists no personas, is not valid JSON, is not version 1, or has a `personas[]` entry with no `name`. | If it lists no personas, nothing is wrong: the agent reads the skill's own persona files instead. Otherwise, check your fullsend version. Until it is fixed, no findings are removed. |
 | `::warning::Dropped <n> finding(s) from dimensions the runner did not stage: <persona> (<n>)` | The review produced findings for a persona you did not stage. | Nothing, if you disabled that persona on purpose. Otherwise, check that the persona's override line is in `.fullsend/review.yaml`. |
 | `::warning::REVIEW_UX_ENABLED is no longer read; to turn off the UX reviewer, remove sub-agents/user-experience.md with a skills override (see docs/review.md)` | Your harness still sets `REVIEW_UX_ENABLED`. | Delete the variable. To turn off the UX reviewer, use the override in [Disable a persona](#disable-a-persona). |
-| `::error::Review result reported action=failure (reason: missing-context)` | The `correctness` persona is not staged. | Remove the override that disables or removes `sub-agents/correctness.md`. |
+| A line starting with `::error::Review result reported action=failure (reason: missing-context)` | The `correctness` persona is not staged. | Remove the override that disables or removes `sub-agents/correctness.md`. |
 | Your custom persona never runs, and no finding carries its `dimension`. | `name` does not match the file name, `role: dimension` is missing, or `when` does not match the diff. | Fix `name` and `role`. Make `when` describe the change in the PR, or set `always: true`. |
+| Your overrides have no effect, and the log has no `applying its file overrides` line. | `.fullsend/config.yaml` does not register `review.yaml`, or the skill key under `skills:` is not `skills/pr-review`. | Add the `agents:` entry from [Before you start](#before-you-start). Use the skill key exactly as shown. |
 | `FAIL: schema validation error:` naming your category, with `at:` ending in `category` | Your persona used a category outside the closed list. | Use only categories from [`schemas/review-result.schema.json`](../schemas/review-result.schema.json) in `categories` and in the persona body. |
 
 ### Variables
