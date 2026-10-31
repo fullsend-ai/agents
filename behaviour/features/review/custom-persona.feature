@@ -28,12 +28,16 @@ Feature: Review personas come from the staged skill files
   The persona file is committed with the "a claude agent" step, which
   writes .fullsend/agents/<name>.md; the overlay maps it into pr-review
   as sub-agents/behaviour-canary.md. It is always: true and its when
-  names behaviour-canary.txt, so it is selected; it reports one true
-  finding about that file (the pull request step writes "behaviour test"
-  to it), so the challenger keeps it. The token check confirms the
-  persona's finding was posted, which means it survived the post-review
-  drop of unstaged dimensions. No suite step reads the agent result or
-  the ledger marker yet, so the finding's
+  names behaviour-canary.txt, so it is selected. It builds a marker from
+  line 1 of that file (the pull request step writes "behaviour test", so
+  the marker is CANARY-behaviour-test) and returns it in its finding.
+  The review run's log streams each sub-agent's reply, so finding the
+  marker there proves the persona was dispatched and ran on the pull
+  request. The marker is computed rather than written in the persona
+  file because another persona reading the canary file must not satisfy
+  the check. The posted review text is written by the model, which may
+  paraphrase the finding, so it is not asserted. No suite step reads the
+  agent result or the ledger marker yet, so the finding's
   "dimension": "behaviour-canary" is asserted by the post-review and
   schema unit tests in this repository rather than here.
 
@@ -94,9 +98,14 @@ Feature: Review personas come from the staged skill files
 
       You are a behaviour-test persona. Do not review anything else.
 
-      Return exactly this JSON array and nothing else:
+      Read line 1 of behaviour-canary.txt. Build a marker: the word
+      CANARY, a hyphen, then that line with every space replaced by a
+      hyphen.
 
-      [{"severity": "low", "category": "doc-style", "file": "behaviour-canary.txt", "line": 1, "description": "BEHAVIOUR-CANARY-PERSONA: behaviour-canary.txt line 1 reads `behaviour test` and has no heading.", "actionable": false}]
+      Return one JSON array with exactly one finding and nothing else:
+      severity "low", category "doc-style", file "behaviour-canary.txt",
+      line 1, actionable false, and a description that starts with the
+      marker, then ": line 1 has no heading."
       """
     And a pull request that changes "behaviour-canary.txt"
     And the pull request is labeled "fullsend-no-fix"
@@ -104,4 +113,4 @@ Feature: Review personas come from the staged skill files
     Then the harness "review" workflow completes successfully
     And the harness "review" workflow logs contain "applying its file overrides to base skill"
     And the run selected the "claude" runtime from "agents.review"
-    And a comment on the pull request contains "BEHAVIOUR-CANARY-PERSONA"
+    And the harness "review" workflow logs contain "CANARY-behaviour-test"
