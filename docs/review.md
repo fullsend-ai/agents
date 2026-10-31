@@ -11,7 +11,7 @@ No additional setup is required beyond the standard fullsend configuration.
 ## How it helps
 
 - Every PR gets a thorough review within minutes, regardless of team availability.
-- Reviews cover security, correctness, intent & coherence, style, docs currency, and user experience by default, with cross-repo contract checks when applicable. Any persona, UXD included, can be disabled or added with a skill file override (see [Review personas](#review-personas)).
+- Reviews cover security, correctness, intent & coherence, style, docs currency, and user experience by default, with cross-repo contract checks when applicable. Any persona, UXD included, can be disabled or added with a skill file override (see [Add, replace or disable a review persona](#add-replace-or-disable-a-review-persona)).
 
 ## Triggers
 
@@ -113,38 +113,23 @@ The older `customized/skills/issue-labels/SKILL.md` overlay in the org
 See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizing-with-agents-md) and
 [Customizing with Skills](https://fullsend.sh/docs/guides/user/customizing-with-skills).
 
-### Review personas
+### Add, replace or disable a review persona
 
-The `pr-review` skill chooses its review dimensions from the persona files
-staged in `skills/pr-review/sub-agents/`. Each persona's frontmatter carries:
+The review agent runs one sub-agent per review area, called a persona. You can turn a persona off, swap in your own version, or add a new one, without copying the review skill.
 
-- `role` — `dimension`, `preprocessor` (`security-triage`), or `synthesis`
-  (`risk-assessment`, `challenger`). Only `dimension` personas are selected by
-  the diff.
-- `when` — the diff signals that select the persona.
-- `always: true` — dispatched on every review (`correctness`,
-  `style-conventions`).
-- `categories` — the finding categories the persona may emit. They must come
-  from the closed `category` enum in `schemas/review-result.schema.json`.
-- `failure_severity` — the severity recorded when the persona fails to return
-  findings.
+#### Before you start
 
-The roster is fixed per run by what the runner staged from the trusted base
-configuration; the PR under review cannot change it. The skill reads it from
-the manifest at `FULLSEND_PERSONAS_FILE` when present, else from the persona
-frontmatter. Every finding carries the `dimension` (persona name) that produced
-it. When the manifest is present, post-review drops a new finding whose
-`dimension` is not a staged persona, unless it answers an open prior finding
-or is an orchestrator finding (`protected-path`, `sub-agent-failure`,
-`scope-authorization-implicit`, `provenance-warning`), and drops nothing when
-the manifest's `personas` list is empty;
-prior findings from a persona that is no longer staged stay in the ledger.
-`correctness` must stay staged: without it the review fails with
-`missing-context`.
+You need a fullsend version that stages skill file overrides.
 
-To disable a persona, or add your own, use a skill file override in a harness
-`base:` overlay (requires a fullsend version that stages skill file
-overrides). For example, to turn off the user-experience persona:
+You make every change in one file: a harness overlay at `.fullsend/review.yaml`. The overlay starts from the stock review harness with `base:` and then lists your changes under `skills:`. Each example below is a complete overlay you can copy.
+
+To get the `<SHA>` and `<sha256sum>` values, follow [Custom sandbox image — How to configure](code.md#how-to-configure) and use `harness/review.yaml` in place of `harness/code.yaml`. See also [AGENTS.md §7](../AGENTS.md#7-skill-resolution).
+
+Each line under `skills/pr-review:` maps a persona path in the skill to a file in your repository. The path on the left is relative to the skill. The path on the right is relative to `.fullsend/`.
+
+#### Disable a persona
+
+Map the persona's path to `null`. This example turns off the user-experience persona:
 
 ```yaml
 # .fullsend/review.yaml
@@ -154,11 +139,116 @@ skills:
       sub-agents/user-experience.md: null
 ```
 
-A custom persona is added the same way, mapping a new
-`sub-agents/<name>.md` path to your persona file. Give it `role: dimension`, a
-`when`, and `categories` from the closed enum.
+If you set `REVIEW_UX_ENABLED: "false"` before, delete it and use this override instead. The variable is no longer read. To turn off the UX reviewer, remove `sub-agents/user-experience.md` with a skills override, as shown above.
 
-Disabling a persona mid-PR does not clear its open high findings; re-enable it for one review round to let it verify the fix, or push the fix before disabling.
+#### Add a persona
+
+Map a new path under `sub-agents/` to your persona file:
+
+```yaml
+# .fullsend/review.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/review.yaml#sha256=<sha256sum>
+skills:
+  - skills/pr-review:
+      sub-agents/rbac-review.md: personas/rbac-review.md
+```
+
+Then create the persona file at `.fullsend/personas/rbac-review.md`:
+
+```markdown
+---
+name: rbac-review
+description: Checks that role and permission changes grant no more access than the PR needs.
+role: dimension
+when: Changes touch roles, permissions, policies, or access-control config.
+categories: [rbac-violation, privilege-escalation]
+failure_severity: medium
+---
+
+Review the diff for role, permission, and policy changes.
+Report each grant that is wider than the change requires.
+```
+
+#### Replace a persona
+
+Map an existing persona path to your own file. This example swaps in your own security persona:
+
+```yaml
+# .fullsend/review.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/review.yaml#sha256=<sha256sum>
+skills:
+  - skills/pr-review:
+      sub-agents/security.md: personas/security.md
+```
+
+Keep `name: security` in your file, so the name still matches `sub-agents/security.md`.
+
+#### Rules
+
+- `name` must equal the persona's file name under `sub-agents/`, without `.md`. The agent skips a file whose name does not match.
+- `role: dimension` makes the persona selectable. A persona without it never runs as a review area.
+- `when` is what the agent matches against the diff. Write the kinds of change that should trigger the persona.
+- `always: true` runs the persona on every review, whatever the diff. Use it instead of `when` for checks you always want.
+- `categories` must come from the closed `category` list in [`schemas/review-result.schema.json`](../schemas/review-result.schema.json). The result schema rejects any other value, and the review fails validation.
+- `failure_severity` sets the severity of the `sub-agent-failure` finding the agent records when the persona fails to return findings. It decides how much a failed persona run counts in the verdict.
+- Keep `correctness` staged. Without it, the review fails with reason `missing-context`, because correctness is the one area every review needs.
+- Findings from a persona that was not staged are removed after the run, except high and critical findings, which are always kept. This stops a stray persona from adding noise, but never hides a serious problem.
+- Disabling a persona mid-PR does not clear its open high findings; re-enable it for one review round to let it verify the fix, or push the fix before disabling.
+
+The runner fixes the persona list for each run from your trusted base configuration. The PR under review cannot change it.
+
+#### What you will see
+
+Output below will be replaced with a real run before merge.
+
+The runner writes a persona manifest and puts its path in `FULLSEND_PERSONAS_FILE`. Your persona appears in the `personas` list:
+
+```json
+{
+  "version": 1,
+  "personas": [
+    {"name": "rbac-review", "skill": "pr-review", "path": "sub-agents/rbac-review.md",
+     "origin": "<set by the runner>", "sha256": "<sha256 of your file>",
+     "description": "Checks that role and permission changes grant no more access than the PR needs.",
+     "role": "dimension",
+     "when": "Changes touch roles, permissions, policies, or access-control config.",
+     "categories": ["rbac-violation", "privilege-escalation"], "failure_severity": "medium"}
+  ],
+  "removed": [{"skill": "pr-review", "path": "sub-agents/user-experience.md"}]
+}
+```
+
+Each finding in the review result names the persona that produced it in `dimension`:
+
+```json
+{
+  "severity": "medium",
+  "category": "rbac-violation",
+  "file": "deploy/role.yaml",
+  "line": 12,
+  "description": "The new role grants write access to all secrets in the namespace.",
+  "remediation": "Limit the rule to the one secret the job reads.",
+  "actionable": true,
+  "dimension": "rbac-review"
+}
+```
+
+When post-review removes findings from a persona that was not staged, the job log shows one warning line. The log uses the word dimension for a persona:
+
+```text
+::warning::Dropped 2 finding(s) from dimensions the runner did not stage: user-experience (2)
+```
+
+#### If it goes wrong
+
+| You see | Cause | Fix |
+|---|---|---|
+| `::warning::Persona manifest is not a valid version 1 manifest; no findings dropped by dimension` | The manifest the runner wrote lists no personas, is not valid JSON, or is not version 1. | If it lists no personas, nothing is wrong: the agent reads the skill's own persona files instead. Otherwise, check your fullsend version. Until it is fixed, no findings are removed. |
+| `::warning::Dropped <n> finding(s) from dimensions the runner did not stage: <persona> (<n>)` | The review produced findings for a persona you did not stage. | Nothing, if you disabled that persona on purpose. Otherwise, check that the persona's override line is in `.fullsend/review.yaml`. |
+| `::warning::REVIEW_UX_ENABLED is no longer read; to turn off the UX reviewer, remove sub-agents/user-experience.md with a skills override (see docs/review.md)` | Your harness still sets `REVIEW_UX_ENABLED`. | Delete the variable. To turn off the UX reviewer, use the override in [Disable a persona](#disable-a-persona). |
+| `::error::Review result reported action=failure (reason: missing-context)` | The `correctness` persona is not staged. | Remove the override that disables or removes `sub-agents/correctness.md`. |
+| Your custom persona never runs, and no finding carries its `dimension`. | `name` does not match the file name, `role: dimension` is missing, or `when` does not match the diff. | Fix `name` and `role`. Make `when` describe the change in the PR, or set `always: true`. |
+| `FAIL: schema validation error:` naming your category, with `at:` ending in `category` | Your persona used a category outside the closed list. | Use only categories from [`schemas/review-result.schema.json`](../schemas/review-result.schema.json) in `categories` and in the persona body. |
 
 ### Variables
 
@@ -167,7 +257,7 @@ Disabling a persona mid-PR does not clear its open high findings; re-enable it f
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
 | `FULLSEND_APP_SET` | GitHub App identity prefix used by the host pre-script to recognize the configured `<prefix>-review[bot]` author when verifying finding-id stamps in resolved threads. The workflow maps the repository variable explicitly; when unset, the organization-specific and shared review-bot identities remain recognized. This identifies the trusted bot record but does not replace resolver-role verification. | _(unset)_ | A configured GitHub App set prefix |
 | `REVIEW_FINDING_SEVERITY_THRESHOLD` | Minimum severity for findings to include in the review. Findings below this level are filtered out at two independent stages (agent output and post-review processing) as defense-in-depth. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`). | `low` | `info`, `low`, `medium`, `high`, `critical` |
-| `FULLSEND_PERSONAS_FILE` | Path to the persona manifest the fullsend runner writes after staging skills, in the sandbox and on the host. Set by the runner, not configured by users. When unset or missing (an older runner), the skill reads the roster from persona frontmatter and post-review drops nothing. See [Review personas](#review-personas). | _(set by runner)_ | A file path |
+| `FULLSEND_PERSONAS_FILE` | Path to the persona manifest the fullsend runner writes after staging skills, in the sandbox and on the host. Set by the runner, not configured by users. The skill uses the entries whose `skill` is its own directory name. When the manifest is unset, missing (an older runner), or has no such entries, the skill reads the roster from persona frontmatter. When it is unset, missing, or lists no personas, post-review drops nothing. See [Add, replace or disable a review persona](#add-replace-or-disable-a-review-persona). | _(set by runner)_ | A file path |
 | `REVIEW_SKIP_AUTHORS` | Comma-separated list of forge usernames to skip review for. When a PR/MR is opened by a user in this list, the review dispatch exits early without running the agent. Set in `env.runner` in your harness YAML (consumed by the pre-script on the runner). | _(empty — all PRs/MRs are reviewed)_ | Comma-separated logins, e.g. `app/renovate,app/dependabot` |
 | `REVIEW_PROTECTED_PATHS` | Comma-separated list of path prefixes the review agent treats as protected. PRs that modify files under these paths cannot be approved by the agent — only a human can grant approval. Default is set in `harness/review.yaml` (`env.runner` and `env.sandbox`); an unset value is a misconfiguration (fail-closed). Set to an empty string to deliberately disable protected-path enforcement entirely. When set to a value that parses to no valid paths (e.g. stray or consecutive commas), the script aborts (fail-closed) as a likely misconfiguration. | See [`harness/review.yaml`](https://github.com/fullsend-ai/agents/blob/main/harness/review.yaml) | Comma-separated path prefixes (e.g. `.github/,deploy/,manifests/`) |
 | `REVIEW_RISK_ASSESSMENT_ENABLED` | Enables the risk assessment (GitHub only). When `true`, the orchestrator dispatches a risk-assessment sub-agent alongside the review dimensions. The sub-agent computes a composite 1–5 risk score from metadata signals, git history, and linked issue context. The post-script applies a `risk/*` label, posts a sticky risk comment, and gates the review verdict when the score is at or above `REVIEW_RISK_VERDICT_THRESHOLD`. Set in `forge.github.env` in the harness — not in the top-level `env:` block, since the risk assessment scripts depend on the GitHub API and produce fabricated scores on other forges. | `true` (GitHub) | `"true"`, `"false"` |
@@ -213,7 +303,7 @@ fails closed when `CI_SERVER_HOST` is not set.
 The review agent follows the same pre-script / sandbox / post-script pipeline as the other agents.
 
 1. **Pre-script** validates inputs and fetches PR metadata. On a re-review, it also fetches current review-thread state, applies verified human dismissals to the prior-finding ledger, and discards the raw thread content before sandbox creation.
-2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, user experience, and optionally cross-repo contracts — whichever personas are staged; see [Review personas](#review-personas)). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
+2. **Sandbox** — the agent runs the `pr-review` orchestrator skill. The orchestrator runs a security-triage pre-pass for large PRs, then dispatches the specialized dimension sub-agents in parallel (plus the risk-assessment sub-agent when enabled), each covering a distinct review dimension (correctness, security, intent & coherence, style & conventions, docs currency, user experience, and optionally cross-repo contracts — whichever personas are staged; see [Add, replace or disable a review persona](#add-replace-or-disable-a-review-persona)). Sub-agents run concurrently and return structured findings. The orchestrator collects, deduplicates, and synthesizes findings across dimensions, runs PR-level checks (scope authorization, protected paths), and produces a structured JSON review result. The agent cannot push files, edit code, or push — it is strictly read-only.
 3. **Validation loop** — the output is checked against a schema. The review harness runs a single iteration (see [Time budget](#time-budget)), so a failed validation is not retried and the review is lost. Contract change: `finding.category` in `schemas/review-result.schema.json` is a closed enum (the dimension categories in `pr-review` `references/re-review.md` plus `protected-path`, `provenance-warning`, `scope-authorization-implicit`, `sub-agent-failure`), no longer any non-empty string. Anything that produces review results must emit only these categories. The `pr-review` orchestrator remaps stray dimensional categories in step 6b to limit this risk.
 4. **Post-script** posts the review on the PR. On GitHub, it also resolves still-open review threads whose only comments are outdated inline comments authored by the review agent, so stale comments do not remain in the PR's unresolved-review state.
 

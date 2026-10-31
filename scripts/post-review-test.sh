@@ -5008,7 +5008,8 @@ run_risk_verdict_tier2_body_test
 # Persona manifest tests. The runner writes FULLSEND_PERSONAS_FILE listing the
 # pr-review personas it staged. post-review drops a new finding only when the
 # manifest is a valid version 1 manifest, the finding names a dimension, that
-# dimension is not staged, and the finding carries no open prior id.
+# dimension is not staged, its severity is below high, it carries no open prior
+# id, and its category is not an exempt orchestrator category.
 # ---------------------------------------------------------------------------
 PERSONA_MANIFEST='{"version":1,"personas":[{"name":"correctness","skill":"pr-review","path":"sub-agents/correctness.md","origin":"upstream","sha256":"00","role":"dimension","always":true},{"name":"style-conventions","skill":"pr-review","path":"sub-agents/style-conventions.md","origin":"upstream","sha256":"00","role":"dimension","always":true}],"removed":[{"skill":"pr-review","path":"sub-agents/user-experience.md"}]}'
 PERSONA_HEAD='"pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"'
@@ -5104,7 +5105,7 @@ run_persona_drop_test "manifest-drops-unstaged-dimension-and-downgrades" "${PERS
   "" "comment" \
   '([.findings[] | select(.dimension == "user-experience")] | length == 0) and ([.findings[] | select(.dimension == "correctness")] | length == 1)' \
   '[.findings[] | select(.dimension == "user-experience")] | length == 0'
-if grep -qF "Dropped 1 finding(s) from dimensions not staged by the runner" \
+if grep -qxF "::warning::Dropped 1 finding(s) from dimensions the runner did not stage: user-experience (1)" \
     "${TMPDIR}/stdout-persona-manifest-drops-unstaged-dimension-and-downgrades.log"; then
   echo "PASS: manifest-drop-logs-count"
 else
@@ -5113,7 +5114,7 @@ else
 fi
 
 run_persona_drop_test "manifest-drop-unstaged-only-reject-becomes-comment" "${PERSONA_MANIFEST}" \
-  "{\"action\":\"reject\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\"}]}" \
+  "{\"action\":\"reject\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\"}]}" \
   "" "comment" \
   '(.findings // []) | length == 0'
 
@@ -5146,6 +5147,41 @@ run_persona_drop_test "empty-personas-manifest-drops-nothing" '{"version":1,"per
   "" "request-changes" \
   '[.findings[] | select(.dimension == "user-experience")] | length == 1'
 
+# High and critical findings are always kept, whatever their dimension, and
+# the action is left as the agent set it.
+run_persona_drop_test "manifest-keeps-high-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.severity == "high" and .dimension == "user-experience")] | length == 1'
+if grep -qF "from dimensions the runner did not stage" \
+    "${TMPDIR}/stdout-persona-manifest-keeps-high-unstaged-dimension.log"; then
+  echo "FAIL: manifest-keeps-high-no-drop-warning — drop warning printed for a kept high finding"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: manifest-keeps-high-no-drop-warning"
+fi
+
+run_persona_drop_test "manifest-keeps-critical-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"reject\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"critical\",\"category\":\"auth-bypass\",\"file\":\"src/auth.ts\",\"line\":5,\"description\":\"Auth bypass\",\"dimension\":\"rbac-review\"}]}" \
+  "" "reject" \
+  '[.findings[] | select(.severity == "critical" and .dimension == "rbac-review")] | length == 1'
+
+# Medium findings from unstaged dimensions are dropped; one warning names each
+# dropped dimension with its count.
+run_persona_drop_test "manifest-drops-medium-unstaged-dimensions-warns-per-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":20,\"description\":\"Second UX issue\",\"dimension\":\"user-experience\"},{\"severity\":\"medium\",\"category\":\"privilege-escalation\",\"file\":\"src/rbac.ts\",\"line\":3,\"description\":\"Role widened\",\"dimension\":\"rbac-review\"},${PERSONA_LOGIC_FINDING}]}" \
+  "" "comment" \
+  '([.findings[] | select(.dimension == "user-experience" or .dimension == "rbac-review")] | length == 0) and ([.findings[] | select(.dimension == "correctness")] | length == 1)'
+PERSONA_DROP_LOG="${TMPDIR}/stdout-persona-manifest-drops-medium-unstaged-dimensions-warns-per-dimension.log"
+if [[ "$(grep -c "from dimensions the runner did not stage" "${PERSONA_DROP_LOG}")" -eq 1 ]] \
+    && grep -qxF "::warning::Dropped 3 finding(s) from dimensions the runner did not stage: rbac-review (1), user-experience (2)" "${PERSONA_DROP_LOG}"; then
+  echo "PASS: manifest-drop-warning-names-dimensions"
+else
+  echo "FAIL: manifest-drop-warning-names-dimensions — expected one warning naming each dropped dimension"
+  cat "${PERSONA_DROP_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # Orchestrator findings are never dropped, whatever their dimension: the drop
 # rewrites the file the protected-path gate reads.
 run_persona_drop_test "manifest-keeps-protected-path-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
@@ -5157,6 +5193,41 @@ run_persona_drop_test "manifest-keeps-sub-agent-failure-with-unstaged-dimension"
   "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"sub-agent-failure\",\"file\":\"N/A\",\"description\":\"dimension failed\",\"dimension\":\"user-experience\"}]}" \
   "" "request-changes" \
   '[.findings[] | select(.category == "sub-agent-failure" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-scope-authorization-implicit-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"comment\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"scope-authorization-implicit\",\"file\":\"N/A\",\"description\":\"Scope implied\",\"dimension\":\"user-experience\"}]}" \
+  "" "comment" \
+  '[.findings[] | select(.category == "scope-authorization-implicit" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-provenance-warning-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"comment\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"provenance-warning\",\"file\":\"N/A\",\"description\":\"Provenance unclear\",\"dimension\":\"user-experience\"}]}" \
+  "" "comment" \
+  '[.findings[] | select(.category == "provenance-warning" and .dimension == "user-experience")] | length == 1'
+
+# REVIEW_UX_ENABLED is no longer read. Setting it prints one warning and
+# changes nothing else: the posted action and findings match a run without it.
+REVIEW_UX_WARNING="::warning::REVIEW_UX_ENABLED is no longer read; to turn off the UX reviewer, remove sub-agents/user-experience.md with a skills override (see docs/review.md)"
+REVIEW_UX_INPUT="{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}"
+run_persona_drop_test "review-ux-enabled-unset" "${PERSONA_MANIFEST}" \
+  "${REVIEW_UX_INPUT}" "" "comment" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+jq -S '{action, findings: [.findings[]? | del(.id)]}' "${TMPDIR}/last-result.json" > "${TMPDIR}/review-ux-unset.json" 2>/dev/null || true
+export REVIEW_UX_ENABLED=false
+run_persona_drop_test "review-ux-enabled-false" "${PERSONA_MANIFEST}" \
+  "${REVIEW_UX_INPUT}" "" "comment" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+unset REVIEW_UX_ENABLED
+jq -S '{action, findings: [.findings[]? | del(.id)]}' "${TMPDIR}/last-result.json" > "${TMPDIR}/review-ux-false.json" 2>/dev/null || true
+if [[ "$(grep -cxF "${REVIEW_UX_WARNING}" "${TMPDIR}/stdout-persona-review-ux-enabled-false.log")" -eq 1 ]] \
+    && ! grep -qF "REVIEW_UX_ENABLED" "${TMPDIR}/stdout-persona-review-ux-enabled-unset.log" \
+    && [[ -s "${TMPDIR}/review-ux-unset.json" ]] \
+    && cmp -s "${TMPDIR}/review-ux-unset.json" "${TMPDIR}/review-ux-false.json"; then
+  echo "PASS: review-ux-enabled-warns-only"
+else
+  echo "FAIL: review-ux-enabled-warns-only — expected exactly one no-longer-read warning and an unchanged result"
+  cat "${TMPDIR}/stdout-persona-review-ux-enabled-false.log"
+  FAILURES=$((FAILURES + 1))
+fi
 
 # Re-review promotion after the drop. Dropping the only blocking finding
 # downgrades request-changes to comment, and the re-review gate may then

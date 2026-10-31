@@ -30,19 +30,19 @@ forge-specific review skill. The orchestrator is the sole producer of
 
 ## Sub-agent roster
 
-Sub-agent discovery: the roster is the persona files staged in
-`sub-agents/` relative to this file. Read the `pr-review` entries of the
-JSON manifest at `FULLSEND_PERSONAS_FILE` (`version` 1; `name`, `path`
-relative to this skill, frontmatter fields) when that file exists, else
-the frontmatter of every `sub-agents/*.md`, skipping with a note any file
-whose `name` is missing or differs from its file stem. Fields:
+Sub-agent discovery: the roster is the personas staged in this skill's
+`sub-agents/`. Read the manifest at `FULLSEND_PERSONAS_FILE`
+(`version` 1; `name`, `path` relative to this skill, frontmatter fields),
+keeping entries whose `skill` is this skill's directory name;
+if it is missing or none match, the frontmatter of every
+`sub-agents/*.md`, skipping with a note any file whose `name` is not
+its file stem. Fields:
 
 - `role` — `dimension` (steps 3b–3c), `preprocessor` or `synthesis`
-  (non-standard types below; if one is not staged, apply its step's
-  failure fallback). An entry with no `role` is never selected as a
-  dimension.
-- `when` — diff signals that make a dimension relevant. Without `when`,
-  a dimension is selected only if `always: true`.
+  (below; each runs at its own step, and if not staged, that step's
+  failure fallback applies). An entry with no `role` is never selected.
+- `when` — diff signals that select a `role: dimension` persona (other
+  roles ignore it). Without it, a dimension needs `always: true`.
 - `always: true` — dispatched on every review.
 - `categories` — what it may emit (steps 3a, 6b); only values in the
   closed enum of `schemas/review-result.schema.json` count. Without it,

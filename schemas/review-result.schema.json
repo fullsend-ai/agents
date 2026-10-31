@@ -147,7 +147,7 @@
         },
         "dimension": {
           "type": "string",
-          "description": "Name of the pr-review persona that produced the finding. Orchestrator-only findings set the persona they concern or omit it. When the runner's persona manifest exists, the post-script drops a new finding whose dimension is not a staged persona."
+          "description": "Name of the pr-review persona that produced the finding. Orchestrator-only findings omit it."
         }
       },
       "additionalProperties": false

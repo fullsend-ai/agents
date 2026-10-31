@@ -892,6 +892,12 @@ echo "::add-mask::${REVIEW_TOKEN}"
 CLEANUP_FILES=()
 trap 'rm -f "${CLEANUP_FILES[@]}"' EXIT
 
+# REVIEW_UX_ENABLED was removed; tell repositories that still set it how to
+# turn off the UX reviewer now. Warning only, no other effect.
+if [[ -n "${REVIEW_UX_ENABLED:-}" ]]; then
+  echo "::warning::REVIEW_UX_ENABLED is no longer read; to turn off the UX reviewer, remove sub-agents/user-experience.md with a skills override (see docs/review.md)"
+fi
+
 # Refuse to post reviews on merged or closed PRs.
 # Also fetch draft status — draft PRs must not receive ready-for-merge.
 PR_INFO=$(forge_get_pr_info)
@@ -1177,17 +1183,22 @@ fi
 # ---------------------------------------------------------------------------
 # Drop findings from dimensions the runner did not stage. The runner writes a
 # persona manifest (FULLSEND_PERSONAS_FILE) listing the pr-review personas it
-# staged from the trusted base config. A new finding is dropped only when the
-# manifest exists and parses as version 1, the finding names a dimension, that
-# dimension is not a staged persona, and the finding does not carry an open
-# prior id. Without a manifest (an older runner) nothing is dropped, and a
-# finding with no dimension is always kept. Runs after id assignment so a row
-# answering an open prior id keeps it; prior dispositions are never touched.
-# Orchestrator findings (protected-path, sub-agent-failure,
-# scope-authorization-implicit, provenance-warning) are never dropped, whatever
-# their dimension: the drop rewrites the same file UNFILTERED_RESULT_FILE points
-# at, so dropping a protected-path finding would bypass the protected-path gate.
-# A manifest with an empty personas array is treated as invalid.
+# staged from the trusted base config. A new finding is dropped only when all
+# of these hold:
+#   - the manifest exists, parses as version 1, and lists at least one persona;
+#   - the finding names a dimension, and that dimension is not a staged persona;
+#   - its severity is below high (info, low or medium);
+#   - it does not carry an open prior id;
+#   - its category is not in drop_exempt_category.
+# High and critical findings are always kept, so disabling a persona cannot
+# hide a serious finding. Without a manifest (an older runner) nothing is
+# dropped, and a finding with no dimension is always kept. Runs after id
+# assignment so a row answering an open prior id keeps it; prior dispositions
+# are never touched. Orchestrator findings (protected-path, sub-agent-failure,
+# scope-authorization-implicit, provenance-warning) are exempt whatever their
+# dimension: the drop rewrites the same file UNFILTERED_RESULT_FILE points at,
+# so dropping a protected-path finding would bypass the protected-path gate.
+# One ::warning:: names each dropped dimension with its count.
 # ---------------------------------------------------------------------------
 REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION=""
 STAGED_PERSONAS=""
@@ -1203,30 +1214,23 @@ if [[ -n "${FULLSEND_PERSONAS_FILE:-}" && -f "${FULLSEND_PERSONAS_FILE}" ]]; the
   fi
 fi
 if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
-  DIMENSION_DROP_COUNT="$(jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
+  DIMENSION_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
+  DIMENSION_DROP_RESULT="$(mktemp)"
+  CLEANUP_FILES+=("${DIMENSION_DROP_RESULT}")
+  jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
     def drop_exempt_category:
       IN("protected-path", "sub-agent-failure", "scope-authorization-implicit", "provenance-warning");
-    [ .findings[]?
-      | select(.category | drop_exempt_category | not)
-      | select((.dimension | type) == "string")
-      | select(.dimension as $d | $staged | index($d) == null)
-      | select(.id as $id | $prior.open_ids | index($id) == null) ]
-    | length
-  ' "${RESULT_FILE}")"
-  if [[ "${DIMENSION_DROP_COUNT}" -gt 0 ]]; then
-    DIMENSION_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
-    DIMENSION_DROP_RESULT="$(mktemp)"
-    CLEANUP_FILES+=("${DIMENSION_DROP_RESULT}")
-    jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
-      def drop_exempt_category:
-        IN("protected-path", "sub-agent-failure", "scope-authorization-implicit", "provenance-warning");
-      .findings |= map(select(
-        (.category | drop_exempt_category)
-        or (.dimension | type) != "string"
-        or (.dimension as $d | $staged | index($d) != null)
-        or (.id as $id | $prior.open_ids | index($id) != null)
-      ))
-      | if .action == "request-changes" or .action == "reject" then
+    def keep:
+      (.category | drop_exempt_category)
+      or (.dimension | type) != "string"
+      or (.dimension as $d | $staged | index($d) != null)
+      or (.severity | IN("high", "critical"))
+      or (.id as $id | $prior.open_ids | index($id) != null);
+    [.findings[] | select(keep | not) | .dimension] as $dropped
+    | .findings |= map(select(keep))
+    | if ($dropped | length) == 0 then .
+      else
+        if .action == "request-changes" or .action == "reject" then
           if ([.findings[]
                | select((.severity | IN("medium", "high", "critical"))
                         or (.actionable // false))] | length) == 0 then
@@ -1235,14 +1239,21 @@ if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESUL
           end
         else .
         end
-      | if (.findings | length) == 0 then del(.findings) else . end
-    ' "${RESULT_FILE}" > "${DIMENSION_DROP_RESULT}"
-    mv "${DIMENSION_DROP_RESULT}" "${RESULT_FILE}"
+        | if (.findings | length) == 0 then del(.findings) else . end
+      end
+    | {result: ., dropped: $dropped}
+  ' "${RESULT_FILE}" > "${DIMENSION_DROP_RESULT}"
+  DIMENSION_DROP_COUNT="$(jq '.dropped | length' "${DIMENSION_DROP_RESULT}")"
+  if [[ "${DIMENSION_DROP_COUNT}" -gt 0 ]]; then
+    DIMENSION_DROP_SUMMARY="$(jq -r '
+      .dropped | group_by(.) | map("\(.[0]) (\(length))") | join(", ")
+    ' "${DIMENSION_DROP_RESULT}")"
+    jq '.result' "${DIMENSION_DROP_RESULT}" > "${RESULT_FILE}"
     if [[ "${DIMENSION_ORIGINAL_ACTION}" = "request-changes" || "${DIMENSION_ORIGINAL_ACTION}" = "reject" ]] \
         && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
       REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION="${DIMENSION_ORIGINAL_ACTION}"
     fi
-    echo "Dropped ${DIMENSION_DROP_COUNT} finding(s) from dimensions not staged by the runner"
+    echo "::warning::Dropped ${DIMENSION_DROP_COUNT} finding(s) from dimensions the runner did not stage: $(_gha_sanitize "${DIMENSION_DROP_SUMMARY}")"
   fi
 fi
 

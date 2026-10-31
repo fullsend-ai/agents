@@ -39,9 +39,10 @@ and pi, through `spawn_agent` on Codex as the runtime note directs.
 - `FULLSEND_FORGE` — the forge type (`github` or `gitlab`). Set by
   the harness forge section.
 - `FULLSEND_PERSONAS_FILE` — path to the runner's persona manifest, which
-  lists the `pr-review` personas staged for this run. When it is unset or
-  missing, the `pr-review` skill reads the roster from its own
-  `sub-agents/*.md` frontmatter.
+  lists the personas staged for this run with the skill each belongs to.
+  The `pr-review` skill uses the entries whose `skill` is its own directory
+  name. When the manifest is unset, missing, or has no such entries, the
+  skill reads the roster from its own `sub-agents/*.md` frontmatter.
 - `PRIOR_REVIEW_SHA` — the commit SHA that the prior review
   evaluated. Empty on first review.
 - `PRIOR_REVIEW_PROVENANCE` — result of provenance validation on
@@ -341,7 +342,7 @@ fields such as `outcome`, `summary`, `prior_review_sha`, or
 | `remediation` | string  | no       | Suggested fix                                 |
 | `actionable`  | boolean | no       | When true with a non-empty `remediation`, routes the verdict to `request-changes` so the fix agent can address the finding automatically (follow-up issue creation is temporarily disabled; see #1137) |
 | `id`          | string  | no       | Stable id copied from the prior projection (`f_` plus letters and digits). Omit on a new finding. |
-| `dimension`   | string  | no       | Name of the `pr-review` persona that produced the finding. Orchestrator-only findings set the persona they concern or omit it. |
+| `dimension`   | string  | no       | Name of the `pr-review` persona that produced the finding. Orchestrator-only findings omit it. |
 
 Schema validation failures trigger a harness retry iteration. The jq
 examples below show the exact JSON shape for each action.
