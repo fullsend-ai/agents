@@ -37,9 +37,11 @@ Feature: Review personas come from the staged skill files
   "dimension": "behaviour-canary" is asserted by the post-review and
   schema unit tests in this repository rather than here.
 
-  A changes-requested review would start fix and closing the pull
-  request would start retro, so fullsend-no-fix and a retro trigger of
-  "false" keep this scenario to the one review run.
+  The review entry's trigger matches only a human's /fs-review, so
+  opening the pull request starts no review. A changes-requested review
+  would start fix and closing the pull request would start retro, so
+  fullsend-no-fix and a retro trigger of "false" keep this scenario to
+  the one review run.
 
   @requires:capability:review-skill-overrides
   Scenario: A persona added by a skill file override is dispatched by a real review
@@ -56,17 +58,17 @@ Feature: Review personas come from the staged skill files
       skills:
         - skills/pr-review:
             sub-agents/behaviour-canary.md: agents/behaviour-canary.md
-      trigger: >
-        event.transition.kind == "comment_added"
-        && has(event.entity.linked_change_proposal)
-        && has(event.transition.comment.command)
-        && event.transition.comment.command == "/fs-review"
-        && event.actor.kind == "human"
       """
     And the repository agents are configured with:
       """
       review:
         runtime: claude
+        trigger: >
+          event.transition.kind == "comment_added"
+          && has(event.entity.linked_change_proposal)
+          && has(event.transition.comment.command)
+          && event.transition.comment.command == "/fs-review"
+          && event.actor.kind == "human"
       retro:
         trigger: "false"
       """
