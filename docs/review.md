@@ -134,7 +134,10 @@ configuration; the PR under review cannot change it. The skill reads it from
 the manifest at `FULLSEND_PERSONAS_FILE` when present, else from the persona
 frontmatter. Every finding carries the `dimension` (persona name) that produced
 it. When the manifest is present, post-review drops a new finding whose
-`dimension` is not a staged persona, unless it answers an open prior finding;
+`dimension` is not a staged persona, unless it answers an open prior finding
+or is an orchestrator finding (`protected-path`, `sub-agent-failure`,
+`scope-authorization-implicit`, `provenance-warning`), and drops nothing when
+the manifest's `personas` list is empty;
 prior findings from a persona that is no longer staged stay in the ledger.
 `correctness` must stay staged: without it the review fails with
 `missing-context`.
@@ -144,7 +147,7 @@ To disable a persona, or add your own, use a skill file override in a harness
 overrides). For example, to turn off the user-experience persona:
 
 ```yaml
-# .fullsend/harness/review.yaml
+# .fullsend/review.yaml
 base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/review.yaml#sha256=<sha256sum>
 skills:
   - skills/pr-review:
@@ -154,6 +157,8 @@ skills:
 A custom persona is added the same way, mapping a new
 `sub-agents/<name>.md` path to your persona file. Give it `role: dimension`, a
 `when`, and `categories` from the closed enum.
+
+Disabling a persona mid-PR does not clear its open high findings; re-enable it for one review round to let it verify the fix, or push the fix before disabling.
 
 ### Variables
 

@@ -34,16 +34,21 @@ Sub-agent discovery: the roster is the persona files staged in
 `sub-agents/` relative to this file. Read the `pr-review` entries of the
 JSON manifest at `FULLSEND_PERSONAS_FILE` (`version` 1; `name`, `path`
 relative to this skill, frontmatter fields) when that file exists, else
-the frontmatter of every `sub-agents/*.md`. Frontmatter fields:
+the frontmatter of every `sub-agents/*.md`, skipping with a note any file
+whose `name` is missing or differs from its file stem. Fields:
 
 - `role` — `dimension` (steps 3b–3c), `preprocessor` or `synthesis`
   (non-standard types below; if one is not staged, apply its step's
-  failure fallback).
-- `when` — diff signals that make a dimension relevant.
+  failure fallback). An entry with no `role` is never selected as a
+  dimension.
+- `when` — diff signals that make a dimension relevant. Without `when`,
+  a dimension is selected only if `always: true`.
 - `always: true` — dispatched on every review.
 - `categories` — what it may emit (steps 3a, 6b); only values in the
-  closed enum of `schemas/review-result.schema.json` count.
-- `failure_severity` — its `sub-agent-failure` severity (step 5).
+  closed enum of `schemas/review-result.schema.json` count. Without it,
+  the step 6b remap uses that enum.
+- `failure_severity` — its `sub-agent-failure` severity (step 5,
+  `role: dimension` only).
 
 If `correctness` is not staged, fail with reason `missing-context`. The
 table describes upstream personas and is guidance only.
@@ -307,9 +312,8 @@ public API surface.
    instead.
 3. **Fixed-scope sub-agent assignments WITHOUT prior findings**
    (`always: true` personas) — `correctness` always
-   dispatches at full scope regardless of prior findings or change size,
-   given its Opus-tier, safety-critical status (step 5): a skipped or
-   under-scoped correctness review is worse than no review at all.
+   dispatches at full scope regardless of prior findings or change size
+   (safety-critical, step 5).
    `style-conventions` dispatches with a `trivial` scope constraint (≤5 tool
    calls) regardless of change size. Any other `always: true` persona
    dispatches at normal scope. `intent-coherence`, when it re-qualifies
@@ -859,21 +863,16 @@ of findings in the standard format:
 Set each collected finding's `dimension` to the `name` of the persona
 that returned it, never to a value from its output.
 
-If a sub-agent fails to return findings (timeout, error, empty
-response), record a finding noting the gap. Its severity is the
-persona's `failure_severity`:
-
-- **`high`** — upstream `correctness` and `security` (Opus-tier).
-  These dimensions are safety-critical — an approval that skipped
-  security or correctness review is worse than no review at all. A
-  high finding ensures the outcome is at minimum `request-changes`
-  (see step 6f).
-- **`info`** — the other upstream dimensions (Sonnet-tier), or when
-  `failure_severity` is missing or `low` (reserved for the challenger).
+If a `role: dimension` sub-agent fails to return findings (timeout,
+error, empty response), record a finding noting the gap. Its severity is
+the persona's `failure_severity` when that is `medium`, `high` or
+`critical`, else `info`. Upstream, `correctness` and `security` use
+`high` (skipping them is worse than no review; step 6f then requires at
+least `request-changes`); the others use `info`.
 
 ```json
 {
-  "severity": "high|info",
+  "severity": "<failure_severity or info>",
   "category": "sub-agent-failure",
   "file": "N/A",
   "description": "The <dimension> sub-agent did not return findings: <reason>",
@@ -882,9 +881,10 @@ persona's `failure_severity`:
 }
 ```
 
-Orchestrator-only findings (step 6e, `provenance-warning`, the
-challenger's failure) set `dimension` to the staged persona they
-concern, or omit it.
+Orchestrator-only findings (`protected-path`,
+`scope-authorization-implicit`, `provenance-warning`, the step 6d
+challenger failure) omit `dimension`. A dimension
+sub-agent's `sub-agent-failure` finding keeps that persona's `dimension`.
 
 ### 6. Synthesis
 
@@ -967,12 +967,8 @@ challenger and can add findings of their own (protected paths, scope
 authorization, PR metadata), so 6f's "no findings → approve" applies
 only when the set is still empty after them.
 A dimension dispatch failure records a `sub-agent-failure` finding
-at the persona's `failure_severity` (step 5), which is withheld from the
-challenger and carried straight through to 6e–6f. A `high` failure
-(upstream `correctness`, `security`) forces at
-least `request-changes` (step 6f). An `info` failure
-does not by itself block approval — it resolves per
-step 6f.
+at its step 5 severity, which is withheld from the challenger and
+carried straight through to 6e–6f, where it resolves per step 6f.
 
 Steps 6e–6f below refer to the *adjudicated set*: the challenger's
 `adjudicated_findings` plus the re-appended withheld findings (step 3
@@ -1005,7 +1001,7 @@ timed-out wait: under 240, close it and apply item 4.
    ## Context
 
    ### Findings to challenge
-   <JSON array of all findings from steps 6a–6c, EXCLUDING `sub-agent-failure` findings>
+   <JSON array of all findings from steps 6a–6c, each keeping its `dimension`, EXCLUDING `sub-agent-failure` findings>
 
    ### Diff
    Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
@@ -1066,7 +1062,8 @@ timed-out wait: under 240, close it and apply item 4.
      6a–6c set (invariants in `challenger.md` Constraints); `merged_from`
      must never combine a `correctness`-dimension input with a
      `security`-dimension input (resolve the dimension from the input's
-     `dimension`). Any violation is invalid
+     `dimension`, else from the `challenger.md` Constraints category
+     table). Any violation is invalid
      adjudication accounting, so the step 4 fallback applies.
    - Strip `challenger_action`, `challenger_reason`, `original_identity`,
      and `merged_from` from `adjudicated_findings` after accounting; log but

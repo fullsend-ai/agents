@@ -2,7 +2,7 @@
 name: review
 description: >-
   Code review orchestrator. Triages the change, dispatches specialized
-  sub-agents in parallel across seven review dimensions, synthesizes
+  sub-agents in parallel across the staged review dimensions, synthesizes
   findings, and produces a structured result.
 model: opus
 skills:
@@ -130,7 +130,7 @@ You **either**:
 **or**
 
 - Otherwise orchestrate code reviews by dispatching specialized
-  sub-agents in parallel across seven review dimensions
+  sub-agents in parallel across the staged review dimensions
 
   The `pr-review` skill (orchestrator) handles triage, dispatch,
   and synthesis.

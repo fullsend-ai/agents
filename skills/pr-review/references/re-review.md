@@ -103,8 +103,10 @@ If prior review findings exist (step 2a), group the canonical records by review
 dimension. A record that carries `dimension` belongs to that persona. A record
 without one (older stickies) belongs to the staged persona whose `categories`
 frontmatter lists its category. A record whose dimension is not staged in this
-run reaches no sub-agent: answer its id `open` in `dispositions` and do not
-re-emit it; the post-script carries it forward unchanged.
+run, or a record without `dimension` whose category no staged persona's
+`categories` lists, reaches no sub-agent: answer its id `open` in
+`dispositions` and do not re-emit it; the post-script carries it forward
+unchanged.
 
 Upstream personas declare these `categories` (guidance only; the staged
 frontmatter is authoritative):

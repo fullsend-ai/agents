@@ -5141,6 +5141,58 @@ run_persona_drop_test "unknown-manifest-version-drops-nothing" '{"version":2,"pe
   "" "request-changes" \
   '[.findings[] | select(.dimension == "user-experience")] | length == 1'
 
+run_persona_drop_test "empty-personas-manifest-drops-nothing" '{"version":1,"personas":[],"removed":[]}' \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 1'
+
+# Orchestrator findings are never dropped, whatever their dimension: the drop
+# rewrites the file the protected-path gate reads.
+run_persona_drop_test "manifest-keeps-protected-path-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"protected-path\",\"file\":\"harness/review.yaml\",\"description\":\"Protected path changed\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "protected-path" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-sub-agent-failure-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"sub-agent-failure\",\"file\":\"N/A\",\"description\":\"dimension failed\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "sub-agent-failure" and .dimension == "user-experience")] | length == 1'
+
+# Re-review promotion after the drop. Dropping the only blocking finding
+# downgrades request-changes to comment, and the re-review gate may then
+# promote to approve, as the removed REVIEW_UX_ENABLED opt-out did. A staged
+# actionable low that remains open from the prior round keeps the review from
+# being promoted (a new low alone never blocks a re-review).
+printf '%s' "${PERSONA_MANIFEST}" > "${TMPDIR}/rereview-personas.json"
+export FULLSEND_PERSONAS_FILE="${TMPDIR}/rereview-personas.json"
+run_rereview_gate_case "rereview-unstaged-dimension-drop-promotes" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_dimfixed"}],"dispositions":[{"id":"f_dimfixed","status":"resolved_by_change"}]}' \
+  "approve" \
+  "No findings at or above the effective blocking threshold remain open" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '[.findings[]? | select(.dimension == "user-experience")] | length == 0'
+
+run_rereview_gate_case "rereview-unstaged-dimension-drop-keeps-actionable-low" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},{\"severity\":\"low\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"remediation\":\"Fix it\",\"actionable\":true,\"dimension\":\"correctness\",\"id\":\"f_dimlow\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"id":"f_dimlow","actionable":true,"dimension":"correctness"}]}' \
+  "request-changes" \
+  "/fs-fix" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '([.findings[]? | select(.dimension == "user-experience")] | length == 0) and ([.findings[]? | select(.id == "f_dimlow")] | length == 1)'
+
+# A prior high from a persona that is no longer staged reaches no sub-agent:
+# the review answers its id open without re-emitting it, and the ledger still
+# withholds approval.
+run_rereview_gate_case "rereview-unstaged-prior-high-open-blocks" \
+  "{\"action\":\"approve\",${PERSONA_HEAD},\"dispositions\":[{\"id\":\"f_uxhigh\",\"status\":\"open\",\"rationale\":\"Persona not staged; not re-verified\",\"evidence\":\"src/App.tsx:10\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxhigh","dimension":"user-experience"}]}' \
+  "request-changes" \
+  "Blocking prior findings" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '[.findings[]? | select(.id == "f_uxhigh")] | length == 1'
+unset FULLSEND_PERSONAS_FILE
+
 # The projection carries dimension on current findings and keeps it on prior
 # findings carried forward, so a persona disabled between rounds keeps its
 # prior ledger. An unsafe dimension is never written into the projection.

@@ -1183,12 +1183,18 @@ fi
 # prior id. Without a manifest (an older runner) nothing is dropped, and a
 # finding with no dimension is always kept. Runs after id assignment so a row
 # answering an open prior id keeps it; prior dispositions are never touched.
+# Orchestrator findings (protected-path, sub-agent-failure,
+# scope-authorization-implicit, provenance-warning) are never dropped, whatever
+# their dimension: the drop rewrites the same file UNFILTERED_RESULT_FILE points
+# at, so dropping a protected-path finding would bypass the protected-path gate.
+# A manifest with an empty personas array is treated as invalid.
 # ---------------------------------------------------------------------------
 REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION=""
 STAGED_PERSONAS=""
 if [[ -n "${FULLSEND_PERSONAS_FILE:-}" && -f "${FULLSEND_PERSONAS_FILE}" ]]; then
   if ! STAGED_PERSONAS="$(jq -ce '
       select(type == "object" and .version == 1 and (.personas | type) == "array"
+             and (.personas | length) > 0
              and all(.personas[]; type == "object" and (.name | type) == "string"))
       | [.personas[].name]
     ' "${FULLSEND_PERSONAS_FILE}" 2>/dev/null)"; then
@@ -1198,7 +1204,10 @@ if [[ -n "${FULLSEND_PERSONAS_FILE:-}" && -f "${FULLSEND_PERSONAS_FILE}" ]]; the
 fi
 if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   DIMENSION_DROP_COUNT="$(jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
-    [ .findings[]
+    def drop_exempt_category:
+      IN("protected-path", "sub-agent-failure", "scope-authorization-implicit", "provenance-warning");
+    [ .findings[]?
+      | select(.category | drop_exempt_category | not)
       | select((.dimension | type) == "string")
       | select(.dimension as $d | $staged | index($d) == null)
       | select(.id as $id | $prior.open_ids | index($id) == null) ]
@@ -1209,8 +1218,11 @@ if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESUL
     DIMENSION_DROP_RESULT="$(mktemp)"
     CLEANUP_FILES+=("${DIMENSION_DROP_RESULT}")
     jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
+      def drop_exempt_category:
+        IN("protected-path", "sub-agent-failure", "scope-authorization-implicit", "provenance-warning");
       .findings |= map(select(
-        (.dimension | type) != "string"
+        (.category | drop_exempt_category)
+        or (.dimension | type) != "string"
         or (.dimension as $d | $staged | index($d) != null)
         or (.id as $id | $prior.open_ids | index($id) != null)
       ))
@@ -1230,8 +1242,8 @@ if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESUL
         && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
       REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION="${DIMENSION_ORIGINAL_ACTION}"
     fi
+    echo "Dropped ${DIMENSION_DROP_COUNT} finding(s) from dimensions not staged by the runner"
   fi
-  echo "Dropped ${DIMENSION_DROP_COUNT} finding(s) from dimensions not staged by the runner"
 fi
 
 # A legacy projection may have valid findings but no prior verdict. Do not
