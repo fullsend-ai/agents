@@ -62,7 +62,7 @@ localizing agent-layer proposals.
 - "Gather all review comments on PR #N and categorize them by source (agent vs human) and type (approval, change request, comment)"
 - "Check the last 10 retro proposals in this repo for recurring patterns"
 - "Read the harness config and agent definition for the code agent and summarize its setup"
-- "Search `<target_repo>` for open and recently-closed issues related to `<topic>` and to `<subsystem>`. For each result, return number, title, state, state_reason (if closed), and the body's problem statement and proposed change."
+- "Search `<target_repo>` for open and closed issues related to `<topic>` and to `<subsystem>`. For each result, return number, title, state, state_reason (if closed), and the body's problem statement and proposed change. For each closed result on the same topic, also return the closing comment verbatim and any merged PR or commit that closed it."
 
 Go deep. Follow threads. If you notice a pattern, investigate whether it occurs on other PRs too.
 
