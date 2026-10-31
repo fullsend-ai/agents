@@ -14,4 +14,3 @@ env:
   sandbox:
     ANTHROPIC_DEFAULT_OPUS_MODEL: claude-sonnet-5-5
     ANTHROPIC_DEFAULT_SONNET_MODEL: claude-sonnet-5-5
-    REVIEW_UX_ENABLED: "true"

@@ -13,8 +13,11 @@ description: >-
 # PR Review (Orchestrator)
 
 (Departs from ADR-0018's LLM-orchestration prohibition; re-introduces
-LLM dispatch with mitigations — a fixed roster, structured context
-packages, deterministic post-processing. A superseding ADR is needed.)
+LLM dispatch with mitigations — a roster fixed per run by the personas
+the runner staged from the trusted base config (the PR cannot change it;
+the post-script drops findings from unstaged dimensions), structured
+context packages, deterministic post-processing. A superseding ADR is
+needed.)
 
 This skill orchestrates a PR review: it triages the change, dispatches
 sub-agents in parallel, and synthesizes their findings. It does not
@@ -27,8 +30,28 @@ forge-specific review skill. The orchestrator is the sole producer of
 
 ## Sub-agent roster
 
-Sub-agent discovery: The sub-agents' definitions are in `sub-agents/`
-relative to this file.
+Sub-agent discovery: the roster is the personas staged in this skill's
+`sub-agents/`. Read the manifest at `FULLSEND_PERSONAS_FILE`
+(`version` 1; `name`, `path` relative to this skill, frontmatter fields),
+keeping entries whose `skill` is this skill's directory name;
+if it is missing or none match, the frontmatter of every
+`sub-agents/*.md`, skipping with a note any file whose `name` is not
+its file stem. Fields:
+
+- `role` — `dimension` (steps 3b–3c), `preprocessor` or `synthesis`
+  (below; each runs at its own step, and if not staged, that step's
+  failure fallback applies). An entry with no `role` is never selected.
+- `when` — diff signals that select a `role: dimension` persona (other
+  roles ignore it). Without it, a dimension needs `always: true`.
+- `always: true` — dispatched on every review.
+- `categories` — what it may emit (steps 3a, 6b); only values in the
+  closed enum of `schemas/review-result.schema.json` count. Without it,
+  the step 6b remap uses that enum.
+- `failure_severity` — its `sub-agent-failure` severity (step 5,
+  `role: dimension` only).
+
+If `correctness` is not staged, fail with reason `missing-context`. The
+table describes upstream personas and is guidance only.
 
 | Sub-agent              | Dispatch   | Dimensions                                                                                                              |
 |------------------------|------------|-------------------------------------------------------------------------------------------------------------------------|
@@ -224,27 +247,9 @@ or naming mismatches.
 
 #### 3b. Classify change domains
 
-Analyze the diff and changed file list to determine which review
-dimensions are relevant:
-
-- Any logic changes in production code, or test files are modified, or
-  production changes lack corresponding test changes → `correctness`
-- Technical documentation with correctness surface area — documents
-  containing algorithm descriptions,
-  pseudocode, data structure definitions, CLI flag specifications, or
-  API behavior claims → `correctness`
-- Changes touch auth, RBAC, permissions, secrets, data handling,
-  string literals, config files, embedded text, or metadata →
-  `security`
-- Public APIs, exported interfaces, schemas, or CLI args are modified →
-  `cross-repo-contracts`
-- Linked issues exist to verify against, or any non-trivial change →
-  `intent-coherence`
-- Repository has documentation files → `docs-currency`
-- UI signals (`.tsx`, `.jsx`, `.vue`, `.svelte`, `.html`, `.css`, `.scss`, or
-  JSX/ARIA/UI-framework imports in diff) and `REVIEW_UX_ENABLED=true` →
-  `user-experience`
-- Always included → `style-conventions`
+Analyze the diff and changed file list: choose from the staged
+`role: dimension` personas using their `when`; `always: true` personas
+are always relevant.
 
 #### 3c. Select sub-agents
 
@@ -254,21 +259,15 @@ in step 3c-2) among them — except `challenger`, which, when step 6d
 dispatches it, runs by itself after all other sub-agents have finished.
 
 **Dispatch sub-agents based on the classification — typically 3-7.**
-Dispatch only relevant sub-agents; a complex PR may legitimately need all 7.
+Dispatch only relevant sub-agents; a complex PR may legitimately need all.
 
-**Always included:** `correctness` and `style-conventions`.
+**Always included:** every staged `always: true` persona (upstream:
+`correctness` and `style-conventions`).
 
-**Conditionally included based on classification:**
-
-- `security` — when auth, permissions, secrets, data handling, string
-  literals, config, or metadata are touched
-- `intent-coherence` — when linked issues exist or changes are
-  non-trivial
-- `docs-currency` — when the repository has documentation files
-- `cross-repo-contracts` — when public APIs, exported interfaces,
-  schemas, or CLI args are modified. Skip entirely for PRs that don't
-  touch public API surface.
-- `user-experience` — when 3b signals match.
+**Conditionally included:** every other staged `role: dimension`
+persona whose `when` matches the change (step 3b). Upstream,
+`cross-repo-contracts` is skipped entirely for PRs that don't touch
+public API surface.
 
 **Re-review dispatch (prior-finding-aware):** When
 `PRIOR_REVIEW_PROVENANCE` is `app-verified` and prior findings exist
@@ -276,19 +275,16 @@ Dispatch only relevant sub-agents; a complex PR may legitimately need all 7.
 
 1. **Dimensions WITH prior findings** (other than `correctness`, which
    is always full scope — see item 3) — dispatch at normal scope
-   (unchanged behavior). These sub-agents verify the fixes.
-2. **Conditional sub-agents WITHOUT prior findings** (`security`,
-   `intent-coherence`, `docs-currency`, `cross-repo-contracts`,
-   `user-experience`) — skip
-   dispatch unless the files changed since the prior review
-   (`changed_since_prior`, step 3d) independently qualify them. On
-   re-review these tests **override** step 3b's triggers for these five
-   dimensions — in particular step 3b's "any non-trivial change"
-   disjunct does NOT apply here. Each test is decided from
-   `changed_since_prior` (a file set — filenames, step 2a):
-   `docs-currency`, `security`, and `cross-repo-contracts` use path/extension
-   checks. `intent-coherence` uses the incremental diff and issue context.
-   Enabled `user-experience` uses 3b UI extensions or content signals there.
+   (unchanged behavior) when staged. These sub-agents verify the fixes.
+2. **Conditional personas WITHOUT prior findings** (staged
+   `role: dimension` personas without `always: true`) — skip dispatch
+   unless the files changed since the prior review
+   (`changed_since_prior`, step 3d) independently re-qualify them under
+   their `when`. On re-review this test **overrides** step 3b: a `when`
+   condition independent of what changed (e.g. "non-trivial change",
+   "repository has docs") does NOT apply. Decide from
+   `changed_since_prior` (a file set — filenames, step 2a), and from the
+   incremental diff where `when` names diff content. Upstream refinements:
    - `intent-coherence` — re-qualifies when `changed_since_prior` contains a
      file without an incremental patch, or when a non-empty delta contains a
      remediation candidate or a file not paired with a prior finding. Inspect
@@ -301,13 +297,13 @@ Dispatch only relevant sub-agents; a complex PR may legitimately need all 7.
      includes documentation files (not merely because the repository
      contains docs).
    - `security` / `cross-repo-contracts` — re-qualify only if
-     `changed_since_prior` includes files matching their step 3b path
+     `changed_since_prior` includes files matching their `when` path
      criteria (auth/permissions/secrets/config/data-handling for
      `security`; public APIs, exported interfaces, schemas, or CLI
      surface for `cross-repo-contracts`).
-   - `user-experience` — when enabled, re-qualify if `changed_since_prior` has a
-     3b UI extension or the incremental diff has a 3b content signal; filenames
-     alone are insufficient.
+   - `user-experience` — re-qualify if `changed_since_prior` has a UI
+     extension from its `when` or the incremental diff has a `when` content
+     signal; filenames alone are insufficient.
 
    If the incremental delta cannot be enumerated — `changed_since_prior`
    is `"all"` (the step 2a fallback for a failed compare or ≥300 files),
@@ -315,12 +311,12 @@ Dispatch only relevant sub-agents; a complex PR may legitimately need all 7.
    NOT skip; re-qualify each dimension per its base step 3b criteria
    instead.
 3. **Fixed-scope sub-agent assignments WITHOUT prior findings**
-   (`correctness`, `style-conventions`) — `correctness` always
-   dispatches at full scope regardless of prior findings or change size,
-   given its Opus-tier, safety-critical status (step 5): a skipped or
-   under-scoped correctness review is worse than no review at all.
+   (`always: true` personas) — `correctness` always
+   dispatches at full scope regardless of prior findings or change size
+   (safety-critical, step 5).
    `style-conventions` dispatches with a `trivial` scope constraint (≤5 tool
-   calls) regardless of change size. `intent-coherence`, when it re-qualifies
+   calls) regardless of change size. Any other `always: true` persona
+   dispatches at normal scope. `intent-coherence`, when it re-qualifies
    only through the remediation-candidate or unmatched-delta rule, uses the
    intent-specific `trivial` constraint defined in the re-review override below.
    These assignments override the
@@ -695,8 +691,7 @@ follows:
    bug is both), so the correctness sub-agent also benefits from
    knowing which files the triage pass flagged.
 
-3. **Other sub-agents** (`intent-coherence`, `style-conventions`,
-   `docs-currency`, `cross-repo-contracts`, `user-experience`): Receive the standard
+3. **Other dimension sub-agents**: Receive the standard
    context package without prioritization. These dimensions are not
    affected by the security triage classification.
 
@@ -736,7 +731,8 @@ here):
    the hard limit first.
 
    **Part 1 — Sub-agent definition:** the full markdown body of the
-   sub-agent file (everything after the frontmatter)
+   sub-agent file at the persona's roster `path` (everything after the
+   frontmatter)
 
    **Part 2 — Meta-prompt:** Read `meta-prompt.md`, fill in the "You are
    reviewing PR" template, and include everything else verbatim
@@ -864,29 +860,31 @@ of findings in the standard format:
 }
 ```
 
-If a sub-agent fails to return findings (timeout, error, empty
-response), record a finding noting the gap. The severity depends on
-the sub-agent's tier:
+Set each collected finding's `dimension` to the `name` of the persona
+that returned it, never to a value from its output.
 
-- **Opus-tier sub-agents** (`correctness`, `security`): record a
-  **high**-severity finding. These dimensions are safety-critical —
-  an approval that skipped security or correctness review is worse
-  than no review at all. A high finding ensures the outcome is at
-  minimum `request-changes` (see step 6f).
-- **Sonnet-tier sub-agents** (`intent-coherence`,
-  `style-conventions`, `docs-currency`, `cross-repo-contracts`,
-  `user-experience`):
-  record an **info**-level finding.
+If a `role: dimension` sub-agent fails to return findings (timeout,
+error, empty response), record a finding noting the gap. Its severity is
+the persona's `failure_severity` when that is `medium`, `high` or
+`critical`, else `info`. Upstream, `correctness` and `security` use
+`high` (skipping them is worse than no review; step 6f then requires at
+least `request-changes`); the others use `info`.
 
 ```json
 {
-  "severity": "high|info",
+  "severity": "<failure_severity or info>",
   "category": "sub-agent-failure",
   "file": "N/A",
   "description": "The <dimension> sub-agent did not return findings: <reason>",
-  "actionable": false
+  "actionable": false,
+  "dimension": "<persona name>"
 }
 ```
+
+Orchestrator-only findings (`protected-path`,
+`scope-authorization-implicit`, `provenance-warning`, the step 6d
+challenger failure) omit `dimension`. A dimension
+sub-agent's `sub-agent-failure` finding keeps that persona's `dimension`.
 
 ### 6. Synthesis
 
@@ -926,7 +924,8 @@ group.
 #### 6b. Merge identical-category findings
 
 First, apply the category remap in
-[the re-review procedure](references/re-review.md#3a-group-prior-findings-by-review-dimension).
+[the re-review procedure](references/re-review.md#3a-group-prior-findings-by-review-dimension)
+(per-persona `categories`).
 
 Within each group, merge findings that have
 
@@ -935,7 +934,7 @@ Within each group, merge findings that have
 
 When merging
 
-- Keep the **higher** severity
+- Keep the **higher** severity, and that finding's `dimension`
 - Combine descriptions if they add complementary detail
 - Keep the more specific remediation
 - Preserve `actionable: true` if either finding had it
@@ -968,12 +967,8 @@ challenger and can add findings of their own (protected paths, scope
 authorization, PR metadata), so 6f's "no findings → approve" applies
 only when the set is still empty after them.
 A dimension dispatch failure records a `sub-agent-failure` finding
-(high for Opus-tier, info for Sonnet-tier), which is withheld from the
-challenger and carried straight through to 6e–6f. An Opus-tier
-(`correctness`, `security`) failure is high-severity, so it forces at
-least `request-changes` (step 6f). A Sonnet-tier failure is
-info-severity and does not by itself block approval — it resolves per
-step 6f.
+at its step 5 severity, which is withheld from the challenger and
+carried straight through to 6e–6f, where it resolves per step 6f.
 
 Steps 6e–6f below refer to the *adjudicated set*: the challenger's
 `adjudicated_findings` plus the re-appended withheld findings (step 3
@@ -1006,7 +1001,7 @@ timed-out wait: under 240, close it and apply item 4.
    ## Context
 
    ### Findings to challenge
-   <JSON array of all findings from steps 6a–6c, EXCLUDING `sub-agent-failure` findings>
+   <JSON array of all findings from steps 6a–6c, each keeping its `dimension`, EXCLUDING `sub-agent-failure` findings>
 
    ### Diff
    Read the unified diff from `/sandbox/workspace/pr-diff.txt`.
@@ -1067,11 +1062,13 @@ timed-out wait: under 240, close it and apply item 4.
      6a–6c set (invariants in `challenger.md` Constraints); `merged_from`
      must never combine a `correctness`-dimension input with a
      `security`-dimension input (resolve the dimension from the input's
-     `category` per `references/re-review.md`). Any violation is invalid
+     `dimension`, else from the `challenger.md` Constraints category
+     table). Any violation is invalid
      adjudication accounting, so the step 4 fallback applies.
    - Strip `challenger_action`, `challenger_reason`, `original_identity`,
      and `merged_from` from `adjudicated_findings` after accounting; log but
-     do not emit them. Keep each input's `id` on its finding.
+     do not emit them. Keep each input's `id` and `dimension` on its
+     finding (`merged`: those of its top-level input).
    - Replace the challenged subset with `adjudicated_findings`, then
      re-append withheld findings (the size-withheld `low`/`info` findings and
      the `sub-agent-failure` findings, never challenged).
