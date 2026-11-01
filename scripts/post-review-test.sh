@@ -1829,13 +1829,20 @@ LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo
 run_no_projection_test "projection-omits-mixed-sub-agent-failure" \
   "${LOSSY_FAILURE_PROJECTION_INPUT}"
 
+# A dimension failure recorded at low is still a dimension failure: severity
+# must not make it look like a challenger skip.
+LOW_LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","description":"kept before this fix"},{"severity":"low","category":"sub-agent-failure","file":"N/A","description":"The style-conventions sub-agent did not return findings: timeout"}]}'
+run_no_projection_test "projection-omits-mixed-low-sub-agent-failure" \
+  "${LOW_LOSSY_FAILURE_PROJECTION_INPUT}"
+
 # A skipped/failed challenger retains the dimensional findings; a failed
-# safety-critical dimension must still suppress the entire projection.
-CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"challenger time budget", actionable:false}]' <<< "${PROJECTION_INPUT}")"
+# dimension, or a failure that names no sub-agent, must still suppress the
+# entire projection at any severity.
+CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"The challenger sub-agent did not return findings: time budget: 500s remaining. Using pre-challenger finding set.", actionable:false}]' <<< "${PROJECTION_INPUT}")"
 for projection_forge in github gitlab; do
   run_projection_test "projection-keeps-findings-with-challenger-failure-${projection_forge}" \
     "${CHALLENGER_FAILURE_INPUT}" "${PROJECTION_EXPECTED}" "${projection_forge}"
-  for failure_severity in info medium high critical; do
+  for failure_severity in info low medium high critical; do
     DIMENSION_FAILURE_INPUT="$(jq --arg severity "${failure_severity}" '.findings += [{severity:$severity, category:"sub-agent-failure", file:"N/A", description:"dimension failed", actionable:false}]' <<< "${CHALLENGER_FAILURE_INPUT}")"
     run_no_projection_test "projection-blocks-${failure_severity}-failure-with-challenger-${projection_forge}" \
       "${DIMENSION_FAILURE_INPUT}" "${projection_forge}"
@@ -1902,6 +1909,20 @@ run_disposition_case() {
   encoded="${marker#<!-- fullsend:review-findings-v2:}"
   encoded="${encoded% -->}"
   actual="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
+
+  # Empty check_jq means expect no projection (used when a finding must
+  # suppress the ledger, e.g. a non-challenger sub-agent-failure).
+  if [[ -z "${check_jq}" ]]; then
+    if [[ ${exit_code} -ne 0 || -n "${marker}" ]]; then
+      echo "FAIL: ${test_name} — expected no disposition projection"
+      echo "Actual: ${actual}"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+    return
+  fi
 
   if [[ ${exit_code} -ne 0 ]] || ! jq -e "${check_jq}" <<< "${actual}" >/dev/null 2>&1; then
     echo "FAIL: ${test_name} — disposition projection mismatch"
@@ -2842,15 +2863,21 @@ run_disposition_case "projection-dismissal-covers-less-severe-row" \
 assert_last_result "projection-dismissal-covers-less-severe-row" \
   '.findings == null and .action == "comment"'
 
-# Runner safety signals are never covered by a dismissal: they mint, stay in
-# the posted result, and the dismissed id stays closed.
-for safety_category in protected-path sub-agent-failure; do
-  run_disposition_case "projection-dismissal-does-not-cover-${safety_category}-row" \
-    "$(jq -c --arg c "${safety_category}" '.findings[0].category = $c' <<< "$(redismiss_review a.go low)")" \
-    "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
-  assert_last_result "projection-dismissal-does-not-cover-${safety_category}-row" \
-    "$(printf '(.findings | length) == 1 and .findings[0].category == "%s" and .findings[0].id != "f_old"' "${safety_category}")"
-done
+# Runner safety signals are never covered by a dismissal: they mint and stay
+# in the posted result. protected-path still writes a projection (dismissed
+# id stays closed). A non-challenger sub-agent-failure suppresses the
+# projection entirely (#1567).
+run_disposition_case "projection-dismissal-does-not-cover-protected-path-row" \
+  "$(jq -c '.findings[0].category = "protected-path"' <<< "$(redismiss_review a.go low)")" \
+  "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-does-not-cover-protected-path-row" \
+  '(.findings | length) == 1 and .findings[0].category == "protected-path" and .findings[0].id != "f_old"'
+
+run_disposition_case "projection-dismissal-does-not-cover-sub-agent-failure-row" \
+  "$(jq -c '.findings[0].category = "sub-agent-failure"' <<< "$(redismiss_review a.go low)")" \
+  "${REDISMISS_PRIOR}" ""
+assert_last_result "projection-dismissal-does-not-cover-sub-agent-failure-row" \
+  '(.findings | length) == 1 and .findings[0].category == "sub-agent-failure" and .findings[0].id != "f_old"'
 
 # Suppression that empties the findings must not leave a blocking verdict:
 # reject and request-changes are downgraded to comment, never posted as-is.
