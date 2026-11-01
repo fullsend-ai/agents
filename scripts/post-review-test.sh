@@ -2898,11 +2898,38 @@ run_disposition_case "projection-supplied-id-in-other-file-unmapped-mints" \
 MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
 export MOCK_REVIEW_THREADS_JSON
 
-# A supplied id on a line the model is off by, in the right file, is kept.
-run_disposition_case "projection-supplied-id-off-by-line-same-file-keeps-id" \
-  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 219)")" \
+# With no stamped thread the recorded place is the check: a supplied id at
+# the recorded file and line is kept.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+unset MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-supplied-id-at-recorded-place-unmapped-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" \
   "${SHIFT_PRIOR}" \
-  '.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":219}] and .dispositions == [{id: "f_old", status: "open"}]'
+  '.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":202}] and .dispositions == [{id: "f_old", status: "open"}]'
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# A supplied id at its stamped thread's file and line is kept.
+run_disposition_case "projection-supplied-id-at-stamped-place-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+
+# A supplied id on another line of the same file (including one line off) is
+# not provably the same finding: it mints and f_old stays open at its place.
+run_disposition_case "projection-supplied-id-same-file-wrong-line-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 240)")" \
+  "${SHIFT_PRIOR}" "$(shift_minted 240)"
+run_disposition_case "projection-supplied-id-same-file-off-by-line-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 219)")" \
+  "${SHIFT_PRIOR}" "$(shift_minted 219)"
+
+# Reservation: a later row supplying f_old from another file cannot reserve
+# it, so the correctly anchored id-less row keeps f_old and the later row
+# mints; no duplicate of the still-present finding is added.
+run_disposition_case "projection-supplied-id-other-file-does-not-reserve" \
+  "$(jq -c '.findings += [{severity:"low",category:"api-contract",file:"docs/other.md",line:5,id:"f_old",description:"d"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md" and .line == 218)] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
 
 # The model closing a still-present concern with unrelated evidence: the row
 # at the stamped thread keeps f_old, which stays open, and nothing mints.
@@ -2924,6 +2951,10 @@ MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.no
 export MOCK_REVIEW_THREADS_JSON
 run_disposition_case "projection-outdated-stamped-thread-mints" \
   "$(shift_review 202)" "${SHIFT_PRIOR}" '([.findings[] | select(.id == "f_old")] | length) == 1 and ([.findings[] | select(.line == 202 and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+
+# The same when the model supplies f_old at the recorded line.
+run_disposition_case "projection-outdated-stamped-thread-supplied-id-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "$(shift_minted 202)"
 
 # A stamp in a comment the review agent did not write maps nothing.
 MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Same thing." false false)"
