@@ -1934,6 +1934,31 @@ run_disposition_case() {
   echo "PASS: ${test_name}"
 }
 
+# run_disposition_case with a trusted live stamped thread for every open
+# anchored prior finding, at its recorded file and line. An id is only kept
+# where its stamped thread sits, never at its recorded coordinates alone, so
+# cases that expect a prior id to be kept need the thread.
+run_stamped_disposition_case() {
+  local saved="${MOCK_REVIEW_THREADS_JSON-}" had_saved=false
+  [[ -n "${MOCK_REVIEW_THREADS_JSON+x}" ]] && had_saved=true
+  MOCK_REVIEW_THREADS_JSON="$(jq -c '
+    . as $prior
+    | {data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+        $prior.findings[]
+        | select(.id as $id | ([$prior.dispositions[]? | select(.status | IN("resolved_by_change", "dismissed_by_human")) | .id] | index($id)) == null)
+        | select(.file != null and .file != "N/A" and (.line | type) == "number")
+        | {id:"T-\(.id)",isResolved:false,isOutdated:false,viewerCanResolve:true,path:.file,line:.line,originalLine:.line,resolvedBy:null,
+           comments:{pageInfo:{hasNextPage:false},nodes:[{body:"<!-- finding:\(.id) --> Prior finding.",outdated:false,viewerDidAuthor:true}]}}
+      ]}}}}}' <<< "$3")"
+  export MOCK_REVIEW_THREADS_JSON
+  run_disposition_case "$@"
+  if [[ "${had_saved}" == true ]]; then
+    MOCK_REVIEW_THREADS_JSON="${saved}"
+  else
+    unset MOCK_REVIEW_THREADS_JSON
+  fi
+}
+
 # Re-review verdict gate tests. These exercise the full post-script and assert
 # the action that would be posted to the forge.
 run_rereview_gate_case() {
@@ -2463,7 +2488,7 @@ run_rereview_gate_case "rereview-initial-approve-open-medium-survives-risk-gate"
   "4"
 
 # A supplied id is kept when it names an open prior finding.
-run_disposition_case "projection-keeps-supplied-finding-id" \
+run_stamped_disposition_case "projection-keeps-supplied-finding-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d",id:"f_keep1"}] | .dispositions=[{id:"f_keep1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_keep1"}]}' \
   '.findings[0].id == "f_keep1" and .findings[0].file == "internal/foo.go" and (.findings | length) == 1 and .dispositions == [{id: "f_keep1", status: "open"}]'
@@ -2473,7 +2498,7 @@ run_disposition_case "projection-mints-missing-finding-id" \
   "" \
   '(.findings | length) == 1 and (.findings[0].id | test("^f_[A-Za-z0-9]+$")) and .findings[0].file == "internal/foo.go" and .dispositions == null'
 
-run_disposition_case "projection-copies-prior-id" \
+run_stamped_disposition_case "projection-copies-prior-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_same1"}]}' \
   '.findings[0].id == "f_same1" and (.findings | length) == 1 and .dispositions == [{id: "f_same1", status: "open"}]'
@@ -2505,7 +2530,7 @@ run_disposition_case "projection-resolved-without-evidence-stays-open" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_done1"}]}' \
   '([.findings[] | select(.id == "f_done1")] | length) == 1 and .dispositions[0].status == "open"'
 
-run_disposition_case "projection-reclassified-keeps-finding" \
+run_stamped_disposition_case "projection-reclassified-keeps-finding" \
   "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"README.md",line:3,description:"typo",id:"f_reclass1"}] | .dispositions=[{id:"f_reclass1",status:"reclassified",rationale:"This is a docs typo, not a logic error.",evidence:"README still says pytset"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"README.md","line":3,"id":"f_reclass1"}]}' \
   '.findings[0].id == "f_reclass1" and .findings[0].category == "incorrect-doc" and (.findings | length) == 1 and .dispositions == [{id: "f_reclass1", status: "reclassified"}]'
@@ -2572,7 +2597,7 @@ assert_last_result() {
 # A finding closed on an earlier review is carried forward unchanged, with
 # its anchor, and is not reported as unanswered.
 CLOSED_PRIOR='{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_closed1"},{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_open1"}],"dispositions":[{"id":"f_closed1","status":"dismissed_by_human"},{"id":"f_open1","status":"open"}]}'
-run_disposition_case "projection-carries-closed-finding-forward" \
+run_stamped_disposition_case "projection-carries-closed-finding-forward" \
   "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"src/add.go",line:2,description:"d",id:"f_open1"}] | .dispositions=[{id:"f_open1",status:"open",rationale:"Still wrong.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   "${CLOSED_PRIOR}" \
   '([.findings[] | select(.id == "f_closed1" and .file == "src/foo.go" and .line == 4)] | length) == 1 and ([.dispositions[] | select(.id == "f_closed1" and .status == "dismissed_by_human")] | length) == 1 and (.findings | length) == 2'
@@ -2590,7 +2615,7 @@ assert_disposition_stdout "projection-closed-id-cannot-be-reused-or-reopened" \
 
 # Two rows that supply the same prior id cannot share one resolution: the
 # second gets its own id.
-run_disposition_case "projection-duplicate-supplied-id-is-reminted" \
+run_stamped_disposition_case "projection-duplicate-supplied-id-is-reminted" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"d",id:"f_same1"},{severity:"low",category:"logic-error",file:"b.go",line:1,description:"d",id:"f_same1"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":1,"id":"f_same1"}]}' \
   '(.findings | length) == 2 and ([.findings[].id] | unique | length) == 2 and ([.findings[] | select(.file == "a.go") | .id] == ["f_same1"])'
@@ -2602,12 +2627,13 @@ run_disposition_case "projection-foreign-supplied-id-is-reminted" \
   "" \
   '(.findings | length) == 1 and .findings[0].id != "f_invented1" and (.findings[0].id | test("^f_[A-Za-z0-9]+$"))'
 
-# A shifted line still copies the prior id when file and category identify
-# one prior finding, so an edit above the finding does not duplicate it.
-run_disposition_case "projection-copies-prior-id-across-line-shift" \
+# Being the only prior finding with that file and category is not enough to
+# copy an id: with no stamped thread to show where it moved, a row on
+# another line mints and the prior id stays open where it was.
+run_disposition_case "projection-line-shift-without-stamped-thread-mints" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:9,description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_shift1"}]}' \
-  '.findings == [{"severity":"low","category":"logic-error","file":"internal/foo.go","id":"f_shift1","line":9}] and .dispositions == [{id: "f_shift1", status: "open"}]'
+  '([.findings[] | select(.id == "f_shift1" and .line == 7)] | length) == 1 and ([.findings[] | select(.line == 9 and .id != "f_shift1" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_shift1", status: "open"}]'
 
 # A missing file is not a place: a PR-level finding must not inherit the
 # prior id of another PR-level finding in the same category.
@@ -2615,6 +2641,52 @@ run_disposition_case "projection-does-not-copy-id-across-unanchored-pr-level-fin
   "$(jq -c '.findings=[{severity:"high",category:"missing-authorization",file:"N/A",description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
   '([.findings[] | select(.id == "f_pr1")] | length) == 1 and ([.findings[] | select(.file == null and .id != "f_pr1" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+
+# A prior PR-level finding has no inline anchor, but an explicit supplied id
+# with the same file (none) and category still stays on its row: reclassifying
+# it from high to low must replace the old severity, not add a second finding.
+run_disposition_case "projection-pr-level-reclassified-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"missing-authorization",file:"N/A",description:"d",id:"f_pr1"}] | .dispositions=[{id:"f_pr1",status:"reclassified",rationale:"Only a hardening note.",evidence:"The endpoint is not reachable without auth"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .findings[0].severity == "low" and .dispositions == [{id: "f_pr1", status: "reclassified"}]'
+
+# The same for a file-level finding: the prior record has a file but no line.
+run_disposition_case "projection-file-level-reclassified-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Wording only.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"stale-doc","file":"docs/x.md","id":"f_file1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_file1" and .findings[0].severity == "low" and .dispositions == [{id: "f_file1", status: "reclassified"}]'
+
+# A supported reclassification may also change the category: the id stays on
+# its row, so the old finding is replaced instead of carried forward.
+run_disposition_case "projection-pr-level-reclassified-category-change-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"N/A",description:"d",id:"f_pr1"}] | .dispositions=[{id:"f_pr1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"The behaviour is correct; the comment is imprecise"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .findings[0].severity == "low" and .findings[0].category == "incorrect-doc" and .dispositions == [{id: "f_pr1", status: "reclassified"}]'
+
+run_disposition_case "projection-file-level-reclassified-category-change-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"docs/x.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"docs/x.md","id":"f_file1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_file1" and .findings[0].severity == "low" and .findings[0].category == "incorrect-doc" and .dispositions == [{id: "f_file1", status: "reclassified"}]'
+
+# A category change without a supported reclassification still mints, and a
+# reclassification of the id does not carry it to a row in another file.
+run_disposition_case "projection-file-level-category-change-other-file-mints" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"docs/y.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"docs/x.md","id":"f_file1"}]}' \
+  '([.findings[] | select(.id == "f_file1")] | length) == 1 and ([.findings[] | select(.file == "docs/y.md" and .id != "f_file1")] | length) == 1 and (.findings | length) == 2'
+
+# A re-emitted open PR-level finding that supplies its id keeps it and does
+# not gain a duplicate on each re-review.
+run_disposition_case "projection-pr-level-reemitted-keeps-id" \
+  "$(jq -c '.findings=[{severity:"high",category:"missing-authorization",file:"N/A",description:"d",id:"f_pr1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .dispositions == [{id: "f_pr1", status: "open"}]'
+
+# An unanchored prior id is not given to a row of another category or file.
+run_disposition_case "projection-pr-level-supplied-id-other-category-mints" \
+  "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"N/A",description:"d",id:"f_pr1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '([.findings[] | select(.id == "f_pr1")] | length) == 1 and ([.findings[] | select(.category == "logic-error" and .id != "f_pr1")] | length) == 1 and (.findings | length) == 2'
 
 # A prior finding written before ids existed gets one and enters the ledger
 # instead of vanishing when the model does not mention it.
@@ -2914,6 +2986,184 @@ run_disposition_case "projection-dismissal-unverified-thread-mints" \
   "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
 
+# A stamped GitHub thread maps its finding id to where the finding sits now.
+# GitHub moves the thread's line with the code, so a finding that shifted
+# from line 202 to 218 keeps its id, and only one active entry remains.
+SHIFT_PRIOR='{"version":2,"findings":[{"severity":"low","category":"api-contract","file":"docs/p.md","line":202,"id":"f_old"}]}'
+SHIFT_KEPT='.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":218}] and .dispositions == [{id: "f_old", status: "open"}]'
+shift_review() {
+  # $1 line of the current row
+  jq -c --argjson line "$1" '.findings=[{severity:"low",category:"api-contract",file:"docs/p.md",line:$line,description:"d"}]' <<< "${BASE_REVIEW}"
+}
+shift_minted() {
+  # $1 line of the current row; f_old stays open at its recorded line
+  printf '([.findings[] | select(.id == "f_old" and .line == 202)] | length) == 1 and ([.findings[] | select(.line == %s and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]' "$1"
+}
+two_threads() {
+  jq -sc '(.[0].data.repository.pullRequest.reviewThreads.nodes += .[1].data.repository.pullRequest.reviewThreads.nodes) | .[0]' <<< "$1$2"
+}
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-stamped-thread-line-shift-keeps-id" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+assert_last_result "projection-stamped-thread-line-shift-keeps-id" \
+  '(.findings | length) == 1 and .findings[0].id == "f_old" and .findings[0].line == 218'
+
+# Same file and category on a line the thread is not at: another finding.
+# It mints and f_old stays open at its recorded line.
+run_disposition_case "projection-stamped-thread-other-line-same-category-mints" \
+  "$(shift_review 240)" "${SHIFT_PRIOR}" "$(shift_minted 240)"
+
+# A supplied open id is only kept on a row in the file the id sits in. A row
+# in another file that supplies f_old is a different finding: it mints, and
+# f_old stays open where its stamped thread is.
+run_disposition_case "projection-supplied-id-in-other-file-mints" \
+  "$(jq -c '.findings[0].file = "docs/other.md" | .findings[0].id = "f_old"' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md")] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
+
+# The same holds with no stamped thread: the recorded file is the check.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+unset MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-supplied-id-in-other-file-unmapped-mints" \
+  "$(jq -c '.findings[0].file = "docs/other.md" | .findings[0].id = "f_old"' <<< "$(shift_review 202)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md")] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# With no stamped thread the recorded coordinates are not an identity map: a
+# row at the recorded file and line, with or without the supplied id, mints
+# and f_old stays open at its recorded place.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+unset MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-supplied-id-at-recorded-place-unmapped-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" \
+  "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_disposition_case "projection-id-less-row-at-recorded-place-unmapped-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+
+# The stamped-thread fetch fails: nothing maps the id, so a row at the old
+# coordinates mints (with or without the supplied id) and f_old stays open.
+MOCK_REVIEW_THREADS_FAIL=1
+export MOCK_REVIEW_THREADS_FAIL
+run_disposition_case "projection-thread-fetch-failure-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+assert_disposition_stdout "projection-thread-fetch-failure-at-old-coordinates-mints" \
+  "::warning::Review thread fetch failed or was truncated" "present"
+run_disposition_case "projection-thread-fetch-failure-supplied-id-at-old-coordinates-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+unset MOCK_REVIEW_THREADS_FAIL
+
+# The thread list is truncated: a stamped thread at the old coordinates in
+# the partial result is not trusted, so the row mints and f_old stays open.
+export MOCK_REVIEW_THREADS_RESPONSE='{"threads":[{"is_resolved":false,"path":"docs/p.md","line":202,"original_line":202,"comments_truncated":false,"comments":[{"author":"fullsend-ai-review","author_type":"Bot","body":"<!-- finding:f_old --> Contract issue."}]}],"truncated":true}'
+run_disposition_case "projection-truncated-threads-at-old-coordinates-mint" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_disposition_case "projection-truncated-threads-supplied-id-at-old-coordinates-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+# The same response, not truncated, is trusted and keeps the id: the
+# truncation flag is what makes the difference.
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.truncated = false' <<< "${MOCK_REVIEW_THREADS_RESPONSE}")"
+export MOCK_REVIEW_THREADS_RESPONSE
+run_disposition_case "projection-untruncated-threads-at-old-coordinates-keep-id" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":202}] and .dispositions == [{id: "f_old", status: "open"}]'
+unset MOCK_REVIEW_THREADS_RESPONSE
+
+# No trusted stamp: a stamp in a comment the review agent did not write, or
+# a thread with no stamp at all, maps nothing at the old coordinates.
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 202 "<!-- finding:f_old --> Same thing." false false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-untrusted-stamp-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_disposition_case "projection-untrusted-stamp-supplied-id-at-old-coordinates-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 202 "Contract issue." false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-unstamped-thread-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# A supplied id at its stamped thread's file and line is kept.
+run_disposition_case "projection-supplied-id-at-stamped-place-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+
+# A supplied id on another line of the same file (including one line off) is
+# not provably the same finding: it mints and f_old stays open at its place.
+run_disposition_case "projection-supplied-id-same-file-wrong-line-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 240)")" \
+  "${SHIFT_PRIOR}" "$(shift_minted 240)"
+run_disposition_case "projection-supplied-id-same-file-off-by-line-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 219)")" \
+  "${SHIFT_PRIOR}" "$(shift_minted 219)"
+
+# Reservation: a later row supplying f_old from another file cannot reserve
+# it, so the correctly anchored id-less row keeps f_old and the later row
+# mints; no duplicate of the still-present finding is added.
+run_disposition_case "projection-supplied-id-other-file-does-not-reserve" \
+  "$(jq -c '.findings += [{severity:"low",category:"api-contract",file:"docs/other.md",line:5,id:"f_old",description:"d"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md" and .line == 218)] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
+
+# An id stamped on several distinct live locations has no reliable place: a
+# same-category row at either location, with or without the supplied id,
+# mints instead of inheriting it, and f_old stays open.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+MOCK_REVIEW_THREADS_JSON="$(two_threads "$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)" "$(thread_json "" docs/p.md 240 "<!-- finding:f_old --> Contract issue again." false)")"
+export MOCK_REVIEW_THREADS_JSON
+AMBIGUOUS_MINTED='([.findings[] | select(.id == "f_old")] | length) == 1 and (.findings | length) == 2 and ([.findings[] | select(.id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and .dispositions == [{id: "f_old", status: "open"}]'
+run_disposition_case "projection-ambiguous-stamped-threads-mint" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "${AMBIGUOUS_MINTED}"
+run_disposition_case "projection-ambiguous-stamped-threads-supplied-id-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 240)")" "${SHIFT_PRIOR}" "${AMBIGUOUS_MINTED}"
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# The model closing a still-present concern with unrelated evidence: the row
+# at the stamped thread keeps f_old, which stays open, and nothing mints.
+run_disposition_case "projection-stamped-thread-resolve-unrelated-evidence-stays-open" \
+  "$(jq -c '.dispositions=[{id:"f_old",status:"resolved_by_change",rationale:"Addressed.",evidence:"Token example updated"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+assert_disposition_stdout "projection-stamped-thread-resolve-unrelated-evidence-stays-open" \
+  "::warning::Prior finding id(s) f_old marked resolved_by_change are still reported at their review thread; recorded as open" "present"
+
+# A reclassification at the shifted line stays on f_old.
+run_disposition_case "projection-stamped-thread-reclassified-keeps-id" \
+  "$(jq -c '.findings[0].severity = "info" | .dispositions=[{id:"f_old",status:"reclassified",rationale:"Only a wording issue.",evidence:"docs/p.md:218 is prose"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"info","category":"api-contract","file":"docs/p.md","id":"f_old","line":218}] and .dispositions == [{id: "f_old", status: "reclassified"}]'
+
+# Every stamped thread is outdated: GitHub cannot say where the finding is,
+# so even a row at the recorded line mints.
+MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0] |= (.line = null | .isOutdated = true)' <<< "$(thread_json "" docs/p.md 202 "<!-- finding:f_old --> Contract issue." false)")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-outdated-stamped-thread-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" '([.findings[] | select(.id == "f_old")] | length) == 1 and ([.findings[] | select(.line == 202 and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+
+# The same when the model supplies f_old at the recorded line.
+run_disposition_case "projection-outdated-stamped-thread-supplied-id-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+
+# A stamp in a comment the review agent did not write maps nothing.
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Same thing." false false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-forged-thread-stamp-mints" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "$(shift_minted 218)"
+
+# A resolve and a human dismissal of other findings stay on their own ids
+# while the shifted finding keeps f_old.
+MOCK_REVIEW_THREADS_JSON="$(two_threads "$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)" "$(thread_json alice src/foo.go 4 "<!-- finding:f_human1 --> Naming nit.")")"
+export MOCK_REVIEW_THREADS_JSON
+export MOCK_PR_AUTHOR="prauthor"
+run_disposition_case "projection-stamped-thread-keeps-other-dispositions" \
+  "$(jq -c '.dispositions=[{id:"f_done1",status:"resolved_by_change",rationale:"Fixed.",evidence:"src/add.go now returns a + b"},{id:"f_human1",status:"dismissed_by_human",rationale:"Reviewer resolved it.",evidence:"alice resolved the src/foo.go:4 thread"}]' <<< "$(shift_review 218)")" \
+  '{"version":2,"findings":[{"severity":"low","category":"api-contract","file":"docs/p.md","line":202,"id":"f_old"},{"severity":"low","category":"api-contract","file":"docs/p.md","line":50,"id":"f_done1"},{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}]}' \
+  '([.findings[] | select(.id == "f_old" and .line == 218)] | length) == 1 and (.findings | length) == 3 and (.dispositions | sort_by(.id)) == [{id: "f_done1", status: "resolved_by_change"}, {id: "f_human1", status: "dismissed_by_human"}, {id: "f_old", status: "open"}]'
+unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
+
 # GitLab dismissals use the authenticated review-token identity. A normal
 # User author type is valid for PAT-backed removed-line review comments.
 GITLAB_HUMAN_DISMISSAL_RESPONSE='{"threads":[{"is_resolved":true,"path":"src/foo.go","side":"left","line":4,"start_side":null,"start_line":null,"original_line":null,"original_start_line":null,"old_line":4,"new_line":null,"is_outdated":null,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"maintain","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"review-bot","author_type":"User","body":"<!-- finding:f_human1 --> Logic issue."}]}],"truncated":false}'
@@ -2966,6 +3216,21 @@ MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.path = "a.go" | .line = 
 export MOCK_REVIEW_THREADS_RESPONSE
 run_gitlab_disposition_case "gitlab-dismissal-category-change-mints" \
   "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+
+# GitLab cannot map a stamped thread to where its finding moved, so a row on
+# a shifted line mints, fail closed, and the prior id stays open.
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.is_resolved = false | .path = "docs/p.md" | .line = 202 | .comments[0].body = "<!-- finding:f_old --> Contract issue.")' <<< "${GITLAB_HUMAN_DISMISSAL_RESPONSE}")"
+export MOCK_REVIEW_THREADS_RESPONSE
+run_gitlab_disposition_case "gitlab-unmappable-thread-line-shift-mints" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "$(shift_minted 218)"
+
+# GitLab keeps the line a note was written on, which is the old coordinates
+# here. A row there, with or without the supplied id, still mints: recorded
+# coordinates are not an identity map, and the prior id stays open.
+run_gitlab_disposition_case "gitlab-thread-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_gitlab_disposition_case "gitlab-thread-at-old-coordinates-supplied-id-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "$(shift_minted 202)"
 unset MOCK_REVIEW_THREADS_RESPONSE MOCK_GITLAB_REVIEW_ACTOR
 
 # A reclassified disposition with no current finding carrying that id is
@@ -2983,7 +3248,7 @@ assert_disposition_stdout "approve-withheld-for-reclassified-without-finding" \
 
 # With the finding re-emitted at its new severity the reclassification
 # holds and the approval stands.
-run_disposition_case "approve-kept-for-reclassified-with-finding" \
+run_stamped_disposition_case "approve-kept-for-reclassified-with-finding" \
   "$(jq -c '.action="approve" | .findings=[{severity:"info",category:"incorrect-doc",file:"old.go",line:3,description:"docs",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"reclassified",rationale:"Only a docs problem.",evidence:"old.go:3 is documentation"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"info","category":"incorrect-doc","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "reclassified"}]'
@@ -2999,7 +3264,7 @@ run_disposition_case "projection-supplied-resolving-id-is-reminted" \
 
 # Re-emitting an open prior high finding at a lower severity, without a
 # reclassification, neither downgrades the ledger nor clears the guard.
-run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
+run_stamped_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
   "$(jq -c '.action="approve" | .findings=[{severity:"info",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
@@ -3008,7 +3273,7 @@ assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-lowe
 
 # Re-emitting an open prior high finding at high still leaves it open.
 # open is not a resolution, so approval is withheld.
-run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
+run_stamped_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
   "$(jq -c '.action="approve" | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
@@ -3018,7 +3283,7 @@ assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-high
 # Finding ids never reach the posted text, whatever the model wrote: known
 # ids and minted-shaped ids are stripped from the body and from each
 # finding's description and remediation, while the ledger marker keeps them.
-run_disposition_case "posted-text-drops-finding-ids" \
+run_stamped_disposition_case "posted-text-drops-finding-ids" \
   "$(jq -c '.action="request-changes" | .body="Review\n\n### Earlier findings\n- f_hi1 (old.go:3) resolved_by_change: returns a + b\n- f_0123456789abcdef still open." | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"Same root cause as f_hi1; see f_hi1 .",remediation:"Fix f_hi1 by checking nil.",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
@@ -3049,7 +3314,7 @@ assert_last_result "posted-text-keeps-id-free-whitespace" \
 assert_disposition_stdout "posted-text-keeps-id-free-whitespace" \
   "::warning::Removed finding id(s)" "absent"
 
-run_disposition_case "posted-text-scrub-preserves-nearby-literals" \
+run_stamped_disposition_case "posted-text-scrub-preserves-nearby-literals" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"Same as f_hi1 in value == \"a  b\"; print(\"hello , world\")",id:"f_hi1"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":1,"id":"f_hi1"}]}' \
   '(.findings | length) == 1 and (.findings[0].id == "f_hi1")'
@@ -3057,7 +3322,7 @@ assert_last_result "posted-text-scrub-preserves-nearby-literals" \
   '.findings[0].id == "f_hi1" and .findings[0].description == "Same as  in value == \"a  b\"; print(\"hello , world\")"'
 
 # Markdown wrappers around a stripped id (backticks, bold) must not remain.
-run_disposition_case "posted-text-drops-markdown-wrapped-ids" \
+run_stamped_disposition_case "posted-text-drops-markdown-wrapped-ids" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3072,7 +3337,7 @@ assert_disposition_stdout "posted-text-drops-markdown-wrapped-ids" \
 
 # Old Earlier findings shape (- id: disposition), bold+colon, parentheses,
 # and an id at the start of a later line. List marker must not glue to ":".
-run_disposition_case "posted-text-drops-old-earlier-findings-shape" \
+run_stamped_disposition_case "posted-text-drops-old-earlier-findings-shape" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3101,7 +3366,7 @@ assert_disposition_stdout "posted-text-drops-reminted-foreign-id" \
 
 # A struck-through id must go whole: a leftover "~~~~" at the start of a
 # line opens a code fence that swallows the rest of the review (#1717).
-run_disposition_case "posted-text-drops-struck-through-ids" \
+run_stamped_disposition_case "posted-text-drops-struck-through-ids" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3117,7 +3382,7 @@ assert_disposition_stdout "posted-text-drops-struck-through-ids" \
 
 # The id run is atomic, so a known id that prefixes another (f_hi1, f_hi10)
 # must not win the match and leave "~~~~" or "****" behind (#1717).
-run_disposition_case "posted-text-drops-prefix-overlapping-wrapped-ids" \
+run_stamped_disposition_case "posted-text-drops-prefix-overlapping-wrapped-ids" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ~~f_hi10~~ gone
@@ -3130,7 +3395,7 @@ assert_last_result "posted-text-drops-prefix-overlapping-wrapped-ids" \
 # Ordered and "+" list items, link-wrapped ids, headings, a line that starts
 # with "id:", adjacent ids and _id_ leave no orphaned ":" or "," and no
 # fused words; a run of adjacent ids leaves one hole (#1717).
-run_disposition_case "posted-text-drops-list-heading-and-adjacent-ids" \
+run_stamped_disposition_case "posted-text-drops-list-heading-and-adjacent-ids" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3173,7 +3438,7 @@ assert_last_result "posted-text-survives-many-minted-ids-with-colon" \
 # A wrapper wraps the whole id run, so removing the run must not leave an
 # empty wrapper: "~~~~" opens a code fence, "****" is a rule, "``" is an
 # empty code span. __id__ is scrubbed too, not just warned about (#1717).
-run_disposition_case "posted-text-drops-wrapped-id-runs" \
+run_stamped_disposition_case "posted-text-drops-wrapped-id-runs" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3204,7 +3469,7 @@ assert_disposition_stdout "posted-text-warns-on-double-underscore-id" \
 
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
-run_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \
+run_stamped_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \
   "$(jq -c '.findings=[{severity:"info",category:"incorrect-doc",file:"README.md",line:3,description:"typo",id:"f_reclass1"}] | .dispositions=[{id:"f_reclass1",status:"reclassified",rationale:"This is a docs typo, not a logic error.",evidence:"README still says pytset"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"README.md","line":3,"id":"f_reclass1"}]}' \
   '.findings == [{"severity":"info","category":"incorrect-doc","file":"README.md","id":"f_reclass1","line":3}] and .dispositions == [{id: "f_reclass1", status: "reclassified"}]'
