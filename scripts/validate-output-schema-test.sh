@@ -326,13 +326,13 @@ run_test_custom_filename "custom-output-file-invalid" \
   "false"
 
 run_test_custom_filename "review-approve-actionable-finding-valid" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"docs","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved with follow-ups.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","line":3,"description":"Document the flag.","remediation":"Add a short usage note.","actionable":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
 
 run_test_custom_filename "review-finding-additional-property-rejected" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false"
@@ -379,11 +379,11 @@ run_test_custom_filename_output() {
 }
 
 run_test_custom_filename_output "nested-additional-property-shows-allowed" \
-  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"docs","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
+  '{"action":"approve","pr_number":42,"repo":"owner/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Approved.","findings":[{"severity":"low","category":"missing-doc","file":"README.md","description":"Document the flag.","unexpected":true}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
-  "allowed properties: actionable, category, description, file, id, line, remediation, severity"
+  "allowed properties: actionable, category, description, dimension, file, id, line, remediation, severity"
 
 # --- Structural failures ---
 
@@ -559,7 +559,7 @@ run_test_custom_filename "path-traversal-stripped" \
 REVIEW_SCHEMA="${SCRIPT_DIR}/../schemas/review-result.schema.json"
 
 run_test_custom_filename "review-reject-valid" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Wrong approach.","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
@@ -572,7 +572,7 @@ run_test_custom_filename "review-reject-missing-findings" \
   "'findings' is a required property"
 
 run_test_custom_filename "review-reject-missing-body" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
@@ -657,7 +657,7 @@ run_test_custom_filename "review-approve-missing-head-sha" \
   "'head_sha' is a required property"
 
 run_test_custom_filename "review-reject-missing-head-sha" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","body":"Wrong approach.","findings":[{"severity":"high","category":"intent-alignment","file":"main.go","description":"Wrong design."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","body":"Wrong approach.","findings":[{"severity":"high","category":"design-direction","file":"main.go","description":"Wrong design."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
@@ -691,10 +691,11 @@ done
 # --- review-result.schema.json: short / non-hex SHA rejected ---
 
 run_test_custom_filename "review-reject-short-sha-rejected" \
-  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong.","findings":[{"severity":"high","category":"bug","file":"main.go","description":"Bug."}]}' \
+  '{"action":"reject","pr_number":1,"repo":"org/repo","head_sha":"abc1234","body":"Wrong.","findings":[{"severity":"high","category":"logic-error","file":"main.go","description":"Bug."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
-  "false"
+  "false" \
+  "'abc1234' does not match"
 
 run_test_custom_filename "review-approve-nonhex-sha-rejected" \
   '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"ghijkl0123456789ghijkl0123456789ghijkl01","body":"LGTM."}' \
@@ -723,7 +724,7 @@ run_test_custom_filename "review-request-changes-with-protected-path-valid" \
   "true"
 
 run_test_custom_filename "review-approve-no-protected-path-valid" \
-  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM.","findings":[{"severity":"low","category":"style","file":"main.go","description":"Minor style nit."}]}' \
+  '{"action":"approve","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM.","findings":[{"severity":"low","category":"naming-convention","file":"main.go","description":"Minor style nit."}]}' \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "true"
@@ -790,6 +791,190 @@ run_test_custom_filename "risk-additional-property-rejected" \
   "${RISK_BASE},\"risk_assessment\":{\"score\":1,\"level\":\"low\",\"rationale\":\"Small.\",\"extra\":true}}" \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
+  "false"
+
+# --- review-result.schema.json finding category taxonomy ---
+# A category outside the projection allowlist makes post-review drop the
+# prior-findings projection, so the next review loses its ledger. The schema
+# must reject such a category before the review is posted.
+
+run_test_custom_filename "review-non-canonical-category-rejected" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"race-condition","file":"main.go","description":"Unsynchronized access."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "'race-condition' is not one of"
+
+ALL_CATEGORIES_RESULT="$(jq -c '
+  ."$defs".finding.properties.category.enum
+  | {action: "comment", pr_number: 1, repo: "org/repo",
+     head_sha: "abcdef0123456789abcdef0123456789abcdef01", body: "Review.",
+     findings: map({severity: "low", category: ., file: "main.go", description: "Finding."})}
+' "${REVIEW_SCHEMA}")"
+run_test_custom_filename "review-every-listed-category-valid" \
+  "${ALL_CATEGORIES_RESULT}" \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+# The category taxonomy is duplicated in the schema, the pre-review and
+# post-review projection allowlists, and the re-review dimension table. All
+# copies must agree, otherwise a schema-valid finding can still break the
+# projection.
+
+# Print the quoted strings inside a jq `def <name>:` block, one per line,
+# ignoring `type == "string"` guards.
+jq_def_strings() {
+  local file="$1" name="$2"
+  awk -v def="def ${name}:" '
+    index($0, def) { found = 1 }
+    found { gsub(/type == "string"/, ""); print }
+    found && /\);/ { exit }
+  ' "${file}" | grep -oE '"[a-z-]+"' | tr -d '"' | sort
+}
+
+assert_same_set() {
+  local test_name="$1" expected="$2" actual="$3"
+  if [[ -z "${expected}" || -z "${actual}" ]]; then
+    echo "FAIL: ${test_name} — could not extract a category list"
+    FAILURES=$((FAILURES + 1))
+  elif [[ "${expected}" == "${actual}" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — category sets differ"
+    diff <(printf '%s\n' "${expected}") <(printf '%s\n' "${actual}") || true
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+SCHEMA_CATEGORIES="$(jq -r '."$defs".finding.properties.category.enum[]' "${REVIEW_SCHEMA}" | sort)"
+PRE_REVIEW_ALLOWED="$(jq_def_strings "${SCRIPT_DIR}/pre-review.src.sh" allowed_category)"
+POST_REVIEW_ALLOWED="$(jq_def_strings "${SCRIPT_DIR}/post-review.src.sh" allowed_category)"
+# post-review treats these as non-dimensional; sub-agent-failure is matched
+# separately in non_dimensional_finding.
+POST_REVIEW_NON_DIMENSIONAL="$( (jq_def_strings "${SCRIPT_DIR}/post-review.src.sh" non_dimensional_category; echo "sub-agent-failure") | sort)"
+RE_REVIEW_TABLE="$(awk '
+  /^\| Dimension / { found = 1; next }
+  found && !/^\|/ { exit }
+  found { print }
+' "${SCRIPT_DIR}/../skills/pr-review/references/re-review.md" | grep -oE '`[a-z-]+`' | tr -d '`' | sort)"
+
+assert_same_set "category-allowlist-pre-matches-post" \
+  "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_ALLOWED}"
+assert_same_set "category-allowlist-matches-re-review-table" \
+  "${PRE_REVIEW_ALLOWED}" "${RE_REVIEW_TABLE}"
+assert_same_set "category-schema-enum-matches-allowlist-plus-non-dimensional" \
+  "${SCHEMA_CATEGORIES}" "$(printf '%s\n%s\n' "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_NON_DIMENSIONAL}" | sort)"
+
+# The pr-review personas declare their categories in frontmatter; the skill
+# builds each persona's allowed set from it. Together the upstream personas
+# must cover exactly the re-review table.
+PERSONA_CATEGORIES="$(for persona in "${SCRIPT_DIR}"/../skills/pr-review/sub-agents/*.md; do
+  awk '
+    NR == 1 && /^---$/ { in_fm = 1; next }
+    in_fm && /^---$/ { exit }
+    in_fm && /^categories:/ { in_cat = 1; next }
+    in_fm && in_cat && /^  - / { sub(/^  - /, ""); print; next }
+    in_fm && in_cat { in_cat = 0 }
+  ' "${persona}"
+done | sort)"
+assert_same_set "persona-frontmatter-categories-match-re-review-table" \
+  "${RE_REVIEW_TABLE}" "${PERSONA_CATEGORIES}"
+
+# --- review-result.schema.json finding dimension ---
+# dimension is optional: results and playback fixtures without it stay valid.
+
+run_test_custom_filename "review-finding-with-dimension-valid" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"logic-error","file":"main.go","description":"Bug.","dimension":"correctness"}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-finding-without-dimension-valid" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"logic-error","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-finding-non-string-dimension-rejected" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"logic-error","file":"main.go","description":"Bug.","dimension":7}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "is not of type 'string'"
+
+# --- Retro result schema (schemas/retro-result.schema.json) ---
+# related_issues is OPTIONAL in the schema: a missing or quantity-deficient
+# receipt must skip only its own proposal in post-retro, not fail whole-result
+# validation and drop valid siblings and the summary (the retro validation loop
+# is all-or-nothing with no feedback). Receipt quantity/uniqueness is enforced
+# by the post-retro gate (see post-retro-test.sh), not here. The schema still
+# rejects a structurally wrong receipt (non-array searched, non-string items).
+SCHEMA="${SCRIPT_DIR}/../schemas/retro-result.schema.json"
+
+run_test "retro-valid-proposal-with-receipt" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[123],"note":"n"}}]}' \
+  "true"
+
+run_test "retro-valid-receipt-empty-found" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[]}}]}' \
+  "true"
+
+# found may mix a bare integer (target_repo) with a qualified owner/repo#N
+# string (cross-repo canonical).
+run_test "retro-valid-found-qualified-cross-repo-ref" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["fix keywords","root cause keywords"],"found":[1234,"fullsend-ai/fullsend#1887"]}}]}' \
+  "true"
+
+# A malformed found entry (bare #N string, not owner/repo#N) is rejected.
+run_test "retro-found-bare-hash-string-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"found":["#1887"]}}]}' \
+  "false"
+
+# found accepts a nested GitLab group/subgroup/project#N reference.
+run_test "retro-found-nested-gitlab-group-ref" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"found":["group/subgroup/project#12"]}}]}' \
+  "true"
+
+# A large receipt must NOT fail whole-result validation (no maxItems): the
+# non-poisoning design requires a big found/searched to pass the schema and be
+# handled by the post-retro gate, not reject the whole result.
+run_test "retro-large-receipt-passes-schema" \
+  "$(python3 -c '
+import json
+found=list(range(1,31))
+searched=["phrase %d" % i for i in range(1,21)]
+print(json.dumps({"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":searched,"found":found}}]}))')" \
+  "true"
+
+# Missing receipt passes the schema (optional) — the post-retro gate skips it.
+run_test "retro-missing-related-issues-passes-schema" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v"}]}' \
+  "true"
+
+# Quantity-deficient receipts pass the schema (gate enforces quantity) so that a
+# weak receipt skips only its own proposal rather than failing the whole result.
+run_test "retro-single-search-phrase-passes-schema" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["only one phrase"]}}]}' \
+  "true"
+
+run_test "retro-duplicate-search-phrases-pass-schema" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["same phrase","same phrase"]}}]}' \
+  "true"
+
+# A structurally wrong receipt still fails the schema: searched must be an array.
+run_test "retro-searched-not-array-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":"a single string"}}]}' \
+  "false"
+
+# searched items must be strings.
+run_test "retro-searched-non-string-items-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":[1,2]}}]}' \
+  "false"
+
+# An unknown key in related_issues is rejected (additionalProperties:false).
+run_test "retro-related-issues-unknown-key-rejected" \
+  '{"summary":"s","proposals":[{"target_repo":"org/repo","title":"T","what_happened":"w","what_could_go_better":"b","proposed_change":"p","validation_criteria":"v","related_issues":{"searched":["a","b"],"bogus":1}}]}' \
   "false"
 
 # --- Summary ---

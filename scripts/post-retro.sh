@@ -157,6 +157,9 @@ GITLAB_RETRO_OPS_SH_LOADED=1
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
 #
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
+#
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
 [[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
@@ -180,6 +183,35 @@ _validate_gitlab_host() {
   fi
   if [[ "${host,,}" != "${CI_SERVER_HOST,,}" ]]; then
     echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' does not match CI_SERVER_HOST" >&2
+    return 1
+  fi
+}
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
     return 1
   fi
 }
@@ -445,6 +477,8 @@ ISSUE_LINKS=""
 EVIDENCE_NOTES=""
 FILTERED_COUNT=0
 SKIPPED_TARGETS=""
+RECEIPT_SKIPPED=""
+FAILED_PROPOSALS=""
 if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
   for i in $(seq 0 $((PROPOSAL_COUNT - 1))); do
     TARGET_REPO=$(jq -r ".proposals[$i].target_repo" "${RESULT_FILE}")
@@ -474,13 +508,48 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
       continue
     fi
 
-    # Build the issue body from the four sections.
+    # Dedup-receipt gate: skip proposals without a well-formed duplicate-search
+    # receipt. This is the enforcement for #1730 — related_issues is optional in
+    # the schema (a missing/weak receipt must skip only its own proposal, not
+    # fail whole-result validation and drop valid siblings and the summary), so
+    # the gate validates the full receipt shape here, on both the validated and
+    # fallback (no FULLSEND_VALIDATED_ITERATION_DIR) paths. The shape check is
+    # exhaustive because the body builder below iterates searched and found and
+    # concatenates note: a non-array searched or a non-string note would abort
+    # BODY=$(...) under `set -e` mid-loop, after earlier proposals were filed.
+    # Requirements: searched is an array of >= 2 distinct, non-blank strings;
+    # found (if present) is an array; note (if present) is a string.
+    if ! jq -e "
+      .proposals[$i].related_issues as \$r |
+      (\$r | type) == \"object\"
+      and (\$r.searched | type) == \"array\"
+      and (\$r.searched | length) >= 2
+      and (\$r.searched | map(select(type == \"string\" and (gsub(\"^\\\\s+|\\\\s+\$\"; \"\") | length > 0))) | length) == (\$r.searched | length)
+      and (\$r.searched | unique | length) == (\$r.searched | length)
+      and ((\$r | has(\"found\") | not) or (\$r.found | type) == \"array\")
+      and ((\$r | has(\"note\") | not) or (\$r.note | type) == \"string\")
+    " "${RESULT_FILE}" >/dev/null 2>&1; then
+      echo "::warning::proposal[$i] not filed — missing or malformed dedup receipt (related_issues.searched must be at least 2 distinct non-empty phrases). Folding into summary."
+      RECEIPT_SKIPPED="${RECEIPT_SKIPPED}
+- **${TITLE}** (${TARGET_REPO}): $(jq -r ".proposals[$i].what_happened | split(\"\\n\")[0]" "${RESULT_FILE}")"
+      continue
+    fi
+
+    # Build the issue body from the four sections, plus the dedup receipt.
     BODY=$(jq -r --arg url "${ORIGINATING_URL}" "
       .proposals[$i] |
       \"## What happened\n\n\" + .what_happened +
       \"\n\n## What could go better\n\n\" + .what_could_go_better +
       \"\n\n## Proposed change\n\n\" + .proposed_change +
       \"\n\n## Validation criteria\n\n\" + .validation_criteria +
+      \"\n\n## Related issues checked\n\nSearched: \" +
+      (.related_issues.searched | join(\"; \")) +
+      (if (.related_issues.found // []) | length > 0 then
+        \"\nConsidered: \" + (.related_issues.found | map(if type == \"number\" then \"#\" + tostring else tostring end) | join(\", \")) +
+        (if .related_issues.note then \"\n\" + .related_issues.note else \"\" end)
+      else
+        \"\nNo overlapping issues found.\"
+      end) +
       \"\n\n---\n_Generated by retro agent from \" + \$url + \"_\"
     " "${RESULT_FILE}")
 
@@ -498,9 +567,14 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     SAFE_TITLE=$(_gha_sanitize "${TITLE}")
     echo "Filing issue in ${TARGET_REPO}: ${SAFE_TITLE}"
+    # A failed creation is non-fatal: record it, keep filing the remaining
+    # proposals, and report it in the summary comment.
     if ! ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage"); then
-      echo "ERROR: failed to create issue in ${TARGET_REPO}: ${ISSUE_URL}" >&2
-      exit 1
+      SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
+      echo "::warning::Failed to create issue in ${TARGET_REPO} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"
+      FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${TARGET_REPO}\`)"
+      continue
     fi
 
     echo "Created: ${ISSUE_URL}"
@@ -524,11 +598,17 @@ COMMENT="${SUMMARY}"
 if [[ -n "${ISSUE_LINKS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals filed\n\n%s' "${COMMENT}" "${ISSUE_LINKS}")
 fi
+if [[ -n "${FAILED_PROPOSALS}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals not filed (issue creation failed)\n\nFile manually; see the post-retro logs for the error:\n%s' "${COMMENT}" "${FAILED_PROPOSALS}")
+fi
 if [[ -n "${EVIDENCE_NOTES}" ]]; then
   COMMENT=$(printf '%s\n\n### Evidence notes (not filed as issues)\n%s' "${COMMENT}" "${EVIDENCE_NOTES}")
 fi
 if [[ -n "${SKIPPED_TARGETS}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals skipped (target repo not allowed)\n\nFile manually or update `create_issues.allow_targets` in config.yaml:\n%s' "${COMMENT}" "${SKIPPED_TARGETS}")
+fi
+if [[ -n "${RECEIPT_SKIPPED}" ]]; then
+  COMMENT=$(printf '%s\n\n### Proposals skipped (no dedup receipt)\n\nNot filed because they did not record a valid duplicate search (`related_issues`). Re-run retro, or search for duplicates and file manually:\n%s' "${COMMENT}" "${RECEIPT_SKIPPED}")
 fi
 
 # Truncate to forge-specific comment limit.

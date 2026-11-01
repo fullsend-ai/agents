@@ -42,6 +42,151 @@ set -euo pipefail
 [[ -n "${POST_FAILURE_REPORT_SH_LOADED:-}" ]] && return 0
 POST_FAILURE_REPORT_SH_LOADED=1
 
+# shellcheck source=forge-transient-retry.lib.sh
+# BEGIN bundled: lib/forge-transient-retry.lib.sh
+# forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
+#
+# Usage:
+#   forge_retry_transient cmd [args...]
+#
+# On success, prints the command's stdout. On failure, prints the command's
+# combined output to stderr so callers (and workflow logs) can diagnose,
+# and stores the same sanitized text in FORGE_RETRY_LAST_ERROR so callers
+# can classify the error without capturing stderr (which would buffer
+# retry notices).
+# Retries only when the output looks like a transient 5xx or timeout.
+#
+# Environment:
+#   FORGE_TRANSIENT_RETRY_ATTEMPTS   — default 3
+#   FORGE_TRANSIENT_RETRY_BASE_DELAY — default 2 (seconds; doubles each retry)
+
+# shellcheck shell=bash
+
+[[ -n "${FORGE_TRANSIENT_RETRY_SH_LOADED:-}" ]] && return 0
+FORGE_TRANSIENT_RETRY_SH_LOADED=1
+
+forge_is_transient_error() {
+  local text="$1"
+  local lower
+  lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
+
+  if echo "${lower}" | grep -qE \
+    'http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
+    return 0
+  fi
+  if echo "${lower}" | grep -qE \
+    'internal server error|service unavailable|bad gateway|gateway timeout'; then
+    return 0
+  fi
+  if echo "${lower}" | grep -qE \
+    'context deadline exceeded|connection reset|i/o timeout|operation timed out|timed out'; then
+    return 0
+  fi
+  # Go net/http (gh) and curl timeout diagnostics that carry no other marker.
+  # Specific phrases only: a bare "timeout" would match branch names such as
+  # "agent/42-fix-webhook-timeout".
+  if echo "${lower}" | grep -qE \
+    'tls handshake timeout|ssl connection timeout|timeout awaiting response headers|connection timeout after|client\.timeout exceeded'; then
+    return 0
+  fi
+  return 1
+}
+
+# Duplicate PR/MR create. GitHub CLI, GitHub GraphQL, and GitLab 409 all
+# include this phrase; other 422/400 validation errors do not.
+forge_is_already_exists_error() {
+  local lower
+  lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  grep -qE 'already exists' <<< "${lower}"
+}
+
+_forge_retry_notice() {
+  local msg="$1"
+  # Always stderr so success stdout (e.g. a PR URL) stays clean.
+  if declare -F gha_echo >/dev/null 2>&1; then
+    gha_echo warning "${msg}" >&2
+  else
+    echo "${msg}" >&2
+  fi
+}
+
+# Sanitize captured command output before it reaches the runner log.
+# Secret redaction (tokens/PEMs) comes from sanitize_failure_detail when
+# post-failure-report.lib.sh is loaded. Whether or not it is, the same
+# order-safe escaping runs as the final step on every path: the shared
+# sanitizers delete "%0A"/"::" piecemeal, and a nested payload such as
+# ":%0%0AA:error" can reassemble into a live "::error" command after one
+# deletion pass. Escaping instead of deleting avoids that — "%" is escaped
+# first and then "::", so no sequence of the escaped output can form "::",
+# "%0A" or "%0D". ANSI escapes and other control characters are dropped
+# (newline and tab kept).
+_forge_retry_sanitize() {
+  local text="$1"
+  if declare -F sanitize_failure_detail >/dev/null 2>&1; then
+    # max_lines=0 disables truncation — this is diagnostic log output, not a
+    # length-limited PR comment.
+    text="$(sanitize_failure_detail "${text}" 0)"
+  fi
+  text="$(printf '%s' "${text}" | LC_ALL=C tr -d '\000-\010\013-\037\177')"
+  text="${text//%/%25}"
+  text="${text//::/%3A%3A}"
+  printf '%s' "${text}"
+}
+
+# Run a command, retrying transient 5xx/timeout failures with exponential
+# backoff (2s, 4s, 8s by default). Non-transient failures return immediately.
+forge_retry_transient() {
+  local max_attempts="${FORGE_TRANSIENT_RETRY_ATTEMPTS:-3}"
+  local delay="${FORGE_TRANSIENT_RETRY_BASE_DELAY:-2}"
+  local attempt=1
+  local outfile errfile rc combined
+
+  outfile=$(mktemp)
+  errfile=$(mktemp)
+  # Read by forge_create_pr after this function returns (same shell).
+  # shellcheck disable=SC2034
+  FORGE_RETRY_LAST_ERROR=""
+  # shellcheck disable=SC2064
+  trap "rm -f '${outfile}' '${errfile}'" RETURN
+
+  while [ "${attempt}" -le "${max_attempts}" ]; do
+    : >"${outfile}"
+    : >"${errfile}"
+    rc=0
+    "$@" >"${outfile}" 2>"${errfile}" || rc=$?
+
+    if [ "${rc}" -eq 0 ]; then
+      # shellcheck disable=SC2034
+      FORGE_RETRY_LAST_ERROR=""
+      cat "${outfile}"
+      return 0
+    fi
+
+    combined=$(cat "${outfile}" "${errfile}")
+    if [ "${attempt}" -lt "${max_attempts}" ] && forge_is_transient_error "${combined}"; then
+      _forge_retry_notice \
+        "Transient forge error (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
+      sleep "${delay}"
+      delay=$((delay * 2))
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    local sanitized_combined
+    sanitized_combined="$(_forge_retry_sanitize "${combined}")"
+    # shellcheck disable=SC2034
+    FORGE_RETRY_LAST_ERROR="${sanitized_combined}"
+    printf '%s' "${sanitized_combined}" >&2
+    if [ -n "${sanitized_combined}" ]; then
+      printf '\n' >&2
+    fi
+    return "${rc}"
+  done
+
+  return 1
+}
+# END bundled: lib/forge-transient-retry.lib.sh
+
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
 # Guard against duplicate posts within one script invocation (e.g. trap + explicit
@@ -207,7 +352,7 @@ categorize_push_failure() {
   fi
 
   if echo "${push_output}" | grep -qiE \
-    'non-fast-forward|rejected|fetch first|protected branch|GH006|permission denied'; then
+    'non-fast-forward|rejected|fetch first|protected branch|GH006|permission denied|not a fast forward|rule violations'; then
     echo "push-rejected"
     return 0
   fi
@@ -335,6 +480,124 @@ _post_failure_ensure_token() {
   fi
 }
 
+# Create the last-resort label directly against the forge API. Deliberately
+# does not call forge_create_label: that helper swallows errors
+# (`2>/dev/null || true` on every forge), so we would never know whether the
+# label actually got created. A create failure here is non-fatal (the label
+# may already exist), but it must be visible, not silently eaten.
+_post_failure_create_label() {
+  local label="$1"
+  local description="$2"
+
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [ -z "${REPO_ENCODED:-}" ]; then
+      return 1
+    fi
+    if declare -F _gitlab_code_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_code_api POST "/projects/${REPO_ENCODED}/labels" \
+        --data-urlencode "name=${label}" \
+        --data-urlencode "description=${description}" \
+        --data-urlencode "color=#B60205" >/dev/null
+      return $?
+    fi
+    if declare -F _gitlab_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_api POST "/projects/${REPO_ENCODED}/labels" \
+        --data-urlencode "name=${label}" \
+        --data-urlencode "description=${description}" \
+        --data-urlencode "color=#B60205" >/dev/null
+      return $?
+    fi
+    return 1
+  fi
+
+  forge_retry_transient gh label create "${label}" --repo "${REPO_FULL_NAME}" \
+    --description "${description}" --color "B60205" --force >/dev/null
+}
+
+# Apply the last-resort label directly against the forge API and report the
+# real exit status. Deliberately does not call forge_add_label or
+# forge_add_pr_label: those helpers are the best-effort production paths
+# (github-code-ops.lib.sh / gitlab-code-ops.lib.sh / github-fix-ops.lib.sh /
+# gitlab-fix-ops.lib.sh) and unconditionally swallow forge errors
+# (`2>/dev/null || true`), so a failure during the same outage that already
+# failed the retried comment would go unnoticed no matter how it's wrapped.
+# Always go straight to the direct API calls below, wrapped in
+# forge_retry_transient, so a persistent failure is actually surfaced.
+_post_failure_add_label() {
+  local label="$1"
+  local target="$2"
+  local number="$3"
+
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [ -z "${REPO_ENCODED:-}" ]; then
+      return 1
+    fi
+    local endpoint
+    if [ "${target}" = "pr" ]; then
+      endpoint="/projects/${REPO_ENCODED}/merge_requests/${number}"
+    else
+      endpoint="/projects/${REPO_ENCODED}/issues/${number}"
+    fi
+    if declare -F _gitlab_code_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_code_api PUT "${endpoint}" \
+        --data-urlencode "add_labels=${label}" >/dev/null
+      return $?
+    fi
+    if declare -F _gitlab_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_api PUT "${endpoint}" \
+        --data-urlencode "add_labels=${label}" >/dev/null
+      return $?
+    fi
+    return 1
+  fi
+
+  if [ "${target}" = "pr" ]; then
+    forge_retry_transient gh pr edit "${number}" --repo "${REPO_FULL_NAME}" \
+      --add-label "${label}" >/dev/null
+    return $?
+  fi
+  forge_retry_transient gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels" \
+    -f "labels[]=${label}" --silent
+}
+
+# Last-resort discoverability when even the retried failure comment fails.
+# A label survives when every comment attempt is swallowed by a forge outage.
+_post_failure_apply_failed_label() {
+  local label="$1"
+  local target="${2:-issue}"
+  local number description
+
+  if [ "${target}" = "pr" ]; then
+    number="${PR_NUMBER:-}"
+    description="Fix agent post-script failed"
+  else
+    number="${ISSUE_NUMBER:-}"
+    description="Code agent post-script failed"
+  fi
+
+  if [ -z "${number}" ] || [ -z "${REPO_FULL_NAME:-}" ]; then
+    gha_echo warning "Cannot apply last-resort ${label} label (missing issue/PR number or repo)"
+    return 1
+  fi
+
+  gha_echo warning "Applying last-resort ${label} label so the failure is discoverable"
+
+  if ! _post_failure_create_label "${label}" "${description}"; then
+    gha_echo warning "Failed to create last-resort ${label} label (may already exist)"
+  fi
+
+  if _post_failure_add_label "${label}" "${target}" "${number}"; then
+    return 0
+  fi
+
+  # `number` may be the unvalidated raw env value on this path; escape it
+  # order-safely (not delete-based) before it reaches a workflow-command line.
+  local log_number
+  log_number="$(_forge_retry_sanitize "${number}")"
+  gha_echo warning "Failed to apply last-resort ${label} label to ${target} #${log_number}"
+  return 1
+}
+
 report_post_failure_to_issue() {
   local exit_code="${1:-$?}"
   local safe_issue_number
@@ -367,14 +630,16 @@ report_post_failure_to_issue() {
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
   if declare -F forge_post_issue_comment >/dev/null 2>&1; then
-    if ! forge_post_issue_comment "${body}"; then
+    if ! forge_retry_transient forge_post_issue_comment "${body}"; then
       gha_echo warning "Failed to post error comment to issue #${safe_issue_number}"
+      _post_failure_apply_failed_label "code-agent-failed" "issue" || true
     fi
   else
-    if ! gh issue comment "${ISSUE_NUMBER}" \
+    if ! forge_retry_transient gh issue comment "${ISSUE_NUMBER}" \
       --repo "${REPO_FULL_NAME}" \
-      --body "${body}" 2>/dev/null; then
-      gha_echo warning "Failed to post error comment to issue #${safe_issue_number} (check issues:write on PUSH_TOKEN)"
+      --body "${body}"; then
+      gha_echo warning "Failed to post error comment to issue #${safe_issue_number}"
+      _post_failure_apply_failed_label "code-agent-failed" "issue" || true
     fi
   fi
 }
@@ -402,14 +667,16 @@ report_post_failure_to_pr() {
 
   gha_echo warning "Posting failure comment to PR #${safe_pr_number}..."
   if declare -F forge_post_pr_comment >/dev/null 2>&1; then
-    if ! forge_post_pr_comment "${PR_NUMBER}" "${body}"; then
+    if ! forge_retry_transient forge_post_pr_comment "${PR_NUMBER}" "${body}"; then
       gha_echo warning "Failed to post error comment to PR #${safe_pr_number}"
+      _post_failure_apply_failed_label "fix-agent-failed" "pr" || true
     fi
   else
-    if ! gh pr comment "${PR_NUMBER}" \
+    if ! forge_retry_transient gh pr comment "${PR_NUMBER}" \
       --repo "${REPO_FULL_NAME}" \
-      --body "${body}" 2>/dev/null; then
-      gha_echo warning "Failed to post error comment to PR #${safe_pr_number} (check pull-requests:write on PUSH_TOKEN)"
+      --body "${body}"; then
+      gha_echo warning "Failed to post error comment to PR #${safe_pr_number}"
+      _post_failure_apply_failed_label "fix-agent-failed" "pr" || true
     fi
   fi
 }
@@ -441,7 +708,7 @@ post_fail_to_pr() {
 #   resolve_platform   — detect OS/arch and print a platform key (e.g. linux_x64)
 #   gitleaks_sha256    — print the SHA-256 checksum for a given platform key
 #   verify_checksum    — verify a file against an expected SHA-256 hash
-#   install_gitleaks   — download, verify, and install the gitleaks binary
+#   install_gitleaks   — select the expected version or checksum-install it; export GITLEAKS_BIN
 #
 # Uses case statements (not declare -A / mapfile) so the script runs on
 # bash 3.2 (macOS system bash).
@@ -504,7 +771,31 @@ verify_checksum() {
 }
 
 install_gitleaks() {
-  if command -v gitleaks >/dev/null 2>&1; then
+  local install_dir="${HOME}/.local/bin"
+  local installed_version path_bin path_dir
+  path_bin="$(command -v gitleaks 2>/dev/null || true)"
+  case "${path_bin}" in
+    /*) ;;
+    "") ;;
+    *) path_bin="${PWD}/${path_bin}" ;;
+  esac
+
+  if [ -n "${path_bin}" ] && [ -x "${path_bin}" ] \
+    && installed_version="$("${path_bin}" version 2>/dev/null)" \
+    && [ "${installed_version}" = "${GITLEAKS_VERSION}" ]; then
+    GITLEAKS_BIN="${path_bin}"
+    export GITLEAKS_BIN
+    path_dir="${path_bin%/*}"
+    export PATH="${path_dir}:${PATH}"
+    return 0
+  fi
+
+  GITLEAKS_BIN="${install_dir}/gitleaks"
+  if [ -x "${GITLEAKS_BIN}" ] \
+    && installed_version="$("${GITLEAKS_BIN}" version 2>/dev/null)" \
+    && [ "${installed_version}" = "${GITLEAKS_VERSION}" ]; then
+    export GITLEAKS_BIN
+    export PATH="${install_dir}:${PATH}"
     return 0
   fi
 
@@ -516,19 +807,27 @@ install_gitleaks() {
     echo "::error::No gitleaks checksum for platform: ${platform}" >&2
     return 1
   fi
-  mkdir -p "${HOME}/.local/bin"
+  mkdir -p "${install_dir}"
   tarball="$(mktemp)"
   if ! curl -fsSL \
        "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${platform}.tar.gz" \
        -o "${tarball}" \
      || ! verify_checksum "${tarball}" "${checksum}" \
-     || ! tar xzf "${tarball}" -C "${HOME}/.local/bin" gitleaks; then
+     || ! tar xzf "${tarball}" -C "${install_dir}" gitleaks; then
     rm -f "${tarball}"
     echo "::error::Failed to download and verify gitleaks v${GITLEAKS_VERSION} (${platform})" >&2
     return 1
   fi
   rm -f "${tarball}"
-  export PATH="${HOME}/.local/bin:${PATH}"
+
+  if ! installed_version="$("${GITLEAKS_BIN}" version 2>/dev/null)" \
+    || [ "${installed_version}" != "${GITLEAKS_VERSION}" ]; then
+    echo "::error::Installed gitleaks does not report expected version ${GITLEAKS_VERSION}" >&2
+    return 1
+  fi
+
+  export GITLEAKS_BIN
+  export PATH="${install_dir}:${PATH}"
 }
 # END bundled: lib/gitleaks-install.lib.sh
 # shellcheck source=lib/precommit-gate.lib.sh
@@ -574,14 +873,39 @@ signoff_bot_email() {
   printf '%s' "${GIT_BOT_EMAIL:-${GIT_COMMITTER_EMAIL:-}}"
 }
 
+# commit_author_identity SHA — prints "name<TAB>email". A commit published
+# through the GitHub API (docs/code.md "Signed commits") is authored by the
+# App's bot user and carries the sandbox identity in an `Authored-by: name
+# <email>` trailer. The trailer is the author only when the git author is
+# that bot (name ending in `[bot]`, email GIT_BOT_EMAIL) and the commit
+# carries exactly one; anything else is read from the git author fields.
+commit_author_identity() {
+  local sha="$1" name email trailers
+  IFS=$'\t' read -r name email <<< "$(git log -1 --format='%an%x09%ae' "${sha}" 2>/dev/null)"
+  if [[ "${name}" == *"[bot]" && "${email}" == "$(signoff_bot_email)" ]]; then
+    trailers="$(git log -1 --format='%(trailers:key=Authored-by,valueonly)' "${sha}" 2>/dev/null | sed '/^$/d')"
+    if [ "$(printf '%s\n' "${trailers}" | grep -c .)" = "1" ]; then
+      case "${trailers}" in
+        *" <"*">")
+          name="${trailers% <*}"
+          email="${trailers##* <}"
+          email="${email%>}"
+          ;;
+      esac
+    fi
+  fi
+  printf '%s\t%s\n' "${name}" "${email}"
+}
+
 # signoff_is_bot_commit <sha> — 0 when the commit is in scope for rewriting.
 # Author, not committer: a rebase re-stamps the committer onto commits the
 # human wrote. Author is also what the DCO app checks when it waives bots.
 signoff_is_bot_commit() {
-  local _sb_bot
+  local _sb_bot _sb_email
   _sb_bot="$(signoff_bot_email)"
   [ -z "${_sb_bot}" ] && return 0
-  [ "$(git log -1 --format='%ae' "$1" 2>/dev/null)" = "${_sb_bot}" ]
+  IFS=$'\t' read -r _ _sb_email <<< "$(commit_author_identity "$1")"
+  [ "${_sb_email}" = "${_sb_bot}" ]
 }
 
 # signoff_count_range <range> — number of in-scope commits carrying a trailer.
@@ -609,7 +933,7 @@ signoff_present_in_range() {
 # closed. Never touches commits below the range's base.
 signoff_strip_range() {
   local _ss_range="$1" _ss_bot _ss_tmp _ss_sed _ss_sha
-  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0
+  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0 _ss_shas=""
   _ss_bot="$(signoff_bot_email)"
   # Skip line 1 so a message whose subject IS the trailer keeps a subject.
   _ss_sed='1!{/^Signed-off-by:/d;}'
@@ -632,6 +956,7 @@ signoff_strip_range() {
     if [ "${_ss_in_tip}" -eq 1 ] && signoff_is_bot_commit "${_ss_sha}"; then
       _ss_tip_n=$((_ss_tip_n + 1))
       _ss_base="${_ss_sha}"
+      _ss_shas="${_ss_shas} ${_ss_sha}"
     else
       _ss_in_tip=0
       if signoff_is_bot_commit "${_ss_sha}" \
@@ -683,19 +1008,17 @@ signoff_strip_range() {
     return 1
   fi
 
-  # The narrowed range is agent-only by construction; the author check in the
-  # filter is a second line of defence. filter-branch exports each original
-  # commit's identity, so $GIT_AUTHOR_EMAIL is the commit being rewritten. The
-  # bot address goes through the environment, not the filter text: it
-  # contains "[bot]" and "+".
+  # The narrowed range is agent-only by construction; as a second line of
+  # defence the filter rewrites only the commits the walk selected, which
+  # filter-branch names through GIT_COMMIT.
   # --first-parent (passed to the underlying rev-list, same as the walk above)
   # keeps a forge-conflict merge's second parent — historical target-branch
   # commits — out of the rewrite. Without it, filter-branch regenerates every
   # commit it is handed, including that second-parent history, which changes
   # its SHAs and breaks the merge's TRUSTED_TARGET_SHA ancestry.
-  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_BOT_EMAIL="${_ss_bot}" \
+  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_SHAS="${_ss_shas} " \
        git filter-branch -f \
-       --msg-filter 'if [ "${GIT_AUTHOR_EMAIL}" = "${SIGNOFF_BOT_EMAIL}" ]; then sed '"'${_ss_sed}'"'; else cat; fi' \
+       --msg-filter 'case "${SIGNOFF_SHAS}" in *" ${GIT_COMMIT} "*) sed '"'${_ss_sed}'"' ;; *) cat ;; esac' \
        -- --first-parent "${_ss_base}^..HEAD" >/dev/null; then
     echo "signoff-strip: git filter-branch failed" >&2
     return 1

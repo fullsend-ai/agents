@@ -8,13 +8,15 @@ First-class agents for the [fullsend](https://github.com/fullsend-ai/fullsend) p
 |-------|-------------|---------|----------|
 | **Triage** | Assesses issue sufficiency, searches for duplicates, applies control labels | New issues, `/fs-triage` | claude, pi |
 | **Code** | Implements fixes and features following repo conventions | `ready-to-code` label, `/fs-code` | claude, pi |
-| **Review** | Dispatches parallel sub-agents across six review dimensions | PR events, `/fs-review` | claude, pi |
+| **Review** | Dispatches parallel sub-agents across the review dimensions the skill stages (correctness, security, user experience for UI changes, and more) | PR events, `/fs-review` | claude, pi |
 | **Fix** | Implements targeted fixes from review feedback | Review comments, `/fs-fix` | claude, pi |
 | **Prioritize** | Scores issues using the RICE framework | Schedule, `/fs-prioritize` | claude, pi |
 | **Retro** | Analyzes completed workflows and proposes improvements | PR close, `/fs-retro` | claude, pi |
 | **Scribe** | Maps meeting notes to issue backlog updates and new issues | Schedule | claude, pi |
 
 Claude Code (`claude`) is the stable default every repo gets; `pi` is in its enablement (experimental) phase and is selected per repo with `runtime: pi` — see fullsend's [Runtimes](https://github.com/fullsend-ai/fullsend/blob/main/docs/runtimes.md). Every harness sets `effort: high` explicitly.
+
+Review and Retro dispatch native Codex children only when the runtime note lists registered sub-agent roles ([fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970)); each agent's row lists `codex` once a live run of that agent is linked from its doc.
 
 See [`docs/`](docs/) for detailed documentation on each agent.
 
@@ -55,7 +57,7 @@ Run all agent shell script test suites from the repo root:
 make test
 ```
 
-This is an alias for `make script-test`, which runs the `scripts/*-test.sh` suites. CI also runs `make check-bundle` and executes `make script-test` twice (source and bundled modes) via `.github/workflows/script-test.yml`.
+This is an alias for `make script-test`, which runs the `scripts/*-test.sh` suites. It also runs the Go test in `harness/triggertest`, which checks the CEL `trigger:` expressions in `harness/` against fullsend's NormalizedEvent fixtures; it needs Go and either network access or a module cache that already holds the pinned fullsend version. CI also runs `make check-bundle` and executes `make script-test` twice (source and bundled modes) via `.github/workflows/script-test.yml`.
 
 The live behaviour suite runs the isolated dev scenarios described in
 [`docs/behaviour-testing.md`](docs/behaviour-testing.md):

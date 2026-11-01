@@ -162,15 +162,14 @@ range as follows:
    network policy blocks it). Record in structured output that the rewrite
    could not run because the base ref is missing, and stop the rewrite.
 3. `MERGE_BASE="$(git merge-base HEAD origin/${BASE})"`.
-4. Walk `git log --format='%H %an %ae' ${MERGE_BASE}..HEAD` from newest
-   to oldest. A commit is in-scope when `%an` equals `$GIT_AUTHOR_NAME`
-   and `%ae` equals `$GIT_AUTHOR_EMAIL`. Collect the contiguous suffix
-   of in-scope commits starting at HEAD. Stop at the first out-of-scope
-   commit (human-authored, code-agent, or otherwise not this fix agent).
-5. The rewrite base is the parent of the oldest in-scope commit
-   (`git rev-parse ${oldest}^`). If HEAD is out-of-scope, or the suffix
-   is empty, fail closed: record that the authorized range could not be
-   determined, and do not rewrite.
+4. Run `scripts/authorized-range.sh origin/${BASE}` from this skill. It
+   prints `REWRITE_BASE=<sha>` and `IN_SCOPE=<n>` for the contiguous
+   suffix of commits at HEAD authored by this fix agent (the identity
+   rule is under "Fail closed" in SKILL.md), or exits non-zero with the
+   reason when HEAD is out-of-scope.
+5. The rewrite base is the `REWRITE_BASE` printed in step 4. If the
+   script exited non-zero, fail closed: record that the authorized range
+   could not be determined, and do not rewrite.
 
 Do not rewrite past a human-authored commit. Do not rewrite commits
 authored by the code agent (`fullsend-code` or any name other than

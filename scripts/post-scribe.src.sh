@@ -13,6 +13,10 @@
 #   GH_TOKEN       — GitHub token (when FULLSEND_FORGE=github)
 #   GITLAB_TOKEN   — GitLab token (when FULLSEND_FORGE=gitlab)
 #
+# Jira issue creation (FULLSEND_TRACKER=jira): new issues are created in
+# SCRIBE_JIRA_PROJECT; comments are not supported. See
+# lib/jira-scribe-ops.lib.sh for the required JIRA_* variables.
+#
 # Optional env vars:
 #   SCRIBE_MODE              — "all" (default), "comments_only", "new_issues_only"
 #   SCRIBE_SLACK_WEBHOOK_URL — Slack incoming webhook for notification (skip if unset)
@@ -34,6 +38,11 @@ if [[ -n "${GH_TOKEN:-}" ]]; then
 fi
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
+fi
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  # Sanitize workflow-command delimiters before interpolating into ::add-mask::
+  # so a crafted token cannot inject additional workflow commands.
+  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
 fi
 
 # ============================================================
@@ -68,6 +77,18 @@ case "${SCRIBE_MODE}" in
     exit 1
     ;;
 esac
+# Jira: existing_issue is a numeric forge issue number, so comments on Jira
+# issues are not supported yet. Only new issues are written.
+if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+  if [[ "${SCRIBE_MODE}" == "comments_only" ]]; then
+    echo "ERROR: SCRIBE_MODE=comments_only is not supported with FULLSEND_TRACKER=jira (comments are not supported)"
+    exit 1
+  fi
+  if [[ "${SCRIBE_MODE}" == "all" ]]; then
+    echo "::notice::FULLSEND_TRACKER=jira — comments are not supported; using new_issues_only"
+    SCRIBE_MODE="new_issues_only"
+  fi
+fi
 echo "Mode: ${SCRIBE_MODE}"
 
 # Find the agent result JSON — prefer the validated iteration when set.
@@ -138,28 +159,22 @@ REJECTED=0
 contains_sensitive() {
   local text="$1"
   # GitHub PATs, AWS access keys, private keys
-  echo "${text}" \
-    | grep -qEi '(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}|\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b|-----BEGIN.*(PRIVATE KEY)' \
+  grep -qEi '(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}|\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b|-----BEGIN.*(PRIVATE KEY)' <<< "${text}" \
     && return 0
   # Email addresses
-  echo "${text}" \
-    | grep -qE '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b' \
+  grep -qE '\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b' <<< "${text}" \
     && return 0
   # SSN
-  echo "${text}" \
-    | grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' \
+  grep -qE '\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b' <<< "${text}" \
     && return 0
   # Slack webhooks
-  echo "${text}" \
-    | grep -qE 'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+' \
+  grep -qE 'https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+' <<< "${text}" \
     && return 0
   # JWTs
-  echo "${text}" \
-    | grep -qE '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b' \
+  grep -qE '\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b' <<< "${text}" \
     && return 0
   # Generic key=value secrets
-  echo "${text}" \
-    | grep -qEi '(api[_-]?key|token|secret|password|bearer)[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+/-]{20,}' \
+  grep -qEi '(api[_-]?key|token|secret|password|bearer)[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+/-]{20,}' <<< "${text}" \
     && return 0
   return 1
 }
@@ -167,8 +182,7 @@ contains_sensitive() {
 contains_suspicious_unicode() {
   local text="$1"
   # Tag characters (U+E0000–E007F), zero-width chars, BOM, bidi overrides/isolates
-  echo "${text}" \
-    | perl -e 'binmode(STDIN, q(:encoding(UTF-8))); while (<STDIN>) { if (/[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/) { exit 0 } } exit 1' \
+  perl -e 'binmode(STDIN, q(:encoding(UTF-8))); while (<STDIN>) { if (/[\x{E0000}-\x{E007F}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}]/) { exit 0 } } exit 1' <<< "${text}" \
     && return 0
   return 1
 }
@@ -244,6 +258,10 @@ COMMENT_ISSUES=()
 NEW_ISSUE_TITLES=()
 NEW_ISSUE_URLS=()
 SKIPPED_NEW_ISSUES=0
+JIRA_DEDUP_FAILURES=0
+CREATE_FAILURES=0
+JIRA_LABEL_FAILURES=0
+JIRA_LABEL_FAILURE_KEYS=()  # issue keys whose label PUT failed
 
 # ============================================================
 # Process comment topics (existing issues)
@@ -307,13 +325,13 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
 
   # Gate: sensitive content (deterministic PII/secret patterns)
   if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}"; then
-    gate_reject "${TOPIC}" "contains sensitive content (PII, secrets)"
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "contains sensitive content (PII, secrets)"
     continue
   fi
 
   # Gate: suspicious Unicode (prompt injection defense)
   if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}"; then
-    gate_reject "${TOPIC}" "contains suspicious Unicode (potential prompt injection)"
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -378,6 +396,15 @@ else
   echo "Processing ${NEW_COUNT} new issue proposals..."
 fi
 
+# Jira: fail before any create call if the configured project/issue type
+# needs required fields scribe does not set.
+if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${NEW_COUNT}" -gt 0 ]]; then
+  if ! tracker_validate_create; then
+    echo "ERROR: Jira project validation failed — no issues created"
+    exit 1
+  fi
+fi
+
 for i in $(seq 0 $((NEW_COUNT - 1))); do
   # Read public_safe FIRST — if false, suppress all content from logs
   PUBLIC_SAFE=$(jq -r ".new_issues[${i}].public_safe" "${RESULT_FILE}")
@@ -407,14 +434,16 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   fi
 
   # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}"; then
-    gate_reject "${TITLE}" "contains sensitive content"
+  # Labels are model-produced free text (Jira creates them on the fly), so
+  # they pass the same gates as the title and body.
+  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}" || contains_sensitive "${LABELS}"; then
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "contains sensitive content"
     continue
   fi
 
   # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}"; then
-    gate_reject "${TITLE}" "contains suspicious Unicode (potential prompt injection)"
+  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}" || contains_suspicious_unicode "${LABELS}"; then
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -451,13 +480,41 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
 
   if [[ "${DRY_RUN}" == "true" ]]; then
     echo "    [DRY RUN] Would create issue: ${SAFE_TITLE}"
-    echo "    [DRY RUN] Labels: $(_gha_sanitize "${LABELS}")"
+    DISPLAY_LABELS=$(forge_normalize_labels "${LABELS}")
+    echo "    [DRY RUN] Labels: $(_gha_sanitize "${DISPLAY_LABELS}")"
     echo "    [DRY RUN] Body length: ${BODY_LEN} chars"
     NEW_ISSUE_URLS+=("")
   else
-    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}")
+    # Jira rerun protection: skip if an issue with the same summary exists.
+    if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then
+        echo "  ERROR: Jira duplicate check failed — refusing to create issue: ${SAFE_TITLE}"
+        JIRA_DEDUP_FAILURES=$((JIRA_DEDUP_FAILURES + 1))
+        unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
+        continue
+      fi
+      if [[ -n "${EXISTING_URL}" ]]; then
+        echo "    SKIP: duplicate issue (already exists: ${EXISTING_URL})"
+        unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
+        continue
+      fi
+    fi
+    CREATE_RC=0
+    ISSUE_URL=$(printf '%s' "${FULL_BODY}" | forge_create_issue "${SCRIBE_REPO}" "${TITLE}" "${LABELS}") || CREATE_RC=$?
+    if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
+      echo "    ERROR: forge_create_issue failed (exit ${CREATE_RC})"
+      unset "NEW_ISSUE_TITLES[$((${#NEW_ISSUE_TITLES[@]} - 1))]"
+      CREATE_FAILURES=$((CREATE_FAILURES + 1))
+      continue
+    fi
     echo "    Created: ${ISSUE_URL}"
     NEW_ISSUE_URLS+=("${ISSUE_URL}")
+    # Exit code 2 means the issue was created but the label PUT failed.
+    if [[ ${CREATE_RC} -eq 2 ]]; then
+      JIRA_LABEL_FAILURES=$((JIRA_LABEL_FAILURES + 1))
+      # Extract issue key from URL (e.g. PROJ-100 from .../browse/PROJ-100)
+      JIRA_LABEL_FAILURE_KEYS+=("${ISSUE_URL##*/}")
+    fi
   fi
 done
 
@@ -478,6 +535,9 @@ echo "  Gate rejections: ${REJECTED}"
 echo "    Content gate: ${CONTENT_GATE_REJECTIONS}"
 echo "  New proposals reviewed: ${NEW_COUNT}"
 [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]] && echo "  Skipped new issues (mode): ${SKIPPED_NEW_ISSUES}"
+if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+  echo "  Label failures: ${JIRA_LABEL_FAILURES} issue(s) created without labels: ${JIRA_LABEL_FAILURE_KEYS[*]}"
+fi
 echo "=================================="
 
 # ============================================================
@@ -520,6 +580,11 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo ""
   fi
 
+  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+    echo "> :warning: **${JIRA_LABEL_FAILURES}** issue(s) created without labels (label PUT failed): ${JIRA_LABEL_FAILURE_KEYS[*]}"
+    echo ""
+  fi
+
   if [[ "${REJECTED}" -gt 0 ]]; then
     echo "> **${REJECTED}** topic(s) rejected by the security gate."
     if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
@@ -552,6 +617,9 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   fi
   if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
     SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
+  fi
+  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+    SLACK_TEXT+="\n• :warning: Label failures: *${JIRA_LABEL_FAILURES}* (${JIRA_LABEL_FAILURE_KEYS[*]})"
   fi
 
   if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
@@ -587,4 +655,11 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   unset SLACK_WEBHOOK
 else
   echo "No SCRIBE_SLACK_WEBHOOK_URL set — skipping Slack notification"
+fi
+
+# Deferred failure: if any Jira duplicate checks or issue creates failed, exit
+# non-zero after finalization so already-created issues are reported in the summary.
+if [[ "${JIRA_DEDUP_FAILURES}" -gt 0 || "${CREATE_FAILURES}" -gt 0 ]]; then
+  echo "ERROR: ${JIRA_DEDUP_FAILURES} Jira duplicate check(s) and/or ${CREATE_FAILURES} issue creation(s) failed — exiting with error"
+  exit 1
 fi

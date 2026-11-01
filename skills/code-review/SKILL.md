@@ -223,9 +223,9 @@ readability or correctness.
 For each issue identified, record:
 
 - **Severity:** critical | high | medium | low | info
-- **Category:** e.g., `logic-error`, `auth-bypass`, `missing-test`,
-  `test-weakened`, `tier-mismatch`, `injection-pattern`,
-  `unicode-steganography`, `data-exposure`, `naming-convention`
+- **Category:** a value from the canonical review taxonomy, e.g.
+  `logic-error`, `auth-bypass`, `missing-test`, `test-weakened`,
+  `tier-mismatch`, `injection-vuln`, `naming-convention`
 - **Description:** natural-language explanation of the finding
 - **Location:** relative file path and line number(s). Verify each
   line number: the content at the cited line must be the specific

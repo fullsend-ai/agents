@@ -15,6 +15,11 @@
 [[ -n "${GITHUB_FIX_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_FIX_OPS_SH_LOADED=1
 
+# forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
+# API publish that gets the commits signed by GitHub.
+# shellcheck source=github-signed-push.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-signed-push.lib.sh"
+
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() {
     local lvl="$1"; shift
@@ -84,6 +89,15 @@ forge_pr_has_merge_conflict() {
   [ "${mergeable}" = "CONFLICTING" ]
 }
 
+# forge_get_pr_labels PR_NUMBER — the PR's live label names, one per line.
+# Returns non-zero on API failure so callers can tell it apart from a PR
+# with no labels.
+forge_get_pr_labels() {
+  local pr_number="$1"
+  GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh pr view "${pr_number}" \
+    --repo "${REPO_FULL_NAME}" --json labels --jq '.labels[].name' 2>/dev/null
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
@@ -129,7 +143,7 @@ forge_post_pr_comment() {
   local body="$2"
   gh pr comment "${pr_number}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null
+    --body "${body}"
 }
 
 # --- Workspace operations ---

@@ -88,6 +88,13 @@ forge_get_pr_author() {
   echo "${mr_data}" | jq -r '.author.username // empty'
 }
 
+# Fails when the labels cannot be read.
+forge_get_pr_labels() {
+  local mr_data
+  mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || return 1
+  jq -r '.labels[]? // empty' <<< "${mr_data}"
+}
+
 forge_get_pr_info() {
   local mr_data
   mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || {
@@ -189,6 +196,11 @@ forge_remove_label() {
   local label="$1"
   _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
+}
+
+forge_remove_label_checked() {
+  _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
+    --data-urlencode "remove_labels=$1" > /dev/null 2>&1
 }
 
 forge_remove_label_edit() {

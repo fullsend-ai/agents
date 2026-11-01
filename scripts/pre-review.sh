@@ -13,6 +13,9 @@
 #   REVIEW_SKIP_AUTHORS — comma-separated author list to skip
 #   PRIOR_REVIEW_FILE   — prior sticky review body; rewritten to validated JSON
 #   PRIOR_REVIEW_PROVENANCE — authenticated provenance for the prior review
+#
+# A closed/merged PR or a REVIEW_SKIP_AUTHORS author writes skipped=true via
+# the pre-script output protocol, so fullsend run stops before the sandbox.
 set -euo pipefail
 
 : "${PR_URL:?PR_URL must be set}"
@@ -20,6 +23,34 @@ set -euo pipefail
 
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/prescript-output.lib.sh
+# BEGIN bundled: lib/prescript-output.lib.sh
+# prescript-output.lib.sh — Write pre-script output protocol lines.
+#
+# The pre-script output protocol (fullsend docs/normative/prescript-output/v1,
+# fullsend-ai/fullsend#4718) is the contract between `fullsend run` and a
+# harness pre-script: the CLI exports FULLSEND_PRESCRIPT_OUTPUT naming a
+# file, and the script appends key=value lines to it — `skipped=true` (plus
+# an optional `reason`) stops the run before sandbox creation. Under a CLI
+# that predates the protocol the variable is unset and writes are skipped,
+# so the run proceeds — the protocol's version-skew contract.
+#
+# Source from a pre-script .src.sh:
+#   source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
+
+# shellcheck shell=bash
+
+[[ -n "${PRESCRIPT_OUTPUT_SH_LOADED:-}" ]] && return 0
+PRESCRIPT_OUTPUT_SH_LOADED=1
+
+# prescript_output KEY VALUE — append a protocol line, if the CLI
+# supports the protocol. Values must be single-line (protocol grammar).
+prescript_output() {
+  if [[ -n "${FULLSEND_PRESCRIPT_OUTPUT:-}" ]]; then
+    printf '%s=%s\n' "$1" "$2" >> "${FULLSEND_PRESCRIPT_OUTPUT}"
+  fi
+}
+# END bundled: lib/prescript-output.lib.sh
 # shellcheck source=lib/review-ops.lib.sh
 # BEGIN bundled: lib/review-ops.lib.sh
 # shellcheck shell=bash
@@ -77,6 +108,12 @@ forge_get_pr_state() {
 forge_get_pr_author() {
   GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
     --repo "${REPO}" --json author --jq '.author.login' 2>/dev/null || true
+}
+
+# Fails when the labels cannot be read.
+forge_get_pr_labels() {
+  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json labels --jq '.labels[].name' 2>/dev/null
 }
 
 forge_get_pr_info() {
@@ -401,6 +438,16 @@ forge_remove_label() {
     -X DELETE --silent 2>/dev/null || true
 }
 
+# Succeeds when the label is gone afterwards; 404 means it was already absent.
+forge_remove_label_checked() {
+  local label="$1"
+  local encoded err
+  encoded=$(printf '%s' "${label}" | jq -sRr @uri)
+  err=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/${encoded}" \
+    -X DELETE --silent 2>&1) && return 0
+  [[ "${err}" == *"HTTP 404"* ]]
+}
+
 forge_remove_label_edit() {
   local label="$1"
   GH_TOKEN="${REVIEW_TOKEN}" gh pr edit "${PR_NUMBER}" --repo "${REPO}" \
@@ -463,6 +510,9 @@ GITLAB_REVIEW_OPS_SH_LOADED=1
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
 #
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
+#
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
 [[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
@@ -486,6 +536,35 @@ _validate_gitlab_host() {
   fi
   if [[ "${host,,}" != "${CI_SERVER_HOST,,}" ]]; then
     echo "ERROR: GitLab host '$(_gha_sanitize "${host}")' does not match CI_SERVER_HOST" >&2
+    return 1
+  fi
+}
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
     return 1
   fi
 }
@@ -551,6 +630,13 @@ forge_get_pr_author() {
   local mr_data
   mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || { echo ""; return; }
   echo "${mr_data}" | jq -r '.author.username // empty'
+}
+
+# Fails when the labels cannot be read.
+forge_get_pr_labels() {
+  local mr_data
+  mr_data=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || return 1
+  jq -r '.labels[]? // empty' <<< "${mr_data}"
 }
 
 forge_get_pr_info() {
@@ -654,6 +740,11 @@ forge_remove_label() {
   local label="$1"
   _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
     --data-urlencode "remove_labels=${label}" > /dev/null 2>/dev/null || true
+}
+
+forge_remove_label_checked() {
+  _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" \
+    --data-urlencode "remove_labels=$1" > /dev/null 2>&1
 }
 
 forge_remove_label_edit() {
@@ -788,7 +879,6 @@ forge_get_human_dismissals() {
       | {
           path: $thread.path,
           line: $thread.line,
-          original_line: $thread.original_line,
           resolved_by: $thread.resolved_by,
           resolved_by_type: $thread.resolved_by_type,
           resolved_by_role: $thread.resolved_by_role,
@@ -883,12 +973,17 @@ validate_prior_review_projection() {
         "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
         "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
         "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
-        "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+        "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
+        "uxd-evaluate-code-heuristics"
       );
     def safe_path:
       type == "string" and length > 0 and . != "N/A" and
       test("^[ -~]+$") and
       (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+    # A persona name. Never checked against the persona manifest, so a
+    # persona disabled between rounds keeps its prior ledger.
+    def safe_dimension:
+      type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$");
     .version as $projection_version
     | if (
       type == "object" and
@@ -899,13 +994,14 @@ validate_prior_review_projection() {
       (.findings | type == "array") and
       all(.findings[];
         type == "object" and
-        ((keys - ["severity", "category", "file", "line", "id", "actionable"]) | length == 0) and
+        ((keys - ["severity", "category", "file", "line", "id", "actionable", "dimension"]) | length == 0) and
         (.severity | IN("info", "low", "medium", "high", "critical")) and
         (.category | type == "string" and allowed_category) and
         ((.file == null and $projection_version == 2) or (.file | safe_path)) and
         (.line == null or (.line | type == "number" and . > 0 and floor == .)) and
         (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$"))) and
-        (.actionable == null or (.actionable | type == "boolean"))
+        (.actionable == null or (.actionable | type == "boolean")) and
+        (.dimension == null or ($projection_version == 2 and (.dimension | safe_dimension)))
       ) and
       ([.findings[].id | select(. != null)] | length == (unique | length)) and
       (.dispositions == null or (
@@ -926,7 +1022,8 @@ validate_prior_review_projection() {
         file: .file,
         line: .line
       } + (if .id == null then {} else {id: .id} end)
-        + (if .actionable == null then {} else {actionable: .actionable} end)]
+        + (if .actionable == null then {} else {actionable: .actionable} end)
+        + (if .dimension == null then {} else {dimension: .dimension} end)]
     } + (if .action == null then {} else {action: .action} end)
     + (if .dispositions == null then {} else {
       dispositions: [.dispositions[] | {id, status}]
@@ -1019,7 +1116,23 @@ The \`/fs-review\` command only reviews open PRs/MRs.
 
   forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
+  prescript_output "skipped" "true"
+  prescript_output "reason" "PR #${PR_NUMBER} is already ${STATE_LOWER}"
   exit 0
+fi
+
+# ADR 0002 block 12: clear a stale ready-for-merge at review start, before the
+# skip-author exit. post-review re-adds it only when this run approves.
+if ! PR_LABELS="$(forge_get_pr_labels)"; then
+  echo "::warning::Could not read PR labels — removing ready-for-merge unchecked"
+  PR_LABELS="ready-for-merge"
+fi
+if grep -qxF "ready-for-merge" <<< "${PR_LABELS}"; then
+  if forge_remove_label_checked "ready-for-merge"; then
+    echo "::notice::Removed ready-for-merge from PR #${PR_NUMBER} at review start"
+  else
+    echo "::warning::Failed to remove ready-for-merge from PR #${PR_NUMBER}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -1042,6 +1155,8 @@ if [[ -n "${REVIEW_SKIP_AUTHORS:-}" ]]; then
 
         forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
+        prescript_output "skipped" "true"
+        prescript_output "reason" "PR author ${_SAFE_AUTHOR} is in REVIEW_SKIP_AUTHORS"
         exit 0
       fi
     done

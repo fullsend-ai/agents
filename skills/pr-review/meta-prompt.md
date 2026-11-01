@@ -14,7 +14,7 @@ For each finding, return a JSON array as follows
 ```json
 {
   "severity": "critical|high|medium|low|info",
-  "category": "<dimension-specific category>",
+  "category": "<canonical taxonomy category>",
   "file": "<relative path>",
   "line": "<line number, optional>",
   "description": "<explanation>",
@@ -22,6 +22,11 @@ For each finding, return a JSON array as follows
   "actionable": true|false
 }
 ```
+
+Dimension sub-agents: the `category` must be one of the categories listed in
+your sub-agent definition above; any other value is invalid. The challenger
+is exempt: it must keep each input finding's `category` unchanged, whatever
+the category is.
 
 **Line number accuracy:** For the `line` field, cite the exact line
 number where the problematic code or text appears. After determining

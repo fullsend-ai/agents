@@ -22,6 +22,8 @@ On GitHub, the prioritize agent runs on a schedule, polling the project board fo
 
 It can also be triggered manually on either forge with the `/fs-prioritize` command.
 
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch that matches `/fs-prioritize` from a human on an issue, a PR or an MR. The scheduled path does not use it. Dispatch does not evaluate it for the built-in prioritize agent yet, so the routing above is what runs today.
+
 ## Commands
 
 | Command | Where | Effect |

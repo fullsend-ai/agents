@@ -63,6 +63,12 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
     author)
       RESPONSE="{\"author\":{\"login\":\"${PR_AUTHOR}\"}}"
       ;;
+    labels)
+      [[ -n "${MOCK_PR_LABELS_FAIL:-}" ]] && exit 1
+      # MOCK_PR_LABELS: comma-separated label names on the PR.
+      RESPONSE="$(jq -cn --arg l "${MOCK_PR_LABELS:-}" \
+        '{labels: [$l | split(",")[] | select(. != "") | {name: .}]}')"
+      ;;
     *)
       RESPONSE="{}"
       ;;
@@ -77,6 +83,9 @@ if [[ "$1" == "pr" && "$2" == "view" ]]; then
 elif [[ "$1" == "issue" && "$2" == "comment" ]]; then
   cat > /dev/null
   exit 0
+elif [[ "$1" == "api" && " $* " == *" -X DELETE "* && -n "${MOCK_LABEL_DELETE_ERR:-}" ]]; then
+  echo "${MOCK_LABEL_DELETE_ERR}" >&2
+  exit 1
 fi
 MOCKEOF
 
@@ -145,7 +154,7 @@ run_test_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
     echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
@@ -197,7 +206,7 @@ run_test_gh_call() {
     return
   fi
 
-  if ! grep -qF "${expected_pattern}" "${gh_log}" 2>/dev/null; then
+  if ! grep -qF -- "${expected_pattern}" "${gh_log}" 2>/dev/null; then
     echo "FAIL: ${test_name} — expected gh call pattern '${expected_pattern}' not found"
     echo "Actual calls:"
     cat "${gh_log}" 2>/dev/null || echo "(no calls)"
@@ -249,7 +258,7 @@ run_test_no_gh_call() {
     return
   fi
 
-  if grep -qF "${forbidden_pattern}" "${gh_log}" 2>/dev/null; then
+  if grep -qF -- "${forbidden_pattern}" "${gh_log}" 2>/dev/null; then
     echo "FAIL: ${test_name} — forbidden gh call pattern '${forbidden_pattern}' was found"
     echo "Actual calls:"
     cat "${gh_log}"
@@ -495,6 +504,30 @@ run_prior_projection_test "v2-id-and-disposition-retained" \
   "app-verified" \
   "${V2_ID_PROJECTION}"
 
+# v2 findings may name the persona that produced them. pre-review checks only
+# that the name is safe, never that the persona is staged, so a persona
+# disabled between rounds keeps its prior ledger. Findings without a dimension
+# (older stickies) are still accepted.
+V2_DIMENSION_PROJECTION='{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_ux1","dimension":"user-experience"},{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_abc123"}]}'
+run_prior_projection_test "v2-dimension-retained" \
+  "$(projection_marker "${V2_DIMENSION_PROJECTION}")" \
+  "app-verified" \
+  "${V2_DIMENSION_PROJECTION}"
+
+for unsafe_dimension in '"Bad Name"' '"../security"' '""' '"-leading-hyphen"' '"a-very-long-persona-name-that-goes-on-and-on-past-the-sixty-four-char-cap"' '7'; do
+  unsafe_dimension_projection="{\"version\":2,\"findings\":[{\"severity\":\"low\",\"category\":\"logic-error\",\"file\":\"internal/foo.go\",\"line\":7,\"id\":\"f_abc123\",\"dimension\":${unsafe_dimension}}]}"
+  run_prior_projection_test "unsafe-dimension-fails-closed-${unsafe_dimension//[^a-z0-9]/}" \
+    "$(projection_marker "${unsafe_dimension_projection}")" \
+    "app-verified" \
+    'EMPTY'
+done
+
+V1_DIMENSION_PROJECTION='{"version":1,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"dimension":"correctness"}]}'
+run_prior_projection_test "v1-dimension-fails-closed" \
+  "$(projection_marker "${V1_DIMENSION_PROJECTION}")" \
+  "app-verified" \
+  'EMPTY'
+
 HUMAN_PRIOR='{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}],"dispositions":[{"id":"f_human1","status":"open"}]}'
 VERIFIED_HUMAN_THREAD='{"threads":[{"is_resolved":true,"path":"src/foo.go","line":40,"original_line":39,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"write","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"custom-review","author_type":"Bot","author_role":"none","author_role_verified":false,"body":"<!-- finding:f_human1 --> Naming nit.","created_at":"2026-10-08T10:00:00Z"}]}],"truncated":false}'
 run_human_dismissal_test "verified-custom-app-resolver-closes-by-id" \
@@ -706,6 +739,201 @@ run_test_stdout "case-insensitive-skip" \
   0 \
   "REVIEW_SKIP_AUTHORS=app/renovate"
 
+# 13. Open PR carrying ready-for-merge → label removed at review start
+run_test_gh_call "open-pr-removes-ready-for-merge" \
+  "OPEN" "some-human" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-for-merge -X DELETE" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-review,ready-for-merge"
+
+run_test_stdout "open-pr-ready-for-merge-removal-notice" \
+  "OPEN" "some-human" \
+  "::notice::Removed ready-for-merge from PR #42 at review start" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-merge"
+
+# 14. Open PR without ready-for-merge → no label DELETE call
+run_test_no_gh_call "open-pr-without-label-no-delete" \
+  "OPEN" "some-human" \
+  "-X DELETE" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-review"
+
+# 15. Closed or merged PR → early exit runs first, no label DELETE call
+for closed_state in MERGED CLOSED; do
+  run_test_no_gh_call "${closed_state,,}-pr-keeps-ready-for-merge" \
+    "${closed_state}" "some-human" \
+    "-X DELETE" \
+    0 \
+    "MOCK_PR_LABELS=ready-for-merge"
+done
+
+# 16. Label read fails → removal is still attempted, with a warning
+run_test_gh_call "label-read-failure-still-removes" \
+  "OPEN" "some-human" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-for-merge -X DELETE" \
+  0 \
+  "MOCK_PR_LABELS_FAIL=1"
+
+run_test_stdout "label-read-failure-warns" \
+  "OPEN" "some-human" \
+  "::warning::Could not read PR labels" \
+  0 \
+  "MOCK_PR_LABELS_FAIL=1"
+
+# 17. DELETE fails → warning, no success notice; 404 counts as removed
+run_test_stdout "label-delete-failure-warns" \
+  "OPEN" "some-human" \
+  "::warning::Failed to remove ready-for-merge from PR #42" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-merge
+MOCK_LABEL_DELETE_ERR=gh: Server Error (HTTP 500)"
+if grep -qF "::notice::Removed ready-for-merge" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: label-delete-failure-no-notice — success notice printed after a failed DELETE"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: label-delete-failure-no-notice"
+fi
+
+run_test_stdout "label-delete-404-is-removed" \
+  "OPEN" "some-human" \
+  "::notice::Removed ready-for-merge from PR #42 at review start" \
+  0 \
+  "MOCK_PR_LABELS=ready-for-merge
+MOCK_LABEL_DELETE_ERR=gh: Label does not exist (HTTP 404)"
+
+# 18. Skipped author → ready-for-merge is still removed before the skip exit
+run_test_gh_call "skip-author-still-removes-ready-for-merge" \
+  "OPEN" "app/renovate" \
+  "gh api repos/test-org/test-repo/issues/42/labels/ready-for-merge -X DELETE" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=app/renovate
+MOCK_PR_LABELS=ready-for-merge"
+
+# --- Pre-script output protocol tests (fullsend-ai/fullsend#4718) ---
+# Contract: fullsend docs/normative/prescript-output/v1. Closed/merged PRs
+# and skipped authors write skipped=true (plus reason=...) to
+# FULLSEND_PRESCRIPT_OUTPUT so fullsend run stops before sandbox creation;
+# every proceed path leaves the file empty (absent skipped means proceed).
+
+# Helper: run pre-review.sh with FULLSEND_PRESCRIPT_OUTPUT set and assert
+# the protocol file's exact content ("" = must stay empty).
+run_test_prescript_output() {
+  local test_name="$1"
+  local pr_state="$2"
+  local pr_author="$3"
+  local expected_content="$4"
+  local expect_exit="$5"
+  local extra_env="${6:-}"
+
+  local mock_bin
+  mock_bin="$(build_mock "${pr_state}" "${pr_author}")"
+  local proto_out="${TMPDIR}/prescript-output.txt"
+  : > "${proto_out}"
+
+  local env_cmd=(
+    env -u FULLSEND_PRESCRIPT_OUTPUT
+    PATH="${mock_bin}:${PATH}"
+    PR_NUMBER="42"
+    REPO_FULL_NAME="test-org/test-repo"
+    PR_URL="https://github.com/test-org/test-repo/pull/42"
+    FULLSEND_FORGE="github"
+    REVIEW_TOKEN="fake-token"
+    GH_TOKEN="fake-token"
+    FULLSEND_PRESCRIPT_OUTPUT="${proto_out}"
+  )
+
+  if [[ -n "${extra_env}" ]]; then
+    while IFS= read -r kv; do
+      [[ -n "${kv}" ]] && env_cmd+=("${kv}")
+    done <<< "${extra_env}"
+  fi
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${SCRIPT_DIR}/pre-review.sh" \
+    > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne ${expect_exit} ]]; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! diff <(printf '%s' "${expected_content}") "${proto_out}" > "${TMPDIR}/proto-diff.log" 2>&1; then
+    echo "FAIL: ${test_name} — protocol output mismatch"
+    cat "${TMPDIR}/proto-diff.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+NL=$'\n'
+
+# Closed or merged PR → skipped=true with a single-line reason.
+for closed_state in MERGED CLOSED; do
+  run_test_prescript_output "protocol-skip-on-${closed_state,,}-pr" \
+    "${closed_state}" "some-human" \
+    "skipped=true${NL}reason=PR #42 is already ${closed_state,,}${NL}" \
+    0
+done
+
+# Author in skip list → skipped=true with a single-line reason.
+run_test_prescript_output "protocol-skip-on-skip-author" \
+  "OPEN" "app/renovate" \
+  "skipped=true${NL}reason=PR author app/renovate is in REVIEW_SKIP_AUTHORS${NL}" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=app/renovate,app/dependabot"
+
+# Case and whitespace variants still match; the reason names the PR author.
+run_test_prescript_output "protocol-skip-on-skip-author-case-whitespace" \
+  "OPEN" "App/Renovate" \
+  "skipped=true${NL}reason=PR author App/Renovate is in REVIEW_SKIP_AUTHORS${NL}" \
+  0 \
+  "REVIEW_SKIP_AUTHORS= app/renovate , app/dependabot "
+
+# Open PR, author not listed → file stays empty.
+run_test_prescript_output "protocol-empty-on-open-pr" \
+  "OPEN" "some-human" \
+  "" \
+  0 \
+  "REVIEW_SKIP_AUTHORS=app/renovate"
+
+# No token → state check skipped, run proceeds → file stays empty.
+run_test_prescript_output "protocol-empty-on-no-token" \
+  "MERGED" "some-human" \
+  "" \
+  0 \
+  "REVIEW_TOKEN="
+
+# Old-CLI guard (fails open by design, see the protocol's Version skew
+# section): FULLSEND_PRESCRIPT_OUTPUT unset → the skip paths must not crash
+# under set -u; they still comment and exit 0.
+for unset_case in "closed-pr|CLOSED|some-human|" "skip-author|OPEN|app/renovate|REVIEW_SKIP_AUTHORS=app/renovate"; do
+  IFS='|' read -r unset_label unset_state unset_author unset_env <<< "${unset_case}"
+  unset_mock_bin="$(build_mock "${unset_state}" "${unset_author}")"
+  unset_exit=0
+  env -u FULLSEND_PRESCRIPT_OUTPUT \
+    PATH="${unset_mock_bin}:${PATH}" \
+    PR_URL="https://github.com/test-org/test-repo/pull/42" \
+    FULLSEND_FORGE="github" \
+    REVIEW_TOKEN="fake-token" \
+    GH_TOKEN="fake-token" \
+    ${unset_env:+"${unset_env}"} \
+    bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout.log" 2>&1 || unset_exit=$?
+  unset_name="protocol-unset-env-old-cli-${unset_label}"
+  if [[ ${unset_exit} -ne 0 ]] || ! grep -qF -- "skipping review" "${TMPDIR}/stdout.log" \
+    || ! grep -qF -- "gh issue comment 42" "${TMPDIR}/gh-calls.log"; then
+    echo "FAIL: ${unset_name} — expected exit 0 with skip notice and comment (exit ${unset_exit})"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${unset_name}"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # GitLab forge pre-review tests
 # ---------------------------------------------------------------------------
@@ -757,7 +985,7 @@ fi
 if [[ "\${URL}" == *"/merge_requests/"* ]]; then
   MR_STATE=\$(cat "${TMPDIR}/mr-state.txt")
   MR_AUTHOR=\$(cat "${TMPDIR}/mr-author.txt")
-  echo "{\"state\":\"\${MR_STATE}\",\"draft\":false,\"author\":{\"username\":\"\${MR_AUTHOR}\"},\"iid\":42}"
+  echo "{\"state\":\"\${MR_STATE}\",\"draft\":false,\"author\":{\"username\":\"\${MR_AUTHOR}\"},\"labels\":\${MOCK_MR_LABELS_JSON:-[]},\"iid\":42}"
   exit 0
 fi
 
@@ -817,7 +1045,7 @@ run_gitlab_test_stdout() {
     return
   fi
 
-  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
+  if ! grep -qF -- "${expected_stdout}" "${TMPDIR}/stdout.log" 2>/dev/null; then
     echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
     echo "Actual stdout:"
     cat "${TMPDIR}/stdout.log"
@@ -875,10 +1103,44 @@ run_gitlab_test_stdout "gitlab-no-token-proceeds" \
   0 \
   "REVIEW_TOKEN="
 
+# GitLab: open MR carrying ready-for-merge → label removed; without it → no PUT
+for gitlab_labels in '["ready-for-merge"]' '["ready-for-review"]'; do
+  gitlab_mock_bin="$(build_gitlab_mock "opened" "some-user")"
+  env \
+    PATH="${gitlab_mock_bin}:${PATH}" \
+    PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/42" \
+    FULLSEND_FORGE="gitlab" \
+    REVIEW_TOKEN="fake-gitlab-token" \
+    CI_SERVER_HOST="gitlab.com" \
+    MOCK_MR_LABELS_JSON="${gitlab_labels}" \
+    bash "${SCRIPT_DIR}/pre-review.sh" > "${TMPDIR}/stdout.log" 2>&1 && gitlab_rc=0 || gitlab_rc=$?
+  if [[ ${gitlab_rc} -ne 0 ]]; then
+    gitlab_test="gitlab-labels-${gitlab_labels}-exit-0"
+    gitlab_ok=0
+  elif [[ "${gitlab_labels}" == *ready-for-merge* ]]; then
+    gitlab_test="gitlab-open-mr-removes-ready-for-merge"
+    grep -F -- "--request PUT" "${TMPDIR}/curl-calls.log" \
+      | grep -F "/merge_requests/42 " | grep -qF "remove_labels=ready-for-merge" \
+      && grep -qF "::notice::Removed ready-for-merge from PR #42" "${TMPDIR}/stdout.log" \
+      && gitlab_ok=1 || gitlab_ok=0
+  else
+    gitlab_test="gitlab-open-mr-without-label-no-remove"
+    grep -qF "remove_labels=" "${TMPDIR}/curl-calls.log" && gitlab_ok=0 || gitlab_ok=1
+  fi
+  if [[ ${gitlab_ok} -eq 1 ]]; then
+    echo "PASS: ${gitlab_test}"
+  else
+    echo "FAIL: ${gitlab_test}"
+    cat "${TMPDIR}/curl-calls.log"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+
 # GitLab uses the authenticated review-token identity as its trusted bot
 # provider and the normalized resolver role from fullsend#7907.
 GITLAB_HUMAN_PRIOR='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"src/foo.go","line":4,"id":"f_gitlab1"}],"dispositions":[{"id":"f_gitlab1","status":"open"}]}'
-GITLAB_HUMAN_THREADS='{"threads":[{"is_resolved":true,"path":"src/foo.go","line":4,"original_line":3,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"maintain","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"review-bot","author_type":"Bot","author_role":"none","author_role_verified":false,"body":"<!-- finding:f_gitlab1 --> Logic issue.","created_at":"2026-10-08T10:00:00Z"}]}],"truncated":false}'
+GITLAB_HUMAN_THREADS='{"threads":[{"is_resolved":true,"path":"src/foo.go","side":"right","line":4,"start_side":null,"start_line":null,"original_line":null,"original_start_line":null,"old_line":3,"new_line":4,"is_outdated":null,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"maintain","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"review-bot","author_type":"Bot","author_role":"none","author_role_verified":false,"body":"<!-- finding:f_gitlab1 --> Logic issue.","created_at":"2026-10-08T10:00:00Z"}]}],"truncated":false}'
 gitlab_prior_file="${TMPDIR}/gitlab-human-prior.txt"
 printf '%s\n' "$(projection_marker "${GITLAB_HUMAN_PRIOR}")" > "${gitlab_prior_file}"
 gitlab_mock_bin="$(build_gitlab_mock "opened" "prauthor")"
@@ -903,8 +1165,8 @@ else
 fi
 
 # GitLab PATs may belong to a normal User account. The authenticated /user
-# identity is trusted on GitLab even when the discussion author type is User.
-GITLAB_HUMAN_USER_THREADS="$(jq -c '.threads[0].comments[0].author_type = "User"' <<< "${GITLAB_HUMAN_THREADS}")"
+# identity is trusted even for a removed-line discussion authored by a User.
+GITLAB_HUMAN_USER_THREADS="$(jq -c '.threads[0] |= (.side = "left" | .old_line = 4 | .new_line = null | .comments[0].author_type = "User")' <<< "${GITLAB_HUMAN_THREADS}")"
 gitlab_user_prior_file="${TMPDIR}/gitlab-human-user-prior.txt"
 printf '%s\n' "$(projection_marker "${GITLAB_HUMAN_PRIOR}")" > "${gitlab_user_prior_file}"
 if ! env \

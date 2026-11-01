@@ -28,6 +28,12 @@
 #   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
+# Jira-sourced runs (FULLSEND_TRACKER or FULLSEND_WORK_ITEM_SOURCE is "jira")
+# also need FULLSEND_WORK_ITEM_URL, JIRA_USER_EMAIL, and JIRA_TOKEN to write
+# the code-stage update and PR/MR URL to the Jira issue. JIRA_BASE_URL is
+# optional and cross-checked against the work-item URL. GitLab targets take
+# the GitLab host from CI_SERVER_HOST.
+#
 # Optional environment variables:
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
 #   CODE_ALLOWED_TARGET_BRANCHES
@@ -49,7 +55,9 @@
 # Exit codes:
 #   0  — branch pushed and PR/MR created, OR agent determined nothing to do
 #   1  — validation failure or error (nothing pushed), including a
-#        timeout-killed run that left uncommitted work and no commit
+#        timeout-killed run that left uncommitted work and no commit;
+#        also when a Jira-sourced run cannot write its stage update to Jira
+#        (the PR/MR already exists on the code host)
 set -euo pipefail
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -200,8 +208,17 @@ ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 WORK_ITEM_URL="${FULLSEND_WORK_ITEM_URL:-${ISSUE_URL:-}}"
 EXTERNAL_WORK_ITEM=false
 
-if [ -n "${FULLSEND_TRACKER:-}" ] \
-   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_FORGE}" ]; then
+# `fullsend run` exports FULLSEND_WORK_ITEM_SOURCE for every run; it names the
+# source tracker when the harness did not set FULLSEND_TRACKER.
+if [ -n "${FULLSEND_TRACKER:-}" ] && [ -n "${FULLSEND_WORK_ITEM_SOURCE:-}" ] \
+   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_WORK_ITEM_SOURCE}" ]; then
+  gha_echo error "FULLSEND_TRACKER and FULLSEND_WORK_ITEM_SOURCE name different trackers"
+  exit 1
+fi
+WORK_ITEM_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_WORK_ITEM_SOURCE:-}}"
+
+if [ -n "${WORK_ITEM_TRACKER}" ] \
+   && [ "${WORK_ITEM_TRACKER}" != "${FULLSEND_FORGE}" ]; then
   EXTERNAL_WORK_ITEM=true
   : "${WORK_ITEM_URL:?FULLSEND_WORK_ITEM_URL is required for external-tracker runs}"
   WORK_ITEM_KEY="${FULLSEND_WORK_ITEM_KEY:-${WORK_ITEM_URL%/}}"
@@ -227,20 +244,30 @@ if [ "${REPO_DIR}" != "." ]; then
 fi
 
 # GitLab needs REPO_ENCODED and GITLAB_HOST for API calls.
-# Always derive GITLAB_HOST from the validated ISSUE_URL. If GITLAB_HOST is
-# pre-set in the environment, verify it matches the URL host to prevent
-# token exfiltration to an unintended host.
+# Always derive GITLAB_HOST from the validated ISSUE_URL (CI_SERVER_HOST for
+# external work items). If GITLAB_HOST is pre-set in the environment, verify
+# it matches that host to prevent token exfiltration to an unintended host.
 if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
-  if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
-    gha_echo error "ISSUE_URL format invalid for GitLab: '${ISSUE_URL:-}'"
-    exit 1
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    # The source issue lives on another tracker, so ISSUE_URL is not a GitLab
+    # URL. The MR goes to the GitLab instance running this job.
+    if ! _validate_gitlab_host "${CI_SERVER_HOST:-}"; then
+      gha_echo error "Cannot determine the GitLab host for an external work item"
+      exit 1
+    fi
+    _url_host="${CI_SERVER_HOST}"
+  else
+    if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
+      gha_echo error "ISSUE_URL format invalid for GitLab: '${ISSUE_URL:-}'"
+      exit 1
+    fi
+    # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
+    # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
+    # to the mismatched host.
+    _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   fi
   # shellcheck disable=SC2034
   REPO_ENCODED="$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)"
-  # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
-  # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
-  # to the mismatched host.
-  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
     gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
     exit 1
@@ -339,6 +366,25 @@ if [ -n "${GITLAB_TOKEN:-}" ]; then
   echo "::add-mask::${GITLAB_TOKEN}"
 fi
 
+# Scan optional public text with built-in rules, not repository policy.
+# A file source skips .gitleaks.toml discovery; the private working directory
+# and explicit ignore path prevent .gitleaksignore discovery. The subshell
+# keeps these overrides local to public text, leaving commit scans unchanged.
+# Return 0 for clean text, 2 for findings, other nonzero for scan/setup errors.
+scan_public_text() (
+  local scan_dir rc=0
+  scan_dir="$(mktemp -d)" || return 1
+  trap 'rm -f "${scan_dir}/text"; rmdir "${scan_dir}"' EXIT
+  unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
+  printf '%s\n' "$1" > "${scan_dir}/text" || return 1
+  cd "${scan_dir}" || return 1
+  # Suppress both streams: even scanner failures may echo sensitive input.
+  "${GITLEAKS_BIN}" detect --source "${scan_dir}/text" --no-git --redact --exit-code 2 \
+    --ignore-gitleaks-allow --gitleaks-ignore-path "${scan_dir}" \
+    >/dev/null 2>&1 || rc=$?
+  return "${rc}"
+)
+
 # ---------------------------------------------------------------------------
 # No-op comment helper
 #
@@ -375,10 +421,14 @@ post_noop_comment() {
   if [ -n "${agent_context}" ]; then
     local sanitized_context
     sanitized_context="$(sanitize_failure_detail "${agent_context}")"
-    detail_block="
+    if ! install_gitleaks || ! scan_public_text "${sanitized_context}"; then
+      gha_echo warning "Agent context omitted because its secret scan did not pass"
+    else
+      detail_block="
 
 **Agent context:**
 ${sanitized_context}"
+    fi
   fi
 
   local body
@@ -393,9 +443,81 @@ ${detail_block}
 
 Retry with \`/fs-code\` if appropriate."
 
-  if ! forge_post_issue_comment "${body}"; then
+  if ! forge_retry_transient forge_post_issue_comment "${body}"; then
     gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Jira stage update
+#
+# For Jira-sourced runs, writes a concise code-stage update with the PR/MR
+# URL to the originating Jira issue through the runner-side tracker CLI.
+# Branch, PR/MR, review, and merge stay on the code host. The fixed marker
+# makes a retried run edit its earlier comment instead of adding another.
+# Returns non-zero when the write fails so the caller can fail the step.
+#
+# Usage: post_jira_stage_update <verb phrase> <pr_url>
+# ---------------------------------------------------------------------------
+post_jira_stage_update() {
+  local verb="$1"
+  local pr_url="$2"
+
+  if [ "${WORK_ITEM_TRACKER}" != "jira" ]; then
+    return 0
+  fi
+
+  if [ -z "${pr_url}" ]; then
+    gha_echo error "No PR/MR URL to report to the Jira issue"
+    return 1
+  fi
+  if [[ ! "${WORK_ITEM_URL}" =~ ^https://([a-zA-Z0-9.-]+\.atlassian\.net)/browse/([A-Z][A-Z0-9]*)-([0-9]+)$ ]]; then
+    gha_echo error "FULLSEND_WORK_ITEM_URL is not a Jira Cloud issue URL"
+    return 1
+  fi
+  local jira_url="https://${BASH_REMATCH[1]}"
+  local project="${BASH_REMATCH[2]}"
+  local number="${BASH_REMATCH[3]}"
+  if [ "${project}-${number}" != "${WORK_ITEM_KEY}" ]; then
+    gha_echo error "FULLSEND_WORK_ITEM_KEY does not match the Jira issue in FULLSEND_WORK_ITEM_URL"
+    return 1
+  fi
+  local base_url="${JIRA_BASE_URL:-}"
+  while [[ "${base_url}" == */ ]]; do
+    base_url="${base_url%/}"
+  done
+  if [ -n "${base_url}" ] && [ "${base_url}" != "${jira_url}" ]; then
+    gha_echo error "JIRA_BASE_URL does not match the Jira host in FULLSEND_WORK_ITEM_URL"
+    return 1
+  fi
+  # The credentials were withheld from the environment earlier in the run
+  # (see the note after the branch checks); they are passed to the trusted
+  # CLI below and nowhere else.
+  if [ -z "${_jira_email_saved:-}" ] || [ -z "${_jira_token_saved:-}" ]; then
+    gha_echo error "JIRA_USER_EMAIL and JIRA_TOKEN are required to write to Jira"
+    return 1
+  fi
+  if [ -z "${_jira_fullsend_bin:-}" ]; then
+    gha_echo error "fullsend CLI not found; cannot write to Jira"
+    return 1
+  fi
+
+  local noun="pull request"
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    noun="merge request"
+  fi
+
+  local body
+  body="**Code stage:** ${verb} ${noun} ${pr_url} for ${WORK_ITEM_KEY}.
+
+Review and merge happen on the ${noun}."
+
+  # The token reaches the CLI through its default JIRA_TOKEN env var rather
+  # than a command-line flag, keeping it out of the process list.
+  printf '%s' "${body}" | JIRA_TOKEN="${_jira_token_saved}" "${_jira_fullsend_bin}" issues post-comment \
+    --tracker jira --project "${project}" --number "${number}" \
+    --jira-url "${jira_url}" --jira-email "${_jira_email_saved}" \
+    --marker "<!-- fullsend:code-agent -->" --result -
 }
 
 # ---------------------------------------------------------------------------
@@ -543,6 +665,20 @@ BRANCH="${SAFE_BRANCH}"
 
 echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
+
+# Stop the Jira credentials from being inherited by child processes that can
+# run repo-controlled code (commit/push hooks, pre-commit tool installs and
+# hooks). This only prevents inheritance; it is not an isolation boundary,
+# because the initial environment of this process and its parent stays
+# readable via /proc/<pid>/environ by anything running as the same user.
+# The credentials are restored only inside post_jira_stage_update, for the
+# single Jira write.
+# Resolve the trusted tracker CLI now, before repo-controlled installs can
+# put a binary of the same name earlier on PATH.
+_jira_token_saved="${JIRA_TOKEN-}"
+_jira_email_saved="${JIRA_USER_EMAIL-}"
+_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
+unset JIRA_TOKEN JIRA_USER_EMAIL
 
 # ---------------------------------------------------------------------------
 # 2. Compute changed files
@@ -753,14 +889,14 @@ fi
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
-PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
-  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     FORCE_PUSH_OUTPUT=""
-    if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+    if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
       PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
@@ -788,7 +924,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
 
   # This path exits before the PR body is assembled, so the note goes here.
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
-    forge_post_pr_comment "${EXISTING_PR_NUM}" \
+    forge_retry_transient forge_post_pr_comment "${EXISTING_PR_NUM}" \
       "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
       || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
   fi
@@ -796,6 +932,10 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
     maybe_assign_pr "${EXISTING_PR_NUM}"
+  fi
+  if ! post_jira_stage_update "pushed new commits to" "${EXISTING_PR_URL}"; then
+    gha_echo error "Failed to write the code-stage update to Jira issue ${WORK_ITEM_KEY}"
+    exit 1
   fi
   exit 0
 fi
@@ -829,33 +969,26 @@ fi
 # never sees it, but it becomes a public PR description.
 PR_BODY_SCAN_STATUS="skipped"
 if [ -n "${PR_BODY_FROM_RESULT}" ]; then
-  PR_BODY_TMP="$(mktemp)"
-  printf '%s\n' "${PR_BODY_FROM_RESULT}" > "${PR_BODY_TMP}"
-  GL_STDERR="$(mktemp)"
   GL_RC=0
-  gitleaks detect --source "${PR_BODY_TMP}" --no-git --redact 2>"${GL_STDERR}" || GL_RC=$?
-  if [ -s "${GL_STDERR}" ]; then
-    sed 's/^/::debug::gitleaks: /' "${GL_STDERR}"
-  fi
-  rm -f "${GL_STDERR}"
+  scan_public_text "${PR_BODY_FROM_RESULT}" || GL_RC=$?
   if [ "${GL_RC}" -eq 0 ]; then
     PR_BODY_SCAN_STATUS="passed"
-  elif [ "${GL_RC}" -eq 1 ]; then
-    gha_echo warning "BLOCKED — secret detected in pr_body; falling back to commit body"
+  elif [ "${GL_RC}" -eq 2 ]; then
+    gha_echo warning "BLOCKED — secret detected in pr_body; checking commit-body fallback"
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="blocked"
   else
-    gha_echo warning "gitleaks scan failed (exit ${GL_RC}); falling back to commit body"
+    gha_echo warning "gitleaks scan failed (exit ${GL_RC}); checking commit-body fallback"
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="error"
   fi
-  rm -f "${PR_BODY_TMP}"
 fi
 
 extract_commit_body() {
   local raw
   raw="$(git log -1 --format='%b' HEAD \
     | sed '/^Signed-off-by:/d' \
+    | sed '/^Authored-by:/d' \
     | sed '/^Closes #/d' \
     | sed '/^Related to #/d' \
     | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
@@ -926,6 +1059,25 @@ if [ -z "${COMMIT_BODY}" ]; then
   COMMIT_BODY="$(extract_commit_body)"
 fi
 
+# Scan the final normalized description after removing trailers. Removing a
+# Signed-off-by line can join text that was separate during the earlier scan.
+COMMIT_BODY_SCAN_STATUS="skipped"
+if [ -n "${COMMIT_BODY}" ]; then
+  GL_RC=0
+  scan_public_text "${COMMIT_BODY}" || GL_RC=$?
+  if [ "${GL_RC}" -eq 0 ]; then
+    COMMIT_BODY_SCAN_STATUS="passed"
+  else
+    COMMIT_BODY=""
+    if [ "${GL_RC}" -eq 2 ]; then
+      COMMIT_BODY_SCAN_STATUS="blocked"
+    else
+      COMMIT_BODY_SCAN_STATUS="error"
+    fi
+    gha_echo warning "Commit body secret scan did not pass; using generic description"
+  fi
+fi
+
 if [ -z "${COMMIT_BODY}" ]; then
   if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
     DESCRIPTION="Automated implementation for ${WORK_ITEM_KEY}."
@@ -938,9 +1090,17 @@ fi
 
 case "${PR_BODY_SCAN_STATUS}" in
   passed)  PR_BODY_SCAN_LINE="- [x] PR body secret scan passed (gitleaks — no-git)" ;;
-  blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked, fell back to commit body" ;;
-  error)   PR_BODY_SCAN_LINE="- [x] PR body secret scan: error, fell back to commit body" ;;
-  *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
+  blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked; commit-body fallback attempted" ;;
+  error)   PR_BODY_SCAN_LINE="- [x] PR body secret scan: error; commit-body fallback attempted" ;;
+  *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (no PR body to scan)" ;;
+esac
+
+COMMIT_BODY_SCAN_LINE=""
+case "${COMMIT_BODY_SCAN_STATUS}" in
+  passed)  COMMIT_BODY_SCAN_LINE="
+- [x] Final PR description secret scan passed (gitleaks — no-git)" ;;
+  blocked|error) COMMIT_BODY_SCAN_LINE="
+- [x] Final PR description secret scan: ${COMMIT_BODY_SCAN_STATUS}; generic description used" ;;
 esac
 
 SIGNOFF_STRIPPED_LINE=""
@@ -967,7 +1127,7 @@ ${ISSUE_REFERENCE}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
+${PR_BODY_SCAN_LINE}${COMMIT_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(forge_create_pr \
@@ -977,9 +1137,14 @@ if ! PR_URL=$(forge_create_pr \
   "${PR_BODY}" 2>"${PR_CREATE_STDERR}"); then
   PR_CREATE_OUTPUT="$(cat "${PR_CREATE_STDERR}")"
   rm -f "${PR_CREATE_STDERR}"
+  print_sanitized_gha_log "${PR_CREATE_OUTPUT}"
   post_fail_to_issue pr-creation-failed "${PR_CREATE_OUTPUT}"
 fi
+PR_CREATE_OUTPUT="$(cat "${PR_CREATE_STDERR}")"
 rm -f "${PR_CREATE_STDERR}"
+if [ -n "${PR_CREATE_OUTPUT}" ]; then
+  print_sanitized_gha_log "${PR_CREATE_OUTPUT}"
+fi
 
 echo "PR created: ${PR_URL}"
 forge_write_output "pr_url" "${PR_URL}"
@@ -1001,4 +1166,12 @@ enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
 if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
   maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Jira stage update (Jira-sourced runs only)
+# ---------------------------------------------------------------------------
+if ! post_jira_stage_update "opened" "${PR_URL}"; then
+  gha_echo error "Failed to write the code-stage update to Jira issue ${WORK_ITEM_KEY}"
+  exit 1
 fi

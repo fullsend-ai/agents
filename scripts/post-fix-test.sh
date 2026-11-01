@@ -16,6 +16,10 @@ parse_script_test_args "$@"
 
 FAILURES=0
 
+# Git Data API calls from forge_push_branch are served from the bare remote
+# by the mock gh scripts below.
+export FAKE_GH_GIT_API="${SCRIPT_DIR}/test-fixtures/fake-gh-git-api.sh"
+
 POST_SCRIPT="$(resolve_agent_script post-fix "${SCRIPT_DIR}")"
 if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_pr' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-failure-reporting"
@@ -25,12 +29,53 @@ else
   echo "PASS: bundled-script-has-failure-reporting"
 fi
 
+if ! grep -q 'forge_push_branch' "${POST_SCRIPT}"; then
+  echo "FAIL: bundled-script-has-signed-push"
+  echo "  ${POST_SCRIPT} missing forge_push_branch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-push"
+fi
+
+# The switch that keeps the publish on git push unless enabled.
+if ! grep -q 'GITHUB_SIGNED_COMMITS' "${SCRIPT_DIR}/post-fix.sh"; then
+  echo "FAIL: bundled-script-has-signed-commits-switch"
+  echo "  scripts/post-fix.sh does not carry the GITHUB_SIGNED_COMMITS switch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: bundled-script-has-signed-commits-switch"
+fi
+
 if ! grep -q 'install_gitleaks' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-gitleaks-install"
   echo "  ${POST_SCRIPT} missing install_gitleaks"
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: bundled-script-has-gitleaks-install"
+fi
+
+# Lib-defined code is only inlined into the bundle: in bundled mode check the
+# bundle (so a stale bundle is caught), in source mode check the lib itself.
+if [[ "${SCRIPT_TEST_TARGET:-source}" == "bundled" ]]; then
+  FAILURE_LIB_TARGET="${POST_SCRIPT}"
+else
+  FAILURE_LIB_TARGET="${SCRIPT_DIR}/lib/post-failure-report.lib.sh"
+fi
+
+if ! grep -q 'forge_retry_transient' "${FAILURE_LIB_TARGET}"; then
+  echo "FAIL: post-failure-has-transient-retry"
+  echo "  ${FAILURE_LIB_TARGET} missing forge_retry_transient"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-transient-retry"
+fi
+
+if ! grep -q 'fix-agent-failed' "${FAILURE_LIB_TARGET}"; then
+  echo "FAIL: post-failure-has-last-resort-label"
+  echo "  ${FAILURE_LIB_TARGET} missing fix-agent-failed last-resort label"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: post-failure-has-last-resort-label"
 fi
 
 # Fetch + rebase must run after forge_set_push_remote and before the push
@@ -263,6 +308,26 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# harness/fix.yaml ships GITHUB_SIGNED_COMMITS off, in its GitHub block
+# only; the eval overlay the root config.yaml registers turns it on so the
+# functional evals keep exercising the API path.
+FIX_EVAL_HARNESS="${SCRIPT_DIR}/../eval/harness/fix.yaml"
+ROOT_CONFIG="${SCRIPT_DIR}/../config.yaml"
+if yq -e '.forge.github.env.runner.GITHUB_SIGNED_COMMITS == "false"' "${FIX_HARNESS}" >/dev/null \
+   && yq -e '[.env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS, .forge.github.env.sandbox.GITHUB_SIGNED_COMMITS, .forge.gitlab.env.runner.GITHUB_SIGNED_COMMITS, .forge.gitlab.env.sandbox.GITHUB_SIGNED_COMMITS] | map(select(. != null)) | length == 0' "${FIX_HARNESS}" >/dev/null; then
+  echo "PASS: fix-harness-signed-commits-default-off"
+else
+  echo "FAIL: fix-harness-signed-commits-default-off — GITHUB_SIGNED_COMMITS must be \"false\" in forge.github.env.runner of harness/fix.yaml and set nowhere else"
+  FAILURES=$((FAILURES + 1))
+fi
+if yq -e '.base == "../../harness/fix.yaml" and .env.runner.GITHUB_SIGNED_COMMITS == "true"' "${FIX_EVAL_HARNESS}" >/dev/null \
+   && yq -e '.agents[] | select(.source == "eval/harness/fix.yaml")' "${ROOT_CONFIG}" >/dev/null; then
+  echo "PASS: eval-fix-harness-signed-commits-on"
+else
+  echo "FAIL: eval-fix-harness-signed-commits-on — eval/harness/fix.yaml must extend harness/fix.yaml with GITHUB_SIGNED_COMMITS \"true\" and be registered in config.yaml"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # GitHub mergeable classification. Anything other than CONFLICTING is not a
 # conflict — including UNKNOWN, MERGEABLE, and mergeStateStatus-like values.
 run_github_conflict_class_test() {
@@ -364,68 +429,6 @@ run_gitlab_conflict_class_test "gitlab-legacy-cannot-be-merged-with-conflicts" \
   '{"has_conflicts":true,"merge_status":"cannot_be_merged"}' "true"
 run_gitlab_conflict_class_test "gitlab-legacy-checking-with-conflicts-is-not-conflict" \
   '{"has_conflicts":true,"merge_status":"checking"}' "false"
-
-# ---------------------------------------------------------------------------
-# Test helper — reimplements the push retry logic from post-fix.sh section 5.
-# Given a push exit code and output, returns the action.
-# ---------------------------------------------------------------------------
-decide_push_retry() {
-  local push_rc="$1"
-  local push_output="$2"
-
-  if [ "${push_rc}" -eq 0 ]; then
-    echo "success"
-    return 0
-  fi
-
-  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
-    echo "retry:force-with-lease"
-    return 0
-  fi
-
-  echo "fail:unexpected-error"
-  return 0
-}
-
-run_push_retry_test() {
-  local test_name="$1"
-  local push_rc="$2"
-  local push_output="$3"
-  local expected_prefix="$4"
-
-  local actual
-  actual="$(decide_push_retry "${push_rc}" "${push_output}")"
-
-  if [[ "${actual}" != ${expected_prefix}* ]]; then
-    echo "FAIL: ${test_name}"
-    echo "  push_rc:         '${push_rc}'"
-    echo "  push_output:     '${push_output}'"
-    echo "  expected prefix: '${expected_prefix}'"
-    echo "  actual:          '${actual}'"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-
-  echo "PASS: ${test_name}"
-}
-
-# --- Push retry test cases ---
-
-# Successful push → no retry needed
-run_push_retry_test "push-success" \
-  "0" "Everything up-to-date" "success"
-
-# Non-fast-forward error → retry with --force-with-lease
-run_push_retry_test "push-non-fast-forward" \
-  "1" "error: failed to push some refs: non-fast-forward" "retry:force-with-lease"
-
-# Rejected error → retry with --force-with-lease
-run_push_retry_test "push-rejected" \
-  "1" "! [rejected] agent/42 -> agent/42 (fetch first)" "retry:force-with-lease"
-
-# Unknown error → fail
-run_push_retry_test "push-unexpected-error" \
-  "1" "fatal: repository not found" "fail:unexpected-error"
 
 # ---------------------------------------------------------------------------
 # Test helper — reimplements the pre-commit auto-fix retry decision logic
@@ -690,6 +693,7 @@ run_postfix_integration_test() {
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export FULLSEND_VALIDATED_ITERATION_DIR="${validated_dir}"
     bash "${POST_SCRIPT}"
   ) > "${INTEGRATION_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
@@ -882,6 +886,7 @@ chmod +x "${REBASE_MOCK_BIN}/sleep"
 cat > "${REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "api -X") exec bash "${FAKE_GH_GIT_API}" "$@" ;;
   "pr view")
     # Distinct --json fields are requested by different forge helpers.
     # Default mergeable=MERGEABLE so these DIFF_BASE tests never look like
@@ -916,6 +921,7 @@ chmod +x "${REBASE_MOCK_BIN}/gh"
 # Mock gitleaks: always pass (the test targets DIFF_BASE logic, not gitleaks)
 cat > "${REBASE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 exit 0
 MOCKEOF
 chmod +x "${REBASE_MOCK_BIN}/gitleaks"
@@ -997,6 +1003,7 @@ Signed-off-by: Human User <human@example.com>" -q
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export TARGET_BRANCH="main"
     export PRE_AGENT_HEAD="${pre_rebase_head}"
     bash "${POST_SCRIPT}"
@@ -1082,6 +1089,7 @@ run_sec_postfix_test() {
     export TRIGGER_SOURCE="test-user"
     export REPO_DIR="repo"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     bash "${POST_SCRIPT}"
   ) > "${SEC_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -1499,6 +1507,7 @@ run_prefix_github_validation_test() {
   # shellcheck disable=SC2030,SC2031
   (
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export REPO_FULL_NAME="${repo_full_name}"
     export PR_NUMBER="42"
     export TRIGGER_SOURCE="test-user"
@@ -1594,6 +1603,7 @@ MOCK
   (
     export PATH="${base}/bin:${PATH}"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_NUMBER="99"
     export TRIGGER_SOURCE="fullsend-ai-review[bot]"
@@ -1769,6 +1779,7 @@ EOF
   (
     export PATH="${base}/bin:${PATH}"
     export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="true"
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_NUMBER="99"
     export TRIGGER_SOURCE="fullsend-ai-review[bot]"
@@ -1824,6 +1835,7 @@ chmod +x "${PUSH_REBASE_MOCK_BIN}/sleep"
 
 cat > "${PUSH_REBASE_MOCK_BIN}/gitleaks" <<'MOCKEOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 exit 0
 MOCKEOF
 chmod +x "${PUSH_REBASE_MOCK_BIN}/gitleaks"
@@ -1831,6 +1843,7 @@ chmod +x "${PUSH_REBASE_MOCK_BIN}/gitleaks"
 cat > "${PUSH_REBASE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash
 case "$1 $2" in
+  "api -X") exec bash "${FAKE_GH_GIT_API}" "$@" ;;
   "pr view")
     # Distinct --json fields are requested by different forge helpers.
     # Default mergeable=MERGEABLE so existing tests never look like a
@@ -1859,6 +1872,21 @@ case "$1 $2" in
 esac
 MOCKEOF
 chmod +x "${PUSH_REBASE_MOCK_BIN}/gh"
+
+# With GITHUB_SIGNED_COMMITS off, run_push_rebase_postfix puts this gh in
+# front of the mock: a Git Data API call fails the run, everything else is
+# served by the mock the scenario chose (PUSH_REBASE_DELEGATE_GH).
+PUSH_REBASE_OFF_BIN="${PUSH_REBASE_TMPDIR}/offbin"
+mkdir -p "${PUSH_REBASE_OFF_BIN}"
+cat > "${PUSH_REBASE_OFF_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "$1 $2" = "api -X" ]; then
+  echo "unexpected Git Data API call on the plain-push path: $*" >&2
+  exit 99
+fi
+exec "${PUSH_REBASE_DELEGATE_GH}" "$@"
+MOCKEOF
+chmod +x "${PUSH_REBASE_OFF_BIN}/gh"
 
 PUSH_REBASE_REAL_GIT="$(which git)"
 cat > "${PUSH_REBASE_MOCK_BIN}/git" <<MOCKEOF
@@ -1899,6 +1927,13 @@ run_push_rebase_postfix() {
     # same way GIT_BOT_EMAIL below does, so GitLab-specific gating can be
     # exercised without a second copy of this harness.
     export FULLSEND_FORGE="${FULLSEND_FORGE:-github}"
+    # The publish path under test: the API unless a caller exports
+    # GITHUB_SIGNED_COMMITS=false, the fleet default in harness/fix.yaml.
+    export GITHUB_SIGNED_COMMITS="${GITHUB_SIGNED_COMMITS:-true}"
+    if [ "${GITHUB_SIGNED_COMMITS}" != "true" ]; then
+      export PUSH_REBASE_DELEGATE_GH="${mock_bin}/gh"
+      export PATH="${PUSH_REBASE_OFF_BIN}:${PATH}"
+    fi
     if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
       # Only needed on the gitlab path (setup() validates PR_URL against
       # REPO_FULL_NAME/PR_NUMBER and derives GITLAB_HOST from it); harmless
@@ -1918,6 +1953,165 @@ run_push_rebase_postfix() {
     bash "${POST_SCRIPT}"
   ) > "${stdout_log}" 2>&1 || exit_code=$?
   return "${exit_code}"
+}
+
+# ---------------------------------------------------------------------------
+# Push retry (post-fix.sh §5) against the real script.
+#
+# GITHUB_SIGNED_COMMITS=false so forge_push_branch is git push. A git
+# wrapper supplies the first-push failure text so each wording of the
+# production grep is hit; the retry is the real `git push --force-with-lease`.
+# ---------------------------------------------------------------------------
+run_fix_push_retry_test() {
+  local test_name="$1"
+  local first_push_fail="${2:-}"
+  local expect_retry="$3"
+  local expect_exit="$4"
+
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  # Isolate HOME so post-fix's PATH="${HOME}/.local/bin:${PATH}" cannot
+  # shadow this mock-bin with an unrelated `gh`/`git` from the developer host.
+  mkdir -p "${base}/home"
+
+  local mock_bin="${base}/mock-bin"
+  local push_log="${base}/push-calls.log"
+  mkdir -p "${mock_bin}"
+  : > "${push_log}"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${PUSH_REBASE_MOCK_BIN}/gitleaks" \
+    "${PUSH_REBASE_MOCK_BIN}/sleep" "${mock_bin}/"
+
+  cat > "${mock_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+if [[ "\$1" == "push" ]]; then
+  printf 'git %s\n' "\$*" >> "${push_log}"
+  _force=false
+  for _a in "\$@"; do
+    if [[ "\$_a" == "--force-with-lease" ]]; then
+      _force=true
+    fi
+  done
+  if [[ "\${_force}" == true ]]; then
+    exec ${PUSH_REBASE_REAL_GIT} "\$@"
+  fi
+  if [[ -n "\${MOCK_PUSH_FAIL:-}" ]]; then
+    echo "\${MOCK_PUSH_FAIL}" >&2
+    exit 1
+  fi
+  exec ${PUSH_REBASE_REAL_GIT} "\$@"
+fi
+exec ${PUSH_REBASE_REAL_GIT} "\$@"
+MOCKEOF
+  chmod +x "${mock_bin}/git"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    if [[ -n "${first_push_fail}" ]]; then
+      export MOCK_PUSH_FAIL="${first_push_fail}"
+    else
+      unset MOCK_PUSH_FAIL
+    fi
+    export GITHUB_SIGNED_COMMITS=false
+    export HOME="${base}/home"
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${mock_bin}"
+  ) || exit_code=$?
+
+  local retried=false
+  if [[ -s "${push_log}" ]] && grep -q -- '--force-with-lease' "${push_log}"; then
+    retried=true
+  fi
+
+  if [[ "${exit_code}" -ne "${expect_exit}" ]]; then
+    echo "FAIL: ${test_name} — exit ${exit_code}, want ${expect_exit}"
+    cat "${stdout_log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # The script must have attempted a plain push first (a line without
+  # --force-with-lease); otherwise these tests could pass without any push.
+  local plain_push_line force_push_line
+  plain_push_line="$(grep -n -- '^git push' "${push_log}" \
+    | grep -v -e '--force-with-lease' -e '--delete' \
+    | head -n1 | cut -d: -f1 || true)"
+  force_push_line="$(grep -n -- '--force-with-lease' "${push_log}" \
+    | head -n1 | cut -d: -f1 || true)"
+  if [[ -z "${plain_push_line}" ]]; then
+    echo "FAIL: ${test_name} — expected a plain git push in the push log"
+    cat "${stdout_log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${expect_retry}" == "true" ]] \
+    && [[ -n "${force_push_line}" ]] \
+    && (( plain_push_line >= force_push_line )); then
+    echo "FAIL: ${test_name} — plain git push must precede --force-with-lease retry"
+    cat "${stdout_log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expect_retry}" == "true" ]]; then
+    if [[ "${retried}" != true ]]; then
+      echo "FAIL: ${test_name} — expected --force-with-lease retry"
+      cat "${stdout_log}"
+      echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if ! grep -qF "retrying with --force-with-lease" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — missing retry warning"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if [[ "${retried}" == true ]]; then
+      echo "FAIL: ${test_name} — unexpected --force-with-lease"
+      cat "${stdout_log}"
+      echo "push calls:"; cat "${push_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if grep -qF "retrying with --force-with-lease" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — unexpected retry warning"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
 }
 
 # Reconstructed local history (different SHAs, same tree as the real remote
@@ -2029,9 +2223,11 @@ run_push_rebase_matching_history_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
+  # The signed push recreates the commit on GitHub, so the remote SHA differs;
+  # the push log names the local commit each remote commit was built from.
   local pushed_f
   pushed_f="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
-  if [ "${pushed_f}" != "${local_f}" ]; then
+  if ! grep -q "Created signed commit ${pushed_f} for ${local_f}" "${stdout_log}"; then
     echo "FAIL: ${test_name} — agent commit SHA changed (rebase was not a no-op)"
     echo "  before: ${local_f}"
     echo "  after:  ${pushed_f}"
@@ -2250,7 +2446,7 @@ MOCKEOF
 # post-fix must skip rebase onto origin/BRANCH (which would undo it) and
 # force-push the rebased history (issue #565).
 run_push_rebase_preserves_agent_rebase_onto_target_test() {
-  local test_name="push-rebase-preserves-agent-rebase-onto-target"
+  local test_name="push-rebase-preserves-agent-rebase-onto-target${1:+-$1}"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
   mkdir -p "${base}"
 
@@ -2922,10 +3118,307 @@ run_push_history_rewrite_preserves_squash_test() {
   echo "PASS: ${test_name}"
 }
 
+# commit_as_published REPO EMAIL NAME MSG [TRAILER_EMAIL] — a commit as the
+# GitHub API publishes it: App bot author with EMAIL (GIT_BOT_EMAIL), GitHub
+# committer, NAME <TRAILER_EMAIL> (default EMAIL) in the Authored-by trailer.
+commit_as_published() {
+  local repo="$1" email="$2" name="$3" msg="$4" trailer_email="${5:-$2}"
+  GIT_AUTHOR_NAME='fullsend-ai-coder[bot]' GIT_AUTHOR_EMAIL="${email}" \
+  GIT_COMMITTER_NAME='GitHub' GIT_COMMITTER_EMAIL='noreply@github.com' \
+    git -C "${repo}" commit -q -m "${msg}" -m "Authored-by: ${name} <${trailer_email}>"
+}
+
+# run_redo_refused_test NAME SEED_FN MESSAGE_GREP — seeds a PR branch with
+# SEED_FN (called with the base dir and the bot email), then a redo that
+# resets to origin/main must be refused, the remote branch unchanged, and
+# the fail-closed message must match MESSAGE_GREP.
+run_redo_refused_test() {
+  local test_name="$1" seed_fn="$2" expect_grep="$3"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+  seed_pr_branch "${base}"
+  "${seed_fn}" "${base}" "${bot_email}"
+  local remote_tip
+  remote_tip="$(git -C "${base}/seed" rev-parse HEAD)"
+  publish_pr_branch "${base}"
+  git -C "${base}/repo" reset -q --hard origin/main
+  echo "gone" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  commit_as "${base}/repo" "${bot_email}" "fullsend-fix" "fix: redo past a protected commit"
+  write_history_rewritten_result "${base}/iteration-1/output"
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "redo from scratch" || exit_code=$?
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit when a protected commit would be lost"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "${expect_grep}" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing fail-closed message matching '${expect_grep}'"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local after
+  after="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${after}" != "${remote_tip}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved despite fail-closed rewrite"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Another bot's commit (name ends in [bot], but not the App's noreply email)
+# carrying a fix-agent trailer stays that bot's commit.
+seed_other_bot_with_trailer() {
+  local base="$1" bot_email="$2"
+  echo "auto" > "${base}/seed/auto.txt"
+  git -C "${base}/seed" add auto.txt
+  GIT_AUTHOR_NAME='github-actions[bot]' GIT_AUTHOR_EMAIL='41898282+github-actions[bot]@users.noreply.github.com' \
+  GIT_COMMITTER_NAME='GitHub' GIT_COMMITTER_EMAIL='noreply@github.com' \
+    git -C "${base}/seed" commit -q -m "chore: auto-format" -m "Authored-by: fullsend-fix <${bot_email}>"
+}
+
+# A published commit with two Authored-by trailers is ambiguous and is
+# read from its git author, the bot, which is not the fix agent.
+seed_published_with_two_trailers() {
+  local base="$1" bot_email="$2"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  GIT_AUTHOR_NAME='fullsend-ai-coder[bot]' GIT_AUTHOR_EMAIL="${bot_email}" \
+  GIT_COMMITTER_NAME='GitHub' GIT_COMMITTER_EMAIL='noreply@github.com' \
+    git -C "${base}/seed" commit -q -m "fix: attempt 1" -m "Authored-by: fullsend-fix <${bot_email}>
+Authored-by: fullsend-fix <${bot_email}>"
+}
+
+# A code-agent commit published through the API, then a fix attempt: the
+# bot author is shared, only the Authored-by trailer tells them apart.
+seed_published_code_agent_commit() {
+  local base="$1" bot_email="$2"
+  echo "code" > "${base}/seed/code.txt"
+  git -C "${base}/seed" add code.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-code" "feat: code agent work"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
+}
+
+# A human commit carrying a fix-agent Authored-by trailer: the trailer only
+# counts on bot-authored commits, so the human stays the author.
+seed_human_with_spoofed_trailer() {
+  local base="$1" bot_email="$2"
+  echo "human" > "${base}/seed/human.txt"
+  git -C "${base}/seed" add human.txt
+  GIT_AUTHOR_NAME="Human" GIT_AUTHOR_EMAIL="human@example.com" \
+  GIT_COMMITTER_NAME="Human" GIT_COMMITTER_EMAIL="human@example.com" \
+    git -C "${base}/seed" commit -q -m "feat: human work" -m "Authored-by: fullsend-fix <${bot_email}>"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
+}
+
+# seed_pr_branch BASE — bare remote at BASE/remote.git with main at "init",
+# and a clone at BASE/seed checked out on agent/99-test-fix.
+seed_pr_branch() {
+  local base="$1"
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+}
+
+# publish_pr_branch BASE — pushes the seed's branch and clones the remote to
+# BASE/repo on that branch, as the sandbox checkout.
+publish_pr_branch() {
+  local base="$1"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+}
+
+# Redo over commits published through the API: all share the bot author, so
+# only the Authored-by trailer separates the fix agent's attempts
+# (droppable) from the code agent's commit (preserved).
+run_push_history_rewrite_preserves_redo_after_signed_push_test() {
+  local test_name="push-history-rewrite-preserves-redo-after-signed-push"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+
+  seed_pr_branch "${base}"
+  echo "code" > "${base}/seed/code.txt"
+  git -C "${base}/seed" add code.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-code" "feat: code agent work"
+  local code_sha
+  code_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+  echo "bad1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: bad attempt 1"
+  echo "bad2" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: bad attempt 2"
+  publish_pr_branch "${base}"
+  git -C "${base}/repo" reset -q --hard "${code_sha}"
+  echo "redone" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  commit_as "${base}/repo" "${bot_email}" "fullsend-fix" "fix: redo from scratch"
+
+  write_history_rewritten_result "${base}/iteration-1/output"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "redo from scratch" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skipping rebase onto origin/agent/99-test-fix to preserve the agent history rewrite" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_content
+  remote_content="$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-test-fix:file.txt)"
+  if [ "${remote_content}" != "redone" ]; then
+    echo "FAIL: ${test_name} — remote file.txt is '${remote_content}', want 'redone'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix | grep -q "bad attempt"; then
+    echo "FAIL: ${test_name} — discarded redo commits are still on the remote"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor "${code_sha}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — the code agent's commit is no longer on the remote"
+    git --git-dir="${base}/remote.git" log --oneline refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# A human commit already published through the API (bot author, Authored-by
+# trailer) is rebased onto an advanced target. Its SHA and tree change, so
+# the preservation check must find it by patch-id and the trailer author,
+# and the republished commit must keep the trailer.
+run_push_history_rewrite_preserves_rebased_published_human_commit_test() {
+  local test_name="push-history-rewrite-preserves-rebased-published-human-commit"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+  local bot_email="bot@example.com"
+  local human_email="human@example.com"
+
+  seed_pr_branch "${base}"
+  echo "human" > "${base}/seed/human.txt"
+  git -C "${base}/seed" add human.txt
+  commit_as_published "${base}/seed" "${bot_email}" "Alice" "feat: human work" "${human_email}"
+  echo "f1" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  commit_as_published "${base}/seed" "${bot_email}" "fullsend-fix" "fix: attempt 1"
+  # Target moves on after the PR branch was built — the ordinary reason a
+  # human asks for a rebase.
+  git -C "${base}/seed" checkout -q main
+  echo "ahead" > "${base}/seed/other.txt"
+  git -C "${base}/seed" add other.txt
+  commit_as "${base}/seed" "${bot_email}" "fullsend-code" "main ahead"
+  git -C "${base}/seed" push -q origin main
+  local main_ahead
+  main_ahead="$(git -C "${base}/seed" rev-parse HEAD)"
+  publish_pr_branch "${base}"
+  git -C "${base}/repo" rebase -q origin/main
+
+  mkdir -p "${base}/iteration-1/output"
+  cat > "${base}/iteration-1/output/agent-result.json" <<'JSONEOF'
+{
+  "pr_number": 99,
+  "trigger_source": "human",
+  "actions": [
+    {"type": "fix", "finding": "rebase onto main", "description": "Rebased the branch onto origin/main per the human /fs-fix rebase request."}
+  ],
+  "summary": "Rebased onto main.",
+  "tests_passed": true,
+  "files_changed": [],
+  "rebased_onto_target": true
+}
+JSONEOF
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  GIT_BOT_EMAIL="${bot_email}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "rebase onto main" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "skipping rebase onto origin/agent/99-test-fix to preserve the agent rebase onto the target" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected skip of rebase onto origin/BRANCH"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote="${base}/remote.git" branch="refs/heads/agent/99-test-fix"
+  if ! git --git-dir="${remote}" merge-base --is-ancestor "${main_ahead}" "${branch}"; then
+    echo "FAIL: ${test_name} — pushed branch is not based on the new main tip"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_count
+  remote_count="$(git --git-dir="${remote}" rev-list --count "refs/heads/main..${branch}")"
+  if [ "${remote_count}" != "2" ]; then
+    echo "FAIL: ${test_name} — expected 2 commits on the PR after the rebase, got ${remote_count}"
+    git --git-dir="${remote}" log --oneline "${branch}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local human_file
+  human_file="$(git --git-dir="${remote}" show "${branch}:human.txt")"
+  if [ "${human_file}" != "human" ]; then
+    echo "FAIL: ${test_name} — human.txt is '${human_file}', want 'human'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local human_trailer fix_trailer
+  human_trailer="$(git --git-dir="${remote}" log -1 --format='%(trailers:key=Authored-by,valueonly)' "${branch}~1" | sed '/^$/d')"
+  fix_trailer="$(git --git-dir="${remote}" log -1 --format='%(trailers:key=Authored-by,valueonly)' "${branch}" | sed '/^$/d')"
+  if [ "${human_trailer}" != "Alice <${human_email}>" ] || [ "${fix_trailer}" != "fullsend-fix <${bot_email}>" ]; then
+    echo "FAIL: ${test_name} — Authored-by trailers not kept through the rebase and republish"
+    echo "  human: '${human_trailer}'  fix: '${fix_trailer}'"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 # Agent reset the contiguous fix-agent suffix and re-committed. post-fix
 # must skip replay onto origin/BRANCH so the discarded attempts stay gone.
 run_push_history_rewrite_preserves_redo_test() {
-  local test_name="push-history-rewrite-preserves-redo"
+  local test_name="push-history-rewrite-preserves-redo${1:+-$1}"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
   mkdir -p "${base}"
   local bot_email="bot@example.com"
@@ -2995,7 +3488,7 @@ run_push_history_rewrite_preserves_redo_test() {
 # Ordinary append: no history_rewritten marker, no squash/redo instruction.
 # New commit on top of the remote tip must fast-forward; no skip.
 run_push_history_rewrite_ordinary_append_test() {
-  local test_name="push-history-rewrite-ordinary-append"
+  local test_name="push-history-rewrite-ordinary-append${1:+-$1}"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
   mkdir -p "${base}"
 
@@ -3034,7 +3527,9 @@ run_push_history_rewrite_ordinary_append_test() {
     FAILURES=$((FAILURES + 1))
     return
   fi
-  if grep -q "skipping rebase onto origin/agent/99-test-fix" "${stdout_log}"; then
+  # The general fast-forward skip (issue #1323) is expected here; only the
+  # history-rewrite / target-rebase preservation skips must not fire.
+  if grep -q "skipping rebase onto origin/agent/99-test-fix to preserve" "${stdout_log}"; then
     echo "FAIL: ${test_name} — ordinary append skipped origin/BRANCH rebase"
     cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
@@ -4121,9 +4616,123 @@ run_push_history_rewrite_non_rewrite_instruction_ignores_marker_test() {
   echo "PASS: ${test_name}"
 }
 
+# Issue #1323: the agent merged origin/main into the PR branch to reconcile
+# a stale base, with no merged_target / rebased_onto_target flag and no human
+# rebase request. origin/BRANCH is already an ancestor of HEAD, so the
+# replay must be skipped: a default rebase would drop the merge commit and
+# replay main-side commits onto the old PR tip — silently inflating the PR
+# when they apply cleanly ("clean"), or re-hitting the conflict the agent
+# already resolved ("conflict").
+run_push_preserves_unflagged_target_merge_test() {
+  local mode="$1"
+  local test_name="push-preserves-unflagged-target-merge-${mode}${2:+-$2}"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git -C "${base}/seed" checkout -q main
+  if [ "${mode}" = "conflict" ]; then
+    echo "main-change" > "${base}/seed/file.txt"
+    git -C "${base}/seed" add file.txt
+  else
+    echo "ahead" > "${base}/seed/other.txt"
+    git -C "${base}/seed" add other.txt
+  fi
+  git -C "${base}/seed" commit -q -m "main ahead"
+  git -C "${base}/seed" push -q origin main
+  local main_ahead
+  main_ahead="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  if [ "${mode}" = "conflict" ]; then
+    git -C "${base}/repo" merge -q --no-edit origin/main >/dev/null 2>&1 || true
+    echo "resolved" > "${base}/repo/file.txt"
+    git -C "${base}/repo" add file.txt
+    git -C "${base}/repo" commit -q --no-edit
+  else
+    git -C "${base}/repo" merge -q --no-edit origin/main
+  fi
+  local local_tree
+  local_tree="$(git -C "${base}/repo" rev-parse "HEAD^{tree}")"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${PUSH_REBASE_MOCK_BIN}" \
+    "test-user" "bring this branch up to date with main" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if grep -q "Rebasing local agent/99-test-fix onto origin/agent/99-test-fix" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — replayed onto origin/BRANCH even though it is an ancestor of HEAD"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "origin/agent/99-test-fix is already an ancestor of local HEAD" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — expected the fast-forward skip message"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git --git-dir="${base}/remote.git" merge-base --is-ancestor \
+       "${main_ahead}" refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — pushed branch does not contain the main tip as an ancestor (merge dropped)"
+    git --git-dir="${base}/remote.git" log --oneline --graph refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [ -z "$(git --git-dir="${base}/remote.git" rev-list --merges refs/heads/agent/99-test-fix)" ]; then
+    echo "FAIL: ${test_name} — merge commit was dropped by replay"
+    git --git-dir="${base}/remote.git" log --oneline --graph refs/heads/agent/99-test-fix
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tree
+  remote_tree="$(git --git-dir="${base}/remote.git" rev-parse "refs/heads/agent/99-test-fix^{tree}")"
+  if [ "${remote_tree}" != "${local_tree}" ]; then
+    echo "FAIL: ${test_name} — pushed tree differs from the agent's resolved tree"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_fix_push_retry_test "push-success" \
+  "" "false" 0
+run_fix_push_retry_test "push-non-fast-forward" \
+  "error: failed to push some refs: non-fast-forward" "true" 0
+run_fix_push_retry_test "push-rejected" \
+  "! [rejected] agent/42 -> agent/42 (fetch first)" "true" 0
+run_fix_push_retry_test "push-api-not-a-fast-forward" \
+  "gh: Update is not a fast forward (HTTP 422)" "true" 0
+run_fix_push_retry_test "push-unexpected-error" \
+  "fatal: repository not found" "false" 1
+
 run_push_rebase_reconstructed_test
 run_push_rebase_matching_history_test
 run_push_rebase_fresh_branch_test
+run_push_preserves_unflagged_target_merge_test clean
+run_push_preserves_unflagged_target_merge_test conflict
 run_push_rebase_conflict_test
 run_push_rebase_fetch_failure_test
 run_push_rebase_preserves_agent_rebase_onto_target_test
@@ -4135,6 +4744,12 @@ run_push_rebase_preserves_agent_rebase_after_validation_retry_test
 run_push_history_rewrite_preserves_squash_test
 run_push_history_rewrite_refuses_partial_squash_test
 run_push_history_rewrite_preserves_redo_test
+run_push_history_rewrite_preserves_redo_after_signed_push_test
+run_redo_refused_test "push-history-rewrite-refuses-lost-published-code-agent-commit" seed_published_code_agent_commit "fullsend-code"
+run_redo_refused_test "push-history-rewrite-refuses-lost-human-commit-with-spoofed-trailer" seed_human_with_spoofed_trailer "author Human <human@example.com>"
+run_push_history_rewrite_preserves_rebased_published_human_commit_test
+run_redo_refused_test "push-history-rewrite-refuses-lost-other-bot-commit-with-trailer" seed_other_bot_with_trailer "github-actions\[bot\]"
+run_redo_refused_test "push-history-rewrite-refuses-ambiguous-double-trailer-commit" seed_published_with_two_trailers "fullsend-ai-coder\[bot\]"
 run_push_history_rewrite_ordinary_append_test
 run_push_history_rewrite_preserves_human_suffix_test
 run_push_history_rewrite_refuses_lost_human_commit_test
@@ -4148,6 +4763,14 @@ run_push_history_rewrite_indistinguishable_from_reconstruction_test
 run_push_history_rewrite_preserves_reconstructed_human_commit_test
 run_push_history_rewrite_bot_trigger_ignores_marker_test
 run_push_history_rewrite_non_rewrite_instruction_ignores_marker_test
+
+# The fleet default (GITHUB_SIGNED_COMMITS "false" in harness/fix.yaml): the
+# same publishes go through a plain git push, with any Git Data API call
+# failing the run. Covers the fast-forward, lease (redo) and rebase pushes.
+GITHUB_SIGNED_COMMITS=false run_push_history_rewrite_ordinary_append_test signed-commits-off
+GITHUB_SIGNED_COMMITS=false run_push_history_rewrite_preserves_redo_test signed-commits-off
+GITHUB_SIGNED_COMMITS=false run_push_rebase_preserves_agent_rebase_onto_target_test signed-commits-off
+GITHUB_SIGNED_COMMITS=false run_push_preserves_unflagged_target_merge_test clean signed-commits-off
 
 # ---------------------------------------------------------------------------
 # Forge-reported conflict: post-fix skip of origin/BRANCH replay (issue #1518).
@@ -4169,6 +4792,7 @@ run_push_rebase_postfix_with_mergeable() {
   cat > "${conflict_mock}/gh" <<EOF
 #!/usr/bin/env bash
 case "\$1 \$2" in
+  "api -X") exec bash "\${FAKE_GH_GIT_API}" "\$@" ;;
   "pr view")
     if printf '%s' "\$*" | grep -q 'headRefName'; then
       echo 'agent/99-test-fix'
@@ -5464,6 +6088,7 @@ run_push_forge_conflict_precommit_gate_first_parent_test() {
   # tree delta rather than just the conflict resolution.
   cat > "${gate_mock}/gitleaks" <<EOF
 #!/usr/bin/env bash
+if [ "\$1" = version ]; then echo 8.30.1; exit 0; fi
 log_opts=""
 pipe_mode=false
 for arg in "\$@"; do
@@ -5599,6 +6224,7 @@ run_push_forge_conflict_untrusted_merge_secret_test() {
   # not confirmed trusted-target history.
   cat > "${gate_mock}/gitleaks" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 pipe_mode=false
 for arg in "$@"; do
   case "${arg}" in
@@ -5723,6 +6349,7 @@ run_push_forge_conflict_untrusted_octopus_merge_secret_test() {
   # merge with an unconfirmed extra parent.
   cat > "${gate_mock}/gitleaks" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
 pipe_mode=false
 for arg in "$@"; do
   case "${arg}" in
@@ -5754,6 +6381,212 @@ EOF
   fi
   if ! grep -q "leaks found" "${stdout_log}"; then
     echo "FAIL: ${test_name} — failed for a reason other than the planted secret"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Issue #1801: patch_added_lines reduces a git patch to the content of its
+# added lines before the merge-content scans pipe it into gitleaks, so
+# unchanged context and deleted lines are never scanned.
+run_patch_added_lines_test() {
+  local test_name="$1"
+  local patch="$2"
+  local expected="$3"
+  local actual
+  # shellcheck disable=SC2030,SC2031
+  actual="$(
+    FULLSEND_FORGE=github
+    # shellcheck source=lib/fix-ops.lib.sh
+    source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+    printf '%s\n' "${patch}" | patch_added_lines
+  )"
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name} — expected '${expected}', got '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_patch_added_lines_test "patch-added-lines-deleted-only" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,2 @@\n alpha\n-sekrit\n omega' \
+  ""
+run_patch_added_lines_test "patch-added-lines-context-only" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n sekrit\n-mode = old\n+mode = new' \
+  "mode = new"
+run_patch_added_lines_test "patch-added-lines-added-strips-prefix" \
+  $'diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n@@ -0,0 +1,2 @@\n+sekrit\n+++tripleplus' \
+  $'sekrit\n++tripleplus'
+run_patch_added_lines_test "patch-added-lines-no-newline-marker" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+sekrit\n\\ No newline at end of file' \
+  "sekrit"
+run_patch_added_lines_test "patch-added-lines-suppress-blank-empty" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+sekrit' \
+  "sekrit"
+run_patch_added_lines_test "patch-added-lines-combined-cc" \
+  $'diff --cc f\nindex 1,2..3\n--- a/f\n+++ b/f\n@@@ -1,4 -1,4 +1,4 @@@\n  alpha\n  sekrit\n--gone\n- ours\n -theirs\n++resolved\n+ fromtheirs\n +fromours' \
+  $'resolved\nfromtheirs\nfromours'
+run_patch_added_lines_test "patch-added-lines-multi-file-headers" \
+  $'commit abc\nMerge: 1 2\n\n    +not a diff line\n\ndiff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+one\ndiff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-sekrit\n+two' \
+  $'one\ntwo'
+
+# Issue #1801: end-to-end coverage for the per-merge (--cc) and
+# target-tip-to-HEAD scans. MODE sets how a forge-conflict resolution (or a
+# follow-up commit) treats a "sekrit" line:
+#   context  — kept unchanged next to the resolved conflict    -> pass
+#   deleted  — removed by the resolution                       -> pass
+#   added    — introduced by the resolution                    -> secret-scan
+#   moved    — removed from file.txt, re-added in moved.txt    -> secret-scan
+#   followup — absent from the merge, added by a later commit  -> secret-scan
+#   message  — only in the merge commit's message              -> secret-scan
+#   fixmsg   — only in a follow-up commit's message            -> secret-scan
+#   author   — only in the merge commit's author identity      -> secret-scan
+#   committer — only in a follow-up commit's committer identity -> secret-scan
+run_push_forge_conflict_merge_secret_lines_test() {
+  local mode="$1"
+  local expect="$2"
+  local test_name="push-forge-conflict-merge-secret-${mode}"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  case "${mode}" in
+    context|deleted|moved) printf 'alpha\nsekrit\nmid\nomega\n' > "${base}/seed/file.txt" ;;
+    *) printf 'alpha\nmid\nomega\n' > "${base}/seed/file.txt" ;;
+  esac
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  sed 's/^mid$/pr-a/' "${base}/seed/file.txt" > "${base}/seed/file.tmp"
+  mv "${base}/seed/file.tmp" "${base}/seed/file.txt"
+  git -C "${base}/seed" commit -q -am "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local pr_a_sha
+  pr_a_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  # Conflicting change on main, so the agent's merge of origin/main is a
+  # real conflict resolution whose only extra parent is trusted target
+  # history — the per-merge scan uses --cc and the tip-to-HEAD scan runs.
+  git -C "${base}/seed" checkout -q main
+  sed 's/^mid$/main-change/' "${base}/seed/file.txt" > "${base}/seed/file.tmp"
+  mv "${base}/seed/file.tmp" "${base}/seed/file.txt"
+  git -C "${base}/seed" commit -q -am "main: conflicting change"
+  git -C "${base}/seed" push -q origin main
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit origin/main >/dev/null 2>&1 || true
+  case "${mode}" in
+    context|added) printf 'alpha\nsekrit\nresolved\nomega\n' > "${base}/repo/file.txt" ;;
+    moved)
+      printf 'alpha\nresolved\nomega\n' > "${base}/repo/file.txt"
+      echo "sekrit" > "${base}/repo/moved.txt"
+      git -C "${base}/repo" add moved.txt
+      ;;
+    *) printf 'alpha\nresolved\nomega\n' > "${base}/repo/file.txt" ;;
+  esac
+  git -C "${base}/repo" add file.txt
+  if [ "${mode}" = "message" ]; then
+    git -C "${base}/repo" commit -q -m "Merge origin/main: sekrit"
+  elif [ "${mode}" = "author" ]; then
+    git -C "${base}/repo" commit -q --no-edit --author="sekrit <sekrit@example.com>"
+  else
+    git -C "${base}/repo" commit -q --no-edit
+  fi
+  if [ "${mode}" = "followup" ]; then
+    echo "sekrit" > "${base}/repo/followup.txt"
+    git -C "${base}/repo" add followup.txt
+    git -C "${base}/repo" commit -q -m "fix: agent change"
+  elif [ "${mode}" = "fixmsg" ]; then
+    echo "fixed" > "${base}/repo/fixed.txt"
+    git -C "${base}/repo" add fixed.txt
+    git -C "${base}/repo" commit -q -m "fix: agent change sekrit"
+  elif [ "${mode}" = "committer" ]; then
+    echo "fixed" > "${base}/repo/fixed.txt"
+    git -C "${base}/repo" add fixed.txt
+    GIT_COMMITTER_NAME="sekrit" GIT_COMMITTER_EMAIL="sekrit@example.com" \
+      git -C "${base}/repo" commit -q -m "fix: agent change"
+  fi
+
+  # Fixture validity: the raw combined diff must carry the secret as
+  # context or as a deleted line, or the pass cases prove nothing.
+  case "${mode}" in
+    context|deleted)
+      if ! git -C "${base}/repo" show --cc --no-color agent/99-test-fix | grep -q "sekrit"; then
+        echo "FAIL: ${test_name} — fixture invalid: raw --cc merge diff does not contain the secret"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+  esac
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-${test_name}"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+
+  # Fails any --pipe scan whose input contains the secret string.
+  cat > "${gate_mock}/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+pipe_mode=false
+for arg in "$@"; do
+  case "${arg}" in
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if ${pipe_mode}; then
+  pipe_input="$(cat)"
+  if printf '%s' "${pipe_input}" | grep -q "sekrit"; then
+    echo "leaks found: secret in --pipe merge-content scan" >&2
+    exit 1
+  fi
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${expect}" = "pass" ]; then
+    if [ "${exit_code}" -ne 0 ] || grep -q "leaks found" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — secret only as context/deleted line failed the scan (exit ${exit_code})"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if [ "${exit_code}" -eq 0 ]; then
+      echo "FAIL: ${test_name} — push succeeded; added secret was not detected"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if ! grep -q "leaks found" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — failed for a reason other than the added secret"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+  # added/moved fail in the per-merge scan, before this line is printed.
+  if { [ "${expect}" = "pass" ] || [ "${mode}" = "followup" ]; } \
+     && ! grep -q "Combined-diff (--cc) used" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — the --cc per-merge and tip-to-HEAD scans did not run"
     cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
     return
@@ -5837,9 +6670,292 @@ run_push_forge_conflict_merged_target_reconstruction_requires_actual_merge_test
 run_push_forge_conflict_precommit_gate_first_parent_test
 run_push_forge_conflict_untrusted_merge_secret_test
 run_push_forge_conflict_untrusted_octopus_merge_secret_test
+run_push_forge_conflict_merge_secret_lines_test context pass
+run_push_forge_conflict_merge_secret_lines_test deleted pass
+run_push_forge_conflict_merge_secret_lines_test added fail
+run_push_forge_conflict_merge_secret_lines_test moved fail
+run_push_forge_conflict_merge_secret_lines_test followup fail
+run_push_forge_conflict_merge_secret_lines_test message fail
+run_push_forge_conflict_merge_secret_lines_test fixmsg fail
+run_push_forge_conflict_merge_secret_lines_test author fail
+run_push_forge_conflict_merge_secret_lines_test committer fail
 run_push_blocked_mergeability_does_not_skip_test
 
 rm -rf "${PUSH_REBASE_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# Per-PR automatic fix budget label (issue #1680)
+# ---------------------------------------------------------------------------
+FIX_BUDGET_TMPDIR="$(mktemp -d)"
+
+# --- fix_budget_from_labels unit tests ---
+run_fix_budget_parse_test() {
+  local test_name="$1"
+  local labels="$2"
+  local bot_cap="$3"
+  local expected="$4"
+  local actual
+  # shellcheck disable=SC2030,SC2031
+  actual="$(
+    FULLSEND_FORGE=github
+    # shellcheck source=lib/fix-ops.lib.sh
+    source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+    fix_budget_from_labels "${labels}" "${bot_cap}"
+  )"
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name} — expected '${expected}', got '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_fix_budget_parse_test "fix-budget-lowers-cap" $'bug\nfullsend-fix-budget/2' 5 "2"
+run_fix_budget_parse_test "fix-budget-missing" $'bug\narea/api' 5 ""
+run_fix_budget_parse_test "fix-budget-no-labels" "" 5 ""
+run_fix_budget_parse_test "fix-budget-equal-to-cap-ignored" "fullsend-fix-budget/5" 5 ""
+run_fix_budget_parse_test "fix-budget-above-cap-ignored" "fullsend-fix-budget/9" 5 ""
+run_fix_budget_parse_test "fix-budget-zero-ignored" "fullsend-fix-budget/0" 5 ""
+run_fix_budget_parse_test "fix-budget-negative-ignored" "fullsend-fix-budget/-1" 5 ""
+run_fix_budget_parse_test "fix-budget-non-integer-ignored" "fullsend-fix-budget/two" 5 ""
+run_fix_budget_parse_test "fix-budget-leading-zero-ignored" "fullsend-fix-budget/02" 5 ""
+run_fix_budget_parse_test "fix-budget-trailing-text-ignored" "fullsend-fix-budget/2x" 5 ""
+run_fix_budget_parse_test "fix-budget-oversized-ignored" "fullsend-fix-budget/18446744073709551616" 5 ""
+run_fix_budget_parse_test "fix-budget-smallest-wins" $'fullsend-fix-budget/3\nfullsend-fix-budget/1\nfullsend-fix-budget/4' 5 "1"
+run_fix_budget_parse_test "fix-budget-invalid-mixed-with-valid" $'fullsend-fix-budget/0\nfullsend-fix-budget/3' 5 "3"
+run_fix_budget_parse_test "fix-budget-other-prefix-ignored" "my-fullsend-fix-budget/2" 5 ""
+
+# --- Shared gh mock: --json labels returns GH_MOCK_LABELS (or fails when
+# GH_MOCK_LABELS_FAIL is set); everything else is logged and succeeds with
+# no output, so mergeability reads as "unknown" (no conflict path). ---
+FIX_BUDGET_MOCK_BIN="${FIX_BUDGET_TMPDIR}/bin"
+mkdir -p "${FIX_BUDGET_MOCK_BIN}"
+cat > "${FIX_BUDGET_MOCK_BIN}/gh" <<'MOCK'
+#!/usr/bin/env bash
+echo "$*" >> "${GH_CALL_LOG:-/dev/null}"
+if [[ "$*" == *"--json labels"* ]]; then
+  if [ -n "${GH_MOCK_LABELS_FAIL:-}" ]; then
+    exit 1
+  fi
+  [ -n "${GH_MOCK_LABELS:-}" ] && printf '%s\n' "${GH_MOCK_LABELS}"
+fi
+exit 0
+MOCK
+chmod +x "${FIX_BUDGET_MOCK_BIN}/gh"
+
+# --- pre-fix enforcement ---
+# run_prefix_budget_test NAME TRIGGER ITERATION LABELS EXPECT_EXIT EXPECT_TEXT [LABELS_FAIL]
+run_prefix_budget_test() {
+  local test_name="$1"
+  local trigger="$2"
+  local iteration="$3"
+  local labels="$4"
+  local expect_exit="$5"
+  local expect_text="$6"
+  local labels_fail="${7:-}"
+  local base="${FIX_BUDGET_TMPDIR}/pre-${test_name}"
+  mkdir -p "${base}/workspace" "${base}/home"
+  local stdout_log="${base}/stdout.log"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export PATH="${FIX_BUDGET_MOCK_BIN}:${PATH}"
+    export HOME="${base}/home"
+    export FULLSEND_FORGE="github"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="${trigger}"
+    export FIX_ITERATION="${iteration}"
+    export ITERATION_CAP="5"
+    export ITERATION_CAP_HUMAN="10"
+    export GITHUB_WORKSPACE="${base}/workspace"
+    export GH_MOCK_LABELS="${labels}"
+    export GH_MOCK_LABELS_FAIL="${labels_fail}"
+    unset GITHUB_PATH
+    bash "${PRE_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+
+  if { [ "${expect_exit}" = "0" ] && [ "${exit_code}" -ne 0 ]; } \
+     || { [ "${expect_exit}" != "0" ] && [ "${exit_code}" -eq 0 ]; }; then
+    echo "FAIL: ${test_name} — expected exit ${expect_exit}, got ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local line
+  while IFS= read -r line; do
+    [ -z "${line}" ] && continue
+    if ! grep -qF -- "${line}" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — missing '${line}'"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  done <<< "${expect_text}"
+  echo "PASS: ${test_name}"
+}
+
+FB_BOT="fullsend-ai-review[bot]"
+
+run_prefix_budget_test "prefix-budget-blocks-bot-above-label" \
+  "${FB_BOT}" 3 $'area/api\nfullsend-fix-budget/2' 1 \
+  $'exceeds the per-PR automatic fix budget of 2 set by label fullsend-fix-budget/2\nA human can still direct the agent with /fs-fix (up to 10 total iterations)'
+
+run_prefix_budget_test "prefix-budget-allows-bot-at-label" \
+  "${FB_BOT}" 2 "fullsend-fix-budget/2" 0 \
+  $'lowers the automatic fix cap from 5 to 2\nFIX_ITERATION=2 of 2'
+
+run_prefix_budget_test "prefix-budget-smallest-label-wins" \
+  "${FB_BOT}" 2 $'fullsend-fix-budget/3\nfullsend-fix-budget/1' 1 \
+  "set by label fullsend-fix-budget/1"
+
+run_prefix_budget_test "prefix-budget-not-lower-than-cap-ignored" \
+  "${FB_BOT}" 5 "fullsend-fix-budget/9" 0 \
+  "FIX_ITERATION=5 of 5"
+
+run_prefix_budget_test "prefix-budget-ignored-label-keeps-bot-cap-message" \
+  "${FB_BOT}" 6 "fullsend-fix-budget/9" 1 \
+  "exceeds bot cap of 5"
+
+run_prefix_budget_test "prefix-budget-invalid-label-ignored" \
+  "${FB_BOT}" 3 "fullsend-fix-budget/0" 0 \
+  "FIX_ITERATION=3 of 5"
+
+run_prefix_budget_test "prefix-budget-human-keeps-human-cap" \
+  "alice" 3 "fullsend-fix-budget/2" 0 \
+  "FIX_ITERATION=3 of 10"
+
+run_prefix_budget_test "prefix-budget-label-read-failure-keeps-bot-cap" \
+  "${FB_BOT}" 3 "fullsend-fix-budget/2" 0 \
+  $'Could not read PR labels\nFIX_ITERATION=3 of 5' "1"
+
+# GitLab: labels come from the MR API's labels array via curl.
+run_prefix_budget_gitlab_test() {
+  local test_name="prefix-budget-gitlab-blocks-bot-above-label"
+  local base="${FIX_BUDGET_TMPDIR}/pre-${test_name}"
+  mkdir -p "${base}/bin" "${base}/workspace" "${base}/home"
+  cat > "${base}/bin/curl" <<'MOCK'
+#!/usr/bin/env bash
+echo '{"labels":["area::api","fullsend-fix-budget/2"],"target_branch":"main","detailed_merge_status":"mergeable"}'
+MOCK
+  chmod +x "${base}/bin/curl"
+  local stdout_log="${base}/stdout.log"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    export PATH="${base}/bin:${PATH}"
+    export HOME="${base}/home"
+    export FULLSEND_FORGE="gitlab"
+    export CI_SERVER_HOST="gitlab.com"
+    export GITLAB_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_NUMBER="99"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export TRIGGER_SOURCE="fullsend_review_bot"
+    export FIX_ITERATION="3"
+    export ITERATION_CAP="5"
+    export ITERATION_CAP_HUMAN="10"
+    export CI_PROJECT_DIR="${base}/workspace"
+    bash "${PRE_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+  if [ "${exit_code}" -eq 0 ] \
+     || ! grep -qF "set by label fullsend-fix-budget/2" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — exit ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_prefix_budget_gitlab_test
+
+# --- post-fix needs-human label and summary ---
+# A repo left on main makes post-fix take the NO_PUSH path, which still
+# reaches the iteration-cap warning and summary.
+# run_postfix_budget_test NAME TRIGGER ITERATION LABELS EXPECT_SUMMARY EXPECT_NEEDS_HUMAN
+run_postfix_budget_test() {
+  local test_name="$1"
+  local trigger="$2"
+  local iteration="$3"
+  local labels="$4"
+  local expect_summary="$5"
+  local expect_needs_human="$6"
+  local base="${FIX_BUDGET_TMPDIR}/post-${test_name}"
+  mkdir -p "${base}/repo" "${base}/home"
+  git init -q -b main "${base}/repo"
+  git -C "${base}/repo" config user.email "test@example.com"
+  git -C "${base}/repo" config user.name "Test"
+  git -C "${base}/repo" commit --allow-empty -q -m "init"
+  local gh_log="${base}/gh.log"
+  : > "${gh_log}"
+  local stdout_log="${base}/stdout.log"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${base}"
+    export PATH="${FIX_BUDGET_MOCK_BIN}:${PATH}"
+    export HOME="${base}/home"
+    export GH_CALL_LOG="${gh_log}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="${trigger}"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export FIX_ITERATION="${iteration}"
+    export ITERATION_CAP="5"
+    export ITERATION_CAP_HUMAN="10"
+    export GH_MOCK_LABELS="${labels}"
+    PRE_AGENT_HEAD="$(git -C "${base}/repo" rev-parse HEAD)"
+    export PRE_AGENT_HEAD
+    unset GITHUB_PATH FULLSEND_VALIDATED_ITERATION_DIR
+    bash "${POST_SCRIPT}"
+  ) > "${stdout_log}" 2>&1 || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit ${exit_code}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF -- "${expect_summary}" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing summary '${expect_summary}'"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local labelled="no"
+  if grep -q -- '--add-label needs-human' "${gh_log}"; then
+    labelled="yes"
+  fi
+  if [ "${labelled}" != "${expect_needs_human}" ]; then
+    echo "FAIL: ${test_name} — needs-human applied: ${labelled}, expected: ${expect_needs_human}"
+    cat "${gh_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_postfix_budget_test "postfix-budget-tightens-needs-human-and-summary" \
+  "${FB_BOT}" 1 "fullsend-fix-budget/2" \
+  "Iteration: 1 of 2 (bot cap, lowered by label fullsend-fix-budget/2)" "yes"
+
+run_postfix_budget_test "postfix-budget-not-lower-than-cap-ignored" \
+  "${FB_BOT}" 3 "fullsend-fix-budget/9" \
+  "Iteration: 3 of 5 (bot cap)" "no"
+
+run_postfix_budget_test "postfix-no-budget-keeps-bot-cap" \
+  "${FB_BOT}" 3 "area/api" \
+  "Iteration: 3 of 5 (bot cap)" "no"
+
+run_postfix_budget_test "postfix-budget-human-keeps-human-cap" \
+  "alice" 3 "fullsend-fix-budget/2" \
+  "Iteration: 3 of 10 (human cap, total across bot+human)" "no"
+
+rm -rf "${FIX_BUDGET_TMPDIR}"
 
 # --- Summary ---
 

@@ -121,15 +121,27 @@ applying either fix category.
 
 ## Before proposing: check for existing issues
 
-**This step is mandatory.** Before including any proposal in your output, verify that no open issue already covers the same improvement. The retro agent is the primary source of systemic proposals — without this check, repeated runs produce duplicate issues that waste human triage time.
+**This step is mandatory and leaves a receipt.** For each proposal, search for existing issues covering it and record the search in the proposal's `related_issues` field. A proposal whose receipt is missing or records fewer than two distinct search phrases is **not filed** — post-retro skips it and folds it into the summary comment. Without this check, repeated retro runs produce duplicate issues that waste human triage time.
 
-For each candidate proposal, dispatch a subagent to search for existing issues using your forge-specific skill's search commands.
+Dispatch a subagent to run your forge-specific skill's search commands, **two passes with different keys**:
+
+1. **Fix-keyed** — keywords from the proposed change, in the proposal's `target_repo`.
+2. **Root-cause-keyed** — keywords for the affected subsystem or failure mechanism, independent of how the proposal frames the fix. A root-cause fix and a symptom workaround describe the same problem in different words; only this pass catches that. **Search this pass across every repo the localization rules can route a proposal to** — platform (`fullsend-ai/fullsend`), the discovered agents repo, and the source repo — because a symptom fix and its root cause can land in different layers. Scope to those named repos, never an org/group-wide search (it reaches private and unrelated sibling repos). See your forge skill for the exact multi-repo query.
+
+The subagent must return each candidate's **repo**, number, title, state, **and body** (or a substantial excerpt of the problem statement and proposed change) — judging overlap from titles alone misses differently-worded duplicates, and the repo is needed to record a cross-repo match as `owner/repo#N` rather than a bare `#N`.
 
 **Evaluation criteria** (apply these yourself, not the subagent):
 
-- **Skip the proposal** if an existing open issue proposes the same or a substantially overlapping change. Reference the existing issue in your summary instead.
-- **Skip the proposal** if a recently closed issue addressed the same problem (closed in the last 90 days) — the fix may already be in flight.
-- **Include the proposal** only if you are confident no existing issue covers it, or if your proposal meaningfully refines an existing one in a way that warrants a new issue.
+- An existing issue covers the proposal if it describes the **same root problem, even if the symptoms or wording differ** — the same rule triage applies when closing duplicates. When in doubt, treat it as covered.
+- **Skip the proposal** if an open issue proposes the same or substantially overlapping change; reference it in your summary instead.
+- **Closed issues — keyed on close reason, not a flat window:**
+  - *duplicate* (any age): follow the chain to the canonical. Prefer the **structured duplicate link** the forge records for a native "close as duplicate" (GitHub `Issue.duplicateOf` via GraphQL; GitLab `_links.closed_as_duplicate_of`) — it is not in the candidate's text. Only when that link is absent, fall back to the candidate's own body and comments for a "duplicate of #X" reference (the duplicate points to the canonical, not the reverse — a search for issues that merely mention the candidate's number will not find it). Fetch the canonical directly, following further duplicate links if it is itself closed as a duplicate, and note its repo — the canonical may live in another layer. Skip and reference the canonical if it is open.
+  - *not planned*: skip if closed within 30 days — a maintainer already rejected it.
+  - *completed with a merged fix*: if the symptom **recurred after the merge**, keep the proposal as a regression referencing the old issue and fix PR; otherwise skip.
+  - *completed without a real fix*: keep the proposal, reference the old issue.
+- **Include the proposal** only if no existing issue covers it, or it meaningfully refines an existing one.
+
+**Record the receipt.** `related_issues` holds the search phrases run and the candidates considered. Record a candidate as a bare integer when it is in the proposal's `target_repo`, or as the fully-qualified `owner/repo#N` string when it is not — a bare `#N` renders as a link into `target_repo` and would point at the wrong issue. It is small in practice — searches usually return zero relevant candidates.
 
 **Do not file "evidence for" issues.** When your analysis produces evidence that supports or corroborates an existing open issue, put it in your `summary` field — not in a new proposal. Do not title proposals "Evidence for #XXXX" or use any other framing that makes a duplicate look like a new issue. The summary is posted as a comment on the originating PR or issue, which preserves the data point. Filing evidence as a separate proposal creates noise that compounds across retro runs.
 
@@ -208,13 +220,18 @@ Write a single JSON file to `$FULLSEND_OUTPUT_DIR/agent-result.json` with this s
       "what_happened": "Timeline with links...",
       "what_could_go_better": "Assessment with uncertainty...",
       "proposed_change": "Specific change description...",
-      "validation_criteria": "How to verify the improvement..."
+      "validation_criteria": "How to verify the improvement...",
+      "related_issues": {
+        "searched": ["fix keywords...", "subsystem or root-cause keywords..."],
+        "found": [1234, "owner/other-repo#56"],
+        "note": "One line per candidate: why it does not cover this proposal, or how this proposal refines it."
+      }
     }
   ]
 }
 ```
 
-**Schema is strict.** The top-level object allows ONLY `summary` and `proposals` — no additional properties. Each proposal object allows ONLY the six fields shown above. The harness validates against `$FULLSEND_OUTPUT_SCHEMA` with `"additionalProperties": false` at both levels. Do not add fields like `timeline`, `metadata`, `workflow_quality`, or `originating_url`.
+**Schema is strict.** The top-level object allows ONLY `summary` and `proposals` — no additional properties. Each proposal object allows ONLY the seven fields shown above. The harness validates against `$FULLSEND_OUTPUT_SCHEMA` with `"additionalProperties": false` at both levels. Do not add fields like `timeline`, `metadata`, `workflow_quality`, or `originating_url`.
 
 After writing the file, validate it before exiting:
 
@@ -232,6 +249,7 @@ JSON you have and exit.
 - **what_could_go_better:** Be honest about your uncertainty. If you are confident, say so and why. If you are speculating, say that too. Explain your reasoning.
 - **proposed_change:** Name the specific file, config, skill, or prompt that should change. Describe what the change looks like. Be specific enough for an implementer to act on it.
 - **validation_criteria:** Define measurable or observable outcomes. Include a timeframe or sample size. For example: "The next 5 code agent runs on this repo should not trigger the same review comment about missing error handling."
+- **related_issues:** The dedup receipt — search phrases run (fix-keyed and root-cause-keyed) and candidates considered (`found`: a bare integer for a `target_repo` issue, or `owner/repo#N` for a cross-repo one). `found` may be empty; `searched` may not. See "Before proposing" above.
 
 ### When to propose nothing
 

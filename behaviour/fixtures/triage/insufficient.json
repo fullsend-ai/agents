@@ -1,0 +1,12 @@
+{
+  "action": "insufficient",
+  "reasoning": "Issue does not describe the expected behaviour or how to reproduce the failure.",
+  "clarity_scores": {
+    "symptom": 0.4,
+    "cause": 0.1,
+    "reproduction": 0.1,
+    "impact": 0.3,
+    "overall": 0.2
+  },
+  "comment": "Behaviour smoke: triage needs more information before this issue can be implemented."
+}

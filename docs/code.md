@@ -18,6 +18,8 @@ No additional setup is required beyond the standard fullsend configuration.
 
 The code agent is triggered when the `ready-to-code` label is applied to an issue, or via the `/fs-code` command.
 
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch: the `ready-to-code` label added to a work item (by a human or a bot), or `/fs-code` from a human on a work item. Work items can be GitHub issues, GitLab issues or Jira issues, so a Jira poller that dispatches the code agent matches the same events; PR and MR comments do not match. Dispatch does not evaluate it for the built-in code agent on GitHub or GitLab yet, so the routing above is what runs there today.
+
 ## Commands
 
 | Command | Where | Effect |
@@ -37,6 +39,7 @@ work items).
 |-------|---------|
 | `ready-to-code` | Triggers the code agent. Applied by the [triage](triage.md) agent for low-risk categories (bug, documentation, performance), or manually by a human for feature work after prioritization. Not applied when the triage result sets `requires_workflow_changes`, since the code agent cannot modify workflow files. Auto-promotion is also subject to `TRIAGE_AUTO_CODE` — see [Ready-to-code promotion](triage.md#ready-to-code-promotion). |
 | `ready-for-review` | Applied by the code agent after pushing a PR. In per-repo installs, triggers the [review agent](review.md) when applied to a PR. Also marks workflow state for humans and the [retro agent](retro.md). |
+| `code-agent-failed` | Last-resort fallback applied to the issue when the post-code script fails and cannot post a failure comment even after retrying transient forge errors. Does not trigger or block the agent — it exists purely so the failure stays discoverable when the forge outage also swallows the comment. |
 
 ## Configuration
 
@@ -54,6 +57,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | `CODE_AUTO_MERGE` | Set to `"true"` to enable auto-merge on PRs/MRs created by the code agent. On GitHub, uses `gh pr merge --auto`; on GitLab, uses `merge_when_pipeline_succeeds`. Requires branch protection with required reviews or status checks on the target branch. Read directly from the runner environment (not declared in `env.runner`). | `""` (disabled) | `"true"` to enable |
 | `CODE_AUTO_MERGE_METHOD` | Merge method for auto-merge: `"squash"`, `"rebase"`, or `"merge"`. When unset, auto-detected from the repo's allowed merge methods (prefers squash). Omitted automatically when the target branch uses a merge queue. Ignored unless `CODE_AUTO_MERGE` is `"true"`. | Auto-detected (prefers squash) | `"squash"`, `"rebase"`, `"merge"` |
 | `FULLSEND_APP_SET` | GitHub App identity prefix for custom deployments. The pre-script derives the bot/coder bot logins (`<prefix>[bot]` / `<prefix>-coder[bot]`) excluded from the existing-PR check, so PRs opened by a custom coder bot aren't misclassified as human PRs. | `"fullsend-ai"` | Any GitHub App identity prefix |
+| `GITHUB_SIGNED_COMMITS` | Set to `"true"` to publish the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](#signed-commits)); anything else keeps `git push`. The default is set in the GitHub overlay of `harness/code.yaml` (and `harness/fix.yaml` for the fix agent); override per repo via `base:` composition. | `"false"` | `"true"`, `"false"` |
 
 ## How the agent works
 
@@ -61,9 +65,75 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 1. **Pre-script** validates inputs on the runner before sandbox creation. It also checks for open PRs linked to the issue, and skips tracking issues that have sub-issues (GitHub sub-issues or GitLab work-item children). `/fs-code --force` bypasses both checks.
 2. **Sandbox** — the agent reads the issue, explores the codebase, writes code, runs tests and linters, and commits locally. It has restricted network access (enforced by OpenShell).
-3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, pushes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
+3. **Post-script** runs on the runner: it performs protected path checks, secret scanning, pre-commit checks, publishes the branch, creates the PR, and best-effort assigns the PR to a human owner (latest `/fs-code` invoker, else issue assignee, else issue author).
 
 This separation ensures the agent never has direct write access to the repository.
+
+When the fix belongs in another repository, the agent reports the upstream
+repository, file, and required change without making a commit or restructuring
+this repository. On GitHub/GitLab source issues, the no-PR path sanitizes
+`pr_body`, keeps only its last 30 lines by default, and posts it as "Agent
+context" under a generic "No PR created — agent determined no changes needed"
+notice with retry guidance. Keep escalation text under 25 lines, put the
+repository, file, and required change first, and omit the normal PR template.
+External-tracker runs (such as Jira) emit only a generic notice; the upstream
+explanation remains in the agent's final message in the run transcript.
+
+If the target is referenced by a pinned SHA and the upstream fix has not
+landed in a newer commit reachable from the intended upstream reference, the
+escalation should name the current pin and say this repository will need a
+follow-up pin bump. Once the fix is merged and verified in a newer commit
+reachable from the intended upstream reference, the agent can bump the pin
+here in a normal PR, even when the issue did not separately ask for that bump.
+An explicit request to change the reference itself also receives a normal PR.
+
+Agent-authored PR/MR descriptions, and optional "Agent context" in no-PR issue
+comments, are secret-scanned before publication. The description is scanned
+after trailer removal and normalization, whether it came from the agent's
+`pr_body` or the commit-body fallback. These text scans use the scanner's
+built-in rules in a private temporary directory, ignore inline
+`gitleaks:allow` markers, and disregard `GITLEAKS_CONFIG`,
+`GITLEAKS_CONFIG_TOML`, and repository ignore files. Existing commit-history
+scans keep their repository policy and inspect patch content; they do not scan
+commit subjects or bodies, and PR/MR titles are likewise published without a
+text scan. If a text scan finds a secret or cannot complete, the issue comment
+omits optional context, and the PR/MR description uses a generic fallback. A
+rejected PR body falls back to the normalized commit body only if that text
+passes the same scan. Raw text-scan diagnostics are not logged.
+Jira-source no-PR runs still emit only their existing generic notice.
+
+### Signed commits
+
+With `GITHUB_SIGNED_COMMITS` set to `"true"` (it is `"false"` by default),
+the post-script rebuilds each commit produced by the agent through the
+[Git Data API](https://docs.github.com/en/rest/git) with the App
+installation token, which causes GitHub to sign every commit it creates.
+The result shows as **Verified** in GitHub. With any other value the
+branch is pushed with `git push` and the rest of this section does not
+apply.
+
+Compared to `git push`:
+
+- The author becomes the App's bot user. The identity the commit was made
+  with is kept in an `Authored-by: name <email>` trailer, which the fix
+  agent and its post-script read to tell fix-agent commits from code-agent
+  and human ones.
+- The branch ref moves with a compare-and-swap, so a `--force-with-lease`
+  publish is refused when the branch moved since the post-script last
+  fetched it.
+- A signature made inside the sandbox (gitsign or SSH signing configured
+  through the harness env) is not preserved; the published commit carries
+  GitHub's signature instead. When GitHub does not sign a commit, the
+  publish fails under an App installation token and proceeds with a
+  warning under any other token, which never gets a signature.
+- Each blob not already in the parent tree or uploaded earlier in the
+  same push, plus each tree and commit, is one request against GitHub's
+  [secondary rate limit](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#about-secondary-rate-limits)
+  (about 80 content-creating requests per minute, 500 per hour). A burst
+  is retried; a commit touching more files than the hourly limit allows
+  fails with the API's rate-limit error.
+
+On GitLab the branch is always pushed with `git push`.
 
 ### Signed-off-by trailers
 
@@ -249,7 +319,22 @@ vars. Key differences from single-forge setup:
   target forge, the code agent derives the key from `ISSUE_URL`.
   Branch names and PR text use that key and link the source URL; they do not
   invent a numeric target-forge issue reference. Target-forge issue comments
-  and assignee lookup are skipped when no such issue exists.
+  and assignee lookup are skipped when no such issue exists. The source
+  tracker comes from `FULLSEND_TRACKER`, or from `FULLSEND_WORK_ITEM_SOURCE`
+  (exported by `fullsend run`) when that is unset. If both are set and
+  disagree, the run stops.
+- **Jira results** — after a Jira-sourced run creates or updates the PR/MR,
+  the post-script posts a short code-stage update with the PR/MR URL to the
+  Jira issue through `fullsend issues post-comment --tracker jira`. The
+  comment uses the fixed marker `<!-- fullsend:code-agent -->`, so a retried
+  run edits it instead of adding another. The write uses the runner-only
+  `JIRA_USER_EMAIL` and `JIRA_TOKEN` from the Jira overlay of
+  `harness/code.yaml`. These are the same account the Jira poller treats as
+  its own, so the update does not dispatch agents. If the Jira write fails,
+  the step fails, even though the PR/MR already exists. The branch, commits,
+  PR/MR, review and merge stay on the code host: GitHub targets get a GitHub
+  PR and GitLab targets get a GitLab MR. For GitLab targets the GitLab host
+  is taken from `CI_SERVER_HOST`, because `ISSUE_URL` is the Jira URL.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
   harnesses using `base:` composition should override at the forge level

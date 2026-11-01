@@ -41,7 +41,8 @@
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count
-#   ITERATION_CAP     — max iterations (default: 5)
+#   ITERATION_CAP     — max iterations (default: 5); a live
+#                       `fullsend-fix-budget/N` PR label can lower it
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging)
 #   HUMAN_INSTRUCTION — the harness-captured /fs-fix comment text (only for
 #                       human-triggered runs); used to confirm a rebase or
@@ -422,9 +423,16 @@ if [ "${NO_PUSH}" = "false" ]; then
   # this script), a downstream reader that exits before draining stdin can
   # SIGPIPE the upstream `git show`, which would then fail the pipeline
   # regardless of what gitleaks itself reported.
+  # `gitleaks detect --pipe` scans its input as plain text, so each patch is
+  # first reduced to its added lines (patch_added_lines): unchanged context
+  # and deleted lines — e.g. a resolution that removes a credential — must
+  # not fail the scan (issue #1801). --no-color/--no-ext-diff keep the patch
+  # format independent of repository git config so the filter sees every
+  # added line.
   if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
     fetch_trusted_target_sha
     MERGE_DIFF_TMP="$(mktemp)"
+    MERGE_ADDED_TMP="$(mktemp)"
     _any_merge_used_cc=false
     while IFS= read -r _merge_sha; do
       [ -z "${_merge_sha}" ] && continue
@@ -444,14 +452,18 @@ if [ "${NO_PUSH}" = "false" ]; then
         MERGE_SHOW_ARGS=(--cc)
         _any_merge_used_cc=true
       fi
-      if ! git show "${MERGE_SHOW_ARGS[@]}" "${_merge_sha}" > "${MERGE_DIFF_TMP}" 2>&1; then
+      if ! git show --no-color --no-ext-diff "${MERGE_SHOW_ARGS[@]}" "${_merge_sha}" > "${MERGE_DIFF_TMP}" 2>&1; then
         MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
-        rm -f "${MERGE_DIFF_TMP}"
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_SHOW_OUTPUT}" stderr
         post_fail_to_pr setup-error "Could not read merge commit ${_merge_sha} for the authoritative secret scan"
       fi
-      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_DIFF_TMP}" 2>&1)"; then
-        rm -f "${MERGE_DIFF_TMP}"
+      if ! patch_added_lines < "${MERGE_DIFF_TMP}" > "${MERGE_ADDED_TMP}"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
+        post_fail_to_pr setup-error "Could not extract added lines of merge commit ${_merge_sha} for the authoritative secret scan"
+      fi
+      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_ADDED_TMP}" 2>&1)"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_GITLEAKS_OUTPUT}" stderr
         post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
       fi
@@ -467,20 +479,45 @@ if [ "${NO_PUSH}" = "false" ]; then
     # blob) shows up here regardless of which parent's content it matches.
     if [ "${_any_merge_used_cc}" = true ]; then
       echo "Combined-diff (--cc) used for at least one merge — additionally scanning content in HEAD not on the current target tip"
-      if ! git diff "${TRUSTED_TARGET_SHA}" HEAD > "${MERGE_DIFF_TMP}" 2>&1; then
+      if ! git diff --no-color --no-ext-diff "${TRUSTED_TARGET_SHA}" HEAD > "${MERGE_DIFF_TMP}" 2>&1; then
         MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
-        rm -f "${MERGE_DIFF_TMP}"
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_SHOW_OUTPUT}" stderr
         post_fail_to_pr setup-error "Could not diff HEAD against the trusted target for the authoritative secret scan"
       fi
-      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_DIFF_TMP}" 2>&1)"; then
-        rm -f "${MERGE_DIFF_TMP}"
+      if ! patch_added_lines < "${MERGE_DIFF_TMP}" > "${MERGE_ADDED_TMP}"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
+        post_fail_to_pr setup-error "Could not extract added lines of HEAD against the trusted target for the authoritative secret scan"
+      fi
+      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_ADDED_TMP}" 2>&1)"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_GITLEAKS_OUTPUT}" stderr
         post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
       fi
     fi
-    rm -f "${MERGE_DIFF_TMP}"
+    rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
   fi
+
+  # Commit messages. `gitleaks detect --pipe` of the added lines above (and
+  # the patch-based history scan) never sees commit messages, so scan them
+  # separately — including merge commit messages, which were scanned as a
+  # side effect of piping the raw `git show` output before issue #1801.
+  # Author and committer identity are scanned alongside each message: no
+  # other check sees them, and %B alone omits them (issue #1845).
+  # Materialize to a file for the same SIGPIPE reason as above.
+  COMMIT_MSG_TMP="$(mktemp)"
+  if ! git log --first-parent --no-color --format='%an <%ae>%n%cn <%ce>%n%B' "${SCAN_RANGE}" > "${COMMIT_MSG_TMP}" 2>&1; then
+    COMMIT_MSG_OUTPUT="$(cat "${COMMIT_MSG_TMP}")"
+    rm -f "${COMMIT_MSG_TMP}"
+    print_sanitized_gha_log "${COMMIT_MSG_OUTPUT}" stderr
+    post_fail_to_pr setup-error "Could not read commit messages in ${SCAN_RANGE} for the authoritative secret scan"
+  fi
+  if ! COMMIT_MSG_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${COMMIT_MSG_TMP}" 2>&1)"; then
+    rm -f "${COMMIT_MSG_TMP}"
+    print_sanitized_gha_log "${COMMIT_MSG_GITLEAKS_OUTPUT}" stderr
+    post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
+  fi
+  rm -f "${COMMIT_MSG_TMP}"
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
   # -------------------------------------------------------------------------
@@ -670,7 +707,8 @@ FIX_AGENT_GIT_NAME="fullsend-fix"
 # history_rewrite_preserves_remote_human_commits — 0 when every commit on
 # origin/BRANCH since it diverged from origin/TARGET_BRANCH that is NOT
 # authored by this fix agent (email + name, not email alone — see
-# FIX_AGENT_GIT_NAME above) is still present in local HEAD, either as an
+# FIX_AGENT_GIT_NAME above; author per commit_author_identity) is still
+# present in local HEAD, either as an
 # exact-SHA ancestor, or as an equivalent commit recognized by one of two
 # fallbacks:
 #   - same tree + same author identity — tolerates GitLab MR reconstruction,
@@ -711,8 +749,7 @@ history_rewrite_preserves_remote_human_commits() {
     return 1
   }
   for sha in $(git rev-list "${mb}..${remote_ref}" 2>/dev/null || true); do
-    author_email="$(git log -1 --format='%ae' "${sha}" 2>/dev/null)"
-    author_name="$(git log -1 --format='%an' "${sha}" 2>/dev/null)"
+    IFS=$'\t' read -r author_name author_email <<< "$(commit_author_identity "${sha}")"
     if [ "${author_email}" != "${bot}" ] || [ "${author_name}" != "${FIX_AGENT_GIT_NAME}" ]; then
       if git merge-base --is-ancestor "${sha}" HEAD 2>/dev/null; then
         continue
@@ -729,13 +766,14 @@ history_rewrite_preserves_remote_human_commits() {
         # Matching is done with exact field equality rather than
         # `grep -qF` against a bare "tree name email" string, which is an
         # unanchored substring match.
-        while IFS=$'\t' read -r candidate_tree candidate_name candidate_email; do
+        while IFS=$'\t' read -r candidate candidate_tree; do
           [ -n "${candidate_tree}" ] || continue
           [ "${candidate_tree}" = "${tree}" ] || continue
+          IFS=$'\t' read -r candidate_name candidate_email <<< "$(commit_author_identity "${candidate}")"
           [ "${candidate_name}" = "${author_name}" ] || continue
           [ "${candidate_email}" = "${author_email}" ] || continue
           continue 2
-        done < <(git log --format='%T%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+        done < <(git log --format='%H%x09%T' "${target_ref}..HEAD" 2>/dev/null)
       fi
       patch_id="$(git show "${sha}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
       if [ -n "${patch_id}" ]; then
@@ -748,8 +786,9 @@ history_rewrite_preserves_remote_human_commits() {
         # survived the rewrite. Matching is done with exact string
         # equality on %an/%ae rather than `git log --author=`, which
         # treats the name as an unanchored regex.
-        while IFS=$'\t' read -r candidate candidate_name candidate_email; do
+        while IFS= read -r candidate; do
           [ -n "${candidate}" ] || continue
+          IFS=$'\t' read -r candidate_name candidate_email <<< "$(commit_author_identity "${candidate}")"
           [ "${candidate_name}" = "${author_name}" ] || continue
           [ "${candidate_email}" = "${author_email}" ] || continue
           candidate_patch_id="$(git show "${candidate}" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{print $1}')"
@@ -757,7 +796,7 @@ history_rewrite_preserves_remote_human_commits() {
             HISTORY_REWRITE_PATCH_ID_ONLY_MATCH=true
             continue 2
           fi
-        done < <(git log --format='%H%x09%an%x09%ae' "${target_ref}..HEAD" 2>/dev/null)
+        done < <(git log --format='%H' "${target_ref}..HEAD" 2>/dev/null)
       fi
       echo "history-rewrite: commit ${sha} (author ${author_name} <${author_email}>) on ${remote_ref} is not an ancestor of HEAD and has no equivalent (tree+author or patch-id+author) commit in HEAD" >&2
       return 1
@@ -1101,6 +1140,22 @@ if [ "${NO_PUSH}" = "false" ]; then
         echo "history_rewritten is set but local HEAD is structurally indistinguishable from origin/${BRANCH} (same commit count and tree) — treating as a GitLab reconstruction rather than a genuine rewrite, and falling through to rebase onto origin/${BRANCH}"
       fi
     fi
+    # General fast-forward skip (issue #1323): when the freshly fetched
+    # origin/${BRANCH} is already an ancestor of HEAD, the plain push below
+    # is a fast-forward and the replay has nothing to reconcile. Running it
+    # anyway is harmful whenever HEAD carries a merge commit (e.g. the agent
+    # merged the target to reconcile a stale base): a default `git rebase`
+    # drops the merge and replays target-side history onto the old PR tip,
+    # either re-hitting the conflict the agent already resolved or silently
+    # inflating the PR. This uses runner-computed ancestry only — no
+    # sandbox-written flag — and is a no-op for linear histories. GitLab
+    # reconstructions have diverged SHAs, never satisfy it, and keep
+    # falling through to the replay.
+    if [ "${SKIP_REMOTE_REBASE}" = "false" ] \
+      && git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null; then
+      SKIP_REMOTE_REBASE=true
+      echo "origin/${BRANCH} is already an ancestor of local HEAD — skipping rebase onto origin/${BRANCH} (push is a fast-forward)"
+    fi
     if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
       echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."
       REBASE_OUTPUT="$(git rebase "origin/${BRANCH}" 2>&1)" && REBASE_RC=0 || REBASE_RC=$?
@@ -1128,14 +1183,14 @@ ${REBASE_OUTPUT}"
   # force-with-lease is safe: it still rejects if someone else pushed in
   # the meantime.
   echo "Pushing branch ${BRANCH}..."
-  PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+  PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
   print_sanitized_gha_log "${PUSH_OUTPUT}"
 
   if [ "${PUSH_RC}" -ne 0 ]; then
-    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
+    if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
       gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
       FORCE_PUSH_OUTPUT=""
-      if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+      if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
         print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
         PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
@@ -1179,7 +1234,7 @@ fi
 # the note on its own so the rewrite still leaves a trace on the PR.
 signoff_note_fallback() {
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
-    forge_post_pr_comment "${PR_NUMBER}" \
+    forge_retry_transient forge_post_pr_comment "${PR_NUMBER}" \
       "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s)." \
       || gha_echo warning "Could not post the Signed-off-by strip note to PR #${PR_NUMBER}"
   fi
@@ -1223,13 +1278,30 @@ fi
 # ---------------------------------------------------------------------------
 ITERATION="${FIX_ITERATION:-1}"
 BOT_CAP="${ITERATION_CAP:-5}"
+
+# Per-PR automatic fix budget (issue #1680): mirror pre-fix so the
+# needs-human warning and summary use the same tightened bot cap that
+# pre-fix enforces. Read live; a failed read keeps the configured cap.
+FIX_BUDGET=""
+if is_bot_user "${TRIGGER_SOURCE}"; then
+  if PR_LABELS_LIVE="$(forge_get_pr_labels "${PR_NUMBER}")"; then
+    FIX_BUDGET="$(fix_budget_from_labels "${PR_LABELS_LIVE}" "${BOT_CAP}")"
+  else
+    gha_echo warning "Could not read PR labels — any fullsend-fix-budget/N label is ignored for this run"
+  fi
+fi
+BOT_CAP="${FIX_BUDGET:-${BOT_CAP}}"
 WARN_THRESHOLD=$(( BOT_CAP - 1 ))
 
 # The needs-human label is based on the bot cap — it signals that the
 # autonomous review→fix loop needs human direction. Human-triggered /fs-fix
 # runs have a separate, higher cap (ITERATION_CAP_HUMAN).
 if [ "${ITERATION}" -ge "${WARN_THRESHOLD}" ] && is_bot_user "${TRIGGER_SOURCE}"; then
-  gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  if [ -n "${FIX_BUDGET}" ]; then
+    gha_echo warning "Fix iteration ${ITERATION} is approaching the per-PR automatic fix budget of ${BOT_CAP} set by label fullsend-fix-budget/${FIX_BUDGET}"
+  else
+    gha_echo warning "Fix iteration ${ITERATION} is approaching bot cap of ${BOT_CAP}"
+  fi
   forge_create_label "needs-human" "Agent loop needs human intervention" "D93F0B"
   # shellcheck disable=SC2153
   forge_add_pr_label "${PR_NUMBER}" "needs-human"
@@ -1244,7 +1316,9 @@ echo "  Branch: ${BRANCH:-none}"
 echo "  PR: #${PR_NUMBER}"
 if [ "${NO_PUSH}" = "true" ]; then echo "  Pushed: no"; else echo "  Pushed: yes"; fi
 echo "  Trigger: ${TRIGGER_SOURCE}"
-if is_bot_user "${TRIGGER_SOURCE}"; then
+if is_bot_user "${TRIGGER_SOURCE}" && [ -n "${FIX_BUDGET}" ]; then
+  echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap, lowered by label fullsend-fix-budget/${FIX_BUDGET})"
+elif is_bot_user "${TRIGGER_SOURCE}"; then
   echo "  Iteration: ${ITERATION} of ${BOT_CAP} (bot cap)"
 else
   echo "  Iteration: ${ITERATION} of ${ITERATION_CAP_HUMAN:-10} (human cap, total across bot+human)"

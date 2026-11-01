@@ -12,6 +12,9 @@
 #   REVIEW_SKIP_AUTHORS — comma-separated author list to skip
 #   PRIOR_REVIEW_FILE   — prior sticky review body; rewritten to validated JSON
 #   PRIOR_REVIEW_PROVENANCE — authenticated provenance for the prior review
+#
+# A closed/merged PR or a REVIEW_SKIP_AUTHORS author writes skipped=true via
+# the pre-script output protocol, so fullsend run stops before the sandbox.
 set -euo pipefail
 
 : "${PR_URL:?PR_URL must be set}"
@@ -19,6 +22,8 @@ set -euo pipefail
 
 # shellcheck disable=SC2034 # SCRIPT_DIR used by source in .src.sh; unused in bundled .sh
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/prescript-output.lib.sh
+source "${SCRIPT_DIR}/lib/prescript-output.lib.sh"
 # shellcheck source=lib/review-ops.lib.sh
 source "${SCRIPT_DIR}/lib/review-ops.lib.sh"
 
@@ -104,12 +109,17 @@ validate_prior_review_projection() {
         "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
         "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
         "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
-        "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+        "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
+        "uxd-evaluate-code-heuristics"
       );
     def safe_path:
       type == "string" and length > 0 and . != "N/A" and
       test("^[ -~]+$") and
       (test("(^/|/$|//|(^|/)\\.\\.?(/|$)|[\\\\\\r\\n<>])") | not);
+    # A persona name. Never checked against the persona manifest, so a
+    # persona disabled between rounds keeps its prior ledger.
+    def safe_dimension:
+      type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$");
     .version as $projection_version
     | if (
       type == "object" and
@@ -120,13 +130,14 @@ validate_prior_review_projection() {
       (.findings | type == "array") and
       all(.findings[];
         type == "object" and
-        ((keys - ["severity", "category", "file", "line", "id", "actionable"]) | length == 0) and
+        ((keys - ["severity", "category", "file", "line", "id", "actionable", "dimension"]) | length == 0) and
         (.severity | IN("info", "low", "medium", "high", "critical")) and
         (.category | type == "string" and allowed_category) and
         ((.file == null and $projection_version == 2) or (.file | safe_path)) and
         (.line == null or (.line | type == "number" and . > 0 and floor == .)) and
         (.id == null or (.id | type == "string" and test("^f_[A-Za-z0-9]+$"))) and
-        (.actionable == null or (.actionable | type == "boolean"))
+        (.actionable == null or (.actionable | type == "boolean")) and
+        (.dimension == null or ($projection_version == 2 and (.dimension | safe_dimension)))
       ) and
       ([.findings[].id | select(. != null)] | length == (unique | length)) and
       (.dispositions == null or (
@@ -147,7 +158,8 @@ validate_prior_review_projection() {
         file: .file,
         line: .line
       } + (if .id == null then {} else {id: .id} end)
-        + (if .actionable == null then {} else {actionable: .actionable} end)]
+        + (if .actionable == null then {} else {actionable: .actionable} end)
+        + (if .dimension == null then {} else {dimension: .dimension} end)]
     } + (if .action == null then {} else {action: .action} end)
     + (if .dispositions == null then {} else {
       dispositions: [.dispositions[] | {id, status}]
@@ -240,7 +252,23 @@ The \`/fs-review\` command only reviews open PRs/MRs.
 
   forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
+  prescript_output "skipped" "true"
+  prescript_output "reason" "PR #${PR_NUMBER} is already ${STATE_LOWER}"
   exit 0
+fi
+
+# ADR 0002 block 12: clear a stale ready-for-merge at review start, before the
+# skip-author exit. post-review re-adds it only when this run approves.
+if ! PR_LABELS="$(forge_get_pr_labels)"; then
+  echo "::warning::Could not read PR labels — removing ready-for-merge unchecked"
+  PR_LABELS="ready-for-merge"
+fi
+if grep -qxF "ready-for-merge" <<< "${PR_LABELS}"; then
+  if forge_remove_label_checked "ready-for-merge"; then
+    echo "::notice::Removed ready-for-merge from PR #${PR_NUMBER} at review start"
+  else
+    echo "::warning::Failed to remove ready-for-merge from PR #${PR_NUMBER}"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -263,6 +291,8 @@ if [[ -n "${REVIEW_SKIP_AUTHORS:-}" ]]; then
 
         forge_post_comment "${COMMENT_BODY}" 2>/dev/null || true
 
+        prescript_output "skipped" "true"
+        prescript_output "reason" "PR author ${_SAFE_AUTHOR} is in REVIEW_SKIP_AUTHORS"
         exit 0
       fi
     done

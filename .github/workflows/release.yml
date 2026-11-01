@@ -37,9 +37,21 @@ jobs:
             PRERELEASE="--prerelease"
           fi
 
+          # Generate notes from the previous final release, so an rc and its
+          # final both list everything since the last final; rc tags and the
+          # floating v0 are skipped. The --notes line is prepended to them.
+          BASE="${TAG%%-*}"
+          PREV=$( { git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | grep -vxF "${BASE}" || true; echo "${BASE}"; } \
+            | sort -V | grep -B1 -xF "${BASE}" | head -n 1)
+          START_TAG=()
+          if [[ -n "${PREV}" && "${PREV}" != "${BASE}" ]]; then
+            START_TAG=(--notes-start-tag "${PREV}")
+          fi
+
           gh release create "${TAG}" \
             --title "${TAG}" \
             --notes "Synced with [fullsend ${TAG}](https://github.com/fullsend-ai/fullsend/releases/tag/${TAG})" \
+            --generate-notes "${START_TAG[@]}" \
             ${PRERELEASE}
 
       - name: Move v0 floating tag

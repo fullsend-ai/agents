@@ -9,6 +9,10 @@
 #   ISSUE_URL        — HTML URL of the issue
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
 #
+# Jira-sourced runs: when FULLSEND_WORK_ITEM_SOURCE is "jira", results are
+# written to the Jira issue at FULLSEND_WORK_ITEM_URL (exported by
+# `fullsend run`), and FULLSEND_WORK_ITEM_KEY must match that URL.
+#
 # The agent writes its decision to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
 #
@@ -19,6 +23,26 @@
 # issues.labeled/issues.unlabeled, avoiding the re-triage loop.
 
 set -euo pipefail
+
+# Route Jira-sourced runs to the originating Jira issue. Refuse to run when an
+# explicit tracker or ISSUE_URL points elsewhere, so results never land on a
+# different work item.
+if [[ "${FULLSEND_WORK_ITEM_SOURCE:-}" == "jira" ]]; then
+  if [[ -n "${FULLSEND_TRACKER:-}" && "${FULLSEND_TRACKER}" != "jira" ]]; then
+    echo "ERROR: FULLSEND_WORK_ITEM_SOURCE is jira but FULLSEND_TRACKER selects a different tracker" >&2
+    exit 1
+  fi
+  FULLSEND_TRACKER="jira"
+  if [[ -z "${FULLSEND_WORK_ITEM_URL:-}" || -z "${FULLSEND_WORK_ITEM_KEY:-}" ]]; then
+    echo "ERROR: FULLSEND_WORK_ITEM_URL and FULLSEND_WORK_ITEM_KEY are required for a Jira-sourced run" >&2
+    exit 1
+  fi
+  if [[ -n "${ISSUE_URL:-}" && "${ISSUE_URL}" != "${FULLSEND_WORK_ITEM_URL}" ]]; then
+    echo "ERROR: ISSUE_URL does not match FULLSEND_WORK_ITEM_URL for a Jira-sourced run" >&2
+    exit 1
+  fi
+  ISSUE_URL="${FULLSEND_WORK_ITEM_URL}"
+fi
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
 FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
@@ -228,6 +252,10 @@ tracker_dispatch_triage() {
 # Expected env vars:
 #   ISSUE_URL      — HTML URL of the issue
 #   GITLAB_TOKEN   — GitLab personal/project access token
+#   CI_SERVER_HOST — GitLab CI predefined variable (set by runner)
+#   CI_SERVER_URL  — GitLab CI predefined variable; API origin, including
+#                    any non-default port (falls back to
+#                    https://${CI_SERVER_HOST} when unset)
 #
 # Token scopes: GITLAB_TOKEN requires minimum scopes:
 #   - api (read/write issues, labels, notes, merge requests)
@@ -252,6 +280,9 @@ GITLAB_TRIAGE_OPS_SH_LOADED=1
 # variable set automatically by the runner.
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
+#
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
 #
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
@@ -279,6 +310,35 @@ _validate_gitlab_host() {
     return 1
   fi
 }
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
+    return 1
+  fi
+}
 # END bundled: lib/gitlab-host-validation.lib.sh
 
 _gitlab_api() {
@@ -291,11 +351,13 @@ _gitlab_api() {
     return 1
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@"
 }
 
@@ -309,6 +371,8 @@ _gitlab_api_with_status() {
     return 1
   fi
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
+  local origin
+  origin=$(_gitlab_trusted_origin) || return 1
   local err_file
   err_file=$(mktemp)
   local raw
@@ -317,7 +381,7 @@ _gitlab_api_with_status() {
     --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "https://${GITLAB_HOST}/api/v4${endpoint}" \
+    "${origin}/api/v4${endpoint}" \
     "$@" 2>"${err_file}") || {
     echo "GitLab API error: curl failed — $(cat "${err_file}")" >&2
     rm -f "${err_file}"
@@ -338,19 +402,20 @@ _gitlab_api_with_status() {
 # --- URL handling ---
 
 tracker_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://[a-zA-Z0-9._-]+(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
+  if [[ ! "${ISSUE_URL}" =~ ^(https://[a-zA-Z0-9._-]+(:[0-9]+)?)(/[a-zA-Z0-9._-]+)+/-/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected GitLab pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
     return 1
   fi
-  local host
-  host=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
-  _validate_gitlab_host "${host}" || return 1
+  local origin="${BASH_REMATCH[1]}"
+  _validate_gitlab_origin "${origin}" || return 1
 }
 
 tracker_parse_issue_url() {
   # Extract host, project path, and issue IID from URL.
   # e.g., https://gitlab.com/group/subgroup/project/-/issues/42
-  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')
+  # The port, if any, is checked by tracker_validate_issue_url; GITLAB_HOST
+  # holds the hostname only and API requests use the trusted CI origin.
+  GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)(:[0-9]+)?/.*|\1|')
   REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
   REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
@@ -730,8 +795,13 @@ tracker_add_label() {
 
 tracker_remove_label() {
   local label="$1"
-  _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+  # Jira treats removing an absent label as a no-op, so an error here is a
+  # real write failure. Fail the step instead of reporting success.
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to remove label '${label}' from issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
 }
 
 tracker_strip_labels() {
@@ -844,19 +914,27 @@ tracker_post_comment() {
   local body="$1"
   _jira_require_vars || return 1
   # `fullsend issues post-comment` always does marker-based find-and-update;
-  # there is no "always create new" mode. A marker unique to this invocation
-  # guarantees no prior comment matches it, so this always creates a new
-  # comment — matching tracker_post_comment's always-new contract on
-  # GitHub/GitLab.
+  # there is no "always create new" mode. Each triage run gets a new comment,
+  # matching tracker_post_comment's always-new contract on GitHub/GitLab.
+  # The marker is scoped to the CI run (GITHUB_RUN_ID survives a workflow
+  # re-run, CI_PIPELINE_ID a GitLab job retry), so a retried run edits its
+  # own earlier comment instead of posting a duplicate.
   local marker stamp
-  stamp=$(date +%s%N)
-  # BSD date without %N support leaves the literal "N" in place, which would
-  # make the marker identical for every invocation within the same second and
-  # break the always-create-new contract. Fall back to a random suffix.
-  if [[ "${stamp}" == *N* ]]; then
-    stamp="$(date +%s)${RANDOM}${RANDOM}"
+  local run_id="${GITHUB_RUN_ID:-${CI_PIPELINE_ID:-}}"
+  if [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+    marker="<!-- fullsend:triage-run-${run_id} -->"
+  else
+    # No CI run ID: a marker unique to this invocation guarantees no prior
+    # comment matches it.
+    stamp=$(date +%s%N)
+    # BSD date without %N support leaves the literal "N" in place, which would
+    # make the marker identical for every invocation within the same second and
+    # break the always-create-new contract. Fall back to a random suffix.
+    if [[ "${stamp}" == *N* ]]; then
+      stamp="$(date +%s)${RANDOM}${RANDOM}"
+    fi
+    marker="<!-- fullsend:triage-${stamp} -->"
   fi
-  marker="<!-- fullsend:triage-${stamp} -->"
   printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
@@ -1116,6 +1194,12 @@ COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 tracker_validate_issue_url
 tracker_parse_issue_url
 
+if [[ "${FULLSEND_TRACKER}" == "jira" && -n "${FULLSEND_WORK_ITEM_KEY:-}" \
+      && "${FULLSEND_WORK_ITEM_KEY}" != "${ISSUE_NUMBER}" ]]; then
+  echo "ERROR: FULLSEND_WORK_ITEM_KEY does not match the Jira issue key in ISSUE_URL" >&2
+  exit 1
+fi
+
 echo "Action: ${ACTION}"
 echo "Repo: ${REPO}"
 echo "Issue: #${ISSUE_NUMBER}"
@@ -1150,6 +1234,16 @@ DEFERRED_LABEL=""
 # labels, but "triaged" is only ever re-applied (never removed) by the
 # handlers themselves, so it must be cleared up front rather than per-branch.
 tracker_remove_label "triaged"
+
+# Classification updates the Jira tracker could not apply. Jira users do not
+# see workflow annotations, so these are also listed in the Jira comment
+# instead of being dropped with only a log warning.
+JIRA_UNAPPLIED=""
+note_jira_unapplied() {
+  [[ "${FULLSEND_TRACKER}" == "jira" ]] || return 0
+  JIRA_UNAPPLIED="${JIRA_UNAPPLIED}
+- $1"
+}
 
 # --- Cross-repo issue creation allowlist ---
 # Used by prerequisites and split actions. Read once before the case
@@ -1501,6 +1595,15 @@ ${FAILED_CREATES}"
         WORKFLOW_BLOCKED=true
       fi
     fi
+    # Clear stale category labels from a prior triage run so a re-categorized
+    # issue never carries two conflicting category labels (#1725). These are
+    # control labels, so label_actions cannot remove them. Skip the current
+    # category's own label to avoid remove/re-add churn.
+    for category_label in bug documentation feature; do
+      if [[ "${category_label}" != "${CATEGORY}" ]]; then
+        tracker_remove_label "${category_label}"
+      fi
+    done
     case "${CATEGORY}" in
       bug)
         echo "Applying bug label..."
@@ -1712,6 +1815,7 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
       add)
         if ! label_exists "${LA_LABEL}"; then
           echo "::warning::Skipping label '$(_gha_sanitize "${LA_LABEL}")' -- does not exist in repo (will not auto-create)"
+          note_jira_unapplied "Label \`${LA_LABEL}\` was not added: it is not in use on this Jira site, and labels are not auto-created."
           continue
         fi
         echo "Adding label '$(_gha_sanitize "${LA_LABEL}")'..."
@@ -1753,6 +1857,7 @@ if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
     # full replacement via PUT) to silently delete pre-existing components.
     if ! CURRENT_COMPONENTS=$(tracker_get_components); then
       echo "::warning::Failed to fetch current components — skipping component mutations to avoid data loss"
+      note_jira_unapplied "Component changes were not applied: the current components could not be read, and replacing them blindly could delete existing ones."
     else
       # Build the new component list by applying add/remove actions.
       NEW_COMPONENTS="${CURRENT_COMPONENTS}"
@@ -1815,6 +1920,13 @@ if [[ -n "${DEFERRED_LABEL}" ]]; then
     forge_ensure_label "${DEFERRED_LABEL}"
   fi
   tracker_add_label "${DEFERRED_LABEL}"
+fi
+
+if [[ -n "${JIRA_UNAPPLIED}" ]]; then
+  COMMENT="${COMMENT}
+
+---
+**Not applied in Jira:**${JIRA_UNAPPLIED}"
 fi
 
 # --- Append action-hints footer (sufficient only) ---

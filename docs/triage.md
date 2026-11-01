@@ -20,9 +20,11 @@ The triage agent runs automatically when:
 
 - A new issue is opened
 - An existing issue is edited
-- Someone comments on an issue labeled `needs-info` (to re-evaluate after the reporter provides clarification)
+- The `ready-for-triage` label is added to an issue
 
 It can also be triggered manually with the `/fs-triage` command.
+
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch: an issue opened or edited by a human, the `ready-for-triage` label added to an issue, or `/fs-triage` from a human on an issue, a PR or an MR. Dispatch does not evaluate it for the built-in triage agent yet, so the routing above is what runs today.
 
 ## Commands
 
@@ -211,6 +213,13 @@ allowed.
 a GitLab CI predefined variable set automatically by the runner. Validation
 fails closed when `CI_SERVER_HOST` is not set.
 
+The trusted origin (scheme, host, and optional port) comes from
+`CI_SERVER_URL`, falling back to `https://${CI_SERVER_HOST}` when it is unset.
+Before any token is sent, the issue URL's origin must match it exactly, so
+self-managed instances on a non-default HTTPS port (for example
+`https://gitlab.example.com:8443`) work, while a mismatched port or a
+non-HTTPS origin is rejected. API requests use the trusted origin.
+
 ## Multi-forge support
 
 The triage agent supports GitHub, GitLab, and Jira (Cloud only). The forge is
@@ -251,6 +260,31 @@ Cross-project issue creation for Jira prerequisites is gated by a
 `create_issues.allow_targets.jira_projects` list of Jira project keys in
 `config.yaml`, alongside the existing `orgs`/`repos` keys used for
 GitHub/GitLab. The issue's own project is always implicitly allowed.
+
+For Jira-sourced runs (`FULLSEND_WORK_ITEM_SOURCE=jira`), the post-script
+writes results to the issue at `FULLSEND_WORK_ITEM_URL`:
+
+- The triage comment is posted on the Jira issue.
+- Labels and components are updated on the Jira issue.
+- Close actions run as Jira transitions.
+
+The run stops before any write if `FULLSEND_WORK_ITEM_KEY` does not match
+that URL, or if an explicit `FULLSEND_TRACKER` or `ISSUE_URL` points
+somewhere else.
+
+- **Retries:** comments are idempotent. Sticky comments (`sufficient`,
+  `in-progress`) use fixed markers. Other comments use a marker scoped to the
+  CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`). A re-run of the same workflow
+  or pipeline edits its earlier comment, while a new triage run still posts a
+  new one.
+- **Write failures:** a failed Jira write fails the step. This covers label
+  adds and removals, component updates, comments and transitions.
+- **Updates that cannot be applied:** these are listed under **Not applied in
+  Jira** in the comment, as well as being logged. Two cases exist:
+  - a `label_actions` add for a label not used anywhere on the Jira site
+    (labels are not auto-created);
+  - component changes skipped because the current components could not be
+    read.
 
 Jira Server/Data Center (self-hosted) is out of scope — only Jira Cloud hosts
 (`*.atlassian.net`) are supported.

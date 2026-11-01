@@ -21,6 +21,12 @@
 #                                       approve actions; default supplied by
 #                                       harness/review.yaml
 #
+# Optional environment variables:
+#   FULLSEND_PERSONAS_FILE            — runner-written persona manifest; when
+#                                       it is a valid version 1 manifest, new
+#                                       findings from unstaged dimensions are
+#                                       dropped
+#
 # Exit codes:
 #   0 — review posted
 #   1 — error (review not posted, fallback comment posted, or the agent
@@ -47,6 +53,12 @@ echo "::add-mask::${REVIEW_TOKEN}"
 # don't overwrite earlier ones.
 CLEANUP_FILES=()
 trap 'rm -f "${CLEANUP_FILES[@]}"' EXIT
+
+# REVIEW_UX_ENABLED was removed; tell repositories that still set it how to
+# turn off the UX reviewer now. Warning only, no other effect.
+if [[ -n "${REVIEW_UX_ENABLED:-}" ]]; then
+  echo "::warning::REVIEW_UX_ENABLED is no longer read; to turn off the UX reviewer, remove sub-agents/user-experience.md with a skills override (see docs/review.md)"
+fi
 
 # Refuse to post reviews on merged or closed PRs.
 # Also fetch draft status — draft PRs must not receive ready-for-merge.
@@ -166,28 +178,83 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
       closed: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
                 | select($d != null and ($d.status | closed_status)) | . + {status: $d.status} ],
       open_ids: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
-                  | select($d == null or ($d.status | closed_status | not)) | .id ],
+                  | select($d == null or ($d.status | closed_status | not))
+                  | .id ],
       used_mints: $r.mint_i
     }
 ' <<< "${PRIOR_JSON}")"
 MINT_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" '.[$prior.used_mints:]' <<< "${MINT_IDS}")"
 
+# Ids the model wrote, captured before remint. A first-review supplied id
+# is foreign and replaced below; the original string can still appear in
+# body/description/remediation and must be in the scrub set.
+SUPPLIED_FINDING_IDS="$(jq -c '
+  [ .findings[]?.id?, .dispositions[]?.id? ]
+  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
+' "${RESULT_FILE}" 2>/dev/null || echo '[]')"
+
+# Human dismissals are the runner's to verify, not the model's to assert:
+# a dismissed_by_human disposition counts only against a resolved review
+# thread from an eligible reviewer (not the PR author, write or above).
+# Fetched once, and only when the model used that status or, on GitHub, a
+# prior human-dismissed finding has a line its thread may still anchor.
+HUMAN_DISMISSALS='[]'
+if jq -e '[.dispositions[]? | select(type == "object" and .status == "dismissed_by_human")] | length > 0' "${RESULT_FILE}" >/dev/null 2>&1 \
+    || { [[ "${FULLSEND_FORGE}" = "github" ]] \
+         && jq -e '[.closed[] | select(.status == "dismissed_by_human" and (.line | type) == "number")] | length > 0' <<< "${PRIOR_LEDGER}" >/dev/null 2>&1; }; then
+  HUMAN_DISMISSALS="$(forge_get_human_dismissals)" || HUMAN_DISMISSALS='[]'
+  if ! jq -e 'type == "array"' <<< "${HUMAN_DISMISSALS}" >/dev/null 2>&1; then
+    HUMAN_DISMISSALS='[]'
+  fi
+fi
+
+# Where a prior human-dismissed finding still sits unchanged: its verified
+# dismissal thread carries the finding's exact stamp, is on the same file,
+# and still has a line. GitHub reports a thread's current line and nulls it
+# once a push changes that line (the thread goes outdated). GitLab keeps the
+# line the note was written on, so it cannot show the line is unchanged and
+# gets no anchors. A finding with no line (file-level or PR-level) has nothing
+# to anchor, so it gets no anchor either and still mints on a category change.
+DISMISSED_ANCHORS='[]'
+if [[ "${FULLSEND_FORGE}" = "github" ]]; then
+  DISMISSED_ANCHORS="$(jq -c --argjson dismissals "${HUMAN_DISMISSALS}" '
+    [ .closed[]
+      | select(.status == "dismissed_by_human" and (.file | type) == "string")
+      | . as $p
+      | first($dismissals[]?
+          | select(.path == $p.file and (.line | type) == "number")
+          | select(any(.finding_ids[]?; . == $p.id))) as $t
+      | {id: $p.id, file: $p.file, line: $t.line, severity: $p.severity}
+    ]
+  ' <<< "${PRIOR_LEDGER}")"
+fi
+
+# Set when every finding is dropped before the severity filter (dismissal
+# suppression below or the severity filter itself); read by the re-review gates.
+REREVIEW_FILTERED_TO_ZERO=false
+REREVIEW_FILTER_ORIGINAL_ACTION=""
+
 # Id assignment for this review. A supplied id is kept only when it is an
 # open prior id no earlier row already took and this review is not
 # resolving; a closed, resolving, foreign, or duplicate id is replaced (a
 # reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
-# category match: the exact line first, else the only candidate at that
-# place (a shifted line must not create a second ledger entry). Do not copy
-# an id this review is closing. A missing file (null or N/A) is not a
-# place, so those rows mint instead of inheriting. Otherwise mint.
-# Supplied open ids of later rows are reserved for them.
+# category match at the exact line; else the human-dismissed id anchored at
+# the row's exact file and line, whatever the category, unless the row is
+# high or critical, a runner safety signal (protected-path or
+# sub-agent-failure), or more severe than the dismissed finding; a dismissal
+# never covers those; else the only open
+# candidate at that place (a shifted line must not create a second ledger
+# entry). Do not copy an id this review is closing. A missing file (null or
+# N/A) is not a place, so those rows mint instead of inheriting. Otherwise
+# mint. Supplied open ids of later rows are reserved for them.
 if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   ID_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${ID_RESULT}")
-  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" '
+  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" --argjson dismissed "${DISMISSED_ANCHORS}" '
     def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
     def anchor_line: if type == "number" then . else null end;
     def anchor_file: if . == "N/A" or . == null then null else . end;
+    def sev_rank: if type == "string" then ({"info": 0, "low": 1, "medium": 2, "high": 3, "critical": 4})[.] // 99 else 99 end;
     def closed_status: IN("resolved_by_change", "dismissed_by_human");
     def resolving:
       (.status | closed_status)
@@ -220,7 +287,15 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                      | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category)
                    ]) as $same_place
                 | ([ $same_place[] | select((.line | anchor_line) == ($f.line | anchor_line)) ]) as $exact
+                | ([ $dismissed[]
+                     | select(.id as $pid | $taken | index($pid) == null)
+                     | select(($f.severity | IN("high", "critical")) | not)
+                     | select(($f.category | IN("protected-path", "sub-agent-failure")) | not)
+                     | select((($f.severity | sev_rank) <= (.severity | sev_rank)) and ((.severity | sev_rank) < 99))
+                     | select(.file == ($f.file | anchor_file) and .line == ($f.line | anchor_line))
+                   ]) as $dismissed_here
                 | if ($exact | length) == 1 then {id: $exact[0].id, mint_i: $state.mint_i}
+                  elif ($dismissed_here | length) > 0 then {id: $dismissed_here[0].id, mint_i: $state.mint_i}
                   elif ($same_place | length) == 1 then {id: $same_place[0].id, mint_i: $state.mint_i}
                   elif ($mints[$state.mint_i] | valid_id | not) then error("ran out of finding ids")
                   else {id: $mints[$state.mint_i], mint_i: ($state.mint_i + 1)}
@@ -234,6 +309,114 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       )
   ' "${RESULT_FILE}" > "${ID_RESULT}"
   mv "${ID_RESULT}" "${RESULT_FILE}"
+
+  # A row that took a human-dismissed id raises that finding again on a line
+  # no push has changed. The dismissal holds: keep the id closed in the
+  # ledger and do not post the row or let it count toward the verdict.
+  REDISMISSED_IDS="$(jq -r --argjson dismissed "${DISMISSED_ANCHORS}" '
+    [ .findings[] | .id | select(. as $id | any($dismissed[]; .id == $id)) ] | join(", ")
+  ' "${RESULT_FILE}")"
+  if [[ -n "${REDISMISSED_IDS}" ]]; then
+    echo "::notice::Finding(s) on an unchanged human-dismissed line keep dismissed id(s) ${REDISMISSED_IDS}; not raised again"
+    REDISMISSED_RESULT="$(mktemp)"
+    CLEANUP_FILES+=("${REDISMISSED_RESULT}")
+    jq --argjson dismissed "${DISMISSED_ANCHORS}" '
+      .findings |= map(select(.id as $id | any($dismissed[]; .id == $id) | not))
+      | if (.findings | length) == 0 then del(.findings) else . end
+    ' "${RESULT_FILE}" > "${REDISMISSED_RESULT}"
+    mv "${REDISMISSED_RESULT}" "${RESULT_FILE}"
+    # Suppression that empties the findings leaves a blocking verdict with no
+    # findings. Downgrade it to comment as the severity filter does, and record
+    # it so the re-review gates see the filtered-to-zero state.
+    if ! jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
+      REREVIEW_FILTERED_TO_ZERO=true
+      REREVIEW_FILTER_ORIGINAL_ACTION="$(jq -r '.action' "${RESULT_FILE}")"
+      if [[ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
+        echo "All findings removed by human dismissal — downgrading '${REREVIEW_FILTER_ORIGINAL_ACTION}' to 'comment'"
+        REDISMISSED_DOWNGRADE="$(mktemp)"
+        CLEANUP_FILES+=("${REDISMISSED_DOWNGRADE}")
+        jq '.action = "comment"' "${RESULT_FILE}" > "${REDISMISSED_DOWNGRADE}"
+        mv "${REDISMISSED_DOWNGRADE}" "${RESULT_FILE}"
+      fi
+    fi
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Drop findings from dimensions the runner did not stage. The runner writes a
+# persona manifest (FULLSEND_PERSONAS_FILE) listing the pr-review personas it
+# staged from the trusted base config. A new finding is dropped only when all
+# of these hold:
+#   - the manifest exists, parses as version 1, and lists at least one persona;
+#   - the finding names a dimension, and that dimension is not a staged persona;
+#   - its severity is below high (info, low or medium);
+#   - it does not carry an open prior id;
+#   - its category is not in drop_exempt_category.
+# High and critical findings are always kept, so disabling a persona cannot
+# hide a serious finding. Without a manifest (an older runner) nothing is
+# dropped, and a finding with no dimension is always kept. Runs after id
+# assignment so a row answering an open prior id keeps it; prior dispositions
+# are never touched. Orchestrator findings (protected-path, sub-agent-failure,
+# scope-authorization-implicit, provenance-warning) are exempt whatever their
+# dimension: the drop rewrites the same file UNFILTERED_RESULT_FILE points at,
+# so dropping a protected-path finding would bypass the protected-path gate.
+# One ::warning:: names each dropped dimension with its count.
+# ---------------------------------------------------------------------------
+REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION=""
+STAGED_PERSONAS=""
+if [[ -n "${FULLSEND_PERSONAS_FILE:-}" && -f "${FULLSEND_PERSONAS_FILE}" ]]; then
+  if ! STAGED_PERSONAS="$(jq -ce '
+      select(type == "object" and .version == 1 and (.personas | type) == "array"
+             and (.personas | length) > 0
+             and all(.personas[]; type == "object" and (.name | type) == "string"))
+      | [.personas[].name]
+    ' "${FULLSEND_PERSONAS_FILE}" 2>/dev/null)"; then
+    STAGED_PERSONAS=""
+    echo "::warning::Persona manifest is not a valid version 1 manifest; no findings dropped by dimension"
+  fi
+fi
+if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
+  DIMENSION_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
+  DIMENSION_DROP_RESULT="$(mktemp)"
+  CLEANUP_FILES+=("${DIMENSION_DROP_RESULT}")
+  jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
+    def drop_exempt_category:
+      IN("protected-path", "sub-agent-failure", "scope-authorization-implicit", "provenance-warning");
+    def keep:
+      (.category | drop_exempt_category)
+      or (.dimension | type) != "string"
+      or (.dimension as $d | $staged | index($d) != null)
+      or (.severity | IN("high", "critical"))
+      or (.id as $id | $prior.open_ids | index($id) != null);
+    [.findings[] | select(keep | not) | .dimension] as $dropped
+    | .findings |= map(select(keep))
+    | if ($dropped | length) == 0 then .
+      else
+        if .action == "request-changes" or .action == "reject" then
+          if ([.findings[]
+               | select((.severity | IN("medium", "high", "critical"))
+                        or (.actionable // false))] | length) == 0 then
+            .action = "comment"
+          else .
+          end
+        else .
+        end
+        | if (.findings | length) == 0 then del(.findings) else . end
+      end
+    | {result: ., dropped: $dropped}
+  ' "${RESULT_FILE}" > "${DIMENSION_DROP_RESULT}"
+  DIMENSION_DROP_COUNT="$(jq '.dropped | length' "${DIMENSION_DROP_RESULT}")"
+  if [[ "${DIMENSION_DROP_COUNT}" -gt 0 ]]; then
+    DIMENSION_DROP_SUMMARY="$(jq -r '
+      .dropped | group_by(.) | map("\(.[0]) (\(length))") | join(", ")
+    ' "${DIMENSION_DROP_RESULT}")"
+    jq '.result' "${DIMENSION_DROP_RESULT}" > "${RESULT_FILE}"
+    if [[ "${DIMENSION_ORIGINAL_ACTION}" = "request-changes" || "${DIMENSION_ORIGINAL_ACTION}" = "reject" ]] \
+        && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
+      REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION="${DIMENSION_ORIGINAL_ACTION}"
+    fi
+    echo "::warning::Dropped ${DIMENSION_DROP_COUNT} finding(s) from dimensions the runner did not stage: $(_gha_sanitize "${DIMENSION_DROP_SUMMARY}")"
+  fi
 fi
 
 # A legacy projection may have valid findings but no prior verdict. Do not
@@ -314,8 +497,6 @@ severity_rank() {
 
 EFFECTIVE_FINDING_SEVERITY_THRESHOLD="${REVIEW_FINDING_SEVERITY_THRESHOLD}"
 threshold_rank=$(severity_rank "$EFFECTIVE_FINDING_SEVERITY_THRESHOLD")
-REREVIEW_FILTERED_TO_ZERO=false
-REREVIEW_FILTER_ORIGINAL_ACTION=""
 
 if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
   original_count=$(jq '.findings | length' "${RESULT_FILE}")
@@ -335,6 +516,26 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
 
   if [ "${filtered_count}" -lt "${original_count}" ]; then
     echo "Severity filter (threshold=${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}): kept ${filtered_count}/${original_count} findings"
+
+    # Record what the filter dropped so the disclosure below can be reconciled
+    # against the findings actually posted (#1800). It cannot be counted here:
+    # the re-review gate restores prior open blocking findings regardless of
+    # the threshold, so a finding dropped now may still be published.
+    #
+    # Ids only: that is all the reconciliation reads, and carrying whole rows
+    # would push descriptions and remediations through a single jq argv slot.
+    # A row with no id keeps a null entry so it still counts as withheld.
+    THRESHOLD_HIDDEN_IDS="$(jq -c --argjson rank "$threshold_rank" '
+      [ .findings[] | select(
+          (if .severity == "info" then 0
+           elif .severity == "low" then 1
+           elif .severity == "medium" then 2
+           elif .severity == "high" then 3
+           elif .severity == "critical" then 4
+           else 1 end) < $rank
+        ) | .id ]
+    ' "${RESULT_FILE}")"
+
     RESULT_FILE="${FILTERED_RESULT}"
 
     # If filtering removed all findings, delete the empty findings array
@@ -356,6 +557,7 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
       fi
       RESULT_FILE="${DOWNGRADE_RESULT}"
     fi
+
   else
     rm -f "${FILTERED_RESULT}"
   fi
@@ -375,14 +577,25 @@ if [[ "${REREVIEW_BLOCKING_RANK}" -lt "$(severity_rank medium)" ]]; then
   REREVIEW_BLOCKING_RANK="$(severity_rank medium)"
 fi
 REREVIEW_CURRENT_MEDIUM_PLUS_COUNT="$(jq -r '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${UNFILTERED_RESULT_FILE}")"
+rereview_action_can_promote() {
+  [[ "$1" = "request-changes" ]] && return 0
+  [[ "$1" = "comment" ]] || return 1
+  if [[ "${REREVIEW_FILTERED_TO_ZERO}" = "true" ]] \
+      && [[ "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" || \
+           "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
+    return 0
+  fi
+  if [[ "${REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION}" = "request-changes" || \
+        "${REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION}" = "reject" ]]; then
+    return 0
+  fi
+  return 1
+}
 if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]] \
     && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
     && [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
     && [[ "${PRIOR_REJECT_HOLD}" != "true" ]] \
-    && [[ "${ACTION}" = "request-changes" || \
-         ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
-           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
-                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) ) ]]; then
+    && rereview_action_can_promote "${ACTION}"; then
   REREVIEW_SAFETY_CANDIDATE=true
   ACTION="approve"
 fi
@@ -740,7 +953,8 @@ REVIEW_CONTROL_LABELS=(
 )
 
 is_control_label() {
-  local label="$1"
+  # Forges match label names case-insensitively, so compare lowercased.
+  local label="${1,,}"
   for cl in "${REVIEW_CONTROL_LABELS[@]}"; do
     if [[ "${cl}" == "${label}" ]]; then
       return 0
@@ -748,6 +962,10 @@ is_control_label() {
   done
   # Pipeline-managed label prefixes
   if [[ "${label}" == risk/* ]]; then
+    return 0
+  fi
+  # Maintainer-set per-PR fix budget (issue #1680)
+  if [[ "${label}" == fullsend-fix-budget/* ]]; then
     return 0
   fi
   return 1
@@ -788,8 +1006,12 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
     LA_ACTION_SHOWN=$(_gha_sanitize "${LA_ACTION}")
     LA_LABEL_SHOWN=$(_gha_sanitize "${LA_LABEL}")
 
-    if [[ "${LA_LABEL}" == *::* || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
-      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters or a double colon"
+    # Leading/trailing whitespace is rejected: forges (notably GitLab) trim
+    # it, so " fullsend-fix-budget/2" would evade is_control_label yet still
+    # act on the real control label.
+    if [[ "${LA_LABEL}" == *::* || "${LA_LABEL}" == " "* || "${LA_LABEL}" == *" " \
+          || ! "${LA_LABEL}" =~ ^[a-zA-Z0-9._/:\ +\-]+$ ]]; then
+      echo "::warning::Refused label '${LA_LABEL_SHOWN}' -- contains invalid characters, a double colon, or leading/trailing whitespace"
       continue
     fi
 
@@ -920,18 +1142,6 @@ else
 fi
 
 
-# Human dismissals are the runner's to verify, not the model's to assert:
-# a dismissed_by_human disposition counts only against a resolved review
-# thread from an eligible reviewer (not the PR author, write or above).
-# Fetched once, and only when the model used that status.
-HUMAN_DISMISSALS='[]'
-if jq -e '[.dispositions[]? | select(type == "object" and .status == "dismissed_by_human")] | length > 0' "${RESULT_FILE}" >/dev/null 2>&1; then
-  HUMAN_DISMISSALS="$(forge_get_human_dismissals)" || HUMAN_DISMISSALS='[]'
-  if ! jq -e 'type == "array"' <<< "${HUMAN_DISMISSALS}" >/dev/null 2>&1; then
-    HUMAN_DISMISSALS='[]'
-  fi
-fi
-
 # Ledger accounting. Each open prior id gets one effective status, decided
 # here and used by both the approval guard and the projection:
 #   resolved_by_change  — rationale and evidence given.
@@ -1030,7 +1240,7 @@ fi
 BLOCKING_IDS="$(jq -r '.blocking | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${BLOCKING_IDS}" && "${ACTION}" = "approve" ]]; then
   echo "::warning::Approval withheld: prior high/critical finding id(s) ${BLOCKING_IDS} are still open"
-  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) '"${BLOCKING_IDS}"$' are still open.'
+  LEDGER_NOTICE=$'\n\n> **Note:** Approval withheld. Earlier high or critical finding(s) are still open.'
   LEDGER_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${LEDGER_RESULT}")
   jq --arg notice "${LEDGER_NOTICE}" \
@@ -1073,7 +1283,7 @@ PRIOR_OPEN_BLOCKING_FINDINGS="$(jq -c --argjson effective "${LEDGER_EFFECTIVE}" 
         file: (.file // "N/A"),
         description: (
           if (.description | type == "string" and length > 0) then .description
-          else ("Previously reported finding " + .id + " remains open: "
+          else ("Previously reported finding remains open: "
             + .severity + " " + .category + " in " + (.file // "PR-level")
             + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end) + ".")
           end
@@ -1094,7 +1304,7 @@ if [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -gt 0 ]]; then
   fi
 fi
 PRIOR_BLOCKING_SUMMARY="$(jq -r --argjson links "${FINDING_COMMENT_LINKS}" '
-  map("- " + .id + ": " + .severity + " " + .category + " at "
+  map("- " + .severity + " " + .category + " at "
       + (.file // "PR-level")
       + (if (.line | type) == "number" then ":" + (.line | tostring) else "" end)
       + (if ($links[.id] | type) == "string" then
@@ -1125,14 +1335,13 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
     RESULT_FILE="${HOLD_RESULT}"
     ACTION="comment"
     DOWNGRADED=true
-  elif [[ "${ACTION}" = "request-changes" \
-      || ( "${ACTION}" = "comment" && "${REREVIEW_FILTERED_TO_ZERO}" = "true" \
-           && ( "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "request-changes" \
-                || "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ) \
-           && "${DOWNGRADED}" = "false" ) ]] \
+  elif rereview_action_can_promote "${ACTION}" \
+      && { [[ "${ACTION}" != "comment" ]] \
+           || { [[ "${LEGACY_UNKNOWN_MEDIUM_HOLD}" != "true" ]] \
+                && [[ "${PRIOR_REJECT_HOLD}" != "true" ]]; }; } \
+      && [[ "${DOWNGRADED}" = "false" ]] \
       && [[ "${PRIOR_OPEN_BLOCKING_COUNT}" -eq 0 ]] \
-      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]] \
-      && [[ "${DOWNGRADED}" = "false" ]]; then
+      && [[ "${REREVIEW_CURRENT_MEDIUM_PLUS_COUNT}" -eq 0 ]]; then
     echo "New findings on a re-review are low/info only — changing '${ACTION}' to 'approve'"
     REREVIEW_RESULT=$(mktemp)
     CLEANUP_FILES+=("${REREVIEW_RESULT}")
@@ -1192,6 +1401,33 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
   fi
 fi
 
+# Disclose findings the severity threshold withheld, so a filtered review is
+# not mistaken for a clean pass (#1800). Runs after the re-review gate: a
+# dropped finding the gate restored is published, so it is reconciled out of
+# the count rather than reported as withheld.
+if [[ -n "${THRESHOLD_HIDDEN_IDS:-}" ]]; then
+  THRESHOLD_HIDDEN_COUNT="$(jq --argjson hidden "${THRESHOLD_HIDDEN_IDS}" '
+    [ (.findings // [])[].id ] as $posted
+    | [ $hidden[]
+        | . as $id
+        | select($id == null or ($posted | index($id) == null)) ]
+    | length
+  ' "${RESULT_FILE}")"
+  if [[ "${THRESHOLD_HIDDEN_COUNT}" -gt 0 ]]; then
+    if [[ "$(jq '(.findings // []) | length' "${RESULT_FILE}")" -eq 0 ]]; then
+      THRESHOLD_NOTICE=$'\n\n---\n'"No findings at or above \`${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}\` severity; ${THRESHOLD_HIDDEN_COUNT} lower-severity finding(s) were not posted."
+    else
+      THRESHOLD_NOTICE=$'\n\n---\n'"${THRESHOLD_HIDDEN_COUNT} finding(s) below the \`${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}\` severity threshold were not posted."
+    fi
+    THRESHOLD_NOTICE_RESULT=$(mktemp)
+    CLEANUP_FILES+=("${THRESHOLD_NOTICE_RESULT}")
+    jq --arg notice "${THRESHOLD_NOTICE}" \
+      '.body = ((.body // "") + $notice)' \
+      "${RESULT_FILE}" > "${THRESHOLD_NOTICE_RESULT}"
+    RESULT_FILE="${THRESHOLD_NOTICE_RESULT}"
+  fi
+fi
+
 # Append a machine-readable projection only when every schema-validated finding
 # can be represented safely. A lossy projection could turn a failed sub-agent
 # into an apparently clean dimension on the next re-review. Challenger failures
@@ -1229,7 +1465,8 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       "scope-exceeded", "tier-mismatch", "unauthorized-change", "scope-creep", "missing-authorization", "misleading-label", "design-direction", "complexity-ratio", "misplaced-abstraction", "architectural-conflict", "design-smell", "over-engineering", "under-engineering", "scope-bundling",
       "naming-convention", "error-handling-idiom", "api-shape", "code-organization", "doc-style", "pattern-inconsistency",
       "stale-doc", "missing-doc", "incorrect-doc", "incomplete-doc",
-      "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible"
+      "breaking-api", "breaking-schema", "breaking-config", "breaking-cli", "missing-deprecation", "missing-version-bump", "backward-incompatible",
+      "uxd-evaluate-code-heuristics"
     );
   def safe_path:
     type == "string" and length > 0 and . != "N/A" and
@@ -1254,7 +1491,8 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       file: (if .file == "N/A" then null else .file end),
       id
     } + (if (.line | type) == "number" then {line} else {} end)
-      + (if (.actionable | type) == "boolean" then {actionable} else {} end);
+      + (if (.actionable | type) == "boolean" then {actionable} else {} end)
+      + (if (.dimension | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) then {dimension} else {} end);
   def is_closed($accounted; $id):
     [$accounted[] | select(.id == $id and (.status | closed_status))] | length > 0;
   (.findings // []) as $findings
@@ -1309,9 +1547,69 @@ if [[ -n "${PRIOR_FINDINGS_PROJECTION}" ]]; then
   PRIOR_FINDINGS_ENCODED="$(printf '%s' "${PRIOR_FINDINGS_PROJECTION}" | base64 | tr -d '\n')"
   PROJECTION_MARKER="<!-- fullsend:review-findings-v2:${PRIOR_FINDINGS_ENCODED} -->"
 fi
+# Finding ids are ledger keys, not prose. The skill tells the model not to
+# print them, and this pass makes that true regardless: every id this run
+# knows (prior ledger, current findings, dispositions) and anything shaped
+# like a minted id is removed from the visible body and from each finding's
+# description and remediation, which fullsend posts as inline comments. The
+# projection marker below and the inline stamps fullsend adds are built
+# from the JSON ids, not from this text, so they keep them.
+KNOWN_FINDING_IDS="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson supplied "${SUPPLIED_FINDING_IDS}" '
+  [ $prior.findings[]?.id?, .findings[]?.id?, .dispositions[]?.id?, $supplied[]? ]
+  | map(select(type == "string" and test("^f_[A-Za-z0-9]+$"))) | unique
+' "${RESULT_FILE}")"
+LEAKED_FINDING_IDS="$(jq -r --argjson known "${KNOWN_FINDING_IDS}" '
+  [ (.body // ""), (.findings[]? | .description // "", .remediation // "") ]
+  | map(select(type == "string"))
+  | map([ scan("\\b(f_[A-Za-z0-9]+)\\b|(?<![A-Za-z0-9_])_(f_[A-Za-z0-9]+)_(?![A-Za-z0-9_])|(?<![A-Za-z0-9_])__(f_[A-Za-z0-9]+)__(?![A-Za-z0-9_])") | .[] | select(. != null) ] | .[])
+  | map(select(. as $id | ($known | index($id)) != null or test("^f_[0-9a-f]{16}$")))
+  | unique | join(", ")
+' "${RESULT_FILE}")"
+if [[ -n "${LEAKED_FINDING_IDS}" ]]; then
+  echo "::warning::Removed finding id(s) ${LEAKED_FINDING_IDS} from the posted review text; ids stay in the ledger only"
+fi
 TMP_RESULT="$(mktemp)"
 CLEANUP_FILES+=("${TMP_RESULT}")
-jq --arg marker "${PROJECTION_MARKER}" '
+jq --arg marker "${PROJECTION_MARKER}" --argjson known_ids "${KNOWN_FINDING_IDS}" '
+  # Closed list of id frames only. Do not tidy unrelated whitespace.
+  # $ids is an alternation of every id. A run of ids separated by commas or
+  # blanks leaves one hole, and a list item, heading or line that starts
+  # with ids loses them and the colon after them. A wrapper (~~, **, `, [],
+  # (), _, __) wraps the whole id run, not one id: ~~f_x, f_y~~ must go whole,
+  # since a leftover ~~~~ opens a code fence, **** is a rule and `` an empty
+  # code span. Runs are atomic so ids that match two alternatives cannot
+  # backtrack exponentially.
+  def id_run($item):
+    "(?>" + $item + "(?:[ \\t]*,[ \\t]*" + $item + "|[ \\t]+" + $item + ")*)";
+  def scrub_id($ids):
+    ("(?:" + $ids + ")") as $id
+    | id_run($id) as $inner
+    | ("(?:\\*\\*" + $inner + "\\*\\*|`" + $inner + "`|~~" + $inner + "~~"
+      + "|\\[" + $inner + "\\]\\([^)]*\\)|\\(" + $inner + "\\)"
+      + "|(?<![A-Za-z0-9_])__" + $inner + "__(?![A-Za-z0-9_])"
+      + "|(?<![A-Za-z0-9_])_" + $inner + "_(?![A-Za-z0-9_])|\\b" + $id + "\\b)") as $frame
+    | id_run($frame) as $run
+    | gsub("(?m)^(?<pfx>[ \\t]*(?:[-*+]|\\d+[.)]|#{1,6})[ \\t]+)" + $run + "[ \\t]*:[ \\t]*"; .pfx)
+    | gsub("(?m)^" + $run + "[ \\t]*(?::[ \\t]*)?"; "")
+    | gsub($run; "");
+  def scrub_ids:
+    if type != "string" then . else
+      # Minted ids already match f_[0-9a-f]{16}; listing them again gives each
+      # id two ways to match.
+      # Longest first: the atomic run never backtracks, so a shorter id that
+      # prefixes a longer one (f_hi1, f_hi10) must not win the alternation.
+      scrub_id(($known_ids | map(select(test("^f_[0-9a-f]{16}$") | not)) | sort_by(-length)) + ["f_[0-9a-f]{16}"] | join("|"))
+    end;
+    .body |= scrub_ids
+  | if (.findings | type) == "array" then
+      .findings |= map(
+        .description |= scrub_ids
+        | if (.description | type) == "string" and (.description | length) == 0
+          then .description = "Previously reported finding remains open." else . end
+        | if has("remediation") then .remediation |= scrub_ids else . end
+      )
+    else . end
+  |
   # pre-review ends the current section at the first line containing a
   # history delimiter, so any copy in the agent body would hide the marker.
   def strip_reserved:

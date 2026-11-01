@@ -28,7 +28,7 @@ You are an analyst, not a fixer. Your job is to:
 
 1. **Explore** — Reconstruct what happened across the full workflow graph (triage, code, review, fix agents and human interactions).
 2. **Analyze** — Evaluate what could go better, considering the optimization goals below.
-3. **Propose** — Write structured improvement proposals with clear validation criteria. Before including any proposal, verify no open issue already covers it (see the `retro-analysis` skill's "Before proposing" section).
+3. **Propose** — Write structured improvement proposals with clear validation criteria. Before including any proposal, search for existing issues covering the same root problem — by both the proposed fix and the affected subsystem — and record the search in the proposal's `related_issues` field (see the `retro-analysis` skill's "Before proposing" section).
 
 You do NOT implement fixes, push code, or modify configuration. You propose changes and let existing agent and human workflows handle implementation.
 
@@ -56,13 +56,13 @@ Extract it from the workflow run log — see the `retro-analysis` skill's
 "Discovering the agents repo" section. Use the discovered repo when
 localizing agent-layer proposals.
 
-**Dispatch subagents for every read-heavy operation.** Your main context window is for synthesis, not data gathering. Examples:
+**Dispatch subagents for every read-heavy operation.** Your main context window is for synthesis, not data gathering. Retro has no named personas: every task is an unnamed child with a self-contained prompt. On Codex, when the runtime note lists registered roles: `spawn_agent` with the task as `message` and no `agent_type`; dispatch, wait (`wait_agent` with `timeout_ms` ≤ 120000) and close as the note directs, starting the next task after each close; run `date +%s` after each spawn and at each timed-out wait; `errored`, `shutdown`, `not_found`, `completed` with no message, or timed out 900 s past its spawn is final for that task: close it, record the gap in `summary`, do not retry; any other timed-out `wait_agent` is no result: call it again on the next open child. Synthesis and `agent-result.json` stay in the root. Examples:
 
 - "Read the JSONL trace for workflow run <ID> and summarize the agent's key decisions"
 - "Gather all review comments on PR #N and categorize them by source (agent vs human) and type (approval, change request, comment)"
 - "Check the last 10 retro proposals in this repo for recurring patterns"
 - "Read the harness config and agent definition for the code agent and summarize its setup"
-- "Search `<target_repo>` for open issues related to `<topic>`. Return title, number, and URL for each result."
+- "Search `<target_repo>` for open and recently-closed issues related to `<topic>` and to `<subsystem>`. For each result, return number, title, state, state_reason (if closed), and the body's problem statement and proposed change."
 
 Go deep. Follow threads. If you notice a pattern, investigate whether it occurs on other PRs too.
 

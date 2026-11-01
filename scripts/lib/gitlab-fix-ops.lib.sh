@@ -140,6 +140,20 @@ forge_pr_has_merge_conflict() {
   [ "${has_conflicts}" = "true" ] && [ "${merge_status}" = "cannot_be_merged" ]
 }
 
+# forge_get_pr_labels PR_NUMBER — the MR's live label names, one per line.
+# Returns non-zero on API failure so callers can tell it apart from an MR
+# with no labels.
+forge_get_pr_labels() {
+  local pr_number="$1"
+  local json
+  json="$(
+    # shellcheck disable=SC2030,SC2031
+    GITLAB_TOKEN="${PUSH_TOKEN:-${GITLAB_TOKEN:-}}"
+    _gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${pr_number}" 2>/dev/null
+  )" || return 1
+  printf '%s' "${json}" | jq -r '.labels[]? | strings'
+}
+
 # --- Push operations ---
 
 forge_set_push_remote() {
@@ -148,6 +162,13 @@ forge_set_push_remote() {
   _validate_gitlab_host "${GITLAB_HOST}" || return 1
   git remote set-url origin \
     "https://oauth2:${token}@${GITLAB_HOST}/${REPO_FULL_NAME}.git"
+}
+
+# forge_push_branch BRANCH [--force-with-lease] — plain git push.
+forge_push_branch() {
+  local branch="$1"
+  shift
+  git push "$@" -u origin -- "${branch}"
 }
 
 forge_setup_push_token() {
@@ -190,7 +211,7 @@ forge_post_pr_comment() {
   local mr_iid="$1"
   local body="$2"
   _gitlab_api POST "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 # --- Workspace operations ---

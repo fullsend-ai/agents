@@ -23,6 +23,41 @@ script runs three phases:
 
 Results are written to `eval/runs/<agent>/<run-id>/`.
 
+### Artifact layout
+
+A case that fails before the agent runs (a non-zero exit that is not a
+timeout, with no turns, cost or tokens) is retried once. A run with a
+retry leaves these directories:
+
+```
+eval/runs/<agent>/
+├── <run-id>/
+│   ├── run_result.json, summary.yaml, score.log
+│   ├── cases/<case>/                # scored: the attempt that counts
+│   └── first-attempt/cases/<case>/  # a retried case's original attempt
+└── <run-id>-retry/                  # the retry's own run directory
+    └── cases/<case>/
+```
+
+- **`<run-id>/cases/`** is what scoring (`score.py`), the case-failure
+  checks and the exit code read. When the retry produced output for a
+  case, that case's directory holds the retry's results, and its record
+  in the run-level `run_result.json` is replaced to match.
+- **`<run-id>/first-attempt/cases/<case>/`** holds the first attempt of
+  each case that the retry replaced, moved there unchanged. It is not
+  scored and has no run-level files of its own. It exists only when a
+  retry replaced a case: a run with no retries, a retry that could not
+  start or whose output could not be copied, or a case the retry left no
+  output for, leaves the first attempt in `cases/` and creates no
+  `first-attempt/`. If the first attempt cannot be moved aside (the move
+  fails, or `first-attempt/cases/<case>` already exists), it stays in
+  `cases/` and the retry's results for that case are not used.
+- **`<run-id>-retry/`** is the retry run's own output, as `execute.py`
+  wrote it. Scoring does not read it.
+
+CI scrubs and uploads all of `eval/runs/`, so every directory above is
+in the uploaded artifact.
+
 ### Tiers
 
 `EVAL_TIER` selects how many cases run and what gates the result:
@@ -50,7 +85,11 @@ them from the runtime copy of the config only. That includes a quality
 judge's `max_error_rate`, so a judge that errors (for example a 400 from
 the judge model) no longer fails the run or triggers a scoring retry: it
 shows up only as a `JUDGE ERROR` line in the log and in the summary's
-error count. A case that fails before the agent runs is still an
+error count. After scoring, every check that failed on a case is logged
+as `CASE CHECK FAILED: [<judge>] <case>: <reason>`, and every judge that
+gave a case no verdict as `CASE JUDGE ERROR: [<judge>] <case>: <error>`,
+gating or report-only alike; these lines change no exit code. A case
+that fails before the agent runs is still an
 infrastructure failure (exit 3). Review has no
 `max_turns` judge, because its turn count does not track the work done.
 
@@ -128,7 +167,23 @@ running:
 ```bash
 bash eval/lint-cases.sh <agent>
 bash eval/lint-measurements.sh
+python3 eval/lint-release-cases.py
 ```
+
+Every agent with an `eval/*/eval.yaml` must have at least one case with
+boolean `release: true` in its `annotations.yaml`. This lint is intentionally
+stricter than the runner's text comparison: the runner also selects a quoted
+`release: "true"`, but the lint rejects that string. Lowercase YAML boolean
+`true` counts, including the explicitly tagged `release: !!bool true` form.
+Aliases and duplicate release keys do not establish coverage. An annotation
+with a top-level merge key is rejected even alongside a literal release marker;
+the lint does not emulate the runner’s merge precedence.
+The release coverage lint runs in pre-commit and CI, including when the last
+release case is deleted. It requires Python 3 and PyYAML (`python3 -m pip install PyYAML==6.0.3`);
+pre-commit installs its own dependency. The offline fixture tests also require yq. Run them with
+`bash eval/lint-release-cases-test.sh`; they also run in `make script-test`.
+The script-test CI job installs PyYAML for these tests. The runtime skip
+behavior described under [Tiers](#tiers) is unchanged.
 
 ## Prerequisites
 
@@ -146,6 +201,24 @@ the submodule before running:
 git submodule sync eval/.agent-eval-harness
 git submodule update --init eval/.agent-eval-harness
 ```
+
+The eval scripts are written against the harness version the submodule pins
+(1.56.3, the first release that confines agent judges with a deny list), so
+`run-functional.sh` checks the harness checkout it uses before every run and
+refuses rather than score with an older one. `AGENT_EVAL_HARNESS_DIR` may
+point at another clone, for example a newer one while developing; the
+harness scripts import `agent_eval` from their own checkout, so that is the
+version that runs. It must be a plain release version (`N.N.N`) at or above
+the pin; a newer clone is fine, prereleases and placeholders are refused. The
+pinned version is read from the submodule commit this checkout records, not
+from whatever is on disk under `eval/.agent-eval-harness`, so the evals need
+a git clone of this repository with the submodule initialised, even when
+`AGENT_EVAL_HARNESS_DIR` points the run at another checkout. For an old
+checkout, update the submodule or point `AGENT_EVAL_HARNESS_DIR` at a newer
+one. `pip install -e eval/.agent-eval-harness` is still needed for the
+harness's third-party dependencies; the check only requires it to exist, so an
+editable install of an older checkout that lacks a dependency shows up as an
+import error from the first harness script, and the fix is to re-run it.
 
 ### GCP credentials
 
@@ -166,16 +239,20 @@ calls during both execution and scoring.
 | Variable | Description |
 |----------|-------------|
 | `FULLSEND_DIR` | Path to the fullsend scaffold directory. Defaults to the repo root. |
-| `EVAL_TIMEOUT` | Runner timeout in seconds. Defaults to `1800` (30 min). |
-| `EVAL_RUNTIME` | Run every case under this runtime (`claude` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
+| `EVAL_TIMEOUT` | Runner timeout in seconds, honoured only when the agent's `eval.yaml` `execution.env` does not set it. The code, review and fix evals pin `1700` and retro pins `540` there, which replaces any value in the environment; triage uses the environment, defaulting to `1800` (30 min). |
+| `EVAL_REPO_VISIBILITY` | Visibility of the ephemeral repos `setup-fixture.sh` creates: `private` (the default: a fixture is a throwaway copy of someone else's repository, and a public copy is indexed, scanned and acted on by automation as if it were meant to be published) or `public`; any other value is an error before anything is created. The snapshot commit and push bypass the developer's local git hooks only for `private`; for `public` the hooks (a secret scanner, for one) run and the script warns. The CI evals use the default. |
+| `EVAL_RUNTIME` | Run every case under this runtime (`claude`, `codex` or `pi`) via `fullsend run --runtime`, instead of the workspace config. |
 | `EVAL_MODEL` | Model override for every case (alias, id or `provider/id`, e.g. `google-vertex/gemini-2.5-flash`) via `fullsend run --model`. |
 | `EVAL_EFFORT` | Effort override via `fullsend run --effort`. |
+| `EVAL_FORGE` | Forge passed to `fullsend run --forge`. Defaults to `github`; a local run otherwise resolves no forge and fullsend's pre-code step fails. |
+| `EVAL_SANDBOX_BINARY` | Optional: a specific Linux `fullsend` binary to copy into the sandbox, passed as `fullsend run --fullsend-binary`. Unset, `fullsend` picks the binary itself: its own executable on Linux, and on another OS a Linux build it fetches or makes. |
+| `OPENAI_API_KEY` | Passed through to `fullsend run` for the pi and codex runtimes when set (kept on the runner per ADR 0092). |
 | `EVAL_TIER` | `full` or `release` — see [Tiers](#tiers) above. Defaults to `release` under a cross-repo Actions `workflow_call`, `full` otherwise. |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCP service account key file for Vertex AI. |
 | `ANTHROPIC_VERTEX_PROJECT_ID` | GCP project ID for Anthropic Vertex. |
 | `GOOGLE_CLOUD_PROJECT` | GCP project ID. |
 | `CLOUD_ML_REGION` | GCP region for Cloud ML. |
-| `AGENT_EVAL_HARNESS_DIR` | Path to the agent-eval-harness checkout. Defaults to `eval/.agent-eval-harness`. |
+| `AGENT_EVAL_HARNESS_DIR` | Path to the agent-eval-harness checkout to run. Defaults to `eval/.agent-eval-harness`. The submodule must still be initialised: the pinned version is read from it. |
 
 ### Derived (set automatically by the runner)
 

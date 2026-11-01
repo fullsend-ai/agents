@@ -15,6 +15,13 @@
 [[ -n "${GITHUB_CODE_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_CODE_OPS_SH_LOADED=1
 
+# shellcheck source=forge-transient-retry.lib.sh
+source "${BASH_SOURCE[0]%/*}/forge-transient-retry.lib.sh"
+# forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
+# API publish that gets the commits signed by GitHub.
+# shellcheck source=github-signed-push.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-signed-push.lib.sh"
+
 # --- URL handling ---
 
 forge_validate_issue_url() {
@@ -71,7 +78,7 @@ forge_create_label() {
 forge_post_issue_comment() {
   local body="$1"
   printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null
+    --repo "${REPO_FULL_NAME}" --body-file -
 }
 
 forge_post_pr_comment() {
@@ -79,7 +86,7 @@ forge_post_pr_comment() {
   local body="$2"
   gh pr comment "${target_pr}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null
+    --body "${body}"
 }
 
 # --- PR/MR lifecycle ---
@@ -133,17 +140,66 @@ forge_list_prs_for_branch() {
     2>/dev/null
 }
 
+# Single open same-repo PR for this head and base. Zero or multiple
+# matches fail closed — adopting the wrong PR is worse than reporting
+# failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local json matches count url
+  json=$(forge_retry_transient gh pr list \
+    --repo "${REPO_FULL_NAME}" \
+    --head "${head}" \
+    --base "${base}" \
+    --state open \
+    --json number,url,headRepositoryOwner,headRefName,baseRefName) || return 1
+  matches=$(printf '%s' "${json}" | jq -c \
+    --arg owner "${owner}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select(.headRepositoryOwner.login == $owner)
+      | select(.headRefName == $head)
+      | select(.baseRefName == $base)
+      | .url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
+}
+
 forge_create_pr() {
   local base="$1"
   local head="$2"
   local title="$3"
   local body="$4"
-  gh pr create \
+  local urlfile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  urlfile=$(mktemp) || return 1
+  forge_retry_transient gh pr create \
     --repo "${REPO_FULL_NAME}" \
     --head "${head}" \
     --base "${base}" \
     --title "${title}" \
-    --body "${body}"
+    --body "${body}" >"${urlfile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    cat "${urlfile}"
+    rm -f "${urlfile}"
+    return 0
+  fi
+  rm -f "${urlfile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
+    return "${rc}"
+  fi
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "PR already exists but could not be resolved for head '${head}' into base '${base}'" >&2
+    return "${rc}"
+  fi
+  _forge_retry_notice "PR create reported already-exists; recovered ${resolved}"
+  printf '%s\n' "${resolved}"
 }
 
 forge_get_pr_url() {

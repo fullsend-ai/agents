@@ -42,6 +42,12 @@ forge_get_pr_author() {
     --repo "${REPO}" --json author --jq '.author.login' 2>/dev/null || true
 }
 
+# Fails when the labels cannot be read.
+forge_get_pr_labels() {
+  GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
+    --repo "${REPO}" --json labels --jq '.labels[].name' 2>/dev/null
+}
+
 forge_get_pr_info() {
   GH_TOKEN="${REVIEW_TOKEN}" gh pr view "${PR_NUMBER}" \
     --repo "${REPO}" --json state,isDraft 2>/dev/null || {
@@ -362,6 +368,16 @@ forge_remove_label() {
   encoded=$(printf '%s' "${label}" | jq -sRr @uri)
   GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/${encoded}" \
     -X DELETE --silent 2>/dev/null || true
+}
+
+# Succeeds when the label is gone afterwards; 404 means it was already absent.
+forge_remove_label_checked() {
+  local label="$1"
+  local encoded err
+  encoded=$(printf '%s' "${label}" | jq -sRr @uri)
+  err=$(GH_TOKEN="${REVIEW_TOKEN}" gh api "repos/${REPO}/issues/${PR_NUMBER}/labels/${encoded}" \
+    -X DELETE --silent 2>&1) && return 0
+  [[ "${err}" == *"HTTP 404"* ]]
 }
 
 forge_remove_label_edit() {

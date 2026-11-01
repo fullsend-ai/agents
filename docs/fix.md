@@ -22,6 +22,8 @@ The fix agent runs automatically when the [review agent](review.md) submits a
 
 It can also be triggered manually with the `/fs-fix` command.
 
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch, on GitHub and GitLab only: `/fs-fix` from a human on a same-repo PR/MR, or a "changes requested" review from a `*-review[bot]` reviewer on a same-repo PR that is bot-authored or labeled `fullsend-fix` and is not labeled `fullsend-no-fix`. It has no Jira path. Dispatch does not evaluate it for the built-in fix agent yet, so the routing above is what runs today.
+
 ## Commands
 
 | Command | Where | Effect |
@@ -58,7 +60,9 @@ Remove the label or use `/fs-fix` to re-engage.
 | Label | Meaning |
 |-------|---------|
 | `fullsend-no-fix` | Prevents automatic fix runs on this PR. Applied by `/fs-fix-stop`. Manual `/fs-fix` commands are unaffected. |
+| `fullsend-fix-budget/N` | Lowers the automatic fix cap for this PR to `N` (a positive integer below `ITERATION_CAP`). Set by a maintainer; the review agent cannot add or remove it. A label that is not a positive integer, is oversized, or is not lower than `ITERATION_CAP` is ignored; with several valid labels the smallest `N` wins. `needs-human` and the stop message use the lowered cap. Manual `/fs-fix` commands are unchanged and keep `ITERATION_CAP_HUMAN`. |
 | `needs-human` | The fix agent is approaching its iteration cap and needs human direction. Applied automatically when an automatic fix iteration reaches the warning threshold. |
+| `fix-agent-failed` | Last-resort fallback applied to the PR when the post-fix script fails and cannot post a failure comment even after retrying transient forge errors. Does not trigger or block the agent — it exists purely so the failure stays discoverable when the forge outage also swallows the comment. |
 
 ## Configuration
 
@@ -70,6 +74,7 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 | Variable | Default | Effect |
 |----------|---------|--------|
 | `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
+| `GITHUB_SIGNED_COMMITS` | `false` | `true` publishes the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](code.md#signed-commits)); anything else keeps `git push`. Set in the `forge.github` block of `harness/fix.yaml`; override via `base:` composition. |
 | `FIX_CONFLICT_UPDATE_STRATEGY` | `merge` | How the fix agent updates a PR/MR when the forge reports a **real** merge conflict: `merge` (default; creates a merge commit and preserves history) or `rebase` (replays the PR onto the target; the post-script force-pushes with `--force-with-lease`). Blocked/behind/unknown mergeability is never treated as a conflict. Override via `base:` composition. |
 
 ### Skill: `fix-review`
@@ -101,7 +106,7 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 1. **Pre-script** validates inputs, checks the iteration cap (preventing infinite fix loops), and — when the forge reports a real merge conflict — fetches the latest target branch into the sandbox checkout.
 2. **Sandbox** — the agent inspects forge mergeability, reconciles a reported conflict, reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
-4. **Post-script** pushes the commit and posts a summary comment on the PR.
+4. **Post-script** publishes the commit (on GitHub through the API when `GITHUB_SIGNED_COMMITS` is `true`, so it is signed — see [Signed commits](code.md#signed-commits)) and posts a summary comment on the PR.
 
 ### Signed-off-by trailers
 
@@ -194,6 +199,10 @@ These two requests have different scopes:
 - **Redo/reset** only discards and re-implements the contiguous suffix of
   commits the fix agent itself authored. Human-authored commits and the
   original code-agent commits below that suffix are preserved untouched.
+  On GitHub, when commits are published through the API and so authored
+  by the App's bot user, the author is the `Authored-by` trailer the
+  publish adds (see
+  [Signed commits](code.md#signed-commits)).
 
 If the redo/reset range cannot be determined — HEAD is not a fix-agent
 commit, or ownership is mixed in a way that is ambiguous — the agent
@@ -302,7 +311,9 @@ instruction supports multi-line text (up to 10,000 bytes).
 
 The fix agent enforces iteration caps to prevent infinite review-fix loops:
 
-- **Automatic:** up to 5 iterations per PR (configurable).
+- **Automatic:** up to 5 iterations per PR (configurable). A maintainer can
+  lower this for a single PR with a `fullsend-fix-budget/N` label
+  ([control labels](#control-labels)).
 - **Manual (`/fs-fix`):** up to 10 total iterations per PR (configurable), shared
   across automatic and manual triggers.
 - When an automatic run is approaching its cap, the agent applies the

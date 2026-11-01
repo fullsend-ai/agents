@@ -187,7 +187,7 @@ To override, comment \`/fs-code --force\` on this issue.
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-    forge_post_issue_comment "${SKIP_COMMENT}" || true
+    forge_retry_transient forge_post_issue_comment "${SKIP_COMMENT}" || true
 
     echo "Skipping code agent — existing PR(s) found for issue #${ISSUE_NUMBER}"
     prescript_output "skipped" "true"
@@ -214,7 +214,7 @@ The code agent implements leaf work items. Use the child issues for implementati
 
 <sub>Posted by <a href=\"https://github.com/fullsend-ai/fullsend\">fullsend</a> pre-code check</sub>"
 
-    forge_post_issue_comment "${SKIP_COMMENT}" || true
+    forge_retry_transient forge_post_issue_comment "${SKIP_COMMENT}" || true
 
     echo "Skipping code agent — issue #${ISSUE_NUMBER} is a tracking issue with sub-issue(s)"
     prescript_output "skipped" "true"

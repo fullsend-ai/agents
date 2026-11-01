@@ -115,7 +115,6 @@ forge_get_human_dismissals() {
       | {
           path: $thread.path,
           line: $thread.line,
-          original_line: $thread.original_line,
           resolved_by: $thread.resolved_by,
           resolved_by_type: $thread.resolved_by_type,
           resolved_by_role: $thread.resolved_by_role,

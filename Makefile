@@ -59,6 +59,11 @@ export SCRIPT_TEST_TARGET
 BEHAVIOUR_TEST_EXEC ?= $(CURDIR)/scripts/run-behaviour-test-exec.sh
 BEHAVIOUR_TEST_TAGS ?= behaviour
 BEHAVIOUR_GOFLAGS ?=
+# applier-branch-namespace gates behaviour/features/code/branch-namespace.feature,
+# whose assertions need this repo's post-code branch-namespace enforcement.
+# review-skill-overrides gates behaviour/features/review/custom-persona.feature,
+# which needs the pinned fullsend to stage skill file overrides.
+BEHAVIOUR_CAPABILITIES ?= applier-branch-namespace,review-skill-overrides
 
 script-test:
 	$(call run-timed,bash scripts/bundle-sh-test.sh)
@@ -77,14 +82,19 @@ script-test:
 	$(call run-timed,bash scripts/skill-env-reachability-test.sh)
 	$(call run-timed,bash scripts/provider-credentials-test.sh)
 	$(call run-timed,bash scripts/signoff-strip-test.sh)
+	$(call run-timed,bash scripts/github-signed-push-test.sh)
+	$(call run-timed,bash scripts/fix-authorized-range-test.sh)
 	$(call run-timed,bash scripts/post-code-test.sh)
+	$(call run-timed,bash scripts/public-text-scan-test.sh)
 	$(call run-timed,bash scripts/pre-review-test.sh)
 	$(call run-timed,bash scripts/pr-review-challenger-contract-test.sh)
 	$(call run-timed,bash scripts/pr-review-remediation-test.sh)
 	$(call run-timed,bash scripts/post-review-test.sh)
 	$(call run-timed,bash scripts/risk-tier1-test.sh)
+	$(call run-timed,bash scripts/pre-fix-test.sh)
 	$(call run-timed,bash scripts/post-fix-test.sh)
 	$(call run-timed,bash scripts/review-body-fallback-test.sh)
+	$(call run-timed,bash scripts/pre-retro-test.sh)
 	$(call run-timed,bash scripts/post-retro-test.sh)
 	$(call run-timed,bash scripts/pre-scribe-test.sh)
 	$(call run-timed,bash scripts/post-scribe-test.sh)
@@ -94,17 +104,24 @@ script-test:
 	$(call run-timed,bash scripts/gitlint-forbidden-type-scope-test.sh)
 	$(call run-timed,bash hack/lint-agent-docs-test.sh)
 	$(call run-timed,bash eval/lint-measurements-test.sh)
+	$(call run-timed,bash eval/lint-release-cases-test.sh)
 	$(call run-timed,bash .github/scripts/check-e2e-authorization-test.sh)
 	$(call run-timed,bash .github/scripts/select-eval-agents-test.sh)
 	$(call run-timed,python3 scripts/process-fix-result-test.py)
 	$(call run-timed,bash eval/scripts/scrub-eval-results-test.sh)
 	$(call run-timed,bash eval/scripts/write-fixture-file-test.sh)
+	$(call run-timed,bash eval/scripts/setup-fixture-test.sh)
+	$(call run-timed,bash eval/scripts/teardown-fixture-test.sh)
+	$(call run-timed,bash eval/scripts/capture-fixture-test.sh)
+	$(call run-timed,bash eval/scripts/finding-expectations-test.sh)
 	$(call run-timed,bash eval/scripts/aggregate-nightly-test.sh)
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
 	$(call run-timed,bash .github/scripts/vouch-check-test.sh)
+	$(call run-timed,test "$(SCRIPT_TEST_TARGET)" = bundled || (cd harness/triggertest && GOWORK=off GOFLAGS= go test -count=1 ./...))
+	$(call run-timed,bash .github/scripts/check-dco-signoff-test.sh)
 
 test: script-test
 
 behaviour-test:
-	go test -v -count=1 -timeout 40m -tags "$(BEHAVIOUR_TEST_TAGS)" $(BEHAVIOUR_GOFLAGS) -exec "$(BEHAVIOUR_TEST_EXEC)" ./behaviour
+	BEHAVIOUR_CAPABILITIES="$(BEHAVIOUR_CAPABILITIES)" go test -v -count=1 -timeout 40m -tags "$(BEHAVIOUR_TEST_TAGS)" $(BEHAVIOUR_GOFLAGS) -exec "$(BEHAVIOUR_TEST_EXEC)" ./behaviour

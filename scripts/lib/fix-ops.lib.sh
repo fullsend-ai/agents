@@ -75,6 +75,30 @@ is_human_history_rewrite_request() {
   is_human_squash_request "${1:-}" || is_human_reset_request "${1:-}"
 }
 
+# fix_budget_from_labels LABELS BOT_CAP — prints the per-PR automatic fix
+# budget N from a maintainer-set `fullsend-fix-budget/N` label when it
+# lowers BOT_CAP, or nothing when no label applies (issue #1680). LABELS is
+# newline-separated (forge_get_pr_labels output). A label is ignored when N
+# is not a positive integer without leading zeros, is oversized (more than
+# 9 digits, which would overflow bash arithmetic), or is not lower than
+# BOT_CAP. With several valid labels the smallest N wins. The budget only
+# ever tightens the bot cap; callers must not apply it to human runs.
+fix_budget_from_labels() {
+  local labels="${1:-}" bot_cap="${2:-}" label n best=""
+  [[ "${bot_cap}" =~ ^[0-9]{1,9}$ ]] || return 0
+  while IFS= read -r label; do
+    [[ "${label}" =~ ^fullsend-fix-budget/([1-9][0-9]{0,8})$ ]] || continue
+    n="${BASH_REMATCH[1]}"
+    [ "${n}" -lt "${bot_cap}" ] || continue
+    if [ -z "${best}" ] || [ "${n}" -lt "${best}" ]; then
+      best="${n}"
+    fi
+  done <<< "${labels}"
+  if [ -n "${best}" ]; then
+    printf '%s\n' "${best}"
+  fi
+}
+
 # fix_conflict_update_strategy — prints merge or rebase.
 # FIX_CONFLICT_UPDATE_STRATEGY is the harness-configured reconciliation
 # strategy used when the forge reports a real merge conflict (issue #1518).
@@ -96,4 +120,36 @@ fix_conflict_update_strategy_raw_is_known() {
   local raw
   raw="$(printf '%s' "${FIX_CONFLICT_UPDATE_STRATEGY:-}" | tr '[:upper:]' '[:lower:]')"
   [ -z "${raw}" ] || [ "${raw}" = "merge" ] || [ "${raw}" = "rebase" ]
+}
+
+# patch_added_lines — reads a git patch on stdin and prints only the content
+# of its added lines, with the diff prefix stripped (issue #1801).
+# `gitleaks detect --pipe` scans its input as plain text, so feeding it a
+# raw patch also flags unchanged context and deleted lines. Handles plain
+# diffs (`@@`, one prefix column) and combined `--cc` diffs (`@@@...`, one
+# prefix column per parent): a line is added when any column is '+'.
+# Everything outside a hunk (commit header, `diff`/`index`/`---`/`+++`
+# lines) is dropped. `\ No newline at end of file` markers and empty lines
+# (an empty context line under `diff.suppressBlankEmpty`) stay in the hunk,
+# so a later added line in the same hunk is still printed. Callers must
+# generate the patch with --no-color and --no-ext-diff so its format is
+# not altered by repository git config.
+patch_added_lines() {
+  awk '
+    /^@@+ / {
+      match($0, /^@+/)
+      cols = RLENGTH - 1
+      in_hunk = 1
+      next
+    }
+    in_hunk && ($0 == "" || /^\\/) { next }
+    in_hunk {
+      prefix = substr($0, 1, cols)
+      if (length($0) >= cols && prefix ~ /^[ +-]+$/) {
+        if (index(prefix, "+") > 0) print substr($0, cols + 1)
+        next
+      }
+      in_hunk = 0
+    }
+  '
 }
