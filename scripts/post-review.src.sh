@@ -312,7 +312,10 @@ REREVIEW_FILTER_ORIGINAL_ACTION=""
 # mints; a closed, resolving, foreign, or duplicate id is replaced (a
 # reclassified id must stay on its row, so it is kept). A prior finding with
 # no inline anchor (PR-level or file-level) has no place, so its supplied id
-# is kept on a row with the same file and category. Without a usable id, copy the open prior id whose file and
+# is kept on a row with the same file and category, or, for a supported
+# reclassification of that id, the same file in any category. An id stamped
+# on several distinct live locations is ambiguous and mints rather than
+# landing on whichever row comes first. Without a usable id, copy the open prior id whose file and
 # category match at the exact line; else the human-dismissed id anchored at
 # the row's exact file and line, whatever the category, unless the row is
 # high or critical, a runner safety signal (protected-path or
@@ -346,21 +349,25 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
     # Whether a row sits at a place its supplied id sits: same file and line.
     # A prior finding recorded without an inline anchor (a PR-level or
     # file-level finding) has no place and no stamped thread; a supplied id
-    # stays on a row with the same file and category as that record. A prior
-    # finding whose stamped threads are all outdated is mapped and not
-    # matched here, so it still mints.
-    def at_place($open_findings):
+    # stays on a row with the same file as that record and either its
+    # category or, for a supported reclassification of that id, any category.
+    # A prior finding whose stamped threads are all outdated is mapped and not
+    # matched here, so it still mints. An id stamped on several distinct live
+    # locations is ambiguous and matches nowhere, so it mints too.
+    def at_place($open_findings; $reclassified_ids):
       . as $row
       | any($open_findings[];
           .id == $row.id
-          and (any(.places[]; .file == ($row.file | anchor_file) and .line == ($row.line | anchor_line))
+          and (((.places | length) < 2
+                and any(.places[]; .file == ($row.file | anchor_file) and .line == ($row.line | anchor_line)))
                or ((.mapped | not)
                    and (.places | length) == 0
-                   and .category == $row.category
+                   and (.category == $row.category or ($reclassified_ids | index($row.id)) != null)
                    and (.file | anchor_file) == ($row.file | anchor_file))));
     ($prior.open_ids) as $open
     | ([ (.dispositions // [])[] | select(resolving or reclassified) | .id | select(valid_id) ]) as $closing
     | ([ (.dispositions // [])[] | select(resolving) | .id | select(valid_id) ]) as $resolving_ids
+    | ([ (.dispositions // [])[] | select(reclassified) | .id | select(valid_id) ]) as $reclassified_ids
     | ([ $prior.findings[] | select(.id as $pid | $open | index($pid) != null)
          | .id as $pid
          | ([ $stamped[] | select(.id == $pid) ]) as $threads
@@ -383,18 +390,19 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
           | (
               if ($f.id | valid_id) and ($open | index($f.id)) != null and ($taken | index($f.id)) == null
                  and ($resolving_ids | index($f.id)) == null
-                 and ($f | at_place($open_findings))
+                 and ($f | at_place($open_findings; $reclassified_ids))
               then {id: $f.id, mint_i: $state.mint_i}
               else
                 ([ $rows[($i + 1):][]
                    | select(.id as $rid | ($rid | valid_id) and ($open | index($rid)) != null and ($resolving_ids | index($rid)) == null)
-                   | select(at_place($open_findings))
+                   | select(at_place($open_findings; $reclassified_ids))
                    | .id
                  ]) as $reserved
                 | ([ $open_findings[]
                      | select(.id as $pid | ($taken + $reserved) | index($pid) == null)
                      | select(.mapped or (.id as $pid | $closing | index($pid) == null))
                      | select(.category == $f.category)
+                     | select((.places | length) < 2)
                      | select(($f.file | anchor_file) != null and ($f.line | anchor_line) != null)
                      | select(any(.places[]; .file == ($f.file | anchor_file) and .line == ($f.line | anchor_line)))
                    ]) as $exact

@@ -2574,6 +2574,25 @@ run_disposition_case "projection-file-level-reclassified-keeps-id" \
   '{"version":2,"findings":[{"severity":"high","category":"stale-doc","file":"docs/x.md","id":"f_file1"}]}' \
   '(.findings | length) == 1 and .findings[0].id == "f_file1" and .findings[0].severity == "low" and .dispositions == [{id: "f_file1", status: "reclassified"}]'
 
+# A supported reclassification may also change the category: the id stays on
+# its row, so the old finding is replaced instead of carried forward.
+run_disposition_case "projection-pr-level-reclassified-category-change-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"N/A",description:"d",id:"f_pr1"}] | .dispositions=[{id:"f_pr1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"The behaviour is correct; the comment is imprecise"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .findings[0].severity == "low" and .findings[0].category == "incorrect-doc" and .dispositions == [{id: "f_pr1", status: "reclassified"}]'
+
+run_disposition_case "projection-file-level-reclassified-category-change-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"docs/x.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"docs/x.md","id":"f_file1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_file1" and .findings[0].severity == "low" and .findings[0].category == "incorrect-doc" and .dispositions == [{id: "f_file1", status: "reclassified"}]'
+
+# A category change without a supported reclassification still mints, and a
+# reclassification of the id does not carry it to a row in another file.
+run_disposition_case "projection-file-level-category-change-other-file-mints" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"docs/y.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"docs/x.md","id":"f_file1"}]}' \
+  '([.findings[] | select(.id == "f_file1")] | length) == 1 and ([.findings[] | select(.file == "docs/y.md" and .id != "f_file1")] | length) == 1 and (.findings | length) == 2'
+
 # A re-emitted open PR-level finding that supplies its id keeps it and does
 # not gain a duplicate on each re-review.
 run_disposition_case "projection-pr-level-reemitted-keeps-id" \
@@ -2957,6 +2976,20 @@ run_disposition_case "projection-supplied-id-other-file-does-not-reserve" \
   "$(jq -c '.findings += [{severity:"low",category:"api-contract",file:"docs/other.md",line:5,id:"f_old",description:"d"}]' <<< "$(shift_review 218)")" \
   "${SHIFT_PRIOR}" \
   '([.findings[] | select(.id == "f_old" and .file == "docs/p.md" and .line == 218)] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
+
+# An id stamped on several distinct live locations has no reliable place: a
+# same-category row at either location, with or without the supplied id,
+# mints instead of inheriting it, and f_old stays open.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+MOCK_REVIEW_THREADS_JSON="$(two_threads "$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)" "$(thread_json "" docs/p.md 240 "<!-- finding:f_old --> Contract issue again." false)")"
+export MOCK_REVIEW_THREADS_JSON
+AMBIGUOUS_MINTED='([.findings[] | select(.id == "f_old")] | length) == 1 and (.findings | length) == 2 and ([.findings[] | select(.id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and .dispositions == [{id: "f_old", status: "open"}]'
+run_disposition_case "projection-ambiguous-stamped-threads-mint" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "${AMBIGUOUS_MINTED}"
+run_disposition_case "projection-ambiguous-stamped-threads-supplied-id-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 240)")" "${SHIFT_PRIOR}" "${AMBIGUOUS_MINTED}"
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
 
 # The model closing a still-present concern with unrelated evidence: the row
 # at the stamped thread keeps f_old, which stays open, and nothing mints.
