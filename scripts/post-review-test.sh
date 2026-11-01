@@ -2560,6 +2560,33 @@ run_disposition_case "projection-does-not-copy-id-across-unanchored-pr-level-fin
   '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
   '([.findings[] | select(.id == "f_pr1")] | length) == 1 and ([.findings[] | select(.file == null and .id != "f_pr1" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
 
+# A prior PR-level finding has no inline anchor, but an explicit supplied id
+# with the same file (none) and category still stays on its row: reclassifying
+# it from high to low must replace the old severity, not add a second finding.
+run_disposition_case "projection-pr-level-reclassified-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"missing-authorization",file:"N/A",description:"d",id:"f_pr1"}] | .dispositions=[{id:"f_pr1",status:"reclassified",rationale:"Only a hardening note.",evidence:"The endpoint is not reachable without auth"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .findings[0].severity == "low" and .dispositions == [{id: "f_pr1", status: "reclassified"}]'
+
+# The same for a file-level finding: the prior record has a file but no line.
+run_disposition_case "projection-file-level-reclassified-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Wording only.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"stale-doc","file":"docs/x.md","id":"f_file1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_file1" and .findings[0].severity == "low" and .dispositions == [{id: "f_file1", status: "reclassified"}]'
+
+# A re-emitted open PR-level finding that supplies its id keeps it and does
+# not gain a duplicate on each re-review.
+run_disposition_case "projection-pr-level-reemitted-keeps-id" \
+  "$(jq -c '.findings=[{severity:"high",category:"missing-authorization",file:"N/A",description:"d",id:"f_pr1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .dispositions == [{id: "f_pr1", status: "open"}]'
+
+# An unanchored prior id is not given to a row of another category or file.
+run_disposition_case "projection-pr-level-supplied-id-other-category-mints" \
+  "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"N/A",description:"d",id:"f_pr1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '([.findings[] | select(.id == "f_pr1")] | length) == 1 and ([.findings[] | select(.category == "logic-error" and .id != "f_pr1")] | length) == 1 and (.findings | length) == 2'
+
 # A prior finding written before ids existed gets one and enters the ledger
 # instead of vanishing when the model does not mention it.
 run_disposition_case "projection-assigns-id-to-legacy-prior-finding" \

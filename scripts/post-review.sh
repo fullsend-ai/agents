@@ -1149,7 +1149,9 @@ REREVIEW_FILTER_ORIGINAL_ACTION=""
 # else its recorded file and line): a row anywhere else, or an id whose
 # stamped threads are all outdated, is not provably the same finding and
 # mints; a closed, resolving, foreign, or duplicate id is replaced (a
-# reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
+# reclassified id must stay on its row, so it is kept). A prior finding with
+# no inline anchor (PR-level or file-level) has no place, so its supplied id
+# is kept on a row with the same file and category. Without a usable id, copy the open prior id whose file and
 # category match at the exact line; else the human-dismissed id anchored at
 # the row's exact file and line, whatever the category, unless the row is
 # high or critical, a runner safety signal (protected-path or
@@ -1181,11 +1183,20 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       and (.rationale | type == "string" and length > 0)
       and (.evidence | type == "string" and length > 0);
     # Whether a row sits at a place its supplied id sits: same file and line.
+    # A prior finding recorded without an inline anchor (a PR-level or
+    # file-level finding) has no place and no stamped thread; a supplied id
+    # stays on a row with the same file and category as that record. A prior
+    # finding whose stamped threads are all outdated is mapped and not
+    # matched here, so it still mints.
     def at_place($open_findings):
       . as $row
       | any($open_findings[];
           .id == $row.id
-          and any(.places[]; .file == ($row.file | anchor_file) and .line == ($row.line | anchor_line)));
+          and (any(.places[]; .file == ($row.file | anchor_file) and .line == ($row.line | anchor_line))
+               or ((.mapped | not)
+                   and (.places | length) == 0
+                   and .category == $row.category
+                   and (.file | anchor_file) == ($row.file | anchor_file))));
     ($prior.open_ids) as $open
     | ([ (.dispositions // [])[] | select(resolving or reclassified) | .id | select(valid_id) ]) as $closing
     | ([ (.dispositions // [])[] | select(resolving) | .id | select(valid_id) ]) as $resolving_ids
