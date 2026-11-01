@@ -664,6 +664,329 @@ func TestPrioritizeTrigger(t *testing.T) {
 	})
 }
 
+// asIssueComment turns the GitHub PR comment fixture into a comment on a
+// standalone issue.
+func asIssueComment(t *testing.T, ev map[string]any) {
+	t.Helper()
+	delete(sub(t, ev, "entity"), "linked_change_proposal")
+	delete(sub(t, ev, "state"), "change_proposal")
+}
+
+func TestCodeTrigger(t *testing.T) {
+	runTriggerCases(t, "code.yaml", []triggerCase{
+		{
+			name:    "/fs-code comment on an issue",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+				asIssueComment(t, ev)
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-code comment on a GitLab issue",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+				asIssueComment(t, ev)
+				sub(t, ev, "source")["system"] = "gitlab"
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-code comment on a Jira issue",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+			},
+			want: true,
+		},
+		{name: "ready-to-code label added to an issue by a bot", fixture: "ready-to-code-labeled.json", want: true},
+		{
+			name:    "ready-to-code label added to an issue by a human",
+			fixture: "issue-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setLabel(ev, "ready-to-code", "added")
+			},
+			want: true,
+		},
+		{
+			name:    "ready-to-code label added to a Jira issue",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setLabel(ev, "ready-to-code", "added")
+			},
+			want: true,
+		},
+		{
+			name:    "/fs-code comment by a bot",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-code comment edited",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+				sub(t, ev, "transition")["kind"] = "comment_edited"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-code comment on a PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-code comment on an MR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+				toMRNote(t, ev)
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-code comment on a discussion",
+			fixture: "discussion-fs-vouch-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-code comment from a manual source",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-code")
+				sub(t, ev, "source")["system"] = "manual"
+			},
+			want: false,
+		},
+		{
+			name:    "comment without a command",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				delete(sub(t, sub(t, ev, "transition"), "comment"), "command")
+			},
+			want: false,
+		},
+		{
+			name:    "ready-to-code label removed from an issue",
+			fixture: "ready-to-code-labeled.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "label")["action"] = "removed"
+			},
+			want: false,
+		},
+		{
+			name:    "ready-to-code label added to a PR",
+			fixture: "pr-opened.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setLabel(ev, "ready-to-code", "added")
+			},
+			want: false,
+		},
+		{
+			name:    "other label added to an issue",
+			fixture: "ready-to-code-labeled.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "label")["name"] = "ready-for-triage"
+			},
+			want: false,
+		},
+		{name: "/fs-triage comment on a Jira issue", fixture: "jira-fs-triage-comment.json", want: false},
+		{name: "/fs-fix comment on a PR", fixture: "fs-fix-comment.json", want: false},
+		{name: "issue opened", fixture: "issue-opened.json", want: false},
+		{name: "PR opened", fixture: "pr-opened.json", want: false},
+		{name: "review requested changes", fixture: "review-changes-requested.json", want: false},
+	})
+}
+
+func TestFixTrigger(t *testing.T) {
+	runTriggerCases(t, "fix.yaml", []triggerCase{
+		{name: "/fs-fix comment on a PR", fixture: "fs-fix-comment.json", want: true},
+		{
+			name:    "/fs-fix comment on an MR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				toMRNote(t, ev)
+			},
+			want: true,
+		},
+		{name: "review requested changes", fixture: "review-changes-requested.json", want: true},
+		{
+			name:    "review requested changes on a bot PR without fullsend-fix",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "state")["labels"] = []any{}
+			},
+			want: true,
+		},
+		{
+			name:    "review requested changes on a human PR with fullsend-fix",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "state"), "change_proposal")["author_id"] = "alice"
+			},
+			want: true,
+		},
+		{
+			name:    "review requested changes on a human PR without fullsend-fix",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "state"), "change_proposal")["author_id"] = "alice"
+				sub(t, ev, "state")["labels"] = []any{}
+			},
+			want: false,
+		},
+		{
+			name:    "review requested changes on a PR labeled fullsend-no-fix",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "state")["labels"] = []any{"fullsend-fix", "fullsend-no-fix"}
+			},
+			want: false,
+		},
+		{
+			name:    "review requested changes on a fork PR",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "state"), "change_proposal")["is_fork"] = true
+			},
+			want: false,
+		},
+		{
+			name:    "review requested changes by a human",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "actor")["kind"] = "human"
+				sub(t, ev, "actor")["id"] = "alice"
+				sub(t, sub(t, ev, "transition"), "review")["reviewer_id"] = "alice"
+			},
+			want: false,
+		},
+		{
+			name:    "review requested changes by a non-review bot",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "actor")["id"] = "dependabot[bot]"
+				sub(t, sub(t, ev, "transition"), "review")["reviewer_id"] = "dependabot[bot]"
+			},
+			want: false,
+		},
+		{
+			name:    "review approved",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "review")["state"] = "approved"
+			},
+			want: false,
+		},
+		{
+			name:    "review commented",
+			fixture: "review-changes-requested.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "transition"), "review")["state"] = "commented"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-fix comment by a bot",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "actor")["kind"] = "bot"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-fix comment edited",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, ev, "transition")["kind"] = "comment_edited"
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-fix comment on a fork PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				sub(t, sub(t, ev, "state"), "change_proposal")["is_fork"] = true
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-fix comment on a PR whose lookup failed",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				delete(sub(t, ev, "state"), "change_proposal")
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-fix comment on an issue",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				asIssueComment(t, ev)
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-fix comment on a Jira issue",
+			fixture: "jira-fs-triage-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-fix")
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-fix comment on a discussion",
+			fixture: "discussion-fs-vouch-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-fix")
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-fix-stop comment on a PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-fix-stop")
+			},
+			want: false,
+		},
+		{
+			name:    "comment without a command",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				delete(sub(t, sub(t, ev, "transition"), "comment"), "command")
+			},
+			want: false,
+		},
+		{
+			name:    "/fs-review comment on a PR",
+			fixture: "fs-fix-comment.json",
+			edit: func(t *testing.T, ev map[string]any) {
+				setCommand(t, ev, "/fs-review")
+			},
+			want: false,
+		},
+		{name: "PR opened", fixture: "pr-opened.json", want: false},
+		{name: "PR synchronized", fixture: "pr-synchronized.json", want: false},
+		{name: "MR opened", fixture: "gitlab-mr-opened.json", want: false},
+		{name: "PR closed", fixture: "pr-closed.json", want: false},
+		{name: "ready-to-code label added to an issue", fixture: "ready-to-code-labeled.json", want: false},
+		{name: "issue opened", fixture: "issue-opened.json", want: false},
+	})
+}
+
 // Dispatch skips an agent whose trigger errors (for example on a missing
 // key), so every trigger must evaluate cleanly on every fixture shape.
 func TestTriggersEvaluateOnEveryFixture(t *testing.T) {

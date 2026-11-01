@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests for run-functional.sh's tier selection, release-tier case
 # filtering/gating, the non-zero-case-exit ("false green") fix, the
-# judge-error classification (infrastructure vs quality regression), and
-# the per-case attribution of failed checks and judge errors.
+# judge-error classification (infrastructure vs quality regression), the
+# per-case attribution of failed checks and judge errors, and the
+# preservation of a retried case's first attempt.
 #
 # Every invocation of the script under test runs with `env -i` and a
 # minimal stub PATH: a per-test bin/ directory stubs python3 (standing in
@@ -41,6 +42,17 @@ trap 'rm -rf "${TMPROOT}"' EXIT
 # (one release:true, one not) and a stub harness, so run-functional.sh's
 # own file-existence checks pass without a real agent-eval-harness.
 # ---------------------------------------------------------------------------
+# git with no user config, hooks or signing, for the fixture repositories.
+FIXTURE_GIT="git -c user.name=t -c user.email=t@t -c commit.gpgsign=false -c core.hooksPath=/dev/null"
+# pin_harness <root> <version>: a new harness commit at <version>, checked out
+# in the submodule and recorded by the superproject (a pin bump).
+pin_harness() {
+  echo "version = \"$2\"" > "$1/harness-src/pyproject.toml"
+  $FIXTURE_GIT -C "$1/harness-src" add -A && $FIXTURE_GIT -C "$1/harness-src" commit -qm "pin $2"
+  $FIXTURE_GIT -C "$1/eval/.agent-eval-harness" -c protocol.file.allow=always pull -q origin HEAD
+  $FIXTURE_GIT -C "$1" add eval/.agent-eval-harness && $FIXTURE_GIT -C "$1" commit -qm "bump to $2"
+}
+
 setup_fixture() {
   local root="$1"
   mkdir -p "${root}/eval/testagent/cases/001-release-case"
@@ -91,11 +103,24 @@ YAML
   echo "fixture: {}" > "${root}/eval/testagent/cases/002-full-only-case/input.yaml"
 
   # Stub harness at run-functional.sh's default AGENT_EVAL_HARNESS_DIR
-  # (${EVAL_DIR}/.agent-eval-harness) — it only checks these paths exist.
-  mkdir -p "${root}/eval/.agent-eval-harness/skills/eval-run/scripts"
-  : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/workspace.py"
-  : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/execute.py"
-  : > "${root}/eval/.agent-eval-harness/skills/eval-run/scripts/score.py"
+  # (${EVAL_DIR}/.agent-eval-harness): it only checks these paths exist and
+  # reads the version. run-functional.sh takes the pinned version from the
+  # submodule commit the superproject records, so the fixture is a git
+  # checkout: a harness repo with a 1.37.4 commit then a 1.56.3 commit,
+  # recorded as the submodule at 1.56.3 (the minimum run-functional.sh
+  # enforces). The fixture's own files stay untracked.
+  mkdir -p "${root}/harness-src/skills/eval-run/scripts"
+  : > "${root}/harness-src/skills/eval-run/scripts/workspace.py"
+  : > "${root}/harness-src/skills/eval-run/scripts/execute.py"
+  : > "${root}/harness-src/skills/eval-run/scripts/score.py"
+  $FIXTURE_GIT -C "${root}/harness-src" init -q
+  echo 'version = "1.37.4"' > "${root}/harness-src/pyproject.toml"
+  $FIXTURE_GIT -C "${root}/harness-src" add -A && $FIXTURE_GIT -C "${root}/harness-src" commit -qm old
+  echo 'version = "1.56.3"' > "${root}/harness-src/pyproject.toml"
+  $FIXTURE_GIT -C "${root}/harness-src" add -A && $FIXTURE_GIT -C "${root}/harness-src" commit -qm pin
+  $FIXTURE_GIT -C "$root" init -q
+  $FIXTURE_GIT -C "$root" -c protocol.file.allow=always submodule add -q "${root}/harness-src" eval/.agent-eval-harness
+  $FIXTURE_GIT -C "$root" add .gitmodules eval/.agent-eval-harness && $FIXTURE_GIT -C "$root" commit -qm super
 
   mkdir -p "${root}/bin" "${root}/capture"
 
@@ -108,18 +133,24 @@ echo "$*" >> "${CAPTURE_DIR}/python3-calls.log"
 
 config_arg=""
 output_arg=""
+run_id_arg=""
 prev=""
 for a in "$@"; do
   [[ "$prev" == "--config" ]] && config_arg="$a"
   [[ "$prev" == "--output" ]] && output_arg="$a"
+  [[ "$prev" == "--run-id" ]] && run_id_arg="$a"
   prev="$a"
 done
 [[ -n "$config_arg" ]] && cp "$config_arg" "${CAPTURE_DIR}/last-config.yaml"
 
-if [[ "${1:-}" == "-c" ]]; then
-  # `python3 -c "import agent_eval"` probe — pretend it is installed.
+# `python3 -P -c "import agent_eval"` probe: installed unless
+# STUB_AGENT_EVAL_MISSING is set. A probe without -P is refused, so the flag
+# cannot silently go away.
+if [[ "${1:-}" == "-P" && "${2:-}" == "-c" ]]; then
+  [[ -n "${STUB_AGENT_EVAL_MISSING:-}" ]] && exit 1
   exit 0
 fi
+[[ "${1:-}" == "-c" ]] && exit 1
 
 case "${1:-}" in
   *execute.py)
@@ -134,7 +165,12 @@ case "${1:-}" in
     # tokens, the record carries token_usage.input, the given turns (default
     # 0) and cost_usd 0 (an agent cut off before its totals). With turns
     # only, it carries num_turns and a cost (the agent ran). With neither,
-    # both are null (the case failed before the agent ran).
+    # both are null (the case failed before the agent ran). Each case also
+    # gets attempt.txt: "retry" when the run id ends in -retry, else "first".
+    # With STUB_COPY_FAIL_<N> set, call N's output/ copy into the runs dir
+    # fails (run-functional.sh's execute_run returns 2). With
+    # STUB_PRESERVED_EXISTS_<N> set, call N (a retry) pre-creates the first
+    # run's first-attempt/cases/<case> dir.
     en=$(( $(cat "${CAPTURE_DIR}/execute-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$en" > "${CAPTURE_DIR}/execute-calls"
     results_var="STUB_CASE_RESULTS_${en}"
@@ -153,6 +189,28 @@ case "${1:-}" in
         else
           printf '{"exit_code": %s, "num_turns": null, "cost_usd": null}\n' "$code" \
             > "${output_arg}/cases/${name}/run_result.json"
+        fi
+        if [[ "$run_id_arg" == *-retry ]]; then
+          echo retry > "${output_arg}/cases/${name}/attempt.txt"
+        else
+          echo first > "${output_arg}/cases/${name}/attempt.txt"
+        fi
+        copy_fail_var="STUB_COPY_FAIL_${en}"
+        if [[ -n "${!copy_fail_var:-}" ]]; then
+          # A workspace output/ dir to copy, and a regular file where the
+          # copy's destination directory should be.
+          ws_out="/tmp/agent-eval/${run_id_arg}/cases/${name}/output"
+          mkdir -p "$ws_out"
+          echo state > "${ws_out}/fixture-state.json"
+          echo "/tmp/agent-eval/${run_id_arg}" >> "${CAPTURE_DIR}/ws-dirs"
+          : > "${output_arg}/cases/${name}/output"
+        fi
+        preserved_var="STUB_PRESERVED_EXISTS_${en}"
+        if [[ -n "${!preserved_var:-}" ]]; then
+          # Occupy the first run's first-attempt/cases/<case> slot.
+          occupied="${output_arg%-retry}/first-attempt/cases/${name}"
+          mkdir -p "$occupied"
+          echo earlier > "${occupied}/occupant.txt"
         fi
       done
       # Run-level record, as execute.py writes it: per_case mirrors each
@@ -496,6 +554,207 @@ else
 fi
 rm -rf "$ROOT"
 
+# ---------------------------------------------------------------------------
+# Harness version gate: the checkout in use must be a plain release version
+# at or above the submodule pin, for every eval. AGENT_EVAL_HARNESS_DIR may
+# point at another checkout. The pin is the submodule commit the superproject
+# records, not the directory's contents.
+# ---------------------------------------------------------------------------
+RUN="STUB_CASE_RESULTS=001-release-case:0:3,002-full-only-case:0:3"
+other_harness() { # root version: a second checkout for AGENT_EVAL_HARNESS_DIR
+  mkdir -p "$1/other-harness/skills/eval-run/scripts"
+  : > "$1/other-harness/skills/eval-run/scripts/workspace.py"
+  : > "$1/other-harness/skills/eval-run/scripts/execute.py"
+  : > "$1/other-harness/skills/eval-run/scripts/score.py"
+  [[ -z "$2" ]] || echo "version = \"$2\"" > "$1/other-harness/pyproject.toml"
+}
+no_execute() { [[ "$(cat "$1/capture/execute-calls" 2>/dev/null || echo 0)" == "0" ]]; }
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+rm -rf "${ROOT}/.git"   # an exported tree: nothing records the pin
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the pinned agent-eval-harness version: ${ROOT} is not a git checkout that records eval/.agent-eval-harness" \
+  && echo "$OUT" | grep -q "Run the evals from a git clone of this repository. Run: git submodule sync" \
+  && no_execute "$ROOT"; then
+  pass "a tree that is not a git checkout is refused before anything runs: the pin cannot be read"
+else
+  fail "a tree that is not a git checkout is refused before anything runs: the pin cannot be read (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# git also finds a repository in the parent directories: an exported tree
+# inside a checkout must not borrow the enclosing checkout's pin.
+run_test
+OUTER="$(mktemp -d)"; setup_fixture "$OUTER"
+ROOT="${OUTER}/exported"; setup_fixture "$ROOT"; rm -rf "${ROOT}/.git"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the pinned agent-eval-harness version: ${ROOT} is not a git checkout that records eval/.agent-eval-harness" \
+  && no_execute "$ROOT"; then
+  pass "an exported tree inside another checkout is refused as not a git checkout"
+else
+  fail "an exported tree inside another checkout is refused as not a git checkout (rc=$RC, output: $OUT)"
+fi
+rm -rf "$OUTER"
+
+# A directory of plain files committed where the submodule was is not a pin.
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+$FIXTURE_GIT -C "$ROOT" rm -q --cached eval/.agent-eval-harness
+rm -f "${ROOT}/.gitmodules" "${ROOT}/eval/.agent-eval-harness/.git"
+$FIXTURE_GIT -C "$ROOT" add eval/.agent-eval-harness && $FIXTURE_GIT -C "$ROOT" commit -qm "plain files"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the pinned agent-eval-harness version: ${ROOT} is not a git checkout that records eval/.agent-eval-harness as a submodule" \
+  && no_execute "$ROOT"; then
+  pass "a harness directory committed as plain files is refused: not a submodule pin"
+else
+  fail "a harness directory committed as plain files is refused: not a submodule pin (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" STUB_AGENT_EVAL_MISSING=1 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "agent-eval-harness library is not installed" \
+  && echo "$OUT" | grep -q "pip install -e eval/.agent-eval-harness" \
+  && no_execute "$ROOT"; then
+  pass "a missing agent_eval install is refused before anything runs"
+else
+  fail "a missing agent_eval install is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+$FIXTURE_GIT -C "$ROOT" submodule deinit -q -f eval/.agent-eval-harness   # recorded, never initialised
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+# With the submodule as the checkout in use, the missing-script check comes
+# first; the hint is the same.
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "harness script not found: ${ROOT}/eval/.agent-eval-harness/skills/eval-run/scripts/workspace.py" \
+  && echo "$OUT" | grep -q "Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness" \
+  && no_execute "$ROOT"; then
+  pass "an uninitialised submodule is refused before anything runs"
+else
+  fail "an uninitialised submodule is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" 1.57.0
+$FIXTURE_GIT -C "$ROOT" submodule deinit -q -f eval/.agent-eval-harness   # never initialised, another checkout in use
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "but that commit is not in the submodule directory" \
+  && no_execute "$ROOT"; then
+  pass "an uninitialised submodule with another checkout in use is still refused: the pin is read from the submodule"
+else
+  fail "an uninitialised submodule with another checkout in use is still refused: the pin is read from the submodule (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+$FIXTURE_GIT -C "${ROOT}/eval/.agent-eval-harness" checkout -q HEAD~1   # directory behind the pin
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "checkout at ${ROOT}/eval/.agent-eval-harness is version 1.37.4, older than the agent-eval-harness 1.56.3 this repo pins" \
+  && no_execute "$ROOT"; then
+  pass "a submodule directory behind the recorded pin is refused (the pin is read from the gitlink)"
+else
+  fail "a submodule directory behind the recorded pin is refused (the pin is read from the gitlink) (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" 2>&1) || RC=$?
+if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "this repo pins"; then
+  pass "a submodule directory at the recorded pin runs normally"
+else
+  fail "a submodule directory at the recorded pin runs normally (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" 1.49.1
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "checkout at ${ROOT}/other-harness is version 1.49.1, older than the agent-eval-harness 1.56.3 this repo pins" \
+  && echo "$OUT" | grep -q "point AGENT_EVAL_HARNESS_DIR at a checkout of 1.56.3 or later" \
+  && no_execute "$ROOT"; then
+  pass "a checkout older than the pin is refused before anything runs"
+else
+  fail "a checkout older than the pin is refused before anything runs (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# The minimum is the pin itself, not a number written into the script.
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" 1.57.0
+pin_harness "$ROOT" 1.60.0
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "is version 1.57.0, older than the agent-eval-harness 1.60.0 this repo pins" && no_execute "$ROOT"; then
+  pass "the minimum follows the submodule pin"
+else
+  fail "the minimum follows the submodule pin (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+for ver in 1.56.3 1.56.10 2.0.0; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" "$ver"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+  if [[ $RC -eq 0 ]] && ! echo "$OUT" | grep -q "this repo pins"; then
+    pass "a checkout at ${ver} (at or above the pin) runs normally"
+  else
+    fail "a checkout at ${ver} (at or above the pin) runs normally (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+for ver in unknown 1.56.3rc1 2.0; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" "$ver"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+  if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "is version '${ver}', not a release version" && no_execute "$ROOT"; then
+    pass "a checkout at '${ver}' is refused as not a release version"
+  else
+    fail "a checkout at '${ver}' is refused as not a release version (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"; other_harness "$ROOT" ""
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full "$RUN" AGENT_EVAL_HARNESS_DIR="${ROOT}/other-harness" 2>&1) || RC=$?
+if [[ $RC -eq 1 ]] \
+  && echo "$OUT" | grep -q "cannot read the agent-eval-harness version from ${ROOT}/other-harness/pyproject.toml" \
+  && echo "$OUT" | grep -q "point AGENT_EVAL_HARNESS_DIR at a checkout of 1.56.3 or later" \
+  && no_execute "$ROOT"; then
+  pass "a checkout with no readable version is refused"
+else
+  fail "a checkout with no readable version is refused (rc=$RC, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
 run_test
 ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
 RC=0
@@ -648,6 +907,140 @@ if [[ $RC -eq 0 && "$MERGED" == '{"case":{"exit_code":0,"num_turns":4},"exit_cod
   pass "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed"
 else
   fail "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed (rc=$RC, merged='$MERGED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
+# A retried case's first attempt is preserved under
+# <run-dir>/first-attempt/cases/<case>, outside cases/ so it is never scored,
+# and only when the retry replaced it.
+# ---------------------------------------------------------------------------
+
+# main_run_dir <root>: the testagent run dir that is not the -retry one.
+main_run_dir() {
+  local d
+  for d in "$1"/eval/runs/testagent/*/; do
+    [[ "$d" == *-retry/ ]] && continue
+    echo "${d%/}"
+    return
+  done
+}
+
+# entries <dir>: the names in <dir>, each followed by a comma ("" if none).
+entries() {
+  local e out=""
+  shopt -s nullglob dotglob
+  for e in "$1"/*; do out+="$(basename "$e"),"; done
+  shopt -u nullglob dotglob
+  echo "$out"
+}
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+KEPT="$(cat "${RD}/first-attempt/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+KEPT_EXIT="$(jq -r '.exit_code' "${RD}/first-attempt/cases/001-release-case/run_result.json" 2>/dev/null || true)"
+TOP="$(entries "${RD}/first-attempt")"
+KEPT_CASES="$(entries "${RD}/first-attempt/cases")"
+if [[ $RC -eq 0 && "$SCORED" == "retry" && "$KEPT" == "first" && "$KEPT_EXIT" == "1" \
+      && "$TOP" == "cases," && "$KEPT_CASES" == "001-release-case," ]] \
+  && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "a retry that succeeds is scored from cases/, and the first attempt is kept in first-attempt/cases/"
+else
+  fail "a retry that succeeds is scored from cases/, and the first attempt is kept in first-attempt/cases/ (rc=$RC, scored='$SCORED', kept='$KEPT', kept_exit='$KEPT_EXIT', top='$TOP', kept_cases='$KEPT_CASES', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:1" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+KEPT="$(cat "${RD}/first-attempt/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "retry" && "$KEPT" == "first" ]] \
+  && echo "$OUT" | grep -q "RESULT: 1 case(s) failed before the agent ran (setup or infrastructure, not an agent result)"; then
+  pass "a retry that fails again keeps both attempts and still exits 3"
+else
+  fail "a retry that fails again keeps both attempts and still exits 3 (rc=$RC, scored='$SCORED', kept='$KEPT', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" \
+  STUB_WORKSPACE_EXITS="0,1" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "first" && ! -e "${RD}/first-attempt" ]] \
+  && echo "$OUT" | grep -q "the retry could not start; keeping the first attempt's results"; then
+  pass "a retry that cannot start leaves the first attempt in cases/ and creates no first-attempt/"
+else
+  fail "a retry that cannot start leaves the first attempt in cases/ and creates no first-attempt/ (rc=$RC, scored='$SCORED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" \
+  STUB_COPY_FAIL_2=1 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "first" && ! -e "${RD}/first-attempt" ]] \
+  && echo "$OUT" | grep -q "the retry ran but its output could not be copied; keeping the first attempt's results"; then
+  pass "a retry whose output copy fails leaves the first attempt in cases/ and creates no first-attempt/"
+else
+  fail "a retry whose output copy fails leaves the first attempt in cases/ and creates no first-attempt/ (rc=$RC, scored='$SCORED', output: $OUT)"
+fi
+while IFS= read -r ws; do
+  [[ "$ws" == /tmp/agent-eval/*-retry ]] && rm -rf "$ws"
+done < <(cat "${ROOT}/capture/ws-dirs" 2>/dev/null || true)
+rmdir /tmp/agent-eval 2>/dev/null || true
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" \
+  STUB_PRESERVED_EXISTS_2=1 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(cat "${RD}/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+OCCUPANT="$(cat "${RD}/first-attempt/cases/001-release-case/occupant.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "first" && "$OCCUPANT" == "earlier" ]] \
+  && echo "$OUT" | grep -q "first-attempt/cases/001-release-case already exists; keeping the first attempt of 001-release-case in cases/"; then
+  pass "an occupied first-attempt/cases/<case> keeps the first attempt in cases/ and skips the retry"
+else
+  fail "an occupied first-attempt/cases/<case> keeps the first attempt in cases/ and skips the retry (rc=$RC, scored='$SCORED', occupant='$OCCUPANT', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS="001-release-case:0:5,002-full-only-case:0:5" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+RUN_DIRS="$(entries "${ROOT}/eval/runs/testagent")"
+CASE_DIRS="$(entries "${RD}/cases")"
+if [[ $RC -eq 0 && "$RUN_DIRS" == "$(basename "$RD")," && "$CASE_DIRS" == "001-release-case,002-full-only-case," && ! -e "${RD}/first-attempt" ]]; then
+  pass "a run with no retries creates no first-attempt/ dir"
+else
+  fail "a run with no retries creates no first-attempt/ dir (rc=$RC, run_dirs=$RUN_DIRS, cases='$CASE_DIRS', output: $OUT)"
 fi
 rm -rf "$ROOT"
 

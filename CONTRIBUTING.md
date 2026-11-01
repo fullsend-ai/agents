@@ -24,12 +24,14 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 ## DCO (Developer Certificate of Origin)
 
-This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce sign-off on commits.
+This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce sign-off on commits. A local `commit-msg` hook configured in `.pre-commit-config.yaml` (`.github/scripts/check-dco-signoff.sh`) also validates that human commits include a matching `Signed-off-by` trailer before push.
 
 - **Human contributors and human-driven agent sessions:** Add `Signed-off-by` to your commits with `git commit -s`. The human directing the session is the one certifying the DCO, just as they would for any other commit.
 - **Autonomous agents: do NOT add `Signed-off-by` trailers.** Do not use `git commit -s` and do not manually append a `Signed-off-by` line. Your commits are exempt — see below.
 
-**Why autonomous agents are exempt.** The DCO is a human attestation — it certifies personhood and legal authority to contribute. No one is present to make that certification in an autonomous session. The fullsend agents commit using the GitHub App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub recognizes as `author.type: "Bot"`. The Probot DCO app auto-skips bot-authored commits. The human who merges an agent PR accepts responsibility for the contribution.
+**Why autonomous agents are exempt.** The DCO is a human attestation — it certifies personhood and legal authority to contribute. No one is present to make that certification in an autonomous session. The fullsend agents commit using the GitHub App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub recognizes as `author.type: "Bot"`. Both the Probot DCO app and the local `commit-msg` hook auto-skip bot-authored commits. The human who merges an agent PR accepts responsibility for the contribution.
+
+**Installing the local commit-msg hook.** Run `pre-commit install` (or `pre-commit install --hook-type commit-msg`) to activate the hook locally. Note that `pre-commit run --all-files` only runs hooks in the `pre-commit` stage; git hooks must be installed via `pre-commit install` to run during `git commit`.
 
 ## Pull request workflow
 

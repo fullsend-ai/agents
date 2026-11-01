@@ -15,6 +15,9 @@
 #   GH_TOKEN       — GitHub token (when FULLSEND_FORGE=github)
 #   GITLAB_TOKEN   — GitLab token (when FULLSEND_FORGE=gitlab)
 #
+# Jira backlog (FULLSEND_TRACKER=jira): see lib/jira-scribe-ops.lib.sh for
+# JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_TOKEN, SCRIBE_JIRA_PROJECT.
+#
 # Optional env vars:
 #   SCRIBE_NAME_FILTER    — substring filter on doc names
 #   SCRIBE_LOOKBACK_HOURS — how far back to search (default: 3)
@@ -33,6 +36,11 @@ if [[ -n "${GH_TOKEN:-}" ]]; then
 fi
 if [[ -n "${GITLAB_TOKEN:-}" ]]; then
   echo "::add-mask::${GITLAB_TOKEN}"
+fi
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
+  # Sanitize workflow-command delimiters before interpolating into ::add-mask::
+  # so a crafted token cannot inject additional workflow commands.
+  printf '::add-mask::%s\n' "$(printf '%s' "${JIRA_TOKEN}" | tr -d '\n\r')"
 fi
 
 WORK_DIR="${RUNNER_TEMP:-/tmp}/scribe-workspace"
@@ -62,7 +70,12 @@ REPO_DOCS_FILE="${WORK_DIR}/repo-docs-index.json"
 # response includes PRs (filtered out below); on GitLab it does not.
 echo "Fetching open issues from ${SCRIBE_REPO}..."
 RAW_PAGINATED_FILE="${WORK_DIR}/raw-paginated-issues.json"
-forge_fetch_open_issues_raw "${SCRIBE_REPO}" "${RAW_PAGINATED_FILE}"
+PAGINATION_RC=0
+forge_fetch_open_issues_raw "${SCRIBE_REPO}" "${RAW_PAGINATED_FILE}" || PAGINATION_RC=$?
+if [[ ${PAGINATION_RC} -ne 0 && ${PAGINATION_RC} -ne 2 ]]; then
+  echo "ERROR: failed to fetch open issues from ${SCRIBE_REPO}" >&2
+  exit 1
+fi
 
 # Count total items from paginated response before filtering.
 # Used later for truncation detection.
@@ -101,7 +114,16 @@ echo "Fetched ${PR_COUNT} open pull requests."
 # prevents false-positive backlog_truncated=true from API timing.
 REPO_OPEN_COUNT=$(forge_get_issue_count "${SCRIBE_REPO}")
 TRUNCATION_TOLERANCE=5
-if [[ -n "${REPO_OPEN_COUNT}" ]]; then
+if [[ "${PAGINATION_RC}" -eq 2 || "${SCRIBE_BACKLOG_PAGE_CAPPED:-false}" == "true" ]]; then
+  BACKLOG_TRUNCATED=true
+  OBSERVED_PR_COUNT=$((PAGINATED_TOTAL - ISSUE_COUNT))
+  if [[ -n "${REPO_OPEN_COUNT}" ]]; then
+    OPEN_ISSUE_TOTAL=$((REPO_OPEN_COUNT - OBSERVED_PR_COUNT))
+    [[ "${OPEN_ISSUE_TOTAL}" -lt 0 ]] && OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  else
+    OPEN_ISSUE_TOTAL="${ISSUE_COUNT}"
+  fi
+elif [[ -n "${REPO_OPEN_COUNT}" ]]; then
   SHORTFALL=$((REPO_OPEN_COUNT - PAGINATED_TOTAL))
   [[ "${SHORTFALL}" -gt "${TRUNCATION_TOLERANCE}" ]] && BACKLOG_TRUNCATED=true || BACKLOG_TRUNCATED=false
   # Derive issue-only total: subtract observed PR count from API total
@@ -221,7 +243,8 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --argjson closed_count "${CLOSED_COUNT}" \
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    --arg tracker "${FULLSEND_TRACKER}" \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, tracker: $tracker, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
@@ -357,10 +380,12 @@ jq -n \
   --argjson closed_count "${CLOSED_COUNT}" \
   --argjson pr_count "${PR_COUNT}" \
   --argjson doc_path_count "${DOC_PATH_COUNT}" \
+  --arg tracker "${FULLSEND_TRACKER}" \
   '{
     cutoff_date: $cutoff,
     notes_url: $notes_url,
     repo: $repo,
+    tracker: $tracker,
     docs_downloaded: $doc_count,
     backlog_issues: $issue_count,
     open_issue_total: $open_total,

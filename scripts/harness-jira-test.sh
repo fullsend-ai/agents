@@ -149,11 +149,17 @@ else
   assert_pass "code-jira-token-not-in-sandbox"
 fi
 
-# JIRA_TOKEN not in runner env (code agent runner doesn't need Jira creds)
+# JIRA_TOKEN and JIRA_USER_EMAIL in runner env (post-code writes the
+# code-stage update to the Jira issue from the runner)
 if jira_overlay_has "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" "JIRA_TOKEN"; then
-  assert_fail "code-jira-token-not-in-runner" "JIRA_TOKEN found in runner env (no longer needed)"
+  assert_pass "code-jira-token-in-runner"
 else
-  assert_pass "code-jira-token-not-in-runner"
+  assert_fail "code-jira-token-in-runner" "JIRA_TOKEN missing from runner env (needed for post-code Jira write)"
+fi
+if jira_overlay_has "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" "JIRA_USER_EMAIL"; then
+  assert_pass "code-jira-email-in-runner"
+else
+  assert_fail "code-jira-email-in-runner" "JIRA_USER_EMAIL missing from runner env (needed for post-code Jira write)"
 fi
 
 # JIRA_USER_EMAIL in sandbox env (non-secret, needed for Basic auth)

@@ -18,7 +18,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:2899f6229f31c3f4dd6f8b5e4af917be240e5f30fe0994483a0e331b8149066e
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:1f5b5d40a6ee3a5a9e51ff6d1e602c9ff71571aa5f6f14913cc53153348caff9
 policy: policies/base.yaml
 providers:
   - vertex-ai
@@ -28,6 +28,31 @@ providers:
 
 role: coder
 slug: fullsend-ai-coder
+
+# CEL dispatch trigger (docs/guides/user/cel-triggers-reference.md in
+# fullsend). Matches the event selection of the code routing in fullsend's
+# reusable-dispatch.yml: a /fs-code comment from a human on a work item, or
+# the ready-to-code label added to a work item, by a human or a bot (triage
+# applies it on promotion). Work items come from GitHub issues, GitLab
+# issues or Jira, so a Jira poller that dispatches code matches the same
+# events. A GitHub PR comment arrives as a work_item with
+# entity.linked_change_proposal set, and a GitLab MR note as a
+# change_proposal; neither matches, as /fs-code is for issues only.
+# Authorization stays with the platform gate and its per-harness threshold,
+# so this expression has no role checks.
+# harness/triggertest/trigger_test.go evaluates this against the
+# NormalizedEvent fixtures.
+trigger: >
+  event.entity.kind == "work_item"
+    && !has(event.entity.linked_change_proposal)
+    && event.source.system in ["github", "gitlab", "jira"]
+    && ((event.transition.kind == "comment_added"
+        && has(event.transition.comment.command)
+        && event.transition.comment.command == "/fs-code"
+        && event.actor.kind == "human")
+      || (event.transition.kind == "label_changed"
+        && event.transition.label.name == "ready-to-code"
+        && event.transition.label.action == "added"))
 
 host_files:
   - src: env/gcp-vertex.env
@@ -149,6 +174,11 @@ overlays:
     env:
       runner:
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        # Runner-only Jira credentials: post-code writes the code-stage
+        # update and PR/MR URL to the Jira issue. The sandbox never gets the
+        # real token (the jira-ro provider supplies a placeholder).
+        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
+        JIRA_TOKEN: "${JIRA_TOKEN}"
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
         # A Jira source work item has a key, not a target-forge issue number.
         # Override the inherited compatibility variable so harness expansion

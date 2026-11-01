@@ -2,7 +2,8 @@
 # scrub-eval-results-test.sh — Test the minimum-length guard on ::add-mask::.
 #
 # Verifies that scrub-eval-results.sh skips short mask values (< 4 chars)
-# to avoid catastrophic over-redaction, while still masking real secrets.
+# to avoid catastrophic over-redaction, while still masking real secrets,
+# and that it redacts a retried case's preserved first-attempt files.
 #
 # Run from the repo root:
 #   bash eval/scripts/scrub-eval-results-test.sh
@@ -113,6 +114,26 @@ Token is realsecret123" \
 ::add-mask::***
 The quick brown fox jumps over a lazy dog
 Token is ***"
+
+# --- A retried case's preserved first attempt is scrubbed too ---
+
+# run-functional.sh moves a retried case's first attempt to
+# <run-dir>/first-attempt/cases/<case>; scrubbing eval/runs must reach it.
+# The token is assembled at runtime so no token-shaped literal is committed.
+printf -v token_pad '%036d' 0
+preserved_root="${TMPDIR}/preserved/eval/runs"
+preserved_case="${preserved_root}/testagent/20260101-000000-1/first-attempt/cases/001-case"
+mkdir -p "${preserved_case}"
+printf 'clone with ghp_%s\n' "${token_pad}" > "${preserved_case}/stdout.log"
+exit_code=0
+bash "${SCRUB_SCRIPT}" "${preserved_root}" > /dev/null 2>&1 || exit_code=$?
+actual="$(cat "${preserved_case}/stdout.log")"
+if [[ ${exit_code} -eq 0 && "${actual}" == "clone with ghp_***" ]]; then
+  echo "PASS: preserved-first-attempt-redacted"
+else
+  echo "FAIL: preserved-first-attempt-redacted (exit ${exit_code})"
+  FAILURES=$((FAILURES + 1))
+fi
 
 # --- Summary ---
 

@@ -225,24 +225,74 @@ forge_list_prs_for_branch() {
     '[.[] | select(.source_project_id == ($pid | tonumber))] | .[0].iid // empty'
 }
 
+# Single open same-project MR for this source and target. Zero or
+# multiple matches fail closed — adopting the wrong MR is worse than
+# reporting failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local head_encoded base_encoded mrs project_json project_id matches count url
+  head_encoded=$(printf '%s' "${head}" | jq -sRr @uri)
+  base_encoded=$(printf '%s' "${base}" | jq -sRr @uri)
+  mrs=$(forge_retry_transient _gitlab_code_api_with_status GET \
+    "/projects/${REPO_ENCODED}/merge_requests?state=opened&source_branch=${head_encoded}&target_branch=${base_encoded}") || return 1
+  project_json=$(forge_retry_transient _gitlab_code_api_with_status GET \
+    "/projects/${REPO_ENCODED}") || return 1
+  project_id=$(printf '%s' "${project_json}" | jq -r '.id // empty') || return 1
+  if [[ -z "${project_id}" ]]; then
+    return 1
+  fi
+  matches=$(printf '%s' "${mrs}" | jq -c \
+    --arg pid "${project_id}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select(.source_project_id == ($pid | tonumber))
+      | select(.source_branch == $head)
+      | select(.target_branch == $base)
+      | .web_url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
+}
+
 forge_create_pr() {
   local base="$1"
   local head="$2"
   local title="$3"
   local body="$4"
-  local response
-  response=$(forge_retry_transient _gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
+  local responsefile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  responsefile=$(mktemp) || return 1
+  forge_retry_transient _gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
     --data-urlencode "source_branch=${head}" \
     --data-urlencode "target_branch=${base}" \
     --data-urlencode "title=${title}" \
-    --data-urlencode "description=${body}") || return 1
-  local url
-  url=$(echo "${response}" | jq -r '.web_url // empty')
-  if [[ -z "${url}" ]]; then
-    echo "GitLab API error: MR created but response missing web_url" >&2
+    --data-urlencode "description=${body}" >"${responsefile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    local url
+    url=$(jq -r '.web_url // empty' "${responsefile}")
+    rm -f "${responsefile}"
+    if [[ -z "${url}" ]]; then
+      echo "GitLab API error: MR created but response missing web_url" >&2
+      return 1
+    fi
+    echo "${url}"
+    return 0
+  fi
+  rm -f "${responsefile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
     return 1
   fi
-  echo "${url}"
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "MR already exists but could not be resolved for source '${head}' into target '${base}'" >&2
+    return 1
+  fi
+  _forge_retry_notice "MR create reported already-exists; recovered ${resolved}"
+  echo "${resolved}"
 }
 
 forge_get_pr_url() {

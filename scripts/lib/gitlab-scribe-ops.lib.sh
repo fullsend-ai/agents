@@ -206,6 +206,12 @@ forge_issue_url_base() {
   echo "${origin}/${repo}/-/issues"
 }
 
+# Normalize labels for display and creation. Returns comma-separated string.
+forge_normalize_labels() {
+  local labels="$1"
+  printf '%s' "${labels}"
+}
+
 # Return the CI run/job URL for notifications.
 forge_run_url() {
   if [[ -n "${CI_JOB_URL:-}" ]]; then

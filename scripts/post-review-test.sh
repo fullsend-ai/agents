@@ -1611,6 +1611,7 @@ run_body_count_test() {
   local json_content="$2"
   local pattern="$3"
   local expected_count="$4"
+  local threshold="${5:-low}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
@@ -1628,7 +1629,7 @@ run_body_count_test() {
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_URL="https://github.com/test-org/test-repo/pull/99"
     export FULLSEND_FORGE="github"
-    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="${threshold}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -1708,6 +1709,26 @@ for sticky_case in "${STICKY_CASES[@]}"; do
 done
 run_body_count_test "projection-strips-rebuilt-summary-line" \
   "${STICKY_INPUTS[rebuilt-summary]}" '<summary>Previous run</summary>' "0"
+
+# --- Severity-threshold disclosure (#1800) ---
+# A review filtered down to nothing must not read as a clean pass. The
+# disclosed count is derived from the same filter that drops the findings,
+# so it cannot disagree with what was posted.
+THRESHOLD_ALL_HIDDEN='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"internal/foo.go","line":7,"description":"minor one"},{"severity":"medium","category":"logic-error","file":"internal/bar.go","line":9,"description":"minor two"}]}'
+run_body_count_test "severity-threshold-discloses-fully-filtered" \
+  "${THRESHOLD_ALL_HIDDEN}" \
+  'No findings at or above `high` severity; 2 lower-severity finding(s) were not posted.' "1" "high"
+
+THRESHOLD_PARTLY_HIDDEN='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"auth-bypass","file":"internal/foo.go","line":7,"description":"real problem"},{"severity":"low","category":"style","file":"internal/bar.go","line":9,"description":"minor one"},{"severity":"medium","category":"logic-error","file":"internal/baz.go","line":11,"description":"minor two"}]}'
+run_body_count_test "severity-threshold-discloses-partially-filtered" \
+  "${THRESHOLD_PARTLY_HIDDEN}" \
+  '2 finding(s) below the `high` severity threshold were not posted.' "1" "high"
+
+# A genuinely clean review stays clean: nothing was filtered, so nothing is
+# disclosed.
+THRESHOLD_NO_FINDINGS='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good to me"}'
+run_body_count_test "severity-threshold-silent-when-nothing-filtered" \
+  "${THRESHOLD_NO_FINDINGS}" 'were not posted' "0" "high"
 
 # Round trip: post the body, wrap it in a sticky history block that holds an
 # older marker, and check pre-review recovers only this run's projection.
@@ -1808,13 +1829,20 @@ LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo
 run_no_projection_test "projection-omits-mixed-sub-agent-failure" \
   "${LOSSY_FAILURE_PROJECTION_INPUT}"
 
+# A dimension failure recorded at low is still a dimension failure: severity
+# must not make it look like a challenger skip.
+LOW_LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","description":"kept before this fix"},{"severity":"low","category":"sub-agent-failure","file":"N/A","description":"The style-conventions sub-agent did not return findings: timeout"}]}'
+run_no_projection_test "projection-omits-mixed-low-sub-agent-failure" \
+  "${LOW_LOSSY_FAILURE_PROJECTION_INPUT}"
+
 # A skipped/failed challenger retains the dimensional findings; a failed
-# safety-critical dimension must still suppress the entire projection.
-CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"challenger time budget", actionable:false}]' <<< "${PROJECTION_INPUT}")"
+# dimension, or a failure that names no sub-agent, must still suppress the
+# entire projection at any severity.
+CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"The challenger sub-agent did not return findings: time budget: 500s remaining. Using pre-challenger finding set.", actionable:false}]' <<< "${PROJECTION_INPUT}")"
 for projection_forge in github gitlab; do
   run_projection_test "projection-keeps-findings-with-challenger-failure-${projection_forge}" \
     "${CHALLENGER_FAILURE_INPUT}" "${PROJECTION_EXPECTED}" "${projection_forge}"
-  for failure_severity in info medium high critical; do
+  for failure_severity in info low medium high critical; do
     DIMENSION_FAILURE_INPUT="$(jq --arg severity "${failure_severity}" '.findings += [{severity:$severity, category:"sub-agent-failure", file:"N/A", description:"dimension failed", actionable:false}]' <<< "${CHALLENGER_FAILURE_INPUT}")"
     run_no_projection_test "projection-blocks-${failure_severity}-failure-with-challenger-${projection_forge}" \
       "${DIMENSION_FAILURE_INPUT}" "${projection_forge}"
@@ -1882,6 +1910,20 @@ run_disposition_case() {
   encoded="${encoded% -->}"
   actual="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
 
+  # Empty check_jq means expect no projection (used when a finding must
+  # suppress the ledger, e.g. a non-challenger sub-agent-failure).
+  if [[ -z "${check_jq}" ]]; then
+    if [[ ${exit_code} -ne 0 || -n "${marker}" ]]; then
+      echo "FAIL: ${test_name} — expected no disposition projection"
+      echo "Actual: ${actual}"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+    return
+  fi
+
   if [[ ${exit_code} -ne 0 ]] || ! jq -e "${check_jq}" <<< "${actual}" >/dev/null 2>&1; then
     echo "FAIL: ${test_name} — disposition projection mismatch"
     echo "Actual: ${actual}"
@@ -1909,7 +1951,6 @@ run_rereview_gate_case() {
   local expected_exit="${12:-0}"
   local mock_files_fail="${13:-}"
   local result_check="${14:-}"
-  local ux_enabled="${15:-true}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   local prior_file="${run_dir}/prior.json"
@@ -1932,7 +1973,6 @@ run_rereview_gate_case() {
     export MOCK_PR_FILES="${mock_files}"
     export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
     export REVIEW_RISK_VERDICT_THRESHOLD="${risk_threshold}"
-    export REVIEW_UX_ENABLED="${ux_enabled}"
     if [[ -n "${mock_files_fail}" ]]; then
       export MOCK_PR_FILES_FAIL="${mock_files_fail}"
     fi
@@ -2072,6 +2112,23 @@ run_rereview_gate_case "rereview-prior-medium-still-blocks" \
   '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_open1"}]}' \
   "request-changes" \
   "prior medium-or-higher findings remain open"
+
+# A prior blocking finding the threshold dropped is restored by the gate and
+# posted, so the #1800 disclosure must not report it as withheld.
+run_rereview_gate_case "rereview-restored-finding-not-reported-as-hidden" \
+  "$(jq -c '.findings=[{severity:"high",category:"auth-bypass",file:"old.go",line:1,description:"still broken",id:"f_open1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"auth-bypass","file":"old.go","line":1,"id":"f_open1"}]}' \
+  "request-changes" \
+  "Blocking prior findings:" \
+  "were not posted" \
+  "critical" \
+  "__inherit__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "0" \
+  "" \
+  '[.findings[]? | select(.id == "f_open1")] | length == 1'
 
 run_rereview_gate_case "rereview-prior-advisory-medium-does-not-block" \
   "$(jq -c '.findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
@@ -2751,11 +2808,115 @@ assert_last_result "approve-withheld-for-human-dismissed-high-prior-finding" \
   '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 assert_disposition_stdout "approve-withheld-for-human-dismissed-high-prior-finding" \
   "::warning::dismissed_by_human is not accepted for high or critical prior finding id(s) f_hi1; recorded as open" "present"
+
+# A human dismissal survives a category rename on an unchanged line: the row
+# at the dismissed file:line takes the dismissed id, is not posted, and the
+# ledger keeps the one closed entry. Unchanged means the verified dismissal
+# thread still has a line; GitHub nulls it once a push changes that line.
+REDISMISS_PRIOR='{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":10,"id":"f_old"}],"dispositions":[{"id":"f_old","status":"dismissed_by_human"}]}'
+REDISMISS_KEPT='.findings == [{"severity":"low","category":"logic-error","file":"a.go","line":10,"id":"f_old"}] and .dispositions == [{id: "f_old", status: "dismissed_by_human"}]'
+redismiss_minted() {
+  # $1 file of the current row
+  printf '([.findings[] | select(.id == "f_old" and .file == "a.go" and .category == "logic-error")] | length) == 1 and ([.findings[] | select(.file == "%s" and .category == "code-organization" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "dismissed_by_human"}]' "$1"
+}
+redismiss_review() {
+  # $1 file  $2 severity
+  jq -c --arg file "$1" --arg sev "$2" '.findings=[{severity:$sev,category:"code-organization",file:$file,line:10,description:"d"}]' <<< "${BASE_REVIEW}"
+}
+MOCK_REVIEW_THREADS_JSON="$(thread_json alice a.go 10 "<!-- finding:f_old --> Logic nit.")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-dismissal-holds-across-category-change" \
+  "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-holds-across-category-change" \
+  '.findings == null and .action == "comment"'
+assert_disposition_stdout "projection-dismissal-holds-across-category-change" \
+  "::notice::Finding(s) on an unchanged human-dismissed line keep dismissed id(s) f_old; not raised again" "present"
+
+# Only the re-raised row is held back; other findings are still posted.
+run_disposition_case "projection-dismissal-holds-other-findings-posted" \
+  "$(jq -c '.findings += [{severity:"low",category:"stale-doc",file:"docs/x.md",line:1,description:"d"}]' <<< "$(redismiss_review a.go low)")" \
+  "${REDISMISS_PRIOR}" \
+  '([.findings[] | select(.id == "f_old")] | length) == 1 and ([.findings[] | select(.file == "docs/x.md")] | length) == 1 and (.findings | length) == 2'
+assert_last_result "projection-dismissal-holds-other-findings-posted" \
+  '(.findings | length) == 1 and .findings[0].file == "docs/x.md"'
+
+# A different file at the same line is another place: it mints.
+run_disposition_case "projection-dismissal-other-file-same-line-mints" \
+  "$(redismiss_review b.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted b.go)"
+
+# A high or critical row is never covered by a dismissal: it mints.
+run_disposition_case "projection-dismissal-does-not-cover-high-row" \
+  "$(redismiss_review a.go high)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+
+# A row more severe than the dismissed finding is never covered by it: a
+# dismissed low must not hide a new medium concern at the same unchanged line.
+run_disposition_case "projection-dismissal-does-not-cover-more-severe-row" \
+  "$(redismiss_review a.go medium)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+assert_last_result "projection-dismissal-does-not-cover-more-severe-row" \
+  '(.findings | length) == 1 and .findings[0].severity == "medium" and .findings[0].id != "f_old"'
+assert_disposition_stdout "projection-dismissal-does-not-cover-more-severe-row" \
+  "not raised again" "absent"
+
+# A row no more severe than the dismissed finding is still covered.
+run_disposition_case "projection-dismissal-covers-less-severe-row" \
+  "$(redismiss_review a.go info)" "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-covers-less-severe-row" \
+  '.findings == null and .action == "comment"'
+
+# Runner safety signals are never covered by a dismissal: they mint and stay
+# in the posted result. protected-path still writes a projection (dismissed
+# id stays closed). A non-challenger sub-agent-failure suppresses the
+# projection entirely (#1567).
+run_disposition_case "projection-dismissal-does-not-cover-protected-path-row" \
+  "$(jq -c '.findings[0].category = "protected-path"' <<< "$(redismiss_review a.go low)")" \
+  "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-does-not-cover-protected-path-row" \
+  '(.findings | length) == 1 and .findings[0].category == "protected-path" and .findings[0].id != "f_old"'
+
+run_disposition_case "projection-dismissal-does-not-cover-sub-agent-failure-row" \
+  "$(jq -c '.findings[0].category = "sub-agent-failure"' <<< "$(redismiss_review a.go low)")" \
+  "${REDISMISS_PRIOR}" ""
+assert_last_result "projection-dismissal-does-not-cover-sub-agent-failure-row" \
+  '(.findings | length) == 1 and .findings[0].category == "sub-agent-failure" and .findings[0].id != "f_old"'
+
+# Suppression that empties the findings must not leave a blocking verdict:
+# reject and request-changes are downgraded to comment, never posted as-is.
+for blocking_action in reject request-changes; do
+  run_disposition_case "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    "$(jq -c --arg a "${blocking_action}" '.action = $a' <<< "$(redismiss_review a.go low)")" \
+    "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+  assert_last_result "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    '.findings == null and (.action | IN("reject", "request-changes") | not)'
+  assert_disposition_stdout "projection-dismissal-all-dismissed-downgrades-${blocking_action}" \
+    "All findings removed by human dismissal — downgrading '${blocking_action}' to 'comment'" "present"
+done
+
+# A prior reject is a human-decision hold: when dismissal suppression empties
+# the findings, the posted action stays comment and is not promoted to approve.
+run_disposition_case "projection-dismissal-prior-reject-hold-stays-comment" \
+  "$(jq -c '.action = "request-changes"' <<< "$(redismiss_review a.go low)")" \
+  '{"version":2,"action":"reject","findings":[{"severity":"low","category":"logic-error","file":"a.go","line":10,"id":"f_old"}],"dispositions":[{"id":"f_old","status":"dismissed_by_human"}]}' \
+  "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-prior-reject-hold-stays-comment" \
+  '.findings == null and .action == "comment"'
+
+# The dismissed line changed (thread outdated, line null): a new id.
+MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0] |= (.line = null | .isOutdated = true)' <<< "$(thread_json alice a.go 10 "<!-- finding:f_old --> Logic nit.")")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-dismissal-changed-line-mints" \
+  "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+assert_disposition_stdout "projection-dismissal-changed-line-mints" \
+  "not raised again" "absent"
+
+# No verified dismissal thread: nothing shows the line is unchanged, so mint.
+unset MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-dismissal-unverified-thread-mints" \
+  "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
 
 # GitLab dismissals use the authenticated review-token identity. A normal
-# User author type is valid for PAT-backed review comments.
-GITLAB_HUMAN_DISMISSAL_RESPONSE='{"threads":[{"is_resolved":true,"path":"src/foo.go","line":4,"original_line":3,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"maintain","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"review-bot","author_type":"User","body":"<!-- finding:f_human1 --> Logic issue."}]}],"truncated":false}'
+# User author type is valid for PAT-backed removed-line review comments.
+GITLAB_HUMAN_DISMISSAL_RESPONSE='{"threads":[{"is_resolved":true,"path":"src/foo.go","side":"left","line":4,"start_side":null,"start_line":null,"original_line":null,"original_start_line":null,"old_line":4,"new_line":null,"is_outdated":null,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"maintain","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"review-bot","author_type":"User","body":"<!-- finding:f_human1 --> Logic issue."}]}],"truncated":false}'
 export MOCK_REVIEW_THREADS_RESPONSE="${GITLAB_HUMAN_DISMISSAL_RESPONSE}"
 export MOCK_GITLAB_REVIEW_ACTOR="review-bot"
 run_gitlab_disposition_case() {
@@ -2798,6 +2959,13 @@ run_gitlab_disposition_case() {
 run_gitlab_disposition_case "gitlab-dismissed-by-human-closes-by-id" \
   "${DISMISSED_REVIEW}" "${DISMISSED_PRIOR}" \
   '([.dispositions[] | select(.id == "f_human1" and .status == "dismissed_by_human")] | length) == 1'
+
+# GitLab keeps the line a note was written on, so it cannot show the
+# dismissed line is unchanged: a category rename there still mints.
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.path = "a.go" | .line = 10 | .old_line = 10 | .comments[0].body = "<!-- finding:f_old --> Logic issue.")' <<< "${GITLAB_HUMAN_DISMISSAL_RESPONSE}")"
+export MOCK_REVIEW_THREADS_RESPONSE
+run_gitlab_disposition_case "gitlab-dismissal-category-change-mints" \
+  "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
 unset MOCK_REVIEW_THREADS_RESPONSE MOCK_GITLAB_REVIEW_ACTOR
 
 # A reclassified disposition with no current finding carrying that id is
@@ -4864,28 +5032,39 @@ run_risk_verdict_tier2_body_test() {
 run_risk_verdict_tier2_body_test
 
 # ---------------------------------------------------------------------------
-# UX feature-flag tests. The post-script is the executable enforcement point;
-# the sandbox skill uses the same env value to avoid dispatching UX at all.
+# Persona manifest tests. The runner writes FULLSEND_PERSONAS_FILE listing the
+# pr-review personas it staged. post-review drops a new finding only when the
+# manifest is a valid version 1 manifest, the finding names a dimension, that
+# dimension is not staged, its severity is below high, it carries no open prior
+# id, and its category is not an exempt orchestrator category.
 # ---------------------------------------------------------------------------
-run_ux_flag_test() {
+PERSONA_MANIFEST='{"version":1,"personas":[{"name":"correctness","skill":"pr-review","path":"sub-agents/correctness.md","origin":"upstream","sha256":"00","role":"dimension","always":true},{"name":"style-conventions","skill":"pr-review","path":"sub-agents/style-conventions.md","origin":"upstream","sha256":"00","role":"dimension","always":true}],"removed":[{"skill":"pr-review","path":"sub-agents/user-experience.md"}]}'
+PERSONA_HEAD='"pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"'
+PERSONA_UX_FINDING='{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue","dimension":"user-experience"}'
+PERSONA_LOGIC_FINDING='{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue","dimension":"correctness"}'
+
+# Arguments: name, manifest ("none" leaves FULLSEND_PERSONAS_FILE unset,
+# anything else is written to the file verbatim), agent result JSON, prior
+# projection JSON ("" for a first review), expected action, a jq check on the
+# posted result, and an optional jq check on the decoded ledger projection.
+run_persona_drop_test() {
   local test_name="$1"
-  local flag_value="$2"
-  local expected_ux_count="$3"
-  local expected_logic_count="$4"
+  local manifest="$2"
+  local json_content="$3"
+  local prior_json="$4"
   local expected_action="$5"
-  local expected_exit="${6:-0}"
-  local json_content="${7:-}"
-  local expected_ledger_action="${8:-}"
-  local run_dir="${TMPDIR}/run-ux-${test_name}"
+  local result_check="$6"
+  local projection_check="${7:-}"
+  local run_dir="${TMPDIR}/run-persona-${test_name}"
   local exit_code=0
 
   mkdir -p "${run_dir}/iteration-1/output"
-  if [[ -n "${json_content}" ]]; then
-    printf '%s' "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
-  else
-    cat > "${run_dir}/iteration-1/output/agent-result.json" <<'EOF'
-{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"medium","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}
-EOF
+  printf '%s' "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  if [[ "${manifest}" != "none" ]]; then
+    printf '%s' "${manifest}" > "${run_dir}/personas.json"
+  fi
+  if [[ -n "${prior_json}" ]]; then
+    printf '%s' "${prior_json}" > "${run_dir}/prior.json"
   fi
   rm -f "${TMPDIR}/last-result.json"
 
@@ -4897,172 +5076,230 @@ EOF
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_URL="https://github.com/test-org/test-repo/pull/99"
     export FULLSEND_FORGE="github"
-    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
-    export REVIEW_PROTECTED_PATHS=""
-    if [[ "${flag_value}" == "unset" ]]; then
-      unset REVIEW_UX_ENABLED
-    else
-      export REVIEW_UX_ENABLED="${flag_value}"
-    fi
-    bash "${POST_SCRIPT}"
-  ) > "${TMPDIR}/stdout-ux-${test_name}.log" 2>&1 || exit_code=$?
-
-  if [[ "${exit_code}" -ne "${expected_exit}" ]]; then
-    echo "FAIL: ${test_name} — expected exit ${expected_exit}, got ${exit_code}"
-    cat "${TMPDIR}/stdout-ux-${test_name}.log"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if [[ "${expected_exit}" -ne 0 ]]; then
-    if [[ ! -f "${TMPDIR}/last-result.json" ]] || \
-       ! jq -e '.action == "failure" and .reason == "tool-failure"' "${TMPDIR}/last-result.json" >/dev/null 2>&1; then
-      echo "FAIL: ${test_name} — expected a posted tool-failure result"
-      [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
-      FAILURES=$((FAILURES + 1))
-      return
-    fi
-    echo "PASS: ${test_name}"
-    return
-  fi
-
-  local actual_ux_count actual_logic_count actual_action
-  actual_ux_count="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${TMPDIR}/last-result.json")"
-  actual_logic_count="$(jq '[.findings[]? | select(.category == "logic-error")] | length' "${TMPDIR}/last-result.json")"
-  actual_action="$(jq -r '.action' "${TMPDIR}/last-result.json")"
-  if [[ "${actual_ux_count}" != "${expected_ux_count}" || "${actual_logic_count}" != "${expected_logic_count}" || "${actual_action}" != "${expected_action}" ]]; then
-    echo "FAIL: ${test_name} — UX flag filtering mismatch"
-    jq . "${TMPDIR}/last-result.json"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if [[ -n "${expected_ledger_action}" ]]; then
-    local marker encoded actual_ledger_action
-    marker="$(jq -r '.body // ""' "${TMPDIR}/last-result.json" | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
-    encoded="${marker#<!-- fullsend:review-findings-v2:}"
-    encoded="${encoded% -->}"
-    actual_ledger_action="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -r '.action // empty' 2>/dev/null || true)"
-    if [[ "${actual_ledger_action}" != "${expected_ledger_action}" ]]; then
-      echo "FAIL: ${test_name} — expected ledger action ${expected_ledger_action}, got ${actual_ledger_action}"
-      [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
-      FAILURES=$((FAILURES + 1))
-      return
-    fi
-  fi
-  echo "PASS: ${test_name}"
-}
-
-run_ux_flag_test "default-on" "unset" "1" "1" "request-changes"
-run_ux_flag_test "explicit-on" "true" "1" "1" "request-changes"
-run_ux_flag_test "explicit-off" "false" "0" "1" "request-changes"
-run_ux_flag_test "invalid-value" "yes" "0" "0" "" 1
-
-# Opting out must not change a blocking verdict when no UX finding was
-# removed, or when the remaining non-UX finding still justifies it.
-run_ux_flag_test "opt-out-no-ux-request-changes-low" "false" "0" "1" "request-changes" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
-run_ux_flag_test "opt-out-no-ux-reject-low" "false" "0" "1" "reject" 0 \
-  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
-run_ux_flag_test "opt-out-no-ux-request-changes-empty" "false" "0" "0" "request-changes" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[]}'
-run_ux_flag_test "opt-out-actionable-low-remains-blocking" "false" "0" "1" "request-changes" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Actionable logic issue","actionable":true}]}'
-run_ux_flag_test "opt-out-ux-only-request-changes-becomes-comment" "false" "0" "0" "comment" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"}]}'
-run_ux_flag_test "opt-out-ux-only-reject-becomes-comment" "false" "0" "0" "comment" 0 \
-  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"}]}'
-run_ux_flag_test "opt-out-ux-reject-with-low-logic-becomes-comment" "false" "0" "1" "comment" 0 \
-  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"critical","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}' \
-  comment
-
-# Opting out excludes prior UX rows from blocking calculations without
-# deleting their open/closed history from the next ledger projection.
-run_ux_optout_ledger_history_test() {
-  local test_name="ux-optout-preserves-ledger-history"
-  local run_dir="${TMPDIR}/run-${test_name}"
-  local prior_file="${run_dir}/prior.json"
-  local exit_code=0
-  local marker encoded
-  mkdir -p "${run_dir}/iteration-1/output"
-  printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
-    > "${run_dir}/iteration-1/output/agent-result.json"
-  printf '%s' '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxopen"},{"severity":"low","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":20,"id":"f_uxdismissed"}],"dispositions":[{"id":"f_uxopen","status":"open"},{"id":"f_uxdismissed","status":"dismissed_by_human"}]}' \
-    > "${prior_file}"
-  rm -f "${TMPDIR}/last-result.json"
-
-  (
-    cd "${run_dir}"
-    export PATH="${MOCK_BIN}:${PATH}"
-    export REVIEW_TOKEN="fake-token"
-    export PR_NUMBER="99"
-    export REPO_FULL_NAME="test-org/test-repo"
-    export PR_URL="https://github.com/test-org/test-repo/pull/99"
-    export FULLSEND_FORGE="github"
-    export REVIEW_RISK_ASSESSMENT_ENABLED="false"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=""
     export MOCK_PR_FILES="src/main.go"
-    export REVIEW_UX_ENABLED="false"
-    export PRIOR_REVIEW_FILE="${prior_file}"
+    if [[ "${manifest}" != "none" ]]; then
+      export FULLSEND_PERSONAS_FILE="${run_dir}/personas.json"
+    else
+      unset FULLSEND_PERSONAS_FILE
+    fi
+    if [[ -n "${prior_json}" ]]; then
+      export PRIOR_REVIEW_FILE="${run_dir}/prior.json"
+    fi
     bash "${POST_SCRIPT}"
-  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+  ) > "${TMPDIR}/stdout-persona-${test_name}.log" 2>&1 || exit_code=$?
 
+  local actual_action marker encoded projection
+  actual_action="$(jq -r '.action // empty' "${TMPDIR}/last-result.json" 2>/dev/null || true)"
   marker="$(jq -r '.body // ""' "${TMPDIR}/last-result.json" 2>/dev/null | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
   encoded="${marker#<!-- fullsend:review-findings-v2:}"
   encoded="${encoded% -->}"
-  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action // empty' "${TMPDIR}/last-result.json" 2>/dev/null || true)" != "approve" ]] || \
-     ! printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -e '.findings | map(select(.id == "f_uxopen" or .id == "f_uxdismissed")) | length == 2' >/dev/null 2>&1 || \
-     ! printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -e '.dispositions | any(.[]; .id == "f_uxdismissed" and .status == "dismissed_by_human")' >/dev/null 2>&1; then
-    echo "FAIL: ${test_name} — opted-out UX history was dropped or remained blocking"
-    cat "${TMPDIR}/stdout-${test_name}.log"
+  projection="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
+  if [[ ${exit_code} -ne 0 || "${actual_action}" != "${expected_action}" ]] || \
+     ! jq -e "${result_check}" "${TMPDIR}/last-result.json" >/dev/null 2>&1 || \
+     { [[ -n "${projection_check}" ]] && ! jq -e "${projection_check}" <<< "${projection}" >/dev/null 2>&1; }; then
+    echo "FAIL: ${test_name} — persona manifest drop mismatch"
+    echo "  expected action: '${expected_action}'"
+    echo "  actual action:   '${actual_action}'"
+    echo "  projection:      ${projection}"
+    cat "${TMPDIR}/stdout-persona-${test_name}.log"
     [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
     FAILURES=$((FAILURES + 1))
     return
   fi
   echo "PASS: ${test_name}"
-
-  # Re-enabling UX must make the retained open UX finding blocking again.
-  local reenabled_prior="${run_dir}/prior-reenabled.json"
-  printf '%s' "$(printf '%s' "${encoded}" | base64 --decode)" > "${reenabled_prior}"
-  mkdir -p "${run_dir}/iteration-2/output"
-  printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
-    > "${run_dir}/iteration-2/output/agent-result.json"
-  rm -f "${TMPDIR}/last-result.json"
-  exit_code=0
-  (
-    cd "${run_dir}"
-    export PATH="${MOCK_BIN}:${PATH}"
-    export REVIEW_TOKEN="fake-token"
-    export PR_NUMBER="99"
-    export REPO_FULL_NAME="test-org/test-repo"
-    export PR_URL="https://github.com/test-org/test-repo/pull/99"
-    export FULLSEND_FORGE="github"
-    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
-    export REVIEW_PROTECTED_PATHS=""
-    export MOCK_PR_FILES="src/main.go"
-    export REVIEW_UX_ENABLED="true"
-    export PRIOR_REVIEW_FILE="${reenabled_prior}"
-    bash "${POST_SCRIPT}"
-  ) > "${TMPDIR}/stdout-${test_name}-reenabled.log" 2>&1 || exit_code=$?
-  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action // empty' "${TMPDIR}/last-result.json" 2>/dev/null || true)" != "request-changes" ]] || \
-     ! jq -r '.body // ""' "${TMPDIR}/last-result.json" 2>/dev/null | grep -qF "Approval withheld"; then
-    echo "FAIL: ${test_name} — re-enabled UX did not restore the retained blocker"
-    cat "${TMPDIR}/stdout-${test_name}-reenabled.log"
-    [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  echo "PASS: ${test_name} (re-enabled blocker)"
 }
-run_ux_optout_ledger_history_test
 
-run_rereview_gate_case "ux-optout-clears-prior-blocker" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
-  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_ux1"}]}' \
-  "approve" "Review" "No disposition recorded" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
-  '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length == 0' "false"
+run_persona_drop_test "no-manifest-drops-nothing" "none" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "uxd-evaluate-code-heuristics")] | length == 1'
 
-run_ux_flag_test "opt-out-recomputes-verdict" "false" "0" "1" "comment" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
+run_persona_drop_test "manifest-keeps-finding-without-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "uxd-evaluate-code-heuristics")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-staged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"dimension\":\"correctness\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "correctness")] | length == 1' \
+  '[.findings[] | select(.dimension == "correctness" and .category == "logic-error")] | length == 1'
+
+run_persona_drop_test "manifest-drops-unstaged-dimension-and-downgrades" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "comment" \
+  '([.findings[] | select(.dimension == "user-experience")] | length == 0) and ([.findings[] | select(.dimension == "correctness")] | length == 1)' \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+if grep -qxF "::warning::Dropped 1 finding(s) from dimensions the runner did not stage: user-experience (1)" \
+    "${TMPDIR}/stdout-persona-manifest-drops-unstaged-dimension-and-downgrades.log"; then
+  echo "PASS: manifest-drop-logs-count"
+else
+  echo "FAIL: manifest-drop-logs-count — dropped count not logged"
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_persona_drop_test "manifest-drop-unstaged-only-reject-becomes-comment" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"reject\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\"}]}" \
+  "" "comment" \
+  '(.findings // []) | length == 0'
+
+run_persona_drop_test "manifest-drop-keeps-blocking-staged-finding" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},{\"severity\":\"low\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"remediation\":\"Fix it\",\"actionable\":true,\"dimension\":\"correctness\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+
+# A finding that answers an open prior id is never dropped, even when its
+# persona is no longer staged, and the prior id keeps its disposition.
+run_persona_drop_test "manifest-keeps-unstaged-dimension-with-open-prior-id" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\",\"id\":\"f_uxopen\"}],\"dispositions\":[{\"id\":\"f_uxopen\",\"status\":\"open\",\"rationale\":\"Still present\",\"evidence\":\"src/App.tsx:10\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxopen","dimension":"user-experience"}]}' \
+  "request-changes" \
+  '[.findings[] | select(.id == "f_uxopen" and .dimension == "user-experience")] | length == 1' \
+  '([.findings[] | select(.id == "f_uxopen" and .dimension == "user-experience")] | length == 1) and any(.dispositions[]; .id == "f_uxopen" and .status == "open")'
+
+run_persona_drop_test "malformed-manifest-drops-nothing" '{"version":1,"personas":' \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "unknown-manifest-version-drops-nothing" '{"version":2,"personas":[{"name":"correctness"}]}' \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "empty-personas-manifest-drops-nothing" '{"version":1,"personas":[],"removed":[]}' \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 1'
+
+# High and critical findings are always kept, whatever their dimension, and
+# the action is left as the agent set it.
+run_persona_drop_test "manifest-keeps-high-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.severity == "high" and .dimension == "user-experience")] | length == 1'
+if grep -qF "from dimensions the runner did not stage" \
+    "${TMPDIR}/stdout-persona-manifest-keeps-high-unstaged-dimension.log"; then
+  echo "FAIL: manifest-keeps-high-no-drop-warning — drop warning printed for a kept high finding"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: manifest-keeps-high-no-drop-warning"
+fi
+
+run_persona_drop_test "manifest-keeps-critical-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"reject\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"critical\",\"category\":\"auth-bypass\",\"file\":\"src/auth.ts\",\"line\":5,\"description\":\"Auth bypass\",\"dimension\":\"rbac-review\"}]}" \
+  "" "reject" \
+  '[.findings[] | select(.severity == "critical" and .dimension == "rbac-review")] | length == 1'
+
+# Medium findings from unstaged dimensions are dropped; one warning names each
+# dropped dimension with its count.
+run_persona_drop_test "manifest-drops-medium-unstaged-dimensions-warns-per-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":20,\"description\":\"Second UX issue\",\"dimension\":\"user-experience\"},{\"severity\":\"medium\",\"category\":\"privilege-escalation\",\"file\":\"src/rbac.ts\",\"line\":3,\"description\":\"Role widened\",\"dimension\":\"rbac-review\"},${PERSONA_LOGIC_FINDING}]}" \
+  "" "comment" \
+  '([.findings[] | select(.dimension == "user-experience" or .dimension == "rbac-review")] | length == 0) and ([.findings[] | select(.dimension == "correctness")] | length == 1)'
+PERSONA_DROP_LOG="${TMPDIR}/stdout-persona-manifest-drops-medium-unstaged-dimensions-warns-per-dimension.log"
+if [[ "$(grep -c "from dimensions the runner did not stage" "${PERSONA_DROP_LOG}")" -eq 1 ]] \
+    && grep -qxF "::warning::Dropped 3 finding(s) from dimensions the runner did not stage: rbac-review (1), user-experience (2)" "${PERSONA_DROP_LOG}"; then
+  echo "PASS: manifest-drop-warning-names-dimensions"
+else
+  echo "FAIL: manifest-drop-warning-names-dimensions — expected one warning naming each dropped dimension"
+  cat "${PERSONA_DROP_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Orchestrator findings are never dropped, whatever their dimension: the drop
+# rewrites the file the protected-path gate reads.
+run_persona_drop_test "manifest-keeps-protected-path-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"protected-path\",\"file\":\"harness/review.yaml\",\"description\":\"Protected path changed\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "protected-path" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-sub-agent-failure-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"sub-agent-failure\",\"file\":\"N/A\",\"description\":\"dimension failed\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "sub-agent-failure" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-scope-authorization-implicit-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"comment\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"scope-authorization-implicit\",\"file\":\"N/A\",\"description\":\"Scope implied\",\"dimension\":\"user-experience\"}]}" \
+  "" "comment" \
+  '[.findings[] | select(.category == "scope-authorization-implicit" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-provenance-warning-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"comment\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"provenance-warning\",\"file\":\"N/A\",\"description\":\"Provenance unclear\",\"dimension\":\"user-experience\"}]}" \
+  "" "comment" \
+  '[.findings[] | select(.category == "provenance-warning" and .dimension == "user-experience")] | length == 1'
+
+# REVIEW_UX_ENABLED is no longer read. Setting it prints one warning and
+# changes nothing else: the posted action and findings match a run without it.
+REVIEW_UX_WARNING="::warning::REVIEW_UX_ENABLED is no longer read; to turn off the UX reviewer, remove sub-agents/user-experience.md with a skills override (see docs/review.md)"
+REVIEW_UX_INPUT="{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}"
+run_persona_drop_test "review-ux-enabled-unset" "${PERSONA_MANIFEST}" \
+  "${REVIEW_UX_INPUT}" "" "comment" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+jq -S '{action, findings: [.findings[]? | del(.id)]}' "${TMPDIR}/last-result.json" > "${TMPDIR}/review-ux-unset.json" 2>/dev/null || true
+export REVIEW_UX_ENABLED=false
+run_persona_drop_test "review-ux-enabled-false" "${PERSONA_MANIFEST}" \
+  "${REVIEW_UX_INPUT}" "" "comment" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+unset REVIEW_UX_ENABLED
+jq -S '{action, findings: [.findings[]? | del(.id)]}' "${TMPDIR}/last-result.json" > "${TMPDIR}/review-ux-false.json" 2>/dev/null || true
+if [[ "$(grep -cxF "${REVIEW_UX_WARNING}" "${TMPDIR}/stdout-persona-review-ux-enabled-false.log")" -eq 1 ]] \
+    && ! grep -qF "REVIEW_UX_ENABLED" "${TMPDIR}/stdout-persona-review-ux-enabled-unset.log" \
+    && [[ -s "${TMPDIR}/review-ux-unset.json" ]] \
+    && cmp -s "${TMPDIR}/review-ux-unset.json" "${TMPDIR}/review-ux-false.json"; then
+  echo "PASS: review-ux-enabled-warns-only"
+else
+  echo "FAIL: review-ux-enabled-warns-only — expected exactly one no-longer-read warning and an unchanged result"
+  cat "${TMPDIR}/stdout-persona-review-ux-enabled-false.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Re-review promotion after the drop. Dropping the only blocking finding
+# downgrades request-changes to comment, and the re-review gate may then
+# promote to approve, as the removed REVIEW_UX_ENABLED opt-out did. A staged
+# actionable low that remains open from the prior round keeps the review from
+# being promoted (a new low alone never blocks a re-review).
+printf '%s' "${PERSONA_MANIFEST}" > "${TMPDIR}/rereview-personas.json"
+export FULLSEND_PERSONAS_FILE="${TMPDIR}/rereview-personas.json"
+run_rereview_gate_case "rereview-unstaged-dimension-drop-promotes" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_dimfixed"}],"dispositions":[{"id":"f_dimfixed","status":"resolved_by_change"}]}' \
+  "approve" \
+  "No findings at or above the effective blocking threshold remain open" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '[.findings[]? | select(.dimension == "user-experience")] | length == 0'
+
+run_rereview_gate_case "rereview-unstaged-dimension-drop-keeps-actionable-low" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},{\"severity\":\"low\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"remediation\":\"Fix it\",\"actionable\":true,\"dimension\":\"correctness\",\"id\":\"f_dimlow\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"id":"f_dimlow","actionable":true,"dimension":"correctness"}]}' \
+  "request-changes" \
+  "/fs-fix" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '([.findings[]? | select(.dimension == "user-experience")] | length == 0) and ([.findings[]? | select(.id == "f_dimlow")] | length == 1)'
+
+# A prior high from a persona that is no longer staged reaches no sub-agent:
+# the review answers its id open without re-emitting it, and the ledger still
+# withholds approval.
+run_rereview_gate_case "rereview-unstaged-prior-high-open-blocks" \
+  "{\"action\":\"approve\",${PERSONA_HEAD},\"dispositions\":[{\"id\":\"f_uxhigh\",\"status\":\"open\",\"rationale\":\"Persona not staged; not re-verified\",\"evidence\":\"src/App.tsx:10\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxhigh","dimension":"user-experience"}]}' \
+  "request-changes" \
+  "Blocking prior findings" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '[.findings[]? | select(.id == "f_uxhigh")] | length == 1'
+unset FULLSEND_PERSONAS_FILE
+
+# The projection carries dimension on current findings and keeps it on prior
+# findings carried forward, so a persona disabled between rounds keeps its
+# prior ledger. An unsafe dimension is never written into the projection.
+run_persona_drop_test "projection-carries-dimension" "none" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"dimension\":\"correctness\"},{\"severity\":\"medium\",\"category\":\"naming-convention\",\"file\":\"src/app.ts\",\"line\":30,\"description\":\"Naming issue\",\"dimension\":\"Bad Name\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxprior","dimension":"user-experience"}]}' \
+  "request-changes" \
+  '[.findings[] | select(.dimension == "correctness")] | length == 1' \
+  '([.findings[] | select(.dimension == "correctness" and .category == "logic-error")] | length == 1) and ([.findings[] | select(.id == "f_uxprior" and .dimension == "user-experience")] | length == 1) and ([.findings[] | select(.category == "naming-convention" and has("dimension"))] | length == 0)'
 
 # --- Summary ---
 

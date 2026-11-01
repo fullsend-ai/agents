@@ -12,11 +12,21 @@
 #
 # Required env (injected by harness from hook outputs + execution.env):
 #   FULLSEND_DIR    — path to the fullsend scaffold directory
-#   EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT — optional per-run overrides,
-#                     passed as fullsend run --runtime/--model/--effort
 #   GH_TOKEN        — GitHub token
 #   FIXTURE_URL     — URL of the fixture (issue or PR)
 #   FIXTURE_TYPE    — "issue" or "pull_request"
+#
+# Optional env:
+#   EVAL_RUNTIME / EVAL_MODEL / EVAL_EFFORT — per-run overrides, passed as
+#                     fullsend run --runtime/--model/--effort
+#   EVAL_TIMEOUT    — runner timeout in seconds (default 1800)
+#   EVAL_FORGE      — forge passed as fullsend run --forge (default github; a
+#                     local run otherwise resolves no forge)
+#   EVAL_SANDBOX_BINARY — a specific Linux fullsend binary to copy into the
+#                     sandbox (fullsend run --fullsend-binary); unset, fullsend
+#                     picks one itself
+#   OPENAI_API_KEY  — passed through to fullsend run for the codex and pi
+#                     runtimes when set
 set -euo pipefail
 
 AGENT="${1:?agent name required}"
@@ -53,8 +63,23 @@ EVAL_GH_WORKSPACE=$(mktemp -d)
 TARGET_DIR="${EVAL_GH_WORKSPACE}/target-repo"
 # Username comes from the helper; URL userinfo is lost when curl strips it from the effective URL.
 GH_CRED_HELPER='!f(){ echo "username=x-access-token"; echo "password=${GH_TOKEN}"; };f'
-git -c "credential.helper=${GH_CRED_HELPER}" \
-  clone "https://github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"
+# GitHub occasionally resets the connection mid-clone (curl 56); retry.
+cloned=0
+for attempt in 1 2 3; do
+  rm -rf "$TARGET_DIR"
+  if git -c "credential.helper=${GH_CRED_HELPER}" \
+       clone "https://github.com/${EPHEMERAL_REPO}.git" "$TARGET_DIR"; then
+    cloned=1; break
+  fi
+  if [[ $attempt -lt 3 ]]; then
+    echo "WARNING: clone attempt ${attempt} failed; retrying in $((attempt * 10))s" >&2
+    sleep $((attempt * 10))
+  fi
+done
+if [[ $cloned -ne 1 ]]; then
+  echo "ERROR: could not clone ${EPHEMERAL_REPO} after 3 attempts" >&2
+  exit 1
+fi
 git -C "$TARGET_DIR" config credential.helper "${GH_CRED_HELPER}"
 
 # Fix must run on the PR's actual head branch (post-script pushes
@@ -227,13 +252,15 @@ install -m 0600 /dev/null "$ENV_FILE"
     emit_env "PRIOR_REVIEW_PROVENANCE" "${PRIOR_REVIEW_PROVENANCE:-}"
   fi
 
+  # OpenAI key for the pi/codex runtimes. fullsend keeps it on the runner and
+  # hands the sandbox a placeholder (ADR 0092); it never enters the sandbox.
+  [[ -n "${OPENAI_API_KEY:-}" ]] && emit_env "OPENAI_API_KEY" "${OPENAI_API_KEY}"
   [[ -n "${ANTHROPIC_VERTEX_PROJECT_ID:-}" ]] && emit_env "ANTHROPIC_VERTEX_PROJECT_ID" "${ANTHROPIC_VERTEX_PROJECT_ID}"
   [[ -n "${GOOGLE_CLOUD_PROJECT:-}" ]]        && emit_env "GOOGLE_CLOUD_PROJECT" "${GOOGLE_CLOUD_PROJECT}"
   [[ -n "${CLOUD_ML_REGION:-}" ]]             && emit_env "CLOUD_ML_REGION" "${CLOUD_ML_REGION}"
   [[ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]] && emit_env "GOOGLE_APPLICATION_CREDENTIALS" "${GOOGLE_APPLICATION_CREDENTIALS}"
 } > "$ENV_FILE"
 
-FULLSEND_BIN="$(command -v fullsend)"
 EVAL_TIMEOUT="${EVAL_TIMEOUT:-1800}"
 
 mkdir -p "$OUTPUT_DIR"
@@ -246,14 +273,24 @@ override_args=()
 [[ -n "${EVAL_RUNTIME:-}" ]] && override_args+=(--runtime "$EVAL_RUNTIME")
 [[ -n "${EVAL_MODEL:-}" ]] && override_args+=(--model "$EVAL_MODEL")
 [[ -n "${EVAL_EFFORT:-}" ]] && override_args+=(--effort "$EVAL_EFFORT")
+# fullsend picks the binary it copies into the sandbox: its own executable on
+# Linux, and on another OS a Linux build it fetches or makes. Passing
+# --fullsend-binary switches that off, so pass it only when the caller names
+# a specific binary with EVAL_SANDBOX_BINARY.
+[[ -n "${EVAL_SANDBOX_BINARY:-}" ]] && override_args+=(--fullsend-binary "$EVAL_SANDBOX_BINARY")
+
+# Forge detection falls back to CI env vars (GITHUB_ACTIONS/GITLAB_CI), so a
+# local run resolves no forge and pre-code.sh fails on an empty
+# FULLSEND_FORGE. Pass it explicitly; --forge takes precedence everywhere.
+EVAL_FORGE="${EVAL_FORGE:-github}"
 
 rc=0
 timeout "$EVAL_TIMEOUT" fullsend run "$AGENT" \
+  --forge "$EVAL_FORGE" \
   --fullsend-dir "${FULLSEND_DIR}" \
   --target-repo "$TARGET_DIR" \
   --env-file "$ENV_FILE" \
   --output-dir "$OUTPUT_DIR" \
-  --fullsend-binary "$FULLSEND_BIN" \
   "${override_args[@]+"${override_args[@]}"}" \
   || rc=$?
 

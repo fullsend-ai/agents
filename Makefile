@@ -61,7 +61,9 @@ BEHAVIOUR_TEST_TAGS ?= behaviour
 BEHAVIOUR_GOFLAGS ?=
 # applier-branch-namespace gates behaviour/features/code/branch-namespace.feature,
 # whose assertions need this repo's post-code branch-namespace enforcement.
-BEHAVIOUR_CAPABILITIES ?= applier-branch-namespace
+# review-skill-overrides gates behaviour/features/review/custom-persona.feature,
+# which needs the pinned fullsend to stage skill file overrides.
+BEHAVIOUR_CAPABILITIES ?= applier-branch-namespace,review-skill-overrides
 
 script-test:
 	$(call run-timed,bash scripts/bundle-sh-test.sh)
@@ -112,11 +114,13 @@ script-test:
 	$(call run-timed,bash eval/scripts/setup-fixture-test.sh)
 	$(call run-timed,bash eval/scripts/teardown-fixture-test.sh)
 	$(call run-timed,bash eval/scripts/capture-fixture-test.sh)
+	$(call run-timed,bash eval/scripts/finding-expectations-test.sh)
 	$(call run-timed,bash eval/scripts/aggregate-nightly-test.sh)
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
 	$(call run-timed,bash .github/scripts/vouch-check-test.sh)
 	$(call run-timed,test "$(SCRIPT_TEST_TARGET)" = bundled || (cd harness/triggertest && GOWORK=off GOFLAGS= go test -count=1 ./...))
+	$(call run-timed,bash .github/scripts/check-dco-signoff-test.sh)
 
 test: script-test
 

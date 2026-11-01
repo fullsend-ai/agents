@@ -423,9 +423,16 @@ if [ "${NO_PUSH}" = "false" ]; then
   # this script), a downstream reader that exits before draining stdin can
   # SIGPIPE the upstream `git show`, which would then fail the pipeline
   # regardless of what gitleaks itself reported.
+  # `gitleaks detect --pipe` scans its input as plain text, so each patch is
+  # first reduced to its added lines (patch_added_lines): unchanged context
+  # and deleted lines — e.g. a resolution that removes a credential — must
+  # not fail the scan (issue #1801). --no-color/--no-ext-diff keep the patch
+  # format independent of repository git config so the filter sees every
+  # added line.
   if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
     fetch_trusted_target_sha
     MERGE_DIFF_TMP="$(mktemp)"
+    MERGE_ADDED_TMP="$(mktemp)"
     _any_merge_used_cc=false
     while IFS= read -r _merge_sha; do
       [ -z "${_merge_sha}" ] && continue
@@ -445,14 +452,18 @@ if [ "${NO_PUSH}" = "false" ]; then
         MERGE_SHOW_ARGS=(--cc)
         _any_merge_used_cc=true
       fi
-      if ! git show "${MERGE_SHOW_ARGS[@]}" "${_merge_sha}" > "${MERGE_DIFF_TMP}" 2>&1; then
+      if ! git show --no-color --no-ext-diff "${MERGE_SHOW_ARGS[@]}" "${_merge_sha}" > "${MERGE_DIFF_TMP}" 2>&1; then
         MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
-        rm -f "${MERGE_DIFF_TMP}"
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_SHOW_OUTPUT}" stderr
         post_fail_to_pr setup-error "Could not read merge commit ${_merge_sha} for the authoritative secret scan"
       fi
-      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_DIFF_TMP}" 2>&1)"; then
-        rm -f "${MERGE_DIFF_TMP}"
+      if ! patch_added_lines < "${MERGE_DIFF_TMP}" > "${MERGE_ADDED_TMP}"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
+        post_fail_to_pr setup-error "Could not extract added lines of merge commit ${_merge_sha} for the authoritative secret scan"
+      fi
+      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_ADDED_TMP}" 2>&1)"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_GITLEAKS_OUTPUT}" stderr
         post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
       fi
@@ -468,20 +479,45 @@ if [ "${NO_PUSH}" = "false" ]; then
     # blob) shows up here regardless of which parent's content it matches.
     if [ "${_any_merge_used_cc}" = true ]; then
       echo "Combined-diff (--cc) used for at least one merge — additionally scanning content in HEAD not on the current target tip"
-      if ! git diff "${TRUSTED_TARGET_SHA}" HEAD > "${MERGE_DIFF_TMP}" 2>&1; then
+      if ! git diff --no-color --no-ext-diff "${TRUSTED_TARGET_SHA}" HEAD > "${MERGE_DIFF_TMP}" 2>&1; then
         MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
-        rm -f "${MERGE_DIFF_TMP}"
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_SHOW_OUTPUT}" stderr
         post_fail_to_pr setup-error "Could not diff HEAD against the trusted target for the authoritative secret scan"
       fi
-      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_DIFF_TMP}" 2>&1)"; then
-        rm -f "${MERGE_DIFF_TMP}"
+      if ! patch_added_lines < "${MERGE_DIFF_TMP}" > "${MERGE_ADDED_TMP}"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
+        post_fail_to_pr setup-error "Could not extract added lines of HEAD against the trusted target for the authoritative secret scan"
+      fi
+      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_ADDED_TMP}" 2>&1)"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_GITLEAKS_OUTPUT}" stderr
         post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
       fi
     fi
-    rm -f "${MERGE_DIFF_TMP}"
+    rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
   fi
+
+  # Commit messages. `gitleaks detect --pipe` of the added lines above (and
+  # the patch-based history scan) never sees commit messages, so scan them
+  # separately — including merge commit messages, which were scanned as a
+  # side effect of piping the raw `git show` output before issue #1801.
+  # Author and committer identity are scanned alongside each message: no
+  # other check sees them, and %B alone omits them (issue #1845).
+  # Materialize to a file for the same SIGPIPE reason as above.
+  COMMIT_MSG_TMP="$(mktemp)"
+  if ! git log --first-parent --no-color --format='%an <%ae>%n%cn <%ce>%n%B' "${SCAN_RANGE}" > "${COMMIT_MSG_TMP}" 2>&1; then
+    COMMIT_MSG_OUTPUT="$(cat "${COMMIT_MSG_TMP}")"
+    rm -f "${COMMIT_MSG_TMP}"
+    print_sanitized_gha_log "${COMMIT_MSG_OUTPUT}" stderr
+    post_fail_to_pr setup-error "Could not read commit messages in ${SCAN_RANGE} for the authoritative secret scan"
+  fi
+  if ! COMMIT_MSG_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${COMMIT_MSG_TMP}" 2>&1)"; then
+    rm -f "${COMMIT_MSG_TMP}"
+    print_sanitized_gha_log "${COMMIT_MSG_GITLEAKS_OUTPUT}" stderr
+    post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
+  fi
+  rm -f "${COMMIT_MSG_TMP}"
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
   # -------------------------------------------------------------------------
@@ -1103,6 +1139,22 @@ if [ "${NO_PUSH}" = "false" ]; then
       elif [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
         echo "history_rewritten is set but local HEAD is structurally indistinguishable from origin/${BRANCH} (same commit count and tree) — treating as a GitLab reconstruction rather than a genuine rewrite, and falling through to rebase onto origin/${BRANCH}"
       fi
+    fi
+    # General fast-forward skip (issue #1323): when the freshly fetched
+    # origin/${BRANCH} is already an ancestor of HEAD, the plain push below
+    # is a fast-forward and the replay has nothing to reconcile. Running it
+    # anyway is harmful whenever HEAD carries a merge commit (e.g. the agent
+    # merged the target to reconcile a stale base): a default `git rebase`
+    # drops the merge and replays target-side history onto the old PR tip,
+    # either re-hitting the conflict the agent already resolved or silently
+    # inflating the PR. This uses runner-computed ancestry only — no
+    # sandbox-written flag — and is a no-op for linear histories. GitLab
+    # reconstructions have diverged SHAs, never satisfy it, and keep
+    # falling through to the replay.
+    if [ "${SKIP_REMOTE_REBASE}" = "false" ] \
+      && git merge-base --is-ancestor "origin/${BRANCH}" HEAD 2>/dev/null; then
+      SKIP_REMOTE_REBASE=true
+      echo "origin/${BRANCH} is already an ancestor of local HEAD — skipping rebase onto origin/${BRANCH} (push is a fast-forward)"
     fi
     if [ "${SKIP_REMOTE_REBASE}" = "false" ]; then
       echo "Rebasing local ${BRANCH} onto origin/${BRANCH}..."

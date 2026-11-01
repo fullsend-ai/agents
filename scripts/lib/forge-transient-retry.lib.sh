@@ -5,7 +5,10 @@
 #   forge_retry_transient cmd [args...]
 #
 # On success, prints the command's stdout. On failure, prints the command's
-# combined output to stderr so callers (and workflow logs) can diagnose.
+# combined output to stderr so callers (and workflow logs) can diagnose,
+# and stores the same sanitized text in FORGE_RETRY_LAST_ERROR so callers
+# can classify the error without capturing stderr (which would buffer
+# retry notices).
 # Retries only when the output looks like a transient 5xx or timeout.
 #
 # Environment:
@@ -42,6 +45,14 @@ forge_is_transient_error() {
     return 0
   fi
   return 1
+}
+
+# Duplicate PR/MR create. GitHub CLI, GitHub GraphQL, and GitLab 409 all
+# include this phrase; other 422/400 validation errors do not.
+forge_is_already_exists_error() {
+  local lower
+  lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  grep -qE 'already exists' <<< "${lower}"
 }
 
 _forge_retry_notice() {
@@ -87,6 +98,9 @@ forge_retry_transient() {
 
   outfile=$(mktemp)
   errfile=$(mktemp)
+  # Read by forge_create_pr after this function returns (same shell).
+  # shellcheck disable=SC2034
+  FORGE_RETRY_LAST_ERROR=""
   # shellcheck disable=SC2064
   trap "rm -f '${outfile}' '${errfile}'" RETURN
 
@@ -97,6 +111,8 @@ forge_retry_transient() {
     "$@" >"${outfile}" 2>"${errfile}" || rc=$?
 
     if [ "${rc}" -eq 0 ]; then
+      # shellcheck disable=SC2034
+      FORGE_RETRY_LAST_ERROR=""
       cat "${outfile}"
       return 0
     fi
@@ -113,6 +129,8 @@ forge_retry_transient() {
 
     local sanitized_combined
     sanitized_combined="$(_forge_retry_sanitize "${combined}")"
+    # shellcheck disable=SC2034
+    FORGE_RETRY_LAST_ERROR="${sanitized_combined}"
     printf '%s' "${sanitized_combined}" >&2
     if [ -n "${sanitized_combined}" ]; then
       printf '\n' >&2

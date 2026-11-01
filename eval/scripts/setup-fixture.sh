@@ -10,6 +10,8 @@
 #   CASE_WORKSPACE   — path to the case workspace (cwd)
 #   EVAL_ORG         — GitHub org/user for ephemeral repos
 #   GH_TOKEN         — GitHub token with repo and delete_repo scope
+# Optional env:
+#   EVAL_REPO_VISIBILITY — private (default) or public; see eval/README.md
 #
 # Writes:
 #   $CASE_WORKSPACE/.hook-outputs.yaml — env vars for the runner
@@ -64,7 +66,45 @@ repo_name="eval-${CASE_ID_SAFE}-${uuid}"
 EPHEMERAL_REPO="${EVAL_ORG}/${repo_name}"
 FIXTURE_BODY=${FIXTURE_BODY//\$\{REPO_URL\}/https://github.com/${EPHEMERAL_REPO}}
 
-gh repo create "$EPHEMERAL_REPO" --public --description "Ephemeral eval repo (auto-deleted)"
+# Private by default: the fixture is a throwaway copy of someone else's
+# repository, and a public copy is indexed, scanned and acted on by automation
+# as if it were meant to be published (a secret scanner has flagged a sample
+# key in a public fixture snapshot). EVAL_REPO_VISIBILITY=public restores the
+# old behaviour; the value is checked here, before anything is created, since
+# gh would otherwise reject a typo as an unknown flag on every attempt of the
+# retry loop below.
+EVAL_REPO_VISIBILITY="${EVAL_REPO_VISIBILITY:-private}"
+case "$EVAL_REPO_VISIBILITY" in
+  private|public) ;;
+  *)
+    echo "ERROR: EVAL_REPO_VISIBILITY must be private or public, not '${EVAL_REPO_VISIBILITY}'" >&2
+    exit 1
+    ;;
+esac
+# GitHub's API occasionally resets the connection; retry the create.
+created=0
+for attempt in 1 2 3; do
+  if gh repo create "$EPHEMERAL_REPO" "--${EVAL_REPO_VISIBILITY}" --description "Ephemeral eval repo (auto-deleted)"; then
+    created=1; break
+  fi
+  # A retry after a half-created repo would collide; check before retrying.
+  # Reuse it only with the visibility this run asked for: the snapshot must
+  # not land in a repository more visible than requested.
+  existing="$(gh repo view "$EPHEMERAL_REPO" --json visibility -q .visibility 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+  if [[ -n "$existing" ]]; then
+    if [[ "$existing" == "$EVAL_REPO_VISIBILITY" ]]; then created=1; break; fi
+    echo "ERROR: ${EPHEMERAL_REPO} already exists with visibility ${existing}, not ${EVAL_REPO_VISIBILITY}; refusing to reuse it" >&2
+    exit 1
+  fi
+  if [[ $attempt -lt 3 ]]; then
+    echo "WARNING: gh repo create attempt ${attempt} failed; retrying in $((attempt * 5))s" >&2
+    sleep $((attempt * 5))
+  fi
+done
+if [[ $created -ne 1 ]]; then
+  echo "ERROR: could not create ${EPHEMERAL_REPO} after 3 attempts" >&2
+  exit 1
+fi
 echo "Created repo: $EPHEMERAL_REPO"
 
 # Record the repo for teardown-fixture.sh before anything else can fail.
@@ -94,8 +134,43 @@ fi
 
 git -C "$TARGET_DIR" add -A
 if ! git -C "$TARGET_DIR" diff --cached --quiet; then
-  git -C "$TARGET_DIR" commit -m "eval: initial content"
-  git -C "$TARGET_DIR" push origin HEAD
+  # The snapshot is a mechanical copy of an upstream repository. For a private
+  # throwaway fixture, a developer's global git hooks (e.g. a secret scanner
+  # configured via core.hooksPath, which may hook pre-commit, pre-push or both)
+  # have blocked this step on upstream sample data, so they are bypassed for
+  # this commit and its push only. A public snapshot is the case the private
+  # default exists to prevent (upstream sample secrets published under the
+  # eval account), so there the developer's hooks stay on as the last local
+  # check before the snapshot is published; a hook that refuses fails the
+  # case, which is the right outcome.
+  hook_opts=()
+  if [[ "$EVAL_REPO_VISIBILITY" == "private" ]]; then
+    hook_opts=(-c core.hooksPath=/dev/null)
+    git -C "$TARGET_DIR" "${hook_opts[@]}" commit --no-verify -m "eval: initial content"
+  else
+    echo "WARNING: EVAL_REPO_VISIBILITY=${EVAL_REPO_VISIBILITY}: the snapshot will be published under the eval account; local git hooks run on this commit and its push" >&2
+    git -C "$TARGET_DIR" commit -m "eval: initial content"
+  fi
+  # Large snapshots (100 MB+, 10k+ files) have failed their first HTTPS push
+  # with "curl 55 Send failure: Broken pipe"; retry a few times before giving
+  # up. No git transport settings are changed: GitHub speaks chunked HTTP/1.1,
+  # and git's docs say raising http.postBuffer is not a fix for push failures.
+  push_ok=0
+  for attempt in 1 2 3; do
+    # ${arr[@]+"${arr[@]}"}: an empty array is "unbound" under set -u on bash
+    # before 4.4, so a plain "${hook_opts[@]}" would abort the public push.
+    if git -C "$TARGET_DIR" ${hook_opts[@]+"${hook_opts[@]}"} push origin HEAD; then
+      push_ok=1; break
+    fi
+    if [[ $attempt -lt 3 ]]; then
+      echo "WARNING: push attempt ${attempt} failed; retrying in $((attempt * 10))s" >&2
+      sleep $((attempt * 10))
+    fi
+  done
+  if [[ $push_ok -ne 1 ]]; then
+    echo "ERROR: could not push the snapshot to ${EPHEMERAL_REPO} after 3 attempts" >&2
+    exit 1
+  fi
 fi
 
 # --- Create seed issues (if any) ---

@@ -103,6 +103,147 @@ Per ADR 0049, scribe configuration uses the `SCRIBE_` prefix.
 | `comments_only` | Skip new issue creation |
 | `new_issues_only` | Skip comments on existing issues |
 
+### Jira issue creation
+
+Scribe can create new issues in one Jira Cloud project instead of the
+forge's issue tracker. The forge (`FULLSEND_FORGE`) still provides repo
+context (open PRs, doc index). The Jira project provides the open backlog
+and recently resolved issues the agent matches against and receives new
+issues.
+
+Set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by
+extending the harness with `base:` composition. Then update the agent's
+registered source to point to your local harness so fullsend resolves it
+instead of the remote pinned source:
+
+```yaml
+# .fullsend/scribe.yaml
+base: https://raw.githubusercontent.com/fullsend-ai/agents/<SHA>/harness/scribe.yaml#sha256=<sha256sum>
+env:
+  runner:
+    FULLSEND_TRACKER: jira
+    SCRIBE_JIRA_PROJECT: PROJ
+    SCRIBE_JIRA_ISSUE_TYPE: Task
+    JIRA_BASE_URL: ${JIRA_BASE_URL}
+    JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+    JIRA_TOKEN: ${JIRA_TOKEN}
+```
+
+After creating the local harness, re-register the agent to use it:
+
+```bash
+fullsend agent add .fullsend/scribe.yaml --name scribe --fullsend-dir .
+```
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `FULLSEND_TRACKER` | yes (Jira) | `jira`. Defaults to `FULLSEND_FORGE` |
+| `SCRIBE_JIRA_PROJECT` | yes (Jira) | Project key for backlog reads and new issues |
+| `SCRIBE_JIRA_ISSUE_TYPE` | no | Issue type for new issues (default: `Task`) |
+| `SCRIBE_JIRA_LABELS` | no | Comma-separated allowlist of labels scribe may apply to Jira issues (default: `meeting-notes`) |
+| `JIRA_BASE_URL` | yes (Jira) | `https://<site>.atlassian.net` (Jira Cloud only) |
+| `JIRA_USER_EMAIL` | yes (Jira) | Account email for the operator-provided API token |
+| `JIRA_TOKEN` | yes (Jira) | Jira Cloud API token |
+
+Behavior:
+
+- Jira credentials stay on the runner. Only the pre- and post-scripts
+  use them; the sandbox never receives them.
+- Only new issues are written. Comments on Jira issues are not supported:
+  `all` behaves as `new_issues_only`, and `comments_only` is rejected.
+- The backlog is the project's issues that are not Done, fetched with
+  JQL `nextPageToken` pagination. Fetching stops after 50 pages (about
+  5,000 issues); a larger backlog is silently truncated to the most
+  recently created issues.
+- Recently closed issues: in Jira mode, up to 50 Done issues resolved in
+  the last 30 days are fetched from the Jira project so the agent does
+  not re-propose work that was recently completed.
+- Before creating anything (including in dry-run), the post-script checks
+  Jira create metadata. It fails if the issue type is missing or the
+  project requires fields scribe does not set, or the create screen has no
+  Description field. If the screen has no Labels field, labels are omitted
+  from created issues with a warning.
+- On live runs, an issue whose summary exactly matches an existing issue
+  in the project is skipped, so rerunning on the same notes does not
+  create duplicates. If the lookup cannot prove absence (the title has no
+  letters or digits to search on, the search fails or returns a malformed
+  response, or results are truncated by the page cap without an exact
+  match), the post-script refuses to create the issue.
+- The same content gates and `SCRIBE_DRY_RUN` safety gate apply. The
+  sensitive-content and suspicious-Unicode gates cover labels as well as
+  the title and body. In Jira mode, agent-proposed labels are intersected with
+  an operator allowlist (`SCRIBE_JIRA_LABELS`, default `meeting-notes`),
+  validated against `^[A-Za-z0-9._-]{1,64}$`, and capped at 10 labels before
+  being added to created issues.
+
+Issue creation delegates to `fullsend issues create --tracker jira`
+([#7083](https://github.com/fullsend-ai/fullsend/issues/7083)), which
+handles Markdown-to-ADF conversion and the Jira REST call. **This
+requires a fullsend release that includes `issues create --tracker jira`
+([#8499](https://github.com/fullsend-ai/fullsend/pull/8499)).** The
+post-script validates CLI availability at preflight time (including
+dry-run) and fails with a clear error if the subcommand is missing.
+Labels are applied in a follow-up REST `PUT /issue/{key}` call because
+the CLI does not yet support a `--labels` flag; a label PUT failure is
+recorded in the run summary and Slack notification so operators can fix
+labels manually. The surrounding validation (createmeta checks, duplicate
+detection, content gates) remains in the post-script. This is not an
+adoption or fork of
+[konflux-ci/scribe4jira](https://github.com/konflux-ci/scribe4jira). It
+keeps all writes host-side with the same content gates as the GitHub and
+GitLab paths. It covers only new issues in one project and issue type, so
+scribe4jira behaviors such as custom field mappings are left out. Maintainers
+can revisit convergence with scribe4jira under #1676.
+
+Meeting-derived content is sensitive. Run Jira-backed scribe in a private
+deployment and keep CI logs and artifacts private, including on dry-runs.
+
+#### Supplying Jira credentials in CI
+
+Scribe resolves `${JIRA_BASE_URL}`, `${JIRA_TOKEN}`, and `${JIRA_USER_EMAIL}` host-side on the CI
+runner via `env.runner`. The token is never passed into the sandboxed agent
+container. Configure these credentials in your CI platform as follows:
+
+**GitHub Actions:**
+
+1. Navigate to **Settings** → **Secrets and variables** → **Actions** in your
+   repository or organization.
+2. Under **Repository secrets**, add `JIRA_TOKEN` with your Atlassian Cloud API
+   token ([generated from your Atlassian account](https://id.atlassian.com/manage-profile/security/api-tokens)).
+3. Under the **Variables** tab, add `JIRA_BASE_URL` with your Jira Cloud instance
+   URL (`https://<site>.atlassian.net`).
+4. Add `JIRA_USER_EMAIL` as a secret (or under the **Variables** tab).
+5. In your workflow YAML (e.g. `.github/workflows/scribe.yml`), pass them into
+   the job step's `env`:
+
+```yaml
+- name: Run scribe
+  env:
+    JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
+    JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
+    JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+    GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # ... other required inputs (SCRIBE_REPO, SCRIBE_SEARCH_QUERY, etc.)
+  run: |
+    fullsend run scribe --fullsend-dir . --target-repo "${GITHUB_WORKSPACE}"
+```
+
+**GitLab CI/CD:**
+
+1. Navigate to **Settings** → **CI/CD** → **Variables** in your project or group.
+2. Add `JIRA_BASE_URL`:
+   - **Type:** `Variable`
+   - **Value:** `https://<site>.atlassian.net`
+3. Add `JIRA_TOKEN`:
+   - **Type:** `Variable`
+   - **Mask variable:** checked (ensures the token is masked in job logs)
+   - **Protect variable:** leave unchecked unless the Scribe job runs
+     exclusively on protected branches
+   - **Expand variable reference:** unchecked (raw string)
+4. Add `JIRA_USER_EMAIL` with the associated account email.
+5. GitLab CI automatically injects project variables into the runner
+   environment, so no extra workflow mapping is required.
+
 ### GitLab host validation
 
 `gitlab-scribe-ops.lib.sh` uses `CI_SERVER_URL`, a GitLab CI predefined

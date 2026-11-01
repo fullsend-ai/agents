@@ -18,7 +18,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:2899f6229f31c3f4dd6f8b5e4af917be240e5f30fe0994483a0e331b8149066e
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:1f5b5d40a6ee3a5a9e51ff6d1e602c9ff71571aa5f6f14913cc53153348caff9
 policy: policies/base.yaml
 providers:
   - vertex-ai
@@ -28,6 +28,45 @@ providers:
 
 role: coder
 slug: fullsend-ai-coder
+
+# CEL dispatch trigger (docs/guides/user/cel-triggers-reference.md in
+# fullsend). Matches the event selection of the fix routing in fullsend's
+# reusable-dispatch.yml, on GitHub and GitLab only (fix has no Jira path):
+# a /fs-fix comment from a human on a PR/MR, or a changes-requested review
+# submitted by a review bot. Fix pushes commits, so both paths require a
+# same-repo change proposal; a missing state.change_proposal (failed PR
+# lookup) does not match. The review path also honors the fullsend-no-fix
+# opt-out label and runs only on a bot-authored PR or one labeled
+# fullsend-fix. Dispatch authorizes bot reviews without a role threshold
+# and this expression only checks the -review[bot] login suffix (which
+# covers <org>-review[bot], fullsend-ai-review[bot] and
+# <app-set>-review[bot]) plus actor.kind == "bot". That suffix is a coarse
+# filter, not a trust check: any GitHub App whose login ends in
+# -review[bot] passes it. The exact per-org review bot identity and the
+# write permission of a human PR author cannot be expressed here and must
+# stay with the dispatch workflow; do not rely on this expression alone to
+# authenticate the reviewer. A GitHub PR comment arrives as a work_item with
+# entity.linked_change_proposal set, a GitLab MR note as a change_proposal.
+# harness/triggertest/trigger_test.go evaluates this against the
+# NormalizedEvent fixtures.
+trigger: >
+  event.source.system in ["github", "gitlab"]
+    && has(event.state.change_proposal)
+    && !event.state.change_proposal.is_fork
+    && ((event.transition.kind == "comment_added"
+        && has(event.transition.comment.command)
+        && event.transition.comment.command == "/fs-fix"
+        && event.actor.kind == "human"
+        && (event.entity.kind == "change_proposal"
+            || has(event.entity.linked_change_proposal)))
+      || (event.entity.kind == "change_proposal"
+        && event.transition.kind == "review_submitted"
+        && event.transition.review.state == "changes_requested"
+        && event.actor.kind == "bot"
+        && event.transition.review.reviewer_id.endsWith("-review[bot]")
+        && !("fullsend-no-fix" in event.state.labels)
+        && (event.state.change_proposal.author_id.endsWith("[bot]")
+            || "fullsend-fix" in event.state.labels)))
 
 pre_script: scripts/pre-fix.sh
 post_script: scripts/post-fix.sh

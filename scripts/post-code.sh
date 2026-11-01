@@ -29,6 +29,12 @@
 #   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
+# Jira-sourced runs (FULLSEND_TRACKER or FULLSEND_WORK_ITEM_SOURCE is "jira")
+# also need FULLSEND_WORK_ITEM_URL, JIRA_USER_EMAIL, and JIRA_TOKEN to write
+# the code-stage update and PR/MR URL to the Jira issue. JIRA_BASE_URL is
+# optional and cross-checked against the work-item URL. GitLab targets take
+# the GitLab host from CI_SERVER_HOST.
+#
 # Optional environment variables:
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
 #   CODE_ALLOWED_TARGET_BRANCHES
@@ -50,7 +56,9 @@
 # Exit codes:
 #   0  — branch pushed and PR/MR created, OR agent determined nothing to do
 #   1  — validation failure or error (nothing pushed), including a
-#        timeout-killed run that left uncommitted work and no commit
+#        timeout-killed run that left uncommitted work and no commit;
+#        also when a Jira-sourced run cannot write its stage update to Jira
+#        (the PR/MR already exists on the code host)
 set -euo pipefail
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -76,7 +84,10 @@ POST_FAILURE_REPORT_SH_LOADED=1
 #   forge_retry_transient cmd [args...]
 #
 # On success, prints the command's stdout. On failure, prints the command's
-# combined output to stderr so callers (and workflow logs) can diagnose.
+# combined output to stderr so callers (and workflow logs) can diagnose,
+# and stores the same sanitized text in FORGE_RETRY_LAST_ERROR so callers
+# can classify the error without capturing stderr (which would buffer
+# retry notices).
 # Retries only when the output looks like a transient 5xx or timeout.
 #
 # Environment:
@@ -113,6 +124,14 @@ forge_is_transient_error() {
     return 0
   fi
   return 1
+}
+
+# Duplicate PR/MR create. GitHub CLI, GitHub GraphQL, and GitLab 409 all
+# include this phrase; other 422/400 validation errors do not.
+forge_is_already_exists_error() {
+  local lower
+  lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  grep -qE 'already exists' <<< "${lower}"
 }
 
 _forge_retry_notice() {
@@ -158,6 +177,9 @@ forge_retry_transient() {
 
   outfile=$(mktemp)
   errfile=$(mktemp)
+  # Read by forge_create_pr after this function returns (same shell).
+  # shellcheck disable=SC2034
+  FORGE_RETRY_LAST_ERROR=""
   # shellcheck disable=SC2064
   trap "rm -f '${outfile}' '${errfile}'" RETURN
 
@@ -168,6 +190,8 @@ forge_retry_transient() {
     "$@" >"${outfile}" 2>"${errfile}" || rc=$?
 
     if [ "${rc}" -eq 0 ]; then
+      # shellcheck disable=SC2034
+      FORGE_RETRY_LAST_ERROR=""
       cat "${outfile}"
       return 0
     fi
@@ -184,6 +208,8 @@ forge_retry_transient() {
 
     local sanitized_combined
     sanitized_combined="$(_forge_retry_sanitize "${combined}")"
+    # shellcheck disable=SC2034
+    FORGE_RETRY_LAST_ERROR="${sanitized_combined}"
     printf '%s' "${sanitized_combined}" >&2
     if [ -n "${sanitized_combined}" ]; then
       printf '\n' >&2
@@ -2059,17 +2085,66 @@ forge_list_prs_for_branch() {
     2>/dev/null
 }
 
+# Single open same-repo PR for this head and base. Zero or multiple
+# matches fail closed — adopting the wrong PR is worse than reporting
+# failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local json matches count url
+  json=$(forge_retry_transient gh pr list \
+    --repo "${REPO_FULL_NAME}" \
+    --head "${head}" \
+    --base "${base}" \
+    --state open \
+    --json number,url,headRepositoryOwner,headRefName,baseRefName) || return 1
+  matches=$(printf '%s' "${json}" | jq -c \
+    --arg owner "${owner}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select(.headRepositoryOwner.login == $owner)
+      | select(.headRefName == $head)
+      | select(.baseRefName == $base)
+      | .url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
+}
+
 forge_create_pr() {
   local base="$1"
   local head="$2"
   local title="$3"
   local body="$4"
+  local urlfile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  urlfile=$(mktemp) || return 1
   forge_retry_transient gh pr create \
     --repo "${REPO_FULL_NAME}" \
     --head "${head}" \
     --base "${base}" \
     --title "${title}" \
-    --body "${body}"
+    --body "${body}" >"${urlfile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    cat "${urlfile}"
+    rm -f "${urlfile}"
+    return 0
+  fi
+  rm -f "${urlfile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
+    return "${rc}"
+  fi
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "PR already exists but could not be resolved for head '${head}' into base '${base}'" >&2
+    return "${rc}"
+  fi
+  _forge_retry_notice "PR create reported already-exists; recovered ${resolved}"
+  printf '%s\n' "${resolved}"
 }
 
 forge_get_pr_url() {
@@ -2540,24 +2615,74 @@ forge_list_prs_for_branch() {
     '[.[] | select(.source_project_id == ($pid | tonumber))] | .[0].iid // empty'
 }
 
+# Single open same-project MR for this source and target. Zero or
+# multiple matches fail closed — adopting the wrong MR is worse than
+# reporting failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local head_encoded base_encoded mrs project_json project_id matches count url
+  head_encoded=$(printf '%s' "${head}" | jq -sRr @uri)
+  base_encoded=$(printf '%s' "${base}" | jq -sRr @uri)
+  mrs=$(forge_retry_transient _gitlab_code_api_with_status GET \
+    "/projects/${REPO_ENCODED}/merge_requests?state=opened&source_branch=${head_encoded}&target_branch=${base_encoded}") || return 1
+  project_json=$(forge_retry_transient _gitlab_code_api_with_status GET \
+    "/projects/${REPO_ENCODED}") || return 1
+  project_id=$(printf '%s' "${project_json}" | jq -r '.id // empty') || return 1
+  if [[ -z "${project_id}" ]]; then
+    return 1
+  fi
+  matches=$(printf '%s' "${mrs}" | jq -c \
+    --arg pid "${project_id}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select(.source_project_id == ($pid | tonumber))
+      | select(.source_branch == $head)
+      | select(.target_branch == $base)
+      | .web_url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
+}
+
 forge_create_pr() {
   local base="$1"
   local head="$2"
   local title="$3"
   local body="$4"
-  local response
-  response=$(forge_retry_transient _gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
+  local responsefile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  responsefile=$(mktemp) || return 1
+  forge_retry_transient _gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
     --data-urlencode "source_branch=${head}" \
     --data-urlencode "target_branch=${base}" \
     --data-urlencode "title=${title}" \
-    --data-urlencode "description=${body}") || return 1
-  local url
-  url=$(echo "${response}" | jq -r '.web_url // empty')
-  if [[ -z "${url}" ]]; then
-    echo "GitLab API error: MR created but response missing web_url" >&2
+    --data-urlencode "description=${body}" >"${responsefile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    local url
+    url=$(jq -r '.web_url // empty' "${responsefile}")
+    rm -f "${responsefile}"
+    if [[ -z "${url}" ]]; then
+      echo "GitLab API error: MR created but response missing web_url" >&2
+      return 1
+    fi
+    echo "${url}"
+    return 0
+  fi
+  rm -f "${responsefile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
     return 1
   fi
-  echo "${url}"
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "MR already exists but could not be resolved for source '${head}' into target '${base}'" >&2
+    return 1
+  fi
+  _forge_retry_notice "MR create reported already-exists; recovered ${resolved}"
+  echo "${resolved}"
 }
 
 forge_get_pr_url() {
@@ -3053,8 +3178,17 @@ ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 WORK_ITEM_URL="${FULLSEND_WORK_ITEM_URL:-${ISSUE_URL:-}}"
 EXTERNAL_WORK_ITEM=false
 
-if [ -n "${FULLSEND_TRACKER:-}" ] \
-   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_FORGE}" ]; then
+# `fullsend run` exports FULLSEND_WORK_ITEM_SOURCE for every run; it names the
+# source tracker when the harness did not set FULLSEND_TRACKER.
+if [ -n "${FULLSEND_TRACKER:-}" ] && [ -n "${FULLSEND_WORK_ITEM_SOURCE:-}" ] \
+   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_WORK_ITEM_SOURCE}" ]; then
+  gha_echo error "FULLSEND_TRACKER and FULLSEND_WORK_ITEM_SOURCE name different trackers"
+  exit 1
+fi
+WORK_ITEM_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_WORK_ITEM_SOURCE:-}}"
+
+if [ -n "${WORK_ITEM_TRACKER}" ] \
+   && [ "${WORK_ITEM_TRACKER}" != "${FULLSEND_FORGE}" ]; then
   EXTERNAL_WORK_ITEM=true
   : "${WORK_ITEM_URL:?FULLSEND_WORK_ITEM_URL is required for external-tracker runs}"
   WORK_ITEM_KEY="${FULLSEND_WORK_ITEM_KEY:-${WORK_ITEM_URL%/}}"
@@ -3080,20 +3214,30 @@ if [ "${REPO_DIR}" != "." ]; then
 fi
 
 # GitLab needs REPO_ENCODED and GITLAB_HOST for API calls.
-# Always derive GITLAB_HOST from the validated ISSUE_URL. If GITLAB_HOST is
-# pre-set in the environment, verify it matches the URL host to prevent
-# token exfiltration to an unintended host.
+# Always derive GITLAB_HOST from the validated ISSUE_URL (CI_SERVER_HOST for
+# external work items). If GITLAB_HOST is pre-set in the environment, verify
+# it matches that host to prevent token exfiltration to an unintended host.
 if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
-  if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
-    gha_echo error "ISSUE_URL format invalid for GitLab: '${ISSUE_URL:-}'"
-    exit 1
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    # The source issue lives on another tracker, so ISSUE_URL is not a GitLab
+    # URL. The MR goes to the GitLab instance running this job.
+    if ! _validate_gitlab_host "${CI_SERVER_HOST:-}"; then
+      gha_echo error "Cannot determine the GitLab host for an external work item"
+      exit 1
+    fi
+    _url_host="${CI_SERVER_HOST}"
+  else
+    if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
+      gha_echo error "ISSUE_URL format invalid for GitLab: '${ISSUE_URL:-}'"
+      exit 1
+    fi
+    # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
+    # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
+    # to the mismatched host.
+    _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   fi
   # shellcheck disable=SC2034
   REPO_ENCODED="$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)"
-  # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
-  # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
-  # to the mismatched host.
-  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
     gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
     exit 1
@@ -3275,6 +3419,78 @@ Retry with \`/fs-code\` if appropriate."
 }
 
 # ---------------------------------------------------------------------------
+# Jira stage update
+#
+# For Jira-sourced runs, writes a concise code-stage update with the PR/MR
+# URL to the originating Jira issue through the runner-side tracker CLI.
+# Branch, PR/MR, review, and merge stay on the code host. The fixed marker
+# makes a retried run edit its earlier comment instead of adding another.
+# Returns non-zero when the write fails so the caller can fail the step.
+#
+# Usage: post_jira_stage_update <verb phrase> <pr_url>
+# ---------------------------------------------------------------------------
+post_jira_stage_update() {
+  local verb="$1"
+  local pr_url="$2"
+
+  if [ "${WORK_ITEM_TRACKER}" != "jira" ]; then
+    return 0
+  fi
+
+  if [ -z "${pr_url}" ]; then
+    gha_echo error "No PR/MR URL to report to the Jira issue"
+    return 1
+  fi
+  if [[ ! "${WORK_ITEM_URL}" =~ ^https://([a-zA-Z0-9.-]+\.atlassian\.net)/browse/([A-Z][A-Z0-9]*)-([0-9]+)$ ]]; then
+    gha_echo error "FULLSEND_WORK_ITEM_URL is not a Jira Cloud issue URL"
+    return 1
+  fi
+  local jira_url="https://${BASH_REMATCH[1]}"
+  local project="${BASH_REMATCH[2]}"
+  local number="${BASH_REMATCH[3]}"
+  if [ "${project}-${number}" != "${WORK_ITEM_KEY}" ]; then
+    gha_echo error "FULLSEND_WORK_ITEM_KEY does not match the Jira issue in FULLSEND_WORK_ITEM_URL"
+    return 1
+  fi
+  local base_url="${JIRA_BASE_URL:-}"
+  while [[ "${base_url}" == */ ]]; do
+    base_url="${base_url%/}"
+  done
+  if [ -n "${base_url}" ] && [ "${base_url}" != "${jira_url}" ]; then
+    gha_echo error "JIRA_BASE_URL does not match the Jira host in FULLSEND_WORK_ITEM_URL"
+    return 1
+  fi
+  # The credentials were withheld from the environment earlier in the run
+  # (see the note after the branch checks); they are passed to the trusted
+  # CLI below and nowhere else.
+  if [ -z "${_jira_email_saved:-}" ] || [ -z "${_jira_token_saved:-}" ]; then
+    gha_echo error "JIRA_USER_EMAIL and JIRA_TOKEN are required to write to Jira"
+    return 1
+  fi
+  if [ -z "${_jira_fullsend_bin:-}" ]; then
+    gha_echo error "fullsend CLI not found; cannot write to Jira"
+    return 1
+  fi
+
+  local noun="pull request"
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    noun="merge request"
+  fi
+
+  local body
+  body="**Code stage:** ${verb} ${noun} ${pr_url} for ${WORK_ITEM_KEY}.
+
+Review and merge happen on the ${noun}."
+
+  # The token reaches the CLI through its default JIRA_TOKEN env var rather
+  # than a command-line flag, keeping it out of the process list.
+  printf '%s' "${body}" | JIRA_TOKEN="${_jira_token_saved}" "${_jira_fullsend_bin}" issues post-comment \
+    --tracker jira --project "${project}" --number "${number}" \
+    --jira-url "${jira_url}" --jira-email "${_jira_email_saved}" \
+    --marker "<!-- fullsend:code-agent -->" --result -
+}
+
+# ---------------------------------------------------------------------------
 # Uncommitted-work detection (timeout-kill / incomplete commit)
 #
 # A timeout-killed sandbox can leave staged or untracked files in the
@@ -3419,6 +3635,20 @@ BRANCH="${SAFE_BRANCH}"
 
 echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
+
+# Stop the Jira credentials from being inherited by child processes that can
+# run repo-controlled code (commit/push hooks, pre-commit tool installs and
+# hooks). This only prevents inheritance; it is not an isolation boundary,
+# because the initial environment of this process and its parent stays
+# readable via /proc/<pid>/environ by anything running as the same user.
+# The credentials are restored only inside post_jira_stage_update, for the
+# single Jira write.
+# Resolve the trusted tracker CLI now, before repo-controlled installs can
+# put a binary of the same name earlier on PATH.
+_jira_token_saved="${JIRA_TOKEN-}"
+_jira_email_saved="${JIRA_USER_EMAIL-}"
+_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
+unset JIRA_TOKEN JIRA_USER_EMAIL
 
 # ---------------------------------------------------------------------------
 # 2. Compute changed files
@@ -3673,6 +3903,10 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
     maybe_assign_pr "${EXISTING_PR_NUM}"
   fi
+  if ! post_jira_stage_update "pushed new commits to" "${EXISTING_PR_URL}"; then
+    gha_echo error "Failed to write the code-stage update to Jira issue ${WORK_ITEM_KEY}"
+    exit 1
+  fi
   exit 0
 fi
 
@@ -3902,4 +4136,12 @@ enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
 if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
   maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Jira stage update (Jira-sourced runs only)
+# ---------------------------------------------------------------------------
+if ! post_jira_stage_update "opened" "${PR_URL}"; then
+  gha_echo error "Failed to write the code-stage update to Jira issue ${WORK_ITEM_KEY}"
+  exit 1
 fi

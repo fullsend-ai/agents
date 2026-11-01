@@ -1334,72 +1334,6 @@ run_stale_branch_test "branch-with-open-pr" \
   "abc123 refs/heads/agent/42-fix-widget" "99" "keep:open-pr"
 
 # ---------------------------------------------------------------------------
-# Test helper — reimplements the push retry logic from post-code.sh
-# section 7b. Given a push exit code and output, returns the action.
-# ---------------------------------------------------------------------------
-decide_push_retry() {
-  local push_rc="$1"
-  local push_output="$2"
-
-  if [ "${push_rc}" -eq 0 ]; then
-    echo "success"
-    return 0
-  fi
-
-  if echo "${push_output}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
-    echo "retry:force-with-lease"
-    return 0
-  fi
-
-  echo "fail:unexpected-error"
-  return 0
-}
-
-run_push_retry_test() {
-  local test_name="$1"
-  local push_rc="$2"
-  local push_output="$3"
-  local expected_prefix="$4"
-
-  local actual
-  actual="$(decide_push_retry "${push_rc}" "${push_output}")"
-
-  if [[ "${actual}" != ${expected_prefix}* ]]; then
-    echo "FAIL: ${test_name}"
-    echo "  push_rc:         '${push_rc}'"
-    echo "  push_output:     '${push_output}'"
-    echo "  expected prefix: '${expected_prefix}'"
-    echo "  actual:          '${actual}'"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-
-  echo "PASS: ${test_name}"
-}
-
-# --- Push retry test cases ---
-
-# Successful push → no retry needed
-run_push_retry_test "push-success" \
-  "0" "Everything up-to-date" "success"
-
-# Non-fast-forward error → retry with --force-with-lease
-run_push_retry_test "push-non-fast-forward" \
-  "1" "error: failed to push some refs: non-fast-forward" "retry:force-with-lease"
-
-# Rejected error → retry with --force-with-lease
-run_push_retry_test "push-rejected" \
-  "1" "! [rejected] agent/42 -> agent/42 (fetch first)" "retry:force-with-lease"
-
-# GitHub's wording when the API ref update loses a race → retry with --force-with-lease
-run_push_retry_test "push-api-not-a-fast-forward" \
-  "1" "gh: Update is not a fast forward (HTTP 422)" "retry:force-with-lease"
-
-# Unknown error → fail
-run_push_retry_test "push-unexpected-error" \
-  "1" "fatal: repository not found" "fail:unexpected-error"
-
-# ---------------------------------------------------------------------------
 # Test helper — reimplements the agent artifact stripping logic from
 # post-code.sh section 2b. Given a list of changed files, returns which
 # files would be stripped as agent artifacts.
@@ -2506,6 +2440,176 @@ else
   echo "PASS: git-status-failure-exits-nonzero (exit ${_sec_gitstatus_rc})"
 fi
 
+# ---------------------------------------------------------------------------
+# Push retry (post-code.sh §7b) against the real script.
+#
+# GITHUB_SIGNED_COMMITS=false so forge_push_branch is git push. A git
+# wrapper supplies the first-push failure text so each wording of the
+# production grep is hit; the retry is the real `git push --force-with-lease`.
+# ---------------------------------------------------------------------------
+run_code_push_retry_test() {
+  local test_name="$1"
+  local first_push_fail="${2:-}"
+  local expect_retry="$3"
+  local expect_exit="$4"
+
+  local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
+  setup_sec_code_repo "${run_dir}" "agent/99-push-retry"
+  local mock_bin="${run_dir}/mock-bin"
+  local push_log="${run_dir}/push-calls.log"
+  mkdir -p "${mock_bin}"
+  : > "${push_log}"
+  # gitleaks-install prepends the directory it found gitleaks in to PATH.
+  # Keep gitleaks in this same mock-bin as the git wrapper so that prepend
+  # cannot resurrect SEC_CODE_MOCK_BIN/git (which execs the real git).
+  cp "${SEC_CODE_MOCK_BIN}/gitleaks" "${SEC_CODE_MOCK_BIN}/sleep" "${mock_bin}/"
+
+  cat > "${mock_bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api -X")      echo "unexpected Git Data API call on the plain-push path: $*" >&2; exit 99 ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "pr view")     echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment")
+    printf '%s\n' "$@"
+    cat 2>/dev/null || true
+    exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+  chmod +x "${mock_bin}/gh"
+
+  cat > "${mock_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+if [[ "\$1" == "push" ]]; then
+  printf 'git %s\n' "\$*" >> "${push_log}"
+  _force=false
+  for _a in "\$@"; do
+    if [[ "\$_a" == "--force-with-lease" ]]; then
+      _force=true
+    fi
+  done
+  if [[ "\${_force}" == true ]]; then
+    exec ${REAL_GIT} "\$@"
+  fi
+  if [[ -n "\${MOCK_PUSH_FAIL:-}" ]]; then
+    echo "\${MOCK_PUSH_FAIL}" >&2
+    exit 1
+  fi
+  exec ${REAL_GIT} "\$@"
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+  chmod +x "${mock_bin}/git"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${mock_bin}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="false"
+    if [[ -n "${first_push_fail}" ]]; then
+      export MOCK_PUSH_FAIL="${first_push_fail}"
+    else
+      unset MOCK_PUSH_FAIL
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${SEC_CODE_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  local log="${SEC_CODE_TMPDIR}/stdout-${test_name}.log"
+  local retried=false
+  if [[ -s "${push_log}" ]] && grep -q -- '--force-with-lease' "${push_log}"; then
+    retried=true
+  fi
+
+  if [[ "${exit_code}" -ne "${expect_exit}" ]]; then
+    echo "FAIL: ${test_name} — exit ${exit_code}, want ${expect_exit}"
+    cat "${log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # The script must have attempted a plain push first (a line without
+  # --force-with-lease); otherwise these tests could pass without any push.
+  local plain_push_line force_push_line
+  plain_push_line="$(grep -n -- '^git push' "${push_log}" \
+    | grep -v -e '--force-with-lease' -e '--delete' \
+    | head -n1 | cut -d: -f1 || true)"
+  force_push_line="$(grep -n -- '--force-with-lease' "${push_log}" \
+    | head -n1 | cut -d: -f1 || true)"
+  if [[ -z "${plain_push_line}" ]]; then
+    echo "FAIL: ${test_name} — expected a plain git push in the push log"
+    cat "${log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${expect_retry}" == "true" ]] \
+    && [[ -n "${force_push_line}" ]] \
+    && (( plain_push_line >= force_push_line )); then
+    echo "FAIL: ${test_name} — plain git push must precede --force-with-lease retry"
+    cat "${log}"
+    echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ "${expect_retry}" == "true" ]]; then
+    if [[ "${retried}" != true ]]; then
+      echo "FAIL: ${test_name} — expected --force-with-lease retry"
+      cat "${log}"
+      echo "push calls:"; cat "${push_log}" 2>/dev/null || true
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if ! grep -qF "retrying with --force-with-lease" "${log}"; then
+      echo "FAIL: ${test_name} — missing retry warning"
+      cat "${log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if [[ "${retried}" == true ]]; then
+      echo "FAIL: ${test_name} — unexpected --force-with-lease"
+      cat "${log}"
+      echo "push calls:"; cat "${push_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if grep -qF "retrying with --force-with-lease" "${log}"; then
+      echo "FAIL: ${test_name} — unexpected retry warning"
+      cat "${log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_code_push_retry_test "push-success" \
+  "" "false" 0
+run_code_push_retry_test "push-non-fast-forward" \
+  "error: failed to push some refs: non-fast-forward" "true" 0
+run_code_push_retry_test "push-rejected" \
+  "! [rejected] agent/42 -> agent/42 (fetch first)" "true" 0
+run_code_push_retry_test "push-api-not-a-fast-forward" \
+  "gh: Update is not a fast forward (HTTP 422)" "true" 0
+run_code_push_retry_test "push-unexpected-error" \
+  "fatal: repository not found" "false" 1
+
 rm -rf "${SEC_CODE_TMPDIR}"
 
 # ---------------------------------------------------------------------------
@@ -3142,6 +3246,380 @@ fi
 rm -rf "${GL_INT_TMPDIR}"
 
 # =============================================================================
+# Jira-sourced code runs (#1841)
+#
+# The PR/MR is created on the code host (GitHub or GitLab) and the code-stage
+# update with its URL is written to the Jira issue through
+# `fullsend issues post-comment --tracker jira`. Covers both code hosts, the
+# existing-PR (retry) path, write-failure visibility, bot identity, and that
+# forge-originated runs never write to Jira.
+# =============================================================================
+
+JIRA_INT_TMPDIR="$(mktemp -d)"
+JIRA_INT_MOCK_BIN="${JIRA_INT_TMPDIR}/bin"
+JIRA_INT_FULLSEND_LOG="${JIRA_INT_TMPDIR}/fullsend.log"
+JIRA_INT_FORGE_LOG="${JIRA_INT_TMPDIR}/forge.log"
+JIRA_INT_PRECOMMIT_LOG="${JIRA_INT_TMPDIR}/precommit.log"
+mkdir -p "${JIRA_INT_MOCK_BIN}"
+JIRA_REAL_GIT="$(which git)"
+
+for _tool in sleep gitleaks; do
+  cat > "${JIRA_INT_MOCK_BIN}/${_tool}" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; fi
+exit 0
+MOCKEOF
+  chmod +x "${JIRA_INT_MOCK_BIN}/${_tool}"
+done
+
+cat > "${JIRA_INT_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+exec ${JIRA_REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/git"
+
+# GitHub code host. MOCK_EXISTING_PR=1 reports an open PR for the branch.
+cat > "${JIRA_INT_MOCK_BIN}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+echo "gh \$*" >> "${JIRA_INT_FORGE_LOG}"
+case "\$1 \$2" in
+  "api -X")      echo "unexpected Git Data API call: \$*" >&2; exit 99 ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then echo "7"; fi; exit 0 ;;
+  "pr view")     echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/gh"
+
+# GitLab code host.
+cat > "${JIRA_INT_MOCK_BIN}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+echo "curl \$*" >> "${JIRA_INT_FORGE_LOG}"
+url=""
+method="GET"
+prev=""
+for arg in "\$@"; do
+  case "\${arg}" in
+    https://*) url="\${arg}" ;;
+  esac
+  if [[ "\${prev}" == "--request" || "\${prev}" == "-X" ]]; then
+    method="\${arg}"
+  fi
+  prev="\${arg}"
+done
+case "\${method} \${url}" in
+  *merge_requests\?state=opened*) echo '[]' ;;
+  POST*merge_requests) echo '{"iid":1,"web_url":"https://gitlab.com/test-group/test-project/-/merge_requests/1"}' ;;
+  *projects/*) echo '{"id":1,"default_branch":"main","merge_method":"merge"}' ;;
+  *users*) echo '[]' ;;
+  *) echo '{}' ;;
+esac
+# Callers using --write-out read the HTTP status from the last line.
+if [[ " \$* " == *" --write-out "* ]]; then
+  printf '\n201'
+fi
+exit 0
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/curl"
+
+# Tracker CLI. Records args and the comment body; also records whether the
+# token reached it through the environment. MOCK_FULLSEND_FAIL=1 fails it.
+cat > "${JIRA_INT_MOCK_BIN}/fullsend" <<MOCKEOF
+#!/usr/bin/env bash
+BODY=""
+PREV=""
+for arg in "\$@"; do
+  if [[ "\${arg}" == "-" && "\${PREV}" == "--result" ]]; then
+    BODY=\$(cat)
+  fi
+  PREV="\${arg}"
+done
+echo "fullsend \$* env-token=\${JIRA_TOKEN:-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
+  echo "Error: Jira API returned 401" >&2
+  exit 1
+fi
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/fullsend"
+
+# pre-commit stand-in. Records whether the Jira credentials are visible to
+# hooks (it runs repo-controlled code in the real tool).
+cat > "${JIRA_INT_MOCK_BIN}/pre-commit" <<MOCKEOF
+#!/usr/bin/env bash
+echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset}" >> "${JIRA_INT_PRECOMMIT_LOG}"
+exit 0
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/pre-commit"
+
+setup_jira_int_repo() {
+  local run_dir="$1"
+  local branch_name="$2"
+  local repo_dir="${run_dir}/repo"
+  ${JIRA_REAL_GIT} init -q --bare -b main "${run_dir}/remote.git"
+  ${JIRA_REAL_GIT} clone -q "${run_dir}/remote.git" "${repo_dir}" 2>/dev/null
+  ${JIRA_REAL_GIT} -C "${repo_dir}" config user.email "test@example.com"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" config user.name "Test"
+  echo "init" > "${repo_dir}/README.md"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" add README.md
+  ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "init"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" push -q origin main
+  if [ -n "${JIRA_INT_WITH_PRECOMMIT:-}" ]; then
+    printf 'repos: []\n' > "${repo_dir}/.pre-commit-config.yaml"
+    ${JIRA_REAL_GIT} -C "${repo_dir}" add .pre-commit-config.yaml
+    ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "chore: pre-commit config"
+    ${JIRA_REAL_GIT} -C "${repo_dir}" push -q origin main
+  fi
+  ${JIRA_REAL_GIT} -C "${repo_dir}" checkout -q -b "${branch_name}"
+  echo "changed content" > "${repo_dir}/file.txt"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" add -f file.txt
+  ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
+  if [ -n "${JIRA_INT_PREPUSH_HOOK:-}" ]; then
+    cat > "${repo_dir}/.git/hooks/pre-push" <<HOOKEOF
+#!/usr/bin/env bash
+echo "pre-push jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset}" >> "${JIRA_INT_PREPUSH_HOOK}"
+exit 0
+HOOKEOF
+    chmod +x "${repo_dir}/.git/hooks/pre-push"
+  fi
+}
+
+# Run post-code for a Jira-sourced work item on the given code host. Extra
+# NAME=VALUE arguments are exported last. Leaves the exit code in
+# JIRA_INT_RC and the output in JIRA_INT_OUT.
+run_jira_int() {
+  local test_name="$1"
+  local forge="$2"
+  shift 2
+  local run_dir="${JIRA_INT_TMPDIR}/run-${test_name}"
+  setup_jira_int_repo "${run_dir}" "agent/TESTPROJ-42-fix"
+  : > "${JIRA_INT_FULLSEND_LOG}"
+  : > "${JIRA_INT_FORGE_LOG}"
+  JIRA_INT_OUT="${JIRA_INT_TMPDIR}/stdout-${test_name}.log"
+  JIRA_INT_RC=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    unset GITLAB_HOST CI_SERVER_URL GH_TOKEN GITLAB_TOKEN
+    export HOME="${JIRA_INT_TMPDIR}"
+    export PATH="${JIRA_INT_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_DIR="repo"
+    export ISSUE_NUMBER=""
+    export FULLSEND_FORGE="${forge}"
+    export FULLSEND_TRACKER="jira"
+    export FULLSEND_WORK_ITEM_SOURCE="jira"
+    export FULLSEND_WORK_ITEM_KEY="TESTPROJ-42"
+    export FULLSEND_WORK_ITEM_URL="https://test.atlassian.net/browse/TESTPROJ-42"
+    export ISSUE_URL="${FULLSEND_WORK_ITEM_URL}"
+    export JIRA_BASE_URL="https://test.atlassian.net/"
+    export JIRA_USER_EMAIL="fullsend-bot@example.com"
+    export JIRA_TOKEN="fake-jira-token"
+    if [ "${forge}" = "gitlab" ]; then
+      export REPO_FULL_NAME="test-group/test-project"
+      export GITLAB_TOKEN="${PUSH_TOKEN}"
+      export CI_SERVER_HOST="gitlab.com"
+    else
+      export REPO_FULL_NAME="test-org/test-repo"
+      export GITHUB_SIGNED_COMMITS="false"
+    fi
+    local kv
+    for kv in "$@"; do
+      export "${kv?}"
+    done
+    bash "${POST_SCRIPT}"
+  ) > "${JIRA_INT_OUT}" 2>&1 || JIRA_INT_RC=$?
+}
+
+jira_int_fail() {
+  echo "FAIL: $1 — $2"
+  echo "  exit code: ${JIRA_INT_RC}"
+  cat "${JIRA_INT_OUT}"
+  echo "  fullsend calls:"; cat "${JIRA_INT_FULLSEND_LOG}"
+  FAILURES=$((FAILURES + 1))
+}
+
+JIRA_CODE_MARKER="--marker <!-- fullsend:code-agent -->"
+
+# GitHub target: PR on GitHub, stage update with the PR URL on the Jira issue.
+run_jira_int "jira-github-target" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "post-code failed"
+elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "PR not created on GitHub"
+elif ! grep -qF -- "--tracker jira --project TESTPROJ --number 42 --jira-url https://test.atlassian.net" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "opened pull request https://github.com/test-org/test-repo/pull/1 for TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "Jira stage update missing or malformed"
+elif grep -q "^gh issue comment" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "commented on a GitHub issue for a Jira work item"
+else
+  echo "PASS: jira-github-target-pr-url-to-jira"
+fi
+
+# Bot identity: the write uses the configured fullsend Jira account (the
+# identity the Jira poller classifies as its own), and the token reaches the
+# CLI through the environment rather than the command line.
+if ! grep -qF -- "--jira-email fullsend-bot@example.com" "${JIRA_INT_FULLSEND_LOG}" \
+   || ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}" \
+   || grep -qF -- "--token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-stage-update-bot-identity" "write did not use the configured Jira account, or the token was passed on the command line"
+else
+  echo "PASS: jira-stage-update-bot-identity"
+fi
+
+# Jira credentials are withheld from pre-commit hooks (repo-controlled code)
+# but still reach the Jira stage update afterwards.
+: > "${JIRA_INT_PRECOMMIT_LOG}"
+JIRA_INT_WITH_PRECOMMIT=1 run_jira_int "jira-precommit-hidden" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-hidden-from-precommit" "post-code failed"
+elif ! grep -q "^pre-commit " "${JIRA_INT_PRECOMMIT_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "pre-commit did not run"
+elif ! grep -qF "pre-commit jira-token=unset jira-email=unset" "${JIRA_INT_PRECOMMIT_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "Jira credentials visible to pre-commit hooks"
+elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "Jira credentials not restored for the stage update"
+else
+  echo "PASS: jira-token-hidden-from-precommit"
+fi
+
+# A pre-push hook (repo-controlled code that runs during the plain git push)
+# does not see the Jira credentials either, and a `fullsend` binary dropped in
+# ${HOME}/.local/bin (put first on PATH by the script) does not shadow the
+# trusted CLI used for the Jira write.
+JIRA_INT_PREPUSH_LOG="${JIRA_INT_TMPDIR}/prepush.log"
+JIRA_INT_SHADOW_LOG="${JIRA_INT_TMPDIR}/shadow.log"
+: > "${JIRA_INT_PREPUSH_LOG}"
+: > "${JIRA_INT_SHADOW_LOG}"
+mkdir -p "${JIRA_INT_TMPDIR}/.local/bin"
+cat > "${JIRA_INT_TMPDIR}/.local/bin/fullsend" <<SHADOWEOF
+#!/usr/bin/env bash
+echo "shadow fullsend called token=\${JIRA_TOKEN:-unset}" >> "${JIRA_INT_SHADOW_LOG}"
+exit 0
+SHADOWEOF
+chmod +x "${JIRA_INT_TMPDIR}/.local/bin/fullsend"
+JIRA_INT_PREPUSH_HOOK="${JIRA_INT_PREPUSH_LOG}" run_jira_int "jira-prepush-hidden" github
+rm -rf "${JIRA_INT_TMPDIR}/.local"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "post-code failed"
+elif ! grep -q "^pre-push " "${JIRA_INT_PREPUSH_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "pre-push hook did not run"
+elif ! grep -qF "pre-push jira-token=unset jira-email=unset" "${JIRA_INT_PREPUSH_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "Jira credentials visible to a pre-push hook"
+elif [ -s "${JIRA_INT_SHADOW_LOG}" ]; then
+  jira_int_fail "jira-path-shadowed-fullsend-not-used" "a binary from the repo-controlled PATH entry received the Jira write"
+elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-path-shadowed-fullsend-not-used" "trusted fullsend CLI was not used for the Jira write"
+else
+  echo "PASS: jira-token-hidden-from-prepush-hook"
+  echo "PASS: jira-path-shadowed-fullsend-not-used"
+fi
+
+# GitLab target: MR on GitLab (host from CI_SERVER_HOST, since ISSUE_URL is the
+# Jira URL), stage update with the MR URL on the Jira issue.
+run_jira_int "jira-gitlab-target" gitlab
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "post-code failed"
+elif ! grep -qE "^curl .*--request POST .*https://gitlab.com/api/v4/projects/test-group%2Ftest-project/merge_requests" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "MR not created on GitLab"
+elif grep -qF "atlassian.net/api/v4" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "GitLab API call went to the Jira host"
+elif ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "opened merge request https://gitlab.com/test-group/test-project/-/merge_requests/1 for TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "Jira stage update missing or malformed"
+else
+  echo "PASS: jira-gitlab-target-mr-url-to-jira"
+fi
+
+# GitLab target without a trusted CI server host fails before any API call.
+run_jira_int "jira-gitlab-target-no-ci-host" gitlab CI_SERVER_HOST=
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-gitlab-target-requires-ci-server-host" "expected failure but got success"
+elif [ -s "${JIRA_INT_FORGE_LOG}" ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-gitlab-target-requires-ci-server-host" "API calls made without a trusted GitLab host"
+else
+  echo "PASS: jira-gitlab-target-requires-ci-server-host (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# Retry: the PR already exists, so the run updates it and rewrites the same
+# sticky Jira comment (same marker) instead of adding a second one.
+run_jira_int "jira-existing-pr" github MOCK_EXISTING_PR=1
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "post-code failed"
+elif grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "created a second PR"
+elif [ "$(grep -c "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "pushed new commits to pull request https://github.com/test-org/test-repo/pull/7" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "expected one sticky Jira update for the existing PR"
+else
+  echo "PASS: jira-retry-existing-pr-reuses-marker"
+fi
+
+# Write-failure visibility: a failed Jira write fails the step on both paths.
+for _jira_fail_case in "jira-write-failure-new-pr|" "jira-write-failure-existing-pr|MOCK_EXISTING_PR=1"; do
+  _jira_fail_name="${_jira_fail_case%%|*}"
+  _jira_fail_extra="${_jira_fail_case#*|}"
+  run_jira_int "${_jira_fail_name}" github MOCK_FULLSEND_FAIL=1 ${_jira_fail_extra:+"${_jira_fail_extra}"}
+  if [ "${JIRA_INT_RC}" -eq 0 ]; then
+    jira_int_fail "${_jira_fail_name}-fails-step" "expected failure but got success"
+  elif ! grep -qF "Failed to write the code-stage update to Jira issue TESTPROJ-42" "${JIRA_INT_OUT}"; then
+    jira_int_fail "${_jira_fail_name}-fails-step" "missing Jira write-failure error"
+  else
+    echo "PASS: ${_jira_fail_name}-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+  fi
+done
+
+# Missing runner-side Jira credentials fail visibly instead of skipping.
+run_jira_int "jira-missing-token" github JIRA_TOKEN=
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-missing-token-fails-step" "expected failure but got success"
+elif ! grep -qF "JIRA_USER_EMAIL and JIRA_TOKEN are required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-missing-token-fails-step" "missing credential error, or a write was attempted"
+else
+  echo "PASS: jira-missing-token-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# A work-item key that disagrees with the URL is not written anywhere in Jira.
+run_jira_int "jira-key-mismatch" github FULLSEND_WORK_ITEM_KEY=TESTPROJ-7
+if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-key-mismatch-not-written" "expected failure with no Jira write"
+else
+  echo "PASS: jira-key-mismatch-not-written (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# Forge-originated run (fullsend run still exports FULLSEND_WORK_ITEM_SOURCE):
+# GitHub issue flow, no Jira write.
+run_jira_int "forge-originated" github FULLSEND_TRACKER= FULLSEND_WORK_ITEM_SOURCE=github \
+  FULLSEND_WORK_ITEM_KEY= FULLSEND_WORK_ITEM_URL= ISSUE_NUMBER=42 \
+  ISSUE_URL=https://github.com/test-org/test-repo/issues/42 JIRA_TOKEN= JIRA_USER_EMAIL=
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "forge-originated-run-no-jira-write" "post-code failed"
+elif [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "forge-originated-run-no-jira-write" "wrote to Jira for a GitHub issue"
+elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "forge-originated-run-no-jira-write" "PR not created"
+else
+  echo "PASS: forge-originated-run-no-jira-write"
+fi
+
+# An explicit tracker that disagrees with the exported work-item source stops
+# the run before anything is pushed.
+run_jira_int "jira-tracker-source-conflict" github FULLSEND_WORK_ITEM_SOURCE=github
+if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FORGE_LOG}" ]; then
+  jira_int_fail "jira-tracker-source-conflict-fails" "expected failure before any forge call"
+else
+  echo "PASS: jira-tracker-source-conflict-fails (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+rm -rf "${JIRA_INT_TMPDIR}"
+
+# =============================================================================
 # GitLab auto-merge unit tests
 # =============================================================================
 
@@ -3556,6 +4034,329 @@ run_gl_create_pr_retry_test "gitlab-create-pr-gives-up-after-3" \
   99 "GitLab API error (HTTP 503): no available server" 3 1
 run_gl_create_pr_retry_test "gitlab-create-pr-no-retry-on-400" \
   99 "GitLab API error (HTTP 400): invalid source branch" 1 1
+
+# =============================================================================
+# forge_create_pr already-exists recovery
+# =============================================================================
+
+run_already_exists_matcher_test() {
+  local test_name="$1"
+  local text="$2"
+  local expect_rc="$3"
+  local rc=0
+  (
+    unset FORGE_TRANSIENT_RETRY_SH_LOADED
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/forge-transient-retry.lib.sh"
+    forge_is_already_exists_error "${text}"
+  ) || rc=$?
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_already_exists_matcher_test "already-exists-matches-gh-cli" \
+  'a pull request for branch "agent/1-x" into branch "main" already exists:
+https://github.com/org/repo/pull/99' 0
+run_already_exists_matcher_test "already-exists-matches-graphql" \
+  "GraphQL: A pull request already exists for org:agent/1-x. (createPullRequest)" 0
+run_already_exists_matcher_test "already-exists-matches-gitlab-409" \
+  'GitLab API error (HTTP 409): Another open merge request already exists for this source branch: !1' 0
+run_already_exists_matcher_test "already-exists-rejects-plain-422" \
+  "HTTP 422: Validation Failed" 1
+run_already_exists_matcher_test "already-exists-rejects-400" \
+  "GitLab API error (HTTP 400): invalid source branch" 1
+
+run_gh_create_pr_recover_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local expect_rc="$2"
+  local expect_url="$3"
+  local expect_create_attempts="$4"
+  local expect_list_attempts="$5"
+  local list_json="$6"
+  local create_errs="$7"
+
+  local tmp mock_bin call_log rc=0 output create_attempts list_attempts
+  tmp=$(mktemp -d)
+  mock_bin="${tmp}/bin"
+  call_log="${tmp}/calls"
+  mkdir -p "${mock_bin}"
+  : > "${call_log}"
+  printf '%s\n' "${create_errs}" > "${tmp}/create_errs"
+
+  cat > "${mock_bin}/gh" <<'MOCK'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${CALL_LOG}"
+if printf '%s' " $*" | grep -q ' pr create '; then
+  n=$(grep -c 'pr create' "${CALL_LOG}" 2>/dev/null || true)
+  err=$(sed -n "${n}p" "${CREATE_ERRS_FILE}" 2>/dev/null || true)
+  if [ -n "${err}" ]; then
+    echo "${err}" >&2
+    exit 1
+  fi
+  echo "https://github.com/org/repo/pull/1"
+  exit 0
+fi
+if printf '%s' " $*" | grep -q ' pr list '; then
+  printf '%s\n' "${LIST_JSON}"
+  exit 0
+fi
+exit 0
+MOCK
+  chmod +x "${mock_bin}/gh"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITHUB_CODE_OPS_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
+      sleep() { :; }
+      export REPO_FULL_NAME="org/repo"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export CALL_LOG="${call_log}"
+      export CREATE_ERRS_FILE="${tmp}/create_errs"
+      export LIST_JSON="${list_json}"
+      export PATH="${mock_bin}:${PATH}"
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  create_attempts=$(grep -c 'pr create' "${call_log}" || true)
+  list_attempts=$(grep -c 'pr list' "${call_log}" || true)
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${create_attempts}" -ne "${expect_create_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_create_attempts} gh pr create attempts, got ${create_attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${list_attempts}" -ne "${expect_list_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_list_attempts} gh pr list attempts, got ${list_attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ -n "${expect_url}" ]; then
+    if ! echo "${output}" | grep -qF "${expect_url}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected URL '${expect_url}'"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+  if [ "${expect_list_attempts}" -gt 0 ]; then
+    if ! grep -q -- '--head agent/1-x' "${call_log}" || ! grep -q -- '--base main' "${call_log}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected gh pr list --head agent/1-x --base main"
+      echo "  calls:"
+      cat "${call_log}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+GH_MATCHING_PR='[{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"org"},"headRefName":"agent/1-x","baseRefName":"main"}]'
+GH_WRONG_HEAD='[{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"org"},"headRefName":"agent/other","baseRefName":"main"}]'
+GH_WRONG_BASE='[{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"org"},"headRefName":"agent/1-x","baseRefName":"develop"}]'
+GH_FORK_PR='[{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"forker"},"headRefName":"agent/1-x","baseRefName":"main"}]'
+GH_TWO_PRS='[{"number":98,"url":"https://github.com/org/repo/pull/98","headRepositoryOwner":{"login":"org"},"headRefName":"agent/1-x","baseRefName":"main"},{"number":99,"url":"https://github.com/org/repo/pull/99","headRepositoryOwner":{"login":"org"},"headRefName":"agent/1-x","baseRefName":"main"}]'
+
+run_gh_create_pr_recover_test "create-pr-timeout-then-already-exists-recovers" \
+  0 "https://github.com/org/repo/pull/99" 2 1 \
+  "${GH_MATCHING_PR}" \
+  $'operation timed out\na pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-no-match-fails" \
+  1 "could not be resolved" 1 1 \
+  "[]" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-wrong-head-not-adopted" \
+  1 "could not be resolved" 1 1 \
+  "${GH_WRONG_HEAD}" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-wrong-base-not-adopted" \
+  1 "could not be resolved" 1 1 \
+  "${GH_WRONG_BASE}" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-fork-not-adopted" \
+  1 "could not be resolved" 1 1 \
+  "${GH_FORK_PR}" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-already-exists-multiple-fails" \
+  1 "could not be resolved" 1 1 \
+  "${GH_TWO_PRS}" \
+  'a pull request already exists for org:agent/1-x'
+
+run_gh_create_pr_recover_test "create-pr-plain-422-does-not-list" \
+  1 "" 1 0 \
+  "${GH_MATCHING_PR}" \
+  "HTTP 422: Validation Failed"
+
+run_gl_create_pr_recover_test() {
+  # shellcheck disable=SC2030,SC2031,SC2317
+  local test_name="$1"
+  local expect_rc="$2"
+  local expect_url="$3"
+  local expect_post_attempts="$4"
+  local expect_get_attempts="$5"
+  local list_json="$6"
+  local error_msg="$7"
+
+  local tmp call_log rc=0 output post_attempts get_attempts
+  tmp=$(mktemp -d)
+  call_log="${tmp}/calls"
+  : > "${call_log}"
+
+  output=$(
+    # shellcheck disable=SC2030,SC2031,SC2317
+    {
+      unset GITLAB_CODE_OPS_SH_LOADED
+      unset GITLAB_HOST_VALIDATION_SH_LOADED
+      unset FORGE_TRANSIENT_RETRY_SH_LOADED
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/gitlab-code-ops.lib.sh"
+      sleep() { :; }
+      export CALL_LOG="${call_log}"
+      export ERROR_MSG="${error_msg}"
+      export LIST_JSON="${list_json}"
+      export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+      export REPO_ENCODED="group%2Fproject"
+      _gitlab_code_api_with_status() {
+        local method="$1"
+        local endpoint="$2"
+        printf '%s %s\n' "${method}" "${endpoint}" >> "${CALL_LOG}"
+        if [ "${method}" = "POST" ]; then
+          echo "${ERROR_MSG}" >&2
+          return 1
+        fi
+        if [[ "${endpoint}" == *"/merge_requests?"* ]]; then
+          printf '%s\n' "${LIST_JSON}"
+          return 0
+        fi
+        if [ "${endpoint}" = "/projects/${REPO_ENCODED}" ]; then
+          echo '{"id":42}'
+          return 0
+        fi
+        echo "unexpected GitLab endpoint ${endpoint}" >&2
+        return 1
+      }
+      forge_create_pr "main" "agent/1-x" "title" "body"
+    } 2>&1
+  ) || rc=$?
+
+  post_attempts=$(grep -c '^POST ' "${call_log}" || true)
+  get_attempts=$(grep -c '^GET ' "${call_log}" || true)
+
+  if [ "${rc}" -ne "${expect_rc}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected rc ${expect_rc}, got ${rc}"
+    echo "  output: ${output}"
+    echo "  calls:"
+    cat "${call_log}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${post_attempts}" -ne "${expect_post_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_post_attempts} GitLab POSTs, got ${post_attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ "${get_attempts}" -ne "${expect_get_attempts}" ]; then
+    echo "FAIL: ${test_name}"
+    echo "  expected ${expect_get_attempts} GitLab GETs, got ${get_attempts}"
+    echo "  calls:"
+    cat "${call_log}"
+    echo "  output: ${output}"
+    FAILURES=$((FAILURES + 1))
+    rm -rf "${tmp}"
+    return
+  fi
+  if [ -n "${expect_url}" ]; then
+    if ! echo "${output}" | grep -qF "${expect_url}"; then
+      echo "FAIL: ${test_name}"
+      echo "  expected '${expect_url}'"
+      echo "  output: ${output}"
+      FAILURES=$((FAILURES + 1))
+      rm -rf "${tmp}"
+      return
+    fi
+  fi
+
+  echo "PASS: ${test_name}"
+  rm -rf "${tmp}"
+}
+
+GL_MATCHING_MR='[{"iid":1,"web_url":"https://gitlab.com/group/project/-/merge_requests/1","source_project_id":42,"source_branch":"agent/1-x","target_branch":"main"}]'
+GL_WRONG_TARGET='[{"iid":1,"web_url":"https://gitlab.com/group/project/-/merge_requests/1","source_project_id":42,"source_branch":"agent/1-x","target_branch":"develop"}]'
+GL_FORK_MR='[{"iid":1,"web_url":"https://gitlab.com/group/project/-/merge_requests/1","source_project_id":99,"source_branch":"agent/1-x","target_branch":"main"}]'
+GL_409='GitLab API error (HTTP 409): Another open merge request already exists for this source branch: !1'
+
+run_gl_create_pr_recover_test "gitlab-create-pr-409-recovers" \
+  0 "https://gitlab.com/group/project/-/merge_requests/1" 1 2 \
+  "${GL_MATCHING_MR}" \
+  "${GL_409}"
+
+run_gl_create_pr_recover_test "gitlab-create-pr-409-no-match-fails" \
+  1 "could not be resolved" 1 2 \
+  "[]" \
+  "${GL_409}"
+
+run_gl_create_pr_recover_test "gitlab-create-pr-409-wrong-target-not-adopted" \
+  1 "could not be resolved" 1 2 \
+  "${GL_WRONG_TARGET}" \
+  "${GL_409}"
+
+run_gl_create_pr_recover_test "gitlab-create-pr-409-fork-not-adopted" \
+  1 "could not be resolved" 1 2 \
+  "${GL_FORK_MR}" \
+  "${GL_409}"
+
+run_gl_create_pr_recover_test "gitlab-create-pr-400-does-not-list" \
+  1 "" 1 0 \
+  "${GL_MATCHING_MR}" \
+  "GitLab API error (HTTP 400): invalid source branch"
 
 # --- Summary ---
 

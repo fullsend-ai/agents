@@ -92,7 +92,12 @@ The command:
 
 Only after `SCOPED`:
 
-- **Security dispatch (3b–3c).** Select security dispatch from the full PR diff and full changed-file list, before applying the own-commit scope to other dimensions. When selected, give the security sub-agent `pr-full-diff.txt` as its primary diff and the full changed-file list; a scoped own-commit diff cannot suppress inspection of code that this PR will merge.
+- **Security reviewers.** From the trusted staged roster, include the
+  `security` persona and every dimension whose declared `categories`
+  intersect the security row in `references/re-review.md` step 3a.
+  This definition covers custom personas too; it does not stage a disabled
+  persona. Preserve step 3c's re-review gates.
+- **Security dispatch (3b–3c).** Select security reviewers from the full PR diff and full changed-file list, before applying the own-commit scope to other dimensions. When selected, give each security reviewer `pr-full-diff.txt` as its primary diff, the full changed-file list, and full manifest; a scoped own-commit diff cannot suppress inspection of code that this PR will merge.
 - **Context packages (3d).** `diff` already points at the own-commit
   diff. Set `changed_files` from `dep-scope/files`; keep every
   manifest line in `pr_head` so dependency files stay readable as
@@ -106,8 +111,9 @@ Only after `SCOPED`:
 
   > This PR carries commits `<short SHAs>` from open PR(s) `#<N>`,
   > whose complete matching changes have a verified approval at dependency
-  > head `<SHA>`. Non-security dimensions review `pr-diff.txt`; security
-  > reviews `pr-full-diff.txt`. Do not raise findings on code those
+  > head `<SHA>`. Security reviewers, including custom personas with security
+  > categories, review `pr-full-diff.txt`; others review `pr-diff.txt`.
+  > Do not raise findings on code those
   > commits introduced unless this PR's own changes make it wrong.
   > Still run security inspection over the whole PR and report security
   > findings (vulnerabilities, auth or access-control bypass, secret
@@ -118,8 +124,8 @@ Only after `SCOPED`:
 - **Synthesis (6e).** Drop a finding whose cited code was introduced
   by a dependency commit and whose problem does not come from an own
   commit. Judge scope authorization on the own commits only. Two
-  exceptions: never drop a security finding (any finding from the
-  `security` dimension, including `prompt-injection`,
+  exceptions: never drop a security finding (any finding from a security
+  reviewer, or with a security-row category regardless of persona, including `prompt-injection`,
   `instruction-smuggling`, `unicode-steganography`, `bidi-override`,
   `homoglyph-attack`: an open dependency PR and matching SHAs or patches
   show only that the commit is duplicated, not that its defects were fixed or dismissed), and never drop an open prior

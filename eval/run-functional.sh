@@ -12,13 +12,17 @@
 #   GH_TOKEN      — GitHub token (defaults to gh auth token)
 #
 # Required:
-#   agent-eval-harness — pip install from the submodule or repo
+#   agent-eval-harness — pip install from the submodule or repo for its
+#                        dependencies; the checkout in use must be at least
+#                        the version the submodule pins (see "Harness
+#                        version gate" below)
 #   fullsend           — must be on PATH
 #
 # Optional environment:
 #   FULLSEND_DIR  — path to fullsend scaffold directory (default: repo root)
-#   EVAL_RUNTIME  — run every case under this runtime (claude|pi) instead of
-#                   the workspace config.yaml's runtime (fullsend run --runtime)
+#   EVAL_RUNTIME  — run every case under this runtime (claude|codex|pi)
+#                   instead of the workspace config.yaml's runtime
+#                   (fullsend run --runtime)
 #   EVAL_MODEL    — model override for every case: alias, id or provider/id
 #                   (fullsend run --model), e.g. google-vertex/gemini-2.5-flash
 #   EVAL_EFFORT   — effort override (fullsend run --effort)
@@ -40,8 +44,21 @@
 #                   fullsend release gate, which checks out agents `main`
 #                   rather than a pinned commit). Otherwise defaults to
 #                   "full". Any other value is an error.
+#   EVAL_TIMEOUT  — per-case runner timeout in seconds, honoured only when
+#                   the agent's eval.yaml execution.env does not set it
+#                   (code, review and fix pin 1700, retro 540; triage uses
+#                   the environment, default 1800)
+#   EVAL_FORGE    — forge passed as fullsend run --forge (default github)
+#   EVAL_SANDBOX_BINARY — a specific Linux fullsend binary to copy into the
+#                   sandbox; unset, fullsend picks one itself
+#   EVAL_REPO_VISIBILITY — visibility of the ephemeral fixture repos:
+#                   private (default) or public
+#   OPENAI_API_KEY — passed through to fullsend run for the codex and pi
+#                   runtimes when set
 #   GOOGLE_APPLICATION_CREDENTIALS, ANTHROPIC_VERTEX_PROJECT_ID, etc.
-#   AGENT_EVAL_HARNESS_DIR — path to agent-eval-harness
+#   AGENT_EVAL_HARNESS_DIR — path to the agent-eval-harness checkout to run
+#                   (default: the submodule). The submodule must still be
+#                   initialised: the pinned version is read from it.
 #
 # Exit status:
 #   0 — every phase passed
@@ -155,7 +172,12 @@ fi
 # The harness has inconsistent path resolution for dataset.path between
 # workspace.py (config-dir-relative) and execute.py (cwd-relative). Work
 # around this by rewriting dataset.path to an absolute path at runtime.
-EVAL_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX.yaml")"
+# BSD mktemp (macOS) only substitutes trailing X's, so a template with a
+# .yaml suffix produces the literal name eval-runtime-XXXXXX.yaml and a second
+# run fails with "File exists". Create the temp name first, then add the suffix.
+EVAL_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX")"
+EVAL_YAML="${EVAL_YAML_TMP}.yaml"
+mv "$EVAL_YAML_TMP" "$EVAL_YAML"
 
 yq_expr=".dataset.path = \"${CASES_DIR}\""
 # Report-only judges, in every tier: LLM-quality judges (name ends in
@@ -171,8 +193,21 @@ yq_expr+=' | .thresholds |= with_entries(select(.key | test("^(finding_expectati
 yq "$yq_expr" "$EVAL_YAML_SRC" > "$EVAL_YAML"
 HARNESS_DIR="${AGENT_EVAL_HARNESS_DIR:-${EVAL_DIR}/.agent-eval-harness}"
 
-# Fail fast if agent_eval library is not installed
-if ! python3 -c "import agent_eval" 2>/dev/null; then
+# The environment must not redirect git or python away from this checkout:
+# GIT_DIR and friends would make every git command below look at some other
+# repository, and PYTHONSAFEPATH would stop the harness scripts importing
+# agent_eval from the symlink beside them.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR PYTHONSAFEPATH
+
+# Fail fast if the agent_eval library is not installed. The harness scripts
+# import agent_eval itself from their checkout (a symlink beside them); the
+# install is for its third-party dependencies, and is required either way.
+# It only has to exist: an editable install of an older checkout can leave
+# the harness short of a dependency, which then surfaces as an import error
+# from the first harness script, and the fix is to re-run the install. -P
+# keeps the current directory off sys.path, so a harness checkout the script
+# happens to be run from cannot stand in for an install.
+if ! python3 -P -c "import agent_eval" 2>/dev/null; then
   echo "ERROR: agent-eval-harness library is not installed." >&2
   echo "       pip install -e eval/.agent-eval-harness" >&2
   exit 1
@@ -201,6 +236,85 @@ for script in "$WORKSPACE_PY" "$EXECUTE_PY" "$SCORE_PY"; do
     exit 1
   fi
 done
+
+# ---------------------------------------------------------------------------
+# Harness version gate
+# ---------------------------------------------------------------------------
+# The eval scripts are written against the harness version the submodule
+# pins, and from 1.56.3 the harness also confines agent judges with a deny
+# list. The checkout in use need not be the submodule: AGENT_EVAL_HARNESS_DIR
+# can point at another clone (a developer running against a newer harness).
+# Its scripts import agent_eval from that same checkout, so its version is
+# the one that runs. Require it to be at least the pinned version, and
+# refuse otherwise rather than run with behaviour the scripts were not
+# written for. Checked for every eval; it says nothing about judges, so it
+# cannot drift from how the harness treats them.
+
+# One line of untrusted text that Actions cannot read as a workflow
+# command: CR/LF become spaces and every "::" is broken up. Judge error
+# text comes from model API responses and eval config; version strings and
+# paths below come from pyproject.toml files and the environment.
+log_safe() {
+  printf '%s' "$1" | tr '\r\n' '  ' | sed 's/::/: :/g'
+}
+# harness_version <file>: prints the version in a pyproject.toml, or nothing.
+harness_version() {
+  sed -n 's/^version = "\([^"]*\)"/\1/p' "$1" 2>/dev/null | head -1 || true
+}
+# The pin is the submodule commit this checkout records (the gitlink), not
+# whatever is on disk under eval/.agent-eval-harness: that directory keeps its
+# old contents until `git submodule update`, and reading the pin from it would
+# let a stale directory pass as a stale pin. So the evals need a git clone of
+# this repository with the submodule initialised, even when
+# AGENT_EVAL_HARNESS_DIR points the run at another checkout. git looks for a
+# repository in the parent directories too, so first make sure the tree is
+# the checkout, not an exported tree inside one; and only a submodule entry
+# (mode 160000) is a pin, not a directory of plain files committed in its
+# place.
+submodule_dir="${EVAL_DIR}/.agent-eval-harness"
+submodule_hint="Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness"
+pin_sha="" git_err=""
+if ! toplevel="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>&1)"; then
+  git_err="$toplevel"
+elif [[ "$toplevel" == "$(cd "$REPO_ROOT" && pwd -P)" ]]; then
+  if entry="$(git -C "$REPO_ROOT" ls-tree -d HEAD eval/.agent-eval-harness 2>&1)"; then
+    read -r pin_mode _ pin_sha _ <<< "$entry"   # "<mode> <type> <sha>\t<path>", or nothing
+    [[ "$pin_mode" == "160000" ]] || pin_sha=""
+  else
+    git_err="$entry"
+  fi
+fi
+if [[ -z "$pin_sha" ]]; then
+  echo "ERROR: cannot read the pinned agent-eval-harness version: $(log_safe "$REPO_ROOT") is not a git checkout that records eval/.agent-eval-harness as a submodule${git_err:+ ($(log_safe "$git_err"))}" >&2
+  echo "       Run the evals from a git clone of this repository. ${submodule_hint}" >&2
+  exit 1
+fi
+pinned_ver="$(harness_version <(git -C "$submodule_dir" show "${pin_sha}:pyproject.toml" 2>/dev/null))"
+if [[ -z "$pinned_ver" ]]; then
+  echo "ERROR: cannot read the pinned agent-eval-harness version: this checkout pins commit ${pin_sha:0:8} of eval/.agent-eval-harness, but that commit is not in the submodule directory (not initialised, or not updated since the pin changed)" >&2
+  echo "       ${submodule_hint}" >&2
+  exit 1
+fi
+checkout_hint="Update the submodule (git submodule update --init eval/.agent-eval-harness), or point AGENT_EVAL_HARNESS_DIR at a checkout of ${pinned_ver} or later"
+harness_ver="$(harness_version "${HARNESS_DIR}/pyproject.toml")"
+if [[ -z "$harness_ver" ]]; then
+  echo "ERROR: cannot read the agent-eval-harness version from $(log_safe "${HARNESS_DIR}/pyproject.toml")" >&2
+  echo "       $(log_safe "$checkout_hint")" >&2
+  exit 1
+fi
+# The version must be a plain release (N.N.N) at or above the pinned one.
+# sort -V orders any string, so a prerelease or a placeholder could
+# otherwise pass.
+if [[ ! "$harness_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "ERROR: the agent-eval-harness checkout at $(log_safe "$HARNESS_DIR") is version '$(log_safe "$harness_ver")', not a release version; this repo pins agent-eval-harness $(log_safe "$pinned_ver")" >&2
+  echo "       $(log_safe "$checkout_hint")" >&2
+  exit 1
+fi
+if [[ "$(printf '%s\n%s\n' "$pinned_ver" "$harness_ver" | sort -V | head -1)" != "$pinned_ver" ]]; then
+  echo "ERROR: the agent-eval-harness checkout at $(log_safe "$HARNESS_DIR") is version $(log_safe "$harness_ver"), older than the agent-eval-harness $(log_safe "$pinned_ver") this repo pins" >&2
+  echo "       $(log_safe "$checkout_hint")" >&2
+  exit 1
+fi
 
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"
 
@@ -264,19 +378,26 @@ execute_run() {
     || exec_exit=$?
 
   # Copy output artifacts from harness workspace to runs directory.
-  # execute.py copies stdout/stderr/input but not the output/ subdirectory
-  # that after_each hooks populate (e.g., fixture-state.json).
-  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name
+  # execute.py copies stdout/stderr/input but not the outputs[*].path
+  # subdirectories that after_each hooks populate (output/fixture-state.json
+  # today; an eval that declares more paths needs them copied too). Copy every
+  # declared outputs path, defaulting to output/ when none is declared.
+  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name out_path
+  local output_paths=()
+  mapfile -t output_paths < <(yq -r '.outputs[] | .path // ""' "$config" | grep -v '^$')
+  [[ ${#output_paths[@]} -eq 0 ]] && output_paths=(output)
   if [[ -d "$ws_cases" ]]; then
     for ws_case in "$ws_cases"/*/; do
       case_name=$(basename "$ws_case")
-      if [[ -d "$ws_case/output" ]]; then
-        mkdir -p "$run_dir/cases/${case_name}/output"
-        if ! cp -a "$ws_case/output/." "$run_dir/cases/${case_name}/output/"; then
-          echo "ERROR: copying ${case_name} output into ${run_dir} failed" >&2
-          return 2
+      for out_path in "${output_paths[@]}"; do
+        if [[ -d "$ws_case/$out_path" ]]; then
+          mkdir -p "$run_dir/cases/${case_name}/$out_path"
+          if ! cp -a "$ws_case/$out_path/." "$run_dir/cases/${case_name}/$out_path/"; then
+            echo "ERROR: copying ${case_name} ${out_path} into ${run_dir} failed" >&2
+            return 2
+          fi
         fi
-      fi
+      done
     done
   fi
 }
@@ -319,7 +440,8 @@ fi
 # Retry, once, the cases that failed before the agent ran. They are staged
 # like release-tier cases (a sibling of cases/, so relative symlinks still
 # resolve), run under their own run id, and each retried case's results
-# replace its first attempt in RUN_DIR.
+# replace its first attempt in RUN_DIR. The first attempt moves to
+# RUN_DIR/first-attempt/cases/<case>, outside cases/ so it is never scored.
 mapfile -t retry_cases < <(pre_agent_failures)
 if [[ ${#retry_cases[@]} -gt 0 ]]; then
   echo ""
@@ -328,7 +450,9 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
   for case_name in "${retry_cases[@]}"; do
     cp -a "${CASES_DIR}/${case_name}" "${RETRY_STAGE_DIR}/${case_name}"
   done
-  RETRY_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX.yaml")"
+  RETRY_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX")"
+  RETRY_YAML="${RETRY_YAML_TMP}.yaml"
+  mv "$RETRY_YAML_TMP" "$RETRY_YAML"
   yq ".dataset.path = \"${RETRY_STAGE_DIR}\"" "$EVAL_YAML" > "$RETRY_YAML"
   RETRY_RUN_ID="${RUN_ID}-retry"
   RETRY_RUN_DIR="${RUNS_DIR}/${RETRY_RUN_ID}"
@@ -339,7 +463,19 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
     for case_name in "${retry_cases[@]}"; do
       retried="${RETRY_RUN_DIR}/cases/${case_name}"
       [[ -d "$retried" ]] || continue
-      rm -rf "${RUN_DIR}/cases/${case_name}"
+      # Never delete the first attempt to make room for the retry: if it
+      # cannot be moved aside, it stays in cases/ and the retry is not used.
+      preserved="${RUN_DIR}/first-attempt/cases/${case_name}"
+      if [[ -e "$preserved" ]]; then
+        echo "WARNING: ${preserved} already exists; keeping the first attempt of ${case_name} in cases/" >&2
+        continue
+      fi
+      if ! { mkdir -p "${RUN_DIR}/first-attempt/cases" \
+             && mv "${RUN_DIR}/cases/${case_name}" "$preserved"; }; then
+        echo "WARNING: could not preserve the first attempt of ${case_name}; keeping it in cases/" >&2
+        rmdir "${RUN_DIR}/first-attempt/cases" "${RUN_DIR}/first-attempt" 2>/dev/null || true
+        continue
+      fi
       cp -a "$retried" "${RUN_DIR}/cases/${case_name}"
       # score.py also reads each case's record from the run-level
       # run_result.json; point it at the retry's.
@@ -347,7 +483,7 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
         # Replace the case's record, then recompute the run-level totals
         # from per_case so they describe the attempts that count: exit_code
         # as execute.py derives it (the max), and summed cost, turns and
-        # tokens. The first attempt's spend stays in its own case dirs.
+        # tokens. The first attempt's spend stays in first-attempt/cases/.
         if ! { jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" '
                  .per_case[$c] = $r[0]
                  | [.per_case[]] as $cs
@@ -471,13 +607,6 @@ unexplained_regressions() {
       print; next
     }
     in_list { in_list = 0 }' "$SCORE_LOG"
-}
-
-# One line of untrusted text that Actions cannot read as a workflow
-# command: CR/LF become spaces and every "::" is broken up. Judge error
-# text comes from model API responses and eval config.
-log_safe() {
-  printf '%s' "$1" | tr '\r\n' '  ' | sed 's/::/: :/g'
 }
 
 print_judge_errors() {

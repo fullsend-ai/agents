@@ -18,6 +18,8 @@ No additional setup is required beyond the standard fullsend configuration.
 
 The code agent is triggered when the `ready-to-code` label is applied to an issue, or via the `/fs-code` command.
 
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch: the `ready-to-code` label added to a work item (by a human or a bot), or `/fs-code` from a human on a work item. Work items can be GitHub issues, GitLab issues or Jira issues, so a Jira poller that dispatches the code agent matches the same events; PR and MR comments do not match. Dispatch does not evaluate it for the built-in code agent on GitHub or GitLab yet, so the routing above is what runs there today.
+
 ## Commands
 
 | Command | Where | Effect |
@@ -317,7 +319,22 @@ vars. Key differences from single-forge setup:
   target forge, the code agent derives the key from `ISSUE_URL`.
   Branch names and PR text use that key and link the source URL; they do not
   invent a numeric target-forge issue reference. Target-forge issue comments
-  and assignee lookup are skipped when no such issue exists.
+  and assignee lookup are skipped when no such issue exists. The source
+  tracker comes from `FULLSEND_TRACKER`, or from `FULLSEND_WORK_ITEM_SOURCE`
+  (exported by `fullsend run`) when that is unset. If both are set and
+  disagree, the run stops.
+- **Jira results** — after a Jira-sourced run creates or updates the PR/MR,
+  the post-script posts a short code-stage update with the PR/MR URL to the
+  Jira issue through `fullsend issues post-comment --tracker jira`. The
+  comment uses the fixed marker `<!-- fullsend:code-agent -->`, so a retried
+  run edits it instead of adding another. The write uses the runner-only
+  `JIRA_USER_EMAIL` and `JIRA_TOKEN` from the Jira overlay of
+  `harness/code.yaml`. These are the same account the Jira poller treats as
+  its own, so the update does not dispatch agents. If the Jira write fails,
+  the step fails, even though the PR/MR already exists. The branch, commits,
+  PR/MR, review and merge stay on the code host: GitHub targets get a GitHub
+  PR and GitLab targets get a GitLab MR. For GitLab targets the GitLab host
+  is taken from `CI_SERVER_HOST`, because `ISSUE_URL` is the Jira URL.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
   harnesses using `base:` composition should override at the forge level

@@ -383,7 +383,7 @@ run_test_custom_filename_output "nested-additional-property-shows-allowed" \
   "agent-result.json" \
   "${REVIEW_SCHEMA}" \
   "false" \
-  "allowed properties: actionable, category, description, file, id, line, remediation, severity"
+  "allowed properties: actionable, category, description, dimension, file, id, line, remediation, severity"
 
 # --- Structural failures ---
 
@@ -865,6 +865,43 @@ assert_same_set "category-allowlist-matches-re-review-table" \
   "${PRE_REVIEW_ALLOWED}" "${RE_REVIEW_TABLE}"
 assert_same_set "category-schema-enum-matches-allowlist-plus-non-dimensional" \
   "${SCHEMA_CATEGORIES}" "$(printf '%s\n%s\n' "${PRE_REVIEW_ALLOWED}" "${POST_REVIEW_NON_DIMENSIONAL}" | sort)"
+
+# The pr-review personas declare their categories in frontmatter; the skill
+# builds each persona's allowed set from it. Together the upstream personas
+# must cover exactly the re-review table.
+PERSONA_CATEGORIES="$(for persona in "${SCRIPT_DIR}"/../skills/pr-review/sub-agents/*.md; do
+  awk '
+    NR == 1 && /^---$/ { in_fm = 1; next }
+    in_fm && /^---$/ { exit }
+    in_fm && /^categories:/ { in_cat = 1; next }
+    in_fm && in_cat && /^  - / { sub(/^  - /, ""); print; next }
+    in_fm && in_cat { in_cat = 0 }
+  ' "${persona}"
+done | sort)"
+assert_same_set "persona-frontmatter-categories-match-re-review-table" \
+  "${RE_REVIEW_TABLE}" "${PERSONA_CATEGORIES}"
+
+# --- review-result.schema.json finding dimension ---
+# dimension is optional: results and playback fixtures without it stay valid.
+
+run_test_custom_filename "review-finding-with-dimension-valid" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"logic-error","file":"main.go","description":"Bug.","dimension":"correctness"}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-finding-without-dimension-valid" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"logic-error","file":"main.go","description":"Bug."}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "review-finding-non-string-dimension-rejected" \
+  '{"action":"comment","pr_number":1,"repo":"org/repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Review.","findings":[{"severity":"medium","category":"logic-error","file":"main.go","description":"Bug.","dimension":7}]}' \
+  "agent-result.json" \
+  "${REVIEW_SCHEMA}" \
+  "false" \
+  "is not of type 'string'"
 
 # --- Retro result schema (schemas/retro-result.schema.json) ---
 # related_issues is OPTIONAL in the schema: a missing or quantity-deficient

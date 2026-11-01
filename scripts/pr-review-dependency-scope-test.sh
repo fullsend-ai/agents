@@ -260,15 +260,19 @@ assert_contains "review agent keeps dependency scoping out of approval criteria"
 assert_contains "user docs distinguish scoped review from merge ordering" "${DOCS}" \
   'does not impose merge ordering or prevent an approval'
 assert_contains "reference never drops security findings" "${REFERENCE}" \
-  'never drop a security finding (any finding from the'
+  'never drop a security finding (any finding from a security'
 assert_contains "reference keeps prior security findings at original severity" "${REFERENCE}" \
   'A prior security id keeps its original severity and'
 assert_contains "reference keeps security inspection on the whole PR" "${REFERENCE}" \
   'Still run security inspection over the whole PR'
 assert_contains "security dispatch uses the full PR inputs" "${REFERENCE}" \
-  'Select security dispatch from the full PR diff and full changed-file list'
+  'Select security reviewers from the full PR diff and full changed-file list'
 assert_contains "orchestrator gives security the full scoped-PR context" "${SKILL}" \
-  'security uses `/sandbox/workspace/pr-full-diff.txt` and the full changed-file list'
+  'security reviewers use `/sandbox/workspace/pr-full-diff.txt` and the full changed-file list'
+assert_contains "custom security personas are discovered from declared categories" "${REFERENCE}" \
+  'intersect the security row in `references/re-review.md` step 3a'
+assert_contains "security-category findings survive regardless of persona" "${REFERENCE}" \
+  'or with a security-row category regardless of persona'
 assert_contains "reference does not treat an open dependency as security clearance" "${REFERENCE}" \
   'not that its defects were fixed or dismissed'
 for category in instruction-smuggling unicode-steganography bidi-override homoglyph-attack; do
