@@ -440,7 +440,8 @@ fi
 # Retry, once, the cases that failed before the agent ran. They are staged
 # like release-tier cases (a sibling of cases/, so relative symlinks still
 # resolve), run under their own run id, and each retried case's results
-# replace its first attempt in RUN_DIR.
+# replace its first attempt in RUN_DIR. The first attempt moves to
+# RUN_DIR/first-attempt/cases/<case>, outside cases/ so it is never scored.
 mapfile -t retry_cases < <(pre_agent_failures)
 if [[ ${#retry_cases[@]} -gt 0 ]]; then
   echo ""
@@ -462,7 +463,19 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
     for case_name in "${retry_cases[@]}"; do
       retried="${RETRY_RUN_DIR}/cases/${case_name}"
       [[ -d "$retried" ]] || continue
-      rm -rf "${RUN_DIR}/cases/${case_name}"
+      # Never delete the first attempt to make room for the retry: if it
+      # cannot be moved aside, it stays in cases/ and the retry is not used.
+      preserved="${RUN_DIR}/first-attempt/cases/${case_name}"
+      if [[ -e "$preserved" ]]; then
+        echo "WARNING: ${preserved} already exists; keeping the first attempt of ${case_name} in cases/" >&2
+        continue
+      fi
+      if ! { mkdir -p "${RUN_DIR}/first-attempt/cases" \
+             && mv "${RUN_DIR}/cases/${case_name}" "$preserved"; }; then
+        echo "WARNING: could not preserve the first attempt of ${case_name}; keeping it in cases/" >&2
+        rmdir "${RUN_DIR}/first-attempt/cases" "${RUN_DIR}/first-attempt" 2>/dev/null || true
+        continue
+      fi
       cp -a "$retried" "${RUN_DIR}/cases/${case_name}"
       # score.py also reads each case's record from the run-level
       # run_result.json; point it at the retry's.
@@ -470,7 +483,7 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
         # Replace the case's record, then recompute the run-level totals
         # from per_case so they describe the attempts that count: exit_code
         # as execute.py derives it (the max), and summed cost, turns and
-        # tokens. The first attempt's spend stays in its own case dirs.
+        # tokens. The first attempt's spend stays in first-attempt/cases/.
         if ! { jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" '
                  .per_case[$c] = $r[0]
                  | [.per_case[]] as $cs
