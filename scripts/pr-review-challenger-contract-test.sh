@@ -125,6 +125,9 @@ assert_contains "challenger failure preserves the original findings" \
 assert_contains "challenger failure is non-actionable" \
   '"actionable": false'
 
+assert_contains "Codex recheck keeps a challenger result from close_agent" \
+  'close it; with no `completed` message, apply item 4.'
+
 CHALLENGER_SCHEMA="$(printf '%s\n' "$(cat "${CHALLENGER}")" | tr '\n' ' ' | tr -s ' ')"
 TARGET="${CHALLENGER_SCHEMA}"
 assert_contains "removed_findings schema emits original_category" \
@@ -173,6 +176,12 @@ assert_contains "constraints mirror merged tie-break" \
   '(ties broken on the more specific remediation)'
 assert_not_contains "merged entry no longer omits severity" \
   'top-level `category`, `file`, `line`, and `description`'
+assert_contains "denied spawn never adjudicates in the parent" \
+  "after a denied spawn, do not adjudicate any findings."
+assert_contains "denied spawn returns the fixed non-JSON result" \
+  'Return `Challenger unavailable: isolated context required.`'
+assert_contains "denied spawn falls through to step 6d item 4" \
+  'as a failure under `pr-review` step 6d item 4.'
 
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"

@@ -253,9 +253,10 @@ mutations on the runner.
 - A dispatched sub-agent whose final state is `errored`, `shutdown`,
   `not_found`, or `completed` with no message is final for that
   sub-agent: do not retry it; the `pr-review` skill's failure fallback
-  for that sub-agent applies. A `wait_agent` call that times out is
-  not a final state, unless it times out 900 s past that child's spawn,
-  pi's limit for a sub-agent.
+  for that sub-agent applies. A `wait_agent` call that times out 900 s
+  past that child's spawn, pi's limit for a sub-agent, is also final;
+  any other timed-out call is not. If `close_agent` reports `completed`
+  with a message, that message is the sub-agent's result, not a failure.
 
 ## Output format
 
