@@ -306,24 +306,27 @@ REREVIEW_FILTER_ORIGINAL_ACTION=""
 
 # Id assignment for this review. A supplied id is kept only when it is an
 # open prior id no earlier row already took, this review is not resolving,
-# and the row is at a place the id sits (its stamped thread's file and line,
-# else its recorded file and line): a row anywhere else, or an id whose
-# stamped threads are all outdated, is not provably the same finding and
-# mints; a closed, resolving, foreign, or duplicate id is replaced (a
+# and the row is at a place the id sits (its stamped thread's file and line):
+# a row anywhere else, an id whose stamped threads are all outdated, or an
+# anchored id with no stamped thread (thread fetch failed or truncated,
+# GitLab, no trusted stamp) is not provably the same finding and mints, and
+# the prior id stays open; a closed, resolving, foreign, or duplicate id is replaced (a
 # reclassified id must stay on its row, so it is kept). A prior finding with
 # no inline anchor (PR-level or file-level) has no place, so its supplied id
 # is kept on a row with the same file and category, or, for a supported
-# reclassification of that id, the same file in any category. An id stamped
+# reclassification of that id, the same file in any category; an anchored
+# record is never matched by its recorded file and line. An id stamped
 # on several distinct live locations is ambiguous and mints rather than
 # landing on whichever row comes first. Without a usable id, copy the open prior id whose file and
-# category match at the exact line; else the human-dismissed id anchored at
+# category match at the exact line of its stamped thread; else the human-dismissed id anchored at
 # the row's exact file and line, whatever the category, unless the row is
 # high or critical, a runner safety signal (protected-path or
 # sub-agent-failure), or more severe than the dismissed finding; a dismissal
 # never covers those. Otherwise mint. The exact line is where the id's
 # stamped thread sits now (STAMPED_THREADS), so a shifted line keeps its id;
-# a stamped id whose every thread is outdated has no line and mints. An id
-# with no stamped thread is matched at its recorded line. Do not copy an id
+# a stamped id whose every thread is outdated has no line and mints, as does
+# an id with no stamped thread: the recorded line is never an identity map.
+# Do not copy an id
 # this review is closing, unless its stamped thread sits at the row: that
 # concern is still present and its id stays open. Never copy an id only
 # because it is the one prior finding with that file and category. A missing
@@ -346,8 +349,8 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       .status == "reclassified"
       and (.rationale | type == "string" and length > 0)
       and (.evidence | type == "string" and length > 0);
-    # Whether a row sits at a place its supplied id sits: same file and line.
-    # A prior finding recorded without an inline anchor (a PR-level or
+    # Whether a row sits at a place its supplied id sits: same file and line
+    # of its stamped thread. A prior finding recorded without an inline anchor (a PR-level or
     # file-level finding) has no place and no stamped thread; a supplied id
     # stays on a row with the same file as that record and either its
     # category or, for a supported reclassification of that id, any category.
@@ -361,11 +364,10 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
           and (((.places | length) < 2
                 and any(.places[]; .file == ($row.file | anchor_file) and .line == ($row.line | anchor_line)))
                or ((.mapped | not)
-                   and (.places | length) == 0
+                   and (.anchored | not)
                    and (.category == $row.category or ($reclassified_ids | index($row.id)) != null)
                    and (.file | anchor_file) == ($row.file | anchor_file))));
     ($prior.open_ids) as $open
-    | ([ (.dispositions // [])[] | select(resolving or reclassified) | .id | select(valid_id) ]) as $closing
     | ([ (.dispositions // [])[] | select(resolving) | .id | select(valid_id) ]) as $resolving_ids
     | ([ (.dispositions // [])[] | select(reclassified) | .id | select(valid_id) ]) as $reclassified_ids
     | ([ $prior.findings[] | select(.id as $pid | $open | index($pid) != null)
@@ -373,8 +375,8 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
          | ([ $stamped[] | select(.id == $pid) ]) as $threads
          | if ($threads | length) == 0 then
              . + {mapped: false,
-                  places: (if (.file | anchor_file) != null and (.line | anchor_line) != null
-                           then [{file: (.file | anchor_file), line: (.line | anchor_line)}] else [] end)}
+                  anchored: ((.file | anchor_file) != null and (.line | anchor_line) != null),
+                  places: []}
            else
              . + {mapped: true,
                   places: [ $threads[] | select(.line != null) | {file: .path, line} ] | unique}
@@ -400,7 +402,6 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                  ]) as $reserved
                 | ([ $open_findings[]
                      | select(.id as $pid | ($taken + $reserved) | index($pid) == null)
-                     | select(.mapped or (.id as $pid | $closing | index($pid) == null))
                      | select(.category == $f.category)
                      | select((.places | length) < 2)
                      | select(($f.file | anchor_file) != null and ($f.line | anchor_line) != null)
