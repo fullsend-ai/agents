@@ -2994,8 +2994,7 @@ unset MOCK_REVIEW_THREADS_FAIL
 
 # The thread list is truncated: a stamped thread at the old coordinates in
 # the partial result is not trusted, so the row mints and f_old stays open.
-MOCK_REVIEW_THREADS_RESPONSE='{"threads":[{"is_resolved":false,"path":"docs/p.md","line":202,"original_line":202,"comments_truncated":false,"comments":[{"author":"fullsend-ai-review","author_type":"Bot","body":"<!-- finding:f_old --> Contract issue."}]}],"truncated":true}'
-export MOCK_REVIEW_THREADS_RESPONSE
+export MOCK_REVIEW_THREADS_RESPONSE='{"threads":[{"is_resolved":false,"path":"docs/p.md","line":202,"original_line":202,"comments_truncated":false,"comments":[{"author":"fullsend-ai-review","author_type":"Bot","body":"<!-- finding:f_old --> Contract issue."}]}],"truncated":true}'
 run_disposition_case "projection-truncated-threads-at-old-coordinates-mint" \
   "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
 run_disposition_case "projection-truncated-threads-supplied-id-at-old-coordinates-mints" \
