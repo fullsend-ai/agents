@@ -197,7 +197,8 @@ Collect bare `#N` and same-repository issue URLs from title/body/commits;
 match host/repository to PR, normalize/deduplicate to `#N`, then run forge
 **"Issue context"** commands.
 
-Verify PR claims; [scope approved, complete dependencies](references/dependency-scope.md). Command failure stops review.
+[Verify PR claims and dependencies](references/dependency-scope.md).
+Sandbox block: full diff. Other failures: stop review.
 
 ### 2a. Prior review context (re-reviews)
 

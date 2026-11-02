@@ -3006,13 +3006,13 @@ run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lo
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
   '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
-# Re-emitting an open prior high finding at high still leaves it open.
-# open is not a resolution, so approval is withheld.
-run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
-  "$(jq -c '.action="approve" | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
-  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+# A dependency declaration between review rounds cannot clear the first
+# round's high finding. Keeping its id open at the original severity blocks approval.
+run_disposition_case "dependency-scoped-prior-high-stays-blocking" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Code matches approved dependency #5 but remains unfixed.",evidence:"Dependency #5 head a1."}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
-assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
+assert_last_result "dependency-scoped-prior-high-stays-blocking" \
   '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
 # Finding ids never reach the posted text, whatever the model wrote: known

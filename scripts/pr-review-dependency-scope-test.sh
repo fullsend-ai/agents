@@ -14,9 +14,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SKILL="${REPO_ROOT}/skills/pr-review/SKILL.md"
 REFERENCE="${REPO_ROOT}/skills/pr-review/references/dependency-scope.md"
+REREVIEW_REFERENCE="${REPO_ROOT}/skills/pr-review/references/re-review.md"
 AGENT="${REPO_ROOT}/agents/review.md"
 DOCS="${REPO_ROOT}/docs/review.md"
 GITHUB_FORGE="${REPO_ROOT}/skills/pr-review/github/SKILL.md"
+SCOPE_SCRIPT="${REPO_ROOT}/skills/pr-review/github/scripts/dependency-scope.sh"
 FAILURES=0
 TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "${TMP_ROOT}"' EXIT
@@ -177,10 +179,14 @@ run_case() {
       if test -f "${FIX}/diff_commits_${sha}"; then cat "${FIX}/diff_commits_${sha}" >> "$own_net"; fi
     done < <(jq -r 'add | .[:-1][].sha' "${FIX}/pulls_10_commits_per_page_100" 2>/dev/null || true)
   fi
-  snippet=$(extract_snippet | sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g")
+  mkdir -p "${CASE_DIR}/config/skills/github/scripts"
+  sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g" \
+    "${SCOPE_SCRIPT}" \
+    > "${CASE_DIR}/config/skills/github/scripts/dependency-scope.sh"
+  snippet=$(extract_snippet | sed "s#<candidate PR numbers>#${DEP_PRS:-5}#; s#<step 1 head SHA>#${run_pin}#")
   CASE_RC=0
   (cd "${CASE_DIR}/run" && env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
-    REPO_FULL_NAME=example/repo PR_NUMBER=10 DEP_PRS="${DEP_PRS:-5}" PINNED_SHA="${run_pin}" \
+    REPO_FULL_NAME=example/repo PR_NUMBER=10 PI_CODING_AGENT_DIR="${CASE_DIR}/config" \
     bash -u -c "${snippet}") > "${CASE_DIR}/out" 2> "${CASE_DIR}/err" || CASE_RC=$?
 }
 
@@ -247,6 +253,8 @@ assert_contains "orchestrator links dependency-scope reference" "${SKILL}" \
   "(references/dependency-scope.md)"
 assert_contains "reference names the forge command" "${REFERENCE}" \
   '"Dependency-PR scoping" command'
+assert_contains "forge invokes the packaged scoping command" "${GITHUB_FORGE}" \
+  'scripts/dependency-scope.sh'
 assert_contains "reference reads every page of author comments" "${REFERENCE}" \
   '`--paginate --slurp`'
 assert_contains "reference keeps protected paths on the whole PR" "${REFERENCE}" \
@@ -281,15 +289,23 @@ done
 assert_contains "reference fetches manifest-less scoped paths at the pinned head" "${REFERENCE}" \
   'fetch it at `HEAD_SHA` as step'
 assert_contains "reference reconciles prior finding ids" "${REFERENCE}" \
-  'answer it with a `reclassified` disposition'
-assert_not_contains "GitHub scope command avoids scanner-rejected here-strings" "${GITHUB_FORGE}" \
+  '`open` disposition, retain its original severity'
+assert_contains "re-review rejects dependency-based reclassification" "${REREVIEW_REFERENCE}" \
+  'does not change severity; keep the prior finding `open`'
+assert_contains "orchestrator falls back on a sandbox block" "${SKILL}" \
+  'Sandbox block: full diff.'
+assert_not_contains "GitHub scope command avoids scanner-rejected here-strings" "${SCOPE_SCRIPT}" \
   'read -r -a DEP_PR_LIST <<<'
-assert_not_contains "GitHub scope command avoids scanner-rejected compound regex checks" "${GITHUB_FORGE}" \
+assert_not_contains "GitHub scope command avoids scanner-rejected compound regex checks" "${SCOPE_SCRIPT}" \
   '[[ $PID =~ ^[0-9a-f]{40,64}$ && $EXACT =~ ^[0-9a-f]{64}$ ]]'
-if test -n "$(extract_snippet)"; then
-  pass "GitHub forge has a dependency-scoping snippet"
+assert_not_contains "dependency numbers avoid scanner-rejected regex syntax" "${SCOPE_SCRIPT}" \
+  '[[ $d =~ ^[1-9][0-9]*$ ]]'
+assert_contains "dependency numbers retain positive-integer validation" "${SCOPE_SCRIPT}" \
+  "grep -Eqx '[1-9][0-9]*'"
+if test -n "$(extract_snippet)" && test -s "${SCOPE_SCRIPT}"; then
+  pass "GitHub forge has a dependency-scoping command and script"
 else
-  fail "GitHub forge has a dependency-scoping snippet"
+  fail "GitHub forge has a dependency-scoping command and script"
 fi
 
 # --- Cherry-picked commits: new SHAs, same patches ----------------------------

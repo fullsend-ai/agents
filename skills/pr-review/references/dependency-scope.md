@@ -35,6 +35,9 @@ GitHub: run the forge skill's "Dependency-PR scoping" command once,
 with `DEP_PRS` set to the candidate numbers and `PINNED_SHA` set to the
 step 1 head SHA (it refuses to scope if the PR head has moved). GitLab
 has no command: review the full diff.
+If the sandbox blocks the command before it runs, treat that as `SKIP`
+and review the full diff. Do not shorten or improvise the verification.
+An exit from the script itself still follows the failure rule below.
 
 The command:
 
@@ -131,15 +134,13 @@ Only after `SCOPED`:
   show only that the commit is duplicated, not that its defects were fixed or dismissed), and never drop an open prior
   finding id (next bullet).
 - **Prior findings (re-review).** An open prior id whose cited code is
-  now excluded cannot simply vanish: the ledger would carry it as open
-  indefinitely. Unless it is a security finding (categories above),
-  answer it with a `reclassified` disposition whose `rationale` says the
-  code matches the complete dependency PR `#<N>` approved at head `<SHA>`, and
-  emit the finding with the same id at severity `info` (the row
-  `re-review.md` describes: kept in the ledger, absent from the posted
-  review). A prior security id keeps its original severity and
-  disposition until the defect is fixed or an eligible reviewer
-  dismisses it.
+  now excluded cannot simply vanish or lose severity: approval of a
+  dependency does not fix this PR's prior finding. Answer it with an
+  `open` disposition, retain its original severity and category, and
+  emit the finding with the same id. Name dependency PR `#<N>` and its
+  approved head `<SHA>` in the rationale. Apply the normal resolution
+  rules only when a verified change actually addresses the finding.
+  A prior security id keeps its original severity and disposition too.
 - **Unchanged.** Protected paths and the PR body injection defense
   cover the whole PR (`pr-files.json`, every commit message): merging
   this PR merges the dependency commits too. Security inspection also

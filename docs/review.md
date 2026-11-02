@@ -388,6 +388,8 @@ review when verification fails; an unrecoverable artifact error stops the
 review. Scoping does not impose merge ordering or prevent an approval under
 the normal review criteria. The review body identifies the excluded commits,
 dependency PR, and approved head. GitLab continues to review the full diff.
+An existing finding on dependency code remains open at its original severity
+until the finding is actually resolved; declaring the dependency does not clear it.
 
 ## Time budget
 
