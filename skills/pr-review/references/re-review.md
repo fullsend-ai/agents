@@ -41,7 +41,9 @@ Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
     for a high or critical finding: the post-script refuses it, and the id
     stays open until a code change resolves it. A human's disagreement is
     not grounds for `reclassified` either; reclassify only on your own
-    technical analysis of the code.
+    technical analysis of the code. A dependency declaration or approval
+    does not change severity; keep the prior finding `open` as described
+    in [dependency scoping](dependency-scope.md).
   Absence from the latest diff is not a resolution. Do not drop a prior
   finding because it was not in the current diff, and do not derive an id
   from the file, line, or text.
