@@ -115,25 +115,30 @@ Token is realsecret123" \
 The quick brown fox jumps over a lazy dog
 Token is ***"
 
-# --- A retried case's preserved first attempt is scrubbed too ---
+# --- Every attempt of a retried case is scrubbed ---
 
-# run-functional.sh moves a retried case's first attempt to
-# <run-dir>/first-attempt/cases/<case>; scrubbing eval/runs must reach it.
+# run-functional.sh keeps each attempt of a run in
+# <run-dir>/attempts/<n>/cases/<case>; scrubbing eval/runs must reach all of
+# them, not only the final one.
 # The token is assembled at runtime so no token-shaped literal is committed.
 printf -v token_pad '%036d' 0
-preserved_root="${TMPDIR}/preserved/eval/runs"
-preserved_case="${preserved_root}/testagent/20260101-000000-1/first-attempt/cases/001-case"
-mkdir -p "${preserved_case}"
-printf 'clone with ghp_%s\n' "${token_pad}" > "${preserved_case}/stdout.log"
+attempts_root="${TMPDIR}/attempts/eval/runs"
+attempts_dir="${attempts_root}/testagent/20260101-000000-1/attempts"
+for n in 1 2; do
+  mkdir -p "${attempts_dir}/${n}/cases/001-case"
+  printf 'clone with ghp_%s\n' "${token_pad}" > "${attempts_dir}/${n}/cases/001-case/stdout.log"
+done
 exit_code=0
-bash "${SCRUB_SCRIPT}" "${preserved_root}" > /dev/null 2>&1 || exit_code=$?
-actual="$(cat "${preserved_case}/stdout.log")"
-if [[ ${exit_code} -eq 0 && "${actual}" == "clone with ghp_***" ]]; then
-  echo "PASS: preserved-first-attempt-redacted"
-else
-  echo "FAIL: preserved-first-attempt-redacted (exit ${exit_code})"
-  FAILURES=$((FAILURES + 1))
-fi
+bash "${SCRUB_SCRIPT}" "${attempts_root}" > /dev/null 2>&1 || exit_code=$?
+for n in 1 2; do
+  actual="$(cat "${attempts_dir}/${n}/cases/001-case/stdout.log")"
+  if [[ ${exit_code} -eq 0 && "${actual}" == "clone with ghp_***" ]]; then
+    echo "PASS: attempt-${n}-redacted"
+  else
+    echo "FAIL: attempt-${n}-redacted (exit ${exit_code})"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
 
 # --- Summary ---
 
