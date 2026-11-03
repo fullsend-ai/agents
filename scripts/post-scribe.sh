@@ -1098,6 +1098,9 @@ fi
 echo "Confidence threshold: ${MIN_CONFIDENCE}"
 REJECTED=0
 
+# The detectors feed their input via here-strings rather than `echo | grep -q`:
+# with pipefail, an early-exiting reader makes the writer die of SIGPIPE on
+# large inputs, the pipeline fails, and the helper wrongly reports "clean".
 contains_sensitive() {
   local text="$1"
   # GitHub PATs, AWS access keys, private keys
@@ -1217,7 +1220,8 @@ else
   echo "Processing ${TOPIC_COUNT} topics for existing issues..."
 fi
 
-for i in $(seq 0 $((TOPIC_COUNT - 1))); do
+if [[ "${TOPIC_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   # Read public_safe FIRST — if false, we must not log topic title or content
   PUBLIC_SAFE=$(jq -r ".topics[${i}].public_safe" "${RESULT_FILE}")
   PUBLIC_SAFE_CAT=$(jq -r ".topics[${i}].public_safe_category // empty" "${RESULT_FILE}")
@@ -1235,6 +1239,20 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   CONFIDENCE=$(jq -r ".topics[${i}].confidence" "${RESULT_FILE}")
   ISSUE_NUM=$(jq -r ".topics[${i}].existing_issue // empty" "${RESULT_FILE}")
   OMIT=$(jq -r ".topics[${i}].omit_reason // empty" "${RESULT_FILE}")
+
+  # Content gates run before any gate or log line that prints the topic,
+  # and reject without echoing it.
+  # Gate: sensitive content (deterministic PII/secret patterns)
+  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}" || contains_sensitive "${OMIT}"; then
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "sensitive content (PII, secrets)"
+    continue
+  fi
+
+  # Gate: suspicious Unicode (prompt injection defense)
+  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}" || contains_suspicious_unicode "${OMIT}"; then
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "suspicious Unicode (potential prompt injection)"
+    continue
+  fi
 
   if [[ -n "${OMIT}" ]]; then
     echo "  OMITTED: [$(_gha_sanitize "${TOPIC}")] — $(_gha_sanitize "${OMIT}")"
@@ -1262,18 +1280,6 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   fi
   if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
     gate_reject "${TOPIC}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
-    continue
-  fi
-
-  # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}"; then
-    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "contains sensitive content (PII, secrets)"
-    continue
-  fi
-
-  # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}"; then
-    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -1324,6 +1330,7 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
     COMMENT_ISSUES+=("${ISSUE_NUM}")
   fi
 done
+fi
 
 # ============================================================
 # Process new issues
@@ -1347,7 +1354,8 @@ if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${NEW_COUNT}" -gt 0 ]]; then
   fi
 fi
 
-for i in $(seq 0 $((NEW_COUNT - 1))); do
+if [[ "${NEW_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((NEW_COUNT - 1))); do
   # Read public_safe FIRST — if false, suppress all content from logs
   PUBLIC_SAFE=$(jq -r ".new_issues[${i}].public_safe" "${RESULT_FILE}")
   PUBLIC_SAFE_CAT=$(jq -r ".new_issues[${i}].public_safe_category // empty" "${RESULT_FILE}")
@@ -1365,6 +1373,22 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   CONFIDENCE=$(jq -r ".new_issues[${i}].confidence" "${RESULT_FILE}")
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
 
+  # Content gates run before any gate that prints the title, and reject
+  # without echoing it.
+  # Gate: sensitive content (deterministic PII/secret patterns)
+  # Labels are model-produced free text (Jira creates them on the fly), so
+  # they pass the same gates as the title and body.
+  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}" || contains_sensitive "${LABELS}"; then
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "sensitive content"
+    continue
+  fi
+
+  # Gate: suspicious Unicode (prompt injection defense)
+  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}" || contains_suspicious_unicode "${LABELS}"; then
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "suspicious Unicode (potential prompt injection)"
+    continue
+  fi
+
   # Gate: confidence
   if ! is_valid_confidence "${CONFIDENCE}"; then
     gate_reject "${TITLE}" "invalid confidence value"
@@ -1372,20 +1396,6 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   fi
   if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
     gate_reject "${TITLE}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
-    continue
-  fi
-
-  # Gate: sensitive content (deterministic PII/secret patterns)
-  # Labels are model-produced free text (Jira creates them on the fly), so
-  # they pass the same gates as the title and body.
-  if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}" || contains_sensitive "${LABELS}"; then
-    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "contains sensitive content"
-    continue
-  fi
-
-  # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}" || contains_suspicious_unicode "${LABELS}"; then
-    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -1459,6 +1469,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
     fi
   fi
 done
+fi
 
 # ============================================================
 # Summary (console)
