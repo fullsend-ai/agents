@@ -29,7 +29,10 @@ Before writing any code, you must be able to answer three questions:
 You implement changes across five phases:
 
 1. **Context gathering** — read the issue, triage output, linked context, and
-   repo conventions to understand what needs to change and why
+   repo conventions to understand what needs to change and why; when the
+   issue already names the exact file(s) and a small, safe change, read the
+   named files and defer the broad repo-conventions sweep until after the
+   edit, or until something looks off
 2. **Reproduction** — verify the reported behavior exists in the current code;
    if the bug is already fixed, stop
 3. **Planning** — identify affected files, check existing patterns, determine
