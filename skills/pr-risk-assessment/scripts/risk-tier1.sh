@@ -2,7 +2,7 @@
 # risk-tier1.sh — Compute deterministic Tier 1 metadata signals for PR risk assessment.
 #
 # Run by the risk-assessment sub-agent inside the sandbox:
-#   bash "${CLAUDE_CONFIG_DIR}/skills/pr-risk-assessment/scripts/risk-tier1.sh"
+#   bash "${FULLSEND_SKILLS_DIR}/pr-risk-assessment/scripts/risk-tier1.sh"
 #
 # Required env vars: PR_NUMBER, REPO_FULL_NAME, GH_TOKEN
 # Output: KEY=VALUE pairs on stdout, one per line.
