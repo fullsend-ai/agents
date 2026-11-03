@@ -49,7 +49,7 @@ a human-authored one — the work is in flight either way. (The code agent's
 pre-check filters bot PRs/MRs out, but that filter answers a different question:
 whether to skip dispatching a *new* implementation.)
 
-Compare issue titles and descriptions for semantic overlap. An issue is a duplicate if it describes the same root problem, even if the symptoms or wording differ.
+Compare issue titles and descriptions for semantic overlap. An issue is a duplicate if it describes the same root problem as an issue that is still open, even if the symptoms or wording differ. Closed issues are never duplicate targets: closed issues you see while checking tracked work (Step 2d) or in a listing that includes closed issues (`--state all`) are context only. Never set `duplicate_of` to a closed issue. If the same problem was reported in an issue that is now closed, you may mention it in `comment`, but choose the action you would choose if that closed issue did not exist.
 
 Also look for **blocking relationships** — open issues or PRs/MRs that must be resolved before this issue can make progress. Common patterns:
 
@@ -281,7 +281,7 @@ Information is missing that would change the triage outcome. Ask ONE focused, sp
 
 ### Action: `duplicate`
 
-This issue describes the same problem as an existing open issue.
+This issue describes the same problem as an existing open issue. `duplicate_of` must reference an issue that is open when you triage; a closed issue is never a valid duplicate target (see Step 2b).
 
 On GitHub/GitLab, `duplicate_of` is the issue number (integer). On Jira, it
 is the full issue key (string, e.g. `"PROJ-45"`).

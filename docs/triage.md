@@ -44,7 +44,7 @@ These labels are managed by the triage agent based on its assessment of the issu
 | `needs-info` | The issue lacks sufficient information. The agent posted clarifying questions. |
 | `ready-to-code` | The issue is fully specified and low-risk (bug, documentation, performance). Bug and documentation categories also receive their eponymous labels (`bug`, `documentation`) automatically. Triggers the [code agent](code.md). This behavior is configurable via [Variables](#variables). Exception: `triaged` is applied instead when `requires_workflow_changes` is set, when `TRIAGE_AUTO_CODE` is `off`/`never`, or when `TRIAGE_AUTO_CODE` is `discretionary` and the agent withholds promotion. |
 | `triaged` | The issue is fully specified but requires human prioritization before coding — a feature or other category, auto-promotion disabled, or a discretionary withhold. |
-| `duplicate` | The issue duplicates an existing one. The agent identified the original and the issue is closed automatically. |
+| `duplicate` | The issue duplicates an existing open issue (closed issues are never duplicate targets). The agent identified the original and the issue is closed automatically. |
 | `blocked` | The issue depends on another issue or external condition. The agent identified the blocker. |
 | `feature` | The issue is a feature request. Applied alongside `triaged` so humans can prioritize before coding begins. |
 | `question` | The issue is a question rather than a bug or feature request. |

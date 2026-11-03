@@ -23,6 +23,7 @@ gh issue list --repo OWNER/REPO --state open --json number,title,body --limit 10
 gh issue list --repo OWNER/REPO --state open --search "keyword" --json number,title,body --limit 30
 
 # Include closed issues when verifying finished children of a tracking issue
+# (closed issues are context only — never a duplicate target)
 gh issue list --repo OWNER/REPO --state all --json number,title,state --limit 100
 
 # List GitHub native sub-issues (child issues), including closed ones
