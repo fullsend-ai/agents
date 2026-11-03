@@ -4080,6 +4080,7 @@ run_gh_create_pr_recover_test() {
   local expect_list_attempts="$5"
   local list_json="$6"
   local create_errs="$7"
+  local repo_full_name="${8:-org/repo}"
 
   local tmp mock_bin call_log rc=0 output create_attempts list_attempts
   tmp=$(mktemp -d)
@@ -4118,7 +4119,7 @@ MOCK
       # shellcheck disable=SC1091
       source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
       sleep() { :; }
-      export REPO_FULL_NAME="org/repo"
+      export REPO_FULL_NAME="${repo_full_name}"
       export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
       export CALL_LOG="${call_log}"
       export CREATE_ERRS_FILE="${tmp}/create_errs"
@@ -4197,6 +4198,14 @@ run_gh_create_pr_recover_test "create-pr-timeout-then-already-exists-recovers" \
   0 "https://github.com/org/repo/pull/99" 2 1 \
   "${GH_MATCHING_PR}" \
   $'operation timed out\na pull request already exists for org:agent/1-x'
+
+# Issue URL owner spelling flows into REPO_FULL_NAME; the API returns the
+# canonical login. Owner logins are case-insensitive, so this must recover.
+run_gh_create_pr_recover_test "create-pr-already-exists-owner-case-mismatch-recovers" \
+  0 "https://github.com/org/repo/pull/99" 1 1 \
+  "${GH_MATCHING_PR}" \
+  'a pull request already exists for org:agent/1-x' \
+  "Org/repo"
 
 run_gh_create_pr_recover_test "create-pr-already-exists-no-match-fails" \
   1 "could not be resolved" 1 1 \

@@ -2081,7 +2081,7 @@ forge_list_prs_for_branch() {
   local owner="${REPO_FULL_NAME%%/*}"
   gh pr list --repo "${REPO_FULL_NAME}" --head "${branch}" \
     --state open --json number,headRepositoryOwner \
-    --jq "[.[] | select(.headRepositoryOwner.login == \"${owner}\")] | .[0].number // empty" \
+    --jq "[.[] | select((.headRepositoryOwner.login | ascii_downcase) == (\"${owner}\" | ascii_downcase))] | .[0].number // empty" \
     2>/dev/null
 }
 
@@ -2102,7 +2102,7 @@ _forge_resolve_existing_pr_url() {
   matches=$(printf '%s' "${json}" | jq -c \
     --arg owner "${owner}" --arg head "${head}" --arg base "${base}" \
     '[.[]
-      | select(.headRepositoryOwner.login == $owner)
+      | select((.headRepositoryOwner.login | ascii_downcase) == ($owner | ascii_downcase))
       | select(.headRefName == $head)
       | select(.baseRefName == $base)
       | .url] | unique') || return 1
