@@ -60,6 +60,7 @@ export PATH="${MOCK_BIN}:${PATH}"
 export FULLSEND_TRACKER="jira"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
+unset JIRA_API_URL
 
 run_test() {
   local test_name="$1"
@@ -168,6 +169,36 @@ run_test "jira-base-url-multiple-trailing-slashes-ok" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
   '"remove":"needs-info"'
 unset JIRA_BASE_URL
+
+# --- JIRA_API_URL routing (#1876) ---
+# Unset: REST calls fall back to the site URL (older fullsend releases).
+run_test "jira-api-url-unset-falls-back-to-site" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "https://test.atlassian.net/rest/api/3/issue/TESTPROJ-42"
+
+# Set: REST calls go to the API gateway; trailing slashes are stripped so
+# the request URL has no double slash.
+JIRA_GATEWAY="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+export JIRA_API_URL="${JIRA_GATEWAY}//"
+run_test "jira-api-url-routes-rest-calls" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "${JIRA_GATEWAY}/rest/api/3/issue/TESTPROJ-42"
+if grep -qF "atlassian.net/rest/api/3" "${CURL_LOG}"; then
+  echo "FAIL: jira-api-url-no-site-rest-calls — REST call sent to the site URL"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-api-url-no-site-rest-calls"
+fi
+
+# The credentials are sent to JIRA_API_URL, so a non-https value is refused
+# before any request is made.
+export JIRA_API_URL="http://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+run_test "jira-api-url-non-https-fails" \
+  "https://test.atlassian.net/browse/TESTPROJ-42" \
+  "JIRA_API_URL must start with https://" \
+  "true" "true"
+unset JIRA_API_URL
 
 # --- Jira credential guard tests (#876) ---
 # Verify that source-time :? guards on JIRA_USER_EMAIL and JIRA_TOKEN reject

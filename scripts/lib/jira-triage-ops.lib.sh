@@ -23,6 +23,11 @@
 #   ISSUE_URL       — HTML URL of the issue (https://<host>.atlassian.net/browse/PROJ-123)
 #   JIRA_USER_EMAIL — Jira account email for Basic auth
 #   JIRA_TOKEN      — Jira Cloud API token
+#   JIRA_API_URL    — (optional) where REST calls go, e.g. the Atlassian
+#                     API gateway https://api.atlassian.com/ex/jira/<cloudId>
+#                     that `fullsend run` resolves and exports. Falls back
+#                     to JIRA_BASE_URL when unset (older fullsend releases).
+#                     Browse links always use JIRA_BASE_URL.
 #
 # These are the same env var names the `fullsend issues` CLI commands read
 # by default (see `fullsend issues post-comment --help`) — using the same
@@ -47,11 +52,27 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # ISSUE_URL and FULLSEND_TRACKER.
 : "${JIRA_USER_EMAIL:?JIRA_USER_EMAIL must be set}"
 : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+# JIRA_API_URL is optional, but the credentials are sent to it, so refuse
+# anything that is not https.
+if [[ -n "${JIRA_API_URL:-}" && "${JIRA_API_URL}" != https://* ]]; then
+  echo "ERROR: JIRA_API_URL must start with https://" >&2
+  exit 1
+fi
 
 # JIRA_BASE_URL is derived at runtime by tracker_parse_issue_url, so it
 # cannot be validated at source time — keep a per-call guard for it.
 _jira_require_vars() {
   if [[ -z "${JIRA_BASE_URL:-}" ]]; then echo "ERROR: JIRA_BASE_URL is not set" >&2; return 1; fi
+}
+
+# Print the base URL for REST calls: JIRA_API_URL when set, else
+# JIRA_BASE_URL, with trailing slash(es) stripped.
+_jira_api_base() {
+  local base="${JIRA_API_URL:-${JIRA_BASE_URL}}"
+  while [[ "${base}" == */ ]]; do
+    base="${base%/}"
+  done
+  printf '%s\n' "${base}"
 }
 
 _jira_api() {
@@ -61,13 +82,15 @@ _jira_api() {
   shift
 
   _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
 
   curl --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     --header "Content-Type: application/json" \
     --request "${method}" \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${api_base}/rest/api/3${endpoint}" \
     "$@"
 }
 
@@ -78,6 +101,8 @@ _jira_api_with_status() {
   shift
 
   _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
 
   local err_file
   err_file=$(mktemp)
@@ -88,7 +113,7 @@ _jira_api_with_status() {
     --header "Content-Type: application/json" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${api_base}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
     echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
     rm -f "${err_file}"

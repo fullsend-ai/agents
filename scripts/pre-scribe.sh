@@ -507,6 +507,11 @@ case "${FULLSEND_TRACKER}" in
 #                            issues are scoped to (e.g. "PROJ")
 #
 # Optional env vars:
+#   JIRA_API_URL           — where REST calls go, e.g. the Atlassian API
+#                            gateway https://api.atlassian.com/ex/jira/<cloudId>
+#                            that `fullsend run` resolves and exports. Falls
+#                            back to JIRA_BASE_URL when unset (older fullsend
+#                            releases). Browse links always use JIRA_BASE_URL.
 #   SCRIBE_JIRA_ISSUE_TYPE — issue type name for created issues (default: "Task")
 #   SCRIBE_JIRA_LABELS     — comma-separated allowlist of labels that scribe may
 #                            apply to Jira issues (default: "meeting-notes")
@@ -526,6 +531,15 @@ while [[ "${JIRA_BASE_URL}" == */ ]]; do
 done
 if [[ ! "${JIRA_BASE_URL}" =~ ^https://[a-zA-Z0-9-]+\.atlassian\.net$ ]]; then
   echo "ERROR: JIRA_BASE_URL must be a Jira Cloud URL (https://<site>.atlassian.net)" >&2
+  exit 1
+fi
+# Base URL for REST calls; the credentials go here, so require https.
+SCRIBE_JIRA_API_BASE="${JIRA_API_URL:-${JIRA_BASE_URL}}"
+while [[ "${SCRIBE_JIRA_API_BASE}" == */ ]]; do
+  SCRIBE_JIRA_API_BASE="${SCRIBE_JIRA_API_BASE%/}"
+done
+if [[ "${SCRIBE_JIRA_API_BASE}" != https://* ]]; then
+  echo "ERROR: JIRA_API_URL must start with https://" >&2
   exit 1
 fi
 if [[ ! "${SCRIBE_JIRA_PROJECT}" =~ ^[A-Z][A-Z0-9_]*$ ]]; then
@@ -549,7 +563,7 @@ _scribe_jira_api() {
     --header "Content-Type: application/json" \
     --header "Accept: application/json" \
     --request "${method}" \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${SCRIBE_JIRA_API_BASE}/rest/api/3${endpoint}" \
     "$@"
 }
 
@@ -570,7 +584,7 @@ _scribe_jira_api_with_status() {
     --header "Accept: application/json" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${SCRIBE_JIRA_API_BASE}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
     echo "Jira API error: curl failed — $(_gha_sanitize "$(cat "${err_file}")")" >&2
     rm -f "${err_file}"

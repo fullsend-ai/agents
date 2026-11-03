@@ -171,6 +171,15 @@ overlays:
       profiles:
         - profiles/fullsend-jira-ro.yaml
     pre_script: scripts/pre-code-jira.sh
+    # JIRA_API_URL reaches the sandbox through an expanded host file, not
+    # env.sandbox: a ${VAR} in env.sandbox fails the run when the host
+    # variable is unset, and older fullsend releases do not set it. An
+    # unset value expands to empty here and the skills fall back to
+    # JIRA_BASE_URL.
+    host_files:
+      - src: env/jira/code.env
+        dest: /sandbox/workspace/.env.d/jira-code.env
+        expand: true
     env:
       runner:
         JIRA_BASE_URL: "${JIRA_BASE_URL}"

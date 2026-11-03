@@ -312,7 +312,10 @@ vars. Key differences from single-forge setup:
   auth, but `JIRA_TOKEN` inside the sandbox is the provider's opaque
   placeholder — the real API token is never expanded into sandbox
   config or env files. OpenShell replaces the placeholder in the
-  Basic Authorization header at the proxy boundary. The Jira overlay
+  Basic Authorization header at the proxy boundary. Requests go to
+  `JIRA_API_URL` (the Atlassian API gateway, delivered through the
+  expanded `env/jira/code.env` host file) and fall back to
+  `JIRA_BASE_URL` when it is empty. The Jira overlay
   composes with the target-forge overlay (GitHub or GitLab) via
   merge-all-matching.
 - **External work-item identity** — when the source tracker differs from the

@@ -231,7 +231,7 @@ not the real token. Extract the issue key from `ISSUE_URL`:
 if test "${FULLSEND_TRACKER:-}" = "jira"; then
   ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
   curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
-    "${JIRA_BASE_URL}/rest/api/3/issue/${ISSUE_KEY}"
+    "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}"
 else
   # GitHub:
   gh issue view "${ISSUE_NUMBER}" --json number,title,body,labels,comments,assignees

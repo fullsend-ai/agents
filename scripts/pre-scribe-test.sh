@@ -917,6 +917,63 @@ MOCKEOF
   echo "PASS: ${test_name}"
 }
 
+# JIRA_API_URL (#1876): REST calls go to the API gateway, trailing slash
+# stripped, while backlog links keep the site URL. Unset falls back to
+# JIRA_BASE_URL.
+run_jira_api_url_fetch() {
+  local api_url="$1" url_log="$2" backlog="$3"
+  local jira_bin="${TMPDIR}/jira-bin-api-url"
+  mkdir -p "${jira_bin}"
+  cat > "${jira_bin}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  [[ "\${arg}" == https://* ]] && echo "\${arg}" >> "${url_log}"
+done
+echo '{"issues":[{"key":"PROJ-5","fields":{"summary":"Fifth","description":null,"labels":[]}}],"isLast":true}'
+MOCKEOF
+  chmod +x "${jira_bin}/curl"
+  : > "${url_log}"
+  PATH="${jira_bin}:${PATH}" JIRA_API_URL="${api_url}" \
+  JIRA_BASE_URL="https://mock.atlassian.net" JIRA_USER_EMAIL="bot@mock.example" \
+  JIRA_TOKEN="fake" SCRIBE_JIRA_PROJECT="PROJ" bash -c '
+    set -euo pipefail
+    _gha_sanitize() { printf "%s" "$1"; }
+    source "$1/lib/jira-scribe-ops.lib.sh"
+    forge_fetch_open_issues_raw "unused" "$2"
+    forge_filter_issues_to_backlog "$2" "$3"
+  ' _ "${SCRIPT_DIR}" "${TMPDIR}/jira-api-url-raw.json" "${backlog}" 2>&1
+}
+
+test_jira_api_url_routing() {
+  local test_name="jira/api-url-routing"
+  local url_log="${TMPDIR}/jira-api-url-urls.log" backlog="${TMPDIR}/jira-api-url-backlog.json"
+  local gateway="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+  local out
+  if ! out=$(run_jira_api_url_fetch "${gateway}/" "${url_log}" "${backlog}"); then
+    echo "FAIL: ${test_name} — fetch failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! assert_eq "${test_name}: rest url" "${gateway}/rest/api/3/search/jql" "$(sort -u "${url_log}")"; then return; fi
+  if ! assert_eq "${test_name}: link" "https://mock.atlassian.net/browse/PROJ-5" "$(jq -r '.[0].url' "${backlog}")"; then return; fi
+
+  if ! out=$(run_jira_api_url_fetch "" "${url_log}" "${backlog}"); then
+    echo "FAIL: ${test_name} — fallback fetch failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! assert_eq "${test_name}: fallback rest url" "https://mock.atlassian.net/rest/api/3/search/jql" "$(sort -u "${url_log}")"; then return; fi
+
+  if out=$(run_jira_api_url_fetch "http://api.atlassian.com/ex/jira/x" "${url_log}" "${backlog}"); then
+    echo "FAIL: ${test_name} — non-https JIRA_API_URL was accepted"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! assert_eq "${test_name}: non-https no request" "" "$(cat "${url_log}")"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- Run tests ---
 
 # GitHub tests
@@ -941,6 +998,7 @@ test_jira_backlog_pagination
 test_jira_backlog_page_cap_truncation
 test_jira_closed_issues
 test_jira_closed_issues_failure_fallback
+test_jira_api_url_routing
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

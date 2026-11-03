@@ -131,6 +131,9 @@ overlays:
       - skills/jira-forge
       - skills/issue-labels/jira
       - skills/jira-components
+    # triage.env also carries JIRA_API_URL: a host file expands an unset
+    # variable to empty, where env.sandbox would fail the run on fullsend
+    # releases that do not set it.
     host_files:
       - src: env/jira/triage.env
         dest: /sandbox/workspace/.env.d/triage.env
