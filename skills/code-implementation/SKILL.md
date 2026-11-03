@@ -546,10 +546,10 @@ and how you will verify it works.
 
 ### 9. Implement and verify
 
-Write the code change, then verify it. On the scoped path, now do step 3
-items 2-5 (build/test commands, linter config, commit and PR title
-conventions, PR template) before running verification, since lint,
-commit format, and `pr_body` depend on them.
+Write the code change, then verify it. On the scoped path, read
+`CONTRIBUTING.md` (if present) and do step 3 items 2-5 (build/test,
+linter config, title conventions, PR template) before verification;
+lint, commit format, and `pr_body` depend on them.
 
 **Context efficiency:** A PostToolUse hook automatically compacts verification
 tool output. Successful runs of scan-secrets, pre-commit, tests, linters, and
