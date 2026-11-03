@@ -52,9 +52,15 @@ if test -z "$SKIP"; then
       and all(.latestReviews.nodes[]; .state != "CHANGES_REQUESTED"))' "$W/dep-$d-meta.json" >/dev/null 2>&1 \
       || { SKIP="dependency #$d is not verified at its current head"; break; }
     echo "$d" >> "$W/dep-prs"
-    gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/$d/commits?per_page=100" < /dev/null > "$W/dep-$d.json" || SKIP="${SKIP:-cannot list #$d commits}"
-    jq -e 'add // [] | length < 250' "$W/dep-$d.json" >/dev/null 2>&1 || SKIP="${SKIP:-#$d has 250+ commits}"
-    jq -r 'add // [] | .[].sha' "$W/dep-$d.json" >> "$W/dep-shas" 2>/dev/null
+    if ! gh api --paginate --slurp "repos/${REPO_FULL_NAME}/pulls/$d/commits?per_page=100" < /dev/null > "$W/dep-$d.json"; then
+      SKIP="cannot list #$d commits"; break
+    fi
+    if ! jq -e 'type == "array" and length > 0 and all(.[]; type == "array")
+      and (add | type == "array" and length > 0 and length < 250
+        and all(.[]; type == "object" and (.sha | type) == "string" and (.sha | length) > 0))' "$W/dep-$d.json" >/dev/null 2>&1; then
+      SKIP="#$d has invalid or 250+ commits"; break
+    fi
+    jq -r 'add | .[].sha' "$W/dep-$d.json" >> "$W/dep-shas" 2>/dev/null
   done
 fi
 test -s "$W/dep-prs" || SKIP="${SKIP:-no open dependency PR}"

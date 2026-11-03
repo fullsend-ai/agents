@@ -105,6 +105,10 @@ if test "$key" = pulls_10 && test -f "${FIXTURES}/${key}.next"; then
   count=$((count + 1)); echo "$count" > "${FIXTURES}/${key}.count"
   if test "$count" -ge 3; then cat "${FIXTURES}/${key}.next"; exit 0; fi
 fi
+if test -f "${FIXTURES}/${key}.fail"; then
+  cat "${FIXTURES}/${key}" 2>/dev/null
+  exit 1
+fi
 test -f "${FIXTURES}/${key}" || exit 1
 cat "${FIXTURES}/${key}"
 EOF
@@ -209,7 +213,8 @@ assert_scoped() {
 assert_skipped() {
   local name="$1" reason="$2"
   local ws="${CASE_DIR}/workspace"
-  if grep -qF "SKIP: ${reason}" "${CASE_DIR}/out" \
+  if test "$CASE_RC" -eq 0 \
+    && grep -qF "SKIP: ${reason}" "${CASE_DIR}/out" \
     && test "$(cat "${ws}/pr-diff.txt")" = "full pr diff" \
     && ! test -e "${ws}/pr-full-diff.txt"; then
     pass "${name}"
@@ -646,6 +651,25 @@ for variant in unapproved stale dismissed requested draft base self readonly inc
   mv "${FIX}/modified" "${FIX}/graphql_5"
   run_case
   assert_skipped "${variant} dependency cannot suppress ordinary review" "dependency #5 is not verified at its current head"
+done
+
+for variant in failed-error-body successful-error-body malformed-json; do
+  setup_stack "dependency-commits-${variant}"
+  commits a1 c3 > "${FIX}/pulls_10_commits_per_page_100"
+  case "$variant" in
+    failed-error-body)
+      printf '%s\n' '[{"message":"Not Found"}]' > "${FIX}/pulls_5_commits_per_page_100"
+      : > "${FIX}/pulls_5_commits_per_page_100.fail"
+      reason='cannot list #5 commits' ;;
+    successful-error-body)
+      printf '%s\n' '[{"message":"Not Found"}]' > "${FIX}/pulls_5_commits_per_page_100"
+      reason='#5 has invalid or 250+ commits' ;;
+    malformed-json)
+      printf '%s\n' '{broken' > "${FIX}/pulls_5_commits_per_page_100"
+      reason='#5 has invalid or 250+ commits' ;;
+  esac
+  run_case
+  assert_skipped "${variant} dependency commits keep full review" "$reason"
 done
 
 for variant in later-revert partial-prefix; do
