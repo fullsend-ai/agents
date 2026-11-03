@@ -60,15 +60,35 @@ GITHUB_TRIAGE_OPS_SH_LOADED=1
 
 # --- URL handling ---
 
+# Prints the GitHub web origin the run executes against, without a trailing
+# slash: GITHUB_SERVER_URL (set by GitHub Actions) or https://github.com.
+_github_triage_server_url() {
+  local server="${GITHUB_SERVER_URL:-https://github.com}"
+  printf '%s\n' "${server%/}"
+}
+
 tracker_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  local server
+  server=$(_github_triage_server_url)
+  if [[ ! "${server}" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?$ ]]; then
+    echo "ERROR: GITHUB_SERVER_URL is not an HTTPS origin (https://host[:port]): ${server}" >&2
+    return 1
+  fi
+  # Literal prefix match (including the trailing slash) so look-alike hosts
+  # that merely start with the configured host are rejected.
+  local path="${ISSUE_URL#"${server}/"}"
+  if [[ "${path}" == "${ISSUE_URL}" ]] \
+      || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: ${ISSUE_URL}" >&2
     return 1
   fi
 }
 
 tracker_parse_issue_url() {
-  REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
+  local server path
+  server=$(_github_triage_server_url)
+  path="${ISSUE_URL#"${server}/"}"
+  REPO="${path%%/issues/*}"
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 }
 
