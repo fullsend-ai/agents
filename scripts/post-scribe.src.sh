@@ -298,26 +298,31 @@ if [[ "${TOPIC_COUNT}" -gt 0 ]]; then
   ISSUE_NUM=$(jq -r ".topics[${i}].existing_issue // empty" "${RESULT_FILE}")
   OMIT=$(jq -r ".topics[${i}].omit_reason // empty" "${RESULT_FILE}")
 
+  if [[ -n "${OMIT}" ]]; then
+    if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}" || contains_sensitive "${OMIT}" \
+      || contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}" || contains_suspicious_unicode "${OMIT}"; then
+      echo "  OMITTED: item $((i + 1)) of ${TOPIC_COUNT} (details suppressed)"
+    else
+      echo "  OMITTED: [$(_gha_sanitize "${TOPIC}")] — $(_gha_sanitize "${OMIT}")"
+    fi
+    continue
+  fi
+
+  if [[ -z "${ISSUE_NUM}" || "${ISSUE_NUM}" == "null" ]]; then
+    continue
+  fi
+
   # Content gates run before any gate or log line that prints the topic,
   # and reject without echoing it.
   # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}" || contains_sensitive "${OMIT}"; then
+  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}"; then
     gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "sensitive content (PII, secrets)"
     continue
   fi
 
   # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}" || contains_suspicious_unicode "${OMIT}"; then
+  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}"; then
     gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "suspicious Unicode (potential prompt injection)"
-    continue
-  fi
-
-  if [[ -n "${OMIT}" ]]; then
-    echo "  OMITTED: [$(_gha_sanitize "${TOPIC}")] — $(_gha_sanitize "${OMIT}")"
-    continue
-  fi
-
-  if [[ -z "${ISSUE_NUM}" || "${ISSUE_NUM}" == "null" ]]; then
     continue
   fi
 

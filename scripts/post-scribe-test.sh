@@ -298,6 +298,7 @@ run_test_content_suppressed() {
   local json_content="$2"
   local expected_stdout="$3"
   local forbidden_stdout="$4"
+  local expected_rejections="${5:-1}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
@@ -330,8 +331,8 @@ run_test_content_suppressed() {
     return
   fi
 
-  if ! grep -qF "Gate rejections: 1" "${TMPDIR}/stdout.log"; then
-    echo "FAIL: ${test_name} — expected the item to be counted as rejected"
+  if ! grep -qF "Gate rejections: ${expected_rejections}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected Gate rejections: ${expected_rejections}"
     cat "${TMPDIR}/stdout.log"
     FAILURES=$((FAILURES + 1))
     return
@@ -410,8 +411,15 @@ run_test_content_suppressed "github/invalid-issue-unicode-topic-suppressed" \
 
 run_test_content_suppressed "github/omitted-sensitive-topic-suppressed" \
   '{"topics":[{"topic":"Ping alice@example.com","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"not actionable"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
-  "content gate: sensitive content" \
-  "alice@example.com"
+  "OMITTED: item 1 of 1 (details suppressed)" \
+  "alice@example.com" \
+  0
+
+run_test_content_suppressed "github/no-issue-sensitive-topic-skipped" \
+  '{"topics":[{"topic":"Ping alice@example.com","summary":"Follow up.","existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":0}}' \
+  "Topics processed: 1" \
+  "alice@example.com" \
+  0
 
 run_test_content_suppressed "github/low-confidence-sensitive-new-issue-title-suppressed" \
   '{"topics":[],"new_issues":[{"title":"Email bob@example.com about rollout","summary":"Rollout.","body":"## Problem\nRollout.\n\n## Related\nSource: [Meeting notes](https://docs.google.com/document/d/abc123)","confidence":0.2,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
@@ -445,13 +453,15 @@ ZWSP_ESCAPE="\\u200b"
 
 run_test_content_suppressed "github/oversized-omit-reason-sensitive-suppressed" \
   '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"bob@example.com\n'"${PADDING}"'"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
-  "content gate: sensitive content" \
-  "bob@example.com"
+  "OMITTED: item 1 of 1 (details suppressed)" \
+  "bob@example.com" \
+  0
 
 run_test_content_suppressed "github/oversized-omit-reason-unicode-suppressed" \
   '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"Hidden'"${ZWSP_ESCAPE}"'directive\n'"${PADDING}"'"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
-  "content gate: suspicious Unicode" \
-  "Hidden"
+  "OMITTED: item 1 of 1 (details suppressed)" \
+  "Hidden" \
+  0
 
 run_test_content_suppressed "github/oversized-label-sensitive-suppressed" \
   '{"topics":[],"new_issues":[{"title":"Rollout followup","summary":"Rollout.","body":"## Problem\nRollout.","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes","bob@example.com\n'"${PADDING}"'"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
