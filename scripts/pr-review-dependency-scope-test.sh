@@ -179,10 +179,11 @@ run_case() {
       if test -f "${FIX}/diff_commits_${sha}"; then cat "${FIX}/diff_commits_${sha}" >> "$own_net"; fi
     done < <(jq -r 'add | .[:-1][].sha' "${FIX}/pulls_10_commits_per_page_100" 2>/dev/null || true)
   fi
-  mkdir -p "${CASE_DIR}/config/skills/github/scripts"
+  # fullsend stages the skill under its SKILL.md name, pr-review-github.
+  mkdir -p "${CASE_DIR}/config/skills/pr-review-github/scripts"
   sed "s#/sandbox/workspace#${CASE_DIR}/workspace#g" \
     "${SCOPE_SCRIPT}" \
-    > "${CASE_DIR}/config/skills/github/scripts/dependency-scope.sh"
+    > "${CASE_DIR}/config/skills/pr-review-github/scripts/dependency-scope.sh"
   snippet=$(extract_snippet | sed "s#<candidate PR numbers>#${DEP_PRS:-5}#; s#<step 1 head SHA>#${run_pin}#")
   CASE_RC=0
   (cd "${CASE_DIR}/run" && env PATH="${CASE_DIR}/bin:${PATH}" FIXTURES="${FIX}" \
