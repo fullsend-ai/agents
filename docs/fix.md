@@ -22,6 +22,8 @@ The fix agent runs automatically when the [review agent](review.md) submits a
 
 It can also be triggered manually with the `/fs-fix` command.
 
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch, on GitHub and GitLab only: `/fs-fix` from a human on a same-repo PR/MR, or a "changes requested" review from a `*-review[bot]` reviewer on a same-repo PR that is bot-authored or labeled `fullsend-fix` and is not labeled `fullsend-no-fix`. It has no Jira path. Dispatch does not evaluate it for the built-in fix agent yet, so the routing above is what runs today.
+
 ## Commands
 
 | Command | Where | Effect |

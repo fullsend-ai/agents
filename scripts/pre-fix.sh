@@ -952,6 +952,38 @@ fix_conflict_update_strategy_raw_is_known() {
   raw="$(printf '%s' "${FIX_CONFLICT_UPDATE_STRATEGY:-}" | tr '[:upper:]' '[:lower:]')"
   [ -z "${raw}" ] || [ "${raw}" = "merge" ] || [ "${raw}" = "rebase" ]
 }
+
+# patch_added_lines — reads a git patch on stdin and prints only the content
+# of its added lines, with the diff prefix stripped (issue #1801).
+# `gitleaks detect --pipe` scans its input as plain text, so feeding it a
+# raw patch also flags unchanged context and deleted lines. Handles plain
+# diffs (`@@`, one prefix column) and combined `--cc` diffs (`@@@...`, one
+# prefix column per parent): a line is added when any column is '+'.
+# Everything outside a hunk (commit header, `diff`/`index`/`---`/`+++`
+# lines) is dropped. `\ No newline at end of file` markers and empty lines
+# (an empty context line under `diff.suppressBlankEmpty`) stay in the hunk,
+# so a later added line in the same hunk is still printed. Callers must
+# generate the patch with --no-color and --no-ext-diff so its format is
+# not altered by repository git config.
+patch_added_lines() {
+  awk '
+    /^@@+ / {
+      match($0, /^@+/)
+      cols = RLENGTH - 1
+      in_hunk = 1
+      next
+    }
+    in_hunk && ($0 == "" || /^\\/) { next }
+    in_hunk {
+      prefix = substr($0, 1, cols)
+      if (length($0) >= cols && prefix ~ /^[ +-]+$/) {
+        if (index(prefix, "+") > 0) print substr($0, cols + 1)
+        next
+      }
+      in_hunk = 0
+    }
+  '
+}
 # END bundled: lib/fix-ops.lib.sh
 
 errors=0

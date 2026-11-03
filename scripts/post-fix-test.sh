@@ -6388,6 +6388,212 @@ EOF
   echo "PASS: ${test_name}"
 }
 
+# Issue #1801: patch_added_lines reduces a git patch to the content of its
+# added lines before the merge-content scans pipe it into gitleaks, so
+# unchanged context and deleted lines are never scanned.
+run_patch_added_lines_test() {
+  local test_name="$1"
+  local patch="$2"
+  local expected="$3"
+  local actual
+  # shellcheck disable=SC2030,SC2031
+  actual="$(
+    FULLSEND_FORGE=github
+    # shellcheck source=lib/fix-ops.lib.sh
+    source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+    printf '%s\n' "${patch}" | patch_added_lines
+  )"
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name} — expected '${expected}', got '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_patch_added_lines_test "patch-added-lines-deleted-only" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,2 @@\n alpha\n-sekrit\n omega' \
+  ""
+run_patch_added_lines_test "patch-added-lines-context-only" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n sekrit\n-mode = old\n+mode = new' \
+  "mode = new"
+run_patch_added_lines_test "patch-added-lines-added-strips-prefix" \
+  $'diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n@@ -0,0 +1,2 @@\n+sekrit\n+++tripleplus' \
+  $'sekrit\n++tripleplus'
+run_patch_added_lines_test "patch-added-lines-no-newline-marker" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+sekrit\n\\ No newline at end of file' \
+  "sekrit"
+run_patch_added_lines_test "patch-added-lines-suppress-blank-empty" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+sekrit' \
+  "sekrit"
+run_patch_added_lines_test "patch-added-lines-combined-cc" \
+  $'diff --cc f\nindex 1,2..3\n--- a/f\n+++ b/f\n@@@ -1,4 -1,4 +1,4 @@@\n  alpha\n  sekrit\n--gone\n- ours\n -theirs\n++resolved\n+ fromtheirs\n +fromours' \
+  $'resolved\nfromtheirs\nfromours'
+run_patch_added_lines_test "patch-added-lines-multi-file-headers" \
+  $'commit abc\nMerge: 1 2\n\n    +not a diff line\n\ndiff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+one\ndiff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-sekrit\n+two' \
+  $'one\ntwo'
+
+# Issue #1801: end-to-end coverage for the per-merge (--cc) and
+# target-tip-to-HEAD scans. MODE sets how a forge-conflict resolution (or a
+# follow-up commit) treats a "sekrit" line:
+#   context  — kept unchanged next to the resolved conflict    -> pass
+#   deleted  — removed by the resolution                       -> pass
+#   added    — introduced by the resolution                    -> secret-scan
+#   moved    — removed from file.txt, re-added in moved.txt    -> secret-scan
+#   followup — absent from the merge, added by a later commit  -> secret-scan
+#   message  — only in the merge commit's message              -> secret-scan
+#   fixmsg   — only in a follow-up commit's message            -> secret-scan
+#   author   — only in the merge commit's author identity      -> secret-scan
+#   committer — only in a follow-up commit's committer identity -> secret-scan
+run_push_forge_conflict_merge_secret_lines_test() {
+  local mode="$1"
+  local expect="$2"
+  local test_name="push-forge-conflict-merge-secret-${mode}"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  case "${mode}" in
+    context|deleted|moved) printf 'alpha\nsekrit\nmid\nomega\n' > "${base}/seed/file.txt" ;;
+    *) printf 'alpha\nmid\nomega\n' > "${base}/seed/file.txt" ;;
+  esac
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  sed 's/^mid$/pr-a/' "${base}/seed/file.txt" > "${base}/seed/file.tmp"
+  mv "${base}/seed/file.tmp" "${base}/seed/file.txt"
+  git -C "${base}/seed" commit -q -am "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local pr_a_sha
+  pr_a_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  # Conflicting change on main, so the agent's merge of origin/main is a
+  # real conflict resolution whose only extra parent is trusted target
+  # history — the per-merge scan uses --cc and the tip-to-HEAD scan runs.
+  git -C "${base}/seed" checkout -q main
+  sed 's/^mid$/main-change/' "${base}/seed/file.txt" > "${base}/seed/file.tmp"
+  mv "${base}/seed/file.tmp" "${base}/seed/file.txt"
+  git -C "${base}/seed" commit -q -am "main: conflicting change"
+  git -C "${base}/seed" push -q origin main
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit origin/main >/dev/null 2>&1 || true
+  case "${mode}" in
+    context|added) printf 'alpha\nsekrit\nresolved\nomega\n' > "${base}/repo/file.txt" ;;
+    moved)
+      printf 'alpha\nresolved\nomega\n' > "${base}/repo/file.txt"
+      echo "sekrit" > "${base}/repo/moved.txt"
+      git -C "${base}/repo" add moved.txt
+      ;;
+    *) printf 'alpha\nresolved\nomega\n' > "${base}/repo/file.txt" ;;
+  esac
+  git -C "${base}/repo" add file.txt
+  if [ "${mode}" = "message" ]; then
+    git -C "${base}/repo" commit -q -m "Merge origin/main: sekrit"
+  elif [ "${mode}" = "author" ]; then
+    git -C "${base}/repo" commit -q --no-edit --author="sekrit <sekrit@example.com>"
+  else
+    git -C "${base}/repo" commit -q --no-edit
+  fi
+  if [ "${mode}" = "followup" ]; then
+    echo "sekrit" > "${base}/repo/followup.txt"
+    git -C "${base}/repo" add followup.txt
+    git -C "${base}/repo" commit -q -m "fix: agent change"
+  elif [ "${mode}" = "fixmsg" ]; then
+    echo "fixed" > "${base}/repo/fixed.txt"
+    git -C "${base}/repo" add fixed.txt
+    git -C "${base}/repo" commit -q -m "fix: agent change sekrit"
+  elif [ "${mode}" = "committer" ]; then
+    echo "fixed" > "${base}/repo/fixed.txt"
+    git -C "${base}/repo" add fixed.txt
+    GIT_COMMITTER_NAME="sekrit" GIT_COMMITTER_EMAIL="sekrit@example.com" \
+      git -C "${base}/repo" commit -q -m "fix: agent change"
+  fi
+
+  # Fixture validity: the raw combined diff must carry the secret as
+  # context or as a deleted line, or the pass cases prove nothing.
+  case "${mode}" in
+    context|deleted)
+      if ! git -C "${base}/repo" show --cc --no-color agent/99-test-fix | grep -q "sekrit"; then
+        echo "FAIL: ${test_name} — fixture invalid: raw --cc merge diff does not contain the secret"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+  esac
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-${test_name}"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+
+  # Fails any --pipe scan whose input contains the secret string.
+  cat > "${gate_mock}/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+pipe_mode=false
+for arg in "$@"; do
+  case "${arg}" in
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if ${pipe_mode}; then
+  pipe_input="$(cat)"
+  if printf '%s' "${pipe_input}" | grep -q "sekrit"; then
+    echo "leaks found: secret in --pipe merge-content scan" >&2
+    exit 1
+  fi
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${expect}" = "pass" ]; then
+    if [ "${exit_code}" -ne 0 ] || grep -q "leaks found" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — secret only as context/deleted line failed the scan (exit ${exit_code})"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if [ "${exit_code}" -eq 0 ]; then
+      echo "FAIL: ${test_name} — push succeeded; added secret was not detected"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if ! grep -q "leaks found" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — failed for a reason other than the added secret"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+  # added/moved fail in the per-merge scan, before this line is printed.
+  if { [ "${expect}" = "pass" ] || [ "${mode}" = "followup" ]; } \
+     && ! grep -q "Combined-diff (--cc) used" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — the --cc per-merge and tip-to-HEAD scans did not run"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 run_push_blocked_mergeability_does_not_skip_test() {
   local test_name="push-blocked-mergeability-does-not-skip"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
@@ -6464,6 +6670,15 @@ run_push_forge_conflict_merged_target_reconstruction_requires_actual_merge_test
 run_push_forge_conflict_precommit_gate_first_parent_test
 run_push_forge_conflict_untrusted_merge_secret_test
 run_push_forge_conflict_untrusted_octopus_merge_secret_test
+run_push_forge_conflict_merge_secret_lines_test context pass
+run_push_forge_conflict_merge_secret_lines_test deleted pass
+run_push_forge_conflict_merge_secret_lines_test added fail
+run_push_forge_conflict_merge_secret_lines_test moved fail
+run_push_forge_conflict_merge_secret_lines_test followup fail
+run_push_forge_conflict_merge_secret_lines_test message fail
+run_push_forge_conflict_merge_secret_lines_test fixmsg fail
+run_push_forge_conflict_merge_secret_lines_test author fail
+run_push_forge_conflict_merge_secret_lines_test committer fail
 run_push_blocked_mergeability_does_not_skip_test
 
 rm -rf "${PUSH_REBASE_TMPDIR}"

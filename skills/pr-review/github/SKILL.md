@@ -146,6 +146,18 @@ else
 fi
 ```
 
+## Dependency-PR scoping
+
+Run once, per the orchestrator's dependency-scope procedure.
+Set `DEP_PRS` to the normalized candidate numbers and `PINNED_SHA` to the
+step 1 head SHA. The example uses pi's config directory. On Claude or
+Codex, replace `PI_CODING_AGENT_DIR` with `CLAUDE_CONFIG_DIR` or
+`CODEX_HOME` respectively.
+
+```bash
+DEP_PRS="<candidate PR numbers>" PINNED_SHA="<step 1 head SHA>" bash "${PI_CODING_AGENT_DIR}/skills/pr-review-github/scripts/dependency-scope.sh"
+```
+
 ## Prior review comparison
 
 ```bash

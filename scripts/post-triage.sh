@@ -9,6 +9,10 @@
 #   ISSUE_URL        — HTML URL of the issue
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
 #
+# Jira-sourced runs: when FULLSEND_WORK_ITEM_SOURCE is "jira", results are
+# written to the Jira issue at FULLSEND_WORK_ITEM_URL (exported by
+# `fullsend run`), and FULLSEND_WORK_ITEM_KEY must match that URL.
+#
 # The agent writes its decision to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
 #
@@ -19,6 +23,26 @@
 # issues.labeled/issues.unlabeled, avoiding the re-triage loop.
 
 set -euo pipefail
+
+# Route Jira-sourced runs to the originating Jira issue. Refuse to run when an
+# explicit tracker or ISSUE_URL points elsewhere, so results never land on a
+# different work item.
+if [[ "${FULLSEND_WORK_ITEM_SOURCE:-}" == "jira" ]]; then
+  if [[ -n "${FULLSEND_TRACKER:-}" && "${FULLSEND_TRACKER}" != "jira" ]]; then
+    echo "ERROR: FULLSEND_WORK_ITEM_SOURCE is jira but FULLSEND_TRACKER selects a different tracker" >&2
+    exit 1
+  fi
+  FULLSEND_TRACKER="jira"
+  if [[ -z "${FULLSEND_WORK_ITEM_URL:-}" || -z "${FULLSEND_WORK_ITEM_KEY:-}" ]]; then
+    echo "ERROR: FULLSEND_WORK_ITEM_URL and FULLSEND_WORK_ITEM_KEY are required for a Jira-sourced run" >&2
+    exit 1
+  fi
+  if [[ -n "${ISSUE_URL:-}" && "${ISSUE_URL}" != "${FULLSEND_WORK_ITEM_URL}" ]]; then
+    echo "ERROR: ISSUE_URL does not match FULLSEND_WORK_ITEM_URL for a Jira-sourced run" >&2
+    exit 1
+  fi
+  ISSUE_URL="${FULLSEND_WORK_ITEM_URL}"
+fi
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
 FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
@@ -771,8 +795,13 @@ tracker_add_label() {
 
 tracker_remove_label() {
   local label="$1"
-  _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+  # Jira treats removing an absent label as a no-op, so an error here is a
+  # real write failure. Fail the step instead of reporting success.
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to remove label '${label}' from issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
 }
 
 tracker_strip_labels() {
@@ -885,19 +914,27 @@ tracker_post_comment() {
   local body="$1"
   _jira_require_vars || return 1
   # `fullsend issues post-comment` always does marker-based find-and-update;
-  # there is no "always create new" mode. A marker unique to this invocation
-  # guarantees no prior comment matches it, so this always creates a new
-  # comment — matching tracker_post_comment's always-new contract on
-  # GitHub/GitLab.
+  # there is no "always create new" mode. Each triage run gets a new comment,
+  # matching tracker_post_comment's always-new contract on GitHub/GitLab.
+  # The marker is scoped to the CI run (GITHUB_RUN_ID survives a workflow
+  # re-run, CI_PIPELINE_ID a GitLab job retry), so a retried run edits its
+  # own earlier comment instead of posting a duplicate.
   local marker stamp
-  stamp=$(date +%s%N)
-  # BSD date without %N support leaves the literal "N" in place, which would
-  # make the marker identical for every invocation within the same second and
-  # break the always-create-new contract. Fall back to a random suffix.
-  if [[ "${stamp}" == *N* ]]; then
-    stamp="$(date +%s)${RANDOM}${RANDOM}"
+  local run_id="${GITHUB_RUN_ID:-${CI_PIPELINE_ID:-}}"
+  if [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+    marker="<!-- fullsend:triage-run-${run_id} -->"
+  else
+    # No CI run ID: a marker unique to this invocation guarantees no prior
+    # comment matches it.
+    stamp=$(date +%s%N)
+    # BSD date without %N support leaves the literal "N" in place, which would
+    # make the marker identical for every invocation within the same second and
+    # break the always-create-new contract. Fall back to a random suffix.
+    if [[ "${stamp}" == *N* ]]; then
+      stamp="$(date +%s)${RANDOM}${RANDOM}"
+    fi
+    marker="<!-- fullsend:triage-${stamp} -->"
   fi
-  marker="<!-- fullsend:triage-${stamp} -->"
   printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
@@ -1157,6 +1194,12 @@ COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 tracker_validate_issue_url
 tracker_parse_issue_url
 
+if [[ "${FULLSEND_TRACKER}" == "jira" && -n "${FULLSEND_WORK_ITEM_KEY:-}" \
+      && "${FULLSEND_WORK_ITEM_KEY}" != "${ISSUE_NUMBER}" ]]; then
+  echo "ERROR: FULLSEND_WORK_ITEM_KEY does not match the Jira issue key in ISSUE_URL" >&2
+  exit 1
+fi
+
 echo "Action: ${ACTION}"
 echo "Repo: ${REPO}"
 echo "Issue: #${ISSUE_NUMBER}"
@@ -1191,6 +1234,16 @@ DEFERRED_LABEL=""
 # labels, but "triaged" is only ever re-applied (never removed) by the
 # handlers themselves, so it must be cleared up front rather than per-branch.
 tracker_remove_label "triaged"
+
+# Classification updates the Jira tracker could not apply. Jira users do not
+# see workflow annotations, so these are also listed in the Jira comment
+# instead of being dropped with only a log warning.
+JIRA_UNAPPLIED=""
+note_jira_unapplied() {
+  [[ "${FULLSEND_TRACKER}" == "jira" ]] || return 0
+  JIRA_UNAPPLIED="${JIRA_UNAPPLIED}
+- $1"
+}
 
 # --- Cross-repo issue creation allowlist ---
 # Used by prerequisites and split actions. Read once before the case
@@ -1762,6 +1815,7 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
       add)
         if ! label_exists "${LA_LABEL}"; then
           echo "::warning::Skipping label '$(_gha_sanitize "${LA_LABEL}")' -- does not exist in repo (will not auto-create)"
+          note_jira_unapplied "Label \`${LA_LABEL}\` was not added: it is not in use on this Jira site, and labels are not auto-created."
           continue
         fi
         echo "Adding label '$(_gha_sanitize "${LA_LABEL}")'..."
@@ -1803,6 +1857,7 @@ if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
     # full replacement via PUT) to silently delete pre-existing components.
     if ! CURRENT_COMPONENTS=$(tracker_get_components); then
       echo "::warning::Failed to fetch current components — skipping component mutations to avoid data loss"
+      note_jira_unapplied "Component changes were not applied: the current components could not be read, and replacing them blindly could delete existing ones."
     else
       # Build the new component list by applying add/remove actions.
       NEW_COMPONENTS="${CURRENT_COMPONENTS}"
@@ -1865,6 +1920,13 @@ if [[ -n "${DEFERRED_LABEL}" ]]; then
     forge_ensure_label "${DEFERRED_LABEL}"
   fi
   tracker_add_label "${DEFERRED_LABEL}"
+fi
+
+if [[ -n "${JIRA_UNAPPLIED}" ]]; then
+  COMMENT="${COMMENT}
+
+---
+**Not applied in Jira:**${JIRA_UNAPPLIED}"
 fi
 
 # --- Append action-hints footer (sufficient only) ---

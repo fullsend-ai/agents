@@ -4,6 +4,13 @@ description: >-
   Evaluates user-facing state coverage, content & microcopy,
   destructive action safety, and accessibility.
 model: sonnet
+when: >-
+  UI signals in the diff: .tsx, .jsx, .vue, .svelte, .html, .css, or
+  .scss files, or JSX, ARIA, or UI-framework imports.
+role: dimension
+categories:
+  - uxd-evaluate-code-heuristics
+failure_severity: info
 tools: Read, Grep, Glob, Bash
 permissionMode: dontAsk
 background: true

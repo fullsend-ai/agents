@@ -543,6 +543,16 @@ assert_contains "isolated unmatched-file eval documents its isolation" "${EVAL_U
 assert_contains "severity-anchor eval matches projection line" "${EVAL009_EXPECTATIONS}" \
   "line 2; it has no prior description"
 
+# Roster discovery matches manifest entries by the skill's own directory name,
+# so a skill staged under another name uses its own entries, and falls back to
+# persona frontmatter when no entry matches or the manifest is missing.
+assert_contains "roster selects manifest entries by the skill directory name" "${SKILL}" \
+  "keeping entries whose \`skill\` is this skill's directory name;"
+assert_contains "roster falls back to frontmatter when no manifest entry matches" "${SKILL}" \
+  "if it is missing or none match, the frontmatter of every"
+assert_not_contains "roster does not match the literal pr-review skill name" "${SKILL}" \
+  "Read the \`pr-review\` entries"
+
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
   exit 1

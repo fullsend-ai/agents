@@ -3246,6 +3246,380 @@ fi
 rm -rf "${GL_INT_TMPDIR}"
 
 # =============================================================================
+# Jira-sourced code runs (#1841)
+#
+# The PR/MR is created on the code host (GitHub or GitLab) and the code-stage
+# update with its URL is written to the Jira issue through
+# `fullsend issues post-comment --tracker jira`. Covers both code hosts, the
+# existing-PR (retry) path, write-failure visibility, bot identity, and that
+# forge-originated runs never write to Jira.
+# =============================================================================
+
+JIRA_INT_TMPDIR="$(mktemp -d)"
+JIRA_INT_MOCK_BIN="${JIRA_INT_TMPDIR}/bin"
+JIRA_INT_FULLSEND_LOG="${JIRA_INT_TMPDIR}/fullsend.log"
+JIRA_INT_FORGE_LOG="${JIRA_INT_TMPDIR}/forge.log"
+JIRA_INT_PRECOMMIT_LOG="${JIRA_INT_TMPDIR}/precommit.log"
+mkdir -p "${JIRA_INT_MOCK_BIN}"
+JIRA_REAL_GIT="$(which git)"
+
+for _tool in sleep gitleaks; do
+  cat > "${JIRA_INT_MOCK_BIN}/${_tool}" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; fi
+exit 0
+MOCKEOF
+  chmod +x "${JIRA_INT_MOCK_BIN}/${_tool}"
+done
+
+cat > "${JIRA_INT_MOCK_BIN}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+exec ${JIRA_REAL_GIT} "\$@"
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/git"
+
+# GitHub code host. MOCK_EXISTING_PR=1 reports an open PR for the branch.
+cat > "${JIRA_INT_MOCK_BIN}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+echo "gh \$*" >> "${JIRA_INT_FORGE_LOG}"
+case "\$1 \$2" in
+  "api -X")      echo "unexpected Git Data API call: \$*" >&2; exit 99 ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then echo "7"; fi; exit 0 ;;
+  "pr view")     echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/gh"
+
+# GitLab code host.
+cat > "${JIRA_INT_MOCK_BIN}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+echo "curl \$*" >> "${JIRA_INT_FORGE_LOG}"
+url=""
+method="GET"
+prev=""
+for arg in "\$@"; do
+  case "\${arg}" in
+    https://*) url="\${arg}" ;;
+  esac
+  if [[ "\${prev}" == "--request" || "\${prev}" == "-X" ]]; then
+    method="\${arg}"
+  fi
+  prev="\${arg}"
+done
+case "\${method} \${url}" in
+  *merge_requests\?state=opened*) echo '[]' ;;
+  POST*merge_requests) echo '{"iid":1,"web_url":"https://gitlab.com/test-group/test-project/-/merge_requests/1"}' ;;
+  *projects/*) echo '{"id":1,"default_branch":"main","merge_method":"merge"}' ;;
+  *users*) echo '[]' ;;
+  *) echo '{}' ;;
+esac
+# Callers using --write-out read the HTTP status from the last line.
+if [[ " \$* " == *" --write-out "* ]]; then
+  printf '\n201'
+fi
+exit 0
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/curl"
+
+# Tracker CLI. Records args and the comment body; also records whether the
+# token reached it through the environment. MOCK_FULLSEND_FAIL=1 fails it.
+cat > "${JIRA_INT_MOCK_BIN}/fullsend" <<MOCKEOF
+#!/usr/bin/env bash
+BODY=""
+PREV=""
+for arg in "\$@"; do
+  if [[ "\${arg}" == "-" && "\${PREV}" == "--result" ]]; then
+    BODY=\$(cat)
+  fi
+  PREV="\${arg}"
+done
+echo "fullsend \$* env-token=\${JIRA_TOKEN:-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
+  echo "Error: Jira API returned 401" >&2
+  exit 1
+fi
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/fullsend"
+
+# pre-commit stand-in. Records whether the Jira credentials are visible to
+# hooks (it runs repo-controlled code in the real tool).
+cat > "${JIRA_INT_MOCK_BIN}/pre-commit" <<MOCKEOF
+#!/usr/bin/env bash
+echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset}" >> "${JIRA_INT_PRECOMMIT_LOG}"
+exit 0
+MOCKEOF
+chmod +x "${JIRA_INT_MOCK_BIN}/pre-commit"
+
+setup_jira_int_repo() {
+  local run_dir="$1"
+  local branch_name="$2"
+  local repo_dir="${run_dir}/repo"
+  ${JIRA_REAL_GIT} init -q --bare -b main "${run_dir}/remote.git"
+  ${JIRA_REAL_GIT} clone -q "${run_dir}/remote.git" "${repo_dir}" 2>/dev/null
+  ${JIRA_REAL_GIT} -C "${repo_dir}" config user.email "test@example.com"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" config user.name "Test"
+  echo "init" > "${repo_dir}/README.md"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" add README.md
+  ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "init"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" push -q origin main
+  if [ -n "${JIRA_INT_WITH_PRECOMMIT:-}" ]; then
+    printf 'repos: []\n' > "${repo_dir}/.pre-commit-config.yaml"
+    ${JIRA_REAL_GIT} -C "${repo_dir}" add .pre-commit-config.yaml
+    ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "chore: pre-commit config"
+    ${JIRA_REAL_GIT} -C "${repo_dir}" push -q origin main
+  fi
+  ${JIRA_REAL_GIT} -C "${repo_dir}" checkout -q -b "${branch_name}"
+  echo "changed content" > "${repo_dir}/file.txt"
+  ${JIRA_REAL_GIT} -C "${repo_dir}" add -f file.txt
+  ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
+  if [ -n "${JIRA_INT_PREPUSH_HOOK:-}" ]; then
+    cat > "${repo_dir}/.git/hooks/pre-push" <<HOOKEOF
+#!/usr/bin/env bash
+echo "pre-push jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset}" >> "${JIRA_INT_PREPUSH_HOOK}"
+exit 0
+HOOKEOF
+    chmod +x "${repo_dir}/.git/hooks/pre-push"
+  fi
+}
+
+# Run post-code for a Jira-sourced work item on the given code host. Extra
+# NAME=VALUE arguments are exported last. Leaves the exit code in
+# JIRA_INT_RC and the output in JIRA_INT_OUT.
+run_jira_int() {
+  local test_name="$1"
+  local forge="$2"
+  shift 2
+  local run_dir="${JIRA_INT_TMPDIR}/run-${test_name}"
+  setup_jira_int_repo "${run_dir}" "agent/TESTPROJ-42-fix"
+  : > "${JIRA_INT_FULLSEND_LOG}"
+  : > "${JIRA_INT_FORGE_LOG}"
+  JIRA_INT_OUT="${JIRA_INT_TMPDIR}/stdout-${test_name}.log"
+  JIRA_INT_RC=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    unset GITLAB_HOST CI_SERVER_URL GH_TOKEN GITLAB_TOKEN
+    export HOME="${JIRA_INT_TMPDIR}"
+    export PATH="${JIRA_INT_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_DIR="repo"
+    export ISSUE_NUMBER=""
+    export FULLSEND_FORGE="${forge}"
+    export FULLSEND_TRACKER="jira"
+    export FULLSEND_WORK_ITEM_SOURCE="jira"
+    export FULLSEND_WORK_ITEM_KEY="TESTPROJ-42"
+    export FULLSEND_WORK_ITEM_URL="https://test.atlassian.net/browse/TESTPROJ-42"
+    export ISSUE_URL="${FULLSEND_WORK_ITEM_URL}"
+    export JIRA_BASE_URL="https://test.atlassian.net/"
+    export JIRA_USER_EMAIL="fullsend-bot@example.com"
+    export JIRA_TOKEN="fake-jira-token"
+    if [ "${forge}" = "gitlab" ]; then
+      export REPO_FULL_NAME="test-group/test-project"
+      export GITLAB_TOKEN="${PUSH_TOKEN}"
+      export CI_SERVER_HOST="gitlab.com"
+    else
+      export REPO_FULL_NAME="test-org/test-repo"
+      export GITHUB_SIGNED_COMMITS="false"
+    fi
+    local kv
+    for kv in "$@"; do
+      export "${kv?}"
+    done
+    bash "${POST_SCRIPT}"
+  ) > "${JIRA_INT_OUT}" 2>&1 || JIRA_INT_RC=$?
+}
+
+jira_int_fail() {
+  echo "FAIL: $1 — $2"
+  echo "  exit code: ${JIRA_INT_RC}"
+  cat "${JIRA_INT_OUT}"
+  echo "  fullsend calls:"; cat "${JIRA_INT_FULLSEND_LOG}"
+  FAILURES=$((FAILURES + 1))
+}
+
+JIRA_CODE_MARKER="--marker <!-- fullsend:code-agent -->"
+
+# GitHub target: PR on GitHub, stage update with the PR URL on the Jira issue.
+run_jira_int "jira-github-target" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "post-code failed"
+elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "PR not created on GitHub"
+elif ! grep -qF -- "--tracker jira --project TESTPROJ --number 42 --jira-url https://test.atlassian.net" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "opened pull request https://github.com/test-org/test-repo/pull/1 for TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "Jira stage update missing or malformed"
+elif grep -q "^gh issue comment" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-github-target-pr-url-to-jira" "commented on a GitHub issue for a Jira work item"
+else
+  echo "PASS: jira-github-target-pr-url-to-jira"
+fi
+
+# Bot identity: the write uses the configured fullsend Jira account (the
+# identity the Jira poller classifies as its own), and the token reaches the
+# CLI through the environment rather than the command line.
+if ! grep -qF -- "--jira-email fullsend-bot@example.com" "${JIRA_INT_FULLSEND_LOG}" \
+   || ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}" \
+   || grep -qF -- "--token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-stage-update-bot-identity" "write did not use the configured Jira account, or the token was passed on the command line"
+else
+  echo "PASS: jira-stage-update-bot-identity"
+fi
+
+# Jira credentials are withheld from pre-commit hooks (repo-controlled code)
+# but still reach the Jira stage update afterwards.
+: > "${JIRA_INT_PRECOMMIT_LOG}"
+JIRA_INT_WITH_PRECOMMIT=1 run_jira_int "jira-precommit-hidden" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-hidden-from-precommit" "post-code failed"
+elif ! grep -q "^pre-commit " "${JIRA_INT_PRECOMMIT_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "pre-commit did not run"
+elif ! grep -qF "pre-commit jira-token=unset jira-email=unset" "${JIRA_INT_PRECOMMIT_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "Jira credentials visible to pre-commit hooks"
+elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-precommit" "Jira credentials not restored for the stage update"
+else
+  echo "PASS: jira-token-hidden-from-precommit"
+fi
+
+# A pre-push hook (repo-controlled code that runs during the plain git push)
+# does not see the Jira credentials either, and a `fullsend` binary dropped in
+# ${HOME}/.local/bin (put first on PATH by the script) does not shadow the
+# trusted CLI used for the Jira write.
+JIRA_INT_PREPUSH_LOG="${JIRA_INT_TMPDIR}/prepush.log"
+JIRA_INT_SHADOW_LOG="${JIRA_INT_TMPDIR}/shadow.log"
+: > "${JIRA_INT_PREPUSH_LOG}"
+: > "${JIRA_INT_SHADOW_LOG}"
+mkdir -p "${JIRA_INT_TMPDIR}/.local/bin"
+cat > "${JIRA_INT_TMPDIR}/.local/bin/fullsend" <<SHADOWEOF
+#!/usr/bin/env bash
+echo "shadow fullsend called token=\${JIRA_TOKEN:-unset}" >> "${JIRA_INT_SHADOW_LOG}"
+exit 0
+SHADOWEOF
+chmod +x "${JIRA_INT_TMPDIR}/.local/bin/fullsend"
+JIRA_INT_PREPUSH_HOOK="${JIRA_INT_PREPUSH_LOG}" run_jira_int "jira-prepush-hidden" github
+rm -rf "${JIRA_INT_TMPDIR}/.local"
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "post-code failed"
+elif ! grep -q "^pre-push " "${JIRA_INT_PREPUSH_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "pre-push hook did not run"
+elif ! grep -qF "pre-push jira-token=unset jira-email=unset" "${JIRA_INT_PREPUSH_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-prepush-hook" "Jira credentials visible to a pre-push hook"
+elif [ -s "${JIRA_INT_SHADOW_LOG}" ]; then
+  jira_int_fail "jira-path-shadowed-fullsend-not-used" "a binary from the repo-controlled PATH entry received the Jira write"
+elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-path-shadowed-fullsend-not-used" "trusted fullsend CLI was not used for the Jira write"
+else
+  echo "PASS: jira-token-hidden-from-prepush-hook"
+  echo "PASS: jira-path-shadowed-fullsend-not-used"
+fi
+
+# GitLab target: MR on GitLab (host from CI_SERVER_HOST, since ISSUE_URL is the
+# Jira URL), stage update with the MR URL on the Jira issue.
+run_jira_int "jira-gitlab-target" gitlab
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "post-code failed"
+elif ! grep -qE "^curl .*--request POST .*https://gitlab.com/api/v4/projects/test-group%2Ftest-project/merge_requests" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "MR not created on GitLab"
+elif grep -qF "atlassian.net/api/v4" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "GitLab API call went to the Jira host"
+elif ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "opened merge request https://gitlab.com/test-group/test-project/-/merge_requests/1 for TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-gitlab-target-mr-url-to-jira" "Jira stage update missing or malformed"
+else
+  echo "PASS: jira-gitlab-target-mr-url-to-jira"
+fi
+
+# GitLab target without a trusted CI server host fails before any API call.
+run_jira_int "jira-gitlab-target-no-ci-host" gitlab CI_SERVER_HOST=
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-gitlab-target-requires-ci-server-host" "expected failure but got success"
+elif [ -s "${JIRA_INT_FORGE_LOG}" ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-gitlab-target-requires-ci-server-host" "API calls made without a trusted GitLab host"
+else
+  echo "PASS: jira-gitlab-target-requires-ci-server-host (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# Retry: the PR already exists, so the run updates it and rewrites the same
+# sticky Jira comment (same marker) instead of adding a second one.
+run_jira_int "jira-existing-pr" github MOCK_EXISTING_PR=1
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "post-code failed"
+elif grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "created a second PR"
+elif [ "$(grep -c "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "pushed new commits to pull request https://github.com/test-org/test-repo/pull/7" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-retry-existing-pr-reuses-marker" "expected one sticky Jira update for the existing PR"
+else
+  echo "PASS: jira-retry-existing-pr-reuses-marker"
+fi
+
+# Write-failure visibility: a failed Jira write fails the step on both paths.
+for _jira_fail_case in "jira-write-failure-new-pr|" "jira-write-failure-existing-pr|MOCK_EXISTING_PR=1"; do
+  _jira_fail_name="${_jira_fail_case%%|*}"
+  _jira_fail_extra="${_jira_fail_case#*|}"
+  run_jira_int "${_jira_fail_name}" github MOCK_FULLSEND_FAIL=1 ${_jira_fail_extra:+"${_jira_fail_extra}"}
+  if [ "${JIRA_INT_RC}" -eq 0 ]; then
+    jira_int_fail "${_jira_fail_name}-fails-step" "expected failure but got success"
+  elif ! grep -qF "Failed to write the code-stage update to Jira issue TESTPROJ-42" "${JIRA_INT_OUT}"; then
+    jira_int_fail "${_jira_fail_name}-fails-step" "missing Jira write-failure error"
+  else
+    echo "PASS: ${_jira_fail_name}-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+  fi
+done
+
+# Missing runner-side Jira credentials fail visibly instead of skipping.
+run_jira_int "jira-missing-token" github JIRA_TOKEN=
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-missing-token-fails-step" "expected failure but got success"
+elif ! grep -qF "JIRA_USER_EMAIL and JIRA_TOKEN are required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-missing-token-fails-step" "missing credential error, or a write was attempted"
+else
+  echo "PASS: jira-missing-token-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# A work-item key that disagrees with the URL is not written anywhere in Jira.
+run_jira_int "jira-key-mismatch" github FULLSEND_WORK_ITEM_KEY=TESTPROJ-7
+if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-key-mismatch-not-written" "expected failure with no Jira write"
+else
+  echo "PASS: jira-key-mismatch-not-written (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# Forge-originated run (fullsend run still exports FULLSEND_WORK_ITEM_SOURCE):
+# GitHub issue flow, no Jira write.
+run_jira_int "forge-originated" github FULLSEND_TRACKER= FULLSEND_WORK_ITEM_SOURCE=github \
+  FULLSEND_WORK_ITEM_KEY= FULLSEND_WORK_ITEM_URL= ISSUE_NUMBER=42 \
+  ISSUE_URL=https://github.com/test-org/test-repo/issues/42 JIRA_TOKEN= JIRA_USER_EMAIL=
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "forge-originated-run-no-jira-write" "post-code failed"
+elif [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "forge-originated-run-no-jira-write" "wrote to Jira for a GitHub issue"
+elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
+  jira_int_fail "forge-originated-run-no-jira-write" "PR not created"
+else
+  echo "PASS: forge-originated-run-no-jira-write"
+fi
+
+# An explicit tracker that disagrees with the exported work-item source stops
+# the run before anything is pushed.
+run_jira_int "jira-tracker-source-conflict" github FULLSEND_WORK_ITEM_SOURCE=github
+if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FORGE_LOG}" ]; then
+  jira_int_fail "jira-tracker-source-conflict-fails" "expected failure before any forge call"
+else
+  echo "PASS: jira-tracker-source-conflict-fails (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+rm -rf "${JIRA_INT_TMPDIR}"
+
+# =============================================================================
 # GitLab auto-merge unit tests
 # =============================================================================
 
@@ -3706,6 +4080,7 @@ run_gh_create_pr_recover_test() {
   local expect_list_attempts="$5"
   local list_json="$6"
   local create_errs="$7"
+  local repo_full_name="${8:-org/repo}"
 
   local tmp mock_bin call_log rc=0 output create_attempts list_attempts
   tmp=$(mktemp -d)
@@ -3744,7 +4119,7 @@ MOCK
       # shellcheck disable=SC1091
       source "${SCRIPT_DIR}/lib/github-code-ops.lib.sh"
       sleep() { :; }
-      export REPO_FULL_NAME="org/repo"
+      export REPO_FULL_NAME="${repo_full_name}"
       export FORGE_TRANSIENT_RETRY_BASE_DELAY=0
       export CALL_LOG="${call_log}"
       export CREATE_ERRS_FILE="${tmp}/create_errs"
@@ -3823,6 +4198,14 @@ run_gh_create_pr_recover_test "create-pr-timeout-then-already-exists-recovers" \
   0 "https://github.com/org/repo/pull/99" 2 1 \
   "${GH_MATCHING_PR}" \
   $'operation timed out\na pull request already exists for org:agent/1-x'
+
+# Issue URL owner spelling flows into REPO_FULL_NAME; the API returns the
+# canonical login. Owner logins are case-insensitive, so this must recover.
+run_gh_create_pr_recover_test "create-pr-already-exists-owner-case-mismatch-recovers" \
+  0 "https://github.com/org/repo/pull/99" 1 1 \
+  "${GH_MATCHING_PR}" \
+  'a pull request already exists for org:agent/1-x' \
+  "Org/repo"
 
 run_gh_create_pr_recover_test "create-pr-already-exists-no-match-fails" \
   1 "could not be resolved" 1 1 \

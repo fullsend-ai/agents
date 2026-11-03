@@ -261,6 +261,31 @@ Cross-project issue creation for Jira prerequisites is gated by a
 `config.yaml`, alongside the existing `orgs`/`repos` keys used for
 GitHub/GitLab. The issue's own project is always implicitly allowed.
 
+For Jira-sourced runs (`FULLSEND_WORK_ITEM_SOURCE=jira`), the post-script
+writes results to the issue at `FULLSEND_WORK_ITEM_URL`:
+
+- The triage comment is posted on the Jira issue.
+- Labels and components are updated on the Jira issue.
+- Close actions run as Jira transitions.
+
+The run stops before any write if `FULLSEND_WORK_ITEM_KEY` does not match
+that URL, or if an explicit `FULLSEND_TRACKER` or `ISSUE_URL` points
+somewhere else.
+
+- **Retries:** comments are idempotent. Sticky comments (`sufficient`,
+  `in-progress`) use fixed markers. Other comments use a marker scoped to the
+  CI run (`GITHUB_RUN_ID` or `CI_PIPELINE_ID`). A re-run of the same workflow
+  or pipeline edits its earlier comment, while a new triage run still posts a
+  new one.
+- **Write failures:** a failed Jira write fails the step. This covers label
+  adds and removals, component updates, comments and transitions.
+- **Updates that cannot be applied:** these are listed under **Not applied in
+  Jira** in the comment, as well as being logged. Two cases exist:
+  - a `label_actions` add for a label not used anywhere on the Jira site
+    (labels are not auto-created);
+  - component changes skipped because the current components could not be
+    read.
+
 Jira Server/Data Center (self-hosted) is out of scope — only Jira Cloud hosts
 (`*.atlassian.net`) are supported.
 

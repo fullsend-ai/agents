@@ -21,6 +21,12 @@
 #                                       approve actions; default supplied by
 #                                       harness/review.yaml
 #
+# Optional environment variables:
+#   FULLSEND_PERSONAS_FILE            — runner-written persona manifest; when
+#                                       it is a valid version 1 manifest, new
+#                                       findings from unstaged dimensions are
+#                                       dropped
+#
 # Exit codes:
 #   0 — review posted
 #   1 — error (review not posted, fallback comment posted, or the agent
@@ -43,21 +49,16 @@ forge_parse_pr_url
 
 echo "::add-mask::${REVIEW_TOKEN}"
 
-REVIEW_UX_ENABLED_RAW="${REVIEW_UX_ENABLED:-true}"
-case "${REVIEW_UX_ENABLED_RAW}" in
-  true|false) ;;
-  *)
-    echo "::error::REVIEW_UX_ENABLED='$(_gha_sanitize "${REVIEW_UX_ENABLED_RAW}")' is invalid (expected 'true' or 'false')"
-    echo '{"action":"failure","reason":"tool-failure"}' | \
-      forge_post_review -
-    exit 1
-    ;;
-esac
-
 # Temp file cleanup: accumulate files to remove on exit so later traps
 # don't overwrite earlier ones.
 CLEANUP_FILES=()
 trap 'rm -f "${CLEANUP_FILES[@]}"' EXIT
+
+# REVIEW_UX_ENABLED was removed; tell repositories that still set it how to
+# turn off the UX reviewer now. Warning only, no other effect.
+if [[ -n "${REVIEW_UX_ENABLED:-}" ]]; then
+  echo "::warning::REVIEW_UX_ENABLED is no longer read; to turn off the UX reviewer, remove sub-agents/user-experience.md with a skills override (see docs/review.md)"
+fi
 
 # Refuse to post reviews on merged or closed PRs.
 # Also fetch draft status — draft PRs must not receive ready-for-merge.
@@ -115,40 +116,6 @@ if [ -z "${RESULT_FILE}" ] || [ ! -f "${RESULT_FILE}" ]; then
 fi
 
 echo "Using result: ${RESULT_FILE}"
-# The sandbox prompt skips this dimension when the flag is false. Keep the
-# runner authoritative too: remove any UX findings before severity filtering,
-# ledger accounting, or posting if a model dispatched the dimension anyway.
-REREVIEW_UX_ORIGINAL_ACTION=""
-UX_DISABLED=false
-if [[ "${REVIEW_UX_ENABLED_RAW}" == "false" ]]; then
-  UX_DISABLED=true
-  UX_DISABLED_RESULT="$(mktemp)"
-  CLEANUP_FILES+=("${UX_DISABLED_RESULT}")
-  UX_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
-  UX_FINDINGS_BEFORE="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${RESULT_FILE}")"
-  jq --argjson removed "${UX_FINDINGS_BEFORE}" '
-    if (.findings | type) == "array" then
-      .findings |= map(select(.category != "uxd-evaluate-code-heuristics"))
-      | if $removed > 0 and (.action == "request-changes" or .action == "reject") then
-          if ([.findings[]?
-               | select((.severity | IN("medium", "high", "critical"))
-                        or (.actionable // false))] | length) == 0 then
-            .action = "comment"
-          else .
-          end
-        else .
-        end
-      | if (.findings | length) == 0 then del(.findings) else . end
-    else . end
-  ' "${RESULT_FILE}" > "${UX_DISABLED_RESULT}"
-  RESULT_FILE="${UX_DISABLED_RESULT}"
-  if [[ "${UX_FINDINGS_BEFORE}" -gt 0 ]] \
-      && [[ "${UX_ORIGINAL_ACTION}" = "request-changes" || "${UX_ORIGINAL_ACTION}" = "reject" ]] \
-      && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
-    REREVIEW_UX_ORIGINAL_ACTION="${UX_ORIGINAL_ACTION}"
-  fi
-  echo "User-experience findings suppressed (REVIEW_UX_ENABLED=false)"
-fi
 # The severity filter below can drop an info-level sub-agent-failure. Keep the
 # unfiltered result so the projection still sees every failed dimension.
 UNFILTERED_RESULT_FILE="${RESULT_FILE}"
@@ -196,7 +163,7 @@ MINT_IDS="$(
 # Prior ledger: give legacy prior findings (written before ids existed) an id
 # so they enter the ledger instead of vanishing, and split prior ids into
 # open and closed. Minted ids used here are removed from the pool below.
-PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" --argjson ux_disabled "${UX_DISABLED}" '
+PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" '
   def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
   def closed_status: IN("resolved_by_change", "dismissed_by_human");
   ([ (.dispositions // [])[] | select(type == "object" and (.id | valid_id) and (.status | type == "string")) ]) as $disp
@@ -212,7 +179,6 @@ PRIOR_LEDGER="$(jq -c --argjson mints "${MINT_IDS}" --argjson ux_disabled "${UX_
                 | select($d != null and ($d.status | closed_status)) | . + {status: $d.status} ],
       open_ids: [ $fs[] | .id as $id | ($disp | map(select(.id == $id)) | last) as $d
                   | select($d == null or ($d.status | closed_status | not))
-                  | select(($ux_disabled | not) or .category != "uxd-evaluate-code-heuristics")
                   | .id ],
       used_mints: $r.mint_i
     }
@@ -263,28 +229,98 @@ if [[ "${FULLSEND_FORGE}" = "github" ]]; then
   ' <<< "${PRIOR_LEDGER}")"
 fi
 
+# Where each open prior finding sits now, from the review agent's stamped
+# inline threads (resolved or not). The <!-- finding:f_... --> stamp on a
+# review-bot comment binds that thread to the id, and GitHub moves the
+# thread's line with the code and nulls it once a push changes that line.
+# The same review-thread fetch and stamp match as forge_get_human_dismissals;
+# only comments from the review bot count, so a reply cannot forge a stamp.
+# A failed or truncated fetch, or any thread whose comments are truncated,
+# maps nothing (a stamp hidden past the first comment page would make an
+# id look unambiguous). A thread on the LEFT (removed) side of the diff is
+# kept in the map but has no usable line: its line numbers the old file, not
+# the code a row is anchored to, so it is mapped-but-unusable. Only RIGHT-side
+# (or side-absent) threads give a line. A file-level thread (fullsend posts a
+# finding whose line is outside the diff hunks that way) has no line and never
+# had one, so it says nothing about where the finding sits: it is left out of
+# the map and the id falls back to its recorded coordinates. GitLab keeps the
+# line a note was written on, so it gets no map.
+STAMPED_THREADS='[]'
+if [[ "${FULLSEND_FORGE}" = "github" ]] \
+    && jq -e '.open_ids | length > 0' <<< "${PRIOR_LEDGER}" >/dev/null 2>&1; then
+  if STAMPED_THREADS_RESPONSE="$(GH_TOKEN="${REVIEW_TOKEN:-${GH_TOKEN:-}}" \
+      fullsend fetch-review-threads --forge github --repo "${REPO}" --pr "${PR_NUMBER}" 2>/dev/null)" \
+    && STAMPED_THREADS="$(jq -ce --arg org "${REPO%%/*}" --arg app_set "${FULLSEND_APP_SET:-}" '
+      ([ ($org + "-review"), ($org + "-review[bot]"),
+         "fullsend-ai-review", "fullsend-ai-review[bot]",
+         (if $app_set == "" then empty else ($app_set + "-review"), ($app_set + "-review[bot]") end)
+       ] | map(ascii_downcase)) as $trusted
+      | select(type == "object" and (.threads | type == "array") and .truncated == false)
+      | select(all(.threads[]; type == "object" and .comments_truncated == false))
+      | [ .threads[]
+          | select(type == "object" and (.path | type) == "string")
+          | select((.line | type) == "number" or (.original_line | type) == "number")
+          | . as $t
+          | $t.comments[]?
+          | select(.author_type == "Bot")
+          | select(((.author // "") | ascii_downcase) as $a | ($trusted | index($a)) != null)
+          | (.body // "" | scan("<!--[[:space:]]+finding:(f_[A-Za-z0-9]+)[[:space:]]+-->") | .[0]) as $id
+          | {id: $id, path: $t.path,
+             line: (if ($t.line | type) == "number"
+                       and (($t.side // "" | ascii_upcase) | IN("", "RIGHT"))
+                    then $t.line else null end)}
+        ] | unique
+    ' <<< "${STAMPED_THREADS_RESPONSE}" 2>/dev/null)"; then
+    :
+  else
+    echo "::warning::Review thread fetch failed or was truncated — finding ids are not mapped to their threads"
+    STAMPED_THREADS='[]'
+  fi
+fi
+
 # Set when every finding is dropped before the severity filter (dismissal
 # suppression below or the severity filter itself); read by the re-review gates.
 REREVIEW_FILTERED_TO_ZERO=false
 REREVIEW_FILTER_ORIGINAL_ACTION=""
 
 # Id assignment for this review. A supplied id is kept only when it is an
-# open prior id no earlier row already took and this review is not
-# resolving; a closed, resolving, foreign, or duplicate id is replaced (a
-# reclassified id must stay on its row, so it is kept). Without a usable id, copy the open prior id whose file and
-# category match at the exact line; else the human-dismissed id anchored at
+# open prior id no earlier row already took, this review is not resolving,
+# and the row is at a place the id sits (its stamped thread's file and line):
+# a row anywhere else or an id whose stamped threads are all outdated is not
+# provably the same finding and mints, and the prior id stays open. An
+# anchored id with no stamped thread (thread fetch failed or truncated,
+# GitLab, no trusted stamp) is kept only on a row at its exact recorded file,
+# line and category (a different category only with a supported reclassified
+# disposition for that id), and mints anywhere else. An id whose only stamped
+# threads are on the LEFT side of the diff is mapped but has no usable place,
+# so it mints and never falls back to the recorded coordinates; a closed, resolving, foreign, or duplicate id is replaced (a
+# reclassified id must stay on its row, so it is kept). A prior finding with
+# no inline anchor (PR-level or file-level) has no place, so its supplied id
+# is kept on a row with the same file and category, or, for a supported
+# reclassification of that id, the same file in any category; an anchored
+# record is matched by its recorded file, line and category only when it has
+# no stamped thread. An id stamped
+# on several distinct live locations is ambiguous and mints rather than
+# landing on whichever row comes first. Without a usable id, copy the open prior id whose file and
+# category match at the exact line of its stamped thread; else the human-dismissed id anchored at
 # the row's exact file and line, whatever the category, unless the row is
 # high or critical, a runner safety signal (protected-path or
 # sub-agent-failure), or more severe than the dismissed finding; a dismissal
-# never covers those; else the only open
-# candidate at that place (a shifted line must not create a second ledger
-# entry). Do not copy an id this review is closing. A missing file (null or
-# N/A) is not a place, so those rows mint instead of inheriting. Otherwise
-# mint. Supplied open ids of later rows are reserved for them.
+# never covers those. Otherwise mint. The exact line is where the id's
+# stamped thread sits now (STAMPED_THREADS), so a shifted line keeps its id;
+# a stamped id whose every thread is outdated has no line and mints, as does
+# an id-less row whose prior finding has no stamped thread: the recorded line
+# is never an identity map for copying an id onto an id-less row.
+# Do not copy an id
+# this review is closing, unless its stamped thread sits at the row: that
+# concern is still present and its id stays open. Never copy an id only
+# because it is the one prior finding with that file and category. A missing
+# file (null or N/A) is not a place, so those rows mint instead of
+# inheriting. Supplied open ids of later rows are reserved for them.
 if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   ID_RESULT="$(mktemp)"
   CLEANUP_FILES+=("${ID_RESULT}")
-  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" --argjson dismissed "${DISMISSED_ANCHORS}" '
+  jq --argjson prior "${PRIOR_LEDGER}" --argjson mints "${MINT_IDS}" --argjson dismissed "${DISMISSED_ANCHORS}" --argjson stamped "${STAMPED_THREADS}" '
     def valid_id: type == "string" and test("^f_[A-Za-z0-9]+$");
     def anchor_line: if type == "number" then . else null end;
     def anchor_file: if . == "N/A" or . == null then null else . end;
@@ -298,10 +334,56 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
       .status == "reclassified"
       and (.rationale | type == "string" and length > 0)
       and (.evidence | type == "string" and length > 0);
+    # Whether a row sits at a place its supplied id sits: same file and line
+    # of its stamped thread, and either its category or, for a supported
+    # reclassification of that id, any category. A prior finding recorded without an inline anchor (a PR-level or
+    # file-level finding) has no place and no stamped thread; a supplied id
+    # stays on a row with the same file as that record and either its
+    # category or, for a supported reclassification of that id, any category.
+    # A prior finding whose stamped threads are all outdated is mapped and not
+    # matched here, so it still mints. An id stamped on several distinct live
+    # locations is ambiguous and matches nowhere, so it mints too. An anchored
+    # prior finding with no stamped thread at all (no trusted stamp map) keeps
+    # its supplied id only on a row at its exact recorded file, line and
+    # category, or, for a supported reclassification of that id, any category.
+    # A thread that exists but only on the LEFT side is mapped with no place,
+    # so it never reaches that recorded-coordinate fallback.
+    def at_place($open_findings; $reclassified_ids):
+      . as $row
+      | any($open_findings[];
+          .id == $row.id
+          and (((.places | length) < 2
+                and (.category == $row.category or ($reclassified_ids | index($row.id)) != null)
+                and any(.places[]; .file == ($row.file | anchor_file) and .line == ($row.line | anchor_line)))
+               or ((.mapped | not)
+                   and .anchored
+                   and .category == $row.category
+                   and (.file | anchor_file) == ($row.file | anchor_file)
+                   and (.line | anchor_line) == ($row.line | anchor_line))
+               or ((.mapped | not)
+                   and .anchored
+                   and ($reclassified_ids | index($row.id)) != null
+                   and (.file | anchor_file) == ($row.file | anchor_file)
+                   and (.line | anchor_line) == ($row.line | anchor_line))
+               or ((.mapped | not)
+                   and (.anchored | not)
+                   and (.category == $row.category or ($reclassified_ids | index($row.id)) != null)
+                   and (.file | anchor_file) == ($row.file | anchor_file))));
     ($prior.open_ids) as $open
-    | ([ (.dispositions // [])[] | select(resolving or reclassified) | .id | select(valid_id) ]) as $closing
     | ([ (.dispositions // [])[] | select(resolving) | .id | select(valid_id) ]) as $resolving_ids
-    | ([ $prior.findings[] | select(.id as $pid | $open | index($pid) != null) ]) as $open_findings
+    | ([ (.dispositions // [])[] | select(reclassified) | .id | select(valid_id) ]) as $reclassified_ids
+    | ([ $prior.findings[] | select(.id as $pid | $open | index($pid) != null)
+         | .id as $pid
+         | ([ $stamped[] | select(.id == $pid) ]) as $threads
+         | if ($threads | length) == 0 then
+             . + {mapped: false,
+                  anchored: ((.file | anchor_file) != null and (.line | anchor_line) != null),
+                  places: []}
+           else
+             . + {mapped: true,
+                  places: [ $threads[] | select(.line != null) | {file: .path, line} ] | unique}
+           end
+       ]) as $open_findings
     | (.findings // []) as $rows
     | .findings = (
         reduce range(0; ($rows | length)) as $i (
@@ -312,15 +394,21 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
           | (
               if ($f.id | valid_id) and ($open | index($f.id)) != null and ($taken | index($f.id)) == null
                  and ($resolving_ids | index($f.id)) == null
+                 and ($f | at_place($open_findings; $reclassified_ids))
               then {id: $f.id, mint_i: $state.mint_i}
               else
-                ([ $rows[($i + 1):][] | .id | select(valid_id) | select(. as $x | $open | index($x) != null) ]) as $reserved
+                ([ $rows[($i + 1):][]
+                   | select(.id as $rid | ($rid | valid_id) and ($open | index($rid)) != null and ($resolving_ids | index($rid)) == null)
+                   | select(at_place($open_findings; $reclassified_ids))
+                   | .id
+                 ]) as $reserved
                 | ([ $open_findings[]
-                     | select(.id as $pid | ($taken + $reserved + $closing) | index($pid) == null)
-                     | select((.file | anchor_file) != null and ($f.file | anchor_file) != null)
-                     | select((.file | anchor_file) == ($f.file | anchor_file) and .category == $f.category)
-                   ]) as $same_place
-                | ([ $same_place[] | select((.line | anchor_line) == ($f.line | anchor_line)) ]) as $exact
+                     | select(.id as $pid | ($taken + $reserved) | index($pid) == null)
+                     | select(.category == $f.category)
+                     | select((.places | length) < 2)
+                     | select(($f.file | anchor_file) != null and ($f.line | anchor_line) != null)
+                     | select(any(.places[]; .file == ($f.file | anchor_file) and .line == ($f.line | anchor_line)))
+                   ]) as $exact
                 | ([ $dismissed[]
                      | select(.id as $pid | $taken | index($pid) == null)
                      | select(($f.severity | IN("high", "critical")) | not)
@@ -330,7 +418,6 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
                    ]) as $dismissed_here
                 | if ($exact | length) == 1 then {id: $exact[0].id, mint_i: $state.mint_i}
                   elif ($dismissed_here | length) > 0 then {id: $dismissed_here[0].id, mint_i: $state.mint_i}
-                  elif ($same_place | length) == 1 then {id: $same_place[0].id, mint_i: $state.mint_i}
                   elif ($mints[$state.mint_i] | valid_id | not) then error("ran out of finding ids")
                   else {id: $mints[$state.mint_i], mint_i: ($state.mint_i + 1)}
                   end
@@ -376,6 +463,83 @@ if jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
   fi
 fi
 
+# ---------------------------------------------------------------------------
+# Drop findings from dimensions the runner did not stage. The runner writes a
+# persona manifest (FULLSEND_PERSONAS_FILE) listing the pr-review personas it
+# staged from the trusted base config. A new finding is dropped only when all
+# of these hold:
+#   - the manifest exists, parses as version 1, and lists at least one persona;
+#   - the finding names a dimension, and that dimension is not a staged persona;
+#   - its severity is below high (info, low or medium);
+#   - it does not carry an open prior id;
+#   - its category is not in drop_exempt_category.
+# High and critical findings are always kept, so disabling a persona cannot
+# hide a serious finding. Without a manifest (an older runner) nothing is
+# dropped, and a finding with no dimension is always kept. Runs after id
+# assignment so a row answering an open prior id keeps it; prior dispositions
+# are never touched. Orchestrator findings (protected-path, sub-agent-failure,
+# scope-authorization-implicit, provenance-warning) are exempt whatever their
+# dimension: the drop rewrites the same file UNFILTERED_RESULT_FILE points at,
+# so dropping a protected-path finding would bypass the protected-path gate.
+# One ::warning:: names each dropped dimension with its count.
+# ---------------------------------------------------------------------------
+REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION=""
+STAGED_PERSONAS=""
+if [[ -n "${FULLSEND_PERSONAS_FILE:-}" && -f "${FULLSEND_PERSONAS_FILE}" ]]; then
+  if ! STAGED_PERSONAS="$(jq -ce '
+      select(type == "object" and .version == 1 and (.personas | type) == "array"
+             and (.personas | length) > 0
+             and all(.personas[]; type == "object" and (.name | type) == "string"))
+      | [.personas[].name]
+    ' "${FULLSEND_PERSONAS_FILE}" 2>/dev/null)"; then
+    STAGED_PERSONAS=""
+    echo "::warning::Persona manifest is not a valid version 1 manifest; no findings dropped by dimension"
+  fi
+fi
+if [[ -n "${STAGED_PERSONAS}" ]] && jq -e '.findings | type == "array"' "${RESULT_FILE}" >/dev/null 2>&1; then
+  DIMENSION_ORIGINAL_ACTION="$(jq -r '.action // empty' "${RESULT_FILE}")"
+  DIMENSION_DROP_RESULT="$(mktemp)"
+  CLEANUP_FILES+=("${DIMENSION_DROP_RESULT}")
+  jq --argjson staged "${STAGED_PERSONAS}" --argjson prior "${PRIOR_LEDGER}" '
+    def drop_exempt_category:
+      IN("protected-path", "sub-agent-failure", "scope-authorization-implicit", "provenance-warning");
+    def keep:
+      (.category | drop_exempt_category)
+      or (.dimension | type) != "string"
+      or (.dimension as $d | $staged | index($d) != null)
+      or (.severity | IN("high", "critical"))
+      or (.id as $id | $prior.open_ids | index($id) != null);
+    [.findings[] | select(keep | not) | .dimension] as $dropped
+    | .findings |= map(select(keep))
+    | if ($dropped | length) == 0 then .
+      else
+        if .action == "request-changes" or .action == "reject" then
+          if ([.findings[]
+               | select((.severity | IN("medium", "high", "critical"))
+                        or (.actionable // false))] | length) == 0 then
+            .action = "comment"
+          else .
+          end
+        else .
+        end
+        | if (.findings | length) == 0 then del(.findings) else . end
+      end
+    | {result: ., dropped: $dropped}
+  ' "${RESULT_FILE}" > "${DIMENSION_DROP_RESULT}"
+  DIMENSION_DROP_COUNT="$(jq '.dropped | length' "${DIMENSION_DROP_RESULT}")"
+  if [[ "${DIMENSION_DROP_COUNT}" -gt 0 ]]; then
+    DIMENSION_DROP_SUMMARY="$(jq -r '
+      .dropped | group_by(.) | map("\(.[0]) (\(length))") | join(", ")
+    ' "${DIMENSION_DROP_RESULT}")"
+    jq '.result' "${DIMENSION_DROP_RESULT}" > "${RESULT_FILE}"
+    if [[ "${DIMENSION_ORIGINAL_ACTION}" = "request-changes" || "${DIMENSION_ORIGINAL_ACTION}" = "reject" ]] \
+        && [[ "$(jq '[.findings[]? | select(.severity | IN("medium", "high", "critical"))] | length' "${RESULT_FILE}")" -eq 0 ]]; then
+      REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION="${DIMENSION_ORIGINAL_ACTION}"
+    fi
+    echo "::warning::Dropped ${DIMENSION_DROP_COUNT} finding(s) from dimensions the runner did not stage: $(_gha_sanitize "${DIMENSION_DROP_SUMMARY}")"
+  fi
+fi
+
 # A legacy projection may have valid findings but no prior verdict. Do not
 # reinterpret that missing metadata as request-changes: hold automatic
 # promotion for human review instead. A prior reject likewise requires a
@@ -390,7 +554,8 @@ CURRENT_SETTLED_IDS="$(jq -c '
      | select(
          ($d.status == "resolved_by_change"
           and ($d.rationale | type == "string" and length > 0)
-          and ($d.evidence | type == "string" and length > 0))
+          and ($d.evidence | type == "string" and length > 0)
+          and ($current_ids | index($d.id) == null))
          or ($d.status == "reclassified"
           and ($d.rationale | type == "string" and length > 0)
           and ($d.evidence | type == "string" and length > 0)
@@ -473,6 +638,26 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
 
   if [ "${filtered_count}" -lt "${original_count}" ]; then
     echo "Severity filter (threshold=${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}): kept ${filtered_count}/${original_count} findings"
+
+    # Record what the filter dropped so the disclosure below can be reconciled
+    # against the findings actually posted (#1800). It cannot be counted here:
+    # the re-review gate restores prior open blocking findings regardless of
+    # the threshold, so a finding dropped now may still be published.
+    #
+    # Ids only: that is all the reconciliation reads, and carrying whole rows
+    # would push descriptions and remediations through a single jq argv slot.
+    # A row with no id keeps a null entry so it still counts as withheld.
+    THRESHOLD_HIDDEN_IDS="$(jq -c --argjson rank "$threshold_rank" '
+      [ .findings[] | select(
+          (if .severity == "info" then 0
+           elif .severity == "low" then 1
+           elif .severity == "medium" then 2
+           elif .severity == "high" then 3
+           elif .severity == "critical" then 4
+           else 1 end) < $rank
+        ) | .id ]
+    ' "${RESULT_FILE}")"
+
     RESULT_FILE="${FILTERED_RESULT}"
 
     # If filtering removed all findings, delete the empty findings array
@@ -494,6 +679,7 @@ if jq -e '.findings' "${RESULT_FILE}" >/dev/null 2>&1; then
       fi
       RESULT_FILE="${DOWNGRADE_RESULT}"
     fi
+
   else
     rm -f "${FILTERED_RESULT}"
   fi
@@ -521,8 +707,8 @@ rereview_action_can_promote() {
            "${REREVIEW_FILTER_ORIGINAL_ACTION}" = "reject" ]]; then
     return 0
   fi
-  if [[ "${REREVIEW_UX_ORIGINAL_ACTION}" = "request-changes" || \
-        "${REREVIEW_UX_ORIGINAL_ACTION}" = "reject" ]]; then
+  if [[ "${REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION}" = "request-changes" || \
+        "${REREVIEW_DIMENSION_DROP_ORIGINAL_ACTION}" = "reject" ]]; then
     return 0
   fi
   return 1
@@ -1080,7 +1266,10 @@ fi
 
 # Ledger accounting. Each open prior id gets one effective status, decided
 # here and used by both the approval guard and the projection:
-#   resolved_by_change  — rationale and evidence given.
+#   resolved_by_change  — rationale and evidence given, and no current
+#                         finding carries the id. A finding at the id's
+#                         stamped thread keeps the id, so the concern is
+#                         still present and the id stays open.
 #   reclassified        — rationale and evidence given, and this review
 #                         re-emits a finding with the same id (at its new
 #                         severity or category, below threshold or not).
@@ -1126,7 +1315,9 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
       | (($prior.findings | map(select(.id == $id)) | first) // {id: $id}) as $f
       | ($given | map(select(.id == $id)) | last) as $got
       | if $got == null then {id: $id, status: "open", why: "unanswered"}
-        elif $got.status == "resolved_by_change" and ($got | supported) then {id: $id, status: "resolved_by_change"}
+        elif $got.status == "resolved_by_change" and ($got | supported) then
+          if ($current_ids | index($id)) != null then {id: $id, status: "open", why: "resolved-still-reported"}
+          else {id: $id, status: "resolved_by_change"} end
         elif $got.status == "reclassified" and ($got | supported) then
           if ($current_ids | index($id)) != null then {id: $id, status: "reclassified"}
           else {id: $id, status: "open", why: "reclassified-without-finding"} end
@@ -1142,6 +1333,7 @@ LEDGER_REPORT="$(jq -c --argjson prior "${PRIOR_LEDGER}" --argjson dismissals "$
       effective: [ $effective[] | {id, status} ],
       unanswered: [ $effective[] | select(.why == "unanswered") | .id ],
       reclassified_without_finding: [ $effective[] | select(.why == "reclassified-without-finding") | .id ],
+      resolved_still_reported: [ $effective[] | select(.why == "resolved-still-reported") | .id ],
       dismissed_high: [ $effective[] | select(.why == "dismissed-high") | .id ],
       dismissed_unverified: [ $effective[] | select(.why == "dismissed-unverified") | .id ],
       blocking: [ $prior.findings[]
@@ -1160,6 +1352,10 @@ fi
 RECLASSIFIED_WITHOUT_FINDING_IDS="$(jq -r '.reclassified_without_finding | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${RECLASSIFIED_WITHOUT_FINDING_IDS}" ]]; then
   echo "::warning::Reclassified prior finding id(s) ${RECLASSIFIED_WITHOUT_FINDING_IDS} have no current finding with that id; recorded as open"
+fi
+RESOLVED_STILL_REPORTED_IDS="$(jq -r '.resolved_still_reported | join(", ")' <<< "${LEDGER_REPORT}")"
+if [[ -n "${RESOLVED_STILL_REPORTED_IDS}" ]]; then
+  echo "::warning::Prior finding id(s) $(_gha_sanitize "${RESOLVED_STILL_REPORTED_IDS}") marked resolved_by_change are still reported at their review thread; recorded as open"
 fi
 DISMISSED_HIGH_IDS="$(jq -r '.dismissed_high | join(", ")' <<< "${LEDGER_REPORT}")"
 if [[ -n "${DISMISSED_HIGH_IDS}" ]]; then
@@ -1337,12 +1533,43 @@ if [[ "${HAS_VALID_PRIOR_REVIEW}" = "true" ]]; then
   fi
 fi
 
+# Disclose findings the severity threshold withheld, so a filtered review is
+# not mistaken for a clean pass (#1800). Runs after the re-review gate: a
+# dropped finding the gate restored is published, so it is reconciled out of
+# the count rather than reported as withheld.
+if [[ -n "${THRESHOLD_HIDDEN_IDS:-}" ]]; then
+  THRESHOLD_HIDDEN_COUNT="$(jq --argjson hidden "${THRESHOLD_HIDDEN_IDS}" '
+    [ (.findings // [])[].id ] as $posted
+    | [ $hidden[]
+        | . as $id
+        | select($id == null or ($posted | index($id) == null)) ]
+    | length
+  ' "${RESULT_FILE}")"
+  if [[ "${THRESHOLD_HIDDEN_COUNT}" -gt 0 ]]; then
+    if [[ "$(jq '(.findings // []) | length' "${RESULT_FILE}")" -eq 0 ]]; then
+      THRESHOLD_NOTICE=$'\n\n---\n'"No findings at or above \`${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}\` severity; ${THRESHOLD_HIDDEN_COUNT} lower-severity finding(s) were not posted."
+    else
+      THRESHOLD_NOTICE=$'\n\n---\n'"${THRESHOLD_HIDDEN_COUNT} finding(s) below the \`${EFFECTIVE_FINDING_SEVERITY_THRESHOLD}\` severity threshold were not posted."
+    fi
+    THRESHOLD_NOTICE_RESULT=$(mktemp)
+    CLEANUP_FILES+=("${THRESHOLD_NOTICE_RESULT}")
+    jq --arg notice "${THRESHOLD_NOTICE}" \
+      '.body = ((.body // "") + $notice)' \
+      "${RESULT_FILE}" > "${THRESHOLD_NOTICE_RESULT}"
+    RESULT_FILE="${THRESHOLD_NOTICE_RESULT}"
+  fi
+fi
+
 # Append a machine-readable projection only when every schema-validated finding
 # can be represented safely. A lossy projection could turn a failed sub-agent
-# into an apparently clean dimension on the next re-review. Low-severity
-# challenger failures are non-dimensional and retain the pre-challenger findings.
-# A dimension failure the severity filter removed (Sonnet-tier failures are
-# recorded at info) must still suppress the projection.
+# into an apparently clean dimension on the next re-review. Challenger failures
+# are non-dimensional and retain the pre-challenger findings. They are told
+# apart by the failed sub-agent's name, which the pr-review skill puts at the
+# start of the description ("The challenger sub-agent did not return
+# findings: ..."), never by severity. Every other sub-agent-failure, at any
+# severity and including one that names no sub-agent, suppresses the
+# projection, even when the severity filter removed it (Sonnet-tier failures
+# are recorded at info).
 #
 # The projection is the ledger: every current finding plus every prior
 # finding not re-emitted, each with its id, and one {id, status} per prior
@@ -1381,9 +1608,11 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
     type == "string" and IN(
       "protected-path", "provenance-warning", "scope-authorization-implicit"
     );
+  def challenger_failure:
+    .category == "sub-agent-failure" and
+    (.description | type == "string" and startswith("The challenger sub-agent did not return findings:"));
   def non_dimensional_finding:
-    (.category | non_dimensional_category) or
-    (.category == "sub-agent-failure" and .severity == "low");
+    (.category | non_dimensional_category) or challenger_failure;
   def projectable:
     (.category | type == "string" and allowed_category) and (.file == "N/A" or (.file | safe_path));
   def closed_status: IN("resolved_by_change", "dismissed_by_human");
@@ -1394,7 +1623,8 @@ PRIOR_FINDINGS_PROJECTION="$(jq -c --slurpfile unfiltered "${UNFILTERED_RESULT_F
       file: (if .file == "N/A" then null else .file end),
       id
     } + (if (.line | type) == "number" then {line} else {} end)
-      + (if (.actionable | type) == "boolean" then {actionable} else {} end);
+      + (if (.actionable | type) == "boolean" then {actionable} else {} end)
+      + (if (.dimension | type == "string" and test("^[a-z0-9][a-z0-9-]{0,63}$")) then {dimension} else {} end);
   def is_closed($accounted; $id):
     [$accounted[] | select(.id == $id and (.status | closed_status))] | length > 0;
   (.findings // []) as $findings

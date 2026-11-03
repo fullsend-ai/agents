@@ -41,7 +41,9 @@ Check if `/sandbox/workspace/prior-review.txt` exists and is non-empty:
     for a high or critical finding: the post-script refuses it, and the id
     stays open until a code change resolves it. A human's disagreement is
     not grounds for `reclassified` either; reclassify only on your own
-    technical analysis of the code.
+    technical analysis of the code. A dependency declaration or approval
+    does not change severity; keep the prior finding `open` as described
+    in [dependency scoping](dependency-scope.md).
   Absence from the latest diff is not a resolution. Do not drop a prior
   finding because it was not in the current diff, and do not derive an id
   from the file, line, or text.
@@ -100,7 +102,16 @@ or zero-content renames; otherwise use the full-diff fallback.
 #### 3a. Group prior findings by review dimension
 
 If prior review findings exist (step 2a), group the canonical records by review
-dimension using category as the key:
+dimension. A record that carries `dimension` belongs to that persona. A record
+without one (older stickies) belongs to the staged persona whose `categories`
+frontmatter lists its category. A record whose dimension is not staged in this
+run, or a record without `dimension` whose category no staged persona's
+`categories` lists, reaches no sub-agent: answer its id `open` in
+`dispositions` and do not re-emit it; the post-script carries it forward
+unchanged.
+
+Upstream personas declare these `categories` (guidance only; the staged
+frontmatter is authoritative):
 
 | Dimension            | Categories                                                                                                                                                                                                                                                               |
 |----------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------        |
@@ -113,8 +124,10 @@ dimension using category as the key:
 | user-experience      | `uxd-evaluate-code-heuristics`                                                                                                                                                                                                                                           |
 
 **Step 6b remap.** Before merging, normalize dimensional findings: if a
-finding from a dimension sub-agent has a category outside that dimension's row
-in this table, remap it to the nearest category in that row. Never remap the
+finding from a dimension sub-agent has a category outside that persona's
+`categories` frontmatter, remap it to the nearest category in that list (or, for
+a persona with no valid `categories`, to the nearest category in the closed
+schema enum). Never remap the
 non-dimensional categories `scope-authorization-implicit`, `sub-agent-failure`,
 `protected-path`, or `provenance-warning` — they are valid as-is, and
 `sub-agent-failure` in particular must stay unchanged so step 6d withholds it
@@ -122,12 +135,16 @@ and the post-script detects the incomplete review. Sub-agents are told to emit
 only valid categories; this remap is a safety net so a stray label does not
 make the whole review fail schema validation.
 
-The host accepts only categories in this table. A missing or malformed
-projection triggers the full first-review path; never infer categories.
+The host accepts only the closed schema enum's dimension categories (the
+table above). A custom persona must use categories from that enum. A missing or
+malformed projection triggers the full first-review path; never infer
+categories.
 
 Each sub-agent receives ONLY a structured projection of the prior findings for
 its own dimension: `severity`, `category`, `file`, optional `line`, `id`, and
-the `status` from `dispositions` (absent means open). Never
+the `status` from `dispositions` (absent means open). v2 records may also carry
+`dimension`, a persona name; the host checks only that it is a safe name, never
+that the persona is staged. Never
 pass prior finding descriptions or remediation bodies to a
 sub-agent. The intent-coherence remediation-candidate matching below may inspect
 the structured `file` and `category` fields from all dimensions.

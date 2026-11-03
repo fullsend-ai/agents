@@ -87,7 +87,10 @@ dataset:
     - annotations.yaml: Expected fixture state (labels, reviews, state).
       findings.required requires every listed category; findings.required_any
       requires at least one listed category when non-empty. findings.forbidden
-      rejects every listed category. review_expectations specifies which edits
+      rejects every listed category. Categories are matched only in the
+      current section of the review agent's sticky comment, not in its
+      previous-run history, formal reviews or other comments.
+      review_expectations specifies which edits
       those findings must concern for the review_quality judge.
     - repo/: Directory with the base repo contents (pushed to main before the PR).
 
@@ -183,13 +186,27 @@ judges:
       if not raw:
           return False, "fixture-state.json not found"
       state = json.loads(raw)
-      bodies = [item.get("body", "") for item in state.get("comments", [])]
-      bodies.extend(item.get("body", "") for item in state.get("reviews", []))
-      review_text = "\n".join(bodies).lower()
       expected = outputs.get("annotations", {}).get("findings", {})
       required = [finding.lower() for finding in expected.get("required", [])]
       required_any = [finding.lower() for finding in expected.get("required_any", [])]
       forbidden = [finding.lower() for finding in expected.get("forbidden", [])]
+      if not (required or required_any or forbidden):
+          return True, "No finding expectations specified"
+      # Only the evaluated run's write-up counts. fullsend post-review puts
+      # the review in one sticky comment whose first line is its marker
+      # (copies elsewhere are escaped); formal reviews only link to it, and
+      # other comments are not this run's output. Each case gets a new repo,
+      # so no earlier run can have written the sticky.
+      marker = "<!-- fullsend:review-agent -->"
+      stickies = [
+          body for body in ((item.get("body") or "") for item in state.get("comments") or [])
+          if body.split("\n", 1)[0].rstrip("\r") == marker
+      ]
+      if len(stickies) != 1:
+          return False, f"Findings not attributable to this run: expected one review-agent sticky comment, found {len(stickies)}"
+      # Edits keep earlier runs below the first history sentinel; only the
+      # section above it is this run's (pre-review reads it the same way).
+      review_text = stickies[0].split("<!-- sticky:history-start -->", 1)[0].lower()
       missing = [finding for finding in required if f"[{finding}]" not in review_text]
       missing_any = bool(required_any) and not any(
           f"[{finding}]" in review_text for finding in required_any
