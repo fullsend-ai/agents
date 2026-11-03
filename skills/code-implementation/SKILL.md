@@ -272,6 +272,19 @@ echo "::notice::STEP 3: Discover repo conventions"
 Before writing any code, understand how this repository works. Use `Read`
 and `Glob` to inspect project configuration:
 
+**Scoped path.** Discovery scales with the task. When the issue, triage,
+or dispatch instruction names the exact file(s) and a small, concrete
+change (an exact before/after or one endorsed fix) whose behavior and
+safety are clear, defer the sweep below: do item 1 (`CLAUDE.md`,
+`AGENTS.md`) and write the structured output now, then steps 4-7. In
+step 8, read the target files plus only the callers or tests needed to
+confirm the change, and make the edit. Do items 2-5 before step 9.
+Skip unrelated files (siblings, docs, evals, workflows) before the
+edit. Return to full discovery if the change does not apply cleanly,
+the issue's claims are wrong, the impact is wider (other callers,
+public interfaces, constants, protected paths), or verification fails
+unexpectedly.
+
 1. **Read project-level instructions.** Use `Read` on `CLAUDE.md`,
    `CONTRIBUTING.md`, and `AGENTS.md` (if they exist).
 
@@ -480,7 +493,8 @@ reproduce.
 
 ### 8. Plan the implementation
 
-Before writing code, form a concrete plan:
+Before writing code, form a concrete plan (scoped path: see step 3;
+items 7-9 still apply).
 
 1. **Read affected files in full** — not just the lines mentioned in the issue.
    Understand the surrounding context, imports, types, and call sites.
