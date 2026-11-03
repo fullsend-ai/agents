@@ -16,10 +16,15 @@
 [[ -n "${GITHUB_RETRO_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_RETRO_OPS_SH_LOADED=1
 
+# shellcheck source=github-host.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-host.lib.sh"
+
 # --- URL handling ---
 
 forge_validate_originating_url() {
-  if [[ ! "${ORIGINATING_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
+  local path
+  if ! path=$(_github_url_path "${ORIGINATING_URL}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/(issues|pull)/[0-9]+$ ]]; then
     echo "ERROR: ORIGINATING_URL does not match expected pattern: $(_gha_sanitize "${ORIGINATING_URL}")" >&2
     return 1
   fi
@@ -27,7 +32,7 @@ forge_validate_originating_url() {
 
 forge_parse_originating_url() {
   # shellcheck disable=SC2034 # ORIGINATING_REPO consumed by callers after function returns
-  ORIGINATING_REPO=$(echo "${ORIGINATING_URL}" | sed -E 's#https://github.com/##; s#/(issues|pull)/.*##')
+  ORIGINATING_REPO=$(_github_url_path "${ORIGINATING_URL}" | sed -E 's#/(issues|pull)/.*##')
   # shellcheck disable=SC2034 # ORIGINATING_NUMBER consumed by callers after function returns
   ORIGINATING_NUMBER=$(basename "${ORIGINATING_URL}")
 }

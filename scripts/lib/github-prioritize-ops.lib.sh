@@ -20,18 +20,22 @@ GITHUB_PRIORITIZE_OPS_SH_LOADED=1
 
 # shellcheck source=github-api-csma.lib.sh
 source "${SCRIPT_DIR}/lib/github-api-csma.lib.sh"
+# shellcheck source=github-host.lib.sh
+source "${SCRIPT_DIR}/lib/github-host.lib.sh"
 
 # --- URL handling ---
 
 forge_validate_issue_url() {
-  if [[ ! "${ISSUE_URL}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
+  local path
+  if ! path=$(_github_url_path "${ISSUE_URL}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/issues/[0-9]+$ ]]; then
     echo "ERROR: ISSUE_URL does not match expected pattern: $(_gha_sanitize "${ISSUE_URL}")" >&2
     return 1
   fi
 }
 
 forge_parse_issue_url() {
-  REPO=$(echo "${ISSUE_URL}" | sed 's|https://github.com/||; s|/issues/.*||')
+  REPO=$(_github_url_path "${ISSUE_URL}" | sed 's|/issues/.*||')
   ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 }
 
