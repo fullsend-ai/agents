@@ -591,11 +591,11 @@ the scan passes.
 echo "::notice::STEP 9b: Pre-commit hooks"
 ```
 
-Pre-commit is bounded, not optional. Exactly three things let you stop
+Pre-commit is bounded, not optional. Exactly four things let you stop
 short: the time-budget threshold above (under 10% of the budget
 remaining), the 300s fallback floor that guards STEP C's direct
-execution, and STEP D's two-run cap. Nothing else authorizes skipping
-it. The post-script
+execution, STEP D's two-run cap, and a possible sandbox permission
+denial (see 9c). Nothing else authorizes skipping it. The post-script
 (`post-code.sh`) runs an authoritative pre-commit check on the CI
 runner before pushing. However, the post-script runs **after the
 sandbox is destroyed** — any failure it catches is terminal
@@ -672,6 +672,11 @@ The first run may be slow (installs hook environments). This is normal.
   ```bash
   pre-commit run --files <all-your-changed-files>
   ```
+
+- **Permission error** (`Permission denied`, `Operation not permitted`,
+  `EACCES`, `EPERM`): not an infrastructure failure for the fallback
+  below. Follow "Possible sandbox permission denials" in 9c; do not run
+  the hooks directly to get around it.
 
 - **Any other failure** (exit 3, network error, infrastructure error) —
   **do not skip verification — unless the floor below says you cannot
@@ -887,6 +892,36 @@ not verified:
 **Do NOT silently skip tests or linters and commit as if everything
 passed.** If you cannot run the relevant test suite or lint command, you
 must disclose that.
+
+**Possible sandbox permission denials.** A verification command that
+fails with `Permission denied`, `Operation not permitted`, `EACCES`, or
+`EPERM` may be hitting a sandbox or environment restriction, not a
+missing tool or a defect in your code — GNU Make under OpenShell, for
+example, can report `make: pnpm: Operation not permitted` for a tool
+that exists. Treat the denial as final for that operation:
+
+- Stop running it. Do not retry it through an alternate path, wrapper,
+  shim, setup target, or equivalent command, and do not probe for a way
+  around it. Do not spend a 9c retry on it.
+- Emit a visible warning naming the step, the denied command or
+  executable, and the error. Redact credential-like arguments (tokens,
+  passwords, secret-bearing URLs). Call it a possible denial; do not
+  assert the sandbox caused it unless the output shows that.
+
+  ```bash
+  echo "::warning::Possible sandbox denial in STEP 9c: 'make test' failed: make: pnpm: Operation not permitted. Not retried. Unverified: unit tests, lint"
+  ```
+
+- List the checks that remain unverified. Continue only with checks
+  that do not need the denied operation. If the remaining checks cannot
+  give a trustworthy result without it, do not commit: validate
+  structured output and stop.
+- Repeat the warning and the unverified checks in the commit message,
+  `pr_body`, and your final message.
+
+If the error points at the repository itself — a tracked file's mode,
+a project script missing its execute bit, a path your change created —
+it is a project problem: investigate and fix it like any other failure.
 
 **If tests or linters fail due to your code:**
 

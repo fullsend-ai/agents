@@ -257,6 +257,22 @@ Trigger: a human `/fs-fix` squash (whole PR → one commit) or redo/reset
 redo. Fail closed when squash and redo are requested together, or when
 redo ownership is ambiguous. Rebase-then-squash when both are requested.
 
+## Sandbox permission denials
+
+If a verification command fails with `Permission denied`, `Operation not
+permitted`, `EACCES`, or `EPERM`, treat it as a possible sandbox or
+environment denial — unless the error points at the repository itself,
+which you investigate like any other failure. The denial is final for
+that operation. Do not repeat it, and do not retry it through an
+alternate path, wrapper, shim, or equivalent command. Emit a warning
+naming the step, the denied command, and the error, with credential-like
+arguments redacted, and without asserting a cause you have not verified.
+List the checks left unverified, continue only with checks that do not
+need the denied operation, and stop cleanly if the result cannot be
+trusted without it. Carry the warning and the unverified checks into the
+commit message, the result's `summary`, and your final message. The
+`fix-verification` skill (step 7c) gives the procedure.
+
 ## Structured output
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json` that
