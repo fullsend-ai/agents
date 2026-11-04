@@ -415,6 +415,12 @@ run_test_content_suppressed "github/omitted-sensitive-topic-suppressed" \
   "alice@example.com" \
   0
 
+run_test_content_suppressed "github/omitted-clean-topic-unsuppressed" \
+  '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"not actionable"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
+  "OMITTED: [Rollout followup] — not actionable" \
+  "(details suppressed)" \
+  0
+
 run_test_content_suppressed "github/no-issue-sensitive-topic-skipped" \
   '{"topics":[{"topic":"Ping alice@example.com","summary":"Follow up.","existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":0}}' \
   "Topics processed: 1" \
