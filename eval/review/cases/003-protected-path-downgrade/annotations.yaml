@@ -6,6 +6,7 @@
 # .github/ is protected. The outcome label must be requires-manual-review,
 # never ready-for-merge.
 state: open
+review_action: [comment]
 
 # Selected as the review agent's release-tier smoke case (eval/run-functional.sh
 # EVAL_TIER=release): it exercises the whole post-script, not just the

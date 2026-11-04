@@ -115,6 +115,7 @@ script-test:
 	$(call run-timed,bash eval/scripts/teardown-fixture-test.sh)
 	$(call run-timed,bash eval/scripts/capture-fixture-test.sh)
 	$(call run-timed,bash eval/scripts/finding-expectations-test.sh)
+	$(call run-timed,bash eval/scripts/state-and-action-checks-test.sh)
 	$(call run-timed,bash eval/scripts/aggregate-nightly-test.sh)
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)

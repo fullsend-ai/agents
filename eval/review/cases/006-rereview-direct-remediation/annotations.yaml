@@ -1,4 +1,5 @@
 state: open
+review_action: [comment, request-changes]
 
 labels:
   required: []

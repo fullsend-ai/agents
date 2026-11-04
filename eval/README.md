@@ -91,7 +91,8 @@ other judges run and are reported, but don't fail the run:
 - LLM quality judges (name ends in `_quality`, e.g. `review_quality`,
   `triage_quality`)
 - live-model behaviour checks: `finding_expectations`, `required_labels`,
-  `forbidden_labels`, `risk_label_present`, `expected_files`
+  `forbidden_labels`, `risk_label_present`, `expected_files`,
+  `expected_state`, `expected_review_action`
 - the `max_turns`/`max_cost` budget judges
 
 Their thresholds stay in each `eval.yaml`; `run-functional.sh` drops
@@ -144,8 +145,9 @@ eval/scripts/aggregate-nightly.sh eval/review/eval.yaml \
 ```
 
 - **Behaviour checks** (`finding_expectations`, `required_labels`,
-  `forbidden_labels`, `risk_label_present`, `expected_files`) with a
-  `min_pass_rate`: a case fails the check when it is `false` in at least
+  `forbidden_labels`, `risk_label_present`, `expected_files`,
+  `expected_state`, `expected_review_action`) with a `min_pass_rate`: a
+  case fails the check when it is `false` in at least
   2 of the given runs. The nightly pass rate is the share of cases that
   do not fail, and is compared with `min_pass_rate`. A flake that hits a
   different case each night passes; a case that keeps failing does not.
@@ -304,9 +306,11 @@ Each case directory under `eval/<agent>/cases/` contains:
   and a `prior_review` body/provenance to exercise a re-review. Each PR
   file is written ending with exactly one final newline, whatever block
   style its `content` uses.
-- `annotations.yaml` — expected outcomes (labels, review expectations)
-  and the report-only budgets: `max_cost_usd`, plus `max_turns` where the
-  eval has a `max_turns` judge. Set `release: true` to include the case
+- `annotations.yaml` — expected outcomes (labels, final `state`, review
+  expectations, and for review cases an optional `review_action` list of
+  allowed final actions) and the report-only budgets: `max_cost_usd`, plus
+  `max_turns` where the eval has a `max_turns` judge. Set `release: true`
+  to include the case
   in `EVAL_TIER=release` runs (see [Tiers](#tiers) above).
 - `repo/` (optional) — base repo contents pushed to main before the
   fixture is created

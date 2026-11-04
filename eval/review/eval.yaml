@@ -84,7 +84,9 @@ dataset:
       PR fixtures may include followup_files, commit_message (default
       'eval: fixture changes'), plus prior_review body/provenance to exercise
       re-review behavior.
-    - annotations.yaml: Expected fixture state (labels, reviews, state).
+    - annotations.yaml: Expected fixture state (labels, state).
+      state is checked by expected_state. review_action optionally lists
+      the final actions the case allows, checked by expected_review_action.
       findings.required requires every listed category; findings.required_any
       requires at least one listed category when non-empty. findings.forbidden
       rejects every listed category. Categories are matched only in the
@@ -233,6 +235,68 @@ judges:
           return False, f"No risk/* label found (actual: {actual})"
       return True, f"Risk label present: {risk_labels}"
 
+  - name: expected_state
+    description: The issue or PR must end in the state annotations.yaml expects
+    check: |
+      import json
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      expected = outputs.get("annotations", {}).get("state")
+      if not expected:
+          return True, "No expected state specified"
+      actual = json.loads(raw).get("state")
+      if not actual:
+          return False, "State not captured — the forge read may have failed"
+      # Annotations are lowercase; gh reports OPEN, CLOSED or MERGED.
+      if str(actual).lower() != str(expected).lower():
+          return False, f"Expected state {expected}, got {actual}"
+      return True, f"State is {actual}"
+
+  - name: expected_review_action
+    description: The review's final action must be one annotations.yaml allows
+    check: |
+      import base64
+      import json
+      import re
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found"
+      allowed = [action.lower() for action in outputs.get("annotations", {}).get("review_action", [])]
+      if not allowed:
+          return True, "No expected review action specified"
+      state = json.loads(raw)
+      # The formal review can't supply this: REVIEW_TOKEN reuses GH_TOKEN here,
+      # so GitHub rejects approve and request-changes on the fixture's own PR
+      # (#245). fullsend post-review writes the sticky before it submits that
+      # review, so the sticky's projection marker survives the rejection. It
+      # records the action after any post-review downgrade.
+      marker = "<!-- fullsend:review-agent -->"
+      stickies = [
+          body for body in ((item.get("body") or "") for item in state.get("comments") or [])
+          if body.split("\n", 1)[0].rstrip("\r") == marker
+      ]
+      if len(stickies) != 1:
+          return False, f"Action not attributable to this run: expected one review-agent sticky comment, found {len(stickies)}"
+      # Edits keep earlier runs below the first history sentinel; only the
+      # section above it is this run's.
+      current = stickies[0].split("<!-- sticky:history-start -->", 1)[0]
+      projections = re.findall(
+          r"^<!-- fullsend:review-findings-v2:([A-Za-z0-9+/]+={0,2}) -->\r?$", current, re.MULTILINE
+      )
+      if len(projections) != 1:
+          return False, f"Expected one review-findings marker in the current sticky section, found {len(projections)}"
+      try:
+          projection = json.loads(base64.b64decode(projections[0], validate=True))
+      except ValueError as err:
+          return False, f"Could not decode the review-findings marker: {err}"
+      action = projection.get("action") if isinstance(projection, dict) else None
+      if not action or not isinstance(action, str):
+          return False, "The review-findings marker has no action"
+      if action.lower() not in allowed:
+          return False, f"Review action {action} is not one of {allowed}"
+      return True, f"Review action {action} is allowed"
+
   - name: max_cost
     description: Agent must complete within the declared cost budget
     check: |
@@ -273,4 +337,8 @@ thresholds:
   forbidden_labels:
     min_pass_rate: 1.0
   finding_expectations:
+    min_pass_rate: 1.0
+  expected_state:
+    min_pass_rate: 1.0
+  expected_review_action:
     min_pass_rate: 1.0
