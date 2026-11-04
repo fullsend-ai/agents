@@ -2610,6 +2610,229 @@ run_code_push_retry_test "push-api-not-a-fast-forward" \
 run_code_push_retry_test "push-unexpected-error" \
   "fatal: repository not found" "false" 1
 
+# ---------------------------------------------------------------------------
+# Recovery patch on failure before the branch is pushed, against the real
+# script. MOCK_PUSH_FAIL fails every push (plain and --force-with-lease).
+# MOCK_GITLEAKS_TEXT_FINDING makes the no-git text scan report a finding
+# (exit 2) when the scanned file contains it; MOCK_GITLEAKS_COMMIT_FAIL
+# fails the commit-history scan.
+# ---------------------------------------------------------------------------
+# Usage: run_recovery_post_code <run_dir> <log> [VAR=value ...]
+run_recovery_post_code() {
+  local run_dir="$1" log="$2"
+  shift 2
+  local mock_bin="${run_dir}/mock-bin"
+  mkdir -p "${mock_bin}"
+  cp "${SEC_CODE_MOCK_BIN}/sleep" "${mock_bin}/"
+
+  cat > "${mock_bin}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+if [[ " $* " == *" --no-git "* ]]; then
+  _src="" _prev=""
+  for _a in "$@"; do
+    if [ "${_prev}" = "--source" ]; then _src="${_a}"; fi
+    _prev="${_a}"
+  done
+  if [ -n "${MOCK_GITLEAKS_TEXT_FINDING:-}" ] \
+     && grep -qF -- "${MOCK_GITLEAKS_TEXT_FINDING}" "${_src}"; then
+    exit 2
+  fi
+  exit 0
+fi
+if [ -n "${MOCK_GITLEAKS_COMMIT_FAIL:-}" ]; then echo "leaks found: 1" >&2; exit 1; fi
+exit 0
+MOCKEOF
+  chmod +x "${mock_bin}/gitleaks"
+
+  cat > "${mock_bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api -X")      echo "unexpected Git Data API call on the plain-push path: $*" >&2; exit 99 ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo ""; exit 0 ;;
+  "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "issue comment"|"pr comment")
+    printf '%s\n' "$@"
+    cat 2>/dev/null || true
+    exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+  chmod +x "${mock_bin}/gh"
+
+  cat > "${mock_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
+  exit 0
+fi
+if [[ "\$1" == "push" && -n "\${MOCK_PUSH_FAIL:-}" ]]; then
+  echo "\${MOCK_PUSH_FAIL}" >&2
+  exit 1
+fi
+exec ${REAL_GIT} "\$@"
+MOCKEOF
+  chmod +x "${mock_bin}/git"
+
+  local rc=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${mock_bin}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="false"
+    unset MOCK_PUSH_FAIL MOCK_GITLEAKS_TEXT_FINDING MOCK_GITLEAKS_COMMIT_FAIL
+    local _assignment
+    for _assignment in "$@"; do
+      export "${_assignment?}"
+    done
+    bash "${POST_SCRIPT}"
+  ) > "${log}" 2>&1 || rc=$?
+  return "${rc}"
+}
+
+# Fail a recovery test with diagnostics.
+recovery_fail() {
+  local test_name="$1" reason="$2" log="$3"
+  echo "FAIL: ${test_name} — ${reason}"
+  cat "${log}"
+  FAILURES=$((FAILURES + 1))
+}
+
+# --- Failure before commit: tracked + untracked files are recoverable -------
+_rec_name="recovery-uncommitted-tracked-and-untracked"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-uncommitted"
+_rec_base="$(${REAL_GIT} -C "${_rec_dir}/repo" rev-parse HEAD~1)"
+${REAL_GIT} -C "${_rec_dir}/repo" reset -q --soft HEAD~1
+echo "edited" > "${_rec_dir}/repo/README.md"
+echo "new notes" > "${_rec_dir}/repo/notes.txt"
+printf '\000\001binary\377' > "${_rec_dir}/repo/blob.bin"
+mkdir -p "${_rec_dir}/repo/.agentready"
+echo "agent state" > "${_rec_dir}/repo/.agentready/state.json"
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" || _rec_rc=$?
+_rec_patch="${_rec_dir}/recovery/agent-work.patch"
+_rec_verify="${_rec_dir}/verify"
+${REAL_GIT} clone -q "${_rec_dir}/remote.git" "${_rec_verify}"
+${REAL_GIT} -C "${_rec_verify}" checkout -q "${_rec_base}"
+if [ "${_rec_rc}" -eq 0 ]; then
+  recovery_fail "${_rec_name}" "expected non-zero exit" "${_rec_log}"
+elif [ ! -s "${_rec_patch}" ] || [ ! -s "${_rec_dir}/recovery/README.md" ]; then
+  recovery_fail "${_rec_name}" "recovery patch or README not written" "${_rec_log}"
+elif grep -q "agentready" "${_rec_patch}"; then
+  recovery_fail "${_rec_name}" "agent working directory included in patch" "${_rec_log}"
+elif ! ${REAL_GIT} -C "${_rec_verify}" apply --index "${_rec_patch}" >/dev/null 2>&1; then
+  recovery_fail "${_rec_name}" "patch does not apply at the starting commit" "${_rec_log}"
+elif [ "$(cat "${_rec_verify}/file.txt")" != "changed content" ] \
+     || [ "$(cat "${_rec_verify}/README.md")" != "edited" ] \
+     || [ "$(cat "${_rec_verify}/notes.txt")" != "new notes" ] \
+     || ! cmp -s "${_rec_verify}/blob.bin" "${_rec_dir}/repo/blob.bin"; then
+  recovery_fail "${_rec_name}" "applied patch does not reproduce the agent's files" "${_rec_log}"
+elif ! grep -q "uncommitted work saved as a recovery patch" "${_rec_log}" \
+     || ! grep -qF "Starting commit:** \`${_rec_base}\`" "${_rec_log}" \
+     || ! grep -q "Untracked files included (2)" "${_rec_log}" \
+     || ! grep -q "notes.txt" "${_rec_log}" \
+     || ! grep -q "git apply --index agent-work.patch" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "comment missing recovery details" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
+# --- Push rejected for workflow files: patch preserved, manual path shown ---
+_rec_name="recovery-push-workflow-permission"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-workflow"
+mkdir -p "${_rec_dir}/repo/.github/workflows"
+echo "name: ci" > "${_rec_dir}/repo/.github/workflows/ci.yml"
+${REAL_GIT} -C "${_rec_dir}/repo" add .github/workflows/ci.yml
+${REAL_GIT} -C "${_rec_dir}/repo" commit -q -m "ci: add workflow"
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" \
+  "MOCK_PUSH_FAIL=! [remote rejected] agent/99-recover-workflow -> agent/99-recover-workflow (refusing to allow a GitHub App to create or update workflow \`.github/workflows/ci.yml\` without \`workflows\` permission)" \
+  || _rec_rc=$?
+_rec_patch="${_rec_dir}/recovery/agent-work.patch"
+if [ "${_rec_rc}" -eq 0 ]; then
+  recovery_fail "${_rec_name}" "expected non-zero exit" "${_rec_log}"
+elif [ ! -s "${_rec_patch}" ] \
+     || ! grep -q "^+++ b/.github/workflows/ci.yml" "${_rec_patch}" \
+     || ! grep -q "^+++ b/file.txt" "${_rec_patch}"; then
+  recovery_fail "${_rec_name}" "committed work missing from recovery patch" "${_rec_log}"
+elif ! grep -q "Push rejected — workflows permission" "${_rec_log}" \
+     || ! grep -q "Workflow files:" "${_rec_log}" \
+     || ! grep -q "open the pull request manually" "${_rec_log}" \
+     || ! grep -q "recovery/agent-work.patch" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "comment missing reason or manual recovery path" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
+# --- Secret found in the patch: withheld, paths and reason reported --------
+_rec_name="recovery-secret-in-patch-withheld"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-secret"
+echo "value RECOVERY-SCAN-MARKER-42" > "${_rec_dir}/repo/config.txt"
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" \
+  "MOCK_PUSH_FAIL=fatal: repository not found" \
+  "MOCK_GITLEAKS_TEXT_FINDING=RECOVERY-SCAN-MARKER" || _rec_rc=$?
+if [ "${_rec_rc}" -eq 0 ]; then
+  recovery_fail "${_rec_name}" "expected non-zero exit" "${_rec_log}"
+elif [ -e "${_rec_dir}/recovery" ]; then
+  recovery_fail "${_rec_name}" "recovery files written despite secret finding" "${_rec_log}"
+elif grep -q "RECOVERY-SCAN-MARKER-42" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "secret value leaked into the log" "${_rec_log}"
+elif ! grep -q "Recovered work withheld" "${_rec_log}" \
+     || ! grep -q "found a possible secret" "${_rec_log}" \
+     || ! grep -q "config.txt" "${_rec_log}" \
+     || ! grep -q "file.txt" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "comment missing withheld reason or changed paths" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
+# --- Commit secret scan blocked the push: patch withheld ------------------
+_rec_name="recovery-secret-scan-block-withheld"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-scan-block"
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" "MOCK_GITLEAKS_COMMIT_FAIL=1" || _rec_rc=$?
+if [ "${_rec_rc}" -eq 0 ]; then
+  recovery_fail "${_rec_name}" "expected non-zero exit" "${_rec_log}"
+elif [ -e "${_rec_dir}/recovery" ]; then
+  recovery_fail "${_rec_name}" "recovery files written after secret-scan block" "${_rec_log}"
+elif ! grep -q "Secret scan blocked" "${_rec_log}" \
+     || ! grep -q "Recovered work withheld" "${_rec_log}" \
+     || ! grep -q "secret scan blocked the push" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "comment missing withheld reason" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
+# --- Successful run: no recovery artifact -----------------------------------
+_rec_name="recovery-success-no-artifact"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-success"
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" || _rec_rc=$?
+if [ "${_rec_rc}" -ne 0 ]; then
+  recovery_fail "${_rec_name}" "expected exit 0, got ${_rec_rc}" "${_rec_log}"
+elif [ -e "${_rec_dir}/recovery" ] || grep -q "Recovered work" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "recovery artifact produced on success" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
 rm -rf "${SEC_CODE_TMPDIR}"
 
 # ---------------------------------------------------------------------------
