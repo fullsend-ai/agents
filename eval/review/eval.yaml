@@ -86,7 +86,8 @@ dataset:
       re-review behavior.
     - annotations.yaml: Expected fixture state (labels, state).
       state is checked by expected_state. review_action optionally lists
-      the final actions the case allows, checked by expected_review_action.
+      the actions the case allows in the review-findings marker, checked by
+      expected_review_action.
       findings.required requires every listed category; findings.required_any
       requires at least one listed category when non-empty. findings.forbidden
       rejects every listed category. Categories are matched only in the
@@ -254,7 +255,7 @@ judges:
       return True, f"State is {actual}"
 
   - name: expected_review_action
-    description: The review's final action must be one annotations.yaml allows
+    description: The action in the review-findings marker must be one annotations.yaml allows
     check: |
       import base64
       import json
@@ -269,8 +270,11 @@ judges:
       # The formal review can't supply this: REVIEW_TOKEN reuses GH_TOKEN here,
       # so GitHub rejects approve and request-changes on the fixture's own PR
       # (#245). fullsend post-review writes the sticky before it submits that
-      # review, so the sticky's projection marker survives the rejection. It
-      # records the action after any post-review downgrade.
+      # review, so the sticky's projection marker survives the rejection. The
+      # marker is not always the posted action: a direct protected-path or
+      # risk-gate downgrade changes only the posted review, so an agent's
+      # approve stays approve here. The outcome label checks cover what was
+      # posted.
       marker = "<!-- fullsend:review-agent -->"
       stickies = [
           body for body in ((item.get("body") or "") for item in state.get("comments") or [])

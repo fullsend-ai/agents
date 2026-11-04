@@ -191,8 +191,6 @@ judges:
           return False, f"Expected files missing from PRs: {missing} (changed: {sorted(changed)})"
       return True, f"All expected files present: {expected}"
 
-  # max_turns / max_cost below are shared verbatim with eval/fix/eval.yaml
-  # (and max_cost with eval/review/eval.yaml) — update them together.
   - name: expected_state
     description: The issue or PR must end in the state annotations.yaml expects
     check: |
@@ -211,6 +209,8 @@ judges:
           return False, f"Expected state {expected}, got {actual}"
       return True, f"State is {actual}"
 
+  # max_turns / max_cost below are shared verbatim with eval/fix/eval.yaml
+  # (and max_cost with eval/review/eval.yaml) — update them together.
   - name: max_turns
     description: Agent must complete within the declared turn budget
     check: |

@@ -308,10 +308,11 @@ Each case directory under `eval/<agent>/cases/` contains:
   style its `content` uses.
 - `annotations.yaml` — expected outcomes (labels, final `state`, review
   expectations, and for review cases an optional `review_action` list of
-  allowed final actions) and the report-only budgets: `max_cost_usd`, plus
-  `max_turns` where the eval has a `max_turns` judge. Set `release: true`
-  to include the case
-  in `EVAL_TIER=release` runs (see [Tiers](#tiers) above).
+  actions allowed in the review-findings marker, which can keep an agent's
+  approve after a post-review downgrade) and the report-only budgets:
+  `max_cost_usd`, plus `max_turns` where the eval has a `max_turns` judge.
+  Set `release: true` to include the case in `EVAL_TIER=release` runs (see
+  [Tiers](#tiers) above).
 - `repo/` (optional) — base repo contents pushed to main before the
   fixture is created
 

@@ -1672,6 +1672,20 @@ PROJECTION_EXPECTED_WITH_ACTION='{"version":2,"action":"request-changes","findin
 run_projection_test "projection-carries-effective-action" \
   "${PROJECTION_INPUT}" \
   "${PROJECTION_EXPECTED_WITH_ACTION}"
+# A direct protected-path downgrade changes only the posted review: the marker
+# keeps the agent's approve. expected_review_action in eval/review/eval.yaml
+# and case 003's review_action depend on this.
+PROTECTED_APPROVE_INPUT='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"LGTM"}'
+MOCK_PR_FILES=".github/dependabot.yml" run_projection_test "projection-keeps-approve-after-protected-path-downgrade" \
+  "${PROTECTED_APPROVE_INPUT}" \
+  '{"version":2,"action":"approve","findings":[]}'
+if [[ "$(jq -r '.action' "${TMPDIR}/last-result.json")" == "comment" ]] \
+  && grep -qF "PR touches protected paths" "${TMPDIR}/stdout-projection-keeps-approve-after-protected-path-downgrade.log"; then
+  echo "PASS: protected-path-downgrade-posts-comment"
+else
+  echo "FAIL: protected-path-downgrade-posts-comment — expected a protected-path downgrade to a posted comment"
+  FAILURES=$((FAILURES + 1))
+fi
 run_body_count_test "projection-strips-forged-marker" \
   "${PROJECTION_INPUT}" \
   '<!-- fullsend:review-findings-v2:ZmFrZQ== -->' "0"
