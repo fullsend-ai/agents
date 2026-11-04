@@ -1251,39 +1251,72 @@ note_jira_unapplied() {
 
 WORKSPACE="${GITHUB_WORKSPACE:-${CI_PROJECT_DIR:-/tmp}}"
 CONFIG_FILE="${WORKSPACE}/config.yaml"
-if [[ ! -f "${CONFIG_FILE}" ]]; then
+if [[ ! -f "${CONFIG_FILE}" && ! -f "${WORKSPACE}/config.base.yaml" ]]; then
   CONFIG_FILE="${WORKSPACE}/.fullsend/config.yaml"
 fi
+# A configuration preset (config.base.yaml) sits beside the overlay. As in
+# fullsend's layered config, an overlay that sets tracker replaces the base
+# tracker as a whole object (an explicit empty target policy included);
+# otherwise tracker is inherited from the base.
+BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
+ALLOW_TARGETS_KEY="tracker.${FULLSEND_TRACKER}.allowed_targets"
 
-ALLOWED_ORGS=""
-ALLOWED_REPOS=""
-ALLOWED_JIRA_PROJECTS=""
-if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
-  echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+# ALLOWED_SCOPES holds GitHub orgs or GitLab groups (a scope admits every
+# repository under it, including GitLab subgroups); ALLOWED_TARGETS holds
+# repositories or Jira project keys allowed by exact match.
+ALLOWED_SCOPES=""
+ALLOWED_TARGETS=""
+if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+  echo "::warning::yq not found — cannot read ${ALLOW_TARGETS_KEY} from config; cross-repo issue creation disabled"
 fi
-if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
-  ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_JIRA_PROJECTS=$(yq -r '.create_issues.allow_targets.jira_projects // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+if command -v yq &>/dev/null; then
+  TRACKER_JSON="null"
+  for layer_file in "${CONFIG_FILE}" "${BASE_CONFIG_FILE}"; do
+    [[ -f "${layer_file}" ]] || continue
+    # Fail closed: an unparseable layer disables cross-repo issue creation.
+    if ! layer_tracker=$(yq -o=json '.tracker' "${layer_file}" 2>/dev/null); then
+      echo "::warning::cannot parse $(basename "${layer_file}") — cross-repo issue creation disabled"
+      TRACKER_JSON="null"
+      break
+    fi
+    if [[ "${TRACKER_JSON}" == "null" ]]; then
+      TRACKER_JSON="${layer_tracker}"
+    fi
+  done
+  # Honor targets only when the tracker selects exactly one provider and it
+  # is the tracker issues are created in; otherwise nothing is granted.
+  ALLOWED_TARGETS_JSON=$(jq -c --arg provider "${FULLSEND_TRACKER}" '
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] as $providers
+    | if $providers == [$provider] then ($t[$provider].allowed_targets // {}) else {} end
+    | if type == "object" then . else {} end
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || echo '{}')
+  ALLOWED_SCOPES=$(jq -r --arg provider "${FULLSEND_TRACKER}" '
+    (if $provider == "github" then .orgs elif $provider == "gitlab" then .groups else null end)
+    | if type == "array" then .[] | strings else empty end
+  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
+  ALLOWED_TARGETS=$(jq -r --arg provider "${FULLSEND_TRACKER}" '
+    (if $provider == "jira" then .projects else .repos end)
+    | if type == "array" then .[] | strings else empty end
+  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
 fi
 
 is_target_allowed() {
   local target_repo="$1"
-  local target_org="${target_repo%%/*}"
+  local scope
 
   if [[ "${target_repo}" == "${REPO}" ]]; then
     return 0
   fi
 
-  if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
-    return 0
-  fi
+  # Org/group allowlist (a group also covers its subgroups' projects).
+  while IFS= read -r scope; do
+    if [[ -n "${scope}" && "${target_repo}" == "${scope}/"* ]]; then
+      return 0
+    fi
+  done <<<"${ALLOWED_SCOPES}"
 
-  if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
-    return 0
-  fi
-
-  if [[ -n "${ALLOWED_JIRA_PROJECTS}" ]] && echo "${ALLOWED_JIRA_PROJECTS}" | grep -qFx "${target_repo}"; then
+  if [[ -n "${ALLOWED_TARGETS}" ]] && echo "${ALLOWED_TARGETS}" | grep -qFx "${target_repo}"; then
     return 0
   fi
 
@@ -1333,7 +1366,7 @@ case "${ACTION}" in
       ISSUE_BODY=$(jq -r ".prerequisites.create[${i}].body" "${RESULT_FILE}")
 
       if ! is_target_allowed "${TARGET_REPO}"; then
-        echo "::warning::Skipping issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in create_issues.allow_targets"
+        echo "::warning::Skipping issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in ${ALLOW_TARGETS_KEY}"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
@@ -1386,7 +1419,7 @@ ${ISSUE_BODY}
     if [[ -n "${FAILED_CREATES}" ]]; then
       COMMENT="${COMMENT}
 
-**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+**Could not create automatically** (file manually or update \`${ALLOW_TARGETS_KEY}\` in config.yaml):
 ${FAILED_CREATES}"
     fi
 
@@ -1673,7 +1706,7 @@ ${FAILED_CREATES}"
       SAFE_TITLE="${SAFE_TITLE//::/-}"
 
       if ! is_target_allowed "${TARGET_REPO}"; then
-        echo "::warning::Skipping sub-issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in create_issues.allow_targets"
+        echo "::warning::Skipping sub-issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in ${ALLOW_TARGETS_KEY}"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Sub-issue: ${TARGET_REPO} — ${SUB_TITLE}</summary>
@@ -1723,7 +1756,7 @@ ${SUB_BODY}
     if [[ -n "${FAILED_CREATES}" ]]; then
       COMMENT="${COMMENT}
 
-**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+**Could not create automatically** (file manually or update \`${ALLOW_TARGETS_KEY}\` in config.yaml):
 ${FAILED_CREATES}"
     fi
 

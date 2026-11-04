@@ -54,7 +54,7 @@ These labels are managed by the triage agent based on its assessment of the issu
 | `completed` | The work described in the issue is done (all child issues closed, addressing PRs/MRs merged, acceptance criteria met). The issue is closed with reason "completed". Distinct from `not-planned` (rejected) and from `in-progress` (open PR/MR still in flight). |
 | `pr-open` | An open PR or merge request already addresses this issue. Applied either by the triage agent's `in-progress` action — used when a PR/MR *fixes* the issue, as opposed to `prerequisites`/`blocked` when a PR/MR must merely land first — or by the code agent's pre-check when it finds a human PR before dispatching. No automation clears this label when the linked PR/MR is closed without merging: nothing re-triages on PR/MR close, so the issue keeps `pr-open` — and the in-progress comment stays on the issue — until triage runs again, via an issue edit or a manual `/fs-triage`. |
 
-The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `create_issues.allow_targets` in config.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
+The `split` action decomposes an issue that bundles multiple independent concerns into separate sub-issues. The agent creates one sub-issue per independent item (in the source repo by default, or in a cross-repo target if allowed by `tracker.<provider>.allowed_targets` in config.yaml), posts a comment listing the new sub-issues, cleans up stale labels (`blocked`, `needs-info`, `ready-to-code`, `pr-open`), and closes the original issue with reason "completed". Each sub-issue is then triaged independently.
 
 The `issue-labels` skill may also apply contextual labels (e.g., `area/api`,
 `kind/bug`) but these are informational — they do not control agent behavior.
@@ -199,10 +199,27 @@ triage should still classify issues but must not flood the coding queue.
 
 ### Issue filing allowlist
 
-Cross-repo issue creation for prerequisites is governed by
-`create_issues.allow_targets` in `config.yaml`. Prerequisite issues
-targeting repos outside the allowlist are skipped with a warning and
-surfaced in the summary comment so they can be filed manually.
+Cross-repo issue creation for prerequisites and split sub-issues is
+governed by `tracker.<provider>.allowed_targets` in `config.yaml`. The
+post-script honors the targets of the `tracker` provider block that
+matches `FULLSEND_TRACKER`:
+
+- GitHub: `tracker.github.allowed_targets.orgs` and `repos`.
+- GitLab: `tracker.gitlab.allowed_targets.groups` and `repos`. A group also
+  covers its subgroups' projects.
+- Jira: `tracker.jira.allowed_targets.projects` (project keys).
+
+A `tracker` mapping for another provider, or one with more than one
+provider block, grants no cross-repo targets. Issues targeting repos
+outside the allowlist are skipped with a warning and surfaced in the
+summary comment so they can be filed manually.
+
+A configuration preset (`config.base.yaml`, beside `config.yaml`) is
+composed beneath the overlay with fullsend's whole-object `tracker` merge:
+an overlay without `tracker` inherits the base's targets, and an overlay
+that sets `tracker` (including an explicit empty target policy) replaces
+them. If either file cannot be parsed, cross-repo issue creation is
+disabled with a warning.
 
 The source repo (where the triaged issue lives) is always implicitly
 allowed.
@@ -257,9 +274,9 @@ fails loudly rather than silently skipping the close — set all three to the
 same transition name if your Jira workflow doesn't distinguish between them.
 
 Cross-project issue creation for Jira prerequisites is gated by a
-`create_issues.allow_targets.jira_projects` list of Jira project keys in
-`config.yaml`, alongside the existing `orgs`/`repos` keys used for
-GitHub/GitLab. The issue's own project is always implicitly allowed.
+`tracker.jira.allowed_targets.projects` list of Jira project keys in
+`config.yaml` (see [Issue filing allowlist](#issue-filing-allowlist)). The
+issue's own project is always implicitly allowed.
 
 For Jira-sourced runs (`FULLSEND_WORK_ITEM_SOURCE=jira`), the post-script
 writes results to the issue at `FULLSEND_WORK_ITEM_URL`:
@@ -326,7 +343,7 @@ If you use `base:` composition to override `harness/triage.yaml`:
   against GitHub, GitLab, and Jira patterns regardless of the active forge.
   This is intentional — the schema is forge-neutral. Cross-forge issue
   creation (`prerequisites.create`) is enforced at runtime (the forge API
-  rejects foreign project paths, and `create_issues.allow_targets` gates it
+  rejects foreign project paths, and `tracker.<provider>.allowed_targets` gates it
   further), but comment URLs (`pull_requests[].url`,
   `prerequisites.existing[].url`) are interpolated verbatim and are
   schema-constrained only. The prompt includes examples of the relevant URL
