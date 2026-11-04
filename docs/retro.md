@@ -77,8 +77,10 @@ A configuration preset (`config.base.yaml`, beside `config.yaml`) is
 composed beneath the overlay with fullsend's whole-object `tracker` merge:
 an overlay without `tracker` (or with a null or bare `tracker:`) inherits
 the base's targets, and an overlay that sets `tracker` (including an
-explicit empty target policy) replaces them. If either file cannot be parsed, cross-repo issue creation is
-disabled with a warning.
+explicit empty target policy) replaces them. A null or bare `tracker:` that
+inherits base targets prints a warning; to revoke them, set an explicit empty
+`allowed_targets` instead. If either file cannot be parsed, cross-repo issue
+creation is disabled with a warning.
 
 The originating repo (where the PR that triggered the retro lives) is
 always implicitly allowed.

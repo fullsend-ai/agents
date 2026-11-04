@@ -1407,6 +1407,22 @@ run_test_no_gh_call "layered-overlay-explicit-empty-not-inherited" \
   "gh issue create" \
   "::warning::Skipping issue creation in 'test-org/target-repo'"
 
+# An explicit null tracker inherits the base grants and warns about it; a
+# sparse overlay (no tracker key) or an empty target policy does not.
+layered_workspace "overlay-null" "${LAYERED_BASE_ORG}" 'version: "1"
+tracker:'
+run_test_stdout "layered-overlay-null-tracker-warns" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "::warning::config.yaml sets tracker to null, so cross-repo targets from config.base.yaml are inherited"
+run_test "layered-overlay-null-tracker-inherits" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create --repo test-org/target-repo"
+layered_workspace "base-sparse-nowarn" "${LAYERED_BASE_ORG}" "${LAYERED_SPARSE_OVERLAY}"
+run_test_stdout_absent "layered-sparse-overlay-no-null-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created:" \
+  "sets tracker to null"
+
 layered_workspace "no-base" "" "${LAYERED_SPARSE_OVERLAY}"
 run_test_no_gh_call "layered-no-base-sparse-overlay-skipped" \
   "${FIXTURE_ONE_PROPOSAL}" \

@@ -98,6 +98,7 @@ if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/d
 fi
 if command -v yq &>/dev/null; then
   TRACKER_JSON="null"
+  OVERLAY_TRACKER_NULL="false"
   for layer_file in "${CONFIG_FILE}" "${BASE_CONFIG_FILE}"; do
     [[ -f "${layer_file}" ]] || continue
     # Fail closed: an unparseable layer disables cross-repo issue creation.
@@ -111,7 +112,15 @@ if command -v yq &>/dev/null; then
       echo "::warning::$(basename "${layer_file}") sets create_issues.allow_targets, which is no longer read — move its targets to ${ALLOW_TARGETS_KEY}"
     fi
     if [[ "${TRACKER_JSON}" == "null" ]]; then
+      # An overlay that sets tracker to null inherits the base targets; say so
+      # when that keeps cross-repo grants the operator may have meant to clear.
+      if [[ "${OVERLAY_TRACKER_NULL}" == "true" ]] && jq -e '[.. | arrays | select(length > 0)] | length > 0' <<<"${layer_tracker}" &>/dev/null; then
+        echo "::warning::config.yaml sets tracker to null, so cross-repo targets from $(basename "${layer_file}") are inherited — set an empty ${ALLOW_TARGETS_KEY} in config.yaml to revoke them"
+      fi
       TRACKER_JSON="${layer_tracker}"
+    fi
+    if [[ "${layer_file}" == "${CONFIG_FILE}" && "${layer_tracker}" == "null" && "$(yq 'has("tracker")' "${layer_file}" 2>/dev/null)" == "true" ]]; then
+      OVERLAY_TRACKER_NULL="true"
     fi
   done
   # Warn when a tracker mapping selects other or several providers, since it
