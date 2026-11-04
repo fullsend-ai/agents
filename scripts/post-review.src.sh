@@ -1248,7 +1248,7 @@ if [[ "${HAS_RISK}" == "true" ]]; then
       --arg score "${RISK_SCORE}" \
       --arg level "${RISK_LEVEL}" \
       --arg rationale "${RISK_RATIONALE}" \
-      -r '"<!-- fullsend:risk-assessment -->\n**Risk Assessment: \($level) (\($score)/5)**\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>"')
+      -r '"**Risk Assessment: \($level) (\($score)/5)**\n\n<details>\n<summary>Details</summary>\n\n\($rationale)\n\n</details>"')
 
     printf '%s' "${RISK_COMMENT}" | fullsend post-comment \
       --repo "${REPO}" \
