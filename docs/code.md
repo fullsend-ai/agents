@@ -85,7 +85,8 @@ opened manually, or the workflow changes removed before retrying.
 
 The patch is secret-scanned with the same built-in-rules text scan used for
 PR descriptions before it is written. If that scan finds a possible secret
-or cannot run, or the failure was itself a secret-scan block, the patch is
+or cannot run, the failure was itself a secret-scan block, or the changes
+include binary files (which the text scan cannot inspect), the patch is
 withheld: nothing is written, and the comment reports only the changed paths
 and the reason. No recovery files are written on a successful run, when the
 branch was already pushed, or when there are no changes. A process killed

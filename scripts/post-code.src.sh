@@ -281,92 +281,6 @@ if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
   GITLAB_HOST="${_url_host}"
 fi
 
-# ---------------------------------------------------------------------------
-# Resolve target branch (ADR 0053)
-#
-# Priority: agent output > allowed-list validation > auto-detect default
-# The agent writes its chosen branch to agent-result.json. The post-script
-# validates it against CODE_ALLOWED_TARGET_BRANCHES (comma-separated list
-# or "*" for any). When unset, only the auto-detected default branch is
-# allowed. Falls back to "main" if the API call fails.
-# ---------------------------------------------------------------------------
-AGENT_TARGET=""
-# Prefer the validated iteration when set. Trust boundary:
-# FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI on the runner —
-# not by the sandbox or the agent. No containment check (realpath / prefix
-# guard) is applied here; the value is trusted from the external harness.
-# If the trust model changes, add a realpath prefix check.
-if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
-  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
-    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
-  else
-    # No silent rescan: an env var pointing at a dir without the expected
-    # filename must not fall back to scanning other iterations, which could
-    # pick up a different (possibly invalid) iteration's output. Degrade to
-    # no result the same as the "nothing found" case below — this script
-    # already falls back to the auto-detected default branch when
-    # RESULT_FILE is empty, so this isn't a hard failure.
-    RESULT_FILE=""
-  fi
-else
-  # Backward compatibility: scan iteration-N/ subdirectories for the last
-  # iteration's output (glob order = naturally ascending iteration numbers).
-  RESULT_FILE=""
-  for dir in "${RUN_DIR}"/iteration-*/output; do
-    if [ -f "${dir}/agent-result.json" ]; then
-      RESULT_FILE="${dir}/agent-result.json"
-    fi
-  done
-fi
-CLOSES_ISSUE="true"
-INJECT_ISSUE_SCOPE="true"
-if [ -n "${RESULT_FILE}" ]; then
-  AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
-  # Do not use jq `//` for the boolean opt-outs: it treats JSON false as
-  # missing, so `closes_issue: false` / `inject_issue_scope: false` would
-  # silently read as the default. Only the literal string "false" opts out.
-  AGENT_CLOSES="$(jq -r '.closes_issue' "${RESULT_FILE}" 2>/dev/null || true)"
-  AGENT_INJECT="$(jq -r '.inject_issue_scope' "${RESULT_FILE}" 2>/dev/null || true)"
-  if [ "${AGENT_CLOSES}" = "false" ]; then
-    CLOSES_ISSUE="false"
-  fi
-  if [ "${AGENT_INJECT}" = "false" ]; then
-    INJECT_ISSUE_SCOPE="false"
-  fi
-fi
-if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
-  post_fail_to_issue branch-validation \
-    "Invalid branch name from agent output: '${AGENT_TARGET}'"
-fi
-
-DEFAULT_BRANCH="$(forge_get_default_branch "${PUSH_TOKEN}")"
-
-if [ -n "${AGENT_TARGET}" ]; then
-  if [ -n "${CODE_ALLOWED_TARGET_BRANCHES:-}" ]; then
-    # Explicit allowed list — hard-fail if agent's choice is not in it.
-    if [ "${CODE_ALLOWED_TARGET_BRANCHES}" = "*" ] \
-       || echo ",${CODE_ALLOWED_TARGET_BRANCHES}," | grep -qF ",${AGENT_TARGET},"; then
-      TARGET_BRANCH="${AGENT_TARGET}"
-      echo "Agent requested branch '${TARGET_BRANCH}' — allowed"
-    else
-      post_fail_to_issue branch-validation \
-        "Agent requested branch '${AGENT_TARGET}' but allowed branches are: ${CODE_ALLOWED_TARGET_BRANCHES}"
-    fi
-  else
-    # No explicit list — auto-correct to API-discovered default when mismatched.
-    if [ "${AGENT_TARGET}" = "${DEFAULT_BRANCH}" ]; then
-      TARGET_BRANCH="${AGENT_TARGET}"
-      echo "Agent requested branch '${TARGET_BRANCH}' — matches default"
-    else
-      TARGET_BRANCH="${DEFAULT_BRANCH}"
-      gha_echo warning "Agent requested branch '${AGENT_TARGET}' but default branch is '${DEFAULT_BRANCH}' — auto-correcting"
-    fi
-  fi
-else
-  TARGET_BRANCH="${DEFAULT_BRANCH}"
-  echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
-fi
-
 echo "::add-mask::${PUSH_TOKEN}"
 if [ -n "${GITLAB_TOKEN:-}" ]; then
   echo "::add-mask::${GITLAB_TOKEN}"
@@ -562,17 +476,29 @@ trusted_git() {
   # defined in the tree's own .git/config, update-index/status/add can invoke
   # that filter's arbitrary command when the file's cached stat looks stale
   # (routine after extraction, and certain for dirty files on the
-  # timeout-kill path). Discover any repo-local filter drivers and
-  # neutralize each one with its own -c override; reading config values
-  # doesn't execute them, only invoking the filter does.
-  local filter_line filter_key filter_overrides=()
-  while IFS= read -r filter_line; do
-    [ -z "${filter_line}" ] && continue
-    filter_key="${filter_line%% *}"
-    filter_overrides+=(-c "${filter_key}=")
-  done < <(git config --local --get-regexp '^filter\..*\.(clean|smudge|process)$' 2>/dev/null || true)
-  trust_cfg+=("${filter_overrides[@]}")
-  git "${trust_cfg[@]}" "$@"
+  # timeout-kill path). Discover any repo-local filter drivers, including
+  # ones pulled in through include.path / includeIf in the tree's own
+  # .git/config (--includes), and neutralize each one; reading config values
+  # doesn't execute them, only invoking the filter does. Overrides go through
+  # GIT_CONFIG_KEY_n/VALUE_n rather than -c so a driver name containing "="
+  # cannot split the key. Fail closed when discovery itself fails (exit 1
+  # only means no filter is configured).
+  local filter_names filter_rc=0 filter_key
+  filter_names="$(git config --local --includes --name-only \
+    --get-regexp '^filter\..*\.(clean|smudge|process)$' 2>/dev/null)" || filter_rc=$?
+  if [ "${filter_rc}" -gt 1 ]; then
+    echo "trusted_git: could not enumerate filter drivers in the repo config" >&2
+    return 1
+  fi
+  local cfg_count="${GIT_CONFIG_COUNT:-0}"
+  [[ "${cfg_count}" =~ ^[0-9]+$ ]] || cfg_count=0
+  local cfg_env=()
+  while IFS= read -r filter_key; do
+    [ -z "${filter_key}" ] && continue
+    cfg_env+=("GIT_CONFIG_KEY_${cfg_count}=${filter_key}" "GIT_CONFIG_VALUE_${cfg_count}=")
+    cfg_count=$((cfg_count + 1))
+  done <<< "${filter_names}"
+  env "GIT_CONFIG_COUNT=${cfg_count}" ${cfg_env[@]+"${cfg_env[@]}"} git "${trust_cfg[@]}" "$@"
 }
 
 # git status --porcelain for the extracted repo, excluding agent working
@@ -689,8 +615,19 @@ recovery_snapshot() {
   local index="${work_dir}/index" patch="${work_dir}/agent-work.patch"
   local path tree rc artifacts=()
 
-  if ! GIT_INDEX_FILE="${index}" trusted_git read-tree HEAD >/dev/null 2>&1 \
-     || ! GIT_INDEX_FILE="${index}" trusted_git add -A -- . >/dev/null 2>&1; then
+  # Seed the temporary index from the repo's real index, not HEAD, so a
+  # force-added ignored file (git add -f) stays tracked and `add -A` keeps
+  # it. Fall back to HEAD when there is no usable index to copy.
+  local real_index
+  real_index="$(trusted_git rev-parse --git-path index 2>/dev/null)" || real_index=""
+  if [ -z "${real_index}" ] || [ ! -f "${real_index}" ] || ! cp "${real_index}" "${index}" 2>/dev/null; then
+    rm -f "${index}"
+    if ! GIT_INDEX_FILE="${index}" trusted_git read-tree HEAD >/dev/null 2>&1; then
+      recovery_unavailable "git could not snapshot the working tree"
+      return 0
+    fi
+  fi
+  if ! GIT_INDEX_FILE="${index}" trusted_git add -A -- . >/dev/null 2>&1; then
     recovery_unavailable "git could not snapshot the working tree"
     return 0
   fi
@@ -747,9 +684,27 @@ $(recovery_path_block "${changed}")"
 $(recovery_path_block "${untracked}")"
   fi
 
-  local withheld="" scan_rc=0
-  if [ "${category}" = "secret-scan" ]; then
+  # The patch encodes binary payloads (NUL-containing files, or files the
+  # tree's attributes mark -diff) as compressed base85, which the text scan
+  # cannot see through. Withhold the patch rather than risk shipping an
+  # unscanned credential in the uploaded artifact. numstat reports "-" for
+  # both counts on binary files; deletions add no new content.
+  local withheld="" scan_rc=0 numstat_out numstat_added numstat_deleted has_binary=false
+  if ! numstat_out="$(git diff-tree -r --numstat --diff-filter=d "${base}" "${tree}" 2>/dev/null)"; then
+    withheld="the patch could not be checked for binary content"
+  else
+    while IFS=$'\t' read -r numstat_added numstat_deleted _; do
+      if [ "${numstat_added}" = "-" ] && [ "${numstat_deleted}" = "-" ]; then
+        has_binary=true
+      fi
+    done <<< "${numstat_out}"
+  fi
+  if [ -n "${withheld}" ]; then
+    :
+  elif [ "${category}" = "secret-scan" ]; then
     withheld="the secret scan blocked the push"
+  elif [ "${has_binary}" = "true" ]; then
+    withheld="they include binary files that the secret scan cannot inspect"
   elif ! install_gitleaks; then
     withheld="the secret scan could not run"
   else
@@ -848,6 +803,95 @@ post_failure_capture_recovery() {
     print_sanitized_gha_log "${POST_FAILURE_RECOVERY_NOTE}"
   fi
 }
+
+# ---------------------------------------------------------------------------
+# Resolve target branch (ADR 0053)
+#
+# Priority: agent output > allowed-list validation > auto-detect default
+# The agent writes its chosen branch to agent-result.json. The post-script
+# validates it against CODE_ALLOWED_TARGET_BRANCHES (comma-separated list
+# or "*" for any). When unset, only the auto-detected default branch is
+# allowed. Falls back to "main" if the API call fails.
+#
+# This runs after the recovery hook and its dependencies are defined, so a
+# branch-validation failure still preserves the agent's work as a patch.
+# ---------------------------------------------------------------------------
+AGENT_TARGET=""
+# Prefer the validated iteration when set. Trust boundary:
+# FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI on the runner —
+# not by the sandbox or the agent. No containment check (realpath / prefix
+# guard) is applied here; the value is trusted from the external harness.
+# If the trust model changes, add a realpath prefix check.
+if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
+  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+  else
+    # No silent rescan: an env var pointing at a dir without the expected
+    # filename must not fall back to scanning other iterations, which could
+    # pick up a different (possibly invalid) iteration's output. Degrade to
+    # no result the same as the "nothing found" case below — this script
+    # already falls back to the auto-detected default branch when
+    # RESULT_FILE is empty, so this isn't a hard failure.
+    RESULT_FILE=""
+  fi
+else
+  # Backward compatibility: scan iteration-N/ subdirectories for the last
+  # iteration's output (glob order = naturally ascending iteration numbers).
+  RESULT_FILE=""
+  for dir in "${RUN_DIR}"/iteration-*/output; do
+    if [ -f "${dir}/agent-result.json" ]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
+CLOSES_ISSUE="true"
+INJECT_ISSUE_SCOPE="true"
+if [ -n "${RESULT_FILE}" ]; then
+  AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+  # Do not use jq `//` for the boolean opt-outs: it treats JSON false as
+  # missing, so `closes_issue: false` / `inject_issue_scope: false` would
+  # silently read as the default. Only the literal string "false" opts out.
+  AGENT_CLOSES="$(jq -r '.closes_issue' "${RESULT_FILE}" 2>/dev/null || true)"
+  AGENT_INJECT="$(jq -r '.inject_issue_scope' "${RESULT_FILE}" 2>/dev/null || true)"
+  if [ "${AGENT_CLOSES}" = "false" ]; then
+    CLOSES_ISSUE="false"
+  fi
+  if [ "${AGENT_INJECT}" = "false" ]; then
+    INJECT_ISSUE_SCOPE="false"
+  fi
+fi
+if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+  post_fail_to_issue branch-validation \
+    "Invalid branch name from agent output: '${AGENT_TARGET}'"
+fi
+
+DEFAULT_BRANCH="$(forge_get_default_branch "${PUSH_TOKEN}")"
+
+if [ -n "${AGENT_TARGET}" ]; then
+  if [ -n "${CODE_ALLOWED_TARGET_BRANCHES:-}" ]; then
+    # Explicit allowed list — hard-fail if agent's choice is not in it.
+    if [ "${CODE_ALLOWED_TARGET_BRANCHES}" = "*" ] \
+       || echo ",${CODE_ALLOWED_TARGET_BRANCHES}," | grep -qF ",${AGENT_TARGET},"; then
+      TARGET_BRANCH="${AGENT_TARGET}"
+      echo "Agent requested branch '${TARGET_BRANCH}' — allowed"
+    else
+      post_fail_to_issue branch-validation \
+        "Agent requested branch '${AGENT_TARGET}' but allowed branches are: ${CODE_ALLOWED_TARGET_BRANCHES}"
+    fi
+  else
+    # No explicit list — auto-correct to API-discovered default when mismatched.
+    if [ "${AGENT_TARGET}" = "${DEFAULT_BRANCH}" ]; then
+      TARGET_BRANCH="${AGENT_TARGET}"
+      echo "Agent requested branch '${TARGET_BRANCH}' — matches default"
+    else
+      TARGET_BRANCH="${DEFAULT_BRANCH}"
+      gha_echo warning "Agent requested branch '${AGENT_TARGET}' but default branch is '${DEFAULT_BRANCH}' — auto-correcting"
+    fi
+  fi
+else
+  TARGET_BRANCH="${DEFAULT_BRANCH}"
+  echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Verify feature branch

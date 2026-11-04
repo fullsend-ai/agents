@@ -2713,7 +2713,6 @@ _rec_base="$(${REAL_GIT} -C "${_rec_dir}/repo" rev-parse HEAD~1)"
 ${REAL_GIT} -C "${_rec_dir}/repo" reset -q --soft HEAD~1
 echo "edited" > "${_rec_dir}/repo/README.md"
 echo "new notes" > "${_rec_dir}/repo/notes.txt"
-printf '\000\001binary\377' > "${_rec_dir}/repo/blob.bin"
 mkdir -p "${_rec_dir}/repo/.agentready"
 echo "agent state" > "${_rec_dir}/repo/.agentready/state.json"
 _rec_rc=0
@@ -2732,12 +2731,11 @@ elif ! ${REAL_GIT} -C "${_rec_verify}" apply --index "${_rec_patch}" >/dev/null 
   recovery_fail "${_rec_name}" "patch does not apply at the starting commit" "${_rec_log}"
 elif [ "$(cat "${_rec_verify}/file.txt")" != "changed content" ] \
      || [ "$(cat "${_rec_verify}/README.md")" != "edited" ] \
-     || [ "$(cat "${_rec_verify}/notes.txt")" != "new notes" ] \
-     || ! cmp -s "${_rec_verify}/blob.bin" "${_rec_dir}/repo/blob.bin"; then
+     || [ "$(cat "${_rec_verify}/notes.txt")" != "new notes" ]; then
   recovery_fail "${_rec_name}" "applied patch does not reproduce the agent's files" "${_rec_log}"
 elif ! grep -q "uncommitted work saved as a recovery patch" "${_rec_log}" \
      || ! grep -qF "Starting commit:** \`${_rec_base}\`" "${_rec_log}" \
-     || ! grep -q "Untracked files included (2)" "${_rec_log}" \
+     || ! grep -q "Untracked files included (1)" "${_rec_log}" \
      || ! grep -q "notes.txt" "${_rec_log}" \
      || ! grep -q "git apply --index agent-work.patch" "${_rec_log}"; then
   recovery_fail "${_rec_name}" "comment missing recovery details" "${_rec_log}"
@@ -2814,6 +2812,99 @@ elif ! grep -q "Secret scan blocked" "${_rec_log}" \
      || ! grep -q "Recovered work withheld" "${_rec_log}" \
      || ! grep -q "secret scan blocked the push" "${_rec_log}"; then
   recovery_fail "${_rec_name}" "comment missing withheld reason" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
+# --- Disallowed target branch: work is still recovered ----------------------
+# The branch-validation failure runs before the later script sections, so the
+# recovery hook must already be defined by then.
+_rec_name="recovery-branch-validation-failure"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-branch-validation"
+mkdir -p "${_rec_dir}/iteration-1/output"
+echo '{"target_branch":"develop"}' > "${_rec_dir}/iteration-1/output/agent-result.json"
+echo "edited" > "${_rec_dir}/repo/README.md"
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" "CODE_ALLOWED_TARGET_BRANCHES=main" || _rec_rc=$?
+_rec_patch="${_rec_dir}/recovery/agent-work.patch"
+if [ "${_rec_rc}" -eq 0 ]; then
+  recovery_fail "${_rec_name}" "expected non-zero exit" "${_rec_log}"
+elif ! grep -q "allowed branches are" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "did not fail on branch validation" "${_rec_log}"
+elif [ ! -s "${_rec_patch}" ] \
+     || ! grep -q "^+++ b/README.md" "${_rec_patch}" \
+     || ! grep -q "^+++ b/file.txt" "${_rec_patch}"; then
+  recovery_fail "${_rec_name}" "work not recovered after branch-validation failure" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
+# --- Filter driver defined through an include is not run --------------------
+_rec_name="recovery-included-filter-not-run"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-included-filter"
+_rec_marker="${_rec_dir}/filter-ran"
+printf '[filter "evil"]\n\tclean = touch %s; cat\n' "${_rec_marker}" > "${_rec_dir}/filter.cfg"
+${REAL_GIT} -C "${_rec_dir}/repo" config --local include.path "${_rec_dir}/filter.cfg"
+echo "*.evil filter=evil" > "${_rec_dir}/repo/.gitattributes"
+echo "payload" > "${_rec_dir}/repo/payload.evil"
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" "MOCK_PUSH_FAIL=fatal: repository not found" || _rec_rc=$?
+if [ "${_rec_rc}" -eq 0 ]; then
+  recovery_fail "${_rec_name}" "expected non-zero exit" "${_rec_log}"
+elif [ -e "${_rec_marker}" ]; then
+  recovery_fail "${_rec_name}" "included filter driver ran during recovery" "${_rec_log}"
+elif [ ! -s "${_rec_dir}/recovery/agent-work.patch" ] \
+     || ! grep -q "^+++ b/payload.evil" "${_rec_dir}/recovery/agent-work.patch"; then
+  recovery_fail "${_rec_name}" "recovery patch missing the filtered file" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
+# --- Binary payload cannot be scanned: patch withheld -----------------------
+_rec_name="recovery-binary-withheld"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-binary"
+printf 'token RECOVERY-BINARY-MARKER-77\000\001\377' > "${_rec_dir}/repo/blob.bin"
+echo "notes -diff" > "${_rec_dir}/repo/marked.txt"
+echo "marked.txt -diff" > "${_rec_dir}/repo/.gitattributes"
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" "MOCK_PUSH_FAIL=fatal: repository not found" || _rec_rc=$?
+if [ "${_rec_rc}" -eq 0 ]; then
+  recovery_fail "${_rec_name}" "expected non-zero exit" "${_rec_log}"
+elif [ -e "${_rec_dir}/recovery" ]; then
+  recovery_fail "${_rec_name}" "recovery files written for a patch with binary content" "${_rec_log}"
+elif ! grep -q "Recovered work withheld" "${_rec_log}" \
+     || ! grep -q "binary files that the secret scan cannot inspect" "${_rec_log}" \
+     || ! grep -q "blob.bin" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "comment missing withheld reason or changed paths" "${_rec_log}"
+else
+  echo "PASS: ${_rec_name}"
+fi
+
+# --- Force-added ignored file is part of the recovery patch -----------------
+_rec_name="recovery-force-added-ignored-file"
+_rec_dir="${SEC_CODE_TMPDIR}/run-${_rec_name}"
+_rec_log="${SEC_CODE_TMPDIR}/stdout-${_rec_name}.log"
+setup_sec_code_repo "${_rec_dir}" "agent/99-recover-force-add"
+echo "*.generated" > "${_rec_dir}/repo/.gitignore"
+${REAL_GIT} -C "${_rec_dir}/repo" add .gitignore
+${REAL_GIT} -C "${_rec_dir}/repo" commit -q -m "chore: ignore generated files"
+echo "forced" > "${_rec_dir}/repo/forced.generated"
+${REAL_GIT} -C "${_rec_dir}/repo" add -f forced.generated
+_rec_rc=0
+run_recovery_post_code "${_rec_dir}" "${_rec_log}" "MOCK_PUSH_FAIL=fatal: repository not found" || _rec_rc=$?
+if [ "${_rec_rc}" -eq 0 ]; then
+  recovery_fail "${_rec_name}" "expected non-zero exit" "${_rec_log}"
+elif [ ! -s "${_rec_dir}/recovery/agent-work.patch" ] \
+     || ! grep -q "^+++ b/forced.generated" "${_rec_dir}/recovery/agent-work.patch"; then
+  recovery_fail "${_rec_name}" "force-added ignored file missing from patch" "${_rec_log}"
+elif ! grep -q "forced.generated" "${_rec_log}"; then
+  recovery_fail "${_rec_name}" "force-added ignored file missing from changed paths" "${_rec_log}"
 else
   echo "PASS: ${_rec_name}"
 fi
