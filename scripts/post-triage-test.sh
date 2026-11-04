@@ -79,36 +79,13 @@ fi
 MOCKEOF
 chmod +x "${MOCK_BIN}/fullsend"
 
-# Mock yq: parse the test config.yaml for create_issues.allow_targets.
-# Handles the two queries used by post-triage.sh's is_target_allowed().
-cat > "${MOCK_BIN}/yq" <<'YQEOF'
-#!/usr/bin/env bash
-FILTER="$2"
-FILE="$3"
-if [[ ! -f "${FILE}" ]]; then
+# The tracker allowlist is read with the real yq (mikefarah v4), as in
+# post-retro-test.sh: the layered tracker.<provider>.allowed_targets mapping
+# needs a YAML parser, and invalid-YAML tests need real parse errors.
+if ! command -v yq &>/dev/null; then
+  echo "ERROR: yq (mikefarah v4) is required to run post-triage tests" >&2
   exit 1
 fi
-case "${FILTER}" in
-  # Each block selects the key's range, then strips the "      - " prefix in a
-  # second pass. Nested `{ ... { ... } }` blocks are a GNU sed extension that
-  # BSD/macOS sed rejects outright ("extra characters at the end of } command"),
-  # which silently yielded an empty allowlist and failed every allow_targets
-  # test on macOS — keep these single-level.
-  '.create_issues.allow_targets.orgs // [] | .[]')
-    sed -n '/^    orgs:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
-    ;;
-  '.create_issues.allow_targets.repos // [] | .[]')
-    sed -n '/^    repos:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
-    ;;
-  '.create_issues.allow_targets.jira_projects // [] | .[]')
-    sed -n '/^    jira_projects:/,/^    [^ ]/p' "${FILE}" | sed -n 's/^      - //p'
-    ;;
-  *)
-    exit 1
-    ;;
-esac
-YQEOF
-chmod +x "${MOCK_BIN}/yq"
 
 export PATH="${MOCK_BIN}:${PATH}"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
@@ -123,17 +100,49 @@ export TRIAGE_AUTO_CODE_CATEGORIES="bug,documentation,performance"
 # both the allowed and disallowed paths.
 WORKSPACE="${TMPDIR}/workspace"
 mkdir -p "${WORKSPACE}"
-cat > "${WORKSPACE}/config.yaml" <<CFGEOF
+
+# write_tracker_config PROVIDER — write the shared workspace config.yaml with
+# allowed targets for PROVIDER (github, gitlab, or jira). Only the selected
+# tracker's targets are honored, so each tracker section rewrites it.
+write_tracker_config() {
+  case "$1" in
+    github)
+      cat > "${WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
-create_issues:
-  allow_targets:
-    orgs:
-      - test-org
-    repos:
-      - allowed-org/allowed-repo
-    jira_projects:
-      - ALLOWEDPROJ
+tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org
+      repos:
+        - allowed-org/allowed-repo
 CFGEOF
+      ;;
+    gitlab)
+      cat > "${WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-org
+      repos:
+        - allowed-org/allowed-repo
+CFGEOF
+      ;;
+    jira)
+      cat > "${WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    allowed_targets:
+      projects:
+        - ALLOWEDPROJ
+CFGEOF
+      ;;
+  esac
+}
+write_tracker_config github
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
 run_test() {
@@ -1589,6 +1598,168 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Layered config tests (config.base.yaml beneath config.yaml)
+# tracker is replaced as a whole object when the overlay sets it and
+# inherited from the base otherwise; an unparseable layer fails closed.
+# ---------------------------------------------------------------------------
+
+# layered_workspace NAME BASE OVERLAY — point GITHUB_WORKSPACE at a fresh
+# workspace holding BASE as config.base.yaml and OVERLAY as config.yaml.
+# An empty BASE or OVERLAY leaves that file absent.
+layered_workspace() {
+  local ws="${TMPDIR}/layered-$1"
+  mkdir -p "${ws}"
+  if [[ -n "$2" ]]; then
+    printf '%s\n' "$2" > "${ws}/config.base.yaml"
+  fi
+  if [[ -n "$3" ]]; then
+    printf '%s\n' "$3" > "${ws}/config.yaml"
+  fi
+  export GITHUB_WORKSPACE="${ws}"
+}
+
+LAYERED_BASE_ORG='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org'
+LAYERED_SPARSE_OVERLAY='version: "1"'
+LAYERED_OVERLAY_REPO='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      repos:
+        - allowed-org/allowed-repo'
+LAYERED_OVERLAY_EMPTY='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      orgs: []
+      repos: []'
+LAYERED_INVALID='version: "1"
+tracker: [unclosed'
+PREREQ_ORG_TARGET='{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/other-repo","title":"Need X","body":"We need X."}]},"comment":"Blocked on upstream work."}'
+PREREQ_REPO_TARGET='{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"allowed-org/allowed-repo","title":"Need X","body":"We need X."}]},"comment":"Blocked on upstream work."}'
+PREREQ_SOURCE_TARGET='{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/test-repo","title":"Need X","body":"We need X."}]},"comment":"Blocked on upstream work."}'
+SPLIT_ORG_TARGET='{"action":"split","reasoning":"spans repos","sub_issues":[{"title":"Local fix","body":"Fix here."},{"repo":"test-org/other-repo","title":"Upstream fix","body":"Fix upstream."}],"comment":"Split across repos."}'
+
+layered_workspace "base-sparse" "${LAYERED_BASE_ORG}" "${LAYERED_SPARSE_OVERLAY}"
+run_test "layered-base-only-prerequisite-allowed" \
+  "${PREREQ_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+run_test "layered-base-only-split-allowed" \
+  "${SPLIT_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+
+layered_workspace "base-no-overlay" "${LAYERED_BASE_ORG}" ""
+run_test "layered-base-only-no-overlay-allowed" \
+  "${PREREQ_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+
+# Per-repo layout: both layers live under .fullsend/.
+LAYERED_PER_REPO="${TMPDIR}/layered-per-repo"
+mkdir -p "${LAYERED_PER_REPO}/.fullsend"
+printf '%s\n' "${LAYERED_BASE_ORG}" > "${LAYERED_PER_REPO}/.fullsend/config.base.yaml"
+printf '%s\n' "${LAYERED_SPARSE_OVERLAY}" > "${LAYERED_PER_REPO}/.fullsend/config.yaml"
+export GITHUB_WORKSPACE="${LAYERED_PER_REPO}"
+run_test "layered-per-repo-base-only-allowed" \
+  "${PREREQ_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+
+layered_workspace "overlay-wins" "${LAYERED_BASE_ORG}" "${LAYERED_OVERLAY_REPO}"
+run_test_stdout "layered-overlay-tracker-replaces-base" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+run_test_stdout "layered-overlay-tracker-replaces-base-split" \
+  "${SPLIT_ORG_TARGET}" \
+  "::warning::Skipping sub-issue creation in 'test-org/other-repo'"
+run_test "layered-overlay-tracker-target-allowed" \
+  "${PREREQ_REPO_TARGET}" \
+  "gh issue create --repo allowed-org/allowed-repo"
+
+layered_workspace "overlay-empty" "${LAYERED_BASE_ORG}" "${LAYERED_OVERLAY_EMPTY}"
+run_test_stdout "layered-overlay-explicit-empty-not-inherited" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+
+# An explicit null tracker inherits the base grants and warns about it; a
+# sparse overlay (no tracker key) does not.
+layered_workspace "overlay-null" "${LAYERED_BASE_ORG}" 'version: "1"
+tracker:'
+run_test_stdout "layered-overlay-null-tracker-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::config.yaml sets tracker to null, so cross-repo targets from config.base.yaml are inherited"
+run_test "layered-overlay-null-tracker-inherits" \
+  "${PREREQ_ORG_TARGET}" \
+  "gh issue create --repo test-org/other-repo"
+
+layered_workspace "no-base" "" "${LAYERED_SPARSE_OVERLAY}"
+run_test_stdout "layered-no-base-sparse-overlay-skipped" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+
+layered_workspace "invalid-base" "${LAYERED_INVALID}" "${LAYERED_OVERLAY_REPO}"
+run_test_stdout "layered-invalid-base-warns" \
+  "${PREREQ_REPO_TARGET}" \
+  "::warning::cannot parse config.base.yaml"
+run_test_stdout "layered-invalid-base-fails-closed" \
+  "${PREREQ_REPO_TARGET}" \
+  "::warning::Skipping issue creation in 'allowed-org/allowed-repo'"
+
+layered_workspace "invalid-overlay" "${LAYERED_BASE_ORG}" "${LAYERED_INVALID}"
+run_test_stdout "layered-invalid-overlay-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::cannot parse config.yaml"
+run_test_stdout "layered-invalid-overlay-fails-closed" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+
+# The source repository stays allowed even when config cannot be parsed.
+run_test "layered-invalid-overlay-source-repo-allowed" \
+  "${PREREQ_SOURCE_TARGET}" \
+  "gh issue create --repo test-org/test-repo"
+
+# Only the selected tracker's targets are honored: GitLab groups do not admit
+# GitHub repositories, and an ambiguous multi-provider mapping grants nothing.
+layered_workspace "other-provider" "" 'tracker:
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-org'
+run_test_stdout "tracker-other-provider-not-honored" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+
+layered_workspace "multi-provider" "" 'tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org
+  jira:
+    allowed_targets:
+      projects:
+        - ALLOWEDPROJ'
+run_test_stdout "tracker-multiple-providers-grant-nothing" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::Skipping issue creation in 'test-org/other-repo'"
+run_test_stdout "tracker-multiple-providers-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::tracker mapping selects provider(s) 'github,jira'"
+
+# A leftover create_issues.allow_targets key is no longer read and is named
+# in a warning.
+layered_workspace "old-key" "" 'create_issues:
+  allow_targets:
+    orgs:
+      - test-org'
+run_test_stdout "old-allow-targets-key-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::config.yaml sets create_issues.allow_targets, which is no longer read"
+
+export GITHUB_WORKSPACE="${WORKSPACE}"
+
+# ---------------------------------------------------------------------------
 # FULLSEND_FORGE backward-compat fallback test
 # Verify that post-triage.sh still dispatches correctly when only the legacy
 # FULLSEND_FORGE is set (FULLSEND_TRACKER unset).
@@ -1609,6 +1780,7 @@ export FULLSEND_TRACKER="github"
 
 # Switch to GitLab tracker. Replace mock curl to handle GitLab API patterns.
 export FULLSEND_TRACKER="gitlab"
+write_tracker_config gitlab
 export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
 export GITLAB_TOKEN="fake-gitlab-token"
 export CI_SERVER_HOST="gitlab.com"
@@ -1948,7 +2120,22 @@ rm -f "${MOCK_CURL_LABEL_FAIL}"
 
 run_gitlab_test_stdout "gitlab-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"disallowed-org/other-repo","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
-  "not in create_issues.allow_targets"
+  "not in tracker.gitlab.allowed_targets"
+
+# GitLab: a group in allowed_targets.groups also covers its subgroups' projects.
+run_gitlab_test "gitlab-prerequisites-group-covers-subgroup" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org/sub/project","title":"Need Z","body":"We need Z."}]},"comment":"Blocked on upstream work."}' \
+  "projects/test-org%2Fsub%2Fproject/issues"
+
+# GitLab: a project listed in allowed_targets.repos is allowed.
+run_gitlab_test "gitlab-prerequisites-repo-target-allowed" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"allowed-org/allowed-repo","title":"Need Z","body":"We need Z."}]},"comment":"Blocked on upstream work."}' \
+  "projects/allowed-org%2Fallowed-repo/issues"
+
+# GitLab: a group name is matched by path segment, not by string prefix.
+run_gitlab_test_stdout "gitlab-prerequisites-group-prefix-not-matched" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"test-org-other/project","title":"Need Z","body":"We need Z."}]},"comment":"Blocked on upstream work."}' \
+  "::warning::Skipping issue creation in 'test-org-other/project'"
 
 # GitLab split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
 run_gitlab_test "gitlab-split-dispatches-triage" \
@@ -2020,6 +2207,7 @@ export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
 # ---------------------------------------------------------------------------
 
 export FULLSEND_TRACKER="jira"
+write_tracker_config jira
 export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
@@ -2273,7 +2461,7 @@ unset MOCK_JIRA_CREATE_NO_KEY
 # Jira prerequisites: cross-project creation in a disallowed target project is skipped.
 run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"DISALLOWEDPROJ","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
-  "not in create_issues.allow_targets"
+  "not in tracker.jira.allowed_targets"
 
 # On a date(1) without %N support (BSD/macOS before nanosecond support), the
 # comment marker must still be unique to this invocation — a literal "N" would
@@ -2836,6 +3024,7 @@ FAILURES=$((FAILURES + $(wc -l < "${JIRA_CASE_FAILURES}")))
 # Restore GitHub tracker for any subsequent tests.
 # shellcheck disable=SC2031
 export FULLSEND_TRACKER="github"
+write_tracker_config github
 # shellcheck disable=SC2031
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 # shellcheck disable=SC2031

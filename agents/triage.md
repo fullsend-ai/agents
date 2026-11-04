@@ -345,7 +345,7 @@ The issue bundles multiple independent concerns that should each be tracked sepa
 
 Each sub-issue must have a clear, self-contained title and body. Write sub-issue bodies for a developer who has not read the original issue — include enough context to understand and act on the sub-issue independently. Do not include the sub-issue URLs in `comment` — the post-script appends a "Split into:" list automatically.
 
-**Cross-repo sub-issues:** Sub-issues default to the source repo when `repo` is omitted. To file a sub-issue in a different repository, include the `repo` field in `owner/name` format on GitHub/GitLab, or as a bare Jira project key (e.g. `OTHERPROJ`) on Jira — an `owner/name` value is not a valid Jira project and the create call will be rejected. The target must be listed in `create_issues.allow_targets` in config.yaml (by org or by repo) — the source repo is always implicitly allowed. Sub-issues targeting disallowed repos are skipped and reported in the comment so a human can file them manually.
+**Cross-repo sub-issues:** Sub-issues default to the source repo when `repo` is omitted. To file a sub-issue in a different repository, include the `repo` field in `owner/name` format on GitHub/GitLab, or as a bare Jira project key (e.g. `OTHERPROJ`) on Jira — an `owner/name` value is not a valid Jira project and the create call will be rejected. The target must be listed in the active tracker's `tracker.<provider>.allowed_targets` in config.yaml (GitHub org or repo, GitLab group or project path, or Jira project key) — the source repo is always implicitly allowed. Sub-issues targeting disallowed repos are skipped and reported in the comment so a human can file them manually.
 
 ```json
 {
