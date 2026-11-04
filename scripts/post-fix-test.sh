@@ -1911,9 +1911,14 @@ run_push_rebase_postfix() {
   local human_instruction="${5:-}"
   local conflict_strategy="${6:-}"
   local exit_code=0
+  # post-fix puts ${HOME}/.local/bin first on PATH, so a host-installed
+  # pre-commit/gitleaks would shadow the mocks; isolate HOME per run.
+  local home_dir="${run_dir}/home"
+  mkdir -p "${home_dir}"
   # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
+    export HOME="${home_dir}"
     export PATH="${mock_bin}:${PATH}"
     export PUSH_TOKEN="fake-token"
     export REPO_FULL_NAME="test-org/test-repo"
