@@ -630,7 +630,9 @@ fi
 PREV=""
 for arg in "\$@"; do
   if [[ "\${PREV}" == "--result" ]]; then
-    if [[ "\${arg}" == "-" ]]; then
+    if [[ "\${arg}" == "-" ]] && [[ "\$1" == "post-comment" ]]; then
+      cat > "${TMPDIR}/last-post-comment.txt"
+    elif [[ "\${arg}" == "-" ]]; then
       cat > "${TMPDIR}/last-result.json"
     elif [[ -f "\${arg}" ]]; then
       cp "\${arg}" "${TMPDIR}/last-result.json"
@@ -4273,6 +4275,44 @@ run_label_test "risk-label-high-applied" \
 run_label_test "risk-comment-posted" \
   "${RISK_HIGH_RESULT}" \
   "fullsend post-comment"
+
+# The risk comment body must not carry its own marker: `fullsend
+# post-comment --marker` prepends it, and a second copy inside the body
+# is HTML-escaped by the CLI and renders as visible text (#1885).
+run_risk_comment_body_test() {
+  local test_name="risk-comment-body-has-no-marker"
+  local marker="<!-- fullsend:risk-assessment -->"
+  rm -f "${TMPDIR}/last-post-comment.txt"
+
+  run_label_test "${test_name}-marker-flag" \
+    "${RISK_HIGH_RESULT}" \
+    "--marker ${marker}"
+
+  if [[ ! -f "${TMPDIR}/last-post-comment.txt" ]]; then
+    echo "FAIL: ${test_name} — risk comment body was not captured"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local body
+  body="$(cat "${TMPDIR}/last-post-comment.txt")"
+  if grep -qF -- "fullsend:risk-assessment" <<< "${body}"; then
+    echo "FAIL: ${test_name} — body contains the risk-assessment marker"
+    echo "${body}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF -- "**Risk Assessment: high (4/5)**" <<< "${body}" \
+    || ! grep -qF -- "Auth middleware refactor." <<< "${body}"; then
+    echo "FAIL: ${test_name} — body missing risk header or rationale"
+    echo "${body}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_comment_body_test
 
 # Stdout should mention risk label
 run_label_test_stdout "risk-label-log-message" \
