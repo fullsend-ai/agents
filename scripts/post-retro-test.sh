@@ -1461,6 +1461,21 @@ run_test_no_gh_call "tracker-multiple-providers-grant-nothing" \
   "${FIXTURE_ONE_PROPOSAL}" \
   "gh issue create" \
   "::warning::Skipping issue creation in 'test-org/target-repo'"
+run_test_no_gh_call "tracker-multiple-providers-warns" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::tracker mapping selects provider(s) 'github,gitlab'"
+
+# A leftover create_issues.allow_targets key is no longer read and is named
+# in a warning.
+layered_workspace "old-key" "" 'create_issues:
+  allow_targets:
+    orgs:
+      - test-org'
+run_test_no_gh_call "old-allow-targets-key-warns" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::config.yaml sets create_issues.allow_targets, which is no longer read"
 
 # shellcheck disable=SC2031 # GITHUB_WORKSPACE exported for subshell test run
 export GITHUB_WORKSPACE="${WORKSPACE}"

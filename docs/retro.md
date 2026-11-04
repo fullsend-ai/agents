@@ -65,15 +65,19 @@ for prerequisite issues. The post-script honors the targets of the
 `tracker.gitlab.allowed_targets.groups` and `repos` on GitLab (a group
 also covers its subgroups' projects). A `tracker` mapping for another
 provider, or one with more than one provider block, grants no cross-repo
-targets. Proposals targeting repos outside the allowlist are skipped with
-a warning and surfaced in the summary comment so they can be filed
-manually.
+targets (the post-script logs a warning naming the providers it found).
+The former `create_issues.allow_targets` key is no longer read and logs a
+warning if present; move `orgs` and `repos` to
+`tracker.github.allowed_targets`, or `repos` to
+`tracker.gitlab.allowed_targets` (with `groups` for group-wide access).
+Proposals targeting repos outside the allowlist are skipped with a warning
+and surfaced in the summary comment so they can be filed manually.
 
 A configuration preset (`config.base.yaml`, beside `config.yaml`) is
 composed beneath the overlay with fullsend's whole-object `tracker` merge:
-an overlay without `tracker` inherits the base's targets, and an overlay
-that sets `tracker` (including an explicit empty target policy) replaces
-them. If either file cannot be parsed, cross-repo issue creation is
+an overlay without `tracker` (or with a null or bare `tracker:`) inherits
+the base's targets, and an overlay that sets `tracker` (including an
+explicit empty target policy) replaces them. If either file cannot be parsed, cross-repo issue creation is
 disabled with a warning.
 
 The originating repo (where the PR that triggered the retro lives) is

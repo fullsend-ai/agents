@@ -1732,6 +1732,19 @@ layered_workspace "multi-provider" "" 'tracker:
 run_test_stdout "tracker-multiple-providers-grant-nothing" \
   "${PREREQ_ORG_TARGET}" \
   "::warning::Skipping issue creation in 'test-org/other-repo'"
+run_test_stdout "tracker-multiple-providers-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::tracker mapping selects provider(s) 'github,jira'"
+
+# A leftover create_issues.allow_targets key is no longer read and is named
+# in a warning.
+layered_workspace "old-key" "" 'create_issues:
+  allow_targets:
+    orgs:
+      - test-org'
+run_test_stdout "old-allow-targets-key-warns" \
+  "${PREREQ_ORG_TARGET}" \
+  "::warning::config.yaml sets create_issues.allow_targets, which is no longer read"
 
 export GITHUB_WORKSPACE="${WORKSPACE}"
 

@@ -1257,7 +1257,8 @@ fi
 # A configuration preset (config.base.yaml) sits beside the overlay. As in
 # fullsend's layered config, an overlay that sets tracker replaces the base
 # tracker as a whole object (an explicit empty target policy included);
-# otherwise tracker is inherited from the base.
+# otherwise tracker is inherited from the base. A null or bare `tracker:` in
+# the overlay counts as unset (it inherits the base), matching that merge.
 BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
 ALLOW_TARGETS_KEY="tracker.${FULLSEND_TRACKER}.allowed_targets"
 
@@ -1279,10 +1280,23 @@ if command -v yq &>/dev/null; then
       TRACKER_JSON="null"
       break
     fi
+    # The old create_issues.allow_targets key is no longer read.
+    if yq -e '.create_issues.allow_targets' "${layer_file}" &>/dev/null; then
+      echo "::warning::$(basename "${layer_file}") sets create_issues.allow_targets, which is no longer read — move its targets to ${ALLOW_TARGETS_KEY}"
+    fi
     if [[ "${TRACKER_JSON}" == "null" ]]; then
       TRACKER_JSON="${layer_tracker}"
     fi
   done
+  # Warn when a tracker mapping selects other or several providers, since it
+  # then grants no cross-repo targets.
+  TRACKER_PROVIDERS=$(jq -r '
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] | join(",")
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
+  if [[ -n "${TRACKER_PROVIDERS}" && "${TRACKER_PROVIDERS}" != "${FULLSEND_TRACKER}" ]]; then
+    echo "::warning::tracker mapping selects provider(s) '${TRACKER_PROVIDERS}' but FULLSEND_TRACKER requires only '${FULLSEND_TRACKER}' — no cross-repo targets granted"
+  fi
   # Honor targets only when the tracker selects exactly one provider and it
   # is the tracker issues are created in; otherwise nothing is granted.
   ALLOWED_TARGETS_JSON=$(jq -c --arg provider "${FULLSEND_TRACKER}" '
