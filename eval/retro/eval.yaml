@@ -64,6 +64,7 @@ outputs:
     schema: |
       metrics.json: Agent run metrics. Presence indicates the sandbox
       was created and the agent started.
+      fixture-state.json: Captured PR state, read by expected_state.
 
 # ---------------------------------------------------------------------------
 # Judges — smoke test: did the sandbox start + behavioral guards
@@ -83,6 +84,24 @@ judges:
       if int(turns) < 1:
           return False, f"Agent ran 0 turns — sandbox may have failed"
       return True, f"Sandbox started, agent ran {turns} turn(s)"
+
+  - name: expected_state
+    description: The issue or PR must end in the state annotations.yaml expects
+    check: |
+      import json
+      raw = outputs["files"].get("output/fixture-state.json")
+      if not raw:
+          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
+      expected = outputs.get("annotations", {}).get("state")
+      if not expected:
+          return True, "No expected state specified"
+      actual = json.loads(raw).get("state")
+      if not actual:
+          return False, "State not captured — the forge read may have failed"
+      # Annotations are lowercase; gh reports OPEN, CLOSED or MERGED.
+      if str(actual).lower() != str(expected).lower():
+          return False, f"Expected state {expected}, got {actual}"
+      return True, f"State is {actual}"
 
   - name: max_turns
     description: Agent must complete within the declared turn budget
@@ -128,4 +147,6 @@ judges:
 # caught (none since 2026-08), so a budget miss is not a failure.
 thresholds:
   sandbox_started:
+    min_pass_rate: 1.0
+  expected_state:
     min_pass_rate: 1.0
