@@ -1192,6 +1192,16 @@ class TestPrMetadataGitLab(unittest.TestCase):
                 self.assertIn("GitLab quick action", log)
                 self.assertIn("quick-action line", forge.comment_body())
 
+    def test_gitlab_quick_action_in_preserved_live_tail_not_resent(self):
+        live_body = LIVE_BODY + "\n/close"
+        forge = FakeForge(body=live_body)
+        data = _metadata_result(pr_body=NEW_BODY, pr_body_base_sha256=_sha(live_body))
+        rc, log = self._run(data, forge)
+        self.assertEqual(rc, 0)
+        self.assertEqual(forge.edits(), [])
+        self.assertIn("GitLab quick action", log)
+        self.assertIn("quick-action line", forge.comment_body())
+
     def test_gitlab_ordinary_markdown_with_slashes_still_sent(self):
         body = "New: see `scripts/a.py` and https://example.com/a/b.\n\n- a/b\n> /note quoted"
         forge = FakeForge()

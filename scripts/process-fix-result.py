@@ -1136,13 +1136,15 @@ def apply_pr_metadata(data, repo, pr_number, schema_validated, secret_scan_passe
                 file=sys.stderr,
             )
             notes.append("body not updated (changed since the agent read it)")
-        elif forge == "gitlab" and has_quick_action(proposed_body):
+        elif forge == "gitlab" and has_quick_action(merged):
+            # Check the description actually submitted, not just the proposal:
+            # the preserved live verification tail is re-sent unchanged.
             print(
-                "::warning::PR body not updated: the proposed text has a line that starts"
-                " with a GitLab quick action",
+                "::warning::PR body not updated: the resulting description has a line that"
+                " starts with a GitLab quick action",
                 file=sys.stderr,
             )
-            notes.append("body not updated (proposal contains a GitLab quick-action line)")
+            notes.append("body not updated (description contains a GitLab quick-action line)")
         elif not merged:
             print(
                 "::warning::Proposed PR body is empty after removing post-script-managed sections",
