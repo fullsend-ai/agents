@@ -29,6 +29,8 @@
 #
 # After pushing, this script processes agent-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
+#   - Apply a proposed pr_title / pr_body (after schema validation and the
+#     result-file secret scan pass; skipped on a concurrent edit; non-fatal)
 #   - Apply labels (needs-human) if the iteration cap is approaching
 #
 # Required environment variables:
@@ -3529,20 +3531,36 @@ else
   # Scan agent-result.json for secrets before posting content as a PR comment.
   # The agent could have been tricked into embedding sensitive data in the
   # structured output via prompt injection in the review body.
+  #
+  # A proposed pr_title / pr_body is only applied when this scan actually ran
+  # and passed (FIX_RESULT_SECRET_SCAN=passed). gitleaks is only installed on
+  # push runs, so install it for a metadata-only (no-push) run that proposes
+  # metadata; if that fails the summary is still posted without the update.
+  if ! command -v gitleaks >/dev/null 2>&1 \
+    && jq -e '(.pr_title // "") != "" or (.pr_body // "") != ""' "${RESULT_FILE}" >/dev/null 2>&1; then
+    install_gitleaks || gha_echo warning "Could not install gitleaks — proposed PR metadata will not be applied"
+  fi
+  FIX_RESULT_SECRET_SCAN=skipped
   if command -v gitleaks >/dev/null 2>&1; then
     echo "Scanning agent-result.json for secrets before posting..."
     SCAN_DIR="$(mktemp -d)"
     cp "${RESULT_FILE}" "${SCAN_DIR}/agent-result.json"
+    # The publisher applies the JSON-decoded pr_title / pr_body, so scan those
+    # too: a secret written with \uXXXX escapes does not match in the raw file.
+    jq -r '(.pr_title // "") | strings' "${RESULT_FILE}" > "${SCAN_DIR}/pr_title.txt" 2>/dev/null || true
+    jq -r '(.pr_body // "") | strings' "${RESULT_FILE}" > "${SCAN_DIR}/pr_body.txt" 2>/dev/null || true
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
       rm -rf "${SCAN_DIR}"
       post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
     fi
     rm -rf "${SCAN_DIR}"
+    FIX_RESULT_SECRET_SCAN=passed
   fi
 
   echo "Processing agent-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
   SIGNOFF_STRIPPED_COUNT="${SIGNOFF_STRIPPED_COUNT}" \
+  FIX_RESULT_SECRET_SCAN="${FIX_RESULT_SECRET_SCAN}" \
     python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
     post_fail_to_pr process-output-failed \

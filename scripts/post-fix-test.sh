@@ -6962,6 +6962,243 @@ run_postfix_budget_test "postfix-budget-human-keeps-human-cap" \
 
 rm -rf "${FIX_BUDGET_TMPDIR}"
 
+# ---------------------------------------------------------------------------
+# PR/MR metadata update (issue #519) against the real script. A metadata-only
+# run (no commit, NO_PUSH=true) proposes pr_title / pr_body. The update must
+# only happen after the agent-result.json secret scan passes, must keep the
+# post-script-managed body sections, and a failed edit must not block the
+# summary comment or fail the run.
+# ---------------------------------------------------------------------------
+PRM_TMPDIR="$(mktemp -d)"
+
+# write_prm_fixtures <dir> — the live PR (mock forge response) and an
+# agent-result.json whose base hashes match it.
+write_prm_fixtures() {
+  python3 - "$1" <<'PYEOF'
+import hashlib, json, os, sys
+d = sys.argv[1]
+title = "docs(#484): document X in AGENTS.md"
+body = ("Adds docs to AGENTS.md.\n\n---\n\nCloses #484\n\n"
+        "### Post-script verification\n\n- [x] Secret scan passed")
+with open(os.path.join(d, "live-pr.json"), "w") as f:
+    json.dump({"title": title, "body": body, "description": body}, f)
+h = lambda s: hashlib.sha256(s.encode()).hexdigest()
+result = {
+    "pr_number": 99,
+    "trigger_source": "human",
+    "actions": [{"type": "fix", "finding": "Stale PR metadata",
+                 "description": "Proposed an accurate title and body"}],
+    "summary": "Updated PR metadata only.",
+    "tests_passed": True,
+    "files_changed": [],
+    "pr_title": "docs(#484): document X in docs/code.md",
+    "pr_title_base_sha256": h(title),
+    "pr_body": "Moves the docs to `docs/code.md`.\n\nKeeps \"quotes\" and 'single' quotes.",
+    "pr_body_base_sha256": h(body),
+}
+os.makedirs(os.path.join(d, "validated-output"), exist_ok=True)
+text = json.dumps(result)
+# PRM_ESCAPED_SECRET_FIELD: carry a marker credential in that field, written
+# with \uXXXX escapes so it never appears in plain text in the serialized file.
+field = os.environ.get("PRM_ESCAPED_SECRET_FIELD", "")
+if field:
+    result[field] = result[field] + " PRMSECRET-1234"
+    text = json.dumps(result).replace(
+        "PRMSECRET-1234", "".join("\\u%04x" % ord(c) for c in "PRMSECRET-1234"))
+with open(os.path.join(d, "validated-output", "agent-result.json"), "w") as f:
+    f.write(text)
+PYEOF
+}
+
+# run_prm_test <name> <forge> <gitleaks-rc> <edit-rc> <expect-exit-zero>
+run_prm_test() {
+  local test_name="$1" forge="$2" gitleaks_rc="$3" edit_rc="$4" expect_ok="$5"
+  local run_dir="${PRM_TMPDIR}/run-${test_name}"
+  local mock_bin="${run_dir}/bin"
+  local log="${run_dir}/stdout.log"
+  mkdir -p "${mock_bin}" "${run_dir}/repo"
+  write_prm_fixtures "${run_dir}"
+
+  git init -q -b main "${run_dir}/repo"
+  git -C "${run_dir}/repo" config user.email "test@example.com"
+  git -C "${run_dir}/repo" config user.name "Test"
+  git -C "${run_dir}/repo" commit --allow-empty -m "init" -q
+
+  if [ "${gitleaks_rc}" = "marker" ]; then
+    # Fails only when the marker credential appears in plain text in a scanned
+    # file, as a real signature would.
+    cat > "${mock_bin}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--source" ]; then src="$2"; fi
+  shift
+done
+if grep -rqF 'PRMSECRET-1234' "${src}"; then exit 1; fi
+exit 0
+MOCKEOF
+  else
+    printf '#!/usr/bin/env bash\nexit %s\n' "${gitleaks_rc}" > "${mock_bin}/gitleaks"
+  fi
+  cat > "${mock_bin}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr view")
+    case "\$*" in
+      *"title,body"*) cat "${run_dir}/live-pr.json" ;;
+    esac
+    exit 0 ;;
+  "pr edit")
+    printf '%s\n' "\$@" > "${run_dir}/edit-args.log"
+    cat > "${run_dir}/edit-body.log"
+    exit ${edit_rc} ;;
+  "pr comment")
+    cat > "${run_dir}/comment.log"
+    exit 0 ;;
+esac
+exit 0
+MOCKEOF
+  cat > "${mock_bin}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+cat > /dev/null
+case "\$*" in
+  *"--request PUT"*)
+    printf '%s\n' "\$@" > "${run_dir}/edit-args.log"
+    exit ${edit_rc} ;;
+  *"--request POST"*"/notes"*)
+    printf '%s\n' "\$@" > "${run_dir}/comment.log"
+    exit 0 ;;
+  *"--request GET"*) cat "${run_dir}/live-pr.json" ;;
+esac
+exit 0
+MOCKEOF
+  chmod +x "${mock_bin}/gitleaks" "${mock_bin}/gh" "${mock_bin}/curl"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${mock_bin}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="${forge}"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${run_dir}/validated-output"
+    export FULLSEND_OUTPUT_SCHEMA="${SCRIPT_DIR}/../schemas/fix-result.schema.json"
+    PRE_AGENT_HEAD="$(git -C repo rev-parse HEAD)"
+    export PRE_AGENT_HEAD
+    if [ "${forge}" = "gitlab" ]; then
+      export CI_SERVER_HOST="gitlab.com"
+      export PR_URL="https://gitlab.com/test-org/test-repo/-/merge_requests/99"
+      export GITLAB_TOKEN="fake-gitlab-token"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${log}" 2>&1 || exit_code=$?
+
+  if [ "${expect_ok}" = "true" ] && [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${log}"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+  if [ "${expect_ok}" != "true" ] && [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${log}"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+  PRM_RUN_DIR="${run_dir}"
+  return 0
+}
+
+prm_fail() {
+  echo "FAIL: $1 — $2"
+  cat "${PRM_RUN_DIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+}
+
+# GitHub: both fields applied, body via stdin, managed sections kept.
+if run_prm_test "metadata-github-applied-no-push" github 0 0 true; then
+  name="metadata-github-applied-no-push"
+  if ! grep -qx -- '--title=docs(#484): document X in docs/code.md' "${PRM_RUN_DIR}/edit-args.log" 2>/dev/null; then
+    prm_fail "${name}" "gh pr edit missing --title"
+  elif ! grep -qx -- '--body-file' "${PRM_RUN_DIR}/edit-args.log"; then
+    prm_fail "${name}" "gh pr edit did not pass the body through --body-file"
+  elif ! grep -qF 'Keeps "quotes" and '"'"'single'"'"' quotes.' "${PRM_RUN_DIR}/edit-body.log" \
+    || ! grep -qF 'Moves the docs to `docs/code.md`.' "${PRM_RUN_DIR}/edit-body.log"; then
+    prm_fail "${name}" "body text not passed through intact"
+  elif ! grep -qx 'Closes #484' "${PRM_RUN_DIR}/edit-body.log" \
+    || ! grep -qx '### Post-script verification' "${PRM_RUN_DIR}/edit-body.log"; then
+    prm_fail "${name}" "managed body sections not preserved"
+  elif grep -qF 'Adds docs to AGENTS.md.' "${PRM_RUN_DIR}/edit-body.log"; then
+    prm_fail "${name}" "stale description not replaced"
+  elif ! grep -qF '**PR metadata:** title updated; body updated' "${PRM_RUN_DIR}/comment.log" 2>/dev/null; then
+    prm_fail "${name}" "summary comment missing metadata outcome"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
+# Failed secret scan of agent-result.json: no metadata update.
+if run_prm_test "metadata-secret-scan-failure-blocks-update" github 1 0 false; then
+  if [ -f "${PRM_RUN_DIR}/edit-args.log" ]; then
+    prm_fail "metadata-secret-scan-failure-blocks-update" "gh pr edit ran despite a failed secret scan"
+  elif ! grep -q 'Scanning agent-result.json for secrets' "${PRM_RUN_DIR}/stdout.log" \
+    || grep -q 'Processing agent-result.json' "${PRM_RUN_DIR}/stdout.log"; then
+    prm_fail "metadata-secret-scan-failure-blocks-update" "did not stop at the agent-result.json secret scan"
+  else
+    echo "PASS: metadata-secret-scan-failure-blocks-update"
+  fi
+fi
+
+# A credential written with \uXXXX escapes in the proposed title or body is
+# caught by scanning the decoded values, so no metadata update happens.
+for secret_field in pr_title pr_body; do
+  name="metadata-escaped-secret-in-${secret_field}-blocks-update"
+  export PRM_ESCAPED_SECRET_FIELD="${secret_field}"
+  if run_prm_test "${name}" github marker 0 false; then
+    if [ -f "${PRM_RUN_DIR}/edit-args.log" ]; then
+      prm_fail "${name}" "gh pr edit ran despite an escaped secret in ${secret_field}"
+    elif grep -q 'Processing agent-result.json' "${PRM_RUN_DIR}/stdout.log"; then
+      prm_fail "${name}" "did not stop at the agent-result.json secret scan"
+    else
+      echo "PASS: ${name}"
+    fi
+  fi
+  unset PRM_ESCAPED_SECRET_FIELD
+done
+
+# A failed edit is visible but non-fatal: the summary is still posted.
+if run_prm_test "metadata-edit-failure-non-fatal" github 0 1 true; then
+  if ! grep -qF 'title update failed; body update failed' "${PRM_RUN_DIR}/comment.log" 2>/dev/null; then
+    prm_fail "metadata-edit-failure-non-fatal" "summary comment missing or lacks the failure outcome"
+  elif ! grep -q 'Failed to update PR title and body' "${PRM_RUN_DIR}/stdout.log"; then
+    prm_fail "metadata-edit-failure-non-fatal" "missing warning for the failed edit"
+  else
+    echo "PASS: metadata-edit-failure-non-fatal"
+  fi
+fi
+
+# GitLab: the MR update API gets title and description; gh is never used.
+if run_prm_test "metadata-gitlab-applied-no-push" gitlab 0 0 true; then
+  name="metadata-gitlab-applied-no-push"
+  if ! grep -qx 'title=docs(#484): document X in docs/code.md' "${PRM_RUN_DIR}/edit-args.log" 2>/dev/null; then
+    prm_fail "${name}" "MR update missing title"
+  elif ! grep -q '^description=Moves the docs' "${PRM_RUN_DIR}/edit-args.log" \
+    || ! grep -qx 'Closes #484' "${PRM_RUN_DIR}/edit-args.log"; then
+    prm_fail "${name}" "MR update missing description or managed sections"
+  elif grep -q 'fake-gitlab-token' "${PRM_RUN_DIR}/edit-args.log"; then
+    prm_fail "${name}" "token leaked into curl arguments"
+  elif ! grep -qF 'title updated; body updated' "${PRM_RUN_DIR}/comment.log" 2>/dev/null; then
+    prm_fail "${name}" "MR summary note missing metadata outcome"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
+rm -rf "${PRM_TMPDIR}"
+
 # --- Summary ---
 
 echo ""
