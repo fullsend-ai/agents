@@ -6,6 +6,16 @@
   "type": "object",
   "required": ["pr_number", "trigger_source", "actions", "summary", "tests_passed", "files_changed"],
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "required": ["pr_title"] },
+      "then": { "required": ["pr_title_base_sha256"] }
+    },
+    {
+      "if": { "required": ["pr_body"] },
+      "then": { "required": ["pr_body_base_sha256"] }
+    }
+  ],
   "properties": {
     "pr_number": {
       "type": "integer",
@@ -159,6 +169,35 @@
     "history_rewritten": {
       "type": "boolean",
       "description": "Set to true whenever this run's HEAD reflects an authorized human squash or redo/reset that still needs to be published on the remote PR (see 'Rewrite fix-agent history' in the fix-history-rewrite skill), or a validation-loop retry carrying the field forward. A squash targets the whole PR range (fix-agent, code-agent, and human commits alike) and must land as exactly one commit ahead of the target branch; a redo/reset only discards and re-implements the contiguous fix-agent commit suffix, preserving every commit below it. Never set for a failed/aborted rewrite, a squash no-op (PR already a single commit), or a bot-triggered run. The post-script requires this field together with a harness-verified human squash/redo request (TRIGGER_SOURCE plus the literal /fs-fix instruction text) before skipping the replay onto the remote PR tip — for a squash it additionally refuses to publish unless exactly one commit results, and for a redo/reset it refuses to publish if a human-authored or code-agent commit below the rewrite base would be lost."
+    },
+    "pr_title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S",
+      "not": { "pattern": "[\\r\\n]" },
+      "description": "Optional replacement PR/MR title. Set only when this run made the current title materially inaccurate. Single line (no CR/LF). Requires pr_title_base_sha256. Applied by the post-script after schema validation and the secret scan pass, and only if the live title still matches pr_title_base_sha256."
+    },
+    "pr_title_base_sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 of the exact PR/MR title the agent read before proposing pr_title. The post-script skips the title update when the live title no longer matches (a concurrent edit)."
+    },
+    "pr_body": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000,
+      "pattern": "\\S",
+      "description": "Optional replacement PR/MR description. Set only when this run made the current description materially inaccurate. Requires pr_body_base_sha256. The post-script keeps the existing issue-closing reference and post-script verification section, drops any copies of them from this text, and applies it only after schema validation and the secret scan pass and the live body still matches pr_body_base_sha256."
+    },
+    "pr_body_base_sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Lowercase hex SHA-256 of the exact PR/MR description the agent read before proposing pr_body (empty string when the description was empty or null). The post-script skips the body update when the live description no longer matches (a concurrent edit)."
     },
     "ci_inspections": {
       "type": "array",

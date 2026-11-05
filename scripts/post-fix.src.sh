@@ -28,6 +28,8 @@
 #
 # After pushing, this script processes agent-result.json to:
 #   - Post a summary comment on the PR documenting fixes and disagreements
+#   - Apply a proposed pr_title / pr_body (after schema validation and the
+#     result-file secret scan pass; skipped on a concurrent edit; non-fatal)
 #   - Apply labels (needs-human) if the iteration cap is approaching
 #
 # Required environment variables:
@@ -423,9 +425,16 @@ if [ "${NO_PUSH}" = "false" ]; then
   # this script), a downstream reader that exits before draining stdin can
   # SIGPIPE the upstream `git show`, which would then fail the pipeline
   # regardless of what gitleaks itself reported.
+  # `gitleaks detect --pipe` scans its input as plain text, so each patch is
+  # first reduced to its added lines (patch_added_lines): unchanged context
+  # and deleted lines — e.g. a resolution that removes a credential — must
+  # not fail the scan (issue #1801). --no-color/--no-ext-diff keep the patch
+  # format independent of repository git config so the filter sees every
+  # added line.
   if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
     fetch_trusted_target_sha
     MERGE_DIFF_TMP="$(mktemp)"
+    MERGE_ADDED_TMP="$(mktemp)"
     _any_merge_used_cc=false
     while IFS= read -r _merge_sha; do
       [ -z "${_merge_sha}" ] && continue
@@ -445,14 +454,18 @@ if [ "${NO_PUSH}" = "false" ]; then
         MERGE_SHOW_ARGS=(--cc)
         _any_merge_used_cc=true
       fi
-      if ! git show "${MERGE_SHOW_ARGS[@]}" "${_merge_sha}" > "${MERGE_DIFF_TMP}" 2>&1; then
+      if ! git show --no-color --no-ext-diff "${MERGE_SHOW_ARGS[@]}" "${_merge_sha}" > "${MERGE_DIFF_TMP}" 2>&1; then
         MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
-        rm -f "${MERGE_DIFF_TMP}"
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_SHOW_OUTPUT}" stderr
         post_fail_to_pr setup-error "Could not read merge commit ${_merge_sha} for the authoritative secret scan"
       fi
-      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_DIFF_TMP}" 2>&1)"; then
-        rm -f "${MERGE_DIFF_TMP}"
+      if ! patch_added_lines < "${MERGE_DIFF_TMP}" > "${MERGE_ADDED_TMP}"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
+        post_fail_to_pr setup-error "Could not extract added lines of merge commit ${_merge_sha} for the authoritative secret scan"
+      fi
+      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_ADDED_TMP}" 2>&1)"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_GITLEAKS_OUTPUT}" stderr
         post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
       fi
@@ -468,20 +481,45 @@ if [ "${NO_PUSH}" = "false" ]; then
     # blob) shows up here regardless of which parent's content it matches.
     if [ "${_any_merge_used_cc}" = true ]; then
       echo "Combined-diff (--cc) used for at least one merge — additionally scanning content in HEAD not on the current target tip"
-      if ! git diff "${TRUSTED_TARGET_SHA}" HEAD > "${MERGE_DIFF_TMP}" 2>&1; then
+      if ! git diff --no-color --no-ext-diff "${TRUSTED_TARGET_SHA}" HEAD > "${MERGE_DIFF_TMP}" 2>&1; then
         MERGE_SHOW_OUTPUT="$(cat "${MERGE_DIFF_TMP}")"
-        rm -f "${MERGE_DIFF_TMP}"
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_SHOW_OUTPUT}" stderr
         post_fail_to_pr setup-error "Could not diff HEAD against the trusted target for the authoritative secret scan"
       fi
-      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_DIFF_TMP}" 2>&1)"; then
-        rm -f "${MERGE_DIFF_TMP}"
+      if ! patch_added_lines < "${MERGE_DIFF_TMP}" > "${MERGE_ADDED_TMP}"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
+        post_fail_to_pr setup-error "Could not extract added lines of HEAD against the trusted target for the authoritative secret scan"
+      fi
+      if ! MERGE_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${MERGE_ADDED_TMP}" 2>&1)"; then
+        rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
         print_sanitized_gha_log "${MERGE_GITLEAKS_OUTPUT}" stderr
         post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
       fi
     fi
-    rm -f "${MERGE_DIFF_TMP}"
+    rm -f "${MERGE_DIFF_TMP}" "${MERGE_ADDED_TMP}"
   fi
+
+  # Commit messages. `gitleaks detect --pipe` of the added lines above (and
+  # the patch-based history scan) never sees commit messages, so scan them
+  # separately — including merge commit messages, which were scanned as a
+  # side effect of piping the raw `git show` output before issue #1801.
+  # Author and committer identity are scanned alongside each message: no
+  # other check sees them, and %B alone omits them (issue #1845).
+  # Materialize to a file for the same SIGPIPE reason as above.
+  COMMIT_MSG_TMP="$(mktemp)"
+  if ! git log --first-parent --no-color --format='%an <%ae>%n%cn <%ce>%n%B' "${SCAN_RANGE}" > "${COMMIT_MSG_TMP}" 2>&1; then
+    COMMIT_MSG_OUTPUT="$(cat "${COMMIT_MSG_TMP}")"
+    rm -f "${COMMIT_MSG_TMP}"
+    print_sanitized_gha_log "${COMMIT_MSG_OUTPUT}" stderr
+    post_fail_to_pr setup-error "Could not read commit messages in ${SCAN_RANGE} for the authoritative secret scan"
+  fi
+  if ! COMMIT_MSG_GITLEAKS_OUTPUT="$(gitleaks detect --pipe --redact < "${COMMIT_MSG_TMP}" 2>&1)"; then
+    rm -f "${COMMIT_MSG_TMP}"
+    print_sanitized_gha_log "${COMMIT_MSG_GITLEAKS_OUTPUT}" stderr
+    post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
+  fi
+  rm -f "${COMMIT_MSG_TMP}"
   echo "Secret scan passed — no leaks in agent's commit(s)"
 
   # -------------------------------------------------------------------------
@@ -1214,20 +1252,36 @@ else
   # Scan agent-result.json for secrets before posting content as a PR comment.
   # The agent could have been tricked into embedding sensitive data in the
   # structured output via prompt injection in the review body.
+  #
+  # A proposed pr_title / pr_body is only applied when this scan actually ran
+  # and passed (FIX_RESULT_SECRET_SCAN=passed). gitleaks is only installed on
+  # push runs, so install it for a metadata-only (no-push) run that proposes
+  # metadata; if that fails the summary is still posted without the update.
+  if ! command -v gitleaks >/dev/null 2>&1 \
+    && jq -e '(.pr_title // "") != "" or (.pr_body // "") != ""' "${RESULT_FILE}" >/dev/null 2>&1; then
+    install_gitleaks || gha_echo warning "Could not install gitleaks — proposed PR metadata will not be applied"
+  fi
+  FIX_RESULT_SECRET_SCAN=skipped
   if command -v gitleaks >/dev/null 2>&1; then
     echo "Scanning agent-result.json for secrets before posting..."
     SCAN_DIR="$(mktemp -d)"
     cp "${RESULT_FILE}" "${SCAN_DIR}/agent-result.json"
+    # The publisher applies the JSON-decoded pr_title / pr_body, so scan those
+    # too: a secret written with \uXXXX escapes does not match in the raw file.
+    jq -r '(.pr_title // "") | strings' "${RESULT_FILE}" > "${SCAN_DIR}/pr_title.txt" 2>/dev/null || true
+    jq -r '(.pr_body // "") | strings' "${RESULT_FILE}" > "${SCAN_DIR}/pr_body.txt" 2>/dev/null || true
     if ! gitleaks detect --source "${SCAN_DIR}" --no-git --redact 2>/dev/null; then
       rm -rf "${SCAN_DIR}"
       post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
     fi
     rm -rf "${SCAN_DIR}"
+    FIX_RESULT_SECRET_SCAN=passed
   fi
 
   echo "Processing agent-result.json: ${RESULT_FILE}"
   PROCESS_EXIT=0
   SIGNOFF_STRIPPED_COUNT="${SIGNOFF_STRIPPED_COUNT}" \
+  FIX_RESULT_SECRET_SCAN="${FIX_RESULT_SECRET_SCAN}" \
     python3 "${PROCESS_SCRIPT}" "${RESULT_FILE}" "${REPO_FULL_NAME}" "${PR_NUMBER}" || PROCESS_EXIT=$?
   if [ "${PROCESS_EXIT}" -eq 1 ]; then
     post_fail_to_pr process-output-failed \

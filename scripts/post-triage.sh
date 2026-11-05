@@ -9,6 +9,10 @@
 #   ISSUE_URL        — HTML URL of the issue
 #   FULLSEND_TRACKER — "github", "gitlab", or "jira" (falls back to FULLSEND_FORGE)
 #
+# Jira-sourced runs: when FULLSEND_WORK_ITEM_SOURCE is "jira", results are
+# written to the Jira issue at FULLSEND_WORK_ITEM_URL (exported by
+# `fullsend run`), and FULLSEND_WORK_ITEM_KEY must match that URL.
+#
 # The agent writes its decision to output/agent-result.json (relative to
 # the iteration directory). This script finds the most recent iteration's output.
 #
@@ -19,6 +23,26 @@
 # issues.labeled/issues.unlabeled, avoiding the re-triage loop.
 
 set -euo pipefail
+
+# Route Jira-sourced runs to the originating Jira issue. Refuse to run when an
+# explicit tracker or ISSUE_URL points elsewhere, so results never land on a
+# different work item.
+if [[ "${FULLSEND_WORK_ITEM_SOURCE:-}" == "jira" ]]; then
+  if [[ -n "${FULLSEND_TRACKER:-}" && "${FULLSEND_TRACKER}" != "jira" ]]; then
+    echo "ERROR: FULLSEND_WORK_ITEM_SOURCE is jira but FULLSEND_TRACKER selects a different tracker" >&2
+    exit 1
+  fi
+  FULLSEND_TRACKER="jira"
+  if [[ -z "${FULLSEND_WORK_ITEM_URL:-}" || -z "${FULLSEND_WORK_ITEM_KEY:-}" ]]; then
+    echo "ERROR: FULLSEND_WORK_ITEM_URL and FULLSEND_WORK_ITEM_KEY are required for a Jira-sourced run" >&2
+    exit 1
+  fi
+  if [[ -n "${ISSUE_URL:-}" && "${ISSUE_URL}" != "${FULLSEND_WORK_ITEM_URL}" ]]; then
+    echo "ERROR: ISSUE_URL does not match FULLSEND_WORK_ITEM_URL for a Jira-sourced run" >&2
+    exit 1
+  fi
+  ISSUE_URL="${FULLSEND_WORK_ITEM_URL}"
+fi
 
 : "${ISSUE_URL:?ISSUE_URL must be set}"
 FULLSEND_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_FORGE:-}}"
@@ -771,8 +795,13 @@ tracker_add_label() {
 
 tracker_remove_label() {
   local label="$1"
-  _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+  # Jira treats removing an absent label as a no-op, so an error here is a
+  # real write failure. Fail the step instead of reporting success.
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to remove label '${label}' from issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
 }
 
 tracker_strip_labels() {
@@ -885,19 +914,27 @@ tracker_post_comment() {
   local body="$1"
   _jira_require_vars || return 1
   # `fullsend issues post-comment` always does marker-based find-and-update;
-  # there is no "always create new" mode. A marker unique to this invocation
-  # guarantees no prior comment matches it, so this always creates a new
-  # comment — matching tracker_post_comment's always-new contract on
-  # GitHub/GitLab.
+  # there is no "always create new" mode. Each triage run gets a new comment,
+  # matching tracker_post_comment's always-new contract on GitHub/GitLab.
+  # The marker is scoped to the CI run (GITHUB_RUN_ID survives a workflow
+  # re-run, CI_PIPELINE_ID a GitLab job retry), so a retried run edits its
+  # own earlier comment instead of posting a duplicate.
   local marker stamp
-  stamp=$(date +%s%N)
-  # BSD date without %N support leaves the literal "N" in place, which would
-  # make the marker identical for every invocation within the same second and
-  # break the always-create-new contract. Fall back to a random suffix.
-  if [[ "${stamp}" == *N* ]]; then
-    stamp="$(date +%s)${RANDOM}${RANDOM}"
+  local run_id="${GITHUB_RUN_ID:-${CI_PIPELINE_ID:-}}"
+  if [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+    marker="<!-- fullsend:triage-run-${run_id} -->"
+  else
+    # No CI run ID: a marker unique to this invocation guarantees no prior
+    # comment matches it.
+    stamp=$(date +%s%N)
+    # BSD date without %N support leaves the literal "N" in place, which would
+    # make the marker identical for every invocation within the same second and
+    # break the always-create-new contract. Fall back to a random suffix.
+    if [[ "${stamp}" == *N* ]]; then
+      stamp="$(date +%s)${RANDOM}${RANDOM}"
+    fi
+    marker="<!-- fullsend:triage-${stamp} -->"
   fi
-  marker="<!-- fullsend:triage-${stamp} -->"
   printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
@@ -1157,6 +1194,12 @@ COMMENT=$(jq -r '.comment // empty' "${RESULT_FILE}")
 tracker_validate_issue_url
 tracker_parse_issue_url
 
+if [[ "${FULLSEND_TRACKER}" == "jira" && -n "${FULLSEND_WORK_ITEM_KEY:-}" \
+      && "${FULLSEND_WORK_ITEM_KEY}" != "${ISSUE_NUMBER}" ]]; then
+  echo "ERROR: FULLSEND_WORK_ITEM_KEY does not match the Jira issue key in ISSUE_URL" >&2
+  exit 1
+fi
+
 echo "Action: ${ACTION}"
 echo "Repo: ${REPO}"
 echo "Issue: #${ISSUE_NUMBER}"
@@ -1192,45 +1235,111 @@ DEFERRED_LABEL=""
 # handlers themselves, so it must be cleared up front rather than per-branch.
 tracker_remove_label "triaged"
 
+# Classification updates the Jira tracker could not apply. Jira users do not
+# see workflow annotations, so these are also listed in the Jira comment
+# instead of being dropped with only a log warning.
+JIRA_UNAPPLIED=""
+note_jira_unapplied() {
+  [[ "${FULLSEND_TRACKER}" == "jira" ]] || return 0
+  JIRA_UNAPPLIED="${JIRA_UNAPPLIED}
+- $1"
+}
+
 # --- Cross-repo issue creation allowlist ---
 # Used by prerequisites and split actions. Read once before the case
 # statement so both handlers share the same config and helper.
 
 WORKSPACE="${GITHUB_WORKSPACE:-${CI_PROJECT_DIR:-/tmp}}"
 CONFIG_FILE="${WORKSPACE}/config.yaml"
-if [[ ! -f "${CONFIG_FILE}" ]]; then
+if [[ ! -f "${CONFIG_FILE}" && ! -f "${WORKSPACE}/config.base.yaml" ]]; then
   CONFIG_FILE="${WORKSPACE}/.fullsend/config.yaml"
 fi
+# A configuration preset (config.base.yaml) sits beside the overlay. As in
+# fullsend's layered config, an overlay that sets tracker replaces the base
+# tracker as a whole object (an explicit empty target policy included);
+# otherwise tracker is inherited from the base. A null or bare `tracker:` in
+# the overlay counts as unset (it inherits the base), matching that merge.
+BASE_CONFIG_FILE="$(dirname "${CONFIG_FILE}")/config.base.yaml"
+ALLOW_TARGETS_KEY="tracker.${FULLSEND_TRACKER}.allowed_targets"
 
-ALLOWED_ORGS=""
-ALLOWED_REPOS=""
-ALLOWED_JIRA_PROJECTS=""
-if [[ -f "${CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
-  echo "::warning::yq not found — cannot read create_issues.allow_targets from config; cross-repo issue creation disabled"
+# ALLOWED_SCOPES holds GitHub orgs or GitLab groups (a scope admits every
+# repository under it, including GitLab subgroups); ALLOWED_TARGETS holds
+# repositories or Jira project keys allowed by exact match.
+ALLOWED_SCOPES=""
+ALLOWED_TARGETS=""
+if [[ -f "${CONFIG_FILE}" || -f "${BASE_CONFIG_FILE}" ]] && ! command -v yq &>/dev/null; then
+  echo "::warning::yq not found — cannot read ${ALLOW_TARGETS_KEY} from config; cross-repo issue creation disabled"
 fi
-if [[ -f "${CONFIG_FILE}" ]] && command -v yq &>/dev/null; then
-  ALLOWED_ORGS=$(yq -r '.create_issues.allow_targets.orgs // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_REPOS=$(yq -r '.create_issues.allow_targets.repos // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
-  ALLOWED_JIRA_PROJECTS=$(yq -r '.create_issues.allow_targets.jira_projects // [] | .[]' "${CONFIG_FILE}" 2>/dev/null || true)
+if command -v yq &>/dev/null; then
+  TRACKER_JSON="null"
+  OVERLAY_TRACKER_NULL="false"
+  for layer_file in "${CONFIG_FILE}" "${BASE_CONFIG_FILE}"; do
+    [[ -f "${layer_file}" ]] || continue
+    # Fail closed: an unparseable layer disables cross-repo issue creation.
+    if ! layer_tracker=$(yq -o=json '.tracker' "${layer_file}" 2>/dev/null); then
+      echo "::warning::cannot parse $(basename "${layer_file}") — cross-repo issue creation disabled"
+      TRACKER_JSON="null"
+      break
+    fi
+    # The old create_issues.allow_targets key is no longer read.
+    if yq -e '.create_issues.allow_targets' "${layer_file}" &>/dev/null; then
+      echo "::warning::$(basename "${layer_file}") sets create_issues.allow_targets, which is no longer read — move its targets to ${ALLOW_TARGETS_KEY}"
+    fi
+    if [[ "${TRACKER_JSON}" == "null" ]]; then
+      # An overlay that sets tracker to null inherits the base targets; say so
+      # when that keeps cross-repo grants the operator may have meant to clear.
+      if [[ "${OVERLAY_TRACKER_NULL}" == "true" ]] && jq -e '[.. | arrays | select(length > 0)] | length > 0' <<<"${layer_tracker}" &>/dev/null; then
+        echo "::warning::config.yaml sets tracker to null, so cross-repo targets from $(basename "${layer_file}") are inherited — set an empty ${ALLOW_TARGETS_KEY} in config.yaml to revoke them"
+      fi
+      TRACKER_JSON="${layer_tracker}"
+    fi
+    if [[ "${layer_file}" == "${CONFIG_FILE}" && "${layer_tracker}" == "null" && "$(yq 'has("tracker")' "${layer_file}" 2>/dev/null)" == "true" ]]; then
+      OVERLAY_TRACKER_NULL="true"
+    fi
+  done
+  # Warn when a tracker mapping selects other or several providers, since it
+  # then grants no cross-repo targets.
+  TRACKER_PROVIDERS=$(jq -r '
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] | join(",")
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
+  if [[ -n "${TRACKER_PROVIDERS}" && "${TRACKER_PROVIDERS}" != "${FULLSEND_TRACKER}" ]]; then
+    echo "::warning::tracker mapping selects provider(s) '${TRACKER_PROVIDERS}' but FULLSEND_TRACKER requires only '${FULLSEND_TRACKER}' — no cross-repo targets granted"
+  fi
+  # Honor targets only when the tracker selects exactly one provider and it
+  # is the tracker issues are created in; otherwise nothing is granted.
+  ALLOWED_TARGETS_JSON=$(jq -c --arg provider "${FULLSEND_TRACKER}" '
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] as $providers
+    | if $providers == [$provider] then ($t[$provider].allowed_targets // {}) else {} end
+    | if type == "object" then . else {} end
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || echo '{}')
+  ALLOWED_SCOPES=$(jq -r --arg provider "${FULLSEND_TRACKER}" '
+    (if $provider == "github" then .orgs elif $provider == "gitlab" then .groups else null end)
+    | if type == "array" then .[] | strings else empty end
+  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
+  ALLOWED_TARGETS=$(jq -r --arg provider "${FULLSEND_TRACKER}" '
+    (if $provider == "jira" then .projects else .repos end)
+    | if type == "array" then .[] | strings else empty end
+  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
 fi
 
 is_target_allowed() {
   local target_repo="$1"
-  local target_org="${target_repo%%/*}"
+  local scope
 
   if [[ "${target_repo}" == "${REPO}" ]]; then
     return 0
   fi
 
-  if [[ -n "${ALLOWED_ORGS}" ]] && echo "${ALLOWED_ORGS}" | grep -qFx "${target_org}"; then
-    return 0
-  fi
+  # Org/group allowlist (a group also covers its subgroups' projects).
+  while IFS= read -r scope; do
+    if [[ -n "${scope}" && "${target_repo}" == "${scope}/"* ]]; then
+      return 0
+    fi
+  done <<<"${ALLOWED_SCOPES}"
 
-  if [[ -n "${ALLOWED_REPOS}" ]] && echo "${ALLOWED_REPOS}" | grep -qFx "${target_repo}"; then
-    return 0
-  fi
-
-  if [[ -n "${ALLOWED_JIRA_PROJECTS}" ]] && echo "${ALLOWED_JIRA_PROJECTS}" | grep -qFx "${target_repo}"; then
+  if [[ -n "${ALLOWED_TARGETS}" ]] && echo "${ALLOWED_TARGETS}" | grep -qFx "${target_repo}"; then
     return 0
   fi
 
@@ -1280,7 +1389,7 @@ case "${ACTION}" in
       ISSUE_BODY=$(jq -r ".prerequisites.create[${i}].body" "${RESULT_FILE}")
 
       if ! is_target_allowed "${TARGET_REPO}"; then
-        echo "::warning::Skipping issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in create_issues.allow_targets"
+        echo "::warning::Skipping issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in ${ALLOW_TARGETS_KEY}"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Prerequisite: ${TARGET_REPO} — ${ISSUE_TITLE}</summary>
@@ -1333,7 +1442,7 @@ ${ISSUE_BODY}
     if [[ -n "${FAILED_CREATES}" ]]; then
       COMMENT="${COMMENT}
 
-**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+**Could not create automatically** (file manually or update \`${ALLOW_TARGETS_KEY}\` in config.yaml):
 ${FAILED_CREATES}"
     fi
 
@@ -1620,7 +1729,7 @@ ${FAILED_CREATES}"
       SAFE_TITLE="${SAFE_TITLE//::/-}"
 
       if ! is_target_allowed "${TARGET_REPO}"; then
-        echo "::warning::Skipping sub-issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in create_issues.allow_targets"
+        echo "::warning::Skipping sub-issue creation in '$(_gha_sanitize "${TARGET_REPO}")' — not in ${ALLOW_TARGETS_KEY}"
         FAILED_CREATES="${FAILED_CREATES}
 <details>
 <summary>Sub-issue: ${TARGET_REPO} — ${SUB_TITLE}</summary>
@@ -1670,7 +1779,7 @@ ${SUB_BODY}
     if [[ -n "${FAILED_CREATES}" ]]; then
       COMMENT="${COMMENT}
 
-**Could not create automatically** (file manually or update \`create_issues.allow_targets\` in config.yaml):
+**Could not create automatically** (file manually or update \`${ALLOW_TARGETS_KEY}\` in config.yaml):
 ${FAILED_CREATES}"
     fi
 
@@ -1762,6 +1871,7 @@ if [[ "${HAS_LABEL_ACTIONS}" == "true" ]]; then
       add)
         if ! label_exists "${LA_LABEL}"; then
           echo "::warning::Skipping label '$(_gha_sanitize "${LA_LABEL}")' -- does not exist in repo (will not auto-create)"
+          note_jira_unapplied "Label \`${LA_LABEL}\` was not added: it is not in use on this Jira site, and labels are not auto-created."
           continue
         fi
         echo "Adding label '$(_gha_sanitize "${LA_LABEL}")'..."
@@ -1803,6 +1913,7 @@ if [[ "${HAS_COMPONENT_ACTIONS}" == "true" ]]; then
     # full replacement via PUT) to silently delete pre-existing components.
     if ! CURRENT_COMPONENTS=$(tracker_get_components); then
       echo "::warning::Failed to fetch current components — skipping component mutations to avoid data loss"
+      note_jira_unapplied "Component changes were not applied: the current components could not be read, and replacing them blindly could delete existing ones."
     else
       # Build the new component list by applying add/remove actions.
       NEW_COMPONENTS="${CURRENT_COMPONENTS}"
@@ -1865,6 +1976,13 @@ if [[ -n "${DEFERRED_LABEL}" ]]; then
     forge_ensure_label "${DEFERRED_LABEL}"
   fi
   tracker_add_label "${DEFERRED_LABEL}"
+fi
+
+if [[ -n "${JIRA_UNAPPLIED}" ]]; then
+  COMMENT="${COMMENT}
+
+---
+**Not applied in Jira:**${JIRA_UNAPPLIED}"
 fi
 
 # --- Append action-hints footer (sufficient only) ---

@@ -1911,9 +1911,14 @@ run_push_rebase_postfix() {
   local human_instruction="${5:-}"
   local conflict_strategy="${6:-}"
   local exit_code=0
+  # post-fix puts ${HOME}/.local/bin first on PATH, so a host-installed
+  # pre-commit/gitleaks would shadow the mocks; isolate HOME per run.
+  local home_dir="${run_dir}/home"
+  mkdir -p "${home_dir}"
   # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
+    export HOME="${home_dir}"
     export PATH="${mock_bin}:${PATH}"
     export PUSH_TOKEN="fake-token"
     export REPO_FULL_NAME="test-org/test-repo"
@@ -6388,6 +6393,212 @@ EOF
   echo "PASS: ${test_name}"
 }
 
+# Issue #1801: patch_added_lines reduces a git patch to the content of its
+# added lines before the merge-content scans pipe it into gitleaks, so
+# unchanged context and deleted lines are never scanned.
+run_patch_added_lines_test() {
+  local test_name="$1"
+  local patch="$2"
+  local expected="$3"
+  local actual
+  # shellcheck disable=SC2030,SC2031
+  actual="$(
+    FULLSEND_FORGE=github
+    # shellcheck source=lib/fix-ops.lib.sh
+    source "${SCRIPT_DIR}/lib/fix-ops.lib.sh"
+    printf '%s\n' "${patch}" | patch_added_lines
+  )"
+  if [ "${actual}" != "${expected}" ]; then
+    echo "FAIL: ${test_name} — expected '${expected}', got '${actual}'"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_patch_added_lines_test "patch-added-lines-deleted-only" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,2 @@\n alpha\n-sekrit\n omega' \
+  ""
+run_patch_added_lines_test "patch-added-lines-context-only" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,2 +1,2 @@\n sekrit\n-mode = old\n+mode = new' \
+  "mode = new"
+run_patch_added_lines_test "patch-added-lines-added-strips-prefix" \
+  $'diff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n@@ -0,0 +1,2 @@\n+sekrit\n+++tripleplus' \
+  $'sekrit\n++tripleplus'
+run_patch_added_lines_test "patch-added-lines-no-newline-marker" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+sekrit\n\\ No newline at end of file' \
+  "sekrit"
+run_patch_added_lines_test "patch-added-lines-suppress-blank-empty" \
+  $'diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,3 +1,3 @@\n a\n\n-b\n+sekrit' \
+  "sekrit"
+run_patch_added_lines_test "patch-added-lines-combined-cc" \
+  $'diff --cc f\nindex 1,2..3\n--- a/f\n+++ b/f\n@@@ -1,4 -1,4 +1,4 @@@\n  alpha\n  sekrit\n--gone\n- ours\n -theirs\n++resolved\n+ fromtheirs\n +fromours' \
+  $'resolved\nfromtheirs\nfromours'
+run_patch_added_lines_test "patch-added-lines-multi-file-headers" \
+  $'commit abc\nMerge: 1 2\n\n    +not a diff line\n\ndiff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-x\n+one\ndiff --git a/g b/g\n--- a/g\n+++ b/g\n@@ -1 +1 @@\n-sekrit\n+two' \
+  $'one\ntwo'
+
+# Issue #1801: end-to-end coverage for the per-merge (--cc) and
+# target-tip-to-HEAD scans. MODE sets how a forge-conflict resolution (or a
+# follow-up commit) treats a "sekrit" line:
+#   context  — kept unchanged next to the resolved conflict    -> pass
+#   deleted  — removed by the resolution                       -> pass
+#   added    — introduced by the resolution                    -> secret-scan
+#   moved    — removed from file.txt, re-added in moved.txt    -> secret-scan
+#   followup — absent from the merge, added by a later commit  -> secret-scan
+#   message  — only in the merge commit's message              -> secret-scan
+#   fixmsg   — only in a follow-up commit's message            -> secret-scan
+#   author   — only in the merge commit's author identity      -> secret-scan
+#   committer — only in a follow-up commit's committer identity -> secret-scan
+run_push_forge_conflict_merge_secret_lines_test() {
+  local mode="$1"
+  local expect="$2"
+  local test_name="push-forge-conflict-merge-secret-${mode}"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  case "${mode}" in
+    context|deleted|moved) printf 'alpha\nsekrit\nmid\nomega\n' > "${base}/seed/file.txt" ;;
+    *) printf 'alpha\nmid\nomega\n' > "${base}/seed/file.txt" ;;
+  esac
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  sed 's/^mid$/pr-a/' "${base}/seed/file.txt" > "${base}/seed/file.tmp"
+  mv "${base}/seed/file.tmp" "${base}/seed/file.txt"
+  git -C "${base}/seed" commit -q -am "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local pr_a_sha
+  pr_a_sha="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  # Conflicting change on main, so the agent's merge of origin/main is a
+  # real conflict resolution whose only extra parent is trusted target
+  # history — the per-merge scan uses --cc and the tip-to-HEAD scan runs.
+  git -C "${base}/seed" checkout -q main
+  sed 's/^mid$/main-change/' "${base}/seed/file.txt" > "${base}/seed/file.tmp"
+  mv "${base}/seed/file.tmp" "${base}/seed/file.txt"
+  git -C "${base}/seed" commit -q -am "main: conflicting change"
+  git -C "${base}/seed" push -q origin main
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit origin/main >/dev/null 2>&1 || true
+  case "${mode}" in
+    context|added) printf 'alpha\nsekrit\nresolved\nomega\n' > "${base}/repo/file.txt" ;;
+    moved)
+      printf 'alpha\nresolved\nomega\n' > "${base}/repo/file.txt"
+      echo "sekrit" > "${base}/repo/moved.txt"
+      git -C "${base}/repo" add moved.txt
+      ;;
+    *) printf 'alpha\nresolved\nomega\n' > "${base}/repo/file.txt" ;;
+  esac
+  git -C "${base}/repo" add file.txt
+  if [ "${mode}" = "message" ]; then
+    git -C "${base}/repo" commit -q -m "Merge origin/main: sekrit"
+  elif [ "${mode}" = "author" ]; then
+    git -C "${base}/repo" commit -q --no-edit --author="sekrit <sekrit@example.com>"
+  else
+    git -C "${base}/repo" commit -q --no-edit
+  fi
+  if [ "${mode}" = "followup" ]; then
+    echo "sekrit" > "${base}/repo/followup.txt"
+    git -C "${base}/repo" add followup.txt
+    git -C "${base}/repo" commit -q -m "fix: agent change"
+  elif [ "${mode}" = "fixmsg" ]; then
+    echo "fixed" > "${base}/repo/fixed.txt"
+    git -C "${base}/repo" add fixed.txt
+    git -C "${base}/repo" commit -q -m "fix: agent change sekrit"
+  elif [ "${mode}" = "committer" ]; then
+    echo "fixed" > "${base}/repo/fixed.txt"
+    git -C "${base}/repo" add fixed.txt
+    GIT_COMMITTER_NAME="sekrit" GIT_COMMITTER_EMAIL="sekrit@example.com" \
+      git -C "${base}/repo" commit -q -m "fix: agent change"
+  fi
+
+  # Fixture validity: the raw combined diff must carry the secret as
+  # context or as a deleted line, or the pass cases prove nothing.
+  case "${mode}" in
+    context|deleted)
+      if ! git -C "${base}/repo" show --cc --no-color agent/99-test-fix | grep -q "sekrit"; then
+        echo "FAIL: ${test_name} — fixture invalid: raw --cc merge diff does not contain the secret"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+  esac
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-${test_name}"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+
+  # Fails any --pipe scan whose input contains the secret string.
+  cat > "${gate_mock}/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+pipe_mode=false
+for arg in "$@"; do
+  case "${arg}" in
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if ${pipe_mode}; then
+  pipe_input="$(cat)"
+  if printf '%s' "${pipe_input}" | grep -q "sekrit"; then
+    echo "leaks found: secret in --pipe merge-content scan" >&2
+    exit 1
+  fi
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${expect}" = "pass" ]; then
+    if [ "${exit_code}" -ne 0 ] || grep -q "leaks found" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — secret only as context/deleted line failed the scan (exit ${exit_code})"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    if [ "${exit_code}" -eq 0 ]; then
+      echo "FAIL: ${test_name} — push succeeded; added secret was not detected"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if ! grep -q "leaks found" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — failed for a reason other than the added secret"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+  # added/moved fail in the per-merge scan, before this line is printed.
+  if { [ "${expect}" = "pass" ] || [ "${mode}" = "followup" ]; } \
+     && ! grep -q "Combined-diff (--cc) used" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — the --cc per-merge and tip-to-HEAD scans did not run"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 run_push_blocked_mergeability_does_not_skip_test() {
   local test_name="push-blocked-mergeability-does-not-skip"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
@@ -6464,6 +6675,15 @@ run_push_forge_conflict_merged_target_reconstruction_requires_actual_merge_test
 run_push_forge_conflict_precommit_gate_first_parent_test
 run_push_forge_conflict_untrusted_merge_secret_test
 run_push_forge_conflict_untrusted_octopus_merge_secret_test
+run_push_forge_conflict_merge_secret_lines_test context pass
+run_push_forge_conflict_merge_secret_lines_test deleted pass
+run_push_forge_conflict_merge_secret_lines_test added fail
+run_push_forge_conflict_merge_secret_lines_test moved fail
+run_push_forge_conflict_merge_secret_lines_test followup fail
+run_push_forge_conflict_merge_secret_lines_test message fail
+run_push_forge_conflict_merge_secret_lines_test fixmsg fail
+run_push_forge_conflict_merge_secret_lines_test author fail
+run_push_forge_conflict_merge_secret_lines_test committer fail
 run_push_blocked_mergeability_does_not_skip_test
 
 rm -rf "${PUSH_REBASE_TMPDIR}"
@@ -6741,6 +6961,243 @@ run_postfix_budget_test "postfix-budget-human-keeps-human-cap" \
   "Iteration: 3 of 10 (human cap, total across bot+human)" "no"
 
 rm -rf "${FIX_BUDGET_TMPDIR}"
+
+# ---------------------------------------------------------------------------
+# PR/MR metadata update (issue #519) against the real script. A metadata-only
+# run (no commit, NO_PUSH=true) proposes pr_title / pr_body. The update must
+# only happen after the agent-result.json secret scan passes, must keep the
+# post-script-managed body sections, and a failed edit must not block the
+# summary comment or fail the run.
+# ---------------------------------------------------------------------------
+PRM_TMPDIR="$(mktemp -d)"
+
+# write_prm_fixtures <dir> — the live PR (mock forge response) and an
+# agent-result.json whose base hashes match it.
+write_prm_fixtures() {
+  python3 - "$1" <<'PYEOF'
+import hashlib, json, os, sys
+d = sys.argv[1]
+title = "docs(#484): document X in AGENTS.md"
+body = ("Adds docs to AGENTS.md.\n\n---\n\nCloses #484\n\n"
+        "### Post-script verification\n\n- [x] Secret scan passed")
+with open(os.path.join(d, "live-pr.json"), "w") as f:
+    json.dump({"title": title, "body": body, "description": body}, f)
+h = lambda s: hashlib.sha256(s.encode()).hexdigest()
+result = {
+    "pr_number": 99,
+    "trigger_source": "human",
+    "actions": [{"type": "fix", "finding": "Stale PR metadata",
+                 "description": "Proposed an accurate title and body"}],
+    "summary": "Updated PR metadata only.",
+    "tests_passed": True,
+    "files_changed": [],
+    "pr_title": "docs(#484): document X in docs/code.md",
+    "pr_title_base_sha256": h(title),
+    "pr_body": "Moves the docs to `docs/code.md`.\n\nKeeps \"quotes\" and 'single' quotes.",
+    "pr_body_base_sha256": h(body),
+}
+os.makedirs(os.path.join(d, "validated-output"), exist_ok=True)
+text = json.dumps(result)
+# PRM_ESCAPED_SECRET_FIELD: carry a marker credential in that field, written
+# with \uXXXX escapes so it never appears in plain text in the serialized file.
+field = os.environ.get("PRM_ESCAPED_SECRET_FIELD", "")
+if field:
+    result[field] = result[field] + " PRMSECRET-1234"
+    text = json.dumps(result).replace(
+        "PRMSECRET-1234", "".join("\\u%04x" % ord(c) for c in "PRMSECRET-1234"))
+with open(os.path.join(d, "validated-output", "agent-result.json"), "w") as f:
+    f.write(text)
+PYEOF
+}
+
+# run_prm_test <name> <forge> <gitleaks-rc> <edit-rc> <expect-exit-zero>
+run_prm_test() {
+  local test_name="$1" forge="$2" gitleaks_rc="$3" edit_rc="$4" expect_ok="$5"
+  local run_dir="${PRM_TMPDIR}/run-${test_name}"
+  local mock_bin="${run_dir}/bin"
+  local log="${run_dir}/stdout.log"
+  mkdir -p "${mock_bin}" "${run_dir}/repo"
+  write_prm_fixtures "${run_dir}"
+
+  git init -q -b main "${run_dir}/repo"
+  git -C "${run_dir}/repo" config user.email "test@example.com"
+  git -C "${run_dir}/repo" config user.name "Test"
+  git -C "${run_dir}/repo" commit --allow-empty -m "init" -q
+
+  if [ "${gitleaks_rc}" = "marker" ]; then
+    # Fails only when the marker credential appears in plain text in a scanned
+    # file, as a real signature would.
+    cat > "${mock_bin}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  if [ "$1" = "--source" ]; then src="$2"; fi
+  shift
+done
+if grep -rqF 'PRMSECRET-1234' "${src}"; then exit 1; fi
+exit 0
+MOCKEOF
+  else
+    printf '#!/usr/bin/env bash\nexit %s\n' "${gitleaks_rc}" > "${mock_bin}/gitleaks"
+  fi
+  cat > "${mock_bin}/gh" <<MOCKEOF
+#!/usr/bin/env bash
+case "\$1 \$2" in
+  "pr view")
+    case "\$*" in
+      *"title,body"*) cat "${run_dir}/live-pr.json" ;;
+    esac
+    exit 0 ;;
+  "pr edit")
+    printf '%s\n' "\$@" > "${run_dir}/edit-args.log"
+    cat > "${run_dir}/edit-body.log"
+    exit ${edit_rc} ;;
+  "pr comment")
+    cat > "${run_dir}/comment.log"
+    exit 0 ;;
+esac
+exit 0
+MOCKEOF
+  cat > "${mock_bin}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+cat > /dev/null
+case "\$*" in
+  *"--request PUT"*)
+    printf '%s\n' "\$@" > "${run_dir}/edit-args.log"
+    exit ${edit_rc} ;;
+  *"--request POST"*"/notes"*)
+    printf '%s\n' "\$@" > "${run_dir}/comment.log"
+    exit 0 ;;
+  *"--request GET"*) cat "${run_dir}/live-pr.json" ;;
+esac
+exit 0
+MOCKEOF
+  chmod +x "${mock_bin}/gitleaks" "${mock_bin}/gh" "${mock_bin}/curl"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${mock_bin}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export PR_NUMBER="99"
+    export TRIGGER_SOURCE="test-user"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="${forge}"
+    export FULLSEND_VALIDATED_ITERATION_DIR="${run_dir}/validated-output"
+    export FULLSEND_OUTPUT_SCHEMA="${SCRIPT_DIR}/../schemas/fix-result.schema.json"
+    PRE_AGENT_HEAD="$(git -C repo rev-parse HEAD)"
+    export PRE_AGENT_HEAD
+    if [ "${forge}" = "gitlab" ]; then
+      export CI_SERVER_HOST="gitlab.com"
+      export PR_URL="https://gitlab.com/test-org/test-repo/-/merge_requests/99"
+      export GITLAB_TOKEN="fake-gitlab-token"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${log}" 2>&1 || exit_code=$?
+
+  if [ "${expect_ok}" = "true" ] && [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${log}"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+  if [ "${expect_ok}" != "true" ] && [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit"
+    cat "${log}"
+    FAILURES=$((FAILURES + 1))
+    return 1
+  fi
+  PRM_RUN_DIR="${run_dir}"
+  return 0
+}
+
+prm_fail() {
+  echo "FAIL: $1 — $2"
+  cat "${PRM_RUN_DIR}/stdout.log"
+  FAILURES=$((FAILURES + 1))
+}
+
+# GitHub: both fields applied, body via stdin, managed sections kept.
+if run_prm_test "metadata-github-applied-no-push" github 0 0 true; then
+  name="metadata-github-applied-no-push"
+  if ! grep -qx -- '--title=docs(#484): document X in docs/code.md' "${PRM_RUN_DIR}/edit-args.log" 2>/dev/null; then
+    prm_fail "${name}" "gh pr edit missing --title"
+  elif ! grep -qx -- '--body-file' "${PRM_RUN_DIR}/edit-args.log"; then
+    prm_fail "${name}" "gh pr edit did not pass the body through --body-file"
+  elif ! grep -qF 'Keeps "quotes" and '"'"'single'"'"' quotes.' "${PRM_RUN_DIR}/edit-body.log" \
+    || ! grep -qF 'Moves the docs to `docs/code.md`.' "${PRM_RUN_DIR}/edit-body.log"; then
+    prm_fail "${name}" "body text not passed through intact"
+  elif ! grep -qx 'Closes #484' "${PRM_RUN_DIR}/edit-body.log" \
+    || ! grep -qx '### Post-script verification' "${PRM_RUN_DIR}/edit-body.log"; then
+    prm_fail "${name}" "managed body sections not preserved"
+  elif grep -qF 'Adds docs to AGENTS.md.' "${PRM_RUN_DIR}/edit-body.log"; then
+    prm_fail "${name}" "stale description not replaced"
+  elif ! grep -qF '**PR metadata:** title updated; body updated' "${PRM_RUN_DIR}/comment.log" 2>/dev/null; then
+    prm_fail "${name}" "summary comment missing metadata outcome"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
+# Failed secret scan of agent-result.json: no metadata update.
+if run_prm_test "metadata-secret-scan-failure-blocks-update" github 1 0 false; then
+  if [ -f "${PRM_RUN_DIR}/edit-args.log" ]; then
+    prm_fail "metadata-secret-scan-failure-blocks-update" "gh pr edit ran despite a failed secret scan"
+  elif ! grep -q 'Scanning agent-result.json for secrets' "${PRM_RUN_DIR}/stdout.log" \
+    || grep -q 'Processing agent-result.json' "${PRM_RUN_DIR}/stdout.log"; then
+    prm_fail "metadata-secret-scan-failure-blocks-update" "did not stop at the agent-result.json secret scan"
+  else
+    echo "PASS: metadata-secret-scan-failure-blocks-update"
+  fi
+fi
+
+# A credential written with \uXXXX escapes in the proposed title or body is
+# caught by scanning the decoded values, so no metadata update happens.
+for secret_field in pr_title pr_body; do
+  name="metadata-escaped-secret-in-${secret_field}-blocks-update"
+  export PRM_ESCAPED_SECRET_FIELD="${secret_field}"
+  if run_prm_test "${name}" github marker 0 false; then
+    if [ -f "${PRM_RUN_DIR}/edit-args.log" ]; then
+      prm_fail "${name}" "gh pr edit ran despite an escaped secret in ${secret_field}"
+    elif grep -q 'Processing agent-result.json' "${PRM_RUN_DIR}/stdout.log"; then
+      prm_fail "${name}" "did not stop at the agent-result.json secret scan"
+    else
+      echo "PASS: ${name}"
+    fi
+  fi
+  unset PRM_ESCAPED_SECRET_FIELD
+done
+
+# A failed edit is visible but non-fatal: the summary is still posted.
+if run_prm_test "metadata-edit-failure-non-fatal" github 0 1 true; then
+  if ! grep -qF 'title update failed; body update failed' "${PRM_RUN_DIR}/comment.log" 2>/dev/null; then
+    prm_fail "metadata-edit-failure-non-fatal" "summary comment missing or lacks the failure outcome"
+  elif ! grep -q 'Failed to update PR title and body' "${PRM_RUN_DIR}/stdout.log"; then
+    prm_fail "metadata-edit-failure-non-fatal" "missing warning for the failed edit"
+  else
+    echo "PASS: metadata-edit-failure-non-fatal"
+  fi
+fi
+
+# GitLab: the MR update API gets title and description; gh is never used.
+if run_prm_test "metadata-gitlab-applied-no-push" gitlab 0 0 true; then
+  name="metadata-gitlab-applied-no-push"
+  if ! grep -qx 'title=docs(#484): document X in docs/code.md' "${PRM_RUN_DIR}/edit-args.log" 2>/dev/null; then
+    prm_fail "${name}" "MR update missing title"
+  elif ! grep -q '^description=Moves the docs' "${PRM_RUN_DIR}/edit-args.log" \
+    || ! grep -qx 'Closes #484' "${PRM_RUN_DIR}/edit-args.log"; then
+    prm_fail "${name}" "MR update missing description or managed sections"
+  elif grep -q 'fake-gitlab-token' "${PRM_RUN_DIR}/edit-args.log"; then
+    prm_fail "${name}" "token leaked into curl arguments"
+  elif ! grep -qF 'title updated; body updated' "${PRM_RUN_DIR}/comment.log" 2>/dev/null; then
+    prm_fail "${name}" "MR summary note missing metadata outcome"
+  else
+    echo "PASS: ${name}"
+  fi
+fi
+
+rm -rf "${PRM_TMPDIR}"
 
 # --- Summary ---
 

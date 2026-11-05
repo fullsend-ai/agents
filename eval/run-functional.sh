@@ -59,6 +59,10 @@
 #   AGENT_EVAL_HARNESS_DIR — path to the agent-eval-harness checkout to run
 #                   (default: the submodule). The submodule must still be
 #                   initialised: the pinned version is read from it.
+#   EVAL_MAX_ATTEMPTS — how many attempts, in all, a case that failed before
+#                   the agent ran gets (default 2: the first run and one
+#                   retry). Each attempt is kept in attempts/<n>/ (see
+#                   eval/README.md, Artifact layout).
 #
 # Exit status:
 #   0 — every phase passed
@@ -67,7 +71,8 @@
 #       regression list (a crash or a config error)
 #   3 — infrastructure, not an agent or quality result: every failed case
 #       failed before the agent ran (non-zero exit other than a timeout,
-#       no turns, cost or tokens) on its first run and on one retry, or
+#       no turns, cost or tokens) on every attempt (its first run and one
+#       retry, by default), or
 #       every failing threshold is explained by LLM judge calls that errored
 #       (an error_rate gate, or a judge left with no score), after one
 #       scoring retry
@@ -121,6 +126,12 @@ fi
 
 notice "EVAL_TIER=${EVAL_TIER} (${TIER_REASON})"
 
+MAX_ATTEMPTS="${EVAL_MAX_ATTEMPTS:-2}"
+if [[ ! "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: invalid EVAL_MAX_ATTEMPTS '${MAX_ATTEMPTS}' (must be a positive integer)" >&2
+  exit 1
+fi
+
 # ---------------------------------------------------------------------------
 # Release-tier case selection — stage only this agent's release:true
 # case(s) into a temp dataset dir so the checked-in cases/ tree is never
@@ -132,6 +143,19 @@ EVAL_YAML=""
 RELEASE_STAGE_DIR=""
 RETRY_STAGE_DIR=""
 RETRY_YAML=""
+SCORE_VIEW=""
+# remove_score_view: removes the scoring view (see Phase 3) — only its
+# symlinks, never what they point at, so no attempt's output can go with it.
+remove_score_view() {
+  local link
+  [[ -n "$SCORE_VIEW" && -d "$SCORE_VIEW" ]] || return 0
+  for link in "$SCORE_VIEW"/*; do
+    [[ -L "$link" ]] && rm -f "$link"
+  done
+  rmdir "$SCORE_VIEW" 2>/dev/null \
+    || echo "WARNING: could not remove the scoring view ${SCORE_VIEW}" >&2
+  true
+}
 cleanup_runtime_config() {
   # Trailing `true` is load-bearing: an EXIT trap's own exit status
   # replaces an already-issued `exit N` when the trap's last command is
@@ -142,6 +166,7 @@ cleanup_runtime_config() {
   [[ -n "$RELEASE_STAGE_DIR" ]] && rm -rf "$RELEASE_STAGE_DIR"
   [[ -n "$RETRY_STAGE_DIR" ]] && rm -rf "$RETRY_STAGE_DIR"
   [[ -n "$RETRY_YAML" ]] && rm -f "$RETRY_YAML"
+  remove_score_view
   true
 }
 # Armed before either temp path is created, so a failure while staging
@@ -329,6 +354,9 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 RUNS_BASE="${EVAL_DIR}/runs"
 RUNS_DIR="${RUNS_BASE}/${AGENT}"
 RUN_DIR="${RUNS_DIR}/${RUN_ID}"
+# Attempt <n> of the run is executed into attempts/<n>/; final.json names
+# the attempt that counts for each case (see eval/README.md).
+ATTEMPTS_DIR="${RUN_DIR}/attempts"
 mkdir -p "$RUN_DIR"
 
 echo "=== Functional Tests: ${AGENT} ==="
@@ -350,8 +378,9 @@ fi
 
 # ---------------------------------------------------------------------------
 # Phases 1-2: create workspaces and execute — the harness drives case
-# iteration with hooks. execute_run is called once, plus once more for any
-# case that failed before the agent ran (see below).
+# iteration with hooks. execute_run is called once per attempt: attempt 1
+# runs every case, and each later attempt only the cases that failed before
+# the agent ran (see below).
 # ---------------------------------------------------------------------------
 # execute_run <config> <run-id> <run-dir>: sets exec_exit.
 execute_run() {
@@ -402,6 +431,14 @@ execute_run() {
   fi
 }
 
+# The attempt that counts for each case: attempt 1 unless a later attempt
+# produced output for it. final_case_dir <case> prints that attempt's case
+# directory.
+declare -A final_attempt=()
+final_case_dir() {
+  echo "${ATTEMPTS_DIR}/${final_attempt[$1]:-1}/cases/$1"
+}
+
 # A case that exited non-zero with no agent turns, no cost and no tokens
 # never reached the agent: a fixture, sandbox, provider or profile setup
 # failure (e.g. a provider profile reported missing right after import), or
@@ -409,12 +446,12 @@ execute_run() {
 # script's own `timeout` (exit 124, or 137 after SIGKILL) and the harness
 # timeout (exit -1) cut the run before its final turn and cost totals, so
 # those can read 0, but the agent ran (tokens are recorded as it goes).
-# Prints one case name per line.
+# Prints one case name per line, judged on each case's final attempt.
 pre_agent_failures() {
   local case_dir case_name run_result
   for case_dir in "${case_dirs[@]}"; do
     case_name="$(basename "$case_dir")"
-    run_result="$RUN_DIR/cases/${case_name}/run_result.json"
+    run_result="$(final_case_dir "$case_name")/run_result.json"
     [[ -f "$run_result" ]] || continue
     if jq -e '(.exit_code // 0) as $e
               | $e != 0 and ([-1, 124, 137] | index($e) | not)
@@ -426,25 +463,36 @@ pre_agent_failures() {
   done
 }
 
-execute_run "$EVAL_YAML" "$RUN_ID" "$RUN_DIR" || exit 1
+execute_run "$EVAL_YAML" "$RUN_ID" "${ATTEMPTS_DIR}/1" || exit 1
 
 if [[ $exec_exit -ne 0 ]]; then
   echo "WARNING: execute.py exited $exec_exit" >&2
   # If no case produced output, this is an infrastructure failure — not an agent failure.
-  if [[ ! -d "$RUN_DIR/cases" ]] || [[ -z "$(ls "$RUN_DIR/cases/" 2>/dev/null)" ]]; then
+  if [[ ! -d "${ATTEMPTS_DIR}/1/cases" ]] || [[ -z "$(ls "${ATTEMPTS_DIR}/1/cases/" 2>/dev/null)" ]]; then
     echo "ERROR: no case output produced — infrastructure failure" >&2
     exit 1
   fi
 fi
 
-# Retry, once, the cases that failed before the agent ran. They are staged
-# like release-tier cases (a sibling of cases/, so relative symlinks still
-# resolve), run under their own run id, and each retried case's results
-# replace its first attempt in RUN_DIR.
-mapfile -t retry_cases < <(pre_agent_failures)
-if [[ ${#retry_cases[@]} -gt 0 ]]; then
+# The run-level run_result.json stays at the top of the run dir, where
+# score.py and run discovery (eval/runs/<agent>/*/run_result.json) read it.
+# It starts as attempt 1's; a retried case's record is replaced below.
+if [[ -f "${ATTEMPTS_DIR}/1/run_result.json" ]]; then
+  cp "${ATTEMPTS_DIR}/1/run_result.json" "${RUN_DIR}/run_result.json"
+fi
+
+# Retry the cases that failed before the agent ran, up to MAX_ATTEMPTS
+# attempts in all. Each retry is staged like release-tier cases (a sibling
+# of cases/, so relative symlinks still resolve), runs under its own run id
+# into attempts/<n>/, and becomes the final attempt of each case it produced
+# output for. No attempt is ever moved or deleted.
+attempt=1
+while [[ $attempt -lt $MAX_ATTEMPTS ]]; do
+  mapfile -t retry_cases < <(pre_agent_failures)
+  [[ ${#retry_cases[@]} -gt 0 ]] || break
+  attempt=$((attempt + 1))
   echo ""
-  echo "Retrying ${#retry_cases[@]} case(s) that failed before the agent ran: ${retry_cases[*]}" >&2
+  echo "Retrying ${#retry_cases[@]} case(s) that failed before the agent ran: ${retry_cases[*]} (attempt ${attempt} of ${MAX_ATTEMPTS})" >&2
   RETRY_STAGE_DIR="$(mktemp -d "${EVAL_DIR}/${AGENT}/retry-cases-XXXXXX")"
   for case_name in "${retry_cases[@]}"; do
     cp -a "${CASES_DIR}/${case_name}" "${RETRY_STAGE_DIR}/${case_name}"
@@ -453,24 +501,21 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
   RETRY_YAML="${RETRY_YAML_TMP}.yaml"
   mv "$RETRY_YAML_TMP" "$RETRY_YAML"
   yq ".dataset.path = \"${RETRY_STAGE_DIR}\"" "$EVAL_YAML" > "$RETRY_YAML"
-  RETRY_RUN_ID="${RUN_ID}-retry"
-  RETRY_RUN_DIR="${RUNS_DIR}/${RETRY_RUN_ID}"
-  first_exec_exit=$exec_exit
+  prev_exec_exit=$exec_exit
   retry_rc=0
-  execute_run "$RETRY_YAML" "$RETRY_RUN_ID" "$RETRY_RUN_DIR" || retry_rc=$?
+  execute_run "$RETRY_YAML" "${RUN_ID}-attempt-${attempt}" "${ATTEMPTS_DIR}/${attempt}" || retry_rc=$?
   if [[ $retry_rc -eq 0 ]]; then
     for case_name in "${retry_cases[@]}"; do
-      retried="${RETRY_RUN_DIR}/cases/${case_name}"
+      retried="${ATTEMPTS_DIR}/${attempt}/cases/${case_name}"
       [[ -d "$retried" ]] || continue
-      rm -rf "${RUN_DIR}/cases/${case_name}"
-      cp -a "$retried" "${RUN_DIR}/cases/${case_name}"
+      final_attempt[$case_name]=$attempt
       # score.py also reads each case's record from the run-level
       # run_result.json; point it at the retry's.
       if [[ -f "${RUN_DIR}/run_result.json" && -f "${retried}/run_result.json" ]]; then
         # Replace the case's record, then recompute the run-level totals
         # from per_case so they describe the attempts that count: exit_code
         # as execute.py derives it (the max), and summed cost, turns and
-        # tokens. The first attempt's spend stays in its own case dirs.
+        # tokens. Earlier attempts' spend stays in their attempts/<n>/.
         if ! { jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" '
                  .per_case[$c] = $r[0]
                  | [.per_case[]] as $cs
@@ -486,27 +531,44 @@ if [[ ${#retry_cases[@]} -gt 0 ]]; then
       fi
     done
   elif [[ $retry_rc -eq 2 ]]; then
-    echo "WARNING: the retry ran but its output could not be copied; keeping the first attempt's results" >&2
-    exec_exit=$first_exec_exit
+    echo "WARNING: attempt ${attempt} ran but its output could not be copied; keeping the earlier attempt's results" >&2
+    exec_exit=$prev_exec_exit
   else
-    echo "WARNING: the retry could not start; keeping the first attempt's results" >&2
-    exec_exit=$first_exec_exit
+    echo "WARNING: attempt ${attempt} could not start; keeping the earlier attempt's results" >&2
+    exec_exit=$prev_exec_exit
   fi
-  # The retry's own exit replaces the first attempt's only when every
-  # first-attempt failure was one of the retried cases.
-  if [[ $first_exec_exit -ne 0 && $exec_exit -eq 0 ]]; then
+  # The retry's own exit replaces the earlier one only when every earlier
+  # failure was one of the retried cases.
+  if [[ $prev_exec_exit -ne 0 && $exec_exit -eq 0 ]]; then
     other_failure=false
     for case_dir in "${case_dirs[@]}"; do
       case_name="$(basename "$case_dir")"
       [[ " ${retry_cases[*]} " == *" ${case_name} "* ]] && continue
-      jq -e '(.exit_code // 1) == 0' "$RUN_DIR/cases/${case_name}/run_result.json" >/dev/null 2>&1 \
+      jq -e '(.exit_code // 1) == 0' "$(final_case_dir "$case_name")/run_result.json" >/dev/null 2>&1 \
         || other_failure=true
     done
-    [[ "$other_failure" == true ]] && exec_exit=$first_exec_exit
-  elif [[ $first_exec_exit -ne 0 ]]; then
-    exec_exit=$first_exec_exit
+    [[ "$other_failure" == true ]] && exec_exit=$prev_exec_exit
+  elif [[ $prev_exec_exit -ne 0 ]]; then
+    exec_exit=$prev_exec_exit
   fi
-fi
+  rm -rf "$RETRY_STAGE_DIR"
+  rm -f "$RETRY_YAML"
+  RETRY_STAGE_DIR="" RETRY_YAML=""
+done
+
+# final.json maps each case that produced output to the attempt that counts
+# for it, e.g. {"001-case": 1, "002-case": 2}: the one scored, checked and
+# merged into the run-level run_result.json. A file, not a symlink, because
+# upload-artifact follows symlinks and would upload a second copy.
+final_json='{}'
+shopt -s nullglob
+for case_out in "${ATTEMPTS_DIR}/1/cases"/*/; do
+  case_name="$(basename "$case_out")"
+  final_json="$(jq -c --arg c "$case_name" --argjson n "${final_attempt[$case_name]:-1}" \
+    '.[$c] = $n' <<< "$final_json")"
+done
+shopt -u nullglob
+jq . <<< "$final_json" > "${RUN_DIR}/final.json"
 
 # A non-zero exit from any individual case must fail the script, even when
 # other cases produced output — the aggregate execute.py exit code above is
@@ -516,7 +578,7 @@ fi
 case_failures=()
 for case_dir in "${case_dirs[@]}"; do
   case_name="$(basename "$case_dir")"
-  run_result="$RUN_DIR/cases/${case_name}/run_result.json"
+  run_result="$(final_case_dir "$case_name")/run_result.json"
   if [[ ! -f "$run_result" ]]; then
     case_failures+=("${case_name} (no run_result.json)")
     continue
@@ -531,7 +593,7 @@ if [[ ${#case_failures[@]} -gt 0 ]]; then
   echo "ERROR: ${#case_failures[@]} case(s) failed to run cleanly:" >&2
   printf '  %s\n' "${case_failures[@]}" >&2
   if [[ ${#setup_failures[@]} -gt 0 ]]; then
-    echo "  of which failed before the agent ran (setup or infrastructure, after one retry): ${setup_failures[*]}" >&2
+    echo "  of which failed before the agent ran (setup or infrastructure, after ${attempt} attempt(s)): ${setup_failures[*]}" >&2
   fi
 fi
 
@@ -547,6 +609,17 @@ if [[ -n "${EVALS_HOST_CREDENTIALS:-}" ]]; then
 fi
 SCORE_LOG="${RUN_DIR}/score.log"
 SUMMARY_YAML="${RUN_DIR}/summary.yaml"
+
+# score.py scores every directory in <run-dir>/cases/ and cannot be pointed
+# anywhere else. While it runs, that is a scoring view: one symlink per case
+# in final.json, to the case in its final attempt, so only final attempts
+# are scored. It is removed after scoring (and by the EXIT trap), so the run
+# dir keeps one copy of each attempt.
+SCORE_VIEW="${RUN_DIR}/cases"
+mkdir "$SCORE_VIEW"
+while IFS=$'\t' read -r case_name case_attempt; do
+  ln -s "../attempts/${case_attempt}/cases/${case_name}" "${SCORE_VIEW}/${case_name}"
+done < <(jq -r 'to_entries[] | [.key, (.value | tostring)] | @tsv' "${RUN_DIR}/final.json")
 
 # score.py exits 1 for any threshold miss, including one caused only by
 # judge calls that errored (a 400 from the model API, an unparseable
@@ -649,6 +722,7 @@ if [[ $score_exit -ne 0 && ${#case_failures[@]} -eq 0 && -n "$(errored_judges)" 
   score_exit=0
   run_score || score_exit=$?
 fi
+remove_score_view
 
 errored="$(errored_judges)"
 # Report judge errors even when no threshold failed (the *_quality

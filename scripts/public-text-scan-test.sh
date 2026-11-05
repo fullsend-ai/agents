@@ -165,6 +165,7 @@ Signed-off-by: Test <test@example.com>
   printf '%s\n' 'title = "hostile"' '[extend]' 'useDefault = true' \
     '[allowlist]' 'regexes = [".*"]' > "${run_dir}/repo/.agentready/allow.toml"
   cp "${run_dir}/repo/.agentready/allow.toml" "${run_dir}/repo/.gitleaks.toml"
+  mkdir -p "${run_dir}/repo/.git/info"
   printf '/.gitleaks.toml\n/.gitleaksignore\n' >> "${run_dir}/repo/.git/info/exclude"
   # shellcheck disable=SC2030,SC2031
   (

@@ -207,12 +207,13 @@ WORKSPACE="${TMPDIR}/workspace"
 mkdir -p "${WORKSPACE}"
 cat > "${WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
-create_issues:
-  allow_targets:
-    orgs:
-      - test-org
-    repos:
-      - allowed-org/allowed-repo
+tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org
+      repos:
+        - allowed-org/allowed-repo
 CFGEOF
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
@@ -1258,7 +1259,7 @@ fi
 
 # ---------------------------------------------------------------------------
 # allow_targets tests
-# Verify that proposals targeting repos not in create_issues.allow_targets
+# Verify that proposals targeting repos not in tracker.<provider>.allowed_targets
 # are skipped with a warning, while allowed targets proceed normally.
 # ---------------------------------------------------------------------------
 
@@ -1318,6 +1319,180 @@ run_test "allow-targets-no-workspace-originating-allowed" \
   "gh issue create"
 # shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
 ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+# shellcheck disable=SC2031 # GITHUB_WORKSPACE exported for subshell test run
+export GITHUB_WORKSPACE="${WORKSPACE}"
+
+# Skipped-proposal summary names the provider-specific config key.
+run_test_stdin "allow-targets-summary-names-tracker-key" \
+  "${FIXTURE_DISALLOWED_TARGET}" \
+  "update \`tracker.github.allowed_targets\` in config.yaml"
+
+# ---------------------------------------------------------------------------
+# Layered config tests (config.base.yaml beneath config.yaml)
+# tracker is replaced as a whole object when the overlay sets it and
+# inherited from the base otherwise; an unparseable layer fails closed.
+# ---------------------------------------------------------------------------
+
+# layered_workspace NAME BASE OVERLAY — point GITHUB_WORKSPACE at a fresh
+# workspace holding BASE as config.base.yaml and OVERLAY as config.yaml.
+# An empty BASE or OVERLAY leaves that file absent.
+layered_workspace() {
+  local ws="${TMPDIR}/layered-$1"
+  mkdir -p "${ws}"
+  if [[ -n "$2" ]]; then
+    printf '%s\n' "$2" > "${ws}/config.base.yaml"
+  fi
+  if [[ -n "$3" ]]; then
+    printf '%s\n' "$3" > "${ws}/config.yaml"
+  fi
+  # shellcheck disable=SC2031 # GITHUB_WORKSPACE exported for subshell test runs
+  export GITHUB_WORKSPACE="${ws}"
+}
+
+LAYERED_BASE_ORG='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org'
+LAYERED_SPARSE_OVERLAY='version: "1"'
+LAYERED_OVERLAY_REPO='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      repos:
+        - allowed-org/allowed-repo'
+LAYERED_OVERLAY_EMPTY='version: "1"
+tracker:
+  github:
+    allowed_targets:
+      orgs: []
+      repos: []'
+LAYERED_INVALID='version: "1"
+tracker: [unclosed'
+
+layered_workspace "base-sparse" "${LAYERED_BASE_ORG}" "${LAYERED_SPARSE_OVERLAY}"
+run_test "layered-base-only-target-allowed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create --repo test-org/target-repo"
+
+layered_workspace "base-no-overlay" "${LAYERED_BASE_ORG}" ""
+run_test "layered-base-only-no-overlay-allowed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create --repo test-org/target-repo"
+
+# Per-repo layout: both layers live under .fullsend/.
+LAYERED_PER_REPO="${TMPDIR}/layered-per-repo"
+mkdir -p "${LAYERED_PER_REPO}/.fullsend"
+printf '%s\n' "${LAYERED_BASE_ORG}" > "${LAYERED_PER_REPO}/.fullsend/config.base.yaml"
+printf '%s\n' "${LAYERED_SPARSE_OVERLAY}" > "${LAYERED_PER_REPO}/.fullsend/config.yaml"
+# shellcheck disable=SC2031 # GITHUB_WORKSPACE exported for subshell test run
+export GITHUB_WORKSPACE="${LAYERED_PER_REPO}"
+run_test "layered-per-repo-base-only-target-allowed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create --repo test-org/target-repo"
+
+layered_workspace "overlay-wins" "${LAYERED_BASE_ORG}" "${LAYERED_OVERLAY_REPO}"
+run_test_no_gh_call "layered-overlay-tracker-replaces-base" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'test-org/target-repo'"
+run_test "layered-overlay-tracker-target-allowed" \
+  "${FIXTURE_REPO_ALLOWLIST_TARGET}" \
+  "gh issue create --repo allowed-org/allowed-repo"
+
+layered_workspace "overlay-empty" "${LAYERED_BASE_ORG}" "${LAYERED_OVERLAY_EMPTY}"
+run_test_no_gh_call "layered-overlay-explicit-empty-not-inherited" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'test-org/target-repo'"
+
+# An explicit null tracker inherits the base grants and warns about it; a
+# sparse overlay (no tracker key) or an empty target policy does not.
+layered_workspace "overlay-null" "${LAYERED_BASE_ORG}" 'version: "1"
+tracker:'
+run_test_stdout "layered-overlay-null-tracker-warns" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "::warning::config.yaml sets tracker to null, so cross-repo targets from config.base.yaml are inherited"
+run_test "layered-overlay-null-tracker-inherits" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create --repo test-org/target-repo"
+layered_workspace "base-sparse-nowarn" "${LAYERED_BASE_ORG}" "${LAYERED_SPARSE_OVERLAY}"
+run_test_stdout_absent "layered-sparse-overlay-no-null-warning" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Created:" \
+  "sets tracker to null"
+
+layered_workspace "no-base" "" "${LAYERED_SPARSE_OVERLAY}"
+run_test_no_gh_call "layered-no-base-sparse-overlay-skipped" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'test-org/target-repo'"
+
+layered_workspace "invalid-base" "${LAYERED_INVALID}" "${LAYERED_OVERLAY_REPO}"
+run_test_no_gh_call "layered-invalid-base-fails-closed" \
+  "${FIXTURE_REPO_ALLOWLIST_TARGET}" \
+  "gh issue create" \
+  "::warning::cannot parse config.base.yaml"
+
+layered_workspace "invalid-overlay" "${LAYERED_BASE_ORG}" "${LAYERED_INVALID}"
+run_test_no_gh_call "layered-invalid-overlay-fails-closed" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::cannot parse config.yaml"
+
+# The originating repo stays allowed even when config cannot be parsed.
+layered_workspace "invalid-base-source" "${LAYERED_INVALID}" "${LAYERED_SPARSE_OVERLAY}"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://github.com/unlisted-org/originating-repo/pull/10"
+run_test "layered-invalid-base-originating-allowed" \
+  "${FIXTURE_ORIGINATING_REPO_TARGET}" \
+  "gh issue create --repo unlisted-org/originating-repo"
+# shellcheck disable=SC2031 # ORIGINATING_URL exported for subshell test run
+ORIGINATING_URL="https://github.com/test-org/test-repo/pull/10"
+
+# Only the provider issues are created on grants targets: GitLab groups do
+# not admit GitHub repositories, and an ambiguous multi-provider mapping
+# grants nothing.
+layered_workspace "other-provider" "" 'tracker:
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-org'
+run_test_no_gh_call "tracker-other-provider-not-honored" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'test-org/target-repo'"
+
+layered_workspace "multi-provider" "" 'tracker:
+  github:
+    allowed_targets:
+      orgs:
+        - test-org
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-org'
+run_test_no_gh_call "tracker-multiple-providers-grant-nothing" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::Skipping issue creation in 'test-org/target-repo'"
+run_test_no_gh_call "tracker-multiple-providers-warns" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::tracker mapping selects provider(s) 'github,gitlab'"
+
+# A leftover create_issues.allow_targets key is no longer read and is named
+# in a warning.
+layered_workspace "old-key" "" 'create_issues:
+  allow_targets:
+    orgs:
+      - test-org'
+run_test_no_gh_call "old-allow-targets-key-warns" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "gh issue create" \
+  "::warning::config.yaml sets create_issues.allow_targets, which is no longer read"
+
 # shellcheck disable=SC2031 # GITHUB_WORKSPACE exported for subshell test run
 export GITHUB_WORKSPACE="${WORKSPACE}"
 
@@ -1489,12 +1664,13 @@ GL_WORKSPACE="${TMPDIR}/gl-workspace"
 mkdir -p "${GL_WORKSPACE}"
 cat > "${GL_WORKSPACE}/config.yaml" <<CFGEOF
 version: "1"
-create_issues:
-  allow_targets:
-    orgs:
-      - test-group
-    repos:
-      - allowed-org/allowed-repo
+tracker:
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-group
+      repos:
+        - allowed-org/allowed-repo
 CFGEOF
 # shellcheck disable=SC2031 # CI_PROJECT_DIR exported for subshell test runs
 export CI_PROJECT_DIR="${GL_WORKSPACE}"
@@ -1839,7 +2015,46 @@ ORIGINATING_URL="https://gitlab.com/test-group/test-project/-/merge_requests/10"
 # GitLab: disallowed target org is skipped with warning.
 run_gl_test "gl-disallowed-target-skipped" \
   "${GL_FIXTURE_DISALLOWED_TARGET}" \
-  "not in create_issues.allow_targets"
+  "not in tracker.gitlab.allowed_targets"
+
+# GitLab: a subgroup in allowed_targets.groups admits projects nested under
+# it, but not projects in its parent group.
+GL_SUBGROUP_WORKSPACE="${TMPDIR}/gl-subgroup-workspace"
+mkdir -p "${GL_SUBGROUP_WORKSPACE}"
+cat > "${GL_SUBGROUP_WORKSPACE}/config.yaml" <<CFGEOF
+tracker:
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-group/subgroup
+CFGEOF
+# shellcheck disable=SC2031 # CI_PROJECT_DIR exported for subshell test runs
+export CI_PROJECT_DIR="${GL_SUBGROUP_WORKSPACE}"
+run_gl_test_no_gh_call "gl-subgroup-group-target-allowed" \
+  "${GL_FIXTURE_SUBGROUP}" \
+  "Created: "
+run_gl_test "gl-subgroup-group-parent-skipped" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "::warning::Skipping issue creation in 'test-group/target-project'"
+
+# GitLab: base-only group target is inherited by a sparse overlay.
+GL_LAYERED_WORKSPACE="${TMPDIR}/gl-layered-workspace"
+mkdir -p "${GL_LAYERED_WORKSPACE}"
+cat > "${GL_LAYERED_WORKSPACE}/config.base.yaml" <<CFGEOF
+tracker:
+  gitlab:
+    allowed_targets:
+      groups:
+        - test-group
+CFGEOF
+printf 'version: "1"\n' > "${GL_LAYERED_WORKSPACE}/config.yaml"
+# shellcheck disable=SC2031 # CI_PROJECT_DIR exported for subshell test runs
+export CI_PROJECT_DIR="${GL_LAYERED_WORKSPACE}"
+run_gl_test_no_gh_call "gl-layered-base-only-target-allowed" \
+  "${GL_FIXTURE_ONE_PROPOSAL}" \
+  "Created: "
+# shellcheck disable=SC2031 # CI_PROJECT_DIR exported for subshell test runs
+export CI_PROJECT_DIR="${GL_WORKSPACE}"
 
 # GitLab: originating repo is always allowed even when its org is NOT in the
 # allowlist — isolates the originating-repo bypass from the org allowlist.

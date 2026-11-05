@@ -4,6 +4,10 @@ description: >-
   Computes composite PR risk score from metadata, git history,
   and linked issue signals.
 model: sonnet
+when: >-
+  Risk assessment is enabled (step 3c-2); dispatched with the step 4
+  batch.
+role: synthesis
 tools: Read, Bash, Grep, Glob
 permissionMode: dontAsk
 background: false

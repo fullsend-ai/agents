@@ -164,8 +164,8 @@ external key as a GitHub or GitLab issue number.
 ```bash
 # Jira-source env vars (JIRA_USER_EMAIL and JIRA_BASE_URL enter the code
 # sandbox as non-secret config; JIRA_TOKEN is read by the jira-ro
-# provider on the host — it never enters the code agent's runner or
-# sandbox environment)
+# provider on the host and is available to the code runner for the
+# post-code Jira write — it never enters the sandbox environment)
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"

@@ -504,6 +504,30 @@ run_prior_projection_test "v2-id-and-disposition-retained" \
   "app-verified" \
   "${V2_ID_PROJECTION}"
 
+# v2 findings may name the persona that produced them. pre-review checks only
+# that the name is safe, never that the persona is staged, so a persona
+# disabled between rounds keeps its prior ledger. Findings without a dimension
+# (older stickies) are still accepted.
+V2_DIMENSION_PROJECTION='{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_ux1","dimension":"user-experience"},{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_abc123"}]}'
+run_prior_projection_test "v2-dimension-retained" \
+  "$(projection_marker "${V2_DIMENSION_PROJECTION}")" \
+  "app-verified" \
+  "${V2_DIMENSION_PROJECTION}"
+
+for unsafe_dimension in '"Bad Name"' '"../security"' '""' '"-leading-hyphen"' '"a-very-long-persona-name-that-goes-on-and-on-past-the-sixty-four-char-cap"' '7'; do
+  unsafe_dimension_projection="{\"version\":2,\"findings\":[{\"severity\":\"low\",\"category\":\"logic-error\",\"file\":\"internal/foo.go\",\"line\":7,\"id\":\"f_abc123\",\"dimension\":${unsafe_dimension}}]}"
+  run_prior_projection_test "unsafe-dimension-fails-closed-${unsafe_dimension//[^a-z0-9]/}" \
+    "$(projection_marker "${unsafe_dimension_projection}")" \
+    "app-verified" \
+    'EMPTY'
+done
+
+V1_DIMENSION_PROJECTION='{"version":1,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"dimension":"correctness"}]}'
+run_prior_projection_test "v1-dimension-fails-closed" \
+  "$(projection_marker "${V1_DIMENSION_PROJECTION}")" \
+  "app-verified" \
+  'EMPTY'
+
 HUMAN_PRIOR='{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}],"dispositions":[{"id":"f_human1","status":"open"}]}'
 VERIFIED_HUMAN_THREAD='{"threads":[{"is_resolved":true,"path":"src/foo.go","line":40,"original_line":39,"resolved_by":"alice","resolved_by_type":"User","resolved_by_role":"write","resolved_by_role_verified":true,"comments_truncated":false,"comments":[{"author":"custom-review","author_type":"Bot","author_role":"none","author_role_verified":false,"body":"<!-- finding:f_human1 --> Naming nit.","created_at":"2026-10-08T10:00:00Z"}]}],"truncated":false}'
 run_human_dismissal_test "verified-custom-app-resolver-closes-by-id" \

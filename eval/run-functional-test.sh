@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Tests for run-functional.sh's tier selection, release-tier case
 # filtering/gating, the non-zero-case-exit ("false green") fix, the
-# judge-error classification (infrastructure vs quality regression), and
-# the per-case attribution of failed checks and judge errors.
+# judge-error classification (infrastructure vs quality regression), the
+# per-case attribution of failed checks and judge errors, and the
+# attempts/<n> artifact layout (every attempt kept, only the final one
+# scored).
 #
 # Every invocation of the script under test runs with `env -i` and a
 # minimal stub PATH: a per-test bin/ directory stubs python3 (standing in
@@ -132,10 +134,12 @@ echo "$*" >> "${CAPTURE_DIR}/python3-calls.log"
 
 config_arg=""
 output_arg=""
+run_id_arg=""
 prev=""
 for a in "$@"; do
   [[ "$prev" == "--config" ]] && config_arg="$a"
   [[ "$prev" == "--output" ]] && output_arg="$a"
+  [[ "$prev" == "--run-id" ]] && run_id_arg="$a"
   prev="$a"
 done
 [[ -n "$config_arg" ]] && cp "$config_arg" "${CAPTURE_DIR}/last-config.yaml"
@@ -162,7 +166,10 @@ case "${1:-}" in
     # tokens, the record carries token_usage.input, the given turns (default
     # 0) and cost_usd 0 (an agent cut off before its totals). With turns
     # only, it carries num_turns and a cost (the agent ran). With neither,
-    # both are null (the case failed before the agent ran).
+    # both are null (the case failed before the agent ran). Each case also
+    # gets attempt.txt: <n> when the run id ends in -attempt-<n>, else 1.
+    # With STUB_COPY_FAIL_<N> set, call N's output/ copy into the runs dir
+    # fails (run-functional.sh's execute_run returns 2).
     en=$(( $(cat "${CAPTURE_DIR}/execute-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$en" > "${CAPTURE_DIR}/execute-calls"
     results_var="STUB_CASE_RESULTS_${en}"
@@ -181,6 +188,21 @@ case "${1:-}" in
         else
           printf '{"exit_code": %s, "num_turns": null, "cost_usd": null}\n' "$code" \
             > "${output_arg}/cases/${name}/run_result.json"
+        fi
+        if [[ "$run_id_arg" =~ -attempt-([0-9]+)$ ]]; then
+          echo "${BASH_REMATCH[1]}" > "${output_arg}/cases/${name}/attempt.txt"
+        else
+          echo 1 > "${output_arg}/cases/${name}/attempt.txt"
+        fi
+        copy_fail_var="STUB_COPY_FAIL_${en}"
+        if [[ -n "${!copy_fail_var:-}" ]]; then
+          # A workspace output/ dir to copy, and a regular file where the
+          # copy's destination directory should be.
+          ws_out="/tmp/agent-eval/${run_id_arg}/cases/${name}/output"
+          mkdir -p "$ws_out"
+          echo state > "${ws_out}/fixture-state.json"
+          echo "/tmp/agent-eval/${run_id_arg}" >> "${CAPTURE_DIR}/ws-dirs"
+          : > "${output_arg}/cases/${name}/output"
         fi
       done
       # Run-level record, as execute.py writes it: per_case mirrors each
@@ -208,7 +230,9 @@ case "${1:-}" in
     # Per-call behaviour for the judge-error tests: call N (1-based) uses
     # STUB_SCORE_EXITS' Nth comma-separated exit code, prints
     # STUB_SCORE_OUT_<N> and writes STUB_SUMMARY_<N> as the run's
-    # summary.yaml. Without them, exit STUB_SCORE_EXIT.
+    # summary.yaml. Without them, exit STUB_SCORE_EXIT. Each call rewrites
+    # scored.txt with what it would score, as score.py finds it (every
+    # directory in <run-dir>/cases/): one "<case>:<attempt.txt>" per line.
     n=$(( $(cat "${CAPTURE_DIR}/score-calls" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "${CAPTURE_DIR}/score-calls"
     run_id=""
@@ -216,6 +240,11 @@ case "${1:-}" in
     for a in "$@"; do
       [[ "$prev" == "--run-id" ]] && run_id="$a"
       prev="$a"
+    done
+    : > "${CAPTURE_DIR}/scored.txt"
+    for d in "${AGENT_EVAL_RUNS_DIR}"/*/"${run_id}"/cases/*/; do
+      [[ -d "$d" ]] || continue
+      echo "$(basename "$d"):$(cat "${d}attempt.txt" 2>/dev/null || true)" >> "${CAPTURE_DIR}/scored.txt"
     done
     summary_var="STUB_SUMMARY_${n}"
     out_var="STUB_SCORE_OUT_${n}"
@@ -798,7 +827,7 @@ OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
   STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:1:7" \
   STUB_CASE_RESULTS_2="001-release-case:1" 2>&1) || RC=$?
 if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "RESULT: 2 case(s) failed ===" \
-  && echo "$OUT" | grep -q "of which failed before the agent ran (setup or infrastructure, after one retry): 001-release-case"; then
+  && echo "$OUT" | grep -q "of which failed before the agent ran (setup or infrastructure, after 2 attempt(s)): 001-release-case"; then
   pass "an agent failure alongside a setup failure exits 1 and names the setup failure"
 else
   fail "an agent failure alongside a setup failure exits 1 and names the setup failure (rc=$RC, output: $OUT)"
@@ -852,7 +881,7 @@ RC=0
 OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
   STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
   STUB_WORKSPACE_EXITS="0,1" 2>&1) || RC=$?
-if [[ $RC -eq 3 ]] && echo "$OUT" | grep -q "the retry could not start; keeping the first attempt's results" \
+if [[ $RC -eq 3 ]] && echo "$OUT" | grep -q "attempt 2 could not start; keeping the earlier attempt's results" \
   && echo "$OUT" | grep -q "RESULT: 1 case(s) failed before the agent ran"; then
   pass "a retry that cannot start keeps the first attempt and still reports a result"
 else
@@ -866,17 +895,266 @@ RC=0
 OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
   STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
   STUB_CASE_RESULTS_2="001-release-case:0:4" 2>&1) || RC=$?
-RUNREC=""
-for f in "${ROOT}"/eval/runs/testagent/*/run_result.json; do
-  [[ "$f" == *-retry/run_result.json ]] && continue
-  RUNREC="$f"
-  break
-done
-MERGED="$(jq -c '{case: (.per_case["001-release-case"] | {exit_code, num_turns}), exit_code, num_turns}' "$RUNREC" 2>/dev/null || true)"
-if [[ $RC -eq 0 && "$MERGED" == '{"case":{"exit_code":0,"num_turns":4},"exit_code":0,"num_turns":9}' ]]; then
-  pass "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed"
+# Run discovery (CI, the nightly) globs eval/runs/<agent>/*/run_result.json:
+# a retry must add no second match.
+shopt -s nullglob
+RUNRECS=( "${ROOT}"/eval/runs/testagent/*/run_result.json )
+shopt -u nullglob
+MERGED="$(jq -c '{case: (.per_case["001-release-case"] | {exit_code, num_turns}), exit_code, num_turns}' "${RUNRECS[0]:-/nonexistent}" 2>/dev/null || true)"
+if [[ $RC -eq 0 && ${#RUNRECS[@]} -eq 1 && "$MERGED" == '{"case":{"exit_code":0,"num_turns":4},"exit_code":0,"num_turns":9}' ]]; then
+  pass "a retried case's record replaces the first attempt in the one run-level run_result.json, totals recomputed"
 else
-  fail "a retried case's record replaces the first attempt in the run-level run_result.json, totals recomputed (rc=$RC, merged='$MERGED', output: $OUT)"
+  fail "a retried case's record replaces the first attempt in the one run-level run_result.json, totals recomputed (rc=$RC, run records=${RUNRECS[*]:-none}, merged='$MERGED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+# ---------------------------------------------------------------------------
+# Every attempt is kept under <run-dir>/attempts/<n>/, final.json names the
+# attempt that counts for each case, and only that attempt is scored.
+# ---------------------------------------------------------------------------
+
+# main_run_dir <root>: the testagent run dir (there must be only one).
+main_run_dir() {
+  local d
+  for d in "$1"/eval/runs/testagent/*/; do
+    echo "${d%/}"
+    return
+  done
+}
+
+# scored <root>: what the last score.py call was given, as comma-separated
+# "<case>:<attempt>".
+scored() {
+  paste -sd, - < "$1/capture/scored.txt" 2>/dev/null || true
+}
+
+# final_map <run-dir>: final.json, compact.
+final_map() {
+  jq -c . "$1/final.json" 2>/dev/null || true
+}
+
+# links <run-dir>: any symlinks left in the run dir (upload-artifact would
+# upload each one as a second copy of what it points at).
+links() {
+  find "$1" -type l 2>/dev/null | paste -sd, -
+}
+
+CASES_OK_ALL="001-release-case:0:5,002-full-only-case:0:5"
+
+# entries <dir>: the names in <dir>, each followed by a comma ("" if none).
+entries() {
+  local e out=""
+  shopt -s nullglob dotglob
+  for e in "$1"/*; do out+="$(basename "$e"),"; done
+  shopt -u nullglob dotglob
+  echo "$out"
+}
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+RUN_DIRS="$(entries "${ROOT}/eval/runs/testagent")"
+TOP="$(entries "$RD")"
+ATTEMPTS="$(entries "${RD}/attempts")"
+KEPT="$(cat "${RD}/attempts/1/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+KEPT_EXIT="$(jq -r '.exit_code' "${RD}/attempts/1/cases/001-release-case/run_result.json" 2>/dev/null || true)"
+RETRIED_CASES="$(entries "${RD}/attempts/2/cases")"
+SCORED="$(scored "$ROOT")"
+FINAL="$(final_map "$RD")"
+LINKS="$(links "$RD")"
+if [[ $RC -eq 0 && "$RUN_DIRS" == "$(basename "$RD")," \
+      && "$TOP" == "attempts,final.json,run_result.json,score.log," && "$ATTEMPTS" == "1,2," \
+      && "$KEPT" == "1" && "$KEPT_EXIT" == "1" && "$RETRIED_CASES" == "001-release-case," \
+      && "$SCORED" == "001-release-case:2,002-full-only-case:1" \
+      && "$FINAL" == '{"001-release-case":2,"002-full-only-case":1}' && -z "$LINKS" ]] \
+  && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "a retry that succeeds is kept in attempts/2, the first attempt stays in attempts/1, and only the final attempts are scored"
+else
+  fail "a retry that succeeds is kept in attempts/2, the first attempt stays in attempts/1, and only the final attempts are scored (rc=$RC, run_dirs=$RUN_DIRS, top='$TOP', attempts='$ATTEMPTS', kept='$KEPT', kept_exit='$KEPT_EXIT', retried='$RETRIED_CASES', scored='$SCORED', final='$FINAL', links='$LINKS', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:1" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+KEPT="$(cat "${RD}/attempts/1/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+RETRIED="$(cat "${RD}/attempts/2/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+SCORED="$(scored "$ROOT")"
+FINAL="$(final_map "$RD")"
+if [[ $RC -eq 3 && "$KEPT" == "1" && "$RETRIED" == "2" \
+      && "$SCORED" == "001-release-case:2,002-full-only-case:1" \
+      && "$FINAL" == '{"001-release-case":2,"002-full-only-case":1}' ]] \
+  && echo "$OUT" | grep -q "RESULT: 1 case(s) failed before the agent ran (setup or infrastructure, not an agent result)"; then
+  pass "a retry that fails again keeps both attempts, is the final attempt, and still exits 3"
+else
+  fail "a retry that fails again keeps both attempts, is the final attempt, and still exits 3 (rc=$RC, kept='$KEPT', retried='$RETRIED', scored='$SCORED', final='$FINAL', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" \
+  STUB_WORKSPACE_EXITS="0,1" 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(scored "$ROOT")"
+FINAL="$(final_map "$RD")"
+if [[ $RC -eq 3 && "$SCORED" == "001-release-case:1,002-full-only-case:1" \
+      && "$FINAL" == '{"001-release-case":1,"002-full-only-case":1}' ]] \
+  && echo "$OUT" | grep -q "attempt 2 could not start; keeping the earlier attempt's results"; then
+  pass "a retry that cannot start leaves attempt 1 as every case's final attempt"
+else
+  fail "a retry that cannot start leaves attempt 1 as every case's final attempt (rc=$RC, scored='$SCORED', final='$FINAL', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:0:4" \
+  STUB_COPY_FAIL_2=1 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(scored "$ROOT")"
+FINAL="$(final_map "$RD")"
+RETRIED="$(cat "${RD}/attempts/2/cases/001-release-case/attempt.txt" 2>/dev/null || true)"
+if [[ $RC -eq 3 && "$SCORED" == "001-release-case:1,002-full-only-case:1" && "$RETRIED" == "2" \
+      && "$FINAL" == '{"001-release-case":1,"002-full-only-case":1}' ]] \
+  && echo "$OUT" | grep -q "attempt 2 ran but its output could not be copied; keeping the earlier attempt's results"; then
+  pass "a retry whose output copy fails is kept in attempts/2 but attempt 1 stays final"
+else
+  fail "a retry whose output copy fails is kept in attempts/2 but attempt 1 stays final (rc=$RC, scored='$SCORED', retried='$RETRIED', final='$FINAL', output: $OUT)"
+fi
+while IFS= read -r ws; do
+  [[ "$ws" == /tmp/agent-eval/*-attempt-* ]] && rm -rf "$ws"
+done < <(cat "${ROOT}/capture/ws-dirs" 2>/dev/null || true)
+rmdir /tmp/agent-eval 2>/dev/null || true
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:1" \
+  STUB_CASE_RESULTS_3="001-release-case:0:4" \
+  EVAL_MAX_ATTEMPTS=3 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+RUN_DIRS="$(entries "${ROOT}/eval/runs/testagent")"
+ATTEMPTS="$(entries "${RD}/attempts")"
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+SCORED="$(scored "$ROOT")"
+FINAL="$(final_map "$RD")"
+MERGED="$(jq -c '{case: (.per_case["001-release-case"] | {exit_code, num_turns}), exit_code, num_turns}' "${RD}/run_result.json" 2>/dev/null || true)"
+EXITS="$(for n in 1 2 3; do jq -r '.exit_code' "${RD}/attempts/${n}/cases/001-release-case/run_result.json" 2>/dev/null || echo none; done | paste -sd, -)"
+if [[ $RC -eq 0 && "$CALLS" == "3" && "$RUN_DIRS" == "$(basename "$RD")," && "$ATTEMPTS" == "1,2,3," \
+      && "$EXITS" == "1,1,0" && "$SCORED" == "001-release-case:3,002-full-only-case:1" \
+      && "$FINAL" == '{"001-release-case":3,"002-full-only-case":1}' \
+      && "$MERGED" == '{"case":{"exit_code":0,"num_turns":4},"exit_code":0,"num_turns":9}' ]] \
+  && echo "$OUT" | grep -q "Retrying 1 case(s) that failed before the agent ran: 001-release-case (attempt 3 of 3)" \
+  && echo "$OUT" | grep -q "RESULT: All phases complete"; then
+  pass "with more attempts allowed, every retry is kept in its own attempts/<n> and the last one is final"
+else
+  fail "with more attempts allowed, every retry is kept in its own attempts/<n> and the last one is final (rc=$RC, calls=$CALLS, run_dirs=$RUN_DIRS, attempts='$ATTEMPTS', exits='$EXITS', scored='$SCORED', final='$FINAL', merged='$MERGED', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  STUB_CASE_RESULTS_2="001-release-case:1" \
+  STUB_CASE_RESULTS_3="001-release-case:1" \
+  EVAL_MAX_ATTEMPTS=3 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+FINAL="$(final_map "$RD")"
+if [[ $RC -eq 3 && "$CALLS" == "3" && "$FINAL" == '{"001-release-case":3,"002-full-only-case":1}' ]] \
+  && echo "$OUT" | grep -q "of which failed before the agent ran (setup or infrastructure, after 3 attempt(s)): 001-release-case" \
+  && echo "$OUT" | grep -q "RESULT: 1 case(s) failed before the agent ran (setup or infrastructure, not an agent result)"; then
+  pass "a case that fails before the agent ran on every allowed attempt exits 3"
+else
+  fail "a case that fails before the agent ran on every allowed attempt exits 3 (rc=$RC, calls=$CALLS, final='$FINAL', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full \
+  STUB_CASE_RESULTS_1="001-release-case:1,002-full-only-case:0:5" \
+  EVAL_MAX_ATTEMPTS=1 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+CALLS="$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)"
+ATTEMPTS="$(entries "${RD}/attempts")"
+if [[ $RC -eq 3 && "$CALLS" == "1" && "$ATTEMPTS" == "1," ]] && ! echo "$OUT" | grep -q "Retrying"; then
+  pass "EVAL_MAX_ATTEMPTS=1 runs no retry"
+else
+  fail "EVAL_MAX_ATTEMPTS=1 runs no retry (rc=$RC, calls=$CALLS, attempts='$ATTEMPTS', output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+for bad in 0 two -1; do
+  run_test
+  ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+  RC=0
+  OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK_ALL" \
+    EVAL_MAX_ATTEMPTS="$bad" 2>&1) || RC=$?
+  if [[ $RC -eq 1 ]] && echo "$OUT" | grep -q "invalid EVAL_MAX_ATTEMPTS '${bad}'" && no_execute "$ROOT"; then
+    pass "EVAL_MAX_ATTEMPTS='${bad}' is refused before anything runs"
+  else
+    fail "EVAL_MAX_ATTEMPTS='${bad}' is refused before anything runs (rc=$RC, output: $OUT)"
+  fi
+  rm -rf "$ROOT"
+done
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK_ALL" \
+  STUB_SUMMARY_1='per_case: {}\n' 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+RUN_DIRS="$(entries "${ROOT}/eval/runs/testagent")"
+TOP="$(entries "$RD")"
+ATTEMPTS="$(entries "${RD}/attempts")"
+SCORED="$(scored "$ROOT")"
+FINAL="$(final_map "$RD")"
+LINKS="$(links "$RD")"
+SUMMARIES="$(find "${ROOT}/eval/runs" -name summary.yaml | wc -l | tr -d ' ')"
+if [[ $RC -eq 0 && "$RUN_DIRS" == "$(basename "$RD")," \
+      && "$TOP" == "attempts,final.json,run_result.json,score.log,summary.yaml," && "$ATTEMPTS" == "1," \
+      && "$SCORED" == "001-release-case:1,002-full-only-case:1" \
+      && "$FINAL" == '{"001-release-case":1,"002-full-only-case":1}' && -z "$LINKS" && "$SUMMARIES" == "1" ]]; then
+  pass "a run with no retries is one attempt in attempts/1, with final.json and one summary.yaml"
+else
+  fail "a run with no retries is one attempt in attempts/1, with final.json and one summary.yaml (rc=$RC, run_dirs=$RUN_DIRS, top='$TOP', attempts='$ATTEMPTS', scored='$SCORED', final='$FINAL', links='$LINKS', summaries=$SUMMARIES, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=full STUB_CASE_RESULTS="$CASES_OK_ALL" \
+  STUB_SCORE_EXIT=2 2>&1) || RC=$?
+RD="$(main_run_dir "$ROOT")"
+SCORED="$(scored "$ROOT")"
+if [[ $RC -eq 1 && "$SCORED" == "001-release-case:1,002-full-only-case:1" && ! -e "${RD}/cases" \
+      && -f "${RD}/attempts/1/cases/001-release-case/run_result.json" ]]; then
+  pass "the scoring view is removed when score.py fails, and the attempt it pointed at is kept"
+else
+  fail "the scoring view is removed when score.py fails, and the attempt it pointed at is kept (rc=$RC, scored='$SCORED', output: $OUT)"
 fi
 rm -rf "$ROOT"
 

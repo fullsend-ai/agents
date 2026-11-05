@@ -61,7 +61,9 @@ BEHAVIOUR_TEST_TAGS ?= behaviour
 BEHAVIOUR_GOFLAGS ?=
 # applier-branch-namespace gates behaviour/features/code/branch-namespace.feature,
 # whose assertions need this repo's post-code branch-namespace enforcement.
-BEHAVIOUR_CAPABILITIES ?= applier-branch-namespace
+# review-skill-overrides gates behaviour/features/review/custom-persona.feature,
+# which needs the pinned fullsend to stage skill file overrides.
+BEHAVIOUR_CAPABILITIES ?= applier-branch-namespace,review-skill-overrides
 
 script-test:
 	$(call run-timed,bash scripts/bundle-sh-test.sh)
@@ -87,6 +89,7 @@ script-test:
 	$(call run-timed,bash scripts/pre-review-test.sh)
 	$(call run-timed,bash scripts/pr-review-challenger-contract-test.sh)
 	$(call run-timed,bash scripts/pr-review-remediation-test.sh)
+	$(call run-timed,bash scripts/pr-review-dependency-scope-test.sh)
 	$(call run-timed,bash scripts/post-review-test.sh)
 	$(call run-timed,bash scripts/risk-tier1-test.sh)
 	$(call run-timed,bash scripts/pre-fix-test.sh)
@@ -111,6 +114,7 @@ script-test:
 	$(call run-timed,bash eval/scripts/setup-fixture-test.sh)
 	$(call run-timed,bash eval/scripts/teardown-fixture-test.sh)
 	$(call run-timed,bash eval/scripts/capture-fixture-test.sh)
+	$(call run-timed,bash eval/scripts/finding-expectations-test.sh)
 	$(call run-timed,bash eval/scripts/aggregate-nightly-test.sh)
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)

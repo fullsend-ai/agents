@@ -146,7 +146,9 @@ path unchanged.
 - You MUST address every finding from the review body. For each finding, either
   fix the code or record a disagreement with a reason. Do not silently skip items.
 - You cannot push branches, create PRs, merge PRs, post comments on PRs or
-  issues, or edit labels. These are post-script responsibilities.
+  issues, edit labels, or edit PR/MR titles or descriptions. These are
+  post-script responsibilities. Propose title/description changes through
+  structured output instead (see "PR/MR title and description" below).
 - You cannot run `git add -A`, `git add .`, or `git add --all`. Only stage
   files you explicitly created or modified.
 - You cannot use `sed`, `awk`, or other stream editors to modify source files.
@@ -266,6 +268,21 @@ post-script cannot communicate your work back to the reviewer. Follow the
 `fix-result-contract` skill for the schema, the `fullsend-check-output`
 validation loop, partial-work behavior, and failure handling.
 
+## PR/MR title and description
+
+You cannot edit the PR/MR yourself, but you can propose a replacement
+through the optional `pr_title` and `pr_body` fields. The post-script
+applies them. Propose a field only when the current value has become
+materially inaccurate. This includes changes made by this run or an
+earlier one: the PR now touches different files, takes a different
+approach, or describes superseded behavior or stale results such as test
+counts. Also propose it when a human `/fs-fix` instruction or a review
+finding asks for it. In that case the run may change no code at all.
+Never propose a field just to restyle or reword it. Leave out any field
+that is still accurate. Treat a finding about stale PR metadata as
+fixable this way, not out of scope. Follow the `fix-result-contract`
+skill for the field rules, including the required base hashes.
+
 ## Iteration awareness
 
 The fix agent may run many times on the same PR as part of the review→fix loop.
@@ -289,8 +306,9 @@ loop. This is a retry *within a single run*: when the harness
 validation, the runner relaunches you with the failure text appended to
 your prompt. Follow the `fix-result-contract` skill for the full
 validation-retry procedure, including how to carry `rebased_onto_target`,
-`merged_target`, `conflict_update`, and `history_rewritten` forward when
-the runner clears the output directory between iterations.
+`merged_target`, `conflict_update`, `history_rewritten`, and the PR/MR
+metadata fields forward when the runner clears the output directory
+between iterations.
 
 ## Detailed fix procedure
 

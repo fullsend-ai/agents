@@ -603,6 +603,7 @@ if [[ "\$*" == *"fetch-review-threads"* ]]; then
               path: .path,
               line: .line,
               original_line: .originalLine,
+              side: .diffSide,
               resolved_by: .resolvedBy.login,
               resolved_by_type: "User",
               resolved_by_role: \$role,
@@ -629,7 +630,9 @@ fi
 PREV=""
 for arg in "\$@"; do
   if [[ "\${PREV}" == "--result" ]]; then
-    if [[ "\${arg}" == "-" ]]; then
+    if [[ "\${arg}" == "-" ]] && [[ "\$1" == "post-comment" ]]; then
+      cat > "${TMPDIR}/last-post-comment.txt"
+    elif [[ "\${arg}" == "-" ]]; then
       cat > "${TMPDIR}/last-result.json"
     elif [[ -f "\${arg}" ]]; then
       cp "\${arg}" "${TMPDIR}/last-result.json"
@@ -1611,6 +1614,7 @@ run_body_count_test() {
   local json_content="$2"
   local pattern="$3"
   local expected_count="$4"
+  local threshold="${5:-low}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   mkdir -p "${run_dir}/iteration-1/output"
@@ -1628,7 +1632,7 @@ run_body_count_test() {
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_URL="https://github.com/test-org/test-repo/pull/99"
     export FULLSEND_FORGE="github"
-    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="${threshold}"
     bash "${POST_SCRIPT}"
   ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
 
@@ -1708,6 +1712,26 @@ for sticky_case in "${STICKY_CASES[@]}"; do
 done
 run_body_count_test "projection-strips-rebuilt-summary-line" \
   "${STICKY_INPUTS[rebuilt-summary]}" '<summary>Previous run</summary>' "0"
+
+# --- Severity-threshold disclosure (#1800) ---
+# A review filtered down to nothing must not read as a clean pass. The
+# disclosed count is derived from the same filter that drops the findings,
+# so it cannot disagree with what was posted.
+THRESHOLD_ALL_HIDDEN='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"low","category":"style","file":"internal/foo.go","line":7,"description":"minor one"},{"severity":"medium","category":"logic-error","file":"internal/bar.go","line":9,"description":"minor two"}]}'
+run_body_count_test "severity-threshold-discloses-fully-filtered" \
+  "${THRESHOLD_ALL_HIDDEN}" \
+  'No findings at or above `high` severity; 2 lower-severity finding(s) were not posted.' "1" "high"
+
+THRESHOLD_PARTLY_HIDDEN='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issues found","findings":[{"severity":"high","category":"auth-bypass","file":"internal/foo.go","line":7,"description":"real problem"},{"severity":"low","category":"style","file":"internal/bar.go","line":9,"description":"minor one"},{"severity":"medium","category":"logic-error","file":"internal/baz.go","line":11,"description":"minor two"}]}'
+run_body_count_test "severity-threshold-discloses-partially-filtered" \
+  "${THRESHOLD_PARTLY_HIDDEN}" \
+  '2 finding(s) below the `high` severity threshold were not posted.' "1" "high"
+
+# A genuinely clean review stays clean: nothing was filtered, so nothing is
+# disclosed.
+THRESHOLD_NO_FINDINGS='{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Looks good to me"}'
+run_body_count_test "severity-threshold-silent-when-nothing-filtered" \
+  "${THRESHOLD_NO_FINDINGS}" 'were not posted' "0" "high"
 
 # Round trip: post the body, wrap it in a sticky history block that holds an
 # older marker, and check pre-review recovers only this run's projection.
@@ -1808,13 +1832,20 @@ LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo
 run_no_projection_test "projection-omits-mixed-sub-agent-failure" \
   "${LOSSY_FAILURE_PROJECTION_INPUT}"
 
+# A dimension failure recorded at low is still a dimension failure: severity
+# must not make it look like a challenger skip.
+LOW_LOSSY_FAILURE_PROJECTION_INPUT='{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"abcdef0123456789abcdef0123456789abcdef01","body":"Issue","findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","description":"kept before this fix"},{"severity":"low","category":"sub-agent-failure","file":"N/A","description":"The style-conventions sub-agent did not return findings: timeout"}]}'
+run_no_projection_test "projection-omits-mixed-low-sub-agent-failure" \
+  "${LOW_LOSSY_FAILURE_PROJECTION_INPUT}"
+
 # A skipped/failed challenger retains the dimensional findings; a failed
-# safety-critical dimension must still suppress the entire projection.
-CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"challenger time budget", actionable:false}]' <<< "${PROJECTION_INPUT}")"
+# dimension, or a failure that names no sub-agent, must still suppress the
+# entire projection at any severity.
+CHALLENGER_FAILURE_INPUT="$(jq '.findings += [{severity:"low", category:"sub-agent-failure", file:"N/A", description:"The challenger sub-agent did not return findings: time budget: 500s remaining. Using pre-challenger finding set.", actionable:false}]' <<< "${PROJECTION_INPUT}")"
 for projection_forge in github gitlab; do
   run_projection_test "projection-keeps-findings-with-challenger-failure-${projection_forge}" \
     "${CHALLENGER_FAILURE_INPUT}" "${PROJECTION_EXPECTED}" "${projection_forge}"
-  for failure_severity in info medium high critical; do
+  for failure_severity in info low medium high critical; do
     DIMENSION_FAILURE_INPUT="$(jq --arg severity "${failure_severity}" '.findings += [{severity:$severity, category:"sub-agent-failure", file:"N/A", description:"dimension failed", actionable:false}]' <<< "${CHALLENGER_FAILURE_INPUT}")"
     run_no_projection_test "projection-blocks-${failure_severity}-failure-with-challenger-${projection_forge}" \
       "${DIMENSION_FAILURE_INPUT}" "${projection_forge}"
@@ -1882,6 +1913,20 @@ run_disposition_case() {
   encoded="${encoded% -->}"
   actual="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
 
+  # Empty check_jq means expect no projection (used when a finding must
+  # suppress the ledger, e.g. a non-challenger sub-agent-failure).
+  if [[ -z "${check_jq}" ]]; then
+    if [[ ${exit_code} -ne 0 || -n "${marker}" ]]; then
+      echo "FAIL: ${test_name} — expected no disposition projection"
+      echo "Actual: ${actual}"
+      cat "${TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+    return
+  fi
+
   if [[ ${exit_code} -ne 0 ]] || ! jq -e "${check_jq}" <<< "${actual}" >/dev/null 2>&1; then
     echo "FAIL: ${test_name} — disposition projection mismatch"
     echo "Actual: ${actual}"
@@ -1890,6 +1935,31 @@ run_disposition_case() {
     return
   fi
   echo "PASS: ${test_name}"
+}
+
+# run_disposition_case with a trusted live stamped thread for every open
+# anchored prior finding, at its recorded file and line. An id is only kept
+# where its stamped thread sits, never at its recorded coordinates alone, so
+# cases that expect a prior id to be kept need the thread.
+run_stamped_disposition_case() {
+  local saved="${MOCK_REVIEW_THREADS_JSON-}" had_saved=false
+  [[ -n "${MOCK_REVIEW_THREADS_JSON+x}" ]] && had_saved=true
+  MOCK_REVIEW_THREADS_JSON="$(jq -c '
+    . as $prior
+    | {data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false,endCursor:null},nodes:[
+        $prior.findings[]
+        | select(.id as $id | ([$prior.dispositions[]? | select(.status | IN("resolved_by_change", "dismissed_by_human")) | .id] | index($id)) == null)
+        | select(.file != null and .file != "N/A" and (.line | type) == "number")
+        | {id:"T-\(.id)",isResolved:false,isOutdated:false,viewerCanResolve:true,path:.file,line:.line,originalLine:.line,resolvedBy:null,
+           comments:{pageInfo:{hasNextPage:false},nodes:[{body:"<!-- finding:\(.id) --> Prior finding.",outdated:false,viewerDidAuthor:true}]}}
+      ]}}}}}' <<< "$3")"
+  export MOCK_REVIEW_THREADS_JSON
+  run_disposition_case "$@"
+  if [[ "${had_saved}" == true ]]; then
+    MOCK_REVIEW_THREADS_JSON="${saved}"
+  else
+    unset MOCK_REVIEW_THREADS_JSON
+  fi
 }
 
 # Re-review verdict gate tests. These exercise the full post-script and assert
@@ -1909,7 +1979,6 @@ run_rereview_gate_case() {
   local expected_exit="${12:-0}"
   local mock_files_fail="${13:-}"
   local result_check="${14:-}"
-  local ux_enabled="${15:-true}"
 
   local run_dir="${TMPDIR}/run-${test_name}"
   local prior_file="${run_dir}/prior.json"
@@ -1932,7 +2001,6 @@ run_rereview_gate_case() {
     export MOCK_PR_FILES="${mock_files}"
     export REVIEW_RISK_ASSESSMENT_ENABLED="${risk_enabled}"
     export REVIEW_RISK_VERDICT_THRESHOLD="${risk_threshold}"
-    export REVIEW_UX_ENABLED="${ux_enabled}"
     if [[ -n "${mock_files_fail}" ]]; then
       export MOCK_PR_FILES_FAIL="${mock_files_fail}"
     fi
@@ -2072,6 +2140,23 @@ run_rereview_gate_case "rereview-prior-medium-still-blocks" \
   '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_open1"}]}' \
   "request-changes" \
   "prior medium-or-higher findings remain open"
+
+# A prior blocking finding the threshold dropped is restored by the gate and
+# posted, so the #1800 disclosure must not report it as withheld.
+run_rereview_gate_case "rereview-restored-finding-not-reported-as-hidden" \
+  "$(jq -c '.findings=[{severity:"high",category:"auth-bypass",file:"old.go",line:1,description:"still broken",id:"f_open1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"auth-bypass","file":"old.go","line":1,"id":"f_open1"}]}' \
+  "request-changes" \
+  "Blocking prior findings:" \
+  "were not posted" \
+  "critical" \
+  "__inherit__" \
+  "src/main.go" \
+  "false" \
+  "4" \
+  "0" \
+  "" \
+  '[.findings[]? | select(.id == "f_open1")] | length == 1'
 
 run_rereview_gate_case "rereview-prior-advisory-medium-does-not-block" \
   "$(jq -c '.findings=[{severity:"low",category:"style",file:"new.go",line:1,description:"minor"}]' <<< "${BASE_REVIEW}")" \
@@ -2406,7 +2491,7 @@ run_rereview_gate_case "rereview-initial-approve-open-medium-survives-risk-gate"
   "4"
 
 # A supplied id is kept when it names an open prior finding.
-run_disposition_case "projection-keeps-supplied-finding-id" \
+run_stamped_disposition_case "projection-keeps-supplied-finding-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d",id:"f_keep1"}] | .dispositions=[{id:"f_keep1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_keep1"}]}' \
   '.findings[0].id == "f_keep1" and .findings[0].file == "internal/foo.go" and (.findings | length) == 1 and .dispositions == [{id: "f_keep1", status: "open"}]'
@@ -2416,7 +2501,7 @@ run_disposition_case "projection-mints-missing-finding-id" \
   "" \
   '(.findings | length) == 1 and (.findings[0].id | test("^f_[A-Za-z0-9]+$")) and .findings[0].file == "internal/foo.go" and .dispositions == null'
 
-run_disposition_case "projection-copies-prior-id" \
+run_stamped_disposition_case "projection-copies-prior-id" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:7,description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_same1"}]}' \
   '.findings[0].id == "f_same1" and (.findings | length) == 1 and .dispositions == [{id: "f_same1", status: "open"}]'
@@ -2448,7 +2533,7 @@ run_disposition_case "projection-resolved-without-evidence-stays-open" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_done1"}]}' \
   '([.findings[] | select(.id == "f_done1")] | length) == 1 and .dispositions[0].status == "open"'
 
-run_disposition_case "projection-reclassified-keeps-finding" \
+run_stamped_disposition_case "projection-reclassified-keeps-finding" \
   "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"README.md",line:3,description:"typo",id:"f_reclass1"}] | .dispositions=[{id:"f_reclass1",status:"reclassified",rationale:"This is a docs typo, not a logic error.",evidence:"README still says pytset"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"README.md","line":3,"id":"f_reclass1"}]}' \
   '.findings[0].id == "f_reclass1" and .findings[0].category == "incorrect-doc" and (.findings | length) == 1 and .dispositions == [{id: "f_reclass1", status: "reclassified"}]'
@@ -2515,7 +2600,7 @@ assert_last_result() {
 # A finding closed on an earlier review is carried forward unchanged, with
 # its anchor, and is not reported as unanswered.
 CLOSED_PRIOR='{"version":2,"findings":[{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_closed1"},{"severity":"high","category":"logic-error","file":"src/add.go","line":2,"id":"f_open1"}],"dispositions":[{"id":"f_closed1","status":"dismissed_by_human"},{"id":"f_open1","status":"open"}]}'
-run_disposition_case "projection-carries-closed-finding-forward" \
+run_stamped_disposition_case "projection-carries-closed-finding-forward" \
   "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"src/add.go",line:2,description:"d",id:"f_open1"}] | .dispositions=[{id:"f_open1",status:"open",rationale:"Still wrong.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   "${CLOSED_PRIOR}" \
   '([.findings[] | select(.id == "f_closed1" and .file == "src/foo.go" and .line == 4)] | length) == 1 and ([.dispositions[] | select(.id == "f_closed1" and .status == "dismissed_by_human")] | length) == 1 and (.findings | length) == 2'
@@ -2533,7 +2618,7 @@ assert_disposition_stdout "projection-closed-id-cannot-be-reused-or-reopened" \
 
 # Two rows that supply the same prior id cannot share one resolution: the
 # second gets its own id.
-run_disposition_case "projection-duplicate-supplied-id-is-reminted" \
+run_stamped_disposition_case "projection-duplicate-supplied-id-is-reminted" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"d",id:"f_same1"},{severity:"low",category:"logic-error",file:"b.go",line:1,description:"d",id:"f_same1"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":1,"id":"f_same1"}]}' \
   '(.findings | length) == 2 and ([.findings[].id] | unique | length) == 2 and ([.findings[] | select(.file == "a.go") | .id] == ["f_same1"])'
@@ -2545,12 +2630,13 @@ run_disposition_case "projection-foreign-supplied-id-is-reminted" \
   "" \
   '(.findings | length) == 1 and .findings[0].id != "f_invented1" and (.findings[0].id | test("^f_[A-Za-z0-9]+$"))'
 
-# A shifted line still copies the prior id when file and category identify
-# one prior finding, so an edit above the finding does not duplicate it.
-run_disposition_case "projection-copies-prior-id-across-line-shift" \
+# Being the only prior finding with that file and category is not enough to
+# copy an id: with no stamped thread to show where it moved, a row on
+# another line mints and the prior id stays open where it was.
+run_disposition_case "projection-line-shift-without-stamped-thread-mints" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"internal/foo.go",line:9,description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"internal/foo.go","line":7,"id":"f_shift1"}]}' \
-  '.findings == [{"severity":"low","category":"logic-error","file":"internal/foo.go","id":"f_shift1","line":9}] and .dispositions == [{id: "f_shift1", status: "open"}]'
+  '([.findings[] | select(.id == "f_shift1" and .line == 7)] | length) == 1 and ([.findings[] | select(.line == 9 and .id != "f_shift1" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_shift1", status: "open"}]'
 
 # A missing file is not a place: a PR-level finding must not inherit the
 # prior id of another PR-level finding in the same category.
@@ -2558,6 +2644,52 @@ run_disposition_case "projection-does-not-copy-id-across-unanchored-pr-level-fin
   "$(jq -c '.findings=[{severity:"high",category:"missing-authorization",file:"N/A",description:"d"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
   '([.findings[] | select(.id == "f_pr1")] | length) == 1 and ([.findings[] | select(.file == null and .id != "f_pr1" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+
+# A prior PR-level finding has no inline anchor, but an explicit supplied id
+# with the same file (none) and category still stays on its row: reclassifying
+# it from high to low must replace the old severity, not add a second finding.
+run_disposition_case "projection-pr-level-reclassified-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"missing-authorization",file:"N/A",description:"d",id:"f_pr1"}] | .dispositions=[{id:"f_pr1",status:"reclassified",rationale:"Only a hardening note.",evidence:"The endpoint is not reachable without auth"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .findings[0].severity == "low" and .dispositions == [{id: "f_pr1", status: "reclassified"}]'
+
+# The same for a file-level finding: the prior record has a file but no line.
+run_disposition_case "projection-file-level-reclassified-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"stale-doc",file:"docs/x.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Wording only.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"stale-doc","file":"docs/x.md","id":"f_file1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_file1" and .findings[0].severity == "low" and .dispositions == [{id: "f_file1", status: "reclassified"}]'
+
+# A supported reclassification may also change the category: the id stays on
+# its row, so the old finding is replaced instead of carried forward.
+run_disposition_case "projection-pr-level-reclassified-category-change-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"N/A",description:"d",id:"f_pr1"}] | .dispositions=[{id:"f_pr1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"The behaviour is correct; the comment is imprecise"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .findings[0].severity == "low" and .findings[0].category == "incorrect-doc" and .dispositions == [{id: "f_pr1", status: "reclassified"}]'
+
+run_disposition_case "projection-file-level-reclassified-category-change-keeps-id" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"docs/x.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"docs/x.md","id":"f_file1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_file1" and .findings[0].severity == "low" and .findings[0].category == "incorrect-doc" and .dispositions == [{id: "f_file1", status: "reclassified"}]'
+
+# A category change without a supported reclassification still mints, and a
+# reclassification of the id does not carry it to a row in another file.
+run_disposition_case "projection-file-level-category-change-other-file-mints" \
+  "$(jq -c '.findings=[{severity:"low",category:"incorrect-doc",file:"docs/y.md",description:"d",id:"f_file1"}] | .dispositions=[{id:"f_file1",status:"reclassified",rationale:"Only a doc wording issue.",evidence:"docs/x.md is prose"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"docs/x.md","id":"f_file1"}]}' \
+  '([.findings[] | select(.id == "f_file1")] | length) == 1 and ([.findings[] | select(.file == "docs/y.md" and .id != "f_file1")] | length) == 1 and (.findings | length) == 2'
+
+# A re-emitted open PR-level finding that supplies its id keeps it and does
+# not gain a duplicate on each re-review.
+run_disposition_case "projection-pr-level-reemitted-keeps-id" \
+  "$(jq -c '.findings=[{severity:"high",category:"missing-authorization",file:"N/A",description:"d",id:"f_pr1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '(.findings | length) == 1 and .findings[0].id == "f_pr1" and .dispositions == [{id: "f_pr1", status: "open"}]'
+
+# An unanchored prior id is not given to a row of another category or file.
+run_disposition_case "projection-pr-level-supplied-id-other-category-mints" \
+  "$(jq -c '.findings=[{severity:"high",category:"logic-error",file:"N/A",description:"d",id:"f_pr1"}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"findings":[{"severity":"high","category":"missing-authorization","file":null,"id":"f_pr1"}]}' \
+  '([.findings[] | select(.id == "f_pr1")] | length) == 1 and ([.findings[] | select(.category == "logic-error" and .id != "f_pr1")] | length) == 1 and (.findings | length) == 2'
 
 # A prior finding written before ids existed gets one and enters the ledger
 # instead of vanishing when the model does not mention it.
@@ -2806,15 +2938,21 @@ run_disposition_case "projection-dismissal-covers-less-severe-row" \
 assert_last_result "projection-dismissal-covers-less-severe-row" \
   '.findings == null and .action == "comment"'
 
-# Runner safety signals are never covered by a dismissal: they mint, stay in
-# the posted result, and the dismissed id stays closed.
-for safety_category in protected-path sub-agent-failure; do
-  run_disposition_case "projection-dismissal-does-not-cover-${safety_category}-row" \
-    "$(jq -c --arg c "${safety_category}" '.findings[0].category = $c' <<< "$(redismiss_review a.go low)")" \
-    "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
-  assert_last_result "projection-dismissal-does-not-cover-${safety_category}-row" \
-    "$(printf '(.findings | length) == 1 and .findings[0].category == "%s" and .findings[0].id != "f_old"' "${safety_category}")"
-done
+# Runner safety signals are never covered by a dismissal: they mint and stay
+# in the posted result. protected-path still writes a projection (dismissed
+# id stays closed). A non-challenger sub-agent-failure suppresses the
+# projection entirely (#1567).
+run_disposition_case "projection-dismissal-does-not-cover-protected-path-row" \
+  "$(jq -c '.findings[0].category = "protected-path"' <<< "$(redismiss_review a.go low)")" \
+  "${REDISMISS_PRIOR}" "${REDISMISS_KEPT}"
+assert_last_result "projection-dismissal-does-not-cover-protected-path-row" \
+  '(.findings | length) == 1 and .findings[0].category == "protected-path" and .findings[0].id != "f_old"'
+
+run_disposition_case "projection-dismissal-does-not-cover-sub-agent-failure-row" \
+  "$(jq -c '.findings[0].category = "sub-agent-failure"' <<< "$(redismiss_review a.go low)")" \
+  "${REDISMISS_PRIOR}" ""
+assert_last_result "projection-dismissal-does-not-cover-sub-agent-failure-row" \
+  '(.findings | length) == 1 and .findings[0].category == "sub-agent-failure" and .findings[0].id != "f_old"'
 
 # Suppression that empties the findings must not leave a blocking verdict:
 # reject and request-changes are downgraded to comment, never posted as-is.
@@ -2849,6 +2987,265 @@ assert_disposition_stdout "projection-dismissal-changed-line-mints" \
 unset MOCK_REVIEW_THREADS_JSON
 run_disposition_case "projection-dismissal-unverified-thread-mints" \
   "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
+
+# A stamped GitHub thread maps its finding id to where the finding sits now.
+# GitHub moves the thread's line with the code, so a finding that shifted
+# from line 202 to 218 keeps its id, and only one active entry remains.
+SHIFT_PRIOR='{"version":2,"findings":[{"severity":"low","category":"api-contract","file":"docs/p.md","line":202,"id":"f_old"}]}'
+SHIFT_AT_RECORDED='.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":202}] and .dispositions == [{id: "f_old", status: "open"}]'
+SHIFT_KEPT='.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":218}] and .dispositions == [{id: "f_old", status: "open"}]'
+shift_review() {
+  # $1 line of the current row
+  jq -c --argjson line "$1" '.findings=[{severity:"low",category:"api-contract",file:"docs/p.md",line:$line,description:"d"}]' <<< "${BASE_REVIEW}"
+}
+shift_minted() {
+  # $1 line of the current row; f_old stays open at its recorded line
+  printf '([.findings[] | select(.id == "f_old" and .line == 202)] | length) == 1 and ([.findings[] | select(.line == %s and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]' "$1"
+}
+two_threads() {
+  jq -sc '(.[0].data.repository.pullRequest.reviewThreads.nodes += .[1].data.repository.pullRequest.reviewThreads.nodes) | .[0]' <<< "$1$2"
+}
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-stamped-thread-line-shift-keeps-id" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+assert_last_result "projection-stamped-thread-line-shift-keeps-id" \
+  '(.findings | length) == 1 and .findings[0].id == "f_old" and .findings[0].line == 218'
+
+# Same file and category on a line the thread is not at: another finding.
+# It mints and f_old stays open at its recorded line.
+run_disposition_case "projection-stamped-thread-other-line-same-category-mints" \
+  "$(shift_review 240)" "${SHIFT_PRIOR}" "$(shift_minted 240)"
+
+# A supplied open id is only kept on a row in the file the id sits in. A row
+# in another file that supplies f_old is a different finding: it mints, and
+# f_old stays open where its stamped thread is.
+run_disposition_case "projection-supplied-id-in-other-file-mints" \
+  "$(jq -c '.findings[0].file = "docs/other.md" | .findings[0].id = "f_old"' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md")] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
+
+# The stamped thread check also needs the recorded category: a different
+# finding (another category) at the stamped thread's line that supplies f_old
+# mints, and f_old stays open at its recorded line.
+run_disposition_case "projection-supplied-id-at-stamped-thread-other-category-mints" \
+  "$(jq -c '.findings[0].id = "f_old" | .findings[0].category = "logic-error"' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .category == "api-contract" and .line == 202)] | length) == 1 and ([.findings[] | select(.category == "logic-error" and .line == 218 and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
+# A supported reclassified disposition for that id allows the category change
+# at the stamped thread, so the id stays on its row.
+run_disposition_case "projection-supplied-id-at-stamped-thread-reclassified-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old" | .findings[0].category = "logic-error" | .dispositions=[{id:"f_old",status:"reclassified",rationale:"It is a logic issue, not an API contract one.",evidence:"docs/p.md:218 describes behaviour"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"low","category":"logic-error","file":"docs/p.md","id":"f_old","line":218}] and .dispositions == [{id: "f_old", status: "reclassified"}]'
+
+# The same holds with no stamped thread: the recorded file is the check.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+unset MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-supplied-id-in-other-file-unmapped-mints" \
+  "$(jq -c '.findings[0].file = "docs/other.md" | .findings[0].id = "f_old"' <<< "$(shift_review 202)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md")] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# With no stamped thread the recorded coordinates are not an identity map for
+# an id-less row, which mints and leaves f_old open at its recorded place. A
+# row that supplies f_old at the recorded file and line keeps the id.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+unset MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-supplied-id-at-recorded-place-unmapped-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" \
+  "${SHIFT_PRIOR}" "${SHIFT_AT_RECORDED}"
+# A supplied id on a shifted line of the recorded file is another place: it mints.
+run_disposition_case "projection-supplied-id-at-other-line-unmapped-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" "$(shift_minted 218)"
+run_disposition_case "projection-id-less-row-at-recorded-place-unmapped-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+# The recorded-coordinate fallback also needs the recorded category: a
+# different finding (another category) at the exact recorded file and line
+# that supplies f_old mints, and f_old stays open.
+run_disposition_case "projection-supplied-id-at-recorded-place-other-category-unmapped-mints" \
+  "$(jq -c '.findings[0].id = "f_old" | .findings[0].category = "logic-error"' <<< "$(shift_review 202)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .category == "api-contract")] | length) == 1 and ([.findings[] | select(.category == "logic-error" and .line == 202 and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
+# A supported reclassified disposition for that id allows the category change
+# at the recorded place, so the id stays on its row.
+run_disposition_case "projection-supplied-id-at-recorded-place-reclassified-unmapped-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old" | .findings[0].category = "logic-error" | .dispositions=[{id:"f_old",status:"reclassified",rationale:"It is a logic issue, not an API contract one.",evidence:"docs/p.md:202 describes behaviour"}]' <<< "$(shift_review 202)")" \
+  "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"low","category":"logic-error","file":"docs/p.md","id":"f_old","line":202}] and .dispositions == [{id: "f_old", status: "reclassified"}]'
+
+# The stamped-thread fetch fails: nothing maps the id, so an id-less row at
+# the old coordinates mints and f_old stays open; a row supplying f_old at the
+# recorded file and line keeps it.
+MOCK_REVIEW_THREADS_FAIL=1
+export MOCK_REVIEW_THREADS_FAIL
+run_disposition_case "projection-thread-fetch-failure-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+assert_disposition_stdout "projection-thread-fetch-failure-at-old-coordinates-mints" \
+  "::warning::Review thread fetch failed or was truncated" "present"
+run_disposition_case "projection-thread-fetch-failure-supplied-id-at-old-coordinates-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "${SHIFT_AT_RECORDED}"
+unset MOCK_REVIEW_THREADS_FAIL
+
+# The thread list is truncated: a stamped thread at the old coordinates in
+# the partial result is not trusted, so an id-less row mints and f_old stays
+# open; a row supplying f_old at the recorded file and line keeps it.
+export MOCK_REVIEW_THREADS_RESPONSE='{"threads":[{"is_resolved":false,"path":"docs/p.md","line":202,"original_line":202,"comments_truncated":false,"comments":[{"author":"fullsend-ai-review","author_type":"Bot","body":"<!-- finding:f_old --> Contract issue."}]}],"truncated":true}'
+run_disposition_case "projection-truncated-threads-at-old-coordinates-mint" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_disposition_case "projection-truncated-threads-supplied-id-at-old-coordinates-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "${SHIFT_AT_RECORDED}"
+# The same response, not truncated, is trusted and keeps the id: the
+# truncation flag is what makes the difference.
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.truncated = false' <<< "${MOCK_REVIEW_THREADS_RESPONSE}")"
+export MOCK_REVIEW_THREADS_RESPONSE
+run_disposition_case "projection-untruncated-threads-at-old-coordinates-keep-id" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":202}] and .dispositions == [{id: "f_old", status: "open"}]'
+# A thread with truncated comments (top-level truncated:false) makes the map
+# untrustworthy: a stamp hidden past the first comment page could make an id
+# look unambiguous. Nothing is mapped, so an id-less row mints and f_old stays
+# open; a row supplying f_old at the recorded file and line keeps it.
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0].comments_truncated = true' <<< "${MOCK_REVIEW_THREADS_RESPONSE}")"
+export MOCK_REVIEW_THREADS_RESPONSE
+run_disposition_case "projection-comments-truncated-thread-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_disposition_case "projection-comments-truncated-thread-supplied-id-at-old-coordinates-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "${SHIFT_AT_RECORDED}"
+assert_disposition_stdout "projection-comments-truncated-thread-supplied-id-at-old-coordinates-keeps-id" \
+  "::warning::Review thread fetch failed or was truncated" "present"
+unset MOCK_REVIEW_THREADS_RESPONSE
+
+# No trusted stamp: a stamp in a comment the review agent did not write, or
+# a thread with no stamp at all, maps nothing at the old coordinates: an
+# id-less row mints, and a row supplying f_old there keeps it.
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 202 "<!-- finding:f_old --> Same thing." false false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-untrusted-stamp-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_disposition_case "projection-untrusted-stamp-supplied-id-at-old-coordinates-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "${SHIFT_AT_RECORDED}"
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 202 "Contract issue." false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-unstamped-thread-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# A supplied id at its stamped thread's file and line is kept.
+run_disposition_case "projection-supplied-id-at-stamped-place-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+
+# A RIGHT-side stamped thread is a usable place: the shifted row matches.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0].diffSide = "RIGHT"' <<< "${SAVED_THREADS_JSON}")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-right-side-stamped-thread-keeps-id" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+run_disposition_case "projection-right-side-stamped-thread-supplied-id-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 218)")" "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+
+# A LEFT-side stamped thread stays in the map but has no usable place, so it
+# mints, even when the row supplies f_old at the exact recorded coordinates
+# (no fall-through to the recorded-coordinate fallback).
+MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0].diffSide = "LEFT" | .data.repository.pullRequest.reviewThreads.nodes[0].line = 202' <<< "${SAVED_THREADS_JSON}")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-left-only-stamped-thread-supplied-id-at-recorded-coordinates-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_disposition_case "projection-left-only-stamped-thread-id-less-row-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# A supplied id on another line of the same file (including one line off) is
+# not provably the same finding: it mints and f_old stays open at its place.
+run_disposition_case "projection-supplied-id-same-file-wrong-line-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 240)")" \
+  "${SHIFT_PRIOR}" "$(shift_minted 240)"
+run_disposition_case "projection-supplied-id-same-file-off-by-line-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 219)")" \
+  "${SHIFT_PRIOR}" "$(shift_minted 219)"
+
+# Reservation: a later row supplying f_old from another file cannot reserve
+# it, so the correctly anchored id-less row keeps f_old and the later row
+# mints; no duplicate of the still-present finding is added.
+run_disposition_case "projection-supplied-id-other-file-does-not-reserve" \
+  "$(jq -c '.findings += [{severity:"low",category:"api-contract",file:"docs/other.md",line:5,id:"f_old",description:"d"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '([.findings[] | select(.id == "f_old" and .file == "docs/p.md" and .line == 218)] | length) == 1 and ([.findings[] | select(.file == "docs/other.md" and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2 and .dispositions == [{id: "f_old", status: "open"}]'
+
+# An id stamped on several distinct live locations has no reliable place: a
+# same-category row at either location, with or without the supplied id,
+# mints instead of inheriting it, and f_old stays open.
+SAVED_THREADS_JSON="${MOCK_REVIEW_THREADS_JSON}"
+MOCK_REVIEW_THREADS_JSON="$(two_threads "$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)" "$(thread_json "" docs/p.md 240 "<!-- finding:f_old --> Contract issue again." false)")"
+export MOCK_REVIEW_THREADS_JSON
+AMBIGUOUS_MINTED='([.findings[] | select(.id == "f_old")] | length) == 1 and (.findings | length) == 2 and ([.findings[] | select(.id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and .dispositions == [{id: "f_old", status: "open"}]'
+run_disposition_case "projection-ambiguous-stamped-threads-mint" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "${AMBIGUOUS_MINTED}"
+run_disposition_case "projection-ambiguous-stamped-threads-supplied-id-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 240)")" "${SHIFT_PRIOR}" "${AMBIGUOUS_MINTED}"
+MOCK_REVIEW_THREADS_JSON="${SAVED_THREADS_JSON}"
+export MOCK_REVIEW_THREADS_JSON
+
+# The model closing a still-present concern with unrelated evidence: the row
+# at the stamped thread keeps f_old, which stays open, and nothing mints.
+run_disposition_case "projection-stamped-thread-resolve-unrelated-evidence-stays-open" \
+  "$(jq -c '.dispositions=[{id:"f_old",status:"resolved_by_change",rationale:"Addressed.",evidence:"Token example updated"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" "${SHIFT_KEPT}"
+assert_disposition_stdout "projection-stamped-thread-resolve-unrelated-evidence-stays-open" \
+  "::warning::Prior finding id(s) f_old marked resolved_by_change are still reported at their review thread; recorded as open" "present"
+
+# A reclassification at the shifted line stays on f_old.
+run_disposition_case "projection-stamped-thread-reclassified-keeps-id" \
+  "$(jq -c '.findings[0].severity = "info" | .dispositions=[{id:"f_old",status:"reclassified",rationale:"Only a wording issue.",evidence:"docs/p.md:218 is prose"}]' <<< "$(shift_review 218)")" \
+  "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"info","category":"api-contract","file":"docs/p.md","id":"f_old","line":218}] and .dispositions == [{id: "f_old", status: "reclassified"}]'
+
+# Every stamped thread is outdated: GitHub cannot say where the finding is,
+# so even a row at the recorded line mints.
+MOCK_REVIEW_THREADS_JSON="$(jq -c '.data.repository.pullRequest.reviewThreads.nodes[0] |= (.line = null | .isOutdated = true)' <<< "$(thread_json "" docs/p.md 202 "<!-- finding:f_old --> Contract issue." false)")"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-outdated-stamped-thread-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" '([.findings[] | select(.id == "f_old")] | length) == 1 and ([.findings[] | select(.line == 202 and .id != "f_old" and (.id | test("^f_[A-Za-z0-9]+$")))] | length) == 1 and (.findings | length) == 2'
+
+# The same when the model supplies f_old at the recorded line.
+run_disposition_case "projection-outdated-stamped-thread-supplied-id-mints" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+
+# A stamped file-level thread (fullsend posts a finding whose line is outside
+# the diff hunks this way) has no line and never had one, so it says nothing
+# about where the finding sits: it maps nothing and the recorded-coordinate
+# fallback applies. A supplied id at the recorded file, line and category
+# keeps the id; an id-less row still mints.
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md null "<!-- finding:f_old --> Contract issue." false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-file-level-stamped-thread-supplied-id-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" \
+  '.findings == [{"severity":"low","category":"api-contract","file":"docs/p.md","id":"f_old","line":202}] and .dispositions == [{id: "f_old", status: "open"}]'
+run_disposition_case "projection-file-level-stamped-thread-id-less-row-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+
+# A stamp in a comment the review agent did not write maps nothing.
+MOCK_REVIEW_THREADS_JSON="$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Same thing." false false)"
+export MOCK_REVIEW_THREADS_JSON
+run_disposition_case "projection-forged-thread-stamp-mints" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "$(shift_minted 218)"
+
+# A resolve and a human dismissal of other findings stay on their own ids
+# while the shifted finding keeps f_old.
+MOCK_REVIEW_THREADS_JSON="$(two_threads "$(thread_json "" docs/p.md 218 "<!-- finding:f_old --> Contract issue." false)" "$(thread_json alice src/foo.go 4 "<!-- finding:f_human1 --> Naming nit.")")"
+export MOCK_REVIEW_THREADS_JSON
+export MOCK_PR_AUTHOR="prauthor"
+run_disposition_case "projection-stamped-thread-keeps-other-dispositions" \
+  "$(jq -c '.dispositions=[{id:"f_done1",status:"resolved_by_change",rationale:"Fixed.",evidence:"src/add.go now returns a + b"},{id:"f_human1",status:"dismissed_by_human",rationale:"Reviewer resolved it.",evidence:"alice resolved the src/foo.go:4 thread"}]' <<< "$(shift_review 218)")" \
+  '{"version":2,"findings":[{"severity":"low","category":"api-contract","file":"docs/p.md","line":202,"id":"f_old"},{"severity":"low","category":"api-contract","file":"docs/p.md","line":50,"id":"f_done1"},{"severity":"low","category":"naming-convention","file":"src/foo.go","line":4,"id":"f_human1"}]}' \
+  '([.findings[] | select(.id == "f_old" and .line == 218)] | length) == 1 and (.findings | length) == 3 and (.dispositions | sort_by(.id)) == [{id: "f_done1", status: "resolved_by_change"}, {id: "f_human1", status: "dismissed_by_human"}, {id: "f_old", status: "open"}]'
 unset MOCK_REVIEW_THREADS_JSON MOCK_PR_AUTHOR
 
 # GitLab dismissals use the authenticated review-token identity. A normal
@@ -2903,6 +3300,22 @@ MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.path = "a.go" | .line = 
 export MOCK_REVIEW_THREADS_RESPONSE
 run_gitlab_disposition_case "gitlab-dismissal-category-change-mints" \
   "$(redismiss_review a.go low)" "${REDISMISS_PRIOR}" "$(redismiss_minted a.go)"
+
+# GitLab cannot map a stamped thread to where its finding moved, so a row on
+# a shifted line mints, fail closed, and the prior id stays open.
+MOCK_REVIEW_THREADS_RESPONSE="$(jq -c '.threads[0] |= (.is_resolved = false | .path = "docs/p.md" | .line = 202 | .comments[0].body = "<!-- finding:f_old --> Contract issue.")' <<< "${GITLAB_HUMAN_DISMISSAL_RESPONSE}")"
+export MOCK_REVIEW_THREADS_RESPONSE
+run_gitlab_disposition_case "gitlab-unmappable-thread-line-shift-mints" \
+  "$(shift_review 218)" "${SHIFT_PRIOR}" "$(shift_minted 218)"
+
+# GitLab keeps the line a note was written on, which is the old coordinates
+# here. An id-less row there still mints (recorded coordinates are not an
+# identity map, and the prior id stays open); a row supplying the prior id at
+# the recorded file and line keeps it.
+run_gitlab_disposition_case "gitlab-thread-at-old-coordinates-mints" \
+  "$(shift_review 202)" "${SHIFT_PRIOR}" "$(shift_minted 202)"
+run_gitlab_disposition_case "gitlab-thread-at-old-coordinates-supplied-id-keeps-id" \
+  "$(jq -c '.findings[0].id = "f_old"' <<< "$(shift_review 202)")" "${SHIFT_PRIOR}" "${SHIFT_AT_RECORDED}"
 unset MOCK_REVIEW_THREADS_RESPONSE MOCK_GITLAB_REVIEW_ACTOR
 
 # A reclassified disposition with no current finding carrying that id is
@@ -2920,7 +3333,7 @@ assert_disposition_stdout "approve-withheld-for-reclassified-without-finding" \
 
 # With the finding re-emitted at its new severity the reclassification
 # holds and the approval stands.
-run_disposition_case "approve-kept-for-reclassified-with-finding" \
+run_stamped_disposition_case "approve-kept-for-reclassified-with-finding" \
   "$(jq -c '.action="approve" | .findings=[{severity:"info",category:"incorrect-doc",file:"old.go",line:3,description:"docs",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"reclassified",rationale:"Only a docs problem.",evidence:"old.go:3 is documentation"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"info","category":"incorrect-doc","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "reclassified"}]'
@@ -2936,26 +3349,26 @@ run_disposition_case "projection-supplied-resolving-id-is-reminted" \
 
 # Re-emitting an open prior high finding at a lower severity, without a
 # reclassification, neither downgrades the ledger nor clears the guard.
-run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
+run_stamped_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
   "$(jq -c '.action="approve" | .findings=[{severity:"info",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
 assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-lower" \
   '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
-# Re-emitting an open prior high finding at high still leaves it open.
-# open is not a resolution, so approval is withheld.
-run_disposition_case "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
-  "$(jq -c '.action="approve" | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
-  '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
+# A dependency declaration between review rounds cannot clear the first
+# round's high finding. Keeping its id open at the original severity blocks approval.
+run_stamped_disposition_case "dependency-scoped-prior-high-stays-blocking" \
+  "$(jq -c '.action="approve" | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"d",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Code matches approved dependency #5 but remains unfixed.",evidence:"Dependency #5 head a1."}]' <<< "${BASE_REVIEW}")" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
-assert_last_result "approve-withheld-for-open-high-prior-finding-re-emitted-high" \
+assert_last_result "dependency-scoped-prior-high-stays-blocking" \
   '.action == "request-changes" and (.body | contains("Approval withheld")) and (.body | contains("f_hi1") | not)'
 
 # Finding ids never reach the posted text, whatever the model wrote: known
 # ids and minted-shaped ids are stripped from the body and from each
 # finding's description and remediation, while the ledger marker keeps them.
-run_disposition_case "posted-text-drops-finding-ids" \
+run_stamped_disposition_case "posted-text-drops-finding-ids" \
   "$(jq -c '.action="request-changes" | .body="Review\n\n### Earlier findings\n- f_hi1 (old.go:3) resolved_by_change: returns a + b\n- f_0123456789abcdef still open." | .findings=[{severity:"high",category:"logic-error",file:"old.go",line:3,description:"Same root cause as f_hi1; see f_hi1 .",remediation:"Fix f_hi1 by checking nil.",id:"f_hi1"}] | .dispositions=[{id:"f_hi1",status:"open",rationale:"Still present.",evidence:""}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"old.go","line":3,"id":"f_hi1"}]}' \
   '.findings == [{"severity":"high","category":"logic-error","file":"old.go","id":"f_hi1","line":3}] and .dispositions == [{id: "f_hi1", status: "open"}]'
@@ -2986,7 +3399,7 @@ assert_last_result "posted-text-keeps-id-free-whitespace" \
 assert_disposition_stdout "posted-text-keeps-id-free-whitespace" \
   "::warning::Removed finding id(s)" "absent"
 
-run_disposition_case "posted-text-scrub-preserves-nearby-literals" \
+run_stamped_disposition_case "posted-text-scrub-preserves-nearby-literals" \
   "$(jq -c '.findings=[{severity:"low",category:"logic-error",file:"a.go",line:1,description:"Same as f_hi1 in value == \"a  b\"; print(\"hello , world\")",id:"f_hi1"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"low","category":"logic-error","file":"a.go","line":1,"id":"f_hi1"}]}' \
   '(.findings | length) == 1 and (.findings[0].id == "f_hi1")'
@@ -2994,7 +3407,7 @@ assert_last_result "posted-text-scrub-preserves-nearby-literals" \
   '.findings[0].id == "f_hi1" and .findings[0].description == "Same as  in value == \"a  b\"; print(\"hello , world\")"'
 
 # Markdown wrappers around a stripped id (backticks, bold) must not remain.
-run_disposition_case "posted-text-drops-markdown-wrapped-ids" \
+run_stamped_disposition_case "posted-text-drops-markdown-wrapped-ids" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3009,7 +3422,7 @@ assert_disposition_stdout "posted-text-drops-markdown-wrapped-ids" \
 
 # Old Earlier findings shape (- id: disposition), bold+colon, parentheses,
 # and an id at the start of a later line. List marker must not glue to ":".
-run_disposition_case "posted-text-drops-old-earlier-findings-shape" \
+run_stamped_disposition_case "posted-text-drops-old-earlier-findings-shape" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3038,7 +3451,7 @@ assert_disposition_stdout "posted-text-drops-reminted-foreign-id" \
 
 # A struck-through id must go whole: a leftover "~~~~" at the start of a
 # line opens a code fence that swallows the rest of the review (#1717).
-run_disposition_case "posted-text-drops-struck-through-ids" \
+run_stamped_disposition_case "posted-text-drops-struck-through-ids" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3054,7 +3467,7 @@ assert_disposition_stdout "posted-text-drops-struck-through-ids" \
 
 # The id run is atomic, so a known id that prefixes another (f_hi1, f_hi10)
 # must not win the match and leave "~~~~" or "****" behind (#1717).
-run_disposition_case "posted-text-drops-prefix-overlapping-wrapped-ids" \
+run_stamped_disposition_case "posted-text-drops-prefix-overlapping-wrapped-ids" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ~~f_hi10~~ gone
@@ -3067,7 +3480,7 @@ assert_last_result "posted-text-drops-prefix-overlapping-wrapped-ids" \
 # Ordered and "+" list items, link-wrapped ids, headings, a line that starts
 # with "id:", adjacent ids and _id_ leave no orphaned ":" or "," and no
 # fused words; a run of adjacent ids leaves one hole (#1717).
-run_disposition_case "posted-text-drops-list-heading-and-adjacent-ids" \
+run_stamped_disposition_case "posted-text-drops-list-heading-and-adjacent-ids" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3110,7 +3523,7 @@ assert_last_result "posted-text-survives-many-minted-ids-with-colon" \
 # A wrapper wraps the whole id run, so removing the run must not leave an
 # empty wrapper: "~~~~" opens a code fence, "****" is a rule, "``" is an
 # empty code span. __id__ is scrubbed too, not just warned about (#1717).
-run_disposition_case "posted-text-drops-wrapped-id-runs" \
+run_stamped_disposition_case "posted-text-drops-wrapped-id-runs" \
   "$(jq -c --arg body "$(printf '%s' 'Review
 
 ### Earlier findings
@@ -3141,7 +3554,7 @@ assert_disposition_stdout "posted-text-warns-on-double-underscore-id" \
 
 # Reclassifying a high finding to info must persist the new severity even
 # when the info row is below the posted-review threshold.
-run_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \
+run_stamped_disposition_case "projection-reclassified-below-threshold-keeps-new-severity" \
   "$(jq -c '.findings=[{severity:"info",category:"incorrect-doc",file:"README.md",line:3,description:"typo",id:"f_reclass1"}] | .dispositions=[{id:"f_reclass1",status:"reclassified",rationale:"This is a docs typo, not a logic error.",evidence:"README still says pytset"}]' <<< "${BASE_REVIEW}")" \
   '{"version":2,"findings":[{"severity":"high","category":"logic-error","file":"README.md","line":3,"id":"f_reclass1"}]}' \
   '.findings == [{"severity":"info","category":"incorrect-doc","file":"README.md","id":"f_reclass1","line":3}] and .dispositions == [{id: "f_reclass1", status: "reclassified"}]'
@@ -3862,6 +4275,44 @@ run_label_test "risk-label-high-applied" \
 run_label_test "risk-comment-posted" \
   "${RISK_HIGH_RESULT}" \
   "fullsend post-comment"
+
+# The risk comment body must not carry its own marker: `fullsend
+# post-comment --marker` prepends it, and a second copy inside the body
+# is HTML-escaped by the CLI and renders as visible text (#1885).
+run_risk_comment_body_test() {
+  local test_name="risk-comment-body-has-no-marker"
+  local marker="<!-- fullsend:risk-assessment -->"
+  rm -f "${TMPDIR}/last-post-comment.txt"
+
+  run_label_test "${test_name}-marker-flag" \
+    "${RISK_HIGH_RESULT}" \
+    "--marker ${marker}"
+
+  if [[ ! -f "${TMPDIR}/last-post-comment.txt" ]]; then
+    echo "FAIL: ${test_name} — risk comment body was not captured"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local body
+  body="$(cat "${TMPDIR}/last-post-comment.txt")"
+  if grep -qF -- "fullsend:risk-assessment" <<< "${body}"; then
+    echo "FAIL: ${test_name} — body contains the risk-assessment marker"
+    echo "${body}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -qF -- "**Risk Assessment: high (4/5)**" <<< "${body}" \
+    || ! grep -qF -- "Auth middleware refactor." <<< "${body}"; then
+    echo "FAIL: ${test_name} — body missing risk header or rationale"
+    echo "${body}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+run_risk_comment_body_test
 
 # Stdout should mention risk label
 run_label_test_stdout "risk-label-log-message" \
@@ -4969,28 +5420,39 @@ run_risk_verdict_tier2_body_test() {
 run_risk_verdict_tier2_body_test
 
 # ---------------------------------------------------------------------------
-# UX feature-flag tests. The post-script is the executable enforcement point;
-# the sandbox skill uses the same env value to avoid dispatching UX at all.
+# Persona manifest tests. The runner writes FULLSEND_PERSONAS_FILE listing the
+# pr-review personas it staged. post-review drops a new finding only when the
+# manifest is a valid version 1 manifest, the finding names a dimension, that
+# dimension is not staged, its severity is below high, it carries no open prior
+# id, and its category is not an exempt orchestrator category.
 # ---------------------------------------------------------------------------
-run_ux_flag_test() {
+PERSONA_MANIFEST='{"version":1,"personas":[{"name":"correctness","skill":"pr-review","path":"sub-agents/correctness.md","origin":"upstream","sha256":"00","role":"dimension","always":true},{"name":"style-conventions","skill":"pr-review","path":"sub-agents/style-conventions.md","origin":"upstream","sha256":"00","role":"dimension","always":true}],"removed":[{"skill":"pr-review","path":"sub-agents/user-experience.md"}]}'
+PERSONA_HEAD='"pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"'
+PERSONA_UX_FINDING='{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue","dimension":"user-experience"}'
+PERSONA_LOGIC_FINDING='{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue","dimension":"correctness"}'
+
+# Arguments: name, manifest ("none" leaves FULLSEND_PERSONAS_FILE unset,
+# anything else is written to the file verbatim), agent result JSON, prior
+# projection JSON ("" for a first review), expected action, a jq check on the
+# posted result, and an optional jq check on the decoded ledger projection.
+run_persona_drop_test() {
   local test_name="$1"
-  local flag_value="$2"
-  local expected_ux_count="$3"
-  local expected_logic_count="$4"
+  local manifest="$2"
+  local json_content="$3"
+  local prior_json="$4"
   local expected_action="$5"
-  local expected_exit="${6:-0}"
-  local json_content="${7:-}"
-  local expected_ledger_action="${8:-}"
-  local run_dir="${TMPDIR}/run-ux-${test_name}"
+  local result_check="$6"
+  local projection_check="${7:-}"
+  local run_dir="${TMPDIR}/run-persona-${test_name}"
   local exit_code=0
 
   mkdir -p "${run_dir}/iteration-1/output"
-  if [[ -n "${json_content}" ]]; then
-    printf '%s' "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
-  else
-    cat > "${run_dir}/iteration-1/output/agent-result.json" <<'EOF'
-{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"medium","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}
-EOF
+  printf '%s' "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  if [[ "${manifest}" != "none" ]]; then
+    printf '%s' "${manifest}" > "${run_dir}/personas.json"
+  fi
+  if [[ -n "${prior_json}" ]]; then
+    printf '%s' "${prior_json}" > "${run_dir}/prior.json"
   fi
   rm -f "${TMPDIR}/last-result.json"
 
@@ -5002,172 +5464,230 @@ EOF
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_URL="https://github.com/test-org/test-repo/pull/99"
     export FULLSEND_FORGE="github"
-    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
-    export REVIEW_PROTECTED_PATHS=""
-    if [[ "${flag_value}" == "unset" ]]; then
-      unset REVIEW_UX_ENABLED
-    else
-      export REVIEW_UX_ENABLED="${flag_value}"
-    fi
-    bash "${POST_SCRIPT}"
-  ) > "${TMPDIR}/stdout-ux-${test_name}.log" 2>&1 || exit_code=$?
-
-  if [[ "${exit_code}" -ne "${expected_exit}" ]]; then
-    echo "FAIL: ${test_name} — expected exit ${expected_exit}, got ${exit_code}"
-    cat "${TMPDIR}/stdout-ux-${test_name}.log"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if [[ "${expected_exit}" -ne 0 ]]; then
-    if [[ ! -f "${TMPDIR}/last-result.json" ]] || \
-       ! jq -e '.action == "failure" and .reason == "tool-failure"' "${TMPDIR}/last-result.json" >/dev/null 2>&1; then
-      echo "FAIL: ${test_name} — expected a posted tool-failure result"
-      [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
-      FAILURES=$((FAILURES + 1))
-      return
-    fi
-    echo "PASS: ${test_name}"
-    return
-  fi
-
-  local actual_ux_count actual_logic_count actual_action
-  actual_ux_count="$(jq '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length' "${TMPDIR}/last-result.json")"
-  actual_logic_count="$(jq '[.findings[]? | select(.category == "logic-error")] | length' "${TMPDIR}/last-result.json")"
-  actual_action="$(jq -r '.action' "${TMPDIR}/last-result.json")"
-  if [[ "${actual_ux_count}" != "${expected_ux_count}" || "${actual_logic_count}" != "${expected_logic_count}" || "${actual_action}" != "${expected_action}" ]]; then
-    echo "FAIL: ${test_name} — UX flag filtering mismatch"
-    jq . "${TMPDIR}/last-result.json"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  if [[ -n "${expected_ledger_action}" ]]; then
-    local marker encoded actual_ledger_action
-    marker="$(jq -r '.body // ""' "${TMPDIR}/last-result.json" | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
-    encoded="${marker#<!-- fullsend:review-findings-v2:}"
-    encoded="${encoded% -->}"
-    actual_ledger_action="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -r '.action // empty' 2>/dev/null || true)"
-    if [[ "${actual_ledger_action}" != "${expected_ledger_action}" ]]; then
-      echo "FAIL: ${test_name} — expected ledger action ${expected_ledger_action}, got ${actual_ledger_action}"
-      [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
-      FAILURES=$((FAILURES + 1))
-      return
-    fi
-  fi
-  echo "PASS: ${test_name}"
-}
-
-run_ux_flag_test "default-on" "unset" "1" "1" "request-changes"
-run_ux_flag_test "explicit-on" "true" "1" "1" "request-changes"
-run_ux_flag_test "explicit-off" "false" "0" "1" "request-changes"
-run_ux_flag_test "invalid-value" "yes" "0" "0" "" 1
-
-# Opting out must not change a blocking verdict when no UX finding was
-# removed, or when the remaining non-UX finding still justifies it.
-run_ux_flag_test "opt-out-no-ux-request-changes-low" "false" "0" "1" "request-changes" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
-run_ux_flag_test "opt-out-no-ux-reject-low" "false" "0" "1" "reject" 0 \
-  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
-run_ux_flag_test "opt-out-no-ux-request-changes-empty" "false" "0" "0" "request-changes" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[]}'
-run_ux_flag_test "opt-out-actionable-low-remains-blocking" "false" "0" "1" "request-changes" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Actionable logic issue","actionable":true}]}'
-run_ux_flag_test "opt-out-ux-only-request-changes-becomes-comment" "false" "0" "0" "comment" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"}]}'
-run_ux_flag_test "opt-out-ux-only-reject-becomes-comment" "false" "0" "0" "comment" 0 \
-  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"}]}'
-run_ux_flag_test "opt-out-ux-reject-with-low-logic-becomes-comment" "false" "0" "1" "comment" 0 \
-  '{"action":"reject","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"critical","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}' \
-  comment
-
-# Opting out excludes prior UX rows from blocking calculations without
-# deleting their open/closed history from the next ledger projection.
-run_ux_optout_ledger_history_test() {
-  local test_name="ux-optout-preserves-ledger-history"
-  local run_dir="${TMPDIR}/run-${test_name}"
-  local prior_file="${run_dir}/prior.json"
-  local exit_code=0
-  local marker encoded
-  mkdir -p "${run_dir}/iteration-1/output"
-  printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
-    > "${run_dir}/iteration-1/output/agent-result.json"
-  printf '%s' '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxopen"},{"severity":"low","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":20,"id":"f_uxdismissed"}],"dispositions":[{"id":"f_uxopen","status":"open"},{"id":"f_uxdismissed","status":"dismissed_by_human"}]}' \
-    > "${prior_file}"
-  rm -f "${TMPDIR}/last-result.json"
-
-  (
-    cd "${run_dir}"
-    export PATH="${MOCK_BIN}:${PATH}"
-    export REVIEW_TOKEN="fake-token"
-    export PR_NUMBER="99"
-    export REPO_FULL_NAME="test-org/test-repo"
-    export PR_URL="https://github.com/test-org/test-repo/pull/99"
-    export FULLSEND_FORGE="github"
-    export REVIEW_RISK_ASSESSMENT_ENABLED="false"
     export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
     export REVIEW_PROTECTED_PATHS=""
     export MOCK_PR_FILES="src/main.go"
-    export REVIEW_UX_ENABLED="false"
-    export PRIOR_REVIEW_FILE="${prior_file}"
+    if [[ "${manifest}" != "none" ]]; then
+      export FULLSEND_PERSONAS_FILE="${run_dir}/personas.json"
+    else
+      unset FULLSEND_PERSONAS_FILE
+    fi
+    if [[ -n "${prior_json}" ]]; then
+      export PRIOR_REVIEW_FILE="${run_dir}/prior.json"
+    fi
     bash "${POST_SCRIPT}"
-  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+  ) > "${TMPDIR}/stdout-persona-${test_name}.log" 2>&1 || exit_code=$?
 
+  local actual_action marker encoded projection
+  actual_action="$(jq -r '.action // empty' "${TMPDIR}/last-result.json" 2>/dev/null || true)"
   marker="$(jq -r '.body // ""' "${TMPDIR}/last-result.json" 2>/dev/null | grep -E '^<!-- fullsend:review-findings-v2:[A-Za-z0-9+/=]+ -->$' | tail -1 || true)"
   encoded="${marker#<!-- fullsend:review-findings-v2:}"
   encoded="${encoded% -->}"
-  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action // empty' "${TMPDIR}/last-result.json" 2>/dev/null || true)" != "approve" ]] || \
-     ! printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -e '.findings | map(select(.id == "f_uxopen" or .id == "f_uxdismissed")) | length == 2' >/dev/null 2>&1 || \
-     ! printf '%s' "${encoded}" | base64 --decode 2>/dev/null | jq -e '.dispositions | any(.[]; .id == "f_uxdismissed" and .status == "dismissed_by_human")' >/dev/null 2>&1; then
-    echo "FAIL: ${test_name} — opted-out UX history was dropped or remained blocking"
-    cat "${TMPDIR}/stdout-${test_name}.log"
+  projection="$(printf '%s' "${encoded}" | base64 --decode 2>/dev/null || true)"
+  if [[ ${exit_code} -ne 0 || "${actual_action}" != "${expected_action}" ]] || \
+     ! jq -e "${result_check}" "${TMPDIR}/last-result.json" >/dev/null 2>&1 || \
+     { [[ -n "${projection_check}" ]] && ! jq -e "${projection_check}" <<< "${projection}" >/dev/null 2>&1; }; then
+    echo "FAIL: ${test_name} — persona manifest drop mismatch"
+    echo "  expected action: '${expected_action}'"
+    echo "  actual action:   '${actual_action}'"
+    echo "  projection:      ${projection}"
+    cat "${TMPDIR}/stdout-persona-${test_name}.log"
     [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
     FAILURES=$((FAILURES + 1))
     return
   fi
   echo "PASS: ${test_name}"
-
-  # Re-enabling UX must make the retained open UX finding blocking again.
-  local reenabled_prior="${run_dir}/prior-reenabled.json"
-  printf '%s' "$(printf '%s' "${encoded}" | base64 --decode)" > "${reenabled_prior}"
-  mkdir -p "${run_dir}/iteration-2/output"
-  printf '%s' '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
-    > "${run_dir}/iteration-2/output/agent-result.json"
-  rm -f "${TMPDIR}/last-result.json"
-  exit_code=0
-  (
-    cd "${run_dir}"
-    export PATH="${MOCK_BIN}:${PATH}"
-    export REVIEW_TOKEN="fake-token"
-    export PR_NUMBER="99"
-    export REPO_FULL_NAME="test-org/test-repo"
-    export PR_URL="https://github.com/test-org/test-repo/pull/99"
-    export FULLSEND_FORGE="github"
-    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
-    export REVIEW_PROTECTED_PATHS=""
-    export MOCK_PR_FILES="src/main.go"
-    export REVIEW_UX_ENABLED="true"
-    export PRIOR_REVIEW_FILE="${reenabled_prior}"
-    bash "${POST_SCRIPT}"
-  ) > "${TMPDIR}/stdout-${test_name}-reenabled.log" 2>&1 || exit_code=$?
-  if [[ ${exit_code} -ne 0 ]] || [[ "$(jq -r '.action // empty' "${TMPDIR}/last-result.json" 2>/dev/null || true)" != "request-changes" ]] || \
-     ! jq -r '.body // ""' "${TMPDIR}/last-result.json" 2>/dev/null | grep -qF "Approval withheld"; then
-    echo "FAIL: ${test_name} — re-enabled UX did not restore the retained blocker"
-    cat "${TMPDIR}/stdout-${test_name}-reenabled.log"
-    [[ -f "${TMPDIR}/last-result.json" ]] && jq . "${TMPDIR}/last-result.json"
-    FAILURES=$((FAILURES + 1))
-    return
-  fi
-  echo "PASS: ${test_name} (re-enabled blocker)"
 }
-run_ux_optout_ledger_history_test
 
-run_rereview_gate_case "ux-optout-clears-prior-blocker" \
-  '{"action":"approve","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review"}' \
-  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_ux1"}]}' \
-  "approve" "Review" "No disposition recorded" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
-  '[.findings[]? | select(.category == "uxd-evaluate-code-heuristics")] | length == 0' "false"
+run_persona_drop_test "no-manifest-drops-nothing" "none" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "uxd-evaluate-code-heuristics")] | length == 1'
 
-run_ux_flag_test "opt-out-recomputes-verdict" "false" "0" "1" "comment" 0 \
-  '{"action":"request-changes","pr_number":99,"repo":"test-org/test-repo","head_sha":"a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","body":"Review","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"description":"UX issue"},{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"description":"Logic issue"}]}'
+run_persona_drop_test "manifest-keeps-finding-without-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "uxd-evaluate-code-heuristics")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-staged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"dimension\":\"correctness\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "correctness")] | length == 1' \
+  '[.findings[] | select(.dimension == "correctness" and .category == "logic-error")] | length == 1'
+
+run_persona_drop_test "manifest-drops-unstaged-dimension-and-downgrades" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "comment" \
+  '([.findings[] | select(.dimension == "user-experience")] | length == 0) and ([.findings[] | select(.dimension == "correctness")] | length == 1)' \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+if grep -qxF "::warning::Dropped 1 finding(s) from dimensions the runner did not stage: user-experience (1)" \
+    "${TMPDIR}/stdout-persona-manifest-drops-unstaged-dimension-and-downgrades.log"; then
+  echo "PASS: manifest-drop-logs-count"
+else
+  echo "FAIL: manifest-drop-logs-count — dropped count not logged"
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_persona_drop_test "manifest-drop-unstaged-only-reject-becomes-comment" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"reject\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\"}]}" \
+  "" "comment" \
+  '(.findings // []) | length == 0'
+
+run_persona_drop_test "manifest-drop-keeps-blocking-staged-finding" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},{\"severity\":\"low\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"remediation\":\"Fix it\",\"actionable\":true,\"dimension\":\"correctness\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+
+# A finding that answers an open prior id is never dropped, even when its
+# persona is no longer staged, and the prior id keeps its disposition.
+run_persona_drop_test "manifest-keeps-unstaged-dimension-with-open-prior-id" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\",\"id\":\"f_uxopen\"}],\"dispositions\":[{\"id\":\"f_uxopen\",\"status\":\"open\",\"rationale\":\"Still present\",\"evidence\":\"src/App.tsx:10\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxopen","dimension":"user-experience"}]}' \
+  "request-changes" \
+  '[.findings[] | select(.id == "f_uxopen" and .dimension == "user-experience")] | length == 1' \
+  '([.findings[] | select(.id == "f_uxopen" and .dimension == "user-experience")] | length == 1) and any(.dispositions[]; .id == "f_uxopen" and .status == "open")'
+
+run_persona_drop_test "malformed-manifest-drops-nothing" '{"version":1,"personas":' \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "unknown-manifest-version-drops-nothing" '{"version":2,"personas":[{"name":"correctness"}]}' \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "empty-personas-manifest-drops-nothing" '{"version":1,"personas":[],"removed":[]}' \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 1'
+
+# High and critical findings are always kept, whatever their dimension, and
+# the action is left as the agent set it.
+run_persona_drop_test "manifest-keeps-high-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":10,\"description\":\"UX issue\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.severity == "high" and .dimension == "user-experience")] | length == 1'
+if grep -qF "from dimensions the runner did not stage" \
+    "${TMPDIR}/stdout-persona-manifest-keeps-high-unstaged-dimension.log"; then
+  echo "FAIL: manifest-keeps-high-no-drop-warning — drop warning printed for a kept high finding"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: manifest-keeps-high-no-drop-warning"
+fi
+
+run_persona_drop_test "manifest-keeps-critical-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"reject\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"critical\",\"category\":\"auth-bypass\",\"file\":\"src/auth.ts\",\"line\":5,\"description\":\"Auth bypass\",\"dimension\":\"rbac-review\"}]}" \
+  "" "reject" \
+  '[.findings[] | select(.severity == "critical" and .dimension == "rbac-review")] | length == 1'
+
+# Medium findings from unstaged dimensions are dropped; one warning names each
+# dropped dimension with its count.
+run_persona_drop_test "manifest-drops-medium-unstaged-dimensions-warns-per-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},{\"severity\":\"medium\",\"category\":\"uxd-evaluate-code-heuristics\",\"file\":\"src/App.tsx\",\"line\":20,\"description\":\"Second UX issue\",\"dimension\":\"user-experience\"},{\"severity\":\"medium\",\"category\":\"privilege-escalation\",\"file\":\"src/rbac.ts\",\"line\":3,\"description\":\"Role widened\",\"dimension\":\"rbac-review\"},${PERSONA_LOGIC_FINDING}]}" \
+  "" "comment" \
+  '([.findings[] | select(.dimension == "user-experience" or .dimension == "rbac-review")] | length == 0) and ([.findings[] | select(.dimension == "correctness")] | length == 1)'
+PERSONA_DROP_LOG="${TMPDIR}/stdout-persona-manifest-drops-medium-unstaged-dimensions-warns-per-dimension.log"
+if [[ "$(grep -c "from dimensions the runner did not stage" "${PERSONA_DROP_LOG}")" -eq 1 ]] \
+    && grep -qxF "::warning::Dropped 3 finding(s) from dimensions the runner did not stage: rbac-review (1), user-experience (2)" "${PERSONA_DROP_LOG}"; then
+  echo "PASS: manifest-drop-warning-names-dimensions"
+else
+  echo "FAIL: manifest-drop-warning-names-dimensions — expected one warning naming each dropped dimension"
+  cat "${PERSONA_DROP_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Orchestrator findings are never dropped, whatever their dimension: the drop
+# rewrites the file the protected-path gate reads.
+run_persona_drop_test "manifest-keeps-protected-path-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"protected-path\",\"file\":\"harness/review.yaml\",\"description\":\"Protected path changed\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "protected-path" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-sub-agent-failure-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"high\",\"category\":\"sub-agent-failure\",\"file\":\"N/A\",\"description\":\"dimension failed\",\"dimension\":\"user-experience\"}]}" \
+  "" "request-changes" \
+  '[.findings[] | select(.category == "sub-agent-failure" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-scope-authorization-implicit-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"comment\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"scope-authorization-implicit\",\"file\":\"N/A\",\"description\":\"Scope implied\",\"dimension\":\"user-experience\"}]}" \
+  "" "comment" \
+  '[.findings[] | select(.category == "scope-authorization-implicit" and .dimension == "user-experience")] | length == 1'
+
+run_persona_drop_test "manifest-keeps-provenance-warning-with-unstaged-dimension" "${PERSONA_MANIFEST}" \
+  "{\"action\":\"comment\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"provenance-warning\",\"file\":\"N/A\",\"description\":\"Provenance unclear\",\"dimension\":\"user-experience\"}]}" \
+  "" "comment" \
+  '[.findings[] | select(.category == "provenance-warning" and .dimension == "user-experience")] | length == 1'
+
+# REVIEW_UX_ENABLED is no longer read. Setting it prints one warning and
+# changes nothing else: the posted action and findings match a run without it.
+REVIEW_UX_WARNING="::warning::REVIEW_UX_ENABLED is no longer read; to turn off the UX reviewer, remove sub-agents/user-experience.md with a skills override (see docs/review.md)"
+REVIEW_UX_INPUT="{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},${PERSONA_LOGIC_FINDING}]}"
+run_persona_drop_test "review-ux-enabled-unset" "${PERSONA_MANIFEST}" \
+  "${REVIEW_UX_INPUT}" "" "comment" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+jq -S '{action, findings: [.findings[]? | del(.id)]}' "${TMPDIR}/last-result.json" > "${TMPDIR}/review-ux-unset.json" 2>/dev/null || true
+export REVIEW_UX_ENABLED=false
+run_persona_drop_test "review-ux-enabled-false" "${PERSONA_MANIFEST}" \
+  "${REVIEW_UX_INPUT}" "" "comment" \
+  '[.findings[] | select(.dimension == "user-experience")] | length == 0'
+unset REVIEW_UX_ENABLED
+jq -S '{action, findings: [.findings[]? | del(.id)]}' "${TMPDIR}/last-result.json" > "${TMPDIR}/review-ux-false.json" 2>/dev/null || true
+if [[ "$(grep -cxF "${REVIEW_UX_WARNING}" "${TMPDIR}/stdout-persona-review-ux-enabled-false.log")" -eq 1 ]] \
+    && ! grep -qF "REVIEW_UX_ENABLED" "${TMPDIR}/stdout-persona-review-ux-enabled-unset.log" \
+    && [[ -s "${TMPDIR}/review-ux-unset.json" ]] \
+    && cmp -s "${TMPDIR}/review-ux-unset.json" "${TMPDIR}/review-ux-false.json"; then
+  echo "PASS: review-ux-enabled-warns-only"
+else
+  echo "FAIL: review-ux-enabled-warns-only — expected exactly one no-longer-read warning and an unchanged result"
+  cat "${TMPDIR}/stdout-persona-review-ux-enabled-false.log"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Re-review promotion after the drop. Dropping the only blocking finding
+# downgrades request-changes to comment, and the re-review gate may then
+# promote to approve, as the removed REVIEW_UX_ENABLED opt-out did. A staged
+# actionable low that remains open from the prior round keeps the review from
+# being promoted (a new low alone never blocks a re-review).
+printf '%s' "${PERSONA_MANIFEST}" > "${TMPDIR}/rereview-personas.json"
+export FULLSEND_PERSONAS_FILE="${TMPDIR}/rereview-personas.json"
+run_rereview_gate_case "rereview-unstaged-dimension-drop-promotes" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"logic-error","file":"old.go","line":1,"id":"f_dimfixed"}],"dispositions":[{"id":"f_dimfixed","status":"resolved_by_change"}]}' \
+  "approve" \
+  "No findings at or above the effective blocking threshold remain open" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '[.findings[]? | select(.dimension == "user-experience")] | length == 0'
+
+run_rereview_gate_case "rereview-unstaged-dimension-drop-keeps-actionable-low" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[${PERSONA_UX_FINDING},{\"severity\":\"low\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"remediation\":\"Fix it\",\"actionable\":true,\"dimension\":\"correctness\",\"id\":\"f_dimlow\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"low","category":"logic-error","file":"src/app.ts","line":11,"id":"f_dimlow","actionable":true,"dimension":"correctness"}]}' \
+  "request-changes" \
+  "/fs-fix" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '([.findings[]? | select(.dimension == "user-experience")] | length == 0) and ([.findings[]? | select(.id == "f_dimlow")] | length == 1)'
+
+# A prior high from a persona that is no longer staged reaches no sub-agent:
+# the review answers its id open without re-emitting it, and the ledger still
+# withholds approval.
+run_rereview_gate_case "rereview-unstaged-prior-high-open-blocks" \
+  "{\"action\":\"approve\",${PERSONA_HEAD},\"dispositions\":[{\"id\":\"f_uxhigh\",\"status\":\"open\",\"rationale\":\"Persona not staged; not re-verified\",\"evidence\":\"src/App.tsx:10\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"high","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxhigh","dimension":"user-experience"}]}' \
+  "request-changes" \
+  "Blocking prior findings" \
+  "" "low" "__inherit__" "src/main.go" "false" "4" "0" "" \
+  '[.findings[]? | select(.id == "f_uxhigh")] | length == 1'
+unset FULLSEND_PERSONAS_FILE
+
+# The projection carries dimension on current findings and keeps it on prior
+# findings carried forward, so a persona disabled between rounds keeps its
+# prior ledger. An unsafe dimension is never written into the projection.
+run_persona_drop_test "projection-carries-dimension" "none" \
+  "{\"action\":\"request-changes\",${PERSONA_HEAD},\"findings\":[{\"severity\":\"medium\",\"category\":\"logic-error\",\"file\":\"src/app.ts\",\"line\":11,\"description\":\"Logic issue\",\"dimension\":\"correctness\"},{\"severity\":\"medium\",\"category\":\"naming-convention\",\"file\":\"src/app.ts\",\"line\":30,\"description\":\"Naming issue\",\"dimension\":\"Bad Name\"}]}" \
+  '{"version":2,"action":"request-changes","findings":[{"severity":"medium","category":"uxd-evaluate-code-heuristics","file":"src/App.tsx","line":10,"id":"f_uxprior","dimension":"user-experience"}]}' \
+  "request-changes" \
+  '[.findings[] | select(.dimension == "correctness")] | length == 1' \
+  '([.findings[] | select(.dimension == "correctness" and .category == "logic-error")] | length == 1) and ([.findings[] | select(.id == "f_uxprior" and .dimension == "user-experience")] | length == 1) and ([.findings[] | select(.category == "naming-convention" and has("dimension"))] | length == 0)'
 
 # --- Summary ---
 
