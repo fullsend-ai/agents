@@ -16,6 +16,10 @@ parse_script_test_args "$@"
 
 FAILURES=0
 
+# Preserve the caller's per-user Python site before HOME changes below, so
+# user-installed packages remain importable under SUITE_HOME.
+export PYTHONUSERBASE="${PYTHONUSERBASE:-$(python3 -m site --user-base)}"
+
 # post-fix prepends ${HOME}/.local/bin to PATH, so a host-installed
 # gitleaks/pre-commit would shadow the mocks; isolate HOME for the suite.
 SUITE_HOME="$(mktemp -d)"
