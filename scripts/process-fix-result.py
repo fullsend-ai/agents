@@ -1035,7 +1035,9 @@ def build_pr_body(proposed, current):
 
 # A GitLab quick action: a line that starts with "/" and a command name, such as
 # "/close" or "/label ~x". GitLab may run these from an issuable description.
-_QUICK_ACTION_RE = re.compile(r"^[ \t]*/\w", re.MULTILINE)
+# The prefix is any non-newline whitespace, Unicode blanks included, so a
+# leading NBSP or em space cannot hide a command from the filter.
+_QUICK_ACTION_RE = re.compile(r"^[^\S\n]*/\w", re.MULTILINE)
 
 
 def has_quick_action(text):
