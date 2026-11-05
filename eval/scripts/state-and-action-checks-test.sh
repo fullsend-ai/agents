@@ -147,7 +147,7 @@ ACTION_CASES = [
     ("older section cannot fail the list", [sticky(APPROVE, COMMENT)], ["approve"], True, "is allowed"),
     ("oldest section is ignored too", [sticky(APPROVE, COMMENT, REQUEST)], ["approve"], True, "is allowed"),
     ("edited sticky with CRLF line endings", [sticky(APPROVE, COMMENT, crlf=True)], ["approve"], True, "is allowed"),
-    ("history only, no current marker", [sticky("", APPROVE)], ["approve"], False, "found 0"),
+    ("history only, no current marker, is not scored", [sticky("", APPROVE)], ["approve"], None, "Not scored"),
     # Missing or ambiguous attribution never passes.
     ("no sticky fails", [], ["comment"], False, "found 0"),
     ("marker not on the first line is not the sticky",
@@ -155,10 +155,15 @@ ACTION_CASES = [
     ("two stickies are ambiguous", [sticky(COMMENT), sticky(COMMENT)], ["comment"], False, "found 2"),
     ("two markers in the current section are ambiguous",
      [sticky(COMMENT + "\n" + APPROVE)], ["comment"], False, "found 2"),
+    # post-review omits the marker on purpose in these: abstain, don't fail.
+    ("no marker in the sticky is not scored", [sticky("No marker here.")], ["comment"], None, "Not scored"),
+    ("stale-head notice is not scored",
+     [sticky("**Reason:** stale-head")], ["comment"], None, "Not scored"),
+    ("marker text mid-line is not a marker",
+     [sticky("See <!-- fullsend:review-findings-v2:Zm9v -->")], ["comment"], None, "Not scored"),
     # Malformed markers never pass.
-    ("no marker in the sticky", [sticky("No marker here.")], ["comment"], False, "found 0"),
-    ("marker with invalid characters is not a marker",
-     [sticky("<!-- fullsend:review-findings-v2:not*base64 -->")], ["comment"], False, "found 0"),
+    ("marker with invalid characters fails",
+     [sticky("<!-- fullsend:review-findings-v2:not*base64 -->")], ["comment"], False, "Malformed"),
     ("marker with bad base64 padding",
      [sticky("<!-- fullsend:review-findings-v2:abcde -->")], ["comment"], False, "Could not decode"),
     ("marker that is not JSON", [sticky(projection("not json"))], ["comment"], False, "Could not decode"),

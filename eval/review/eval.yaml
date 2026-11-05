@@ -285,13 +285,23 @@ judges:
       # Edits keep earlier runs below the first history sentinel; only the
       # section above it is this run's.
       current = stickies[0].split("<!-- sticky:history-start -->", 1)[0]
-      projections = re.findall(
-          r"^<!-- fullsend:review-findings-v2:([A-Za-z0-9+/]+={0,2}) -->\r?$", current, re.MULTILINE
-      )
+      projections = [
+          line.rstrip("\r") for line in current.split("\n")
+          if line.startswith("<!-- fullsend:review-findings-v2:")
+      ]
+      # post-review leaves the marker out on purpose when a dimension sub-agent
+      # failed, a dimension finding can't be projected or the agent reported a
+      # failure, and a stale-head notice has none. None of those is a wrong
+      # action, so abstain: None is not scored, here or in the nightly verdict.
+      if not projections:
+          return None, "Not scored: no review-findings marker in the current sticky section"
       if len(projections) != 1:
           return False, f"Expected one review-findings marker in the current sticky section, found {len(projections)}"
+      match = re.fullmatch(r"<!-- fullsend:review-findings-v2:([A-Za-z0-9+/]+={0,2}) -->", projections[0])
+      if not match:
+          return False, "Malformed review-findings marker"
       try:
-          projection = json.loads(base64.b64decode(projections[0], validate=True))
+          projection = json.loads(base64.b64decode(match.group(1), validate=True))
       except ValueError as err:
           return False, f"Could not decode the review-findings marker: {err}"
       action = projection.get("action") if isinstance(projection, dict) else None
