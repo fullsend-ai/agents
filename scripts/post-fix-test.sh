@@ -308,16 +308,16 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# harness/fix.yaml ships GITHUB_SIGNED_COMMITS off, in its GitHub block
-# only; the eval overlay the root config.yaml registers turns it on so the
-# functional evals keep exercising the API path.
+# harness/fix.yaml ships GITHUB_SIGNED_COMMITS off, in its GitHub overlay
+# runner env only; the eval overlay the root config.yaml registers turns it
+# on so the functional evals keep exercising the API path.
 FIX_EVAL_HARNESS="${SCRIPT_DIR}/../eval/harness/fix.yaml"
 ROOT_CONFIG="${SCRIPT_DIR}/../config.yaml"
-if yq -e '.forge.github.env.runner.GITHUB_SIGNED_COMMITS == "false"' "${FIX_HARNESS}" >/dev/null \
-   && yq -e '[.env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS, .forge.github.env.sandbox.GITHUB_SIGNED_COMMITS, .forge.gitlab.env.runner.GITHUB_SIGNED_COMMITS, .forge.gitlab.env.sandbox.GITHUB_SIGNED_COMMITS] | map(select(. != null)) | length == 0' "${FIX_HARNESS}" >/dev/null; then
+if [ "$(yq -r '[.overlays[] | select(.when == "runtime.forge == \"github\"") | .env.runner.GITHUB_SIGNED_COMMITS] | join(",")' "${FIX_HARNESS}")" = "false" ] \
+   && [ "$(yq -r '[.env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS, (.overlays[] | select(.when == "runtime.forge == \"github\"") | .env.sandbox.GITHUB_SIGNED_COMMITS), (.overlays[] | select(.when != "runtime.forge == \"github\"") | (.env.runner.GITHUB_SIGNED_COMMITS, .env.sandbox.GITHUB_SIGNED_COMMITS))] | map(select(. != null)) | length' "${FIX_HARNESS}")" = "0" ]; then
   echo "PASS: fix-harness-signed-commits-default-off"
 else
-  echo "FAIL: fix-harness-signed-commits-default-off — GITHUB_SIGNED_COMMITS must be \"false\" in forge.github.env.runner of harness/fix.yaml and set nowhere else"
+  echo "FAIL: fix-harness-signed-commits-default-off — GITHUB_SIGNED_COMMITS must be \"false\" in the GitHub overlay runner env of harness/fix.yaml and set nowhere else"
   FAILURES=$((FAILURES + 1))
 fi
 if yq -e '.base == "../../harness/fix.yaml" and .env.runner.GITHUB_SIGNED_COMMITS == "true"' "${FIX_EVAL_HARNESS}" >/dev/null \
