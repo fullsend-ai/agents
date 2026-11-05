@@ -16,6 +16,12 @@ parse_script_test_args "$@"
 
 FAILURES=0
 
+# post-fix prepends ${HOME}/.local/bin to PATH, so a host-installed
+# gitleaks/pre-commit would shadow the mocks; isolate HOME for the suite.
+SUITE_HOME="$(mktemp -d)"
+export HOME="${SUITE_HOME}"
+trap 'rm -rf "${SUITE_HOME}"' EXIT
+
 # Git Data API calls from forge_push_branch are served from the bare remote
 # by the mock gh scripts below.
 export FAKE_GH_GIT_API="${SCRIPT_DIR}/test-fixtures/fake-gh-git-api.sh"
@@ -1911,14 +1917,9 @@ run_push_rebase_postfix() {
   local human_instruction="${5:-}"
   local conflict_strategy="${6:-}"
   local exit_code=0
-  # post-fix puts ${HOME}/.local/bin first on PATH, so a host-installed
-  # pre-commit/gitleaks would shadow the mocks; isolate HOME per run.
-  local home_dir="${run_dir}/home"
-  mkdir -p "${home_dir}"
   # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
-    export HOME="${home_dir}"
     export PATH="${mock_bin}:${PATH}"
     export PUSH_TOKEN="fake-token"
     export REPO_FULL_NAME="test-org/test-repo"
@@ -1997,10 +1998,6 @@ run_fix_push_retry_test() {
   git -C "${base}/repo" add file.txt
   git -C "${base}/repo" commit -q -m "fix: agent change"
 
-  # Isolate HOME so post-fix's PATH="${HOME}/.local/bin:${PATH}" cannot
-  # shadow this mock-bin with an unrelated `gh`/`git` from the developer host.
-  mkdir -p "${base}/home"
-
   local mock_bin="${base}/mock-bin"
   local push_log="${base}/push-calls.log"
   mkdir -p "${mock_bin}"
@@ -2044,7 +2041,6 @@ MOCKEOF
       unset MOCK_PUSH_FAIL
     fi
     export GITHUB_SIGNED_COMMITS=false
-    export HOME="${base}/home"
     run_push_rebase_postfix "${base}" "${stdout_log}" "${mock_bin}"
   ) || exit_code=$?
 
@@ -6759,14 +6755,13 @@ run_prefix_budget_test() {
   local expect_text="$6"
   local labels_fail="${7:-}"
   local base="${FIX_BUDGET_TMPDIR}/pre-${test_name}"
-  mkdir -p "${base}/workspace" "${base}/home"
+  mkdir -p "${base}/workspace"
   local stdout_log="${base}/stdout.log"
 
   local exit_code=0
   # shellcheck disable=SC2030,SC2031
   (
     export PATH="${FIX_BUDGET_MOCK_BIN}:${PATH}"
-    export HOME="${base}/home"
     export FULLSEND_FORGE="github"
     export REPO_FULL_NAME="test-org/test-repo"
     export PR_NUMBER="99"
@@ -6839,7 +6834,7 @@ run_prefix_budget_test "prefix-budget-label-read-failure-keeps-bot-cap" \
 run_prefix_budget_gitlab_test() {
   local test_name="prefix-budget-gitlab-blocks-bot-above-label"
   local base="${FIX_BUDGET_TMPDIR}/pre-${test_name}"
-  mkdir -p "${base}/bin" "${base}/workspace" "${base}/home"
+  mkdir -p "${base}/bin" "${base}/workspace"
   cat > "${base}/bin/curl" <<'MOCK'
 #!/usr/bin/env bash
 echo '{"labels":["area::api","fullsend-fix-budget/2"],"target_branch":"main","detailed_merge_status":"mergeable"}'
@@ -6850,7 +6845,6 @@ MOCK
   # shellcheck disable=SC2030,SC2031
   (
     export PATH="${base}/bin:${PATH}"
-    export HOME="${base}/home"
     export FULLSEND_FORGE="gitlab"
     export CI_SERVER_HOST="gitlab.com"
     export GITLAB_TOKEN="fake-token"
@@ -6887,7 +6881,7 @@ run_postfix_budget_test() {
   local expect_summary="$5"
   local expect_needs_human="$6"
   local base="${FIX_BUDGET_TMPDIR}/post-${test_name}"
-  mkdir -p "${base}/repo" "${base}/home"
+  mkdir -p "${base}/repo"
   git init -q -b main "${base}/repo"
   git -C "${base}/repo" config user.email "test@example.com"
   git -C "${base}/repo" config user.name "Test"
@@ -6901,7 +6895,6 @@ run_postfix_budget_test() {
   (
     cd "${base}"
     export PATH="${FIX_BUDGET_MOCK_BIN}:${PATH}"
-    export HOME="${base}/home"
     export GH_CALL_LOG="${gh_log}"
     export PUSH_TOKEN="fake-token"
     export REPO_FULL_NAME="test-org/test-repo"
