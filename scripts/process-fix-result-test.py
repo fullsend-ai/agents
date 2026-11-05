@@ -1176,6 +1176,31 @@ class TestPrMetadataGitLab(unittest.TestCase):
             self.assertNotIn("fake-token", arg)
         self.assertIn("PRIVATE-TOKEN: fake-token", stdin)
 
+    def test_gitlab_quick_action_lines_in_body_not_sent(self):
+        for text in (
+            "New.\n\n/close",
+            "New.\n/label ~x",
+            "New.\r\n  /assign @someone",
+            "New.\n\n```\n/close\n```",
+        ):
+            with self.subTest(text=text):
+                forge = FakeForge()
+                data = _metadata_result(pr_body=text, pr_body_base_sha256=_sha(LIVE_BODY))
+                rc, log = self._run(data, forge)
+                self.assertEqual(rc, 0)
+                self.assertEqual(forge.edits(), [])
+                self.assertIn("GitLab quick action", log)
+                self.assertIn("quick-action line", forge.comment_body())
+
+    def test_gitlab_ordinary_markdown_with_slashes_still_sent(self):
+        body = "New: see `scripts/a.py` and https://example.com/a/b.\n\n- a/b\n> /note quoted"
+        forge = FakeForge()
+        data = _metadata_result(pr_body=body, pr_body_base_sha256=_sha(LIVE_BODY))
+        self.assertEqual(self._run(data, forge)[0], 0)
+        (cmd, _), = forge.edits()
+        desc = next(a for a in cmd if a.startswith("description="))
+        self.assertIn("https://example.com/a/b.", desc)
+
     def test_gitlab_title_only_leaves_description(self):
         forge = FakeForge()
         data = _metadata_result(pr_title=NEW_TITLE, pr_title_base_sha256=_sha(LIVE_TITLE))
@@ -1695,6 +1720,15 @@ class TestBuildPrBody(unittest.TestCase):
         self.assertEqual(build_pr_body("New.", current), "New.\n\nCloses #519")
         quoted = "> - item\n> # Heading\n> Old `x\n> 2. item\n> text <!--\n> end`\nCloses #519\n"
         self.assertEqual(build_pr_body("New.", quoted), "New.\n\nCloses #519")
+
+    def test_ordered_marker_that_cannot_interrupt_paragraph_does_not_open_fence(self):
+        # "2. ```" inside a paragraph is paragraph text: the backtick runs form
+        # an inline code span, so the example reference stays inert.
+        current = "Old paragraph\n2. ```\nCloses #519\nend ```"
+        self.assertEqual(build_pr_body("New.", current), "New.")
+        # A marker that can interrupt still opens a list item and its fence.
+        current = "Old paragraph\n1. ```\n   Closes #999\n   ```\n\nCloses #519"
+        self.assertEqual(build_pr_body("New.", current), "New.\n\nCloses #519")
 
     def test_list_ended_by_blank_line_keeps_span_across_ordered_marker(self):
         current = "- item\n\nOld `x\n2. item\ntext <!--\nend`\nCloses #519\n"

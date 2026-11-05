@@ -528,10 +528,15 @@ def _mask_block_code(text, mask_raw_html=False):
             para = False
             continue
         indent = len(e) - len(e.lstrip(" "))
+        closed_item = False
         while stack and indent < stack[-1]:
             stack.pop()
+            closed_item = True
         pos = stack[-1] if stack else 0
         kind = "text"
+        # Paragraph text this line could interrupt: none when it leaves the item
+        # holding the paragraph, and none right after a list marker on the line.
+        in_para = para and not closed_item
         while True:
             rest = e[pos:]
             if len(rest) - len(rest.lstrip(" ")) >= 4:
@@ -544,7 +549,10 @@ def _mask_block_code(text, mask_raw_html=False):
                 kind = "block"
                 break
             m = _LIST_MARKER_RE.match(rest)
+            if m and in_para and not _list_item_interrupts(m):
+                break  # e.g. "2. x" inside a paragraph is paragraph text
             if m:
+                in_para = False
                 col = pos + m.end("marker")
                 gap = 0
                 for c in m.group("gap"):
@@ -675,21 +683,8 @@ def _paragraph_starts(lines):
             # heading, ends the list.
             items = []
         prev_blank = False
-        content = _CONTAINER_PREFIX_RE.sub("", line)
-        quote = bool(_BLOCKQUOTE_PREFIX_RE.match(line))
-        fence = _FENCE_OPEN_RE.match(content)
-        if fence and fence.group("fence")[0] == "`" and "`" in fence.group("info"):
-            fence = None  # an inline code span, not a fence
-        single = bool(
-            fence
-            or _ATX_HEADING_RE.match(content)
-            or _THEMATIC_BREAK_RE.match(content)
-            or _SETEXT_UNDERLINE_RE.match(content)
-        )
-        html = bool(_HTML_BLOCK_START_RE.match(content)) and (
-            not prev_para or bool(_HTML_INTERRUPT_RE.match(content))
-        )
         item_text = False
+        content = _CONTAINER_PREFIX_RE.sub("", line)
         if marker:
             indent = len(inner) - len(inner.lstrip(" "))
             # A marker outside the innermost open item (indented less than its
@@ -704,7 +699,23 @@ def _paragraph_starts(lines):
                 items.append(indent + len(marker.group("marker")) + width)
                 item_text = bool(inner[marker.end() :].strip())
             else:
-                marker = None  # plain paragraph text, e.g. "2. x" after a paragraph line
+                # Plain paragraph text, e.g. "2. x" after a paragraph line: what
+                # follows the marker is text too, never the start of a block.
+                marker = None
+                content = inner
+        quote = bool(_BLOCKQUOTE_PREFIX_RE.match(line))
+        fence = _FENCE_OPEN_RE.match(content)
+        if fence and fence.group("fence")[0] == "`" and "`" in fence.group("info"):
+            fence = None  # an inline code span, not a fence
+        single = bool(
+            fence
+            or _ATX_HEADING_RE.match(content)
+            or _THEMATIC_BREAK_RE.match(content)
+            or _SETEXT_UNDERLINE_RE.match(content)
+        )
+        html = bool(_HTML_BLOCK_START_RE.match(content)) and (
+            not prev_para or bool(_HTML_INTERRUPT_RE.match(content))
+        )
         if single or html or marker or (quote and not prev_quote):
             starts.add(i)
         if single:
@@ -1022,6 +1033,20 @@ def build_pr_body(proposed, current):
     return "\n\n".join(parts)
 
 
+# A GitLab quick action: a line that starts with "/" and a command name, such as
+# "/close" or "/label ~x". GitLab may run these from an issuable description.
+_QUICK_ACTION_RE = re.compile(r"^[ \t]*/\w", re.MULTILINE)
+
+
+def has_quick_action(text):
+    """Say whether any line of text looks like a GitLab quick action.
+
+    Deliberately not Markdown-aware: a line in code or a comment is flagged too,
+    so a parsing mistake cannot let a command through.
+    """
+    return bool(_QUICK_ACTION_RE.search(_normalize_newlines(text)))
+
+
 def _sha256(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -1111,6 +1136,13 @@ def apply_pr_metadata(data, repo, pr_number, schema_validated, secret_scan_passe
                 file=sys.stderr,
             )
             notes.append("body not updated (changed since the agent read it)")
+        elif forge == "gitlab" and has_quick_action(proposed_body):
+            print(
+                "::warning::PR body not updated: the proposed text has a line that starts"
+                " with a GitLab quick action",
+                file=sys.stderr,
+            )
+            notes.append("body not updated (proposal contains a GitLab quick-action line)")
         elif not merged:
             print(
                 "::warning::Proposed PR body is empty after removing post-script-managed sections",
