@@ -337,6 +337,53 @@ run_test_custom_filename "review-finding-additional-property-rejected" \
   "${REVIEW_SCHEMA}" \
   "false"
 
+# --- scribe-result.schema.json: omitted/unsafe topic summaries (issue #1838) ---
+
+SCRIBE_SCHEMA="${SCRIPT_DIR}/../schemas/scribe-result.schema.json"
+SCRIBE_STATS='"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}'
+
+run_test_custom_filename "scribe-omitted-null-summary-valid" \
+  '{"topics":[{"topic":"Synthetic omitted topic","summary":null,"existing_issue":null,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"}],"new_issues":[],'"${SCRIBE_STATS}"'}' \
+  "agent-result.json" \
+  "${SCRIBE_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "scribe-omitted-placeholder-summary-valid" \
+  '{"topics":[{"topic":"Synthetic omitted topic","summary":"Omitted.","existing_issue":null,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"}],"new_issues":[],'"${SCRIBE_STATS}"'}' \
+  "agent-result.json" \
+  "${SCRIBE_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "scribe-unsafe-null-summary-valid" \
+  '{"topics":[{"topic":"Synthetic unsafe topic","summary":null,"existing_issue":42,"new_issue_title":null,"confidence":0.9,"public_safe":false,"public_safe_category":"hr","omit_reason":null}],"new_issues":[],'"${SCRIBE_STATS}"'}' \
+  "agent-result.json" \
+  "${SCRIBE_SCHEMA}" \
+  "true"
+
+run_test_custom_filename "scribe-actionable-null-summary-rejected" \
+  '{"topics":[{"topic":"Synthetic actionable topic","summary":null,"existing_issue":42,"new_issue_title":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],'"${SCRIBE_STATS}"'}' \
+  "agent-result.json" \
+  "${SCRIBE_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "scribe-empty-omit-reason-null-summary-rejected" \
+  '{"topics":[{"topic":"Synthetic actionable topic","summary":null,"existing_issue":42,"new_issue_title":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":""}],"new_issues":[],'"${SCRIBE_STATS}"'}' \
+  "agent-result.json" \
+  "${SCRIBE_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "scribe-omitted-empty-summary-rejected" \
+  '{"topics":[{"topic":"Synthetic omitted topic","summary":"","existing_issue":null,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"}],"new_issues":[],'"${SCRIBE_STATS}"'}' \
+  "agent-result.json" \
+  "${SCRIBE_SCHEMA}" \
+  "false"
+
+run_test_custom_filename "scribe-omitted-missing-summary-rejected" \
+  '{"topics":[{"topic":"Synthetic omitted topic","existing_issue":null,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"}],"new_issues":[],'"${SCRIBE_STATS}"'}' \
+  "agent-result.json" \
+  "${SCRIBE_SCHEMA}" \
+  "false"
+
 # Helper for custom-filename tests that also assert output content.
 run_test_custom_filename_output() {
   local test_name="$1"
