@@ -1,0 +1,29 @@
+forge: github
+fixture:
+  type: issue
+  title: "test-hello integration test flakes: kubectl wait times out after 120s"
+  body: |
+    ## Bug Report
+
+    **What happened:**
+    The `test-hello` integration scenario fails intermittently. The
+    pipeline step that waits for the test-hello deployment gives up with:
+
+    ```
+    error: timed out waiting for the condition on deployments/test-hello
+    ```
+
+    The step runs
+    `kubectl wait --for=condition=Available deployment/test-hello --timeout=120s`.
+    On busy CI nodes the deployment needs about 150s to become available,
+    so the wait expires first. Re-running the job usually passes.
+
+    **Expected behavior:**
+    The integration test should pass on a loaded CI node.
+
+    **Suggested fix:**
+    Raise the wait in the test-hello integration pipeline from
+    `--timeout=120s` to `--timeout=180s`.
+
+    **Environment:**
+    - CI integration runs, roughly 1 in 5 jobs fail

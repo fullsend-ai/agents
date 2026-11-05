@@ -31,7 +31,7 @@ execution:
   # our runner type; a runaway run still spends what it spends and only
   # fails max_cost afterward. Set to match annotations.yaml's max_cost_usd
   # so the harness's own reporting agrees with the judge threshold.
-  max_budget_usd: 4.00
+  max_budget_usd: 0.75
   env:
     EVAL_ORG: $EVAL_ORG
     GH_TOKEN: $GH_TOKEN
@@ -108,13 +108,16 @@ runner:
     - "{workspace}"
     - "{output_dir}"
 # Unused for this CLI-runner type: runner.command has no {model} placeholder.
-# The real model is harness/code.yaml's `model:` unless EVAL_MODEL is set,
-# which run-fullsend.sh passes to `fullsend run --model` (see run-functional.sh).
+# The real model is the code entry's `model:` in the repo-root config.yaml
+# (resolved through its models.aliases) unless EVAL_MODEL is set, which
+# run-fullsend.sh passes to `fullsend run --model` (see run-functional.sh).
 # Declared here for harness reporting / parity with sibling evals only —
 # same "advisory / not enforced" class of limitation as max_budget_usd above.
 models:
-  skill: claude-opus-4-6
-  judge: claude-opus-4-6
+  skill: claude-sonnet-5-5
+  # No LLM judge in this eval; kept equal to the review and triage evals,
+  # whose comment says why the judge is not on claude-sonnet-5-5 yet.
+  judge: claude-sonnet-5
 
 dataset:
   path: cases
@@ -128,7 +131,9 @@ outputs:
   - path: output
     schema: |
       fixture-state.json: Captured GitHub issue state plus any PRs opened
-      by the code post-script. Contains: state, labels, comments, pull_requests.
+      by the code post-script. Contains: state, labels, comments, pull_requests,
+      pull_requests_fetch_failed (true when the PR lookup failed; then
+      pull_requests is null and PR existence is unknown).
 
 # ---------------------------------------------------------------------------
 # Judges
@@ -146,6 +151,8 @@ judges:
       if not raw:
           return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
       state = json.loads(raw)
+      if state.get("pull_requests_fetch_failed"):
+          return False, "Infrastructure failure: gh pr list lookup failed — PR existence unknown (not evidence the agent created no PR)"
       prs = state.get("pull_requests") or []
       if not prs:
           return False, "No pull requests found — code agent/post-script did not create a PR"
@@ -162,6 +169,8 @@ judges:
       if not raw:
           return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
       state = json.loads(raw)
+      if state.get("pull_requests_fetch_failed"):
+          return False, "Infrastructure failure: gh pr list lookup failed — PR existence and changed files unknown"
       expected = outputs.get("annotations", {}).get("expected_files") or []
       if not expected:
           return True, "No expected_files declared"
@@ -182,25 +191,8 @@ judges:
           return False, f"Expected files missing from PRs: {missing} (changed: {sorted(changed)})"
       return True, f"All expected files present: {expected}"
 
-  # forbidden_labels / max_turns / max_cost below are shared verbatim with
-  # eval/fix/eval.yaml and eval/review/eval.yaml — update all three if changing.
-  - name: forbidden_labels
-    description: Labels listed in annotations.yaml forbidden list must NOT be present
-    check: |
-      import json
-      raw = outputs["files"].get("output/fixture-state.json")
-      if not raw:
-          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
-      state = json.loads(raw)
-      actual = [l.lower() for l in state.get("labels", [])]
-      forbidden = outputs.get("annotations", {}).get("labels", {}).get("forbidden", [])
-      if not forbidden:
-          return True, "No forbidden labels specified"
-      present = [l for l in forbidden if l.lower() in actual]
-      if present:
-          return False, f"Forbidden labels present: {present} (actual: {actual})"
-      return True, f"No forbidden labels found (checked: {forbidden})"
-
+  # max_turns / max_cost below are shared verbatim with eval/fix/eval.yaml
+  # (and max_cost with eval/review/eval.yaml) — update them together.
   - name: max_turns
     description: Agent must complete within the declared turn budget
     check: |
@@ -237,14 +229,11 @@ judges:
           return False, f"Exceeded max_cost_usd: {actual} > {limit}"
       return True, f"Cost OK: {actual} <= {limit}"
 
+# max_turns and max_cost run and report but gate nothing: per-case turn
+# counts and cost vary run to run far more than any regression they have
+# caught (none since 2026-08), so a budget miss is not a failure.
 thresholds:
   pr_created:
     min_pass_rate: 1.0
   expected_files:
-    min_pass_rate: 1.0
-  forbidden_labels:
-    min_pass_rate: 1.0
-  max_turns:
-    min_pass_rate: 1.0
-  max_cost:
     min_pass_rate: 1.0

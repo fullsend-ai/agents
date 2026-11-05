@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# pre-triage-test.sh — Test pre-triage.sh with the Jira tracker.
+# pre-triage-test.sh — Test pre-triage.sh with the Jira and GitLab trackers.
 #
-# Uses a mock curl command to capture calls without hitting Jira Cloud.
+# Uses a mock curl command to capture calls without hitting Jira Cloud or GitLab.
 # Run from the repo root: bash scripts/pre-triage-test.sh
 
 set -euo pipefail
@@ -200,6 +200,80 @@ run_test "jira-empty-email-fails" \
   "JIRA_USER_EMAIL must be set" \
   "true" "true"
 export JIRA_USER_EMAIL="triage@example.com"
+
+# --- GitLab origin validation (#1732) ---
+# Self-managed GitLab on a non-default HTTPS port: the issue URL's scheme,
+# host, and port must match the trusted CI server origin before any token is
+# sent, and API requests must keep the port.
+
+printf '#!/usr/bin/env bash\necho "curl $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/curl"
+cat >> "${MOCK_BIN}/curl" <<'CURLMOCK'
+echo '{"labels":[]}'
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+export FULLSEND_TRACKER="gitlab"
+export GITLAB_TOKEN="fake-gitlab-token"
+export CI_SERVER_URL="https://ce.example.test:34881"
+export CI_SERVER_HOST="ce.example.test"
+
+run_test "gitlab-custom-port-matching-origin-ok" \
+  "https://ce.example.test:34881/group/project/-/issues/42" \
+  "https://ce.example.test:34881/api/v4/projects/group%2Fproject/issues/42"
+
+run_test "gitlab-custom-port-mismatched-port-fails" \
+  "https://ce.example.test:8443/group/project/-/issues/42" \
+  "does not match CI server origin" \
+  "true" "true"
+
+run_test "gitlab-custom-port-missing-port-fails" \
+  "https://ce.example.test/group/project/-/issues/42" \
+  "does not match CI server origin" \
+  "true" "true"
+
+run_test "gitlab-custom-port-http-scheme-fails" \
+  "http://ce.example.test:34881/group/project/-/issues/42" \
+  "does not match expected GitLab pattern" \
+  "true" "true"
+
+run_test "gitlab-custom-port-different-host-fails" \
+  "https://evil.example.test:34881/group/project/-/issues/42" \
+  "does not match CI server origin" \
+  "true" "true"
+
+# A non-HTTPS trusted origin fails closed, even for a matching host and port.
+export CI_SERVER_URL="http://ce.example.test:34881"
+run_test "gitlab-non-https-ci-server-url-fails" \
+  "https://ce.example.test:34881/group/project/-/issues/42" \
+  "CI_SERVER_URL is not an HTTPS origin" \
+  "true" "true"
+
+# CI_SERVER_URL host must match CI_SERVER_HOST.
+export CI_SERVER_URL="https://evil.example.test:34881"
+run_test "gitlab-ci-server-url-host-mismatch-fails" \
+  "https://evil.example.test:34881/group/project/-/issues/42" \
+  "does not match CI_SERVER_HOST" \
+  "true" "true"
+
+# Standard-port regression: gitlab.com with and without CI_SERVER_URL.
+export CI_SERVER_URL="https://gitlab.com"
+export CI_SERVER_HOST="gitlab.com"
+run_test "gitlab-com-default-port-ok" \
+  "https://gitlab.com/group/project/-/issues/42" \
+  "https://gitlab.com/api/v4/projects/group%2Fproject/issues/42"
+
+run_test "gitlab-com-unexpected-port-fails" \
+  "https://gitlab.com:8443/group/project/-/issues/42" \
+  "does not match CI server origin" \
+  "true" "true"
+
+unset CI_SERVER_URL
+run_test "gitlab-com-no-ci-server-url-ok" \
+  "https://gitlab.com/group/project/-/issues/42" \
+  "https://gitlab.com/api/v4/projects/group%2Fproject/issues/42"
+
+unset CI_SERVER_HOST GITLAB_TOKEN
 
 # --- Summary ---
 

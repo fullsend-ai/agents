@@ -1,18 +1,28 @@
 # Expected fixture state after triage agent runs.
 state: open
 
+# Selected as the triage agent's release-tier smoke case (eval/run-functional.sh
+# EVAL_TIER=release).
+release: true
+
 labels:
   required:
     - ready-to-code
     - bug
 
 max_turns: 35
-max_cost_usd: 2.00
+max_cost_usd: 0.50
 
 # Guidance for the LLM judge — what a good triage looks like for this case.
 triage_expectations: |
   This issue reports a 500 when logging in with a + in the email address.
-  The repo contains the actual source code the agent should inspect.
+  The repo contains the actual source code the agent should inspect,
+  including the whole request path: templates/login.html builds the login
+  URL by string concatenation ("/login?email=" + email) without
+  encodeURIComponent, so a "+" goes out literally; src/http/request.py
+  builds request.params with parse_qsl, which decodes "+" as a space; and
+  auth/views.py passes that value to validate_email. The cause and the fix
+  location are therefore in the repo, so ready-to-code is the right call.
 
   Key observations a strong triage should surface:
 
@@ -21,10 +31,13 @@ triage_expectations: |
      A good triage should notice the code doesn't match the bug report's
      assumption about the regex.
 
-  2. The real root cause is likely URL decoding: '+' in a query parameter
-     is decoded as a space by standard URL parsers. So the email arrives
-     at validate_email as "user tag@example.com", which the regex rejects.
-     The issue author hints at this but doesn't confirm it.
+  2. The real root cause is URL encoding: the login page concatenates the
+     email into the query string unencoded, and parse_qsl in
+     src/http/request.py decodes the literal '+' as a space. So the email
+     arrives at validate_email as "user tag@example.com", which the regex
+     rejects. The fix is to encode the parameters (encodeURIComponent, or
+     URLSearchParams) in templates/login.html. The issue author hints at
+     this but doesn't confirm it.
 
   3. The stack trace line numbers (42, 118) don't match the actual file
      lengths (13 and 14 lines). A careful triage might note this

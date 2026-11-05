@@ -20,6 +20,8 @@ The retro agent runs automatically when a PR is closed (merged or not).
 
 It can also be triggered manually with the `/fs-retro` command.
 
+The harness also declares a CEL `trigger:` for fullsend's harness dispatch that selects the same events on GitHub: a PR closed (merged or not), or a `/fs-retro` comment from a human on an issue or PR. Dispatch does not evaluate it for the built-in retro agent yet, so the routing above is what runs today.
+
 ## Commands
 
 | Command | Where | Effect |
@@ -55,11 +57,30 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 ### Issue filing allowlist
 
-Cross-repo issue creation is governed by `create_issues.allow_targets` in
-`config.yaml` — the same allowlist used by the [triage agent](triage.md)
-for prerequisite issues. Proposals targeting repos outside the allowlist
-are skipped with a warning and surfaced in the summary comment so they
-can be filed manually.
+Cross-repo issue creation is governed by `tracker.<provider>.allowed_targets`
+in `config.yaml` — the same allowlist used by the [triage agent](triage.md)
+for prerequisite issues. The post-script honors the targets of the
+`tracker` provider block that matches `FULLSEND_FORGE`:
+`tracker.github.allowed_targets.orgs` and `repos` on GitHub, or
+`tracker.gitlab.allowed_targets.groups` and `repos` on GitLab (a group
+also covers its subgroups' projects). A `tracker` mapping for another
+provider, or one with more than one provider block, grants no cross-repo
+targets (the post-script logs a warning naming the providers it found).
+The former `create_issues.allow_targets` key is no longer read and logs a
+warning if present; move `orgs` and `repos` to
+`tracker.github.allowed_targets`, or `repos` to
+`tracker.gitlab.allowed_targets` (with `groups` for group-wide access).
+Proposals targeting repos outside the allowlist are skipped with a warning
+and surfaced in the summary comment so they can be filed manually.
+
+A configuration preset (`config.base.yaml`, beside `config.yaml`) is
+composed beneath the overlay with fullsend's whole-object `tracker` merge:
+an overlay without `tracker` (or with a null or bare `tracker:`) inherits
+the base's targets, and an overlay that sets `tracker` (including an
+explicit empty target policy) replaces them. A null or bare `tracker:` that
+inherits base targets prints a warning; to revoke them, set an explicit empty
+`allowed_targets` instead. If either file cannot be parsed, cross-repo issue
+creation is disabled with a warning.
 
 The originating repo (where the PR that triggered the retro lives) is
 always implicitly allowed.
@@ -103,6 +124,8 @@ If this agent needs to reach hosts beyond the defaults, see the
 ## Runtime support
 
 Supported runtimes: **claude** (stable default), **pi** (experimental). On pi, sub-agents run with the agent model, see [Fullsend pi docs](https://fullsend.sh/docs/runtimes/pi) on how to define a different model for sub-agents.
+
+**Codex** is not a supported runtime for retro yet. Retro dispatches native Codex children only when the runtime note lists registered sub-agent roles, which depends on [fullsend #6970](https://github.com/fullsend-ai/fullsend/issues/6970); this section changes after a live retro run on Codex is linked here. Retro passes no `model`: the runner binds each child's model from `agents[].subagents`, or its run-level default.
 
 Effort: `high` (explicit in the harness; override per run with `fullsend run --effort` or `FULLSEND_EFFORT`, values `low`–`max`).
 

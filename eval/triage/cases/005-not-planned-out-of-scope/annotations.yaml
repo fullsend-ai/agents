@@ -13,7 +13,7 @@ labels:
     - feature
 
 max_turns: 35
-max_cost_usd: 2.00
+max_cost_usd: 0.50
 
 triage_expectations: |
   This issue requests a real-time chat and video calling system in a

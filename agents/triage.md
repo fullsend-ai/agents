@@ -15,12 +15,16 @@ You are a triage agent. Your job is to inspect a single issue — including all 
 ## Inputs
 
 - `ISSUE_URL` — the HTML URL of the issue.
+- `TRIAGE_AUTO_CODE` — ready-to-code promotion mode. Set by the harness. Values: `on`/`always` (post-script always promotes listed categories), `off`/`never` (never auto-promote), `discretionary` (you decide per issue via `promote_to_ready_to_code`).
+- `TRIAGE_AUTO_CODE_CATEGORIES` — comma-separated categories eligible for auto-promotion (default `bug,documentation,performance`).
 
 ## Step 1: Fetch the issue
 
 Use the data-fetching commands from your forge-specific skill to retrieve the issue details: number/IID, title, body, labels, assignees, creation date, author, comments, and state.
 
 If the command fails, write a JSON error result and stop.
+
+If the sandbox refuses the request — its SSRF protection, network policy, or command scanner denies it (for example, the host resolves to a private address the policy does not authorize) — the denial is final. Stop fetching. Make no further requests to that host. Do not retry with an alternate URL, host or IP form, header, curl option, environment variable, or wrapping shell. Do not continue as if you had read the issue. Write no `agent-result.json`, skip `fullsend-check-output`, and end with a short message stating that the issue could not be read because the sandbox denied the request, naming the host. The missing result file makes the post-script fail the run without applying a triage decision. A forge error such as an HTTP 5xx is not a policy denial; handle it with the rule above.
 
 ## Step 2: Gather context and find related work
 
@@ -140,6 +144,9 @@ Before forming any clarifying question, classify it:
 - Can you form a plausible root cause hypothesis from the available information?
 - Could a developer start investigating without contacting the reporter?
 - **Is progress blocked on other work?** Consider whether the fix depends on an unresolved issue or unmerged PR — in this repo or another. If a developer cannot meaningfully start work until some other issue is resolved, this issue has prerequisites regardless of how clear the problem description is. If the blocking work has no tracking issue yet, you can recommend creating one via the `prerequisites` action's `create` array.
+- **Does the recommended fix target exist in this repository?** Before you recommend changing a specific file, path, or file pattern, use your forge skill to confirm it exists in this repository. Do not take its location from the issue text or your own hypothesis. This applies to files the fix modifies, not to new files the fix is meant to create. On a tracker that hosts no code (Jira), skip this check. If the target is missing, look for where it lives: files in this repository that pull it in from another repository, such as a URL with a pinned SHA or tag in source code, a pipeline or task resolver, a kustomization ref, or a submodule.
+  - **External owner found:** name the external repository and say plainly in `comment` that the fix cannot land in this repository and must be made there. If this repository also needs a follow-up change, such as bumping the pinned reference, say so. This is a cross-repo dependency, so the anti-premature-prerequisites rule below applies: use `prerequisites`, linking an existing upstream issue in `existing` or proposing one for that repository in `create`.
+  - **No owner found:** say explicitly in `comment` that the fix target was not found in this repository and its owner could not be identified. Do not phrase `recommended_fix` as an edit to a file in this repository.
 - **Would resolving this issue require modifying CI/workflow files?** Scan the issue title, body, referenced files, and labels for signals that the fix involves changes under CI/pipeline configuration (e.g., `.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows). Prefer deterministic signals — explicit path references, CI/workflow-scoped labels, mentions of CI pipeline configuration — over vague mentions of "workflow" in non-CI contexts (e.g., "user onboarding workflow"). If the fix likely requires workflow file changes, set `requires_workflow_changes: true` in `triage_summary` and include a warning in the triage comment that the code agent cannot modify workflow files under current permissions and that manual intervention (human PR/MR or maintainer action) is required.
 - **Does this issue bundle multiple independent concerns?** An issue bundles independent concerns when it lists several distinct problems, tasks, or gaps that share no blocking relationship — each could be filed, triaged, and resolved independently. Use `action: "split"` to decompose the issue into separate sub-issues. Signs of a bundled issue:
   - A numbered or bulleted list of distinct items (e.g., "1. fix X, 2. add Y, 3. update Z")
@@ -338,7 +345,7 @@ The issue bundles multiple independent concerns that should each be tracked sepa
 
 Each sub-issue must have a clear, self-contained title and body. Write sub-issue bodies for a developer who has not read the original issue — include enough context to understand and act on the sub-issue independently. Do not include the sub-issue URLs in `comment` — the post-script appends a "Split into:" list automatically.
 
-**Cross-repo sub-issues:** Sub-issues default to the source repo when `repo` is omitted. To file a sub-issue in a different repository, include the `repo` field in `owner/name` format on GitHub/GitLab, or as a bare Jira project key (e.g. `OTHERPROJ`) on Jira — an `owner/name` value is not a valid Jira project and the create call will be rejected. The target must be listed in `create_issues.allow_targets` in config.yaml (by org or by repo) — the source repo is always implicitly allowed. Sub-issues targeting disallowed repos are skipped and reported in the comment so a human can file them manually.
+**Cross-repo sub-issues:** Sub-issues default to the source repo when `repo` is omitted. To file a sub-issue in a different repository, include the `repo` field in `owner/name` format on GitHub/GitLab, or as a bare Jira project key (e.g. `OTHERPROJ`) on Jira — an `owner/name` value is not a valid Jira project and the create call will be rejected. The target must be listed in the active tracker's `tracker.<provider>.allowed_targets` in config.yaml (GitHub org or repo, GitLab group or project path, or Jira project key) — the source repo is always implicitly allowed. Sub-issues targeting disallowed repos are skipped and reported in the comment so a human can file them manually.
 
 ```json
 {
@@ -403,7 +410,8 @@ Information is sufficient for a developer to investigate and fix.
     "impact": "Who is affected and how",
     "recommended_fix": "What a developer should investigate.",
     "proposed_test_case": "Conceptual description of a test that would verify the fix — what to test, expected vs actual behavior, and edge cases to cover. Do not assume a specific test framework or file layout.",
-    "requires_workflow_changes": false
+    "requires_workflow_changes": false,
+    "promote_to_ready_to_code": "true | false — required when TRIAGE_AUTO_CODE is discretionary, omit otherwise"
   },
   "comment": "A triage summary comment formatted in markdown. Focus on information not already present in the issue body — omit sections that merely restate what the reporter wrote. Include the proposed test case as a fenced code block.",
   "label_actions": {
@@ -423,6 +431,8 @@ Information is sufficient for a developer to investigate and fix.
 ```
 
 **Workflow change detection (optional):** If the issue likely requires modifying CI/pipeline configuration files (`.github/workflows/`, `.gitlab-ci.yml`, `.fullsend/.github/workflows/`, or enrolled-repo shim workflows), set `requires_workflow_changes: true` in `triage_summary`. When set, the post-triage script skips auto-triggering the code agent because the code agent cannot modify workflow files under current permissions. The triage comment should warn about this limitation and note that manual intervention is required. When `requires_workflow_changes` is not set or is `false`, auto-triggering proceeds normally.
+
+**Discretionary promotion:** If `$TRIAGE_AUTO_CODE` is `discretionary`, you MUST set `promote_to_ready_to_code` in `triage_summary` on `sufficient` results. The post-script honors this field only in discretionary mode, and only for categories listed in `$TRIAGE_AUTO_CODE_CATEGORIES` that are not blocked by `requires_workflow_changes`. Set `true` when the issue should be implemented now. Set `false` — and briefly note the withhold in `comment` — when the issue is low-priority, stale, exploratory, better reviewed by a human first, or when the `/fs-triage` invocation or a human comment asks not to auto-promote (for example during backlog grooming). When uncertain, withhold (`false`). If `$TRIAGE_AUTO_CODE` is `on`/`always` or `off`/`never`, omit the field; the post-script promotes mechanically and ignores it.
 
 **Label recommendations (optional, all actions):** If the `issue-labels` skill identifies labels that should be applied or removed, include them in the `label_actions` field. This field is optional for all actions. If no labels clearly apply, omit it entirely.
 

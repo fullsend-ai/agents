@@ -1,5 +1,0 @@
----
-name: github-ro
-type: fullsend-github-ro
-credentials:
-  GH_TOKEN: "${GH_TOKEN}"

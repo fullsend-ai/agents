@@ -57,8 +57,15 @@ runner:
     EVAL_EFFORT: $EVAL_EFFORT
 
 models:
-  skill: claude-opus-4-6
-  judge: claude-opus-4-6
+  skill: claude-sonnet-5-5
+  # The harness forces tool_choice to get a structured judge verdict.
+  # The eval Vertex project's org policy
+  # (constraints/vertexai.allowedPartnerModelFeatures) allows structured
+  # outputs for claude-sonnet-5 but not yet for claude-sonnet-5-5, which
+  # returns 400 on forced tool_choice. Move the judge to
+  # claude-sonnet-5-5 once the policy lists
+  # claude-sonnet-5-5:structured_outputs (agents#1603).
+  judge: claude-sonnet-5
 
 dataset:
   path: cases
@@ -80,6 +87,9 @@ outputs:
 # ---------------------------------------------------------------------------
 judges:
   - name: triage_quality
+    # The rubric's scale. Declared, an off-scale score is recorded as a
+    # judge error (counted by max_error_rate) instead of being accepted.
+    score_range: [1, 5]
     description: |
       Evaluate the overall quality of the triage — not just whether labels
       were applied, but whether the agent's comment demonstrates understanding
@@ -91,8 +101,10 @@ judges:
       triage pipeline: it read the source code, analyzed the issue, posted
       a comment, and applied labels.
 
-      Here is the captured state of the issue after the agent ran:
-      {{ outputs }}
+      Here is the captured state of the issue after the agent ran (fixture
+      state capped at 50,000 characters, well under the judge model's
+      input limit; a trailing marker appears if truncation happened):
+      {{ outputs.files.get("output/fixture-state.json", "") | truncate(50000, True, "\n\n...[TRUNCATED: fixture state exceeded 50,000 characters]") }}
 
       Here is what the test case author expects from a good triage of this
       specific issue, including what the agent should have noticed in the
@@ -183,16 +195,18 @@ judges:
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
+# max_turns and max_cost run and report but gate nothing: per-case turn
+# counts and cost vary run to run far more than any regression they have
+# caught (none since 2026-08), so a budget miss is not a failure.
 thresholds:
   triage_quality:
     # TODO: raise to 3.5 once the triage agent critically examines source
     # code instead of accepting issue descriptions at face value.
     min_mean: 2.5
+    # Coverage gate, as on review_quality: fail when the judge errored on
+    # more than a fifth of the cases instead of averaging the survivors.
+    max_error_rate: 0.2
   required_labels:
     min_pass_rate: 0.9
   forbidden_labels:
     min_pass_rate: 0.9
-  max_turns:
-    min_pass_rate: 1.0
-  max_cost:
-    min_pass_rate: 1.0

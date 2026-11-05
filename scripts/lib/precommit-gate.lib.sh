@@ -40,20 +40,48 @@ signoff_bot_email() {
   printf '%s' "${GIT_BOT_EMAIL:-${GIT_COMMITTER_EMAIL:-}}"
 }
 
+# commit_author_identity SHA — prints "name<TAB>email". A commit published
+# through the GitHub API (docs/code.md "Signed commits") is authored by the
+# App's bot user and carries the sandbox identity in an `Authored-by: name
+# <email>` trailer. The trailer is the author only when the git author is
+# that bot (name ending in `[bot]`, email GIT_BOT_EMAIL) and the commit
+# carries exactly one; anything else is read from the git author fields.
+commit_author_identity() {
+  local sha="$1" name email trailers
+  IFS=$'\t' read -r name email <<< "$(git log -1 --format='%an%x09%ae' "${sha}" 2>/dev/null)"
+  if [[ "${name}" == *"[bot]" && "${email}" == "$(signoff_bot_email)" ]]; then
+    trailers="$(git log -1 --format='%(trailers:key=Authored-by,valueonly)' "${sha}" 2>/dev/null | sed '/^$/d')"
+    if [ "$(printf '%s\n' "${trailers}" | grep -c .)" = "1" ]; then
+      case "${trailers}" in
+        *" <"*">")
+          name="${trailers% <*}"
+          email="${trailers##* <}"
+          email="${email%>}"
+          ;;
+      esac
+    fi
+  fi
+  printf '%s\t%s\n' "${name}" "${email}"
+}
+
 # signoff_is_bot_commit <sha> — 0 when the commit is in scope for rewriting.
 # Author, not committer: a rebase re-stamps the committer onto commits the
 # human wrote. Author is also what the DCO app checks when it waives bots.
 signoff_is_bot_commit() {
-  local _sb_bot
+  local _sb_bot _sb_email
   _sb_bot="$(signoff_bot_email)"
   [ -z "${_sb_bot}" ] && return 0
-  [ "$(git log -1 --format='%ae' "$1" 2>/dev/null)" = "${_sb_bot}" ]
+  IFS=$'\t' read -r _ _sb_email <<< "$(commit_author_identity "$1")"
+  [ "${_sb_email}" = "${_sb_bot}" ]
 }
 
 # signoff_count_range <range> — number of in-scope commits carrying a trailer.
+# --first-parent is hardcoded here (not folded into the range string) so a
+# forge-conflict merge's second parent (historical target-branch commits)
+# is never walked; it's a no-op when the range has no merge commits.
 signoff_count_range() {
   local _sc_n=0 _sc_sha
-  for _sc_sha in $(git rev-list "$1" 2>/dev/null); do
+  for _sc_sha in $(git rev-list --first-parent "$1" 2>/dev/null); do
     if signoff_is_bot_commit "${_sc_sha}" \
        && git log -1 --format='%B' "${_sc_sha}" | grep -q '^Signed-off-by:'; then
       _sc_n=$((_sc_n + 1))
@@ -72,7 +100,7 @@ signoff_present_in_range() {
 # closed. Never touches commits below the range's base.
 signoff_strip_range() {
   local _ss_range="$1" _ss_bot _ss_tmp _ss_sed _ss_sha
-  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0
+  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0 _ss_shas=""
   _ss_bot="$(signoff_bot_email)"
   # Skip line 1 so a message whose subject IS the trailer keeps a subject.
   _ss_sed='1!{/^Signed-off-by:/d;}'
@@ -89,10 +117,13 @@ signoff_strip_range() {
   # cat, and commit-tree cannot reproduce gpgsig, so a human commit inside the
   # range would lose its signature and change SHA. Agent commits sit at the
   # tip in practice; an in-scope trailer below a human commit fails closed.
-  for _ss_sha in $(git rev-list "${_ss_range}" 2>/dev/null); do
+  # --first-parent (hardcoded, not folded into the range string) keeps a
+  # forge-conflict merge's second parent out of scope; no-op otherwise.
+  for _ss_sha in $(git rev-list --first-parent "${_ss_range}" 2>/dev/null); do
     if [ "${_ss_in_tip}" -eq 1 ] && signoff_is_bot_commit "${_ss_sha}"; then
       _ss_tip_n=$((_ss_tip_n + 1))
       _ss_base="${_ss_sha}"
+      _ss_shas="${_ss_shas} ${_ss_sha}"
     else
       _ss_in_tip=0
       if signoff_is_bot_commit "${_ss_sha}" \
@@ -144,15 +175,18 @@ signoff_strip_range() {
     return 1
   fi
 
-  # The narrowed range is agent-only by construction; the author check in the
-  # filter is a second line of defence. filter-branch exports each original
-  # commit's identity, so $GIT_AUTHOR_EMAIL is the commit being rewritten. The
-  # bot address goes through the environment, not the filter text: it
-  # contains "[bot]" and "+".
-  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_BOT_EMAIL="${_ss_bot}" \
+  # The narrowed range is agent-only by construction; as a second line of
+  # defence the filter rewrites only the commits the walk selected, which
+  # filter-branch names through GIT_COMMIT.
+  # --first-parent (passed to the underlying rev-list, same as the walk above)
+  # keeps a forge-conflict merge's second parent — historical target-branch
+  # commits — out of the rewrite. Without it, filter-branch regenerates every
+  # commit it is handed, including that second-parent history, which changes
+  # its SHAs and breaks the merge's TRUSTED_TARGET_SHA ancestry.
+  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_SHAS="${_ss_shas} " \
        git filter-branch -f \
-       --msg-filter 'if [ "${GIT_AUTHOR_EMAIL}" = "${SIGNOFF_BOT_EMAIL}" ]; then sed '"'${_ss_sed}'"'; else cat; fi' \
-       -- "${_ss_base}^..HEAD" >/dev/null; then
+       --msg-filter 'case "${SIGNOFF_SHAS}" in *" ${GIT_COMMIT} "*) sed '"'${_ss_sed}'"' ;; *) cat ;; esac' \
+       -- --first-parent "${_ss_base}^..HEAD" >/dev/null; then
     echo "signoff-strip: git filter-branch failed" >&2
     return 1
   fi
@@ -238,7 +272,11 @@ precommit_install_deps() {
 #
 # Parameters:
 #   $1 — name of a bash array variable holding changed file paths (nameref)
-#   $2 — git range for gitleaks re-scan after auto-fix (e.g. "abc123..HEAD")
+#   $2 — gitleaks --log-opts for the re-scan after auto-fix: a plain range
+#        (e.g. "abc123..HEAD") or "--first-parent abc123..HEAD" when the
+#        caller detected a merge commit in range. The signoff helpers below
+#        need a plain git-rev-list range, so any "--first-parent " prefix is
+#        stripped before use — they add --first-parent internally instead.
 #   $3 — target branch name (for fallback diff derivation)
 #   $4 — merge-base commit (for diff derivation after auto-fix)
 #
@@ -255,6 +293,10 @@ precommit_run_gate() {
   local _pg_scan_range="$2"
   local _pg_target_branch="$3"
   local _pg_merge_base="$4"
+  # signoff_* helpers take a plain git-rev-list range and add --first-parent
+  # themselves; strip any "--first-parent " prefix a caller folded into $2
+  # for the gitleaks --log-opts use below, so the two don't fight over quoting.
+  local _pg_plain_range="${_pg_scan_range#--first-parent }"
 
   # Output contract — callers read these after the function returns.
   # shellcheck disable=SC2034
@@ -305,7 +347,20 @@ precommit_run_gate() {
     echo "Auto-fixed files:"
     git diff --name-only -- "${_pg_files[@]}" | sed 's/^/  /'
     git diff --name-only -z -- "${_pg_files[@]}" | xargs -0 -r git add --
-    git commit --amend --no-edit
+    # HEAD can be a forge-conflict resolution merge (issue #1518). Amending
+    # it would change the merge's tree, but the per-merge `--pipe` secret
+    # scan that covers merge-introduced content (post-fix.src.sh section 1)
+    # only runs once, before this gate — the `--log-opts` re-scan just below
+    # emits no patch at all for a "Merge:" commit, so an amended merge tree
+    # would never be scanned by anything. Create a new non-merge commit for
+    # the autofix instead: the merge commit's already-scanned tree stays
+    # untouched, and the new commit is an ordinary first-parent commit the
+    # `--log-opts` re-scan below can see.
+    if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
+      git commit -m "pre-commit: autofix forge-conflict resolution"
+    else
+      git commit --amend --no-edit
+    fi
 
     # Re-run secret scan on the amended commit.
     echo "Re-running secret scan on amended commit..."
@@ -327,9 +382,9 @@ precommit_run_gate() {
     # Re-check signed-off-by trailers — strip if present (defense-in-depth).
     # The auto-fix amend above can only have re-added a trailer to HEAD (a repo
     # commit-msg hook); section 3b already cleaned the rest of the range.
-    if signoff_present_in_range "${_pg_scan_range}"; then
+    if signoff_present_in_range "${_pg_plain_range}"; then
       gha_echo warning "Signed-off-by trailer found after auto-fix amend — stripping"
-      if ! signoff_strip_range "${_pg_scan_range}"; then
+      if ! signoff_strip_range "${_pg_plain_range}"; then
         # shellcheck disable=SC2034
         PRECOMMIT_GATE_SIGNOFF_FAIL="true"
         # shellcheck disable=SC2034
@@ -341,7 +396,7 @@ precommit_run_gate() {
         return 0
       fi
       # Re-scan: fail only if a trailer survives a rewrite that reported success
-      if signoff_present_in_range "${_pg_scan_range}"; then
+      if signoff_present_in_range "${_pg_plain_range}"; then
         # shellcheck disable=SC2034
         PRECOMMIT_GATE_SIGNOFF_FAIL="true"
         # shellcheck disable=SC2034

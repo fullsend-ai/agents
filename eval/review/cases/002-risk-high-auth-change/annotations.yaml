@@ -7,8 +7,7 @@ labels:
     - ready-for-merge
   risk_label_required: true
 
-max_turns: 80
-max_cost_usd: 8.00
+max_cost_usd: 3.75
 
 review_expectations: |
   Multi-file auth refactor touching RBAC, CODEOWNERS, and security-

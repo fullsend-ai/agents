@@ -154,8 +154,13 @@ tracker_add_label() {
 
 tracker_remove_label() {
   local label="$1"
-  _jira_api PUT "/issue/${ISSUE_NUMBER}" \
-    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null 2>/dev/null || true
+  # Jira treats removing an absent label as a no-op, so an error here is a
+  # real write failure. Fail the step instead of reporting success.
+  if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" \
+    --data "$(jq -cn --arg l "${label}" '{update:{labels:[{remove:$l}]}}')" > /dev/null; then
+    echo "ERROR: failed to remove label '${label}' from issue ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    return 1
+  fi
 }
 
 tracker_strip_labels() {
@@ -268,19 +273,27 @@ tracker_post_comment() {
   local body="$1"
   _jira_require_vars || return 1
   # `fullsend issues post-comment` always does marker-based find-and-update;
-  # there is no "always create new" mode. A marker unique to this invocation
-  # guarantees no prior comment matches it, so this always creates a new
-  # comment — matching tracker_post_comment's always-new contract on
-  # GitHub/GitLab.
+  # there is no "always create new" mode. Each triage run gets a new comment,
+  # matching tracker_post_comment's always-new contract on GitHub/GitLab.
+  # The marker is scoped to the CI run (GITHUB_RUN_ID survives a workflow
+  # re-run, CI_PIPELINE_ID a GitLab job retry), so a retried run edits its
+  # own earlier comment instead of posting a duplicate.
   local marker stamp
-  stamp=$(date +%s%N)
-  # BSD date without %N support leaves the literal "N" in place, which would
-  # make the marker identical for every invocation within the same second and
-  # break the always-create-new contract. Fall back to a random suffix.
-  if [[ "${stamp}" == *N* ]]; then
-    stamp="$(date +%s)${RANDOM}${RANDOM}"
+  local run_id="${GITHUB_RUN_ID:-${CI_PIPELINE_ID:-}}"
+  if [[ "${run_id}" =~ ^[0-9]+$ ]]; then
+    marker="<!-- fullsend:triage-run-${run_id} -->"
+  else
+    # No CI run ID: a marker unique to this invocation guarantees no prior
+    # comment matches it.
+    stamp=$(date +%s%N)
+    # BSD date without %N support leaves the literal "N" in place, which would
+    # make the marker identical for every invocation within the same second and
+    # break the always-create-new contract. Fall back to a random suffix.
+    if [[ "${stamp}" == *N* ]]; then
+      stamp="$(date +%s)${RANDOM}${RANDOM}"
+    fi
+    marker="<!-- fullsend:triage-${stamp} -->"
   fi
-  marker="<!-- fullsend:triage-${stamp} -->"
   printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
     --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
@@ -399,4 +412,41 @@ tracker_create_issue() {
     return 1
   fi
   echo "${JIRA_BASE_URL}/browse/${key}"
+}
+
+# Apply ready-for-triage to a newly created issue so Jira dispatch can
+# pick it up. Failures are non-fatal for the caller.
+#
+# target_project must be the same already-allowlisted project key (checked
+# via is_target_allowed) that created_url's issue was created in. Unlike
+# GitHub/GitLab, the issue key used to address the label PUT (not just a
+# REPO global) has to be derived from created_url, so this validates the
+# URL against the same anchored pattern tracker_validate_issue_url uses and
+# then rebuilds the issue key from target_project plus only the numeric
+# suffix of created_url — rather than trusting the project name parsed out
+# of created_url — before mutating.
+tracker_dispatch_triage() {
+  local created_url="$1"
+  local target_project="$2"
+  local saved_number="${ISSUE_NUMBER}"
+  if [[ ! "${created_url}" =~ ^https://[a-zA-Z0-9.-]+/browse/[A-Z][A-Z0-9]*-[0-9]+$ ]]; then
+    echo "ERROR: created_url does not match expected Jira pattern: $(_gha_sanitize "${created_url}")" >&2
+    return 1
+  fi
+  local parsed_key="${created_url##*/browse/}"
+  if [[ -n "${target_project}" ]]; then
+    # Rebuild the issue key from the already-allowlisted target project
+    # plus only the numeric suffix from created_url, rather than trusting
+    # the project name parsed out of created_url.
+    ISSUE_NUMBER="${target_project}-${parsed_key##*-}"
+  else
+    ISSUE_NUMBER="${parsed_key}"
+  fi
+  local rc=0
+  if ! tracker_add_label "ready-for-triage"; then
+    echo "::warning::Failed to add ready-for-triage label to $(_gha_sanitize "${created_url}")" >&2
+    rc=1
+  fi
+  ISSUE_NUMBER="${saved_number}"
+  return "${rc}"
 }

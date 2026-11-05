@@ -65,15 +65,33 @@ runner:
     EVAL_EFFORT: $EVAL_EFFORT
 
 models:
-  skill: claude-opus-4-6
-  judge: claude-opus-4-6
+  skill: claude-sonnet-5-5
+  # The harness forces tool_choice to get a structured judge verdict.
+  # The eval Vertex project's org policy
+  # (constraints/vertexai.allowedPartnerModelFeatures) allows structured
+  # outputs for claude-sonnet-5 but not yet for claude-sonnet-5-5, which
+  # returns 400 on forced tool_choice. Move the judge to
+  # claude-sonnet-5-5 once the policy lists
+  # claude-sonnet-5-5:structured_outputs (agents#1603).
+  judge: claude-sonnet-5
 
 dataset:
   path: cases
   schema: |
     Each case directory contains:
     - input.yaml: Fixture definition with forge, fixture type, title, body, and PR files.
+      `${REPO_URL}` in a body is the ephemeral GitHub repository URL.
+      PR fixtures may include followup_files, commit_message (default
+      'eval: fixture changes'), plus prior_review body/provenance to exercise
+      re-review behavior.
     - annotations.yaml: Expected fixture state (labels, reviews, state).
+      findings.required requires every listed category; findings.required_any
+      requires at least one listed category when non-empty. findings.forbidden
+      rejects every listed category. Categories are matched only in the
+      current section of the review agent's sticky comment, not in its
+      previous-run history, formal reviews or other comments.
+      review_expectations specifies which edits
+      those findings must concern for the review_quality judge.
     - repo/: Directory with the base repo contents (pushed to main before the PR).
 
 outputs:
@@ -89,6 +107,9 @@ outputs:
 # ---------------------------------------------------------------------------
 judges:
   - name: review_quality
+    # The rubric's scale. Declared, an off-scale score is recorded as a
+    # judge error (counted by max_error_rate) instead of being accepted.
+    score_range: [1, 5]
     description: |
       Evaluate the overall quality of the review — did the agent understand the
       change and produce a well-reasoned verdict?
@@ -99,8 +120,10 @@ judges:
       it read the diff and source code, analyzed the change, and posted a
       review with a verdict.
 
-      Here is the captured state of the PR after the agent ran:
-      {{ outputs }}
+      Here is the captured state of the PR after the agent ran (fixture
+      state capped at 50,000 characters, well under the judge model's
+      input limit; a trailing marker appears if truncation happened):
+      {{ outputs.files.get("output/fixture-state.json", "") | truncate(50000, True, "\n\n...[TRUNCATED: fixture state exceeded 50,000 characters]") }}
 
       Here is what the test case author expects from a good review of this
       specific PR:
@@ -163,17 +186,35 @@ judges:
       if not raw:
           return False, "fixture-state.json not found"
       state = json.loads(raw)
-      bodies = [item.get("body", "") for item in state.get("comments", [])]
-      bodies.extend(item.get("body", "") for item in state.get("reviews", []))
-      review_text = "\n".join(bodies).lower()
       expected = outputs.get("annotations", {}).get("findings", {})
       required = [finding.lower() for finding in expected.get("required", [])]
+      required_any = [finding.lower() for finding in expected.get("required_any", [])]
       forbidden = [finding.lower() for finding in expected.get("forbidden", [])]
+      if not (required or required_any or forbidden):
+          return True, "No finding expectations specified"
+      # Only the evaluated run's write-up counts. fullsend post-review puts
+      # the review in one sticky comment whose first line is its marker
+      # (copies elsewhere are escaped); formal reviews only link to it, and
+      # other comments are not this run's output. Each case gets a new repo,
+      # so no earlier run can have written the sticky.
+      marker = "<!-- fullsend:review-agent -->"
+      stickies = [
+          body for body in ((item.get("body") or "") for item in state.get("comments") or [])
+          if body.split("\n", 1)[0].rstrip("\r") == marker
+      ]
+      if len(stickies) != 1:
+          return False, f"Findings not attributable to this run: expected one review-agent sticky comment, found {len(stickies)}"
+      # Edits keep earlier runs below the first history sentinel; only the
+      # section above it is this run's (pre-review reads it the same way).
+      review_text = stickies[0].split("<!-- sticky:history-start -->", 1)[0].lower()
       missing = [finding for finding in required if f"[{finding}]" not in review_text]
+      missing_any = bool(required_any) and not any(
+          f"[{finding}]" in review_text for finding in required_any
+      )
       present = [finding for finding in forbidden if f"[{finding}]" in review_text]
-      if missing or present:
-          return False, f"Finding mismatch: missing={missing}, forbidden_present={present}"
-      return True, f"Finding expectations met: required={required}, forbidden={forbidden}"
+      if missing or missing_any or present:
+          return False, f"Finding mismatch: missing={missing}, missing_any={required_any if missing_any else []}, forbidden_present={present}"
+      return True, f"Finding expectations met: required={required}, required_any={required_any}, forbidden={forbidden}"
 
   - name: risk_label_present
     description: When risk_label_required is set, at least one risk/* label must be present
@@ -191,24 +232,6 @@ judges:
       if not risk_labels:
           return False, f"No risk/* label found (actual: {actual})"
       return True, f"Risk label present: {risk_labels}"
-
-  - name: max_turns
-    description: Agent must complete within the declared turn budget
-    check: |
-      import json
-      raw = outputs["files"].get("output/metrics.json")
-      if not raw:
-          return False, "metrics.json not found"
-      metrics = json.loads(raw)
-      actual = metrics.get("num_turns")
-      if actual is None:
-          return False, "num_turns not present in metrics.json"
-      limit = outputs.get("annotations", {}).get("max_turns")
-      if limit is None:
-          return False, "max_turns not declared in annotations.yaml"
-      if int(actual) > int(limit):
-          return False, f"Exceeded max_turns: {actual} > {limit}"
-      return True, f"Turns OK: {actual} <= {limit}"
 
   - name: max_cost
     description: Agent must complete within the declared cost budget
@@ -231,9 +254,18 @@ judges:
 # ---------------------------------------------------------------------------
 # Thresholds
 # ---------------------------------------------------------------------------
+# max_cost runs and reports but gates nothing: per-case cost varies run to
+# run far more than any regression it has caught (none since 2026-08). There
+# is no max_turns judge here: review's num_turns does not track the work done
+# (identical runs, same tool calls and cost, report 2-9 or 37-64 turns).
 thresholds:
   review_quality:
     min_mean: 3.0
+    # Coverage gate: fail loudly if the judge errored on a chunk of the
+    # dataset instead of letting min_mean silently average over survivors.
+    # Off by default upstream; declared here since a too-large judge
+    # prompt is exactly the kind of per-case error this guards against.
+    max_error_rate: 0.2
   required_labels:
     min_pass_rate: 1.0
   risk_label_present:
@@ -241,8 +273,4 @@ thresholds:
   forbidden_labels:
     min_pass_rate: 1.0
   finding_expectations:
-    min_pass_rate: 1.0
-  max_turns:
-    min_pass_rate: 1.0
-  max_cost:
     min_pass_rate: 1.0

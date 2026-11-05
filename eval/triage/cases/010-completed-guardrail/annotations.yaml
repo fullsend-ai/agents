@@ -10,7 +10,7 @@ labels:
     - ready-to-code
 
 max_turns: 35
-max_cost_usd: 2.00
+max_cost_usd: 0.75
 
 triage_expectations: |
   This is a tracking/epic issue with mixed child state: #1 and #2 are

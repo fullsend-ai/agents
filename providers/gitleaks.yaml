@@ -1,5 +1,0 @@
----
-name: gitleaks
-type: fullsend-gitleaks
-credentials:
-  _NOOP_GITLEAKS: ""

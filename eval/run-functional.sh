@@ -12,18 +12,70 @@
 #   GH_TOKEN      — GitHub token (defaults to gh auth token)
 #
 # Required:
-#   agent-eval-harness — pip install from the submodule or repo
+#   agent-eval-harness — pip install from the submodule or repo for its
+#                        dependencies; the checkout in use must be at least
+#                        the version the submodule pins (see "Harness
+#                        version gate" below)
 #   fullsend           — must be on PATH
 #
 # Optional environment:
 #   FULLSEND_DIR  — path to fullsend scaffold directory (default: repo root)
-#   EVAL_RUNTIME  — run every case under this runtime (claude|pi) instead of
-#                   the workspace config.yaml's runtime (fullsend run --runtime)
+#   EVAL_RUNTIME  — run every case under this runtime (claude|codex|pi)
+#                   instead of the workspace config.yaml's runtime
+#                   (fullsend run --runtime)
 #   EVAL_MODEL    — model override for every case: alias, id or provider/id
 #                   (fullsend run --model), e.g. google-vertex/gemini-2.5-flash
 #   EVAL_EFFORT   — effort override (fullsend run --effort)
+#   EVAL_TIER     — "full" (default) or "release".
+#                     full    — run every case.
+#                     release — run only this agent's release:true case(s).
+#                   In both tiers the run fails only on a non-zero case exit
+#                   or a deterministic contract judge (pr_created,
+#                   new_commit, sandbox_started). LLM-quality judges
+#                   (*_quality), the live-model behaviour checks
+#                   (finding_expectations, required_labels,
+#                   forbidden_labels, risk_label_present, expected_files)
+#                   and the max_turns/max_cost budget judges still run and
+#                   report, but their thresholds are dropped at runtime.
+#                   If unset, defaults to "release" when running as a
+#                   cross-repo workflow_call under GitHub Actions
+#                   (GITHUB_ACTIONS=true and GITHUB_REPOSITORY set to
+#                   something other than fullsend-ai/agents — i.e. the
+#                   fullsend release gate, which checks out agents `main`
+#                   rather than a pinned commit). Otherwise defaults to
+#                   "full". Any other value is an error.
+#   EVAL_TIMEOUT  — per-case runner timeout in seconds, honoured only when
+#                   the agent's eval.yaml execution.env does not set it
+#                   (code, review and fix pin 1700, retro 540; triage uses
+#                   the environment, default 1800)
+#   EVAL_FORGE    — forge passed as fullsend run --forge (default github)
+#   EVAL_SANDBOX_BINARY — a specific Linux fullsend binary to copy into the
+#                   sandbox; unset, fullsend picks one itself
+#   EVAL_REPO_VISIBILITY — visibility of the ephemeral fixture repos:
+#                   private (default) or public
+#   OPENAI_API_KEY — passed through to fullsend run for the codex and pi
+#                   runtimes when set
 #   GOOGLE_APPLICATION_CREDENTIALS, ANTHROPIC_VERTEX_PROJECT_ID, etc.
-#   AGENT_EVAL_HARNESS_DIR — path to agent-eval-harness
+#   AGENT_EVAL_HARNESS_DIR — path to the agent-eval-harness checkout to run
+#                   (default: the submodule). The submodule must still be
+#                   initialised: the pinned version is read from it.
+#   EVAL_MAX_ATTEMPTS — how many attempts, in all, a case that failed before
+#                   the agent ran gets (default 2: the first run and one
+#                   retry). Each attempt is kept in attempts/<n>/ (see
+#                   eval/README.md, Artifact layout).
+#
+# Exit status:
+#   0 — every phase passed
+#   1 — a case failed after the agent ran, a judge threshold failed on
+#       scored cases (a quality regression), or score.py failed without a
+#       regression list (a crash or a config error)
+#   3 — infrastructure, not an agent or quality result: every failed case
+#       failed before the agent ran (non-zero exit other than a timeout,
+#       no turns, cost or tokens) on every attempt (its first run and one
+#       retry, by default), or
+#       every failing threshold is explained by LLM judge calls that errored
+#       (an error_rate gate, or a judge left with no score), after one
+#       scoring retry
 set -euo pipefail
 
 AGENT="${1:?agent name required}"
@@ -34,21 +86,153 @@ export PATH="${EVAL_DIR}/scripts:${PATH}"
 EVAL_YAML_SRC="${EVAL_DIR}/${AGENT}/eval.yaml"
 CASES_DIR="${EVAL_DIR}/${AGENT}/cases"
 
-# The harness has inconsistent path resolution for dataset.path between
-# workspace.py (config-dir-relative) and execute.py (cwd-relative). Work
-# around this by rewriting dataset.path to an absolute path at runtime.
-EVAL_YAML="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX.yaml")"
-trap 'rm -f "$EVAL_YAML"' EXIT
-yq ".dataset.path = \"${CASES_DIR}\"" "$EVAL_YAML_SRC" > "$EVAL_YAML"
-HARNESS_DIR="${AGENT_EVAL_HARNESS_DIR:-${EVAL_DIR}/.agent-eval-harness}"
-
 if [[ ! -f "$EVAL_YAML_SRC" ]]; then
   echo "ERROR: eval config not found: $EVAL_YAML_SRC" >&2
   exit 1
 fi
 
-# Fail fast if agent_eval library is not installed
-if ! python3 -c "import agent_eval" 2>/dev/null; then
+notice() {
+  # ::notice:: is GitHub Actions annotation syntax; plain text elsewhere.
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    echo "::notice::$1"
+  else
+    echo "$1"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Tier selection
+# ---------------------------------------------------------------------------
+if [[ -n "${EVAL_TIER:-}" ]]; then
+  case "$EVAL_TIER" in
+    full|release)
+      TIER_REASON="explicit EVAL_TIER=${EVAL_TIER}"
+      ;;
+    *)
+      echo "ERROR: invalid EVAL_TIER '${EVAL_TIER}' (must be 'full' or 'release')" >&2
+      exit 1
+      ;;
+  esac
+elif [[ "${GITHUB_ACTIONS:-}" == "true" && -n "${GITHUB_REPOSITORY:-}" && "${GITHUB_REPOSITORY}" != "fullsend-ai/agents" ]]; then
+  # Cross-repo workflow_call (the fullsend release gate) runs this script
+  # from agents `main`, not a pinned commit, so this is the one place the
+  # release-tier default can take effect without a fullsend pin bump.
+  EVAL_TIER="release"
+  TIER_REASON="cross-repo workflow_call (GITHUB_REPOSITORY=${GITHUB_REPOSITORY} != fullsend-ai/agents)"
+else
+  EVAL_TIER="full"
+  TIER_REASON="default (not a cross-repo Actions call)"
+fi
+
+notice "EVAL_TIER=${EVAL_TIER} (${TIER_REASON})"
+
+MAX_ATTEMPTS="${EVAL_MAX_ATTEMPTS:-2}"
+if [[ ! "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: invalid EVAL_MAX_ATTEMPTS '${MAX_ATTEMPTS}' (must be a positive integer)" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Release-tier case selection — stage only this agent's release:true
+# case(s) into a temp dataset dir so the checked-in cases/ tree is never
+# modified. The staging dir is created as a sibling of cases/ (i.e. at the
+# same depth under eval/<agent>/) so a case's relative symlinks (e.g.
+# repo/ -> ../../repos/foo) still resolve correctly from the copy.
+# ---------------------------------------------------------------------------
+EVAL_YAML=""
+RELEASE_STAGE_DIR=""
+RETRY_STAGE_DIR=""
+RETRY_YAML=""
+SCORE_VIEW=""
+# remove_score_view: removes the scoring view (see Phase 3) — only its
+# symlinks, never what they point at, so no attempt's output can go with it.
+remove_score_view() {
+  local link
+  [[ -n "$SCORE_VIEW" && -d "$SCORE_VIEW" ]] || return 0
+  for link in "$SCORE_VIEW"/*; do
+    [[ -L "$link" ]] && rm -f "$link"
+  done
+  rmdir "$SCORE_VIEW" 2>/dev/null \
+    || echo "WARNING: could not remove the scoring view ${SCORE_VIEW}" >&2
+  true
+}
+cleanup_runtime_config() {
+  # Trailing `true` is load-bearing: an EXIT trap's own exit status
+  # replaces an already-issued `exit N` when the trap's last command is
+  # false, and the `[[ -n ... ]] &&` guards below are false whenever that
+  # path was never created — without `true` a successful run would be
+  # reported to the caller as exit 1.
+  [[ -n "$EVAL_YAML" ]] && rm -f "$EVAL_YAML"
+  [[ -n "$RELEASE_STAGE_DIR" ]] && rm -rf "$RELEASE_STAGE_DIR"
+  [[ -n "$RETRY_STAGE_DIR" ]] && rm -rf "$RETRY_STAGE_DIR"
+  [[ -n "$RETRY_YAML" ]] && rm -f "$RETRY_YAML"
+  remove_score_view
+  true
+}
+# Armed before either temp path is created, so a failure while staging
+# release cases cannot leave eval/<agent>/release-cases-* behind.
+trap cleanup_runtime_config EXIT
+
+if [[ "$EVAL_TIER" == "release" ]]; then
+  RELEASE_STAGE_DIR="$(mktemp -d "${EVAL_DIR}/${AGENT}/release-cases-XXXXXX")"
+  release_case_count=0
+  shopt -s nullglob
+  for case_dir in "${CASES_DIR}"/*/; do
+    case_name="$(basename "$case_dir")"
+    annotations="${case_dir}annotations.yaml"
+    if [[ -f "$annotations" ]] && [[ "$(yq '.release // false' "$annotations")" == "true" ]]; then
+      cp -a "$case_dir" "${RELEASE_STAGE_DIR}/${case_name}"
+      release_case_count=$((release_case_count + 1))
+    fi
+  done
+  shopt -u nullglob
+  if [[ "$release_case_count" -eq 0 ]]; then
+    notice "No release:true case for agent '${AGENT}' — skipping functional tests"
+    rm -rf "$RELEASE_STAGE_DIR"
+    exit 0
+  fi
+  CASES_DIR="$RELEASE_STAGE_DIR"
+fi
+
+# The harness has inconsistent path resolution for dataset.path between
+# workspace.py (config-dir-relative) and execute.py (cwd-relative). Work
+# around this by rewriting dataset.path to an absolute path at runtime.
+# BSD mktemp (macOS) only substitutes trailing X's, so a template with a
+# .yaml suffix produces the literal name eval-runtime-XXXXXX.yaml and a second
+# run fails with "File exists". Create the temp name first, then add the suffix.
+EVAL_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-runtime-XXXXXX")"
+EVAL_YAML="${EVAL_YAML_TMP}.yaml"
+mv "$EVAL_YAML_TMP" "$EVAL_YAML"
+
+yq_expr=".dataset.path = \"${CASES_DIR}\""
+# Report-only judges, in every tier: LLM-quality judges (name ends in
+# "_quality", e.g. review_quality/triage_quality), the live-model behaviour
+# checks (finding_expectations, required_labels, forbidden_labels,
+# risk_label_present, expected_files) and the max_turns/max_cost budget
+# judges. score.py's detect_regressions() only gates on judges with a
+# thresholds: entry, so dropping these leaves them running and reported but
+# out of the pass/fail decision. The deterministic contract judges
+# (pr_created, new_commit, sandbox_started) keep their thresholds. The
+# checked-in eval.yaml keeps every threshold; only the runtime copy drops them.
+yq_expr+=' | .thresholds |= with_entries(select(.key | test("^(finding_expectations|required_labels|forbidden_labels|risk_label_present|expected_files|max_turns|max_cost)$|_quality$") | not))'
+yq "$yq_expr" "$EVAL_YAML_SRC" > "$EVAL_YAML"
+HARNESS_DIR="${AGENT_EVAL_HARNESS_DIR:-${EVAL_DIR}/.agent-eval-harness}"
+
+# The environment must not redirect git or python away from this checkout:
+# GIT_DIR and friends would make every git command below look at some other
+# repository, and PYTHONSAFEPATH would stop the harness scripts importing
+# agent_eval from the symlink beside them.
+unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR PYTHONSAFEPATH
+
+# Fail fast if the agent_eval library is not installed. The harness scripts
+# import agent_eval itself from their checkout (a symlink beside them); the
+# install is for its third-party dependencies, and is required either way.
+# It only has to exist: an editable install of an older checkout can leave
+# the harness short of a dependency, which then surfaces as an import error
+# from the first harness script, and the fix is to re-run the install. -P
+# keeps the current directory off sys.path, so a harness checkout the script
+# happens to be run from cannot stand in for an install.
+if ! python3 -P -c "import agent_eval" 2>/dev/null; then
   echo "ERROR: agent-eval-harness library is not installed." >&2
   echo "       pip install -e eval/.agent-eval-harness" >&2
   exit 1
@@ -78,6 +262,85 @@ for script in "$WORKSPACE_PY" "$EXECUTE_PY" "$SCORE_PY"; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# Harness version gate
+# ---------------------------------------------------------------------------
+# The eval scripts are written against the harness version the submodule
+# pins, and from 1.56.3 the harness also confines agent judges with a deny
+# list. The checkout in use need not be the submodule: AGENT_EVAL_HARNESS_DIR
+# can point at another clone (a developer running against a newer harness).
+# Its scripts import agent_eval from that same checkout, so its version is
+# the one that runs. Require it to be at least the pinned version, and
+# refuse otherwise rather than run with behaviour the scripts were not
+# written for. Checked for every eval; it says nothing about judges, so it
+# cannot drift from how the harness treats them.
+
+# One line of untrusted text that Actions cannot read as a workflow
+# command: CR/LF become spaces and every "::" is broken up. Judge error
+# text comes from model API responses and eval config; version strings and
+# paths below come from pyproject.toml files and the environment.
+log_safe() {
+  printf '%s' "$1" | tr '\r\n' '  ' | sed 's/::/: :/g'
+}
+# harness_version <file>: prints the version in a pyproject.toml, or nothing.
+harness_version() {
+  sed -n 's/^version = "\([^"]*\)"/\1/p' "$1" 2>/dev/null | head -1 || true
+}
+# The pin is the submodule commit this checkout records (the gitlink), not
+# whatever is on disk under eval/.agent-eval-harness: that directory keeps its
+# old contents until `git submodule update`, and reading the pin from it would
+# let a stale directory pass as a stale pin. So the evals need a git clone of
+# this repository with the submodule initialised, even when
+# AGENT_EVAL_HARNESS_DIR points the run at another checkout. git looks for a
+# repository in the parent directories too, so first make sure the tree is
+# the checkout, not an exported tree inside one; and only a submodule entry
+# (mode 160000) is a pin, not a directory of plain files committed in its
+# place.
+submodule_dir="${EVAL_DIR}/.agent-eval-harness"
+submodule_hint="Run: git submodule sync eval/.agent-eval-harness && git submodule update --init eval/.agent-eval-harness"
+pin_sha="" git_err=""
+if ! toplevel="$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>&1)"; then
+  git_err="$toplevel"
+elif [[ "$toplevel" == "$(cd "$REPO_ROOT" && pwd -P)" ]]; then
+  if entry="$(git -C "$REPO_ROOT" ls-tree -d HEAD eval/.agent-eval-harness 2>&1)"; then
+    read -r pin_mode _ pin_sha _ <<< "$entry"   # "<mode> <type> <sha>\t<path>", or nothing
+    [[ "$pin_mode" == "160000" ]] || pin_sha=""
+  else
+    git_err="$entry"
+  fi
+fi
+if [[ -z "$pin_sha" ]]; then
+  echo "ERROR: cannot read the pinned agent-eval-harness version: $(log_safe "$REPO_ROOT") is not a git checkout that records eval/.agent-eval-harness as a submodule${git_err:+ ($(log_safe "$git_err"))}" >&2
+  echo "       Run the evals from a git clone of this repository. ${submodule_hint}" >&2
+  exit 1
+fi
+pinned_ver="$(harness_version <(git -C "$submodule_dir" show "${pin_sha}:pyproject.toml" 2>/dev/null))"
+if [[ -z "$pinned_ver" ]]; then
+  echo "ERROR: cannot read the pinned agent-eval-harness version: this checkout pins commit ${pin_sha:0:8} of eval/.agent-eval-harness, but that commit is not in the submodule directory (not initialised, or not updated since the pin changed)" >&2
+  echo "       ${submodule_hint}" >&2
+  exit 1
+fi
+checkout_hint="Update the submodule (git submodule update --init eval/.agent-eval-harness), or point AGENT_EVAL_HARNESS_DIR at a checkout of ${pinned_ver} or later"
+harness_ver="$(harness_version "${HARNESS_DIR}/pyproject.toml")"
+if [[ -z "$harness_ver" ]]; then
+  echo "ERROR: cannot read the agent-eval-harness version from $(log_safe "${HARNESS_DIR}/pyproject.toml")" >&2
+  echo "       $(log_safe "$checkout_hint")" >&2
+  exit 1
+fi
+# The version must be a plain release (N.N.N) at or above the pinned one.
+# sort -V orders any string, so a prerelease or a placeholder could
+# otherwise pass.
+if [[ ! "$harness_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "ERROR: the agent-eval-harness checkout at $(log_safe "$HARNESS_DIR") is version '$(log_safe "$harness_ver")', not a release version; this repo pins agent-eval-harness $(log_safe "$pinned_ver")" >&2
+  echo "       $(log_safe "$checkout_hint")" >&2
+  exit 1
+fi
+if [[ "$(printf '%s\n%s\n' "$pinned_ver" "$harness_ver" | sort -V | head -1)" != "$pinned_ver" ]]; then
+  echo "ERROR: the agent-eval-harness checkout at $(log_safe "$HARNESS_DIR") is version $(log_safe "$harness_ver"), older than the agent-eval-harness $(log_safe "$pinned_ver") this repo pins" >&2
+  echo "       $(log_safe "$checkout_hint")" >&2
+  exit 1
+fi
+
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token)}"
 
 # Default FULLSEND_DIR to the repo root (the agents repo IS the scaffold).
@@ -91,9 +354,13 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)-$$"
 RUNS_BASE="${EVAL_DIR}/runs"
 RUNS_DIR="${RUNS_BASE}/${AGENT}"
 RUN_DIR="${RUNS_DIR}/${RUN_ID}"
+# Attempt <n> of the run is executed into attempts/<n>/; final.json names
+# the attempt that counts for each case (see eval/README.md).
+ATTEMPTS_DIR="${RUN_DIR}/attempts"
 mkdir -p "$RUN_DIR"
 
 echo "=== Functional Tests: ${AGENT} ==="
+echo "Tier:    ${EVAL_TIER}"
 echo "Config:  ${EVAL_YAML}"
 echo "Cases:   ${CASES_DIR}"
 echo "Run ID:  ${RUN_ID}"
@@ -110,51 +377,224 @@ if [[ ${#case_dirs[@]} -eq 0 ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Phase 1: Create workspaces
+# Phases 1-2: create workspaces and execute — the harness drives case
+# iteration with hooks. execute_run is called once per attempt: attempt 1
+# runs every case, and each later attempt only the cases that failed before
+# the agent ran (see below).
 # ---------------------------------------------------------------------------
-echo "=== Creating workspaces ==="
-python3 "$WORKSPACE_PY" \
-  --config "$EVAL_YAML" \
-  --run-id "$RUN_ID"
+# execute_run <config> <run-id> <run-dir>: sets exec_exit.
+execute_run() {
+  local config="$1" run_id="$2" run_dir="$3"
+  mkdir -p "$run_dir"
+  echo "=== Creating workspaces ==="
+  if ! python3 "$WORKSPACE_PY" \
+    --config "$config" \
+    --run-id "$run_id"; then
+    echo "ERROR: workspace.py failed for run ${run_id}" >&2
+    return 1
+  fi
 
-# ---------------------------------------------------------------------------
-# Phase 2: Execute — harness drives case iteration with hooks
-# ---------------------------------------------------------------------------
-echo ""
-echo "=== Executing ==="
-exec_exit=0
-AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
-  python3 "$EXECUTE_PY" \
-    --workspace "/tmp/agent-eval/${RUN_ID}" \
-    --skill "$AGENT" \
-    --config "$EVAL_YAML" \
-    --output "$RUN_DIR" \
-    --run-id "$RUN_ID" \
-  || exec_exit=$?
+  echo ""
+  echo "=== Executing ==="
+  exec_exit=0
+  AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
+    python3 "$EXECUTE_PY" \
+      --workspace "/tmp/agent-eval/${run_id}" \
+      --skill "$AGENT" \
+      --config "$config" \
+      --output "$run_dir" \
+      --run-id "$run_id" \
+    || exec_exit=$?
+
+  # Copy output artifacts from harness workspace to runs directory.
+  # execute.py copies stdout/stderr/input but not the outputs[*].path
+  # subdirectories that after_each hooks populate (output/fixture-state.json
+  # today; an eval that declares more paths needs them copied too). Copy every
+  # declared outputs path, defaulting to output/ when none is declared.
+  local ws_cases="/tmp/agent-eval/${run_id}/cases" ws_case case_name out_path
+  local output_paths=()
+  mapfile -t output_paths < <(yq -r '.outputs[] | .path // ""' "$config" | grep -v '^$')
+  [[ ${#output_paths[@]} -eq 0 ]] && output_paths=(output)
+  if [[ -d "$ws_cases" ]]; then
+    for ws_case in "$ws_cases"/*/; do
+      case_name=$(basename "$ws_case")
+      for out_path in "${output_paths[@]}"; do
+        if [[ -d "$ws_case/$out_path" ]]; then
+          mkdir -p "$run_dir/cases/${case_name}/$out_path"
+          if ! cp -a "$ws_case/$out_path/." "$run_dir/cases/${case_name}/$out_path/"; then
+            echo "ERROR: copying ${case_name} ${out_path} into ${run_dir} failed" >&2
+            return 2
+          fi
+        fi
+      done
+    done
+  fi
+}
+
+# The attempt that counts for each case: attempt 1 unless a later attempt
+# produced output for it. final_case_dir <case> prints that attempt's case
+# directory.
+declare -A final_attempt=()
+final_case_dir() {
+  echo "${ATTEMPTS_DIR}/${final_attempt[$1]:-1}/cases/$1"
+}
+
+# A case that exited non-zero with no agent turns, no cost and no tokens
+# never reached the agent: a fixture, sandbox, provider or profile setup
+# failure (e.g. a provider profile reported missing right after import), or
+# a runner that could not start. A timed-out agent is left out: the
+# script's own `timeout` (exit 124, or 137 after SIGKILL) and the harness
+# timeout (exit -1) cut the run before its final turn and cost totals, so
+# those can read 0, but the agent ran (tokens are recorded as it goes).
+# Prints one case name per line, judged on each case's final attempt.
+pre_agent_failures() {
+  local case_dir case_name run_result
+  for case_dir in "${case_dirs[@]}"; do
+    case_name="$(basename "$case_dir")"
+    run_result="$(final_case_dir "$case_name")/run_result.json"
+    [[ -f "$run_result" ]] || continue
+    if jq -e '(.exit_code // 0) as $e
+              | $e != 0 and ([-1, 124, 137] | index($e) | not)
+              and ((.num_turns // 0) == 0)
+              and ((.cost_usd // 0) == 0)
+              and (([(.token_usage // {})[]?] | add // 0) == 0)' "$run_result" >/dev/null 2>&1; then
+      echo "$case_name"
+    fi
+  done
+}
+
+execute_run "$EVAL_YAML" "$RUN_ID" "${ATTEMPTS_DIR}/1" || exit 1
 
 if [[ $exec_exit -ne 0 ]]; then
   echo "WARNING: execute.py exited $exec_exit" >&2
   # If no case produced output, this is an infrastructure failure — not an agent failure.
-  if [[ ! -d "$RUN_DIR/cases" ]] || [[ -z "$(ls "$RUN_DIR/cases/" 2>/dev/null)" ]]; then
+  if [[ ! -d "${ATTEMPTS_DIR}/1/cases" ]] || [[ -z "$(ls "${ATTEMPTS_DIR}/1/cases/" 2>/dev/null)" ]]; then
     echo "ERROR: no case output produced — infrastructure failure" >&2
     exit 1
   fi
 fi
 
-# Copy output artifacts from harness workspace to runs directory.
-# execute.py copies stdout/stderr/input but not the output/ subdirectory
-# that after_each hooks populate (e.g., fixture-state.json).
-WORKSPACE_CASES="/tmp/agent-eval/${RUN_ID}/cases"
-if [[ -d "$WORKSPACE_CASES" ]]; then
-  for ws_case in "$WORKSPACE_CASES"/*/; do
-    case_name=$(basename "$ws_case")
-    ws_output="$ws_case/output"
-    run_output="$RUN_DIR/cases/${case_name}/output"
-    if [[ -d "$ws_output" ]]; then
-      mkdir -p "$run_output"
-      cp -a "$ws_output/." "$run_output/"
-    fi
+# The run-level run_result.json stays at the top of the run dir, where
+# score.py and run discovery (eval/runs/<agent>/*/run_result.json) read it.
+# It starts as attempt 1's; a retried case's record is replaced below.
+if [[ -f "${ATTEMPTS_DIR}/1/run_result.json" ]]; then
+  cp "${ATTEMPTS_DIR}/1/run_result.json" "${RUN_DIR}/run_result.json"
+fi
+
+# Retry the cases that failed before the agent ran, up to MAX_ATTEMPTS
+# attempts in all. Each retry is staged like release-tier cases (a sibling
+# of cases/, so relative symlinks still resolve), runs under its own run id
+# into attempts/<n>/, and becomes the final attempt of each case it produced
+# output for. No attempt is ever moved or deleted.
+attempt=1
+while [[ $attempt -lt $MAX_ATTEMPTS ]]; do
+  mapfile -t retry_cases < <(pre_agent_failures)
+  [[ ${#retry_cases[@]} -gt 0 ]] || break
+  attempt=$((attempt + 1))
+  echo ""
+  echo "Retrying ${#retry_cases[@]} case(s) that failed before the agent ran: ${retry_cases[*]} (attempt ${attempt} of ${MAX_ATTEMPTS})" >&2
+  RETRY_STAGE_DIR="$(mktemp -d "${EVAL_DIR}/${AGENT}/retry-cases-XXXXXX")"
+  for case_name in "${retry_cases[@]}"; do
+    cp -a "${CASES_DIR}/${case_name}" "${RETRY_STAGE_DIR}/${case_name}"
   done
+  RETRY_YAML_TMP="$(mktemp "${EVAL_DIR}/${AGENT}/eval-retry-XXXXXX")"
+  RETRY_YAML="${RETRY_YAML_TMP}.yaml"
+  mv "$RETRY_YAML_TMP" "$RETRY_YAML"
+  yq ".dataset.path = \"${RETRY_STAGE_DIR}\"" "$EVAL_YAML" > "$RETRY_YAML"
+  prev_exec_exit=$exec_exit
+  retry_rc=0
+  execute_run "$RETRY_YAML" "${RUN_ID}-attempt-${attempt}" "${ATTEMPTS_DIR}/${attempt}" || retry_rc=$?
+  if [[ $retry_rc -eq 0 ]]; then
+    for case_name in "${retry_cases[@]}"; do
+      retried="${ATTEMPTS_DIR}/${attempt}/cases/${case_name}"
+      [[ -d "$retried" ]] || continue
+      final_attempt[$case_name]=$attempt
+      # score.py also reads each case's record from the run-level
+      # run_result.json; point it at the retry's.
+      if [[ -f "${RUN_DIR}/run_result.json" && -f "${retried}/run_result.json" ]]; then
+        # Replace the case's record, then recompute the run-level totals
+        # from per_case so they describe the attempts that count: exit_code
+        # as execute.py derives it (the max), and summed cost, turns and
+        # tokens. Earlier attempts' spend stays in their attempts/<n>/.
+        if ! { jq --arg c "$case_name" --slurpfile r "${retried}/run_result.json" '
+                 .per_case[$c] = $r[0]
+                 | [.per_case[]] as $cs
+                 | .exit_code = ([$cs[] | .exit_code // 0] | max)
+                 | .cost_usd = ([$cs[] | .cost_usd // 0] | add)
+                 | .num_turns = ([$cs[] | .num_turns // 0] | add)
+                 | .token_usage = (reduce ($cs[] | .token_usage // {} | to_entries[]) as $t
+                                     ({}; .[$t.key] = ((.[$t.key] // 0) + ($t.value // 0))))
+               ' "${RUN_DIR}/run_result.json" > "${RUN_DIR}/run_result.json.tmp" \
+               && mv "${RUN_DIR}/run_result.json.tmp" "${RUN_DIR}/run_result.json"; }; then
+          echo "WARNING: could not update run_result.json for ${case_name}" >&2
+        fi
+      fi
+    done
+  elif [[ $retry_rc -eq 2 ]]; then
+    echo "WARNING: attempt ${attempt} ran but its output could not be copied; keeping the earlier attempt's results" >&2
+    exec_exit=$prev_exec_exit
+  else
+    echo "WARNING: attempt ${attempt} could not start; keeping the earlier attempt's results" >&2
+    exec_exit=$prev_exec_exit
+  fi
+  # The retry's own exit replaces the earlier one only when every earlier
+  # failure was one of the retried cases.
+  if [[ $prev_exec_exit -ne 0 && $exec_exit -eq 0 ]]; then
+    other_failure=false
+    for case_dir in "${case_dirs[@]}"; do
+      case_name="$(basename "$case_dir")"
+      [[ " ${retry_cases[*]} " == *" ${case_name} "* ]] && continue
+      jq -e '(.exit_code // 1) == 0' "$(final_case_dir "$case_name")/run_result.json" >/dev/null 2>&1 \
+        || other_failure=true
+    done
+    [[ "$other_failure" == true ]] && exec_exit=$prev_exec_exit
+  elif [[ $prev_exec_exit -ne 0 ]]; then
+    exec_exit=$prev_exec_exit
+  fi
+  rm -rf "$RETRY_STAGE_DIR"
+  rm -f "$RETRY_YAML"
+  RETRY_STAGE_DIR="" RETRY_YAML=""
+done
+
+# final.json maps each case that produced output to the attempt that counts
+# for it, e.g. {"001-case": 1, "002-case": 2}: the one scored, checked and
+# merged into the run-level run_result.json. A file, not a symlink, because
+# upload-artifact follows symlinks and would upload a second copy.
+final_json='{}'
+shopt -s nullglob
+for case_out in "${ATTEMPTS_DIR}/1/cases"/*/; do
+  case_name="$(basename "$case_out")"
+  final_json="$(jq -c --arg c "$case_name" --argjson n "${final_attempt[$case_name]:-1}" \
+    '.[$c] = $n' <<< "$final_json")"
+done
+shopt -u nullglob
+jq . <<< "$final_json" > "${RUN_DIR}/final.json"
+
+# A non-zero exit from any individual case must fail the script, even when
+# other cases produced output — the aggregate execute.py exit code above is
+# not reliable enough to gate on by itself (a -1 timeout is hidden by its
+# max()). Check every expected case's own run_result.json exit record; a
+# case with no record (skipped, or execute.py died first) is a failure too.
+case_failures=()
+for case_dir in "${case_dirs[@]}"; do
+  case_name="$(basename "$case_dir")"
+  run_result="$(final_case_dir "$case_name")/run_result.json"
+  if [[ ! -f "$run_result" ]]; then
+    case_failures+=("${case_name} (no run_result.json)")
+    continue
+  fi
+  case_exit="$(jq -r '.exit_code // "missing"' "$run_result")"
+  if [[ "$case_exit" != "0" ]]; then
+    case_failures+=("${case_name} (exit ${case_exit})")
+  fi
+done
+mapfile -t setup_failures < <(pre_agent_failures)
+if [[ ${#case_failures[@]} -gt 0 ]]; then
+  echo "ERROR: ${#case_failures[@]} case(s) failed to run cleanly:" >&2
+  printf '  %s\n' "${case_failures[@]}" >&2
+  if [[ ${#setup_failures[@]} -gt 0 ]]; then
+    echo "  of which failed before the agent ran (setup or infrastructure, after ${attempt} attempt(s)): ${setup_failures[*]}" >&2
+  fi
 fi
 
 # ---------------------------------------------------------------------------
@@ -167,10 +607,177 @@ echo "=== Scoring ==="
 if [[ -n "${EVALS_HOST_CREDENTIALS:-}" ]]; then
   export GOOGLE_APPLICATION_CREDENTIALS="$EVALS_HOST_CREDENTIALS"
 fi
-AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
-  python3 "$SCORE_PY" judges \
-    --run-id "$RUN_ID" \
-    --config "$EVAL_YAML"
+SCORE_LOG="${RUN_DIR}/score.log"
+SUMMARY_YAML="${RUN_DIR}/summary.yaml"
+
+# score.py scores every directory in <run-dir>/cases/ and cannot be pointed
+# anywhere else. While it runs, that is a scoring view: one symlink per case
+# in final.json, to the case in its final attempt, so only final attempts
+# are scored. It is removed after scoring (and by the EXIT trap), so the run
+# dir keeps one copy of each attempt.
+SCORE_VIEW="${RUN_DIR}/cases"
+mkdir "$SCORE_VIEW"
+while IFS=$'\t' read -r case_name case_attempt; do
+  ln -s "../attempts/${case_attempt}/cases/${case_name}" "${SCORE_VIEW}/${case_name}"
+done < <(jq -r 'to_entries[] | [.key, (.value | tostring)] | @tsv' "${RUN_DIR}/final.json")
+
+# score.py exits 1 for any threshold miss, including one caused only by
+# judge calls that errored (a 400 from the model API, an unparseable
+# reply): those cases carry an `error:` entry and a null score. Capture
+# its output instead of letting set -e end the script, so a judge error is
+# reported as infrastructure, not as a quality regression.
+run_score() {
+  local rc=0
+  AGENT_EVAL_RUNS_DIR="$RUNS_BASE" \
+    python3 "$SCORE_PY" judges \
+      --run-id "$RUN_ID" \
+      --config "$EVAL_YAML" 2>&1 | tee "$SCORE_LOG" || rc=$?
+  return "$rc"
+}
+
+# Model-backed judges (judge_type llm or agent) whose call errored on at
+# least one case, sorted, one per line. A check judge that raises, or a
+# judge's own `if:` condition raising, is a bug in the eval (possibly in the
+# change under test), not a failed call, so other judge types and
+# "Condition error" entries are left out.
+errored_judges() {
+  [[ -f "$SUMMARY_YAML" ]] || return 0
+  yq -r '[.per_case[] | to_entries[]
+          | select((.value.judge_type == "llm" or .value.judge_type == "agent") and .value.error != null
+                   and (.value.error | test("^Condition error") | not))
+          | .key] | .[]' "$SUMMARY_YAML" 2>/dev/null | sort -u || true
+}
+
+# score.py's regression lines ("    [judge] metric: baseline -> current")
+# that a judge error does NOT explain, one per line. A line is explained
+# when its metric is error_rate (the max_error_rate gate), or its current
+# value is n/a and the judge errored. Anything else (including a low mean
+# on a judge that also errored on some cases) is a quality regression.
+unexplained_regressions() {
+  # Through the environment: BSD awk rejects a newline in a -v value.
+  ERRORED_JUDGES="$1" awk '
+    BEGIN { n = split(ENVIRON["ERRORED_JUDGES"], e, "\n"); for (i = 1; i <= n; i++) if (e[i] != "") err[e[i]] = 1 }
+    /REGRESSIONS: [0-9]+ detected/ { in_list = 1; next }
+    in_list && match($0, /^ +\[[A-Za-z0-9_.-]+\] /) {
+      judge = substr($0, RSTART, RLENGTH); gsub(/[][ ]/, "", judge)
+      rest = substr($0, RSTART + RLENGTH)
+      metric = rest; sub(/:.*/, "", metric)
+      current = rest; sub(/.*-> */, "", current)
+      if (metric == "error_rate" || (current == "n/a" && (judge in err))) next
+      print; next
+    }
+    in_list { in_list = 0 }' "$SCORE_LOG"
+}
+
+print_judge_errors() {
+  local judge count first_error
+  while IFS= read -r judge; do
+    [[ -n "$judge" ]] || continue
+    count="$(yq -r "[.per_case[] | select(.[\"${judge}\"].error != null)] | length" "$SUMMARY_YAML" 2>/dev/null || echo "?")"
+    # Read the whole value, then cut it in bash: piping into `head -c`
+    # can SIGPIPE yq on a long error and, under pipefail, end the script
+    # before it reports a result.
+    first_error="$(yq -r "[.per_case[] | .[\"${judge}\"].error | select(. != null)] | .[0]" "$SUMMARY_YAML" 2>/dev/null || true)"
+    first_error="${first_error:0:300}"
+    echo "JUDGE ERROR: $(log_safe "$judge") errored on ${count} case(s); first error: $(log_safe "$first_error")" >&2
+  done <<< "$1"
+}
+
+# score.py prints only per-judge aggregates (a pass rate, a mean), so name
+# the case behind each one from summary.yaml, sorted by case then judge: a
+# boolean judge that returned false is a failed check, shown with its
+# rationale; a judge with an `error` entry gave no verdict, so it is a judge
+# error, never a failed check. Covers report-only judges too, and decides
+# nothing: the exit code is still set from score.py's result below.
+print_case_results() {
+  [[ -f "$SUMMARY_YAML" ]] || return 0
+  local kind case_id judge reason label
+  # jq's @tsv escapes tabs and newlines, so each record is one line.
+  while IFS=$'\t' read -r kind case_id judge reason; do
+    if [[ "$kind" == "error" ]]; then
+      label="CASE JUDGE ERROR"
+    else
+      label="CASE CHECK FAILED"
+    fi
+    reason="${reason:0:300}"
+    echo "${label}: [$(log_safe "$judge")] $(log_safe "$case_id"): $(log_safe "${reason:-(no reason recorded)}")" >&2
+  done < <(yq -o=json '.per_case // {}' "$SUMMARY_YAML" 2>/dev/null | jq -r '
+             to_entries | sort_by(.key)[] | .key as $c
+             | .value | select(type == "object") | to_entries | sort_by(.key)[]
+             | select(.value | type == "object")
+             | if .value.error != null then ["error", $c, .key, (.value.error | tostring)]
+               elif .value.value == false then ["fail", $c, .key, (.value.rationale // "" | tostring)]
+               else empty end
+             | @tsv' 2>/dev/null || true)
+}
+
+score_exit=0
+run_score || score_exit=$?
+# One retry when a judge errored and nothing else has already decided the
+# result: a transient API failure that outlived the SDK's own retries often
+# clears on a second pass; a deterministic error (such as a prompt over the
+# model's input limit) fails the same way twice.
+if [[ $score_exit -ne 0 && ${#case_failures[@]} -eq 0 && -n "$(errored_judges)" ]]; then
+  echo "Judge call(s) errored ($(errored_judges | paste -sd, -)); retrying scoring once" >&2
+  score_exit=0
+  run_score || score_exit=$?
+fi
+remove_score_view
+
+errored="$(errored_judges)"
+# Report judge errors even when no threshold failed (the *_quality
+# thresholds are dropped at runtime), so an unscored judge is never silent.
+print_judge_errors "$errored"
+print_case_results
+
+score_verdict="pass"
+if [[ $score_exit -ne 0 ]]; then
+  if ! grep -qE 'REGRESSIONS: [0-9]+ detected' "$SCORE_LOG"; then
+    # score.py failed without a regression list: a crash or a config error,
+    # e.g. a broken eval.yaml in the change under test.
+    score_verdict="crash"
+  elif [[ -n "$errored" && -z "$(unexplained_regressions "$errored")" ]]; then
+    score_verdict="judge-infra"
+  else
+    score_verdict="regression"
+  fi
+fi
+
+# RESULT lines also go out as an Actions error annotation, so the class of
+# failure shows on the check without opening the log.
+result() {
+  local msg
+  msg="$(log_safe "$1")"
+  echo "=== RESULT: ${msg} ===" >&2
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] && echo "::error::${msg}"
+  return 0
+}
 
 echo ""
+if [[ ${#case_failures[@]} -gt 0 && ${#case_failures[@]} -eq ${#setup_failures[@]} ]]; then
+  result "${#case_failures[@]} case(s) failed before the agent ran (setup or infrastructure, not an agent result)"
+  exit 3
+fi
+if [[ ${#case_failures[@]} -gt 0 ]]; then
+  result "${#case_failures[@]} case(s) failed"
+  exit 1
+fi
+if [[ $exec_exit -ne 0 ]]; then
+  result "execute.py exited ${exec_exit}"
+  exit 1
+fi
+case "$score_verdict" in
+  judge-infra)
+    result "judge infrastructure error (not a quality regression)"
+    exit 3
+    ;;
+  crash)
+    result "score.py failed (exit ${score_exit}) without a regression list"
+    exit 1
+    ;;
+  regression)
+    result "quality regression (score.py exited ${score_exit})"
+    exit 1
+    ;;
+esac
 echo "=== RESULT: All phases complete ==="

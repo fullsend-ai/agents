@@ -3,31 +3,30 @@ name: Functional Tests
 # PR-triggered functional tests use pull_request_target so fork PRs receive
 # secrets.  Authorization runs in a separate gate job (base checkout only)
 # before the test job checks out the PR head — same pattern as fullsend e2e.
+#
+# Each change runs the full tier once, in the merge queue, on the commit that
+# lands. PR runs use the release tier (one release:true case per agent)
+# unless the PR carries the eval-full label. Applying eval-full does not
+# start a run by itself (only ok-to-test does, so authorization stays
+# tied to a fresh ok-to-test); it applies from the next push or
+# ok-to-test run. There is no push-to-main run:
+# the merge queue already tested that merge commit, and the nightly
+# (functional-tests-nightly.yml) runs the full tier for every agent.
 
 permissions: {}
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'eval/**'
-      - 'agents/**'
-      - 'harness/**'
-      - 'scripts/**'
-      - 'schemas/**'
-      - 'env/**'
-      - 'common/**'
-      - 'policies/**'
-      - 'skills/**'
-      - 'plugins/**'
-      - 'docs/**'
-      - '.github/workflows/functional-tests.yml'
-      - '.github/scripts/**'
-      - 'config.yaml'
   pull_request_target:
     types: [opened, synchronize, reopened, labeled]
   merge_group:
   workflow_dispatch:
+    inputs:
+      tier:
+        description: 'Eval tier: auto (script default), full or release'
+        required: false
+        type: choice
+        options: [auto, full, release]
+        default: auto
   workflow_call:
     inputs:
       fullsend_ref:
@@ -35,6 +34,14 @@ on:
         required: false
         type: string
         default: main
+      tier:
+        # Empty keeps eval/run-functional.sh's caller-derived default
+        # (release for a cross-repo call), so callers that omit it -- and
+        # callers pinned to an older copy of this workflow -- behave the same.
+        description: "Eval tier: '' or auto (script default), full or release"
+        required: false
+        type: string
+        default: ''
     secrets:
       E2E_GCP_WIF_PROVIDER:
         required: false
@@ -90,6 +97,7 @@ jobs:
           event_action: ${{ github.event.action }}
           pr_author_association: ${{ github.event.pull_request.author_association }}
           pr_author_login: ${{ github.event.pull_request.user.login }}
+          label_actor_login: ${{ github.event.sender.login }}
 
   # ---------------------------------------------------------------------------
   # Detect which agents need functional testing based on changed files.
@@ -114,7 +122,6 @@ jobs:
         if: >-
           github.repository == 'fullsend-ai/agents' &&
           (github.event_name == 'pull_request_target' ||
-           github.event_name == 'push' ||
            github.event_name == 'merge_group')
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,8 +130,6 @@ jobs:
           REPO: ${{ github.repository }}
           MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD: ${{ github.event.merge_group.head_sha }}
-          PUSH_BEFORE: ${{ github.event.before }}
-          PUSH_AFTER: ${{ github.event.after }}
         run: |
           if [ "$EVENT_NAME" = "merge_group" ]; then
             FILES=$(gh api "repos/${REPO}/compare/${MERGE_GROUP_BASE}...${MERGE_GROUP_HEAD}" --jq '.files[].filename') || {
@@ -134,16 +139,6 @@ jobs:
             FILE_COUNT=$(echo "$FILES" | wc -l)
             if [ "$FILE_COUNT" -ge 300 ]; then
               echo "::warning::Compare API returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
-              exit 0
-            fi
-          elif [ "$EVENT_NAME" = "push" ]; then
-            FILES=$(gh api "repos/${REPO}/compare/${PUSH_BEFORE}...${PUSH_AFTER}" --jq '.files[].filename') || {
-              echo "::warning::Failed to fetch push diff — running all functional tests as a precaution"
-              exit 0
-            }
-            FILE_COUNT=$(echo "$FILES" | wc -l)
-            if [ "$FILE_COUNT" -ge 300 ]; then
-              echo "::warning::Push diff returned $FILE_COUNT files (possible truncation at 300) — running all functional tests as a precaution"
               exit 0
             fi
           else
@@ -191,7 +186,8 @@ jobs:
           if [ -n "$CHANGED_FILES" ]; then
             AGENTS=$(echo "$CHANGED_FILES" | bash .github/scripts/select-eval-agents.sh)
           else
-            # workflow_dispatch: run all agents with eval configs
+            # No diff (dispatch, workflow_call, or a failed diff fetch): run all
+            # agents with eval configs
             AGENTS=$(for d in eval/*/eval.yaml; do basename "$(dirname "$d")"; done)
           fi
           JSON=$(echo "$AGENTS" | jq -Rsc '[split("\n")[] | select(length > 0)]')
@@ -210,7 +206,9 @@ jobs:
       needs.detect.outputs.agents != '[]' &&
       (github.event_name != 'pull_request_target' || needs.gate.outputs.authorized == 'true')
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    # The full-tier review leg takes 39-43 min (9 live cases); 60 leaves
+    # headroom. The release tier runs one case per agent.
+    timeout-minutes: 60
     permissions:
       contents: read
       id-token: write
@@ -285,29 +283,6 @@ jobs:
           echo "${FULLSEND_CHECKOUT}/bin" >> "$GITHUB_PATH"
           "${FULLSEND_CHECKOUT}/bin/fullsend" --version
 
-      - name: Configure OpenShell gateway
-        run: |
-          eval "$(grep -E '^OPENSHELL_(VERSION|SHA)=' "${FULLSEND_CHECKOUT}/.github/scripts/openshell-version.sh")"
-          if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
-            echo "::error::Failed to resolve OpenShell version from fullsend checkout"
-            exit 1
-          fi
-          echo "OPENSHELL_VERSION=${OPENSHELL_VERSION}" >> "$GITHUB_ENV"
-          echo "OPENSHELL_SHA=${OPENSHELL_SHA}" >> "$GITHUB_ENV"
-          mkdir -p "$HOME/.config/openshell"
-          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
-          cat > "$HOME/.config/openshell/gateway.toml" << EOF
-          [openshell]
-          version = 1
-
-          [openshell.gateway]
-          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
-          EOF
-
-      - name: Install OpenShell CLI
-        run: |
-          "${FULLSEND_CHECKOUT}/.github/scripts/install-openshell.sh"
-
       - name: Install Podman
         run: |
           sudo apt-get update
@@ -321,16 +296,52 @@ jobs:
 
       - name: Start Podman API service
         run: |
+          # Socket-activated under the user's systemd, as in fullsend's
+          # action.yml. The OpenShell gateway is a systemd user service that
+          # pins the podman driver and needs this socket to answer when it
+          # starts. With a `podman system service &` started from a step
+          # instead, it failed with "no responsive Podman API socket found".
+          systemctl --user start podman.socket
           SOCKET_PATH="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/podman/podman.sock"
-          if [ ! -S "${SOCKET_PATH}" ]; then
-            mkdir -p "$(dirname "${SOCKET_PATH}")"
-            podman system service --time=0 "unix://${SOCKET_PATH}" &
-            for _i in $(seq 1 30); do
-              [ -S "${SOCKET_PATH}" ] && podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
-              sleep 1
-            done
-            [ -S "${SOCKET_PATH}" ] || { echo "::error::Podman socket not ready"; exit 1; }
+          for _i in $(seq 1 30); do
+            podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1 && break
+            sleep 1
+          done
+          if ! podman --url "unix://${SOCKET_PATH}" info >/dev/null 2>&1; then
+            echo "::error::Podman socket not ready at ${SOCKET_PATH}"
+            systemctl --user status podman.socket podman.service --no-pager || true
+            journalctl --user -u podman.socket -u podman.service --no-pager -n 40 || true
+            exit 1
           fi
+
+      # After Podman: the gateway pins compute_driver = "podman" and does not
+      # start without the Podman API socket.
+      - name: Configure OpenShell gateway
+        run: |
+          eval "$(grep -E '^OPENSHELL_(VERSION|SHA)=' "${FULLSEND_CHECKOUT}/.github/scripts/openshell-version.sh")"
+          if [ -z "$OPENSHELL_VERSION" ] || [ -z "$OPENSHELL_SHA" ]; then
+            echo "::error::Failed to resolve OpenShell version from fullsend checkout"
+            exit 1
+          fi
+          echo "OPENSHELL_VERSION=${OPENSHELL_VERSION}" >> "$GITHUB_ENV"
+          echo "OPENSHELL_SHA=${OPENSHELL_SHA}" >> "$GITHUB_ENV"
+          mkdir -p "$HOME/.config/openshell"
+          echo "OPENSHELL_BIND_ADDRESS=0.0.0.0" > "$HOME/.config/openshell/gateway.env"
+          cat > "$HOME/.config/openshell/gateway.toml" << EOF
+          [openshell]
+          version = 2
+
+          [openshell.gateway]
+          compute_driver = "podman"
+
+          [openshell.drivers.podman]
+          supervisor_image = "ghcr.io/nvidia/openshell/supervisor:${OPENSHELL_VERSION}"
+          health_check_interval_secs = 10
+          EOF
+
+      - name: Install OpenShell CLI
+        run: |
+          "${FULLSEND_CHECKOUT}/.github/scripts/install-openshell.sh"
 
       - name: Install validation dependencies
         run: pip install --quiet "jsonschema>=4.18.0"
@@ -373,6 +384,18 @@ jobs:
           EVALS_HOST_CREDENTIALS: ${{ env.HOST_GOOGLE_APPLICATION_CREDENTIALS }}
           FULLSEND_DIR: ${{ github.workspace }}
           AGENT: ${{ matrix.agent }}
+          # An explicit tier input (dispatch, workflow_call) wins; a
+          # workflow_call sees its caller's event_name, so the input must
+          # be checked first. Otherwise merge_group runs full, and
+          # pull_request_target runs release, or full with the eval-full
+          # label. Anything else leaves EVAL_TIER empty, i.e. the script's
+          # default.
+          EVAL_TIER: >-
+            ${{ (inputs.tier != '' && inputs.tier != 'auto') && inputs.tier
+                || github.event_name == 'merge_group' && 'full'
+                || github.event_name == 'pull_request_target'
+                   && (contains(github.event.pull_request.labels.*.name, 'eval-full') && 'full' || 'release')
+                || '' }}
         run: ./eval/run-functional.sh "$AGENT"
 
       # Protected-path change (human review required): scrub eval artifacts before

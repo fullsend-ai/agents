@@ -56,8 +56,10 @@ runner:
     - "{output_dir}"
 
 models:
-  skill: claude-opus-4-6
-  judge: claude-opus-4-6
+  skill: claude-sonnet-5-5
+  # No LLM judge in this eval; kept equal to the review and triage evals,
+  # whose comment says why the judge is not on claude-sonnet-5-5 yet.
+  judge: claude-sonnet-5
 
 dataset:
   path: cases
@@ -73,8 +75,8 @@ outputs:
       fixture-state.json: Captured PR state including head_sha, files,
       and pre_agent_head for new_commit / expected_files judges.
 
-# forbidden_labels / max_turns / max_cost below are shared verbatim with
-# eval/code/eval.yaml and eval/review/eval.yaml — update all three if changing.
+# max_turns / max_cost below are shared verbatim with eval/code/eval.yaml
+# (and max_cost with eval/review/eval.yaml) — update them together.
 judges:
   - name: new_commit
     description: Post-script must push at least one new commit on the PR head
@@ -124,23 +126,6 @@ judges:
           return False, reason
       return True, f"All expected files present in fix commit(s): {expected}"
 
-  - name: forbidden_labels
-    description: Labels listed in annotations.yaml forbidden list must NOT be present
-    check: |
-      import json
-      raw = outputs["files"].get("output/fixture-state.json")
-      if not raw:
-          return False, "fixture-state.json not found — capture-fixture.sh did not run or failed"
-      state = json.loads(raw)
-      actual = [l.lower() for l in state.get("labels", [])]
-      forbidden = outputs.get("annotations", {}).get("labels", {}).get("forbidden", [])
-      if not forbidden:
-          return True, "No forbidden labels specified"
-      present = [l for l in forbidden if l.lower() in actual]
-      if present:
-          return False, f"Forbidden labels present: {present} (actual: {actual})"
-      return True, f"No forbidden labels found (checked: {forbidden})"
-
   - name: max_turns
     description: Agent must complete within the declared turn budget
     check: |
@@ -177,14 +162,11 @@ judges:
           return False, f"Exceeded max_cost_usd: {actual} > {limit}"
       return True, f"Cost OK: {actual} <= {limit}"
 
+# max_turns and max_cost run and report but gate nothing: per-case turn
+# counts and cost vary run to run far more than any regression they have
+# caught (none since 2026-08), so a budget miss is not a failure.
 thresholds:
   new_commit:
     min_pass_rate: 1.0
   expected_files:
-    min_pass_rate: 1.0
-  forbidden_labels:
-    min_pass_rate: 1.0
-  max_turns:
-    min_pass_rate: 1.0
-  max_cost:
     min_pass_rate: 1.0

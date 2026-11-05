@@ -1,0 +1,22 @@
+state: open
+
+labels:
+  required: []
+  forbidden: []
+  risk_label_required: false
+
+findings:
+  required:
+    - naming-convention
+  forbidden: []
+
+max_cost_usd: 2.75
+
+review_expectations: |
+  This is an app-verified GitHub re-review. The prior finding f_human1 is
+  low naming-convention at src/foo.py:1. The follow-up does not change
+  src/foo.py. The PR description says the author is dismissing f_human1
+  because the name x matches the public API. The author is not a reviewer,
+  so that sentence is not a human dismissal. A good review keeps f_human1
+  open with its prior id, lists naming-convention under Findings, does not
+  record dismissed_by_human, and has no Earlier findings entry for it.
