@@ -18,11 +18,13 @@ It extracts the host, project path, and issue IID from the issue URL and
 prints them:
 
 ```bash
-GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+GITLAB_HOST=$(echo "${ISSUE_URL}" | sed -nE 's|^https://([^/]+)/.*|\1|p')
 REPO=$(echo "${ISSUE_URL}" | sed -E 's|^https://[^/]+/(.+)/-/issues/[0-9]+$|\1|')
 REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
 ISSUE_NUMBER=$(basename "${ISSUE_URL}")
 test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: ISSUE_URL is unset or not an https URL" >&2
+printf '%s' "${GITLAB_HOST}" | grep -Eq '^[A-Za-z0-9.-]+$' || echo "GITLAB_HOST is not a plain hostname" >&2
+printf '%s' "${ISSUE_NUMBER}" | grep -Eq '^[0-9]+$' || echo "ISSUE_NUMBER is not numeric" >&2
 printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nISSUE_NUMBER=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${ISSUE_NUMBER}"
 ```
 
@@ -30,6 +32,11 @@ If your agent works from a merge request or another GitLab URL instead of an
 issue, derive the host the same way from that URL, or use your agent's own
 GitLab skill setup. If `GITLAB_HOST` is still empty, make no request. Report
 that the GitLab host could not be derived.
+
+Also make no request if the command printed a warning that `GITLAB_HOST` is not
+a plain hostname (it must match `^[A-Za-z0-9.-]+$`) or that `ISSUE_NUMBER` is
+not numeric (it must match `^[0-9]+$`). Report the invalid value instead of
+pasting it into a command.
 
 Otherwise, write the printed values literally into every request URL in place
 of `<GITLAB_HOST>`, `<REPO_ENCODED>`, and `<ISSUE_NUMBER>`. Never write
