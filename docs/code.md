@@ -69,6 +69,29 @@ The code agent follows a three-phase pipeline: pre-script, sandbox execution, po
 
 This separation ensures the agent never has direct write access to the repository.
 
+### Recovering work when the post-script fails
+
+If the post-script fails before the branch is pushed, for example when the
+push is rejected because the changes touch `.github/workflows/` or the run
+was killed before committing, the agent's work would otherwise be lost with
+the runner. The post-script snapshots it first: commits, staged and modified
+files, and untracked files, excluding agent working directories. It writes a
+binary-safe patch against the starting commit to `recovery/agent-work.patch`
+(with a `README.md`) in the run's output directory, which the workflow
+uploads as an artifact. The failure comment lists the starting commit, the
+changed and untracked paths, and the commands to apply the patch. For a
+workflow-permission rejection it also explains that the pull request must be
+opened manually, or the workflow changes removed before retrying.
+
+The patch is secret-scanned with the same built-in-rules text scan used for
+PR descriptions before it is written. If that scan finds a possible secret
+or cannot run, the failure was itself a secret-scan block, or the changes
+include binary files (which the text scan cannot inspect), the patch is
+withheld: nothing is written, and the comment reports only the changed paths
+and the reason. No recovery files are written on a successful run, when the
+branch was already pushed, or when there are no changes. A process killed
+before the post-script runs is not covered.
+
 When the fix belongs in another repository, the agent reports the upstream
 repository, file, and required change without making a commit or restructuring
 this repository. On GitHub/GitLab source issues, the no-PR path sanitizes

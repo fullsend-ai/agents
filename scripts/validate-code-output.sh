@@ -194,6 +194,11 @@ POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
 # a fresh comment when they actively retry.
 POST_FAILURE_REPORTED=false
 POST_FAILURE_SECRET_SCAN_MESSAGE="Secret scan blocked the push. See workflow logs for details."
+# Set by an optional post_failure_capture_recovery hook (post-code defines
+# one) before the issue comment is built. NOTE is appended to the comment;
+# PATCH is the saved patch path, set only when the patch was written.
+POST_FAILURE_RECOVERY_NOTE=""
+POST_FAILURE_RECOVERY_PATCH=""
 
 # Maximum lines of sanitized detail to include in issue/PR comments.
 POST_FAILURE_DETAIL_MAX_LINES="${POST_FAILURE_DETAIL_MAX_LINES:-30}"
@@ -442,16 +447,29 @@ EOF
 "
   fi
 
-  if [ "${category}" = "uncommitted-work" ]; then
-    cat <<EOF
-⚠️ **${agent_kind} agent killed before committing** — uncommitted work discarded (exit code ${exit_code})
+  local recovery_block=""
+  if [ -n "${POST_FAILURE_RECOVERY_NOTE:-}" ]; then
+    recovery_block="
+${POST_FAILURE_RECOVERY_NOTE}
+"
+  fi
 
-The ${agent_kind} agent left uncommitted changes in the extracted repo and produced no commit to push. The run was likely killed (timeout) before \`git commit\` executed, so this work was discarded and no PR was opened.
+  if [ "${category}" = "uncommitted-work" ]; then
+    local outcome="uncommitted work discarded"
+    local outcome_sentence="so this work was discarded and no PR was opened"
+    if [ -n "${POST_FAILURE_RECOVERY_PATCH:-}" ]; then
+      outcome="uncommitted work saved as a recovery patch"
+      outcome_sentence="so no PR was opened. The work was saved as a recovery patch (see below)"
+    fi
+    cat <<EOF
+⚠️ **${agent_kind} agent killed before committing** — ${outcome} (exit code ${exit_code})
+
+The ${agent_kind} agent left uncommitted changes in the extracted repo and produced no commit to push. The run was likely killed (timeout) before \`git commit\` executed, ${outcome_sentence}.
 
 This is not a successful no-op: staged or untracked files were present when the sandbox was extracted.
 
 ${env_note}**Workflow run:** ${run_url}
-${detail_block}
+${detail_block}${recovery_block}
 Retry with \`${retry_command}\` if appropriate.
 EOF
     return 0
@@ -463,7 +481,7 @@ EOF
 The ${agent_kind} agent completed, but the post-${agent_kind} script failed before finishing.
 
 ${env_note}**Workflow run:** ${run_url}
-${detail_block}
+${detail_block}${recovery_block}
 Please check the workflow logs for full details and retry with \`${retry_command}\` if appropriate.
 EOF
 }
@@ -607,6 +625,14 @@ report_post_failure_to_issue() {
   fi
   POST_FAILURE_REPORTED=true
 
+  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
+
+  # Preserve the agent's work before reporting. Called under `||` so a
+  # failing step inside the hook cannot abort the report under set -e.
+  if declare -F post_failure_capture_recovery >/dev/null 2>&1; then
+    post_failure_capture_recovery "${category}" || true
+  fi
+
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
   # target issue number and risk commenting on unrelated work.
@@ -617,7 +643,6 @@ report_post_failure_to_issue() {
 
   _post_failure_ensure_token
 
-  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
   local body
   # shellcheck disable=SC2153

@@ -159,6 +159,42 @@ run_failure_comment_test "failure-comment-uncommitted-work-retry" \
   "uncommitted-work" "A  scripts/bar.sh" "my-org/my-repo" "12345" \
   "/fs-code" "yes"
 
+run_failure_comment_test "failure-comment-no-recovery-note-by-default" \
+  "push-failed" "fatal: repository not found" "my-org/my-repo" "12345" \
+  "Recovered work" "no"
+
+# Recovery note set by post-code's post_failure_capture_recovery hook.
+POST_FAILURE_RECOVERY_NOTE="**Recovered work:** saved as \`run/recovery/agent-work.patch\`"
+POST_FAILURE_RECOVERY_PATCH="/tmp/run/recovery/agent-work.patch"
+
+run_failure_comment_test "failure-comment-includes-recovery-note" \
+  "push-workflow-permission" "refusing to allow a GitHub App" "my-org/my-repo" "12345" \
+  "run/recovery/agent-work.patch" "yes"
+
+run_failure_comment_test "failure-comment-uncommitted-work-recovered-heading" \
+  "uncommitted-work" "M  src/foo.go" "my-org/my-repo" "12345" \
+  "uncommitted work saved as a recovery patch" "yes"
+
+run_failure_comment_test "failure-comment-uncommitted-work-recovered-not-discarded" \
+  "uncommitted-work" "M  src/foo.go" "my-org/my-repo" "12345" \
+  "work was discarded" "no"
+
+# A withheld patch leaves PATCH empty: the work is still reported as discarded.
+POST_FAILURE_RECOVERY_NOTE="**Recovered work withheld:** secret scan"
+# shellcheck disable=SC2034  # read by build_post_failure_comment
+POST_FAILURE_RECOVERY_PATCH=""
+
+run_failure_comment_test "failure-comment-uncommitted-work-withheld-discarded" \
+  "uncommitted-work" "M  src/foo.go" "my-org/my-repo" "12345" \
+  "uncommitted work discarded" "yes"
+
+run_failure_comment_test "failure-comment-uncommitted-work-withheld-note" \
+  "uncommitted-work" "M  src/foo.go" "my-org/my-repo" "12345" \
+  "Recovered work withheld" "yes"
+
+# shellcheck disable=SC2034  # read by build_post_failure_comment
+POST_FAILURE_RECOVERY_NOTE=""
+
 run_fix_failure_comment_test "fix-failure-comment-push-rejected" \
   "push-rejected" "permission denied" "Push rejected" "yes"
 

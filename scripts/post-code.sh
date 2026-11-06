@@ -228,6 +228,11 @@ POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
 # a fresh comment when they actively retry.
 POST_FAILURE_REPORTED=false
 POST_FAILURE_SECRET_SCAN_MESSAGE="Secret scan blocked the push. See workflow logs for details."
+# Set by an optional post_failure_capture_recovery hook (post-code defines
+# one) before the issue comment is built. NOTE is appended to the comment;
+# PATCH is the saved patch path, set only when the patch was written.
+POST_FAILURE_RECOVERY_NOTE=""
+POST_FAILURE_RECOVERY_PATCH=""
 
 # Maximum lines of sanitized detail to include in issue/PR comments.
 POST_FAILURE_DETAIL_MAX_LINES="${POST_FAILURE_DETAIL_MAX_LINES:-30}"
@@ -476,16 +481,29 @@ EOF
 "
   fi
 
-  if [ "${category}" = "uncommitted-work" ]; then
-    cat <<EOF
-⚠️ **${agent_kind} agent killed before committing** — uncommitted work discarded (exit code ${exit_code})
+  local recovery_block=""
+  if [ -n "${POST_FAILURE_RECOVERY_NOTE:-}" ]; then
+    recovery_block="
+${POST_FAILURE_RECOVERY_NOTE}
+"
+  fi
 
-The ${agent_kind} agent left uncommitted changes in the extracted repo and produced no commit to push. The run was likely killed (timeout) before \`git commit\` executed, so this work was discarded and no PR was opened.
+  if [ "${category}" = "uncommitted-work" ]; then
+    local outcome="uncommitted work discarded"
+    local outcome_sentence="so this work was discarded and no PR was opened"
+    if [ -n "${POST_FAILURE_RECOVERY_PATCH:-}" ]; then
+      outcome="uncommitted work saved as a recovery patch"
+      outcome_sentence="so no PR was opened. The work was saved as a recovery patch (see below)"
+    fi
+    cat <<EOF
+⚠️ **${agent_kind} agent killed before committing** — ${outcome} (exit code ${exit_code})
+
+The ${agent_kind} agent left uncommitted changes in the extracted repo and produced no commit to push. The run was likely killed (timeout) before \`git commit\` executed, ${outcome_sentence}.
 
 This is not a successful no-op: staged or untracked files were present when the sandbox was extracted.
 
 ${env_note}**Workflow run:** ${run_url}
-${detail_block}
+${detail_block}${recovery_block}
 Retry with \`${retry_command}\` if appropriate.
 EOF
     return 0
@@ -497,7 +515,7 @@ EOF
 The ${agent_kind} agent completed, but the post-${agent_kind} script failed before finishing.
 
 ${env_note}**Workflow run:** ${run_url}
-${detail_block}
+${detail_block}${recovery_block}
 Please check the workflow logs for full details and retry with \`${retry_command}\` if appropriate.
 EOF
 }
@@ -641,6 +659,14 @@ report_post_failure_to_issue() {
   fi
   POST_FAILURE_REPORTED=true
 
+  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
+
+  # Preserve the agent's work before reporting. Called under `||` so a
+  # failing step inside the hook cannot abort the report under set -e.
+  if declare -F post_failure_capture_recovery >/dev/null 2>&1; then
+    post_failure_capture_recovery "${category}" || true
+  fi
+
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
   # target issue number and risk commenting on unrelated work.
@@ -651,7 +677,6 @@ report_post_failure_to_issue() {
 
   _post_failure_ensure_token
 
-  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
   local body
   # shellcheck disable=SC2153
@@ -3203,6 +3228,11 @@ else
     post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
   WORK_ITEM_KEY="${ISSUE_NUMBER}"
 fi
+# Read by post_failure_capture_recovery: there is nothing to preserve until
+# the extracted repo is in place, and nothing at risk once the branch is
+# on the remote.
+RECOVERY_REPO_READY=false
+BRANCH_PUSHED=false
 trap 'report_post_failure_to_issue' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
@@ -3212,6 +3242,7 @@ if [ "${REPO_DIR}" != "." ]; then
   fi
   cd "${REPO_DIR}"
 fi
+RECOVERY_REPO_READY=true
 
 # GitLab needs REPO_ENCODED and GITLAB_HOST for API calls.
 # Always derive GITLAB_HOST from the validated ISSUE_URL (CI_SERVER_HOST for
@@ -3243,92 +3274,6 @@ if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
     exit 1
   fi
   GITLAB_HOST="${_url_host}"
-fi
-
-# ---------------------------------------------------------------------------
-# Resolve target branch (ADR 0053)
-#
-# Priority: agent output > allowed-list validation > auto-detect default
-# The agent writes its chosen branch to agent-result.json. The post-script
-# validates it against CODE_ALLOWED_TARGET_BRANCHES (comma-separated list
-# or "*" for any). When unset, only the auto-detected default branch is
-# allowed. Falls back to "main" if the API call fails.
-# ---------------------------------------------------------------------------
-AGENT_TARGET=""
-# Prefer the validated iteration when set. Trust boundary:
-# FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI on the runner —
-# not by the sandbox or the agent. No containment check (realpath / prefix
-# guard) is applied here; the value is trusted from the external harness.
-# If the trust model changes, add a realpath prefix check.
-if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
-  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
-    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
-  else
-    # No silent rescan: an env var pointing at a dir without the expected
-    # filename must not fall back to scanning other iterations, which could
-    # pick up a different (possibly invalid) iteration's output. Degrade to
-    # no result the same as the "nothing found" case below — this script
-    # already falls back to the auto-detected default branch when
-    # RESULT_FILE is empty, so this isn't a hard failure.
-    RESULT_FILE=""
-  fi
-else
-  # Backward compatibility: scan iteration-N/ subdirectories for the last
-  # iteration's output (glob order = naturally ascending iteration numbers).
-  RESULT_FILE=""
-  for dir in "${RUN_DIR}"/iteration-*/output; do
-    if [ -f "${dir}/agent-result.json" ]; then
-      RESULT_FILE="${dir}/agent-result.json"
-    fi
-  done
-fi
-CLOSES_ISSUE="true"
-INJECT_ISSUE_SCOPE="true"
-if [ -n "${RESULT_FILE}" ]; then
-  AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
-  # Do not use jq `//` for the boolean opt-outs: it treats JSON false as
-  # missing, so `closes_issue: false` / `inject_issue_scope: false` would
-  # silently read as the default. Only the literal string "false" opts out.
-  AGENT_CLOSES="$(jq -r '.closes_issue' "${RESULT_FILE}" 2>/dev/null || true)"
-  AGENT_INJECT="$(jq -r '.inject_issue_scope' "${RESULT_FILE}" 2>/dev/null || true)"
-  if [ "${AGENT_CLOSES}" = "false" ]; then
-    CLOSES_ISSUE="false"
-  fi
-  if [ "${AGENT_INJECT}" = "false" ]; then
-    INJECT_ISSUE_SCOPE="false"
-  fi
-fi
-if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
-  post_fail_to_issue branch-validation \
-    "Invalid branch name from agent output: '${AGENT_TARGET}'"
-fi
-
-DEFAULT_BRANCH="$(forge_get_default_branch "${PUSH_TOKEN}")"
-
-if [ -n "${AGENT_TARGET}" ]; then
-  if [ -n "${CODE_ALLOWED_TARGET_BRANCHES:-}" ]; then
-    # Explicit allowed list — hard-fail if agent's choice is not in it.
-    if [ "${CODE_ALLOWED_TARGET_BRANCHES}" = "*" ] \
-       || echo ",${CODE_ALLOWED_TARGET_BRANCHES}," | grep -qF ",${AGENT_TARGET},"; then
-      TARGET_BRANCH="${AGENT_TARGET}"
-      echo "Agent requested branch '${TARGET_BRANCH}' — allowed"
-    else
-      post_fail_to_issue branch-validation \
-        "Agent requested branch '${AGENT_TARGET}' but allowed branches are: ${CODE_ALLOWED_TARGET_BRANCHES}"
-    fi
-  else
-    # No explicit list — auto-correct to API-discovered default when mismatched.
-    if [ "${AGENT_TARGET}" = "${DEFAULT_BRANCH}" ]; then
-      TARGET_BRANCH="${AGENT_TARGET}"
-      echo "Agent requested branch '${TARGET_BRANCH}' — matches default"
-    else
-      TARGET_BRANCH="${DEFAULT_BRANCH}"
-      gha_echo warning "Agent requested branch '${AGENT_TARGET}' but default branch is '${DEFAULT_BRANCH}' — auto-correcting"
-    fi
-  fi
-else
-  TARGET_BRANCH="${DEFAULT_BRANCH}"
-  echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
 fi
 
 echo "::add-mask::${PUSH_TOKEN}"
@@ -3514,6 +3459,43 @@ is_agent_artifact_path() {
   return 1
 }
 
+# Run git in the extracted repo with trusted config pinned: the extracted
+# tree is untrusted, and index/status/add commands would otherwise honor
+# repo-local config from that tree (fsmonitor hooks, hidden untracked
+# files) while PUSH_TOKEN is present in the environment.
+trusted_git() {
+  local trust_cfg=(-c core.fsmonitor=false -c core.useBuiltinFSMonitor=false -c core.hooksPath=/dev/null -c status.showUntrackedFiles=all)
+  # filter.<name>.clean/smudge/process drivers are a separate config
+  # namespace from hooks — core.hooksPath does not neutralize them. If
+  # .gitattributes in the untrusted tree maps a tracked file to a filter
+  # defined in the tree's own .git/config, update-index/status/add can invoke
+  # that filter's arbitrary command when the file's cached stat looks stale
+  # (routine after extraction, and certain for dirty files on the
+  # timeout-kill path). Discover any repo-local filter drivers, including
+  # ones pulled in through include.path / includeIf in the tree's own
+  # .git/config (--includes), and neutralize each one; reading config values
+  # doesn't execute them, only invoking the filter does. Overrides go through
+  # GIT_CONFIG_KEY_n/VALUE_n rather than -c so a driver name containing "="
+  # cannot split the key. Fail closed when discovery itself fails (exit 1
+  # only means no filter is configured).
+  local filter_names filter_rc=0 filter_key
+  filter_names="$(git config --local --includes --name-only \
+    --get-regexp '^filter\..*\.(clean|smudge|process)$' 2>/dev/null)" || filter_rc=$?
+  if [ "${filter_rc}" -gt 1 ]; then
+    echo "trusted_git: could not enumerate filter drivers in the repo config" >&2
+    return 1
+  fi
+  local cfg_count="${GIT_CONFIG_COUNT:-0}"
+  [[ "${cfg_count}" =~ ^[0-9]+$ ]] || cfg_count=0
+  local cfg_env=()
+  while IFS= read -r filter_key; do
+    [ -z "${filter_key}" ] && continue
+    cfg_env+=("GIT_CONFIG_KEY_${cfg_count}=${filter_key}" "GIT_CONFIG_VALUE_${cfg_count}=")
+    cfg_count=$((cfg_count + 1))
+  done <<< "${filter_names}"
+  env "GIT_CONFIG_COUNT=${cfg_count}" ${cfg_env[@]+"${cfg_env[@]}"} git "${trust_cfg[@]}" "$@"
+}
+
 # git status --porcelain for the extracted repo, excluding agent working
 # directory artifacts. Empty stdout means a clean tree (or only artifacts).
 #
@@ -3525,31 +3507,9 @@ is_agent_artifact_path() {
 # an empty (clean) porcelain string.
 uncommitted_work_status() {
   local rc_file="$1" err_file="$2"
-  # Pin trusted git config: the extracted tree is untrusted, and both
-  # invocations below are index/status commands that would otherwise honor
-  # repo-local config from that tree (fsmonitor hooks, hidden untracked
-  # files) while PUSH_TOKEN is present in the environment.
-  local trust_cfg=(-c core.fsmonitor=false -c core.useBuiltinFSMonitor=false -c core.hooksPath=/dev/null -c status.showUntrackedFiles=all)
-  # filter.<name>.clean/smudge/process drivers are a separate config
-  # namespace from hooks — core.hooksPath does not neutralize them. If
-  # .gitattributes in the untrusted tree maps a tracked file to a filter
-  # defined in the tree's own .git/config, update-index/status can invoke
-  # that filter's arbitrary command when the file's cached stat looks stale
-  # (routine after extraction, and certain for dirty files on the
-  # timeout-kill path this function exists to detect). Discover any
-  # repo-local filter drivers and neutralize each one with its own -c
-  # override; reading config values doesn't execute them, only invoking the
-  # filter does.
-  local filter_line filter_key filter_overrides=()
-  while IFS= read -r filter_line; do
-    [ -z "${filter_line}" ] && continue
-    filter_key="${filter_line%% *}"
-    filter_overrides+=(-c "${filter_key}=")
-  done < <(git config --local --get-regexp '^filter\..*\.(clean|smudge|process)$' 2>/dev/null || true)
-  trust_cfg+=("${filter_overrides[@]}")
-  git "${trust_cfg[@]}" update-index -q --refresh >/dev/null 2>&1 || true
+  trusted_git update-index -q --refresh >/dev/null 2>&1 || true
   local porcelain rc=0
-  porcelain="$(git "${trust_cfg[@]}" status --porcelain --untracked-files=all 2>"${err_file}")" || rc=$?
+  porcelain="$(trusted_git status --porcelain --untracked-files=all 2>"${err_file}")" || rc=$?
   printf '%s' "${rc}" > "${rc_file}"
   if [ "${rc}" -ne 0 ]; then
     printf ''
@@ -3606,6 +3566,327 @@ ${err}"
     "Uncommitted files:
 ${dirty}"
 }
+
+# ---------------------------------------------------------------------------
+# Recovery patch (failure path)
+#
+# Until the branch reaches the remote, the agent's work exists only in the
+# extracted repo, which is discarded with the runner. On failure, snapshot
+# it (commits, staged, modified and untracked files, minus agent working
+# directories) as a binary-safe patch against the starting commit, written
+# to ${RUN_DIR}/recovery/. RUN_DIR is inside the run output directory that
+# the workflow uploads as an artifact. The patch is secret-scanned first;
+# when the scan does not pass, or the failure itself was a secret-scan
+# block, the patch is withheld and only the changed paths are reported.
+#
+# post_failure_capture_recovery is the hook report_post_failure_to_issue
+# calls under `|| true`, so set -e is not in effect here and every step
+# checks its own status. It sets POST_FAILURE_RECOVERY_NOTE and, when the
+# patch was written, POST_FAILURE_RECOVERY_PATCH.
+# ---------------------------------------------------------------------------
+recovery_unavailable() {
+  gha_echo warning "Recovery patch not saved: $1"
+  POST_FAILURE_RECOVERY_NOTE="**Recovered work:** not saved — $1. The extracted repo is discarded with the runner."
+}
+
+# Indent a path list as a Markdown code block, capped at
+# POST_FAILURE_DETAIL_MAX_LINES entries.
+recovery_path_block() {
+  local paths max total
+  paths="$(sanitize_failure_detail "$1" 0)"
+  total="$(printf '%s\n' "${paths}" | wc -l | tr -d ' ')"
+  max="${POST_FAILURE_DETAIL_MAX_LINES}"
+  if [ "${max}" -le 0 ]; then
+    max="${total}"
+  fi
+  printf '%s\n' "${paths}" | head -n "${max}" | sed 's/^/    /'
+  if [ "${total}" -gt "${max}" ]; then
+    printf '    ... %s more not shown\n' "$((total - max))"
+  fi
+}
+
+recovery_snapshot() {
+  local category="$1" base="$2" work_dir="$3"
+  local index="${work_dir}/index" patch="${work_dir}/agent-work.patch"
+  local path tree rc artifacts=()
+
+  # Seed the temporary index from the repo's real index, not HEAD, so a
+  # force-added ignored file (git add -f) stays tracked and `add -A` keeps
+  # it. Fall back to HEAD when there is no usable index to copy.
+  local real_index
+  real_index="$(trusted_git rev-parse --git-path index 2>/dev/null)" || real_index=""
+  if [ -z "${real_index}" ] || [ ! -f "${real_index}" ] || ! cp "${real_index}" "${index}" 2>/dev/null; then
+    rm -f "${index}"
+    if ! GIT_INDEX_FILE="${index}" trusted_git read-tree HEAD >/dev/null 2>&1; then
+      recovery_unavailable "git could not snapshot the working tree"
+      return 0
+    fi
+  fi
+  if ! GIT_INDEX_FILE="${index}" trusted_git add -A -- . >/dev/null 2>&1; then
+    recovery_unavailable "git could not snapshot the working tree"
+    return 0
+  fi
+  while IFS= read -r -d '' path; do
+    if is_agent_artifact_path "${path}"; then
+      artifacts+=("${path}")
+    fi
+  done < <(GIT_INDEX_FILE="${index}" trusted_git diff-index --cached --name-only -z "${base}" 2>/dev/null)
+  if [ "${#artifacts[@]}" -gt 0 ] \
+     && ! GIT_INDEX_FILE="${index}" GIT_LITERAL_PATHSPECS=1 trusted_git rm --cached -r -q \
+       --ignore-unmatch -- "${artifacts[@]}" >/dev/null 2>&1; then
+    recovery_unavailable "git could not exclude agent working directories"
+    return 0
+  fi
+  if ! tree="$(GIT_INDEX_FILE="${index}" trusted_git write-tree 2>/dev/null)"; then
+    recovery_unavailable "git could not snapshot the working tree"
+    return 0
+  fi
+
+  rc=0
+  git diff-tree --quiet "${base}" "${tree}" >/dev/null 2>&1 || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    echo "No agent changes relative to ${base} — no recovery patch needed"
+    return 0
+  fi
+  if [ "${rc}" -ne 1 ] \
+     || ! git diff-tree -r -p --binary --full-index --src-prefix=a/ --dst-prefix=b/ \
+       "${base}" "${tree}" > "${patch}" 2>/dev/null; then
+    recovery_unavailable "git could not write the patch"
+    return 0
+  fi
+
+  local changed untracked="" line
+  changed="$(git diff-tree -r --name-status "${base}" "${tree}")"
+  while IFS= read -r line; do
+    [ -z "${line}" ] && continue
+    path="${line#\"}"
+    path="${path%\"}"
+    is_agent_artifact_path "${path}" && continue
+    untracked="${untracked}${untracked:+$'\n'}${line}"
+  done < <(trusted_git ls-files --others --exclude-standard 2>/dev/null)
+
+  local paths_block untracked_block=""
+  paths_block="**Starting commit:** \`${base}\`
+
+**Changed paths ($(printf '%s\n' "${changed}" | wc -l | tr -d ' ')):**
+
+$(recovery_path_block "${changed}")"
+  if [ -n "${untracked}" ]; then
+    untracked_block="
+
+**Untracked files included ($(printf '%s\n' "${untracked}" | wc -l | tr -d ' ')):**
+
+$(recovery_path_block "${untracked}")"
+  fi
+
+  # The patch encodes binary payloads (NUL-containing files, or files the
+  # tree's attributes mark -diff) as compressed base85, which the text scan
+  # cannot see through. Withhold the patch rather than risk shipping an
+  # unscanned credential in the uploaded artifact. numstat reports "-" for
+  # both counts on binary files; deletions add no new content.
+  local withheld="" scan_rc=0 numstat_out numstat_added numstat_deleted has_binary=false
+  if ! numstat_out="$(git diff-tree -r --numstat --diff-filter=d "${base}" "${tree}" 2>/dev/null)"; then
+    withheld="the patch could not be checked for binary content"
+  else
+    while IFS=$'\t' read -r numstat_added numstat_deleted _; do
+      if [ "${numstat_added}" = "-" ] && [ "${numstat_deleted}" = "-" ]; then
+        has_binary=true
+      fi
+    done <<< "${numstat_out}"
+  fi
+  if [ -n "${withheld}" ]; then
+    :
+  elif [ "${category}" = "secret-scan" ]; then
+    withheld="the secret scan blocked the push"
+  elif [ "${has_binary}" = "true" ]; then
+    withheld="they include binary files that the secret scan cannot inspect"
+  elif ! install_gitleaks; then
+    withheld="the secret scan could not run"
+  else
+    scan_public_text "$(cat "${patch}")" || scan_rc=$?
+    if [ "${scan_rc}" -eq 2 ]; then
+      withheld="the secret scan found a possible secret in them"
+    elif [ "${scan_rc}" -ne 0 ]; then
+      withheld="the secret scan could not complete"
+    fi
+  fi
+  if [ -n "${withheld}" ]; then
+    gha_echo warning "Recovery patch withheld: ${withheld}"
+    POST_FAILURE_RECOVERY_NOTE="**Recovered work withheld:** the branch was not pushed, and the agent's changes were not saved as a patch because ${withheld}.
+
+${paths_block}${untracked_block}"
+    return 0
+  fi
+
+  local out_dir="${RUN_DIR}/recovery"
+  local recover_branch="recover-${WORK_ITEM_KEY}"
+  local apply_steps="    git checkout -b ${recover_branch} ${base}
+    git apply --index agent-work.patch
+    git commit"
+  if ! mkdir -p "${out_dir}" \
+     || ! cp "${patch}" "${out_dir}/agent-work.patch" \
+     || ! cat > "${out_dir}/README.md" <<EOF
+# Recovered agent work
+
+The post-code step failed before the branch was pushed
+($(post_failure_category_label "${category}"), category \`${category}\`).
+This patch holds the agent's changes for work item ${WORK_ITEM_KEY}.
+
+${paths_block}${untracked_block}
+
+To apply the patch from a clone of the repository:
+
+${apply_steps}
+
+Then push the branch and open a pull request.
+EOF
+  then
+    recovery_unavailable "the recovery files could not be written"
+    return 0
+  fi
+
+  local workflow_note=""
+  if [ "${category}" = "push-workflow-permission" ]; then
+    workflow_note="
+
+**Workflow files:** the agent's app cannot push changes to \`.github/workflows/\`. Apply the patch and open the pull request manually, or remove the workflow changes before retrying."
+  fi
+
+  POST_FAILURE_RECOVERY_PATCH="${out_dir}/agent-work.patch"
+  POST_FAILURE_RECOVERY_NOTE="**Recovered work:** the branch was not pushed, so the agent's changes were saved as \`${RUN_DIR##*/}/recovery/agent-work.patch\` in the workflow run's uploaded output artifact.
+
+${paths_block}${untracked_block}
+
+To apply the patch from a clone of this repository:
+
+${apply_steps}
+
+Then push the branch and open a pull request.${workflow_note}"
+  gha_echo notice "Recovery patch saved to ${POST_FAILURE_RECOVERY_PATCH}"
+}
+
+post_failure_capture_recovery() {
+  local category="$1" base="${MERGE_BASE:-}" ref work_dir
+  POST_FAILURE_RECOVERY_NOTE=""
+  POST_FAILURE_RECOVERY_PATCH=""
+  if [ "${RECOVERY_REPO_READY}" != "true" ] || [ "${BRANCH_PUSHED}" = "true" ]; then
+    return 0
+  fi
+
+  if [ -z "${base}" ]; then
+    for ref in "${TARGET_BRANCH:-}" "${DEFAULT_BRANCH:-}" HEAD; do
+      [ -z "${ref}" ] && continue
+      base="$(git merge-base "origin/${ref}" HEAD 2>/dev/null)" && break
+      base=""
+    done
+  fi
+  if [ -z "${base}" ]; then
+    base="$(git rev-parse --verify -q HEAD 2>/dev/null)" || base=""
+  fi
+  if [ -z "${base}" ]; then
+    recovery_unavailable "the starting commit could not be determined"
+    return 0
+  fi
+
+  if ! work_dir="$(mktemp -d)"; then
+    recovery_unavailable "a temporary directory could not be created"
+    return 0
+  fi
+  recovery_snapshot "${category}" "${base}" "${work_dir}"
+  rm -rf "${work_dir}"
+  if [ -n "${POST_FAILURE_RECOVERY_NOTE}" ]; then
+    print_sanitized_gha_log "${POST_FAILURE_RECOVERY_NOTE}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Resolve target branch (ADR 0053)
+#
+# Priority: agent output > allowed-list validation > auto-detect default
+# The agent writes its chosen branch to agent-result.json. The post-script
+# validates it against CODE_ALLOWED_TARGET_BRANCHES (comma-separated list
+# or "*" for any). When unset, only the auto-detected default branch is
+# allowed. Falls back to "main" if the API call fails.
+#
+# This runs after the recovery hook and its dependencies are defined, so a
+# branch-validation failure still preserves the agent's work as a patch.
+# ---------------------------------------------------------------------------
+AGENT_TARGET=""
+# Prefer the validated iteration when set. Trust boundary:
+# FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI on the runner —
+# not by the sandbox or the agent. No containment check (realpath / prefix
+# guard) is applied here; the value is trusted from the external harness.
+# If the trust model changes, add a realpath prefix check.
+if [ -n "${FULLSEND_VALIDATED_ITERATION_DIR:-}" ]; then
+  if [ -f "${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json" ]; then
+    RESULT_FILE="${FULLSEND_VALIDATED_ITERATION_DIR}/agent-result.json"
+  else
+    # No silent rescan: an env var pointing at a dir without the expected
+    # filename must not fall back to scanning other iterations, which could
+    # pick up a different (possibly invalid) iteration's output. Degrade to
+    # no result the same as the "nothing found" case below — this script
+    # already falls back to the auto-detected default branch when
+    # RESULT_FILE is empty, so this isn't a hard failure.
+    RESULT_FILE=""
+  fi
+else
+  # Backward compatibility: scan iteration-N/ subdirectories for the last
+  # iteration's output (glob order = naturally ascending iteration numbers).
+  RESULT_FILE=""
+  for dir in "${RUN_DIR}"/iteration-*/output; do
+    if [ -f "${dir}/agent-result.json" ]; then
+      RESULT_FILE="${dir}/agent-result.json"
+    fi
+  done
+fi
+CLOSES_ISSUE="true"
+INJECT_ISSUE_SCOPE="true"
+if [ -n "${RESULT_FILE}" ]; then
+  AGENT_TARGET="$(jq -r '.target_branch // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+  # Do not use jq `//` for the boolean opt-outs: it treats JSON false as
+  # missing, so `closes_issue: false` / `inject_issue_scope: false` would
+  # silently read as the default. Only the literal string "false" opts out.
+  AGENT_CLOSES="$(jq -r '.closes_issue' "${RESULT_FILE}" 2>/dev/null || true)"
+  AGENT_INJECT="$(jq -r '.inject_issue_scope' "${RESULT_FILE}" 2>/dev/null || true)"
+  if [ "${AGENT_CLOSES}" = "false" ]; then
+    CLOSES_ISSUE="false"
+  fi
+  if [ "${AGENT_INJECT}" = "false" ]; then
+    INJECT_ISSUE_SCOPE="false"
+  fi
+fi
+if [[ -n "${AGENT_TARGET}" && ! "${AGENT_TARGET}" =~ ^[a-zA-Z0-9._/-]+$ ]]; then
+  post_fail_to_issue branch-validation \
+    "Invalid branch name from agent output: '${AGENT_TARGET}'"
+fi
+
+DEFAULT_BRANCH="$(forge_get_default_branch "${PUSH_TOKEN}")"
+
+if [ -n "${AGENT_TARGET}" ]; then
+  if [ -n "${CODE_ALLOWED_TARGET_BRANCHES:-}" ]; then
+    # Explicit allowed list — hard-fail if agent's choice is not in it.
+    if [ "${CODE_ALLOWED_TARGET_BRANCHES}" = "*" ] \
+       || echo ",${CODE_ALLOWED_TARGET_BRANCHES}," | grep -qF ",${AGENT_TARGET},"; then
+      TARGET_BRANCH="${AGENT_TARGET}"
+      echo "Agent requested branch '${TARGET_BRANCH}' — allowed"
+    else
+      post_fail_to_issue branch-validation \
+        "Agent requested branch '${AGENT_TARGET}' but allowed branches are: ${CODE_ALLOWED_TARGET_BRANCHES}"
+    fi
+  else
+    # No explicit list — auto-correct to API-discovered default when mismatched.
+    if [ "${AGENT_TARGET}" = "${DEFAULT_BRANCH}" ]; then
+      TARGET_BRANCH="${AGENT_TARGET}"
+      echo "Agent requested branch '${TARGET_BRANCH}' — matches default"
+    else
+      TARGET_BRANCH="${DEFAULT_BRANCH}"
+      gha_echo warning "Agent requested branch '${AGENT_TARGET}' but default branch is '${DEFAULT_BRANCH}' — auto-correcting"
+    fi
+  fi
+else
+  TARGET_BRANCH="${DEFAULT_BRANCH}"
+  echo "No agent branch preference — using repo default: ${TARGET_BRANCH}"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Verify feature branch
@@ -3879,6 +4160,7 @@ ${FORCE_PUSH_OUTPUT}"
     post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}"
   fi
 fi
+BRANCH_PUSHED=true
 
 # ---------------------------------------------------------------------------
 # 8. Create PR/MR
