@@ -1,0 +1,42 @@
+# The fixture is the newer of two near-simultaneous filings of the same
+# Cypress flake. Canonical is the older seed (#1). The agent must close
+# this issue as a duplicate of #1, never the reverse.
+state: closed
+
+labels:
+  required:
+    - duplicate
+  forbidden:
+    - ready-to-code
+    - needs-info
+    - triaged
+
+max_turns: 35
+max_cost_usd: 2.00
+
+triage_expectations: |
+  Two issues describe the same flaky Cypress failure in
+  `web/cypress/e2e/repository-details.cy.ts` (tag-expiration,
+  `cy.first()` timing race). The seed issue (#1) was filed first
+  and is still open. This fixture is the later filing.
+
+  A good triage should:
+
+  1. Search open issues and find seed issue #1.
+  2. Recognize the semantic overlap — same root problem, different
+     wording ("tag expiration test flakes" vs "Flaky Cypress:
+     tag-expiration cy.first() timing race").
+  3. Apply the canonical-issue tie-breaker: the lower-numbered /
+     earlier-created issue survives. Choose action "duplicate"
+     with duplicate_of pointing at #1. Do NOT close #1 as a
+     duplicate of this newer issue.
+  4. Post a kind comment explaining the duplicate finding and
+     linking to the original issue.
+
+  A score of 1 means the agent triaged this as a new bug, or closed
+  the older seed as a duplicate of this newer issue.
+  A score of 3 means it found the duplicate but the comment was
+  unhelpful or it did not apply the lower-number tie-breaker.
+  A score of 5 means it correctly identified this as the later
+  duplicate, linked to #1 as canonical, and was respectful to the
+  reporter.
