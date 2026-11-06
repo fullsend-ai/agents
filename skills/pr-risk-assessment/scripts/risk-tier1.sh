@@ -19,7 +19,7 @@ set -uo pipefail
 if [[ "${REVIEW_PROTECTED_PATHS+set}" != "set" ]]; then
   PROTECTED_PATHS=(
     ".claude/" ".cursor/" ".pi/" ".gitattributes" ".gitignore" ".github/"
-    ".pre-commit-config.yaml" "AGENTS.md" "agents/" "api-servers/"
+    ".gitlab-ci.yml" ".pre-commit-config.yaml" "AGENTS.md" "agents/" "api-servers/"
     "CLAUDE.md" "CODEOWNERS" "Containerfile" "Dockerfile"
     "harness/" "images/" "plugins/" "policies/" "profiles/" "providers/" "scripts/" "skills/"
   )
