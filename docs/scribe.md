@@ -141,7 +141,8 @@ fullsend agent add .fullsend/scribe.yaml --name scribe --fullsend-dir .
 | `SCRIBE_JIRA_PROJECT` | yes (Jira) | Project key for backlog reads and new issues |
 | `SCRIBE_JIRA_ISSUE_TYPE` | no | Issue type for new issues (default: `Task`) |
 | `SCRIBE_JIRA_LABELS` | no | Comma-separated allowlist of labels scribe may apply to Jira issues (default: `meeting-notes`) |
-| `JIRA_BASE_URL` | yes (Jira) | `https://<site>.atlassian.net` (Jira Cloud only) |
+| `JIRA_BASE_URL` | yes (Jira) | `https://<site>.atlassian.net` (Jira Cloud only); used for links |
+| `JIRA_API_URL` | no | Where REST calls go; `fullsend run` sets it to the Atlassian API gateway for the site and exports it to the scripts. Falls back to `JIRA_BASE_URL` |
 | `JIRA_USER_EMAIL` | yes (Jira) | Account email for the operator-provided API token |
 | `JIRA_TOKEN` | yes (Jira) | Jira Cloud API token |
 

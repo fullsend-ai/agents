@@ -2214,7 +2214,7 @@ export JIRA_TOKEN="fake-jira-token"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
-unset GH_TOKEN CI_SERVER_HOST
+unset GH_TOKEN CI_SERVER_HOST JIRA_API_URL
 
 # Jira mock curl: record calls and return appropriate responses.
 JIRA_CURL_LOG="${TMPDIR}/jira-curl-calls.log"
@@ -2462,6 +2462,41 @@ unset MOCK_JIRA_CREATE_NO_KEY
 run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
   '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"DISALLOWEDPROJ","title":"Need Y","body":"We need Y."}]},"comment":"Blocked on upstream work."}' \
   "not in tracker.jira.allowed_targets"
+
+# --- JIRA_API_URL routing (#1876) ---
+# With JIRA_API_URL set (as `fullsend run` exports it), the curl helpers send
+# REST calls to the API gateway — trailing slash stripped — while the
+# comment's --jira-url and created-issue links keep the site URL.
+JIRA_GATEWAY="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+export JIRA_API_URL="${JIRA_GATEWAY}/"
+run_jira_test "jira-api-url-routes-label-writes" \
+  '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+  "${JIRA_GATEWAY}/rest/api/3/issue/TESTPROJ-42"
+if grep -qF "atlassian.net/rest/api/3" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-api-url-no-site-rest-calls — REST call sent to the site URL"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-api-url-no-site-rest-calls"
+fi
+if grep -qF -- "--jira-url https://test.atlassian.net " "${GH_LOG}"; then
+  echo "PASS: jira-api-url-comment-keeps-site-url"
+else
+  echo "FAIL: jira-api-url-comment-keeps-site-url — --jira-url is not the site URL"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+run_jira_test_stdout "jira-api-url-created-link-uses-site-url" \
+  '{"action":"prerequisites","reasoning":"needs upstream fix","prerequisites":{"existing":[],"create":[{"repo":"ALLOWEDPROJ","title":"Need X","body":"We need X for downstream."}]},"comment":"Blocked on upstream work."}' \
+  "Created: https://test.atlassian.net/browse/ALLOWEDPROJ-999"
+if grep -qF "${JIRA_GATEWAY}/rest/api/3/issue " "${JIRA_CURL_LOG}"; then
+  echo "PASS: jira-api-url-routes-issue-create"
+else
+  echo "FAIL: jira-api-url-routes-issue-create — create did not go to JIRA_API_URL"
+  cat "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset JIRA_API_URL
 
 # On a date(1) without %N support (BSD/macOS before nanosecond support), the
 # comment marker must still be unique to this invocation — a literal "N" would

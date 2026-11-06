@@ -219,6 +219,28 @@ extract_env_sandbox_keys() {
   # all skill vars will fail the env.sandbox check.
 }
 
+# extract_host_file_env_keys HARNESS_FILE — print the names exported by
+# the harness's local .env.d host files (top-level, forge blocks, and
+# overlays). These reach the sandbox like env.sandbox keys, but expand
+# an unset host variable to empty instead of failing the run, which is
+# why optional values such as JIRA_API_URL are delivered this way.
+# Same union caveat as extract_env_sandbox_keys.
+extract_host_file_env_keys() {
+  local harness_file="$1"
+  yq -r '[
+    (.host_files // []),
+    (.forge[]? | .host_files // []),
+    (.overlays[]? | .host_files // [])
+  ] | flatten | .[] | select(.dest == "*/.env.d/*") | .src' \
+    "${harness_file}" 2>/dev/null \
+    | while IFS= read -r src; do
+        # Only repo-local files can be inspected; ${VAR} sources are
+        # host paths resolved at run time.
+        [[ -f "${REPO_ROOT}/${src}" ]] || continue
+        sed -nE 's/^export ([A-Z][A-Z0-9_]*)=.*/\1/p' "${REPO_ROOT}/${src}"
+      done | sort -u
+}
+
 # extract_skill_paths HARNESS_FILE — print the union of all skill
 # paths from top-level, forge blocks, and overlays
 extract_skill_paths() {
@@ -324,6 +346,9 @@ for harness in "${HARNESS_FILES[@]}"; do
 
   # 1. Extract union of ALL env.sandbox keys
   env_sandbox_keys="$(extract_env_sandbox_keys "$harness")"
+  # 1b. Plus the names exported by .env.d host files
+  env_sandbox_keys="$(printf '%s\n%s\n' "$env_sandbox_keys" \
+    "$(extract_host_file_env_keys "$harness")" | sort -u)"
 
   # 2. Extract skill paths
   skill_paths="$(extract_skill_paths "$harness")"

@@ -263,7 +263,8 @@ GitHub/GitLab auth vars:
 | `FULLSEND_WORK_ITEM_URL` | The `https://<site>.atlassian.net/browse/<KEY>-<n>` URL of the issue to triage. |
 | `JIRA_USER_EMAIL` | Email address of the Jira Cloud account used for Basic auth. |
 | `JIRA_TOKEN` | API token for that account. Available to the runner for post-script mutations; the sandbox receives the `jira-ro` provider's opaque placeholder instead of the real token. |
-| `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). |
+| `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). Used for browse links. |
+| `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls; `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), which accepts both bot-account and service-account tokens. Falls back to `JIRA_BASE_URL` when unset. |
 
 Closing an issue (`duplicate`, `not-planned`, `completed`, `split` actions) performs a
 Jira workflow transition rather than a status field write, since Jira has no
@@ -363,12 +364,15 @@ If you use `base:` composition to override `harness/triage.yaml`:
   — the real API token is never expanded into sandbox config or env
   files. OpenShell replaces the placeholder in the Basic Authorization
   header at the proxy boundary. `JIRA_USER_EMAIL` and `JIRA_BASE_URL`
-  remain in `env.sandbox` as non-secret configuration. Runner-side
+  remain in `env.sandbox` as non-secret configuration; `JIRA_API_URL`
+  reaches the sandbox through `env/jira/triage.env`, so an unset value
+  expands to empty instead of failing the run. Runner-side
   post-scripts retain the real `JIRA_TOKEN` via `env.runner` for
   trusted mutations (label writes, transitions, comment posting).
-  Do not switch to bearer auth — the Jira Cloud tenant URL
-  (`*.atlassian.net/rest/api/3/...`) requires Basic auth with
-  `email:api_token`.
+  Do not switch to bearer auth — both the Jira Cloud tenant URL
+  (`*.atlassian.net/rest/api/3/...`) and the API gateway
+  (`api.atlassian.com/ex/jira/<cloudId>/rest/api/3/...`) take Basic
+  auth with `email:api_token`.
 - **GitHub and GitLab credentials use provider-backed delivery**:
   `GH_TOKEN` and `GITLAB_TOKEN` are not expanded into `env.sandbox` or
   host env files. The sandbox receives the `github-ro` / `gitlab-rw`

@@ -222,8 +222,9 @@ for skill_file in "${SKILL_FILES[@]}"; do
   fi
 done
 
-# Verify no Jira skill curl command uses bearer auth (would require OAuth
-# token and the api.atlassian.com endpoint model, not the tenant URL).
+# Verify no Jira skill curl command uses bearer auth (would require an
+# OAuth token; both the tenant URL and the api.atlassian.com gateway take
+# Basic email:token).
 for skill_file in "${SKILL_FILES[@]}"; do
   skill_name="$(basename "$(dirname "${skill_file}")")"
   test_name="skill-${skill_name}-no-bearer-auth"
@@ -253,6 +254,61 @@ if [ -f "${REPO_ROOT}/profiles/fullsend-jira-ro.yaml" ]; then
 else
   assert_fail "profile-file-exists" "profiles/fullsend-jira-ro.yaml not found"
 fi
+
+# ---------------------------------------------------------------------------
+# JIRA_API_URL (#1876): REST calls go to the API URL fullsend provides (the
+# Atlassian API gateway), falling back to JIRA_BASE_URL.
+# ---------------------------------------------------------------------------
+# The sandbox can reach the gateway.
+if yq -e '.endpoints[] | select(.host == "api.atlassian.com" and .port == 443)' \
+  "${REPO_ROOT}/profiles/fullsend-jira-ro.yaml" >/dev/null; then
+  assert_pass "profile-allows-api-gateway"
+else
+  assert_fail "profile-allows-api-gateway" "api.atlassian.com:443 not in fullsend-jira-ro endpoints"
+fi
+
+# JIRA_API_URL reaches the sandbox through an expanded .env.d host file and
+# never through env.runner/env.sandbox: a ${VAR} there fails the run when the
+# host variable is unset, and older fullsend releases do not set it.
+for harness_file in "${TRIAGE_HARNESS}" "${CODE_HARNESS}"; do
+  harness_name="$(basename "${harness_file}" .yaml)"
+  env_src="$(jira_overlay_field "${harness_file}" \
+    '.host_files[]? | select(.dest == "*/.env.d/*" and .expand == true) | .src')"
+  found=false
+  while IFS= read -r src; do
+    [[ -n "${src}" && -f "${REPO_ROOT}/${src}" ]] || continue
+    if grep -qxF 'export JIRA_API_URL="${JIRA_API_URL}"' "${REPO_ROOT}/${src}"; then
+      found=true
+    fi
+  done <<< "${env_src}"
+  if ${found}; then
+    assert_pass "${harness_name}-jira-api-url-in-env-file"
+  else
+    assert_fail "${harness_name}-jira-api-url-in-env-file" "no expanded .env.d host file exports JIRA_API_URL"
+  fi
+
+  if jira_overlay_has "${harness_file}" \
+    '((.env.runner // {}) + (.env.sandbox // {})) | to_entries | .[] | .key + "=" + .value' \
+    "JIRA_API_URL"; then
+    assert_fail "${harness_name}-jira-api-url-not-required" "JIRA_API_URL must not be referenced in env.runner/env.sandbox"
+  else
+    assert_pass "${harness_name}-jira-api-url-not-required"
+  fi
+done
+
+# Sandbox skills send REST calls to JIRA_API_URL with the site URL fallback.
+for skill_file in "${SKILL_FILES[@]}"; do
+  skill_name="$(basename "$(dirname "${skill_file}")")"
+  test_name="skill-${skill_name}-uses-jira-api-url"
+  [ -f "${skill_file}" ] || continue  # already reported above
+  if grep -qF '${JIRA_BASE_URL}/rest/api' "${skill_file}"; then
+    assert_fail "${test_name}" "REST call uses \${JIRA_BASE_URL} instead of \${JIRA_API_URL:-\${JIRA_BASE_URL}}"
+  elif grep -qF '"${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/' "${skill_file}"; then
+    assert_pass "${test_name}"
+  else
+    assert_fail "${test_name}" "no REST call through \${JIRA_API_URL:-\${JIRA_BASE_URL}}"
+  fi
+done
 
 # ---------------------------------------------------------------------------
 # Summary
