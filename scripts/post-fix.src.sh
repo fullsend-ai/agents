@@ -222,7 +222,7 @@ if [ "${NO_PUSH}" = "false" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 0c. Force-fetch the target branch and pin a trusted SHA (on demand).
+# 0c. Force-fetch the target branch and pin a trusted SHA.
 #
 # origin/${TARGET_BRANCH} is a local remote-tracking ref inside the runner's
 # checkout of the sandbox's extracted repo. Unlike origin/${BRANCH} (force-
@@ -237,9 +237,8 @@ fi
 # below (the extracted repo's origin has no working credentials until
 # forge_set_push_remote runs) — and pin the resulting SHA once, then reuse
 # that pinned value everywhere below instead of re-reading the mutable ref.
-# Memoized and called lazily from each use site below: it is only needed
-# on paths that actually consult the target branch (a detected history
-# rewrite, or the squash/redo publish gate), not on every push.
+# Every publishing run fetches and pins the target before the authoritative
+# secret scan. Subsequent calls reuse the pinned SHA without fetching again.
 # ---------------------------------------------------------------------------
 TRUSTED_TARGET_SHA=""
 fetch_trusted_target_sha() {
@@ -249,14 +248,12 @@ fetch_trusted_target_sha() {
   fi
   # Credential origin only for the duration of this fetch, then restore the
   # unauthenticated URL immediately — mirroring pre-fix.src.sh's own
-  # conflict-branch fetch. This call can run as early as the merge-commit
-  # secret scan below (whenever a forge-conflict merge is in range), which
-  # is before section 2/3 (precommit_install_deps / precommit_run_gate) run
-  # repo-defined, PR-controlled pre-commit hooks and tool installers. Those
-  # must never see a credentialed origin remote (readable via
-  # `git remote get-url origin`). Restore failure is fatal, not
-  # warn-and-continue: leaving the credentialed URL in place would expose it
-  # to that untrusted code.
+  # conflict-branch fetch. On publishing runs, this fetch completes before the
+  # authoritative secret scan and before sections 2/3 run repo-defined,
+  # PR-controlled pre-commit hooks and tool installers. Those must never see a
+  # credentialed origin remote (readable via `git remote get-url origin`).
+  # Restore failure is fatal, not warn-and-continue: leaving the credentialed
+  # URL in place would expose it to that untrusted code.
   _trusted_target_restore_url="$(git remote get-url origin 2>/dev/null || true)"
   forge_set_push_remote "${PUSH_TOKEN}"
   echo "Fetching target branch ${TARGET_BRANCH}..."
@@ -369,35 +366,36 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   SCAN_RANGE="${DIFF_BASE}..HEAD"
 
-  # A forge-conflict merge (issue #1518) keeps DIFF_BASE an ancestor of HEAD,
-  # so the rebase/squash merge-base fallback above never fires and the
-  # two-dot SCAN_RANGE still walks the merge commit's second parent —
-  # historical target-branch commits unrelated to this PR. Detect any merge
-  # commit in range and scope the gitleaks scan to first-parent history
-  # only, mirroring the isolation the rebase/squash path already gets.
-  #
-  # Collect the merge SHAs themselves with --first-parent too: a plain
-  # two-dot `rev-list --merges` also walks the second-parent side and can
-  # surface historical merges on the target branch that only became
-  # reachable through this merge's second parent. Those are not agent-
-  # introduced content and must not feed the per-merge scan below.
-  GITLEAKS_LOG_OPTS="${SCAN_RANGE}"
-  MERGE_COMMITS_IN_RANGE="$(git rev-list --first-parent --merges "${SCAN_RANGE}" 2>/dev/null || true)"
-  if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
-    echo "Merge commit(s) found in ${SCAN_RANGE} — scoping secret scan to first-parent history"
-    GITLEAKS_LOG_OPTS="--first-parent ${SCAN_RANGE}"
-  fi
+  # Fetch and pin the trusted target tip before scanning: every scan and the
+  # merge enumeration below exclude its ancestry.
+  fetch_trusted_target_sha
 
-  if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${GITLEAKS_LOG_OPTS}" --redact 2>&1)"; then
+  # --first-parent skips every side-parent path, not just target history; it
+  # would also hide agent-created side branches and their nested merges.
+  # Walk all parents here, excluding only trusted target ancestry with ^SHA,
+  # and reuse this list for scan selection and merge-resolution checks.
+  # Capture stderr separately so a git warning on a successful run cannot be
+  # mistaken for a merge SHA, while failures still report (sanitized) it.
+  MERGE_LIST_STDERR_TMP="$(mktemp)"
+  if ! MERGE_COMMITS_IN_RANGE="$(git rev-list --merges "${SCAN_RANGE}" "^${TRUSTED_TARGET_SHA}" 2>"${MERGE_LIST_STDERR_TMP}")"; then
+    MERGE_LIST_ERROR="$(cat "${MERGE_LIST_STDERR_TMP}")"
+    rm -f "${MERGE_LIST_STDERR_TMP}"
+    print_sanitized_gha_log "${MERGE_LIST_ERROR}" stderr
+    post_fail_to_pr setup-error "Could not enumerate merge commits in ${SCAN_RANGE} (excluding ${TRUSTED_TARGET_SHA}) for the authoritative secret scan"
+  fi
+  rm -f "${MERGE_LIST_STDERR_TMP}"
+
+  # Always walk all parent paths — the only way to see commits on merged side
+  # branches, including a secret added then deleted before the merge. Exclude
+  # trusted target ancestry: target-branch secrets are not this PR's content.
+  if ! GITLEAKS_OUTPUT="$(gitleaks detect --source . --log-opts="${SCAN_RANGE} ^${TRUSTED_TARGET_SHA}" --redact 2>&1)"; then
     print_sanitized_gha_log "${GITLEAKS_OUTPUT}" stderr
     post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
   fi
 
-  # gitleaks drives `git log -p` under the hood without `-m`; it never emits
-  # a patch for a commit with a "Merge:" header, even when --first-parent
-  # forces git itself to print one (the diff against the merge's first
-  # parent). Content that only exists because of the merge itself — i.e. the
-  # forge-conflict resolution — is therefore invisible to the scan above.
+  # The all-parent scan normally omits merge patches. Explicitly inspect every
+  # merge in this run's range, including nested side-branch merges, to check
+  # their resolution content.
   # Scan each merge's *combined* diff — `git show`'s default format for a
   # merge commit (equivalent to `--cc`), which includes only blobs that
   # differ from every parent — so only the actual conflict-resolution
@@ -414,8 +412,8 @@ if [ "${NO_PUSH}" = "false" ]; then
   # checked. Checking only `^2` is incomplete for a merge with more than two
   # parents — a third (or later) parent that cleanly adds a file (no
   # conflict) would never appear in `--cc` output even though it was never
-  # verified as trusted. MERGE_COMMITS_IN_RANGE is limited to the agent's
-  # own first-parent merge(s), but nothing else guarantees every parent of a
+  # verified as trusted. MERGE_COMMITS_IN_RANGE covers this run's range
+  # outside the trusted target, but nothing else guarantees every parent of a
   # given merge actually IS trusted target-branch history — a compromised
   # sandboxed agent could create a different (possibly octopus) merge during
   # the same session (e.g. of a throwaway branch carrying a planted secret)
@@ -438,7 +436,6 @@ if [ "${NO_PUSH}" = "false" ]; then
   # format independent of repository git config so the filter sees every
   # added line.
   if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
-    fetch_trusted_target_sha
     MERGE_DIFF_TMP="$(mktemp)"
     MERGE_ADDED_TMP="$(mktemp)"
     _any_merge_used_cc=false
@@ -514,7 +511,8 @@ if [ "${NO_PUSH}" = "false" ]; then
   # other check sees them, and %B alone omits them (issue #1845).
   # Materialize to a file for the same SIGPIPE reason as above.
   COMMIT_MSG_TMP="$(mktemp)"
-  if ! git log --first-parent --no-color --format='%an <%ae>%n%cn <%ce>%n%B' "${SCAN_RANGE}" > "${COMMIT_MSG_TMP}" 2>&1; then
+  if ! git log --no-color --format='%an <%ae>%n%cn <%ce>%n%B' \
+    "${SCAN_RANGE}" "^${TRUSTED_TARGET_SHA}" > "${COMMIT_MSG_TMP}" 2>&1; then
     COMMIT_MSG_OUTPUT="$(cat "${COMMIT_MSG_TMP}")"
     rm -f "${COMMIT_MSG_TMP}"
     print_sanitized_gha_log "${COMMIT_MSG_OUTPUT}" stderr
@@ -579,12 +577,15 @@ if [ "${NO_PUSH}" = "false" ]; then
 
   SCAN_RANGE="${DIFF_BASE}..HEAD"
 
-  # Pass GITLEAKS_LOG_OPTS (computed in section 1, same SCAN_RANGE) rather
-  # than the raw two-dot SCAN_RANGE: a forge-conflict merge (issue #1518)
-  # keeps DIFF_BASE an ancestor of HEAD, so the autofix re-scan inside
-  # precommit_run_gate would otherwise walk the merge's second parent and
-  # can fail on historical target-branch secrets unrelated to this PR.
-  precommit_run_gate changed_array "${GITLEAKS_LOG_OPTS}" "${TARGET_BRANCH}" "${MERGE_BASE}"
+  # Use a first-parent range for the autofix re-scan: a forge-conflict merge
+  # (issue #1518) keeps DIFF_BASE an ancestor of HEAD, so the re-scan would
+  # otherwise walk the merge's second parent and can fail on historical
+  # target-branch secrets unrelated to this PR.
+  PRECOMMIT_SCAN_RANGE="${SCAN_RANGE}"
+  if [ -n "${MERGE_COMMITS_IN_RANGE}" ]; then
+    PRECOMMIT_SCAN_RANGE="--first-parent ${SCAN_RANGE}"
+  fi
+  precommit_run_gate changed_array "${PRECOMMIT_SCAN_RANGE}" "${TARGET_BRANCH}" "${MERGE_BASE}"
 
   if [ "${PRECOMMIT_GATE_SECRET_FAIL}" = "true" ]; then
     post_fail_to_pr secret-scan "${POST_FAILURE_SECRET_SCAN_MESSAGE}"
@@ -895,10 +896,9 @@ if [ "${NO_PUSH}" = "false" ]; then
           #
           # merged_target: some first-parent merge introduced since the real
           # remote PR tip (origin/${BRANCH}, freshly fetched above — not
-          # MERGE_COMMITS_IN_RANGE from section 1, which is scoped to
-          # DIFF_BASE..HEAD and, when PRE_AGENT_HEAD is unset, falls back to
-          # HEAD~1 and can exclude the agent's own merge commit entirely) has
-          # a second parent that is an ancestor of the current
+          # MERGE_COMMITS_IN_RANGE from section 1, which starts from
+          # DIFF_BASE rather than the remote PR tip) has a second
+          # parent that is an ancestor of the current
           # TRUSTED_TARGET_SHA — the merged content is still on the target's
           # line, even if the target has since advanced further.
           MERGE_TARGET_ANCESTOR_OK=false
