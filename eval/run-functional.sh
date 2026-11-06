@@ -34,7 +34,8 @@
 #                   new_commit, sandbox_started). LLM-quality judges
 #                   (*_quality), the live-model behaviour checks
 #                   (finding_expectations, required_labels,
-#                   forbidden_labels, risk_label_present, expected_files)
+#                   forbidden_labels, risk_label_present, expected_files,
+#                   expected_state, expected_review_action)
 #                   and the max_turns/max_cost budget judges still run and
 #                   report, but their thresholds are dropped at runtime.
 #                   If unset, defaults to "release" when running as a
@@ -208,13 +209,14 @@ yq_expr=".dataset.path = \"${CASES_DIR}\""
 # Report-only judges, in every tier: LLM-quality judges (name ends in
 # "_quality", e.g. review_quality/triage_quality), the live-model behaviour
 # checks (finding_expectations, required_labels, forbidden_labels,
-# risk_label_present, expected_files) and the max_turns/max_cost budget
+# risk_label_present, expected_files, expected_state,
+# expected_review_action) and the max_turns/max_cost budget
 # judges. score.py's detect_regressions() only gates on judges with a
 # thresholds: entry, so dropping these leaves them running and reported but
 # out of the pass/fail decision. The deterministic contract judges
 # (pr_created, new_commit, sandbox_started) keep their thresholds. The
 # checked-in eval.yaml keeps every threshold; only the runtime copy drops them.
-yq_expr+=' | .thresholds |= with_entries(select(.key | test("^(finding_expectations|required_labels|forbidden_labels|risk_label_present|expected_files|max_turns|max_cost)$|_quality$") | not))'
+yq_expr+=' | .thresholds |= with_entries(select(.key | test("^(finding_expectations|required_labels|forbidden_labels|risk_label_present|expected_files|expected_state|expected_review_action|max_turns|max_cost)$|_quality$") | not))'
 yq "$yq_expr" "$EVAL_YAML_SRC" > "$EVAL_YAML"
 HARNESS_DIR="${AGENT_EVAL_HARNESS_DIR:-${EVAL_DIR}/.agent-eval-harness}"
 

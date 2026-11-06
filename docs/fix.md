@@ -97,7 +97,7 @@ The fix agent uses the `fix-verification` skill after fixes are implemented: man
 
 ### Skill: `fix-result-contract`
 
-The fix agent uses the `fix-result-contract` skill as the canonical owner of the `agent-result.json` handoff contract: schema requirements, the `fullsend-check-output` validation loop, partial-work behavior, failure handling, and validation-retry semantics (including carrying `rebased_onto_target`, `merged_target`, `conflict_update`, and `history_rewritten` forward when the runner clears the output directory between retries).
+The fix agent uses the `fix-result-contract` skill as the canonical owner of the `agent-result.json` handoff contract: schema requirements, the `fullsend-check-output` validation loop, partial-work behavior, failure handling, optional PR title/description proposals, and validation-retry semantics (including carrying `rebased_onto_target`, `merged_target`, `conflict_update`, `history_rewritten`, and the PR metadata fields forward when the runner clears the output directory between retries).
 
 ## How the agent works
 
@@ -107,6 +107,15 @@ The fix agent follows a similar pipeline to the [code agent](code.md), with an a
 2. **Sandbox** — the agent inspects forge mergeability, reconciles a reported conflict, reads each review finding, inspects project CI, implements targeted fixes, and verifies them against tests and linters.
 3. **Validation loop** — the output is checked against a schema, with up to 2 retry iterations if the output is malformed.
 4. **Post-script** publishes the commit (on GitHub through the API when `GITHUB_SIGNED_COMMITS` is `true`, so it is signed — see [Signed commits](code.md#signed-commits)) and posts a summary comment on the PR.
+
+### Updating the PR title and description
+
+A fix can leave the PR title or description inaccurate, for example after content moves to a different file or a test count changes. When that happens the agent proposes a replacement in the optional `pr_title` / `pr_body` fields of `agent-result.json`, and the post-script applies it. GitHub uses `gh pr edit` with the body passed through `--body-file -`. GitLab uses the merge request update API (`title` / `description`). The update happens only when all of these hold:
+
+- the output passed schema validation and the post-script's secret scan of `agent-result.json`;
+- the live value still matches the SHA-256 the agent recorded for the value it read (`pr_title_base_sha256` / `pr_body_base_sha256`). A human edit made after the agent read the value and before the post-script's check is not overwritten; the field is skipped with a warning instead. The check and the write are separate API calls, because neither `gh pr edit` nor the GitLab MR update offers a conditional write, so an edit landing in the short window between them can still be overwritten.
+
+A field the agent did not propose is left unchanged. When the body is replaced, the existing issue-closing reference and the `### Post-script verification` section are kept. Before the body is written, the post-script checks that the merged body still shows them outside fenced code and HTML comments. If a proposal's Markdown could hide them (for example an unclosed code fence or HTML comment), only the body update is skipped with a warning; the post-script does not close or change the agent's Markdown, and a valid title update still applies. The outcome is noted in the summary comment. A failed update is logged as a warning and does not fail the run or block the summary.
 
 ### Signed-off-by trailers
 

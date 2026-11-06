@@ -164,6 +164,43 @@ fi
 expect "a behaviour check absent from every summary reports no data" 0 \
   '^finding_expectations \(min_pass_rate 0.5\): runs n/a \| n/a \| n/a; no scored cases -> NO DATA$'
 
+# expected_state and expected_review_action vote like the other behaviour
+# checks: false in 2 of 3 runs fails the case, a single miss does not.
+cat > "${TMPDIR}/eval-state-action.yaml" <<'EOF'
+thresholds:
+  expected_state:
+    min_pass_rate: 1.0
+  expected_review_action:
+    min_pass_rate: 1.0
+EOF
+
+# state_action_summary <name> <expected_state value> <expected_review_action value>
+state_action_summary() {
+  local file="${TMPDIR}/$1.yaml"
+  cat > "$file" <<EOF
+run_id: $1
+judges:
+  expected_state:
+    scored_cases: 1
+  expected_review_action:
+    scored_cases: 1
+per_case:
+  001-a:
+    expected_state:
+      value: $2
+    expected_review_action:
+      value: $3
+EOF
+  echo "$file"
+}
+
+run_agg "${TMPDIR}/eval-state-action.yaml" \
+  "$(state_action_summary sa1 false true)" "$(state_action_summary sa2 false false)" "$(state_action_summary sa3 true true)"
+expect "expected_state false in 2 of 3 runs fails; expected_review_action false once passes" 1 \
+  '^expected_state .*false in 2\+ runs: 001-a -> FAIL$' \
+  '^expected_review_action .*nightly pass rate 1.00 over 1 case\(s\) -> PASS$' \
+  '^NIGHTLY VERDICT: FAIL$'
+
 # --- Quality judges -----------------------------------------------------
 
 run_agg "$E" "$(summary r1 3 true true true)" "$(summary r2 4 true true true)" "$(summary r3 5 true true true)"

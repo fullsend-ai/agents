@@ -10,8 +10,9 @@
 # score.py summary, newest first, 1 to 3 of them.
 #
 # Behaviour checks (finding_expectations, required_labels, forbidden_labels,
-# risk_label_present, expected_files) with a min_pass_rate: a case fails the
-# check when its per_case value is false in at least 2 of the given runs.
+# risk_label_present, expected_files, expected_state, expected_review_action)
+# with a min_pass_rate: a case fails the check when its per_case value is
+# false in at least 2 of the given runs.
 # The nightly pass rate is the share of cases (scored in at least one run)
 # that do not fail; below min_pass_rate is a FAIL.
 #
@@ -126,7 +127,7 @@ done
 REACHED='.per_case // {} | to_entries[]
   | select(.key as $k | strenv(NR) | contains("," + $k + ",") | not)'
 
-BEHAVIOUR_CHECKS=(finding_expectations required_labels forbidden_labels risk_label_present expected_files)
+BEHAVIOUR_CHECKS=(finding_expectations required_labels forbidden_labels risk_label_present expected_files expected_state expected_review_action)
 
 overall="PASS"
 lines=()

@@ -148,7 +148,6 @@ declare -A KNOWN_GAPS=(
   # env.sandbox.
   ["fix-review:BASE_BRANCH"]="#1665 review — git log escalation references BASE_BRANCH; fix.yaml pre-script uses FORGE_PR_BASE_BRANCH, which doesn't reach env.sandbox under that name"
   ["code-implementation:BRANCH_NAME"]="#1665 review — referenced without assignment or harness delivery"
-  ["gitlab-forge:MR_IID"]="#1665 review — referenced without assignment or harness delivery"
   ["fix-review/github:RUN_ID"]="#1665 review — referenced without assignment or harness delivery"
   ["fix-review/gitlab:JOB_ID"]="#1665 review — referenced without assignment or harness delivery"
 )

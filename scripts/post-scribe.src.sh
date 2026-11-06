@@ -145,17 +145,25 @@ is_valid_confidence() {
   [[ "${1}" =~ ^[0-9]+(\.[0-9]+)?$ ]]
 }
 
+# Numeric less-than via awk. The supported runner image does not ship bc.
+numeric_lt() {
+  awk -v a="${1}" -v b="${2}" 'BEGIN { exit (a+0 < b+0) ? 0 : 1 }'
+}
+
 if ! is_valid_confidence "${MIN_CONFIDENCE}"; then
   echo "ERROR: SCRIBE_MIN_CONFIDENCE must be a number between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
   exit 1
 fi
-if (( $(echo "${MIN_CONFIDENCE} < 0 || ${MIN_CONFIDENCE} > 1" | bc -l) )); then
+if numeric_lt "${MIN_CONFIDENCE}" "0" || numeric_lt "1" "${MIN_CONFIDENCE}"; then
   echo "ERROR: SCRIBE_MIN_CONFIDENCE must be between 0.0 and 1.0 (got: ${MIN_CONFIDENCE})"
   exit 1
 fi
 echo "Confidence threshold: ${MIN_CONFIDENCE}"
 REJECTED=0
 
+# The detectors feed their input via here-strings rather than `echo | grep -q`:
+# with pipefail, an early-exiting reader makes the writer die of SIGPIPE on
+# large inputs, the pipeline fails, and the helper wrongly reports "clean".
 contains_sensitive() {
   local text="$1"
   # GitHub PATs, AWS access keys, private keys
@@ -220,11 +228,14 @@ gate_reject_content() {
 # ============================================================
 # If the LLM produces multiple entries for the same issue despite being asked
 # not to, merge them: combine summaries, keep the highest confidence, keep
-# public_safe=false if any entry is unsafe.
+# public_safe=false if any entry is unsafe. Omitted entries (non-empty
+# omit_reason) are never merged, so they cannot suppress or add content to
+# an actionable comment.
 DEDUP_FILE="${RESULT_FILE}.deduped"
 jq --argjson max_len "${MAX_COMMENT_LEN}" '
+  def mergeable: .existing_issue != null and ((.omit_reason // "") == "");
   .topics as $all |
-  ($all | map(select(.existing_issue != null)) | group_by(.existing_issue) |
+  ($all | map(select(mergeable)) | group_by(.existing_issue) |
     map(
       if length == 1 then .[0]
       else
@@ -239,7 +250,7 @@ jq --argjson max_len "${MAX_COMMENT_LEN}" '
         else . end
     )
   ) as $merged |
-  ($all | map(select(.existing_issue == null))) as $rest |
+  ($all | map(select(mergeable | not))) as $rest |
   . + {topics: ($merged + $rest)}
 ' "${RESULT_FILE}" > "${DEDUP_FILE}"
 
@@ -275,7 +286,8 @@ else
   echo "Processing ${TOPIC_COUNT} topics for existing issues..."
 fi
 
-for i in $(seq 0 $((TOPIC_COUNT - 1))); do
+if [[ "${TOPIC_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   # Read public_safe FIRST — if false, we must not log topic title or content
   PUBLIC_SAFE=$(jq -r ".topics[${i}].public_safe" "${RESULT_FILE}")
   PUBLIC_SAFE_CAT=$(jq -r ".topics[${i}].public_safe_category // empty" "${RESULT_FILE}")
@@ -295,11 +307,30 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
   OMIT=$(jq -r ".topics[${i}].omit_reason // empty" "${RESULT_FILE}")
 
   if [[ -n "${OMIT}" ]]; then
-    echo "  OMITTED: [$(_gha_sanitize "${TOPIC}")] — $(_gha_sanitize "${OMIT}")"
+    if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}" || contains_sensitive "${OMIT}" \
+      || contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}" || contains_suspicious_unicode "${OMIT}"; then
+      echo "  OMITTED: item $((i + 1)) of ${TOPIC_COUNT} (details suppressed)"
+    else
+      echo "  OMITTED: [$(_gha_sanitize "${TOPIC}")] — $(_gha_sanitize "${OMIT}")"
+    fi
     continue
   fi
 
   if [[ -z "${ISSUE_NUM}" || "${ISSUE_NUM}" == "null" ]]; then
+    continue
+  fi
+
+  # Content gates run before any gate or log line that prints the topic,
+  # and reject without echoing it.
+  # Gate: sensitive content (deterministic PII/secret patterns)
+  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}"; then
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "sensitive content (PII, secrets)"
+    continue
+  fi
+
+  # Gate: suspicious Unicode (prompt injection defense)
+  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}"; then
+    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -318,20 +349,8 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
     gate_reject "${TOPIC}" "invalid confidence value"
     continue
   fi
-  if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
+  if numeric_lt "${CONFIDENCE}" "${MIN_CONFIDENCE}"; then
     gate_reject "${TOPIC}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
-    continue
-  fi
-
-  # Gate: sensitive content (deterministic PII/secret patterns)
-  if contains_sensitive "${SUMMARY}" || contains_sensitive "${TOPIC}"; then
-    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "contains sensitive content (PII, secrets)"
-    continue
-  fi
-
-  # Gate: suspicious Unicode (prompt injection defense)
-  if contains_suspicious_unicode "${SUMMARY}" || contains_suspicious_unicode "${TOPIC}"; then
-    gate_reject_content "$((i + 1))" "${TOPIC_COUNT}" "contains suspicious Unicode (potential prompt injection)"
     continue
   fi
 
@@ -382,6 +401,7 @@ for i in $(seq 0 $((TOPIC_COUNT - 1))); do
     COMMENT_ISSUES+=("${ISSUE_NUM}")
   fi
 done
+fi
 
 # ============================================================
 # Process new issues
@@ -405,7 +425,8 @@ if [[ "${FULLSEND_TRACKER}" == "jira" ]] && [[ "${NEW_COUNT}" -gt 0 ]]; then
   fi
 fi
 
-for i in $(seq 0 $((NEW_COUNT - 1))); do
+if [[ "${NEW_COUNT}" -gt 0 ]]; then
+  for i in $(seq 0 $((NEW_COUNT - 1))); do
   # Read public_safe FIRST — if false, suppress all content from logs
   PUBLIC_SAFE=$(jq -r ".new_issues[${i}].public_safe" "${RESULT_FILE}")
   PUBLIC_SAFE_CAT=$(jq -r ".new_issues[${i}].public_safe_category // empty" "${RESULT_FILE}")
@@ -423,27 +444,29 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
   CONFIDENCE=$(jq -r ".new_issues[${i}].confidence" "${RESULT_FILE}")
   LABELS=$(jq -r ".new_issues[${i}].labels // [\"meeting-notes\"] | join(\",\")" "${RESULT_FILE}")
 
-  # Gate: confidence
-  if ! is_valid_confidence "${CONFIDENCE}"; then
-    gate_reject "${TITLE}" "invalid confidence value"
-    continue
-  fi
-  if (( $(echo "${CONFIDENCE} < ${MIN_CONFIDENCE}" | bc -l) )); then
-    gate_reject "${TITLE}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
-    continue
-  fi
-
+  # Content gates run before any gate that prints the title, and reject
+  # without echoing it.
   # Gate: sensitive content (deterministic PII/secret patterns)
   # Labels are model-produced free text (Jira creates them on the fly), so
   # they pass the same gates as the title and body.
   if contains_sensitive "${TITLE}" || contains_sensitive "${BODY}" || contains_sensitive "${LABELS}"; then
-    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "contains sensitive content"
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "sensitive content"
     continue
   fi
 
   # Gate: suspicious Unicode (prompt injection defense)
   if contains_suspicious_unicode "${TITLE}" || contains_suspicious_unicode "${BODY}" || contains_suspicious_unicode "${LABELS}"; then
-    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "contains suspicious Unicode (potential prompt injection)"
+    gate_reject_content "$((i + 1))" "${NEW_COUNT}" "suspicious Unicode (potential prompt injection)"
+    continue
+  fi
+
+  # Gate: confidence
+  if ! is_valid_confidence "${CONFIDENCE}"; then
+    gate_reject "${TITLE}" "invalid confidence value"
+    continue
+  fi
+  if numeric_lt "${CONFIDENCE}" "${MIN_CONFIDENCE}"; then
+    gate_reject "${TITLE}" "confidence ${CONFIDENCE} below threshold ${MIN_CONFIDENCE}"
     continue
   fi
 
@@ -517,6 +540,7 @@ for i in $(seq 0 $((NEW_COUNT - 1))); do
     fi
   fi
 done
+fi
 
 # ============================================================
 # Summary (console)
@@ -645,8 +669,10 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"
 
   SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: .}')
+  # Slack is best-effort: bound the request so a stalled webhook cannot hang the job.
   if printf '%s' "${SLACK_PAYLOAD}" \
-      | curl -fsSL -X POST -H 'Content-Type: application/json' \
+      | curl -fsSL --connect-timeout 10 --max-time 30 \
+        -X POST -H 'Content-Type: application/json' \
         --data-binary @- "${SLACK_WEBHOOK}" >/dev/null 2>&1; then
     echo "Slack notification sent"
   else

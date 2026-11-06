@@ -4,10 +4,11 @@ description: >-
   Use when writing or validating the fix agent's agent-result.json output.
   Canonical owner of the JSON handoff contract: schema requirements, the
   fullsend-check-output validation loop, partial-work behavior, failure
-  handling, and validation-retry semantics — including carry-forward of
-  rebased_onto_target, merged_target, conflict_update, and
-  history_rewritten when the runner clears the output directory between
-  retries. Invoked from the fix-review skill's step 9 (Produce structured
+  handling, optional PR/MR title and description proposals (pr_title,
+  pr_body), and validation-retry semantics — including carry-forward of
+  rebased_onto_target, merged_target, conflict_update, history_rewritten,
+  and the PR metadata fields when the runner clears the output directory
+  between retries. Invoked from the fix-review skill's step 9 (Produce structured
   output) and referenced by agents/fix.md and fix-history-rewrite.
 ---
 
@@ -57,6 +58,51 @@ that gather these). `trigger_source` is `"bot"`/`"human"`. Action types:
 `type`, `finding`, `reason`). Required top-level fields: `pr_number`,
 `trigger_source`, `actions` (≥1), `summary`, `tests_passed`,
 `files_changed`.
+
+## Propose PR/MR metadata
+
+Optional `pr_title` and `pr_body` let the post-script replace the PR/MR
+title or description. Set a field only when the current value is
+materially inaccurate. That covers a changed file scope or approach,
+superseded behavior descriptions, and stale results such as test counts,
+whether this run or an earlier fix caused it. It also covers a human
+`/fs-fix` instruction or a review finding that asks for it. Do not set
+either field for cosmetic rewording. Omit any field that is still
+accurate. The post-script leaves an omitted field unchanged.
+
+- `pr_title`: single line, at most 200 characters. Keep the repo's
+  title convention (for example the Conventional Commits type and scope
+  already in the title).
+- `pr_body`: at most 8000 characters, Markdown. Write the full
+  replacement description, not a diff. Leave out the issue-closing line
+  (`Closes #N`, `Related to …`) and the `### Post-script verification`
+  section. The post-script keeps the existing ones and drops any copies
+  in your text. Do not add closing references to other issues. Close
+  every code fence and HTML comment you open: a body that could hide the
+  appended sections is not applied.
+- Each proposed field needs the SHA-256 of the exact current value you
+  based it on: `pr_title_base_sha256` or `pr_body_base_sha256`. Hash
+  the value as returned by the forge, with no trailing newline added. If
+  the live value has changed by the time the post-script runs (for
+  example a human edited it), that field is skipped with a warning.
+
+```bash
+# GitHub
+gh pr view "${PR_NUMBER}" --json title,body > /tmp/pr-meta.json
+# GitLab: save the MR JSON from the fix-review recipe to /tmp/pr-meta.json,
+# then use '.description // ""' instead of '.body // ""' below.
+jq -j '.title' /tmp/pr-meta.json | sha256sum | cut -d' ' -f1
+jq -j '.body // ""' /tmp/pr-meta.json | sha256sum | cut -d' ' -f1
+```
+
+A metadata-only run (no code change) still needs at least one `actions`
+entry. Record a `fix` action whose `finding` names the stale metadata.
+
+The post-script applies the fields only after the output passes schema
+validation and its secret scan. The outcome appears in the PR summary
+comment. A failed update never fails the run. Like every other field,
+these are public text: do not copy untrusted log or review content into
+them verbatim.
 
 Validate before exiting:
 
@@ -140,6 +186,12 @@ On a validation retry:
   that squash/reset still needs publishing, carry the field forward the
   same way. Dropping it makes the post-script replay local commits onto
   the pre-rewrite remote PR tip and silently undo the squash or reset.
+- If a prior iteration in this run proposed `pr_title` or `pr_body` (see
+  "Propose PR/MR metadata" above), carry those fields and their
+  `pr_title_base_sha256` / `pr_body_base_sha256` forward unchanged.
+  Dropping them silently discards the metadata update. Do not recompute
+  the base hashes from a re-read. The hashes must describe the value the
+  proposal was based on.
 
 ## Constraints
 

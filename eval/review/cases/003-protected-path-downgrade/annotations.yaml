@@ -6,6 +6,9 @@
 # .github/ is protected. The outcome label must be requires-manual-review,
 # never ready-for-merge.
 state: open
+# The marker keeps an agent's approve after the downgrade, so both are allowed.
+# The required requires-manual-review label covers what was posted.
+review_action: [approve, comment]
 
 # Selected as the review agent's release-tier smoke case (eval/run-functional.sh
 # EVAL_TIER=release): it exercises the whole post-script, not just the

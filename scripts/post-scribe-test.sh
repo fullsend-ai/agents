@@ -163,6 +163,19 @@ if [[ "\${URL}" == *"atlassian.net/rest/api/3"* ]]; then
   exit 0
 fi
 
+# Slack incoming webhook — success unless fail/timeout markers are set.
+# Exit 28 matches curl's timeout status (connection or --max-time).
+if [[ "\${URL}" == *"hooks.slack.com"* ]]; then
+  if [[ -f "${TMPDIR}/slack-timeout" ]]; then
+    exit 28
+  fi
+  if [[ -f "${TMPDIR}/slack-fail" ]]; then
+    exit 1
+  fi
+  echo "ok"
+  exit 0
+fi
+
 # Note listing (comments) — return empty array
 if [[ "\${URL}" == *"/notes"* ]] && [[ " \$* " == *" GET "* ]]; then
   echo "[]"
@@ -184,6 +197,14 @@ fi
 exit 0
 MOCKEOF
 chmod +x "${MOCK_BIN}/curl"
+
+# Fail if the post-script still shells out to bc (not in the runner image).
+cat > "${MOCK_BIN}/bc" <<'MOCKEOF'
+#!/usr/bin/env bash
+echo "bc was invoked" >&2
+exit 127
+MOCKEOF
+chmod +x "${MOCK_BIN}/bc"
 
 export PATH="${MOCK_BIN}:${PATH}"
 export SCRIBE_REPO="mock-org/mock-repo"
@@ -291,6 +312,56 @@ run_test_stdout() {
   echo "PASS: ${test_name}"
 }
 
+# run_test_content_suppressed — run the post-script and assert that stdout
+# contains the expected pattern and never contains the forbidden value.
+run_test_content_suppressed() {
+  local test_name="$1"
+  local json_content="$2"
+  local expected_stdout="$3"
+  local forbidden_stdout="$4"
+  local expected_rejections="${5:-1}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${json_content}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  : > "${CURL_LOG}"
+  : > "${FULLSEND_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "${forbidden_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — forbidden value '${forbidden_stdout}' found in stdout"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout pattern '${expected_stdout}' not found"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "Gate rejections: ${expected_rejections}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected Gate rejections: ${expected_rejections}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- GitHub test cases (FULLSEND_FORGE=github) ---
 
 run_test_missing_dry_run() {
@@ -318,13 +389,32 @@ run_test_stdout "github/low-confidence-rejected" \
   '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.2,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
   "GATE REJECTED"
 
+run_test_stdout "github/confidence-at-threshold-passes" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.6,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "[DRY RUN] Would post comment"
+
+run_test_stdout "github/confidence-decimal-just-below-rejected" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.59,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "GATE REJECTED"
+
+run_test_stdout "github/confidence-equal-decimal-passes" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.60,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "[DRY RUN] Would post comment"
+
+export SCRIBE_MIN_CONFIDENCE="1.5"
+run_test_stdout "github/min-confidence-above-one-fails" \
+  '{"topics":[],"new_issues":[],"stats":{"notes_processed":0,"topics_extracted":0,"existing_matched":0,"new_proposed":0,"omitted":0}}' \
+  "" \
+  "true"
+unset SCRIBE_MIN_CONFIDENCE
+
 run_test_stdout "github/public-safe-false-rejected" \
   '{"topics":[{"topic":"Comp review","summary":"**Meeting update — 2026-04-28**\n\nSalary discussion.","existing_issue":42,"confidence":0.9,"public_safe":false,"public_safe_category":"hr","omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
   "content gate: hr"
 
 run_test_stdout "github/sensitive-email-rejected" \
   '{"topics":[{"topic":"Contact follow-up","summary":"**Meeting update — 2026-04-28**\n\nReach out at alice@example.com.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
-  "contains sensitive content"
+  "content gate: sensitive content"
 if grep -qF "alice@example.com" "${TMPDIR}/stdout.log"; then
   echo "FAIL: github/sensitive-email-not-in-stdout — sensitive text leaked to stdout"
   FAILURES=$((FAILURES + 1))
@@ -334,13 +424,95 @@ fi
 
 run_test_stdout "github/sensitive-title-rejected" \
   '{"topics":[],"new_issues":[{"title":"Contact alice@example.com","summary":"Follow up.","body":"## Problem\nContact.\n\n## Acceptance criteria\n- [ ] Done","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
-  "contains sensitive content"
+  "content gate: sensitive content"
 if grep -qF "alice@example.com" "${TMPDIR}/stdout.log"; then
   echo "FAIL: github/sensitive-title-not-in-stdout — sensitive title leaked to stdout"
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: github/sensitive-title-not-in-stdout"
 fi
+
+# Content gates must run before every gate that prints the title/topic,
+# so a low-confidence proposal with sensitive content is never printed.
+run_test_content_suppressed "github/low-confidence-sensitive-topic-suppressed" \
+  '{"topics":[{"topic":"Ping alice@example.com","summary":"**Meeting update — 2026-04-28**\n\nFollow up.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.2,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "alice@example.com"
+
+run_test_content_suppressed "github/low-confidence-sensitive-summary-suppressed" \
+  '{"topics":[{"topic":"Payroll followup","summary":"**Meeting update — 2026-04-28**\n\nSSN 123-45-6789.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.2,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "Payroll followup"
+
+run_test_content_suppressed "github/invalid-issue-unicode-topic-suppressed" \
+  '{"topics":[{"topic":"Hidden\u200bdirective","summary":"**Meeting update — 2026-04-28**\n\nFollow up.","existing_issue":"abc","confidence":0.2,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "content gate: suspicious Unicode" \
+  "Hidden"
+
+run_test_content_suppressed "github/omitted-sensitive-topic-suppressed" \
+  '{"topics":[{"topic":"Ping alice@example.com","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"not actionable"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
+  "OMITTED: item 1 of 1 (details suppressed)" \
+  "alice@example.com" \
+  0
+
+run_test_content_suppressed "github/omitted-clean-topic-unsuppressed" \
+  '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"not actionable"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
+  "OMITTED: [Rollout followup] — not actionable" \
+  "(details suppressed)" \
+  0
+
+run_test_content_suppressed "github/no-issue-sensitive-topic-skipped" \
+  '{"topics":[{"topic":"Ping alice@example.com","summary":"Follow up.","existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":0}}' \
+  "Topics processed: 1" \
+  "alice@example.com" \
+  0
+
+run_test_content_suppressed "github/low-confidence-sensitive-new-issue-title-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Email bob@example.com about rollout","summary":"Rollout.","body":"## Problem\nRollout.\n\n## Related\nSource: [Meeting notes](https://docs.google.com/document/d/abc123)","confidence":0.2,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "bob@example.com"
+
+run_test_content_suppressed "github/low-confidence-sensitive-new-issue-body-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Rollout followup","summary":"Rollout.","body":"## Problem\nContact bob@example.com.\n\n## Related\nSource: [Meeting notes](https://docs.google.com/document/d/abc123)","confidence":0.2,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "Rollout followup"
+
+run_test_content_suppressed "github/invalid-confidence-unicode-new-issue-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Hidden\u202edirective","summary":"Rollout.","body":"## Problem\nRollout.","confidence":"invalid","public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: suspicious Unicode" \
+  "Hidden"
+
+run_test_content_suppressed "github/sensitive-new-issue-label-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Rollout followup","summary":"Rollout.","body":"## Problem\nRollout.","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes","bob@example.com"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "bob@example.com"
+
+# Unbounded fields (labels, omit_reason) larger than the pipe buffer must still
+# be scanned in full: a detector whose reader exits early must not report
+# "clean" because the writer was killed by SIGPIPE. The match sits on the first
+# line and the padding is many short lines (JSON \n escapes, ~600KB decoded —
+# well past both the pipe buffer and grep's read buffer), so an early-exiting
+# reader stops before the writer has finished.
+PADDING="$(printf 'a\\n%.0s' $(seq 1 300000))"
+# JSON escape for U+200B (zero-width space), decoded by jq in the post-script.
+ZWSP_ESCAPE="\\u200b"
+
+run_test_content_suppressed "github/oversized-omit-reason-sensitive-suppressed" \
+  '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"bob@example.com\n'"${PADDING}"'"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
+  "OMITTED: item 1 of 1 (details suppressed)" \
+  "bob@example.com" \
+  0
+
+run_test_content_suppressed "github/oversized-omit-reason-unicode-suppressed" \
+  '{"topics":[{"topic":"Rollout followup","summary":null,"existing_issue":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":"Hidden'"${ZWSP_ESCAPE}"'directive\n'"${PADDING}"'"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":0,"new_proposed":0,"omitted":1}}' \
+  "OMITTED: item 1 of 1 (details suppressed)" \
+  "Hidden" \
+  0
+
+run_test_content_suppressed "github/oversized-label-sensitive-suppressed" \
+  '{"topics":[],"new_issues":[{"title":"Rollout followup","summary":"Rollout.","body":"## Problem\nRollout.","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes","bob@example.com\n'"${PADDING}"'"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
+  "content gate: sensitive content" \
+  "bob@example.com"
 
 run_test_stdout "github/code-block-rejected" \
   '{"topics":[{"topic":"Config change","summary":"**Meeting update — 2026-04-28**\n\nUse ```yaml\nkey: value\n``` in the workflow.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
@@ -370,6 +542,33 @@ export SCRIBE_DRY_RUN="false"
 run_test "github/live-mode-uses-paginate-for-idempotency" \
   '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
   "api --paginate repos/mock-org/mock-repo/issues/42/comments"
+
+# Omitted and unsafe topics carry summary: null (issue #1838). They must
+# never cause writes, and must not suppress a valid actionable topic.
+run_test "github/omitted-and-unsafe-null-summary-no-writes" \
+  '{"topics":[{"topic":"Low-confidence aside","summary":null,"existing_issue":42,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"},{"topic":"Unsafe topic","summary":null,"existing_issue":43,"new_issue_title":null,"confidence":0.9,"public_safe":false,"public_safe_category":"hr","omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":2,"existing_matched":0,"new_proposed":0,"omitted":2}}' \
+  "OMITTED: [Low-confidence aside]"
+if grep -qF "issue comment" "${GH_LOG}"; then
+  echo "FAIL: github/omitted-and-unsafe-null-summary-no-writes — omitted/unsafe topic posted a comment"
+  FAILURES=$((FAILURES + 1))
+fi
+if ! grep -qF "content gate: hr" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: github/omitted-and-unsafe-null-summary-no-writes — unsafe topic not rejected by content gate"
+  FAILURES=$((FAILURES + 1))
+fi
+
+run_test "github/mixed-omitted-unsafe-actionable-one-write" \
+  '{"topics":[{"topic":"Low-confidence aside","summary":null,"existing_issue":42,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"},{"topic":"Unsafe topic","summary":null,"existing_issue":43,"new_issue_title":null,"confidence":0.9,"public_safe":false,"public_safe_category":"hr","omit_reason":null},{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\nPoint A.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"new_issue_title":null,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null},{"topic":"Omitted with placeholder","summary":"OMITTED_CONTENT_MARKER","existing_issue":42,"new_issue_title":null,"confidence":0.3,"public_safe":true,"public_safe_category":null,"omit_reason":"Below confidence threshold"}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":4,"existing_matched":1,"new_proposed":0,"omitted":3}}' \
+  "gh issue comment 42 --repo mock-org/mock-repo --body-file -"
+MIXED_COMMENTS=$(grep -cF "issue comment" "${GH_LOG}" || true)
+if [[ "${MIXED_COMMENTS}" -ne 1 ]]; then
+  echo "FAIL: github/mixed-omitted-unsafe-actionable-one-write — expected 1 comment, got ${MIXED_COMMENTS}"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "Dedup: merged" "${TMPDIR}/stdout.log"; then
+  echo "FAIL: github/mixed-omitted-unsafe-actionable-one-write — omitted topic was merged into actionable topic"
+  FAILURES=$((FAILURES + 1))
+fi
 export SCRIBE_DRY_RUN="true"
 
 # ---------------------------------------------------------------------------
@@ -464,7 +663,7 @@ run_test_stdout "gitlab/dedup-merges-duplicate-issues" \
 
 run_test_stdout "gitlab/sensitive-email-rejected" \
   '{"topics":[{"topic":"Contact follow-up","summary":"**Meeting update — 2026-04-28**\n\nReach out at alice@example.com.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
-  "contains sensitive content"
+  "content gate: sensitive content"
 
 run_test_stdout "gitlab/code-block-rejected" \
   '{"topics":[{"topic":"Config change","summary":"**Meeting update — 2026-04-28**\n\nUse ```yaml\nkey: value\n``` in the workflow.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
@@ -493,6 +692,20 @@ run_test "gitlab/live-mode-posts-comment" \
 run_test "gitlab/live-mode-creates-issue" \
   '{"topics":[],"new_issues":[{"title":"Add dark mode","summary":"Users want dark mode.","body":"## Problem\nNo dark mode.\n\n## Options considered\nTheme toggle.\n\n## Acceptance criteria\n- [ ] Toggle works\n\n## Related\nSource: [Meeting notes](https://docs.google.com/document/d/abc123)","confidence":0.9,"public_safe":true,"public_safe_category":null,"labels":["meeting-notes"]}],"stats":{"notes_processed":1,"topics_extracted":0,"existing_matched":0,"new_proposed":1,"omitted":0}}' \
   "mock-group%2Fmock-project/issues"
+
+# Live GitLab writes must succeed even when Slack cannot be notified.
+touch "${TMPDIR}/slack-fail"
+export SCRIBE_SLACK_WEBHOOK_URL="https://hooks.slack.com/test-webhook"
+run_test_stdout "gitlab/live-write-succeeds-when-slack-fails" \
+  '{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}' \
+  "WARNING: Slack notification failed (non-fatal)"
+if ! grep -qF "mock-group%2Fmock-project/issues/42/notes" "${CURL_LOG}"; then
+  echo "FAIL: gitlab/live-write-succeeds-when-slack-fails — GitLab write missing from curl log"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+unset SCRIBE_SLACK_WEBHOOK_URL
+rm -f "${TMPDIR}/slack-fail"
 export SCRIBE_DRY_RUN="true"
 
 # --- GitLab self-managed origin with a non-default HTTPS port (#1732) ---
@@ -573,6 +786,82 @@ export FULLSEND_FORGE="github"
 export SCRIBE_REPO="mock-org/mock-repo"
 unset GITLAB_TOKEN
 unset CI_SERVER_HOST
+
+# ---------------------------------------------------------------------------
+# Slack notification: best-effort, bounded timeouts, never fails the job
+# ---------------------------------------------------------------------------
+SLACK_OK_JSON='{"topics":[{"topic":"CI reliability","summary":"**Meeting update — 2026-04-28**\n\n**Relevant to this issue:** flaky matrix tests.\n\n[Meeting notes](https://docs.google.com/document/d/abc123)","existing_issue":42,"confidence":0.9,"public_safe":true,"public_safe_category":null,"omit_reason":null}],"new_issues":[],"stats":{"notes_processed":1,"topics_extracted":1,"existing_matched":1,"new_proposed":0,"omitted":0}}'
+SLACK_WEBHOOK_FAKE="https://hooks.slack.com/test-webhook"
+
+run_slack_test() {
+  local test_name="$1"
+  local slack_result="$2"
+  local expected_stdout="$3"
+  local expected_curl="${4:-}"
+
+  rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
+  case "${slack_result}" in
+    fail) touch "${TMPDIR}/slack-fail" ;;
+    timeout) touch "${TMPDIR}/slack-timeout" ;;
+  esac
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${SLACK_OK_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+  : > "${CURL_LOG}"
+
+  local exit_code=0
+  (
+    cd "${run_dir}"
+    export SCRIBE_SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_FAKE}"
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+
+  rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code} (Slack must be non-fatal)"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if grep -qF "bc was invoked" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — post-script invoked bc"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF "${expected_stdout}" "${TMPDIR}/stdout.log"; then
+    echo "FAIL: ${test_name} — expected stdout '${expected_stdout}' not found"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [[ -n "${expected_curl}" ]] && ! grep -qF -- "${expected_curl}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected curl pattern '${expected_curl}' not found"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_slack_test "github/slack-reachable-webhook" "ok" \
+  "Slack notification sent" \
+  "--connect-timeout 10 --max-time 30"
+
+run_slack_test "github/slack-unreachable-webhook" "fail" \
+  "WARNING: Slack notification failed (non-fatal)" \
+  "--connect-timeout 10 --max-time 30"
+
+run_slack_test "github/slack-stalled-webhook" "timeout" \
+  "WARNING: Slack notification failed (non-fatal)" \
+  "--max-time 30"
 
 # --- Jira tracker test cases (FULLSEND_FORGE=github, FULLSEND_TRACKER=jira) ---
 
