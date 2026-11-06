@@ -102,6 +102,21 @@ else
   echo "PASS: outside-lib-should-fail"
 fi
 
+# --- failed bundle must not truncate an existing destination ---
+DEST_UNCHANGED="${TMPDIR}/dest-unchanged.sh"
+printf 'ORIGINAL_CONTENT\n' > "${DEST_UNCHANGED}"
+cp "${DEST_UNCHANGED}" "${DEST_UNCHANGED}.orig"
+if "${BUNDLER}" -o "${DEST_UNCHANGED}" "${FIXTURES}/outside-lib.src.sh" 2>/dev/null; then
+  echo "FAIL: dest-unchanged-on-failure-bundle-should-fail"
+  FAILURES=$((FAILURES + 1))
+elif cmp -s "${DEST_UNCHANGED}" "${DEST_UNCHANGED}.orig"; then
+  echo "PASS: dest-unchanged-on-failure"
+else
+  echo "FAIL: dest-unchanged-on-failure"
+  echo "  destination was modified"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # --- quoted source path with inline comment still bundles ---
 run_bundle_test "comment-inline" "${FIXTURES}/comment.src.sh"
 
