@@ -61,6 +61,8 @@
 set -euo pipefail
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/git-graph-policy.lib.sh
+source "${SCRIPT_DIR_POST}/lib/git-graph-policy.lib.sh"
 # shellcheck source=lib/post-failure-report.lib.sh
 source "${SCRIPT_DIR_POST}/lib/post-failure-report.lib.sh"
 # shellcheck source=lib/gitleaks-install.lib.sh
@@ -242,6 +244,13 @@ if [ "${REPO_DIR}" != "." ]; then
   fi
   cd "${REPO_DIR}"
 fi
+
+# The checkout came from the agent's sandbox and can rewrite ancestry
+# (refs/replace, grafts, commit-graph); pin Git to the stored graph first.
+# Separate from trust_cfg in uncommitted_work_status: that one blocks code
+# execution through repo-local config (fsmonitor, hooks, filters) for its
+# own commands; this one is exported for every Git read. Keep both.
+git_graph_policy_init
 
 # GitLab needs REPO_ENCODED and GITLAB_HOST for API calls.
 # Always derive GITLAB_HOST from the validated ISSUE_URL (CI_SERVER_HOST for
@@ -558,7 +567,9 @@ uncommitted_work_status() {
   # Pin trusted git config: the extracted tree is untrusted, and both
   # invocations below are index/status commands that would otherwise honor
   # repo-local config from that tree (fsmonitor hooks, hidden untracked
-  # files) while PUSH_TOKEN is present in the environment.
+  # files) while PUSH_TOKEN is present in the environment. Ancestry rewrites
+  # (replace refs, grafts, commit-graph) are handled separately and globally
+  # by git_graph_policy_init; do not fold one into the other.
   local trust_cfg=(-c core.fsmonitor=false -c core.useBuiltinFSMonitor=false -c core.hooksPath=/dev/null -c status.showUntrackedFiles=all)
   # filter.<name>.clean/smudge/process drivers are a separate config
   # namespace from hooks — core.hooksPath does not neutralize them. If
