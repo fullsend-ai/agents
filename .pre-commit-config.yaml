@@ -52,6 +52,12 @@ repos:
         language: script
         files: ^(harness/|docs/|hack/lint-agent-docs)
         pass_filenames: false
+      - id: lint-gh-api-syntax
+        name: lint gh api field syntax in skills and agents
+        entry: ./hack/lint-gh-api-syntax
+        language: script
+        files: ^(skills/.*\.md|agents/.*\.md|hack/lint-gh-api-syntax)$
+        pass_filenames: false
       - id: lint-measurements
         name: lint eval measurement manifests
         entry: ./eval/lint-measurements.sh

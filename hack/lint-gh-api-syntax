@@ -1,0 +1,36 @@
+#!/bin/bash
+# Lint: reject httpie-style `-F name:=value` in skill and agent docs.
+#
+# `gh api -F` splits on the first `=`, so `-F number:=843` sets a variable
+# named `number:` and leaves `$number` null. The correct form is
+# `-F number=843` (`-F` already converts numeric values to Int).
+set -euo pipefail
+shopt -s nullglob
+
+REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+SKILLS_DIR="${SKILLS_DIR:-$REPO_ROOT/skills}"
+AGENTS_DIR="${AGENTS_DIR:-$REPO_ROOT/agents}"
+
+PATTERN='-F[[:space:]]+[A-Za-z_][A-Za-z0-9_]*:='
+
+files=()
+if [[ -d "$SKILLS_DIR" ]]; then
+    while IFS= read -r -d '' f; do
+        files+=("$f")
+    done < <(find "$SKILLS_DIR" -type f -name '*.md' -print0)
+fi
+files+=("$AGENTS_DIR"/*.md)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+    echo "OK: no skill or agent docs found"
+    exit 0
+fi
+
+matches="$(grep -nHE -e "$PATTERN" "${files[@]}" || true)"
+if [[ -n "$matches" ]]; then
+    echo "ERROR: invalid gh api field syntax (use '-F name=value', not '-F name:=value'):"
+    echo "$matches" | sed 's/^/  /'
+    exit 1
+fi
+
+echo "OK: no '-F name:=value' usages found in ${#files[@]} file(s)"
