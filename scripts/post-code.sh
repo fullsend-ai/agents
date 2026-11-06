@@ -30,10 +30,13 @@
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
 # Jira-sourced runs (FULLSEND_TRACKER or FULLSEND_WORK_ITEM_SOURCE is "jira")
-# also need FULLSEND_WORK_ITEM_URL, JIRA_USER_EMAIL, and JIRA_TOKEN to write
-# the code-stage update and PR/MR URL to the Jira issue. JIRA_BASE_URL is
-# optional and cross-checked against the work-item URL. GitLab targets take
-# the GitLab host from CI_SERVER_HOST.
+# also need FULLSEND_WORK_ITEM_URL, JIRA_TOKEN, and FULLSEND_DIR (whose
+# config.yaml holds tracker.jira for the fullsend CLI) to write the
+# code-stage update and PR/MR URL to the Jira issue. JIRA_USER_EMAIL is
+# optional: when set, the write uses bot-user Basic auth; when unset or
+# empty, service-account Bearer auth. JIRA_BASE_URL is optional and
+# cross-checked against the work-item URL. GitLab targets take the GitLab
+# host from CI_SERVER_HOST.
 #
 # Optional environment variables:
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
@@ -60,6 +63,47 @@
 #        also when a Jira-sourced run cannot write its stage update to Jira
 #        (the PR/MR already exists on the code host)
 set -euo pipefail
+
+# ---------------------------------------------------------------------------
+# Jira credential isolation — must run before any git command.
+#
+# Repo-controlled code (git hooks, including the reference-transaction hook
+# that `git branch -M` triggers, pre-commit tool installs and hooks) runs as
+# child processes of this one. Unsetting the credentials part-way through the
+# script is not enough: the environment this process started with stays
+# readable through /proc/<pid>/environ (for a hook, /proc/$PPID/environ and
+# up the parent chain), and an earlier git command would have inherited them.
+#
+# So on first entry, move the credentials out of the environment: write them
+# to an unlinked private file, then re-exec this script with them removed
+# from the environment. The re-exec'd process reads them into shell variables
+# and closes the file at once, before any repo-controlled code can run. They
+# then live only in this process's memory, and reach the one trusted
+# consumer, post_jira_stage_update, after all hooks have finished. The
+# FULLSEND_JIRA_* names are what the harness maps from and what the CLI
+# reads, so inherited copies are withheld as well.
+#
+# This still is not a boundary against a same-user process that can ptrace
+# this one; it removes the credentials from every environment and file a
+# hook could read without that.
+# ---------------------------------------------------------------------------
+_jira_token_saved=""
+_jira_email_saved=""
+if [[ -n "${_POST_CODE_JIRA_FD:-}" ]]; then
+  _jira_stash_fd="${_POST_CODE_JIRA_FD}"
+  unset _POST_CODE_JIRA_FD
+  { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true; } \
+    < "/proc/self/fd/${_jira_stash_fd}"
+  exec {_jira_stash_fd}<&-
+  unset _jira_stash_fd
+elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}" ]]; then
+  _jira_stash_file="$(mktemp)"
+  exec {_jira_stash_fd}<>"${_jira_stash_file}"
+  rm -f "${_jira_stash_file}"
+  printf '%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" >&"${_jira_stash_fd}"
+  exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
+    _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
+fi
 
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/git-graph-policy.lib.sh
@@ -1640,6 +1684,86 @@ classify_branch_vs_pr_head() {
   fi
 }
 # END bundled: lib/branch-guard.lib.sh
+# shellcheck source=lib/jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
+# shellcheck shell=bash
+# jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
+#
+# Shared by the Jira triage and scribe ops libraries and post-code.sh, and
+# bundled into each script that sources it. Two credential modes
+# (fullsend#9007):
+#
+#   token + email — bot user: Basic auth with email:token
+#   token only    — service account: Bearer auth with the token
+#
+# An email that is empty or only whitespace counts as absent. A harness
+# that maps an unset FULLSEND_JIRA_EMAIL to JIRA_USER_EMAIL yields an empty
+# string, and that must select Bearer, never an empty-user Basic header.
+#
+# Every helper takes the token and email as arguments, so callers that
+# withhold the credentials from their environment can pass saved copies.
+
+[[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
+JIRA_AUTH_SH_LOADED=1
+
+# Print the email with surrounding whitespace removed. Empty output means
+# no email, which selects Bearer auth.
+#
+# Usage: jira_auth_email <email>
+jira_auth_email() {
+  local email="$1"
+  email="${email#"${email%%[![:space:]]*}"}"
+  email="${email%"${email##*[![:space:]]}"}"
+  printf '%s' "${email}"
+}
+
+# Run curl with the Authorization for the selected mode, followed by the
+# caller's arguments. Fails without calling curl when the token is empty.
+#
+# Usage: jira_auth_curl <token> <email> [curl args...]
+jira_auth_curl() {
+  local token="$1"
+  local email
+  email="$(jira_auth_email "$2")"
+  shift 2
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    curl --user "${email}:${token}" "$@"
+  else
+    curl --oauth2-bearer "${token}" "$@"
+  fi
+}
+
+# Run the fullsend CLI with the Jira credentials it reads from its
+# environment: FULLSEND_JIRA_TOKEN always, FULLSEND_JIRA_EMAIL only for a
+# bot user. In Bearer mode an inherited FULLSEND_JIRA_EMAIL is removed, so
+# the CLI cannot pick Basic auth. The values go through the environment,
+# never the command line.
+#
+# Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
+jira_auth_fullsend() {
+  local bin="$1"
+  local token="$2"
+  local email
+  email="$(jira_auth_email "$3")"
+  shift 3
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    FULLSEND_JIRA_TOKEN="${token}" FULLSEND_JIRA_EMAIL="${email}" "${bin}" "$@"
+  else
+    (
+      unset FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_TOKEN="${token}" "${bin}" "$@"
+    )
+  fi
+}
+# END bundled: lib/jira-auth.lib.sh
 
 # SCRIPT_DIR is used by code-ops.lib.sh dispatcher to locate forge-specific
 # ops libraries. Not directly referenced in this file.
@@ -3509,11 +3633,16 @@ post_jira_stage_update() {
     gha_echo error "JIRA_BASE_URL does not match the Jira host in FULLSEND_WORK_ITEM_URL"
     return 1
   fi
-  # The credentials were withheld from the environment earlier in the run
-  # (see the note after the branch checks); they are passed to the trusted
-  # CLI below and nowhere else.
-  if [ -z "${_jira_email_saved:-}" ] || [ -z "${_jira_token_saved:-}" ]; then
-    gha_echo error "JIRA_USER_EMAIL and JIRA_TOKEN are required to write to Jira"
+  # The credentials were withheld from the environment at the start of the
+  # script (see "Jira credential isolation"); they are passed to the trusted
+  # CLI below and nowhere else. The email is optional: without it the CLI
+  # uses service-account Bearer auth.
+  if [ -z "${_jira_token_saved:-}" ]; then
+    gha_echo error "JIRA_TOKEN is required to write to Jira"
+    return 1
+  fi
+  if [ -z "${FULLSEND_DIR:-}" ]; then
+    gha_echo error "FULLSEND_DIR is required to write to Jira (the fullsend CLI reads tracker.jira from its config.yaml)"
     return 1
   fi
   if [ -z "${_jira_fullsend_bin:-}" ]; then
@@ -3531,11 +3660,14 @@ post_jira_stage_update() {
 
 Review and merge happen on the ${noun}."
 
-  # The token reaches the CLI through its default JIRA_TOKEN env var rather
-  # than a command-line flag, keeping it out of the process list.
-  printf '%s' "${body}" | JIRA_TOKEN="${_jira_token_saved}" "${_jira_fullsend_bin}" issues post-comment \
-    --tracker jira --project "${project}" --number "${number}" \
-    --jira-url "${jira_url}" --jira-email "${_jira_email_saved}" \
+  # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
+  # bot user only, FULLSEND_JIRA_EMAIL, never through command-line flags,
+  # keeping them out of the process list. The Jira site and API gateway
+  # come from tracker.jira in FULLSEND_DIR's config.yaml.
+  printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
+    "${_jira_token_saved}" "${_jira_email_saved:-}" \
+    issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${project}" --number "${number}" \
     --marker "<!-- fullsend:code-agent -->" --result -
 }
 
@@ -3687,19 +3819,11 @@ BRANCH="${SAFE_BRANCH}"
 echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
 
-# Stop the Jira credentials from being inherited by child processes that can
-# run repo-controlled code (commit/push hooks, pre-commit tool installs and
-# hooks). This only prevents inheritance; it is not an isolation boundary,
-# because the initial environment of this process and its parent stays
-# readable via /proc/<pid>/environ by anything running as the same user.
-# The credentials are restored only inside post_jira_stage_update, for the
-# single Jira write.
-# Resolve the trusted tracker CLI now, before repo-controlled installs can
-# put a binary of the same name earlier on PATH.
-_jira_token_saved="${JIRA_TOKEN-}"
-_jira_email_saved="${JIRA_USER_EMAIL-}"
+# The Jira credentials were taken out of the environment at the top of this
+# script and are passed only to post_jira_stage_update. Resolve the trusted
+# tracker CLI now, before repo-controlled installs can put a binary of the
+# same name earlier on PATH.
 _jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
-unset JIRA_TOKEN JIRA_USER_EMAIL
 
 # ---------------------------------------------------------------------------
 # 2. Compute changed files

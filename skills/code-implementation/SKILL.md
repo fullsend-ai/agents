@@ -223,14 +223,15 @@ Determine which issue to implement:
 - Otherwise, if an issue number, URL, or label event was provided, use it.
 - If none was provided, stop rather than guessing.
 
-Fetch the issue content. For Jira, query its REST API with Basic auth.
-The sandbox's `JIRA_TOKEN` is the `jira-ro` provider's opaque placeholder,
-not the real token. Extract the issue key from `ISSUE_URL`:
+Fetch the issue content:
 
 ```bash
 if test "${FULLSEND_TRACKER:-}" = "jira"; then
-  ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
-  curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+  ISSUE_KEY="${ISSUE_URL##*/browse/}"
+  JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+  JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+  JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+  curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
     "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/issue/${ISSUE_KEY}"
 else
   # GitHub:

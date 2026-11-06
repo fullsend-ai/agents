@@ -3359,6 +3359,7 @@ JIRA_INT_MOCK_BIN="${JIRA_INT_TMPDIR}/bin"
 JIRA_INT_FULLSEND_LOG="${JIRA_INT_TMPDIR}/fullsend.log"
 JIRA_INT_FORGE_LOG="${JIRA_INT_TMPDIR}/forge.log"
 JIRA_INT_PRECOMMIT_LOG="${JIRA_INT_TMPDIR}/precommit.log"
+JIRA_INT_FULLSEND_DIR="${JIRA_INT_TMPDIR}/dot-fullsend"
 mkdir -p "${JIRA_INT_MOCK_BIN}"
 JIRA_REAL_GIT="$(which git)"
 
@@ -3438,7 +3439,7 @@ for arg in "\$@"; do
   fi
   PREV="\${arg}"
 done
-echo "fullsend \$* env-token=\${JIRA_TOKEN:-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
 if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
   echo "Error: Jira API returned 401" >&2
   exit 1
@@ -3450,7 +3451,7 @@ chmod +x "${JIRA_INT_MOCK_BIN}/fullsend"
 # hooks (it runs repo-controlled code in the real tool).
 cat > "${JIRA_INT_MOCK_BIN}/pre-commit" <<MOCKEOF
 #!/usr/bin/env bash
-echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset}" >> "${JIRA_INT_PRECOMMIT_LOG}"
+echo "pre-commit jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset}" >> "${JIRA_INT_PRECOMMIT_LOG}"
 exit 0
 MOCKEOF
 chmod +x "${JIRA_INT_MOCK_BIN}/pre-commit"
@@ -3478,13 +3479,35 @@ setup_jira_int_repo() {
   ${JIRA_REAL_GIT} -C "${repo_dir}" add -f file.txt
   ${JIRA_REAL_GIT} -C "${repo_dir}" commit -q -m "fix: test change"
   if [ -n "${JIRA_INT_PREPUSH_HOOK:-}" ]; then
-    cat > "${repo_dir}/.git/hooks/pre-push" <<HOOKEOF
+    write_jira_int_hook "${repo_dir}/.git/hooks/pre-push" pre-push "${JIRA_INT_PREPUSH_HOOK}"
+  fi
+  if [ -n "${JIRA_INT_REFTX_HOOK:-}" ]; then
+    # Runs when `git branch -M` renames the agent branch.
+    write_jira_int_hook "${repo_dir}/.git/hooks/reference-transaction" reference-transaction "${JIRA_INT_REFTX_HOOK}"
+  fi
+}
+
+# Write a repo-controlled hook that records whether the Jira credentials are
+# visible to it: in its environment, and in the initial environment
+# (/proc/<pid>/environ) of its parent and grandparent, the way a hostile hook
+# would look for them.
+write_jira_int_hook() {
+  local hook_path="$1" hook_name="$2" log_path="$3"
+  cat > "${hook_path}" <<HOOKEOF
 #!/usr/bin/env bash
-echo "pre-push jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset}" >> "${JIRA_INT_PREPUSH_HOOK}"
+# The reference-transaction hook reads its stdin; drain it.
+cat > /dev/null
+read -r _ _ _ gp _ < "/proc/\${PPID}/stat"
+leak=no
+for pid in "\${PPID}" "\${gp}"; do
+  if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL)=.'; then
+    leak=yes
+  fi
+done
+echo "${hook_name} jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} proc-environ-leak=\${leak}" >> "${log_path}"
 exit 0
 HOOKEOF
-    chmod +x "${repo_dir}/.git/hooks/pre-push"
-  fi
+  chmod +x "${hook_path}"
 }
 
 # Run post-code for a Jira-sourced work item on the given code host. Extra
@@ -3495,7 +3518,7 @@ run_jira_int() {
   local forge="$2"
   shift 2
   local run_dir="${JIRA_INT_TMPDIR}/run-${test_name}"
-  setup_jira_int_repo "${run_dir}" "agent/TESTPROJ-42-fix"
+  setup_jira_int_repo "${run_dir}" "${JIRA_INT_BRANCH:-agent/TESTPROJ-42-fix}"
   : > "${JIRA_INT_FULLSEND_LOG}"
   : > "${JIRA_INT_FORGE_LOG}"
   JIRA_INT_OUT="${JIRA_INT_TMPDIR}/stdout-${test_name}.log"
@@ -3518,6 +3541,10 @@ run_jira_int() {
     export JIRA_BASE_URL="https://test.atlassian.net/"
     export JIRA_USER_EMAIL="fullsend-bot@example.com"
     export JIRA_TOKEN="fake-jira-token"
+    # The harness also leaves the source secrets in the runner environment.
+    export FULLSEND_JIRA_EMAIL="${JIRA_USER_EMAIL}"
+    export FULLSEND_JIRA_TOKEN="${JIRA_TOKEN}"
+    export FULLSEND_DIR="${JIRA_INT_FULLSEND_DIR}"
     if [ "${forge}" = "gitlab" ]; then
       export REPO_FULL_NAME="test-group/test-project"
       export GITLAB_TOKEN="${PUSH_TOKEN}"
@@ -3550,7 +3577,7 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-github-target-pr-url-to-jira" "post-code failed"
 elif ! grep -q "^gh pr create" "${JIRA_INT_FORGE_LOG}"; then
   jira_int_fail "jira-github-target-pr-url-to-jira" "PR not created on GitHub"
-elif ! grep -qF -- "--tracker jira --project TESTPROJ --number 42 --jira-url https://test.atlassian.net" "${JIRA_INT_FULLSEND_LOG}" \
+elif ! grep -qF -- "--tracker jira --fullsend-dir ${JIRA_INT_FULLSEND_DIR} --project TESTPROJ --number 42" "${JIRA_INT_FULLSEND_LOG}" \
      || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
      || ! grep -qF "opened pull request https://github.com/test-org/test-repo/pull/1 for TESTPROJ-42" "${JIRA_INT_FULLSEND_LOG}"; then
   jira_int_fail "jira-github-target-pr-url-to-jira" "Jira stage update missing or malformed"
@@ -3561,15 +3588,32 @@ else
 fi
 
 # Bot identity: the write uses the configured fullsend Jira account (the
-# identity the Jira poller classifies as its own), and the token reaches the
-# CLI through the environment rather than the command line.
-if ! grep -qF -- "--jira-email fullsend-bot@example.com" "${JIRA_INT_FULLSEND_LOG}" \
-   || ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}" \
-   || grep -qF -- "--token" "${JIRA_INT_FULLSEND_LOG}"; then
-  jira_int_fail "jira-stage-update-bot-identity" "write did not use the configured Jira account, or the token was passed on the command line"
+# identity the Jira poller classifies as its own). The token and email reach
+# the config-backed CLI through FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL
+# rather than the command line.
+if ! grep -qF "env-token=fake-jira-token env-email=fullsend-bot@example.com" "${JIRA_INT_FULLSEND_LOG}" \
+   || grep -qE -- "--(token|jira-email|jira-url)" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-stage-update-bot-identity" "write did not use the configured Jira account, or credentials or URLs were passed on the command line"
 else
   echo "PASS: jira-stage-update-bot-identity"
 fi
+
+# Service account (#1900): an empty or blank email still writes the stage
+# update, with no FULLSEND_JIRA_EMAIL for the CLI (Bearer auth), even when
+# one is inherited.
+for _jira_email_case in "empty|" "blank|  "; do
+  _jira_email_name="${_jira_email_case%%|*}"
+  run_jira_int "jira-service-account-${_jira_email_name}" github \
+    "JIRA_USER_EMAIL=${_jira_email_case#*|}" FULLSEND_JIRA_EMAIL=inherited@example.com
+  if [ "${JIRA_INT_RC}" -ne 0 ]; then
+    jira_int_fail "jira-service-account-${_jira_email_name}-email" "post-code failed"
+  elif ! grep -qF "env-token=fake-jira-token env-email=unset" "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-service-account-${_jira_email_name}-email" "stage update missing, or the CLI got an email"
+  else
+    echo "PASS: jira-service-account-${_jira_email_name}-email"
+  fi
+done
 
 # Jira credentials are withheld from pre-commit hooks (repo-controlled code)
 # but still reach the Jira stage update afterwards.
@@ -3579,7 +3623,7 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-token-hidden-from-precommit" "post-code failed"
 elif ! grep -q "^pre-commit " "${JIRA_INT_PRECOMMIT_LOG}"; then
   jira_int_fail "jira-token-hidden-from-precommit" "pre-commit did not run"
-elif ! grep -qF "pre-commit jira-token=unset jira-email=unset" "${JIRA_INT_PRECOMMIT_LOG}"; then
+elif ! grep -qF "pre-commit jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset" "${JIRA_INT_PRECOMMIT_LOG}"; then
   jira_int_fail "jira-token-hidden-from-precommit" "Jira credentials visible to pre-commit hooks"
 elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
   jira_int_fail "jira-token-hidden-from-precommit" "Jira credentials not restored for the stage update"
@@ -3608,7 +3652,7 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "post-code failed"
 elif ! grep -q "^pre-push " "${JIRA_INT_PREPUSH_LOG}"; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "pre-push hook did not run"
-elif ! grep -qF "pre-push jira-token=unset jira-email=unset" "${JIRA_INT_PREPUSH_LOG}"; then
+elif ! grep -qF "pre-push jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=no" "${JIRA_INT_PREPUSH_LOG}"; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "Jira credentials visible to a pre-push hook"
 elif [ -s "${JIRA_INT_SHADOW_LOG}" ]; then
   jira_int_fail "jira-path-shadowed-fullsend-not-used" "a binary from the repo-controlled PATH entry received the Jira write"
@@ -3617,6 +3661,30 @@ elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
 else
   echo "PASS: jira-token-hidden-from-prepush-hook"
   echo "PASS: jira-path-shadowed-fullsend-not-used"
+fi
+
+# Renaming a non-conforming agent branch runs `git branch -M`, which triggers
+# the repo's reference-transaction hook. That hook must not see the Jira
+# credentials, neither in its environment nor in the initial environment of
+# its parent processes (/proc/$PPID/environ), and the credentials must still
+# reach the Jira write afterwards.
+JIRA_INT_REFTX_LOG="${JIRA_INT_TMPDIR}/reftx.log"
+: > "${JIRA_INT_REFTX_LOG}"
+JIRA_INT_BRANCH="feature/rename-me" JIRA_INT_REFTX_HOOK="${JIRA_INT_REFTX_LOG}" \
+  run_jira_int "jira-rename-hook-hidden" github
+if [ "${JIRA_INT_RC}" -ne 0 ]; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "post-code failed"
+elif ! grep -qF "Renaming agent branch 'feature/rename-me' to 'agent/TESTPROJ-42-rename-me'" "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "agent branch was not renamed"
+elif grep -q "^reference-transaction " "${JIRA_INT_REFTX_LOG}" \
+     && ! grep -qF "reference-transaction jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=no" "${JIRA_INT_REFTX_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials visible to a hook during the branch rename"
+elif grep -qF "proc-environ-leak=yes" "${JIRA_INT_REFTX_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials readable from a parent's /proc environ"
+elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials not passed to the stage update"
+else
+  echo "PASS: jira-token-hidden-from-rename-hook"
 fi
 
 # GitLab target: MR on GitLab (host from CI_SERVER_HOST, since ISSUE_URL is the
@@ -3678,10 +3746,20 @@ done
 run_jira_int "jira-missing-token" github JIRA_TOKEN=
 if [ "${JIRA_INT_RC}" -eq 0 ]; then
   jira_int_fail "jira-missing-token-fails-step" "expected failure but got success"
-elif ! grep -qF "JIRA_USER_EMAIL and JIRA_TOKEN are required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+elif ! grep -qF "JIRA_TOKEN is required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
   jira_int_fail "jira-missing-token-fails-step" "missing credential error, or a write was attempted"
 else
   echo "PASS: jira-missing-token-fails-step (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# The config-backed CLI needs FULLSEND_DIR for tracker.jira.
+run_jira_int "jira-missing-fullsend-dir" github FULLSEND_DIR=
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-missing-fullsend-dir-fails-step" "expected failure but got success"
+elif ! grep -qF "FULLSEND_DIR is required" "${JIRA_INT_OUT}" || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
+  jira_int_fail "jira-missing-fullsend-dir-fails-step" "missing FULLSEND_DIR error, or a write was attempted"
+else
+  echo "PASS: jira-missing-fullsend-dir-fails-step (expected failure, got exit ${JIRA_INT_RC})"
 fi
 
 # A work-item key that disagrees with the URL is not written anywhere in Jira.

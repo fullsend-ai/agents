@@ -308,14 +308,18 @@ vars. Key differences from single-forge setup:
   (`event.source.system == "jira"`), a dedicated overlay attaches the
   `jira-ro` provider and `fullsend-jira-ro` OpenShell profile so the
   sandbox can read the Jira work item via the REST API. Sandbox curl
-  commands use `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` for Basic
-  auth, but `JIRA_TOKEN` inside the sandbox is the provider's opaque
+  commands use `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` (Basic auth)
+  when `JIRA_USER_EMAIL` is set and `--oauth2-bearer "${JIRA_TOKEN}"`
+  (Bearer auth, for a service account) when it is empty, but
+  `JIRA_TOKEN` inside the sandbox is the provider's opaque
   placeholder — the real API token is never expanded into sandbox
   config or env files. OpenShell replaces the placeholder in the
-  Basic Authorization header at the proxy boundary. Requests go to
-  `JIRA_API_URL` (the Atlassian API gateway, delivered through the
-  expanded `env/jira/code.env` host file) and fall back to
-  `JIRA_BASE_URL` when it is empty. The Jira overlay
+  Authorization header at the proxy boundary. Requests go to
+  `JIRA_API_URL` (the Atlassian API gateway) and fall back to
+  `JIRA_BASE_URL` when it is empty. `JIRA_API_URL` and
+  `JIRA_USER_EMAIL` reach the sandbox through the expanded
+  `env/jira/code.env` host file, so an unset value is empty instead of
+  failing the run. The Jira overlay
   composes with the target-forge overlay (GitHub or GitLab) via
   merge-all-matching.
 - **External work-item identity** — when the source tracker differs from the
@@ -331,9 +335,22 @@ vars. Key differences from single-forge setup:
   Jira issue through `fullsend issues post-comment --tracker jira`. The
   comment uses the fixed marker `<!-- fullsend:code-agent -->`, so a retried
   run edits it instead of adding another. The write uses the runner-only
-  `JIRA_USER_EMAIL` and `JIRA_TOKEN` from the Jira overlay of
-  `harness/code.yaml`. These are the same account the Jira poller treats as
-  its own, so the update does not dispatch agents. If the Jira write fails,
+  `JIRA_TOKEN` and optional `JIRA_USER_EMAIL`, which the Jira overlay of
+  `harness/code.yaml` maps from the `FULLSEND_JIRA_TOKEN` and optional
+  `FULLSEND_JIRA_EMAIL` repository secrets. The post-script passes them to
+  the CLI as `FULLSEND_JIRA_TOKEN` and, only when the email is set,
+  `FULLSEND_JIRA_EMAIL`: with an email the CLI uses bot-user Basic auth,
+  without one service-account Bearer auth. It passes
+  `--fullsend-dir "${FULLSEND_DIR}"`, so the CLI takes the Jira site and API
+  gateway from `tracker.jira` in that directory's `config.yaml`. This needs
+  a fullsend release that includes the config-backed Jira commands
+  ([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)).
+  The post-script takes the Jira credentials out of its environment before
+  it runs any git command, so repo-controlled hooks, including the one that
+  fires when it renames the agent branch, cannot read them from their
+  environment or from a parent's `/proc/<pid>/environ`; only this Jira write
+  receives them. These are the same account the Jira poller treats as its own, so the update does not
+  dispatch agents. If the Jira write fails,
   the step fails, even though the PR/MR already exists. The branch, commits,
   PR/MR, review and merge stay on the code host: GitHub targets get a GitHub
   PR and GitLab targets get a GitLab MR. For GitLab targets the GitLab host

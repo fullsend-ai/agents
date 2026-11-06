@@ -171,11 +171,12 @@ overlays:
       profiles:
         - profiles/fullsend-jira-ro.yaml
     pre_script: scripts/pre-code-jira.sh
-    # JIRA_API_URL reaches the sandbox through an expanded host file, not
-    # env.sandbox: a ${VAR} in env.sandbox fails the run when the host
-    # variable is unset, and older fullsend releases do not set it. An
-    # unset value expands to empty here and the skills fall back to
-    # JIRA_BASE_URL.
+    # JIRA_API_URL and JIRA_USER_EMAIL reach the sandbox through an
+    # expanded host file, not env.sandbox: a ${VAR} in env.sandbox fails the
+    # run when the host variable is unset, and older fullsend releases do
+    # not set JIRA_API_URL. An unset value expands to empty here: the skills
+    # fall back to JIRA_BASE_URL, and an empty JIRA_USER_EMAIL selects
+    # Bearer auth (service account).
     host_files:
       - src: env/jira/code.env
         dest: /sandbox/workspace/.env.d/jira-code.env
@@ -185,9 +186,14 @@ overlays:
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
         # Runner-only Jira credentials: post-code writes the code-stage
         # update and PR/MR URL to the Jira issue. The sandbox never gets the
-        # real token (the jira-ro provider supplies a placeholder).
-        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
-        JIRA_TOKEN: "${JIRA_TOKEN}"
+        # real token (the jira-ro provider supplies a placeholder). They
+        # come from the FULLSEND_JIRA_TOKEN and optional FULLSEND_JIRA_EMAIL
+        # repository secrets (fullsend#9079). An absent email expands empty
+        # here, and post-code then uses service-account Bearer auth.
+        JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"
+        JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"
+        # `fullsend issues` reads tracker.jira from this directory's config.
+        FULLSEND_DIR: "${FULLSEND_DIR}"
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
         # A Jira source work item has a key, not a target-forge issue number.
         # Override the inherited compatibility variable so harness expansion
@@ -198,5 +204,4 @@ overlays:
         FULLSEND_TRACKER: jira
         ISSUE_NUMBER: ""
         ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
-        JIRA_USER_EMAIL: "${JIRA_USER_EMAIL}"
         JIRA_BASE_URL: "${JIRA_BASE_URL}"

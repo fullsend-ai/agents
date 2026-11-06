@@ -807,6 +807,7 @@ MOCKEOF
     JIRA_BASE_URL="https://mock.atlassian.net" \
     JIRA_USER_EMAIL="bot@mock.example" \
     JIRA_TOKEN="fake-jira-token" \
+    FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
     SCRIBE_JIRA_PROJECT="PROJ" \
     SCRIBE_JIRA_MAX_PAGES="1" \
     bash "${PRE_SCRIPT}" 2>&1
@@ -974,6 +975,65 @@ test_jira_api_url_routing() {
   echo "PASS: ${test_name}"
 }
 
+# The Jira write path needs FULLSEND_DIR (tracker.jira lives in its
+# config.yaml). pre-scribe.sh must fail before any network call, so a missing
+# value is caught before the agent runs rather than in post-scribe.sh.
+test_jira_missing_fullsend_dir_fails_preflight() {
+  local test_name="jira/missing-fullsend-dir-fails-preflight"
+  local runner_temp="${TMPDIR}/runner-jira-no-dir"
+  local jira_bin="${TMPDIR}/jira-bin-no-dir"
+  local call_log="${TMPDIR}/jira-no-dir-calls.log"
+  mkdir -p "${runner_temp}" "${jira_bin}"
+  : > "${call_log}"
+
+  local tool
+  for tool in curl gh; do
+    cat > "${jira_bin}/${tool}" <<MOCKEOF
+#!/usr/bin/env bash
+echo "${tool} \$*" >> "${call_log}"
+exit 0
+MOCKEOF
+    chmod +x "${jira_bin}/${tool}"
+  done
+
+  local out rc=0
+  out=$(
+    PATH="${jira_bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${TMPDIR}/missing-sa-key.json" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake-jira-token" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    FULLSEND_DIR="" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ) || rc=$?
+
+  if [[ ${rc} -eq 0 ]]; then
+    echo "FAIL: ${test_name} — pre-scribe succeeded without FULLSEND_DIR"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ "${out}" != *"FULLSEND_DIR must be set"* ]]; then
+    echo "FAIL: ${test_name} — expected FULLSEND_DIR error, got: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! assert_eq "${test_name}: no network calls" "" "$(cat "${call_log}")"; then return; fi
+  if [[ -e "${runner_temp}/scribe-workspace" ]]; then
+    echo "FAIL: ${test_name} — workspace was prepared before the preflight failed"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 # --- Run tests ---
 
 # GitHub tests
@@ -999,6 +1059,7 @@ test_jira_backlog_page_cap_truncation
 test_jira_closed_issues
 test_jira_closed_issues_failure_fallback
 test_jira_api_url_routing
+test_jira_missing_fullsend_dir_fails_preflight
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

@@ -131,8 +131,14 @@ runner, no override workaround needed:
 
 ```bash
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
+# Bot user: set the email (Basic auth). Service account: leave both email
+# variables unset (Bearer auth).
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
+# The post-scripts read the FULLSEND_JIRA_* names (fullsend#9079); the
+# sandbox's jira-ro provider reads JIRA_TOKEN.
+export FULLSEND_JIRA_TOKEN="${JIRA_TOKEN}"
+export FULLSEND_JIRA_EMAIL="${JIRA_USER_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
 export FULLSEND_FORGE="jira"
 
@@ -164,11 +170,15 @@ external key as a GitHub or GitLab issue number.
 ```bash
 # Jira-source env vars (JIRA_USER_EMAIL and JIRA_BASE_URL enter the code
 # sandbox as non-secret config; JIRA_TOKEN is read by the jira-ro
-# provider on the host and is available to the code runner for the
-# post-code Jira write — it never enters the sandbox environment)
+# provider on the host and never enters the sandbox environment). The
+# post-code Jira write uses FULLSEND_JIRA_TOKEN and, for a bot user,
+# FULLSEND_JIRA_EMAIL. For a service account, leave both email variables
+# unset (Bearer auth).
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
+export FULLSEND_JIRA_TOKEN="${JIRA_TOKEN}"
+export FULLSEND_JIRA_EMAIL="${JIRA_USER_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
 
 # Target forge — the code agent still pushes/creates PRs on this forge

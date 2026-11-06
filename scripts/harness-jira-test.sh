@@ -79,11 +79,46 @@ else
   assert_fail "triage-jira-token-in-runner" "JIRA_TOKEN missing from runner env (needed for post-script)"
 fi
 
-# JIRA_USER_EMAIL in sandbox env (non-secret, needed for Basic auth)
-if jira_overlay_has "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_USER_EMAIL"; then
-  assert_pass "triage-jira-email-in-sandbox"
+# JIRA_USER_EMAIL reaches the sandbox through the expanded host file, not
+# env.sandbox: it is optional (a service account has none), and an unset
+# ${VAR} in env.sandbox fails the run (#1900).
+if grep -qF 'export JIRA_USER_EMAIL=' "${REPO_ROOT}/env/jira/triage.env" \
+  && ! jira_overlay_has "${TRIAGE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_USER_EMAIL"; then
+  assert_pass "triage-jira-email-in-sandbox-host-file"
 else
-  assert_fail "triage-jira-email-in-sandbox" "JIRA_USER_EMAIL missing from sandbox env"
+  assert_fail "triage-jira-email-in-sandbox-host-file" "JIRA_USER_EMAIL must come from env/jira/triage.env, not env.sandbox"
+fi
+
+# Host-side credentials come from the FULLSEND_JIRA_* repository secrets
+# (fullsend#9079), and the fullsend CLI gets the .fullsend directory.
+check_runner_mapping() {
+  local harness_file="$1" prefix="$2" key="$3" want="$4"
+  local got
+  got="$(jira_overlay_field "${harness_file}" ".env.runner.${key} // \"\"")"
+  if [[ "${got}" == "${want}" ]]; then
+    assert_pass "${prefix}-runner-${key}-mapping"
+  else
+    assert_fail "${prefix}-runner-${key}-mapping" "env.runner.${key} is '${got}', want '${want}'"
+  fi
+}
+check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_TOKEN '${FULLSEND_JIRA_TOKEN}'
+check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_USER_EMAIL '${FULLSEND_JIRA_EMAIL}'
+check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_DIR '${FULLSEND_DIR}'
+
+# fullsend refuses FULLSEND_JIRA_* at sandbox-bound sites, so no sandbox
+# env, Jira host file, or provider may reference them.
+for f in "${TRIAGE_HARNESS}" "${REPO_ROOT}/harness/code.yaml"; do
+  name="$(basename "${f}" .yaml)"
+  if jira_overlay_field "${f}" "(.env.sandbox // {}) | to_entries | .[] | .key + \"=\" + .value" | grep -qF 'FULLSEND_JIRA_'; then
+    assert_fail "${name}-no-fullsend-jira-in-sandbox" "FULLSEND_JIRA_* referenced in env.sandbox"
+  else
+    assert_pass "${name}-no-fullsend-jira-in-sandbox"
+  fi
+done
+if grep -hv '^[[:space:]]*#' "${REPO_ROOT}"/env/jira/*.env "${REPO_ROOT}/providers/jira-ro.yaml" | grep -qF 'FULLSEND_JIRA_'; then
+  assert_fail "no-fullsend-jira-in-host-files-or-provider" "FULLSEND_JIRA_* referenced in a Jira host file or the provider"
+else
+  assert_pass "no-fullsend-jira-in-host-files-or-provider"
 fi
 
 # JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
@@ -162,11 +197,17 @@ else
   assert_fail "code-jira-email-in-runner" "JIRA_USER_EMAIL missing from runner env (needed for post-code Jira write)"
 fi
 
-# JIRA_USER_EMAIL in sandbox env (non-secret, needed for Basic auth)
-if jira_overlay_has "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_USER_EMAIL"; then
-  assert_pass "code-jira-email-in-sandbox"
+check_runner_mapping "${CODE_HARNESS}" code JIRA_TOKEN '${FULLSEND_JIRA_TOKEN}'
+check_runner_mapping "${CODE_HARNESS}" code JIRA_USER_EMAIL '${FULLSEND_JIRA_EMAIL}'
+check_runner_mapping "${CODE_HARNESS}" code FULLSEND_DIR '${FULLSEND_DIR}'
+
+# JIRA_USER_EMAIL reaches the sandbox through the expanded host file, not
+# env.sandbox (optional for a service account; #1900).
+if grep -qF 'export JIRA_USER_EMAIL=' "${REPO_ROOT}/env/jira/code.env" \
+  && ! jira_overlay_has "${CODE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_USER_EMAIL"; then
+  assert_pass "code-jira-email-in-sandbox-host-file"
 else
-  assert_fail "code-jira-email-in-sandbox" "JIRA_USER_EMAIL missing from sandbox env"
+  assert_fail "code-jira-email-in-sandbox-host-file" "JIRA_USER_EMAIL must come from env/jira/code.env, not env.sandbox"
 fi
 
 # JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
@@ -191,11 +232,12 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Skill-level tests: sandbox curl commands must use Basic auth with the
-# opaque provider placeholder (--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}").
-# The real token never enters the sandbox; JIRA_TOKEN in these commands is
-# the provider-supplied placeholder that OpenShell replaces at the proxy
-# boundary.
+# Skill-level tests: sandbox curl commands use the opaque provider
+# placeholder with Basic auth (--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}")
+# when JIRA_USER_EMAIL is set, and Bearer auth (--oauth2-bearer) when it
+# is empty (#1900). The real token never enters the sandbox; JIRA_TOKEN in
+# these commands is the provider-supplied placeholder that OpenShell
+# replaces at the proxy boundary.
 # ---------------------------------------------------------------------------
 SKILL_FILES=(
   "${REPO_ROOT}/skills/jira-forge/SKILL.md"
@@ -213,28 +255,32 @@ for skill_file in "${SKILL_FILES[@]}"; do
     continue
   fi
 
-  # Every Jira curl command in the skill must use --user for Basic auth.
-  # Check that at least one --user flag exists alongside JIRA_TOKEN.
-  if grep -qF -- '--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"' "${skill_file}"; then
+  # The selection lines trim JIRA_USER_EMAIL into JIRA_EMAIL, then pick
+  # Basic auth (--user email:token) only when the trimmed email is
+  # non-empty, else Bearer (--oauth2-bearer token), so no curl sends Basic
+  # auth with an empty or whitespace-only email.
+  if grep -qF -- 'JIRA_EMAIL="$(printf '"'%s'"' "${JIRA_USER_EMAIL:-}" | tr -d '"'[:space:]'"')"' "${skill_file}" \
+    && grep -qF -- 'JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user' "${skill_file}" \
+    && grep -qF -- 'JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"' "${skill_file}"; then
     assert_pass "${test_name}"
   else
-    assert_fail "${test_name}" "missing --user \"\${JIRA_USER_EMAIL}:\${JIRA_TOKEN}\" in ${skill_file}"
+    assert_fail "${test_name}" "missing the Basic/Bearer selection lines in ${skill_file}"
   fi
 done
 
-# Verify no Jira skill curl command uses bearer auth (would require an
-# OAuth token; both the tenant URL and the api.atlassian.com gateway take
-# Basic email:token).
+# Every Jira curl uses the selected auth, and none passes --user directly.
 for skill_file in "${SKILL_FILES[@]}"; do
   skill_name="$(basename "$(dirname "${skill_file}")")"
-  test_name="skill-${skill_name}-no-bearer-auth"
+  test_name="skill-${skill_name}-auth-mode-selection"
 
   if [ ! -f "${skill_file}" ]; then
     continue  # already reported above
   fi
 
-  if grep -qi 'Authorization.*Bearer' "${skill_file}"; then
-    assert_fail "${test_name}" "bearer auth found in ${skill_file} (use Basic auth for tenant URL)"
+  if grep -qF -- '--user "' "${skill_file}"; then
+    assert_fail "${test_name}" "a curl in ${skill_file} passes --user directly instead of the selected auth"
+  elif grep -E 'curl ' "${skill_file}" | grep -F 'JIRA_' | grep -qvF '"${JIRA_AUTH_FLAG}" "${JIRA_AUTH}"'; then
+    assert_fail "${test_name}" "a Jira curl in ${skill_file} does not use \"\${JIRA_AUTH_FLAG}\" \"\${JIRA_AUTH}\""
   else
     assert_pass "${test_name}"
   fi

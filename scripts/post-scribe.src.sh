@@ -15,7 +15,8 @@
 #
 # Jira issue creation (FULLSEND_TRACKER=jira): new issues are created in
 # SCRIBE_JIRA_PROJECT; comments are not supported. See
-# lib/jira-scribe-ops.lib.sh for the required JIRA_* variables.
+# lib/jira-scribe-ops.lib.sh for the JIRA_* variables and FULLSEND_DIR.
+# JIRA_USER_EMAIL is optional: unset or empty selects Bearer auth.
 #
 # Optional env vars:
 #   SCRIBE_MODE              — "all" (default), "comments_only", "new_issues_only"
