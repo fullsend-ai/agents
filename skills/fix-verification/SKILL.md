@@ -75,6 +75,10 @@ skill for the full text):
   back to running the configured hooks directly, honoring each hook's
   `entry`, `args`, `rev`, `stages`, `additional_dependencies`, and
   file filters.
+- A permission error (`Permission denied`, `Operation not permitted`,
+  `EACCES`, `EPERM`) is not an infrastructure failure for that
+  fallback. Follow "Possible sandbox permission denials" in 7c; do not
+  run the hooks directly to get around it.
 - If the second run still fails, log the exact hook, file, and error
   in the commit message and move on. Never claim hooks passed when
   they did not.
@@ -108,6 +112,37 @@ echo "::notice::STEP 7c: Tests and linters"
 Discover build/test commands: Read Makefile, package.json, pyproject.toml, or equivalent. Run test command (e.g., `make test`, `npm test`, `go test ./...`, `pytest`), then lint command (e.g., `make lint`, `golangci-lint run`, `eslint`, `ruff`) as separate invocations (not `&&`-chained; lint runs even if tests fail).
 
 If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit — 7b is closed for this iteration whether you spent the budget or skipped it. Retry limit: `MAX_RETRIES` (default: 1).
+
+**Possible sandbox permission denials.** A verification command that
+fails with `Permission denied`, `Operation not permitted`, `EACCES`, or
+`EPERM` may be hitting a sandbox or environment restriction, not a
+missing tool or a defect in the fix — GNU Make under OpenShell, for
+example, can report `make: pnpm: Operation not permitted` for a tool
+that exists. Treat the denial as final for that operation:
+
+- Stop running it. Do not retry it through an alternate path, wrapper,
+  shim, setup target, or equivalent command, and do not probe for a way
+  around it. Do not spend a 7c retry on it.
+- Emit a visible warning naming the step, the denied command or
+  executable, and the error. Redact credential-like arguments (tokens,
+  passwords, secret-bearing URLs). Call it a possible denial; do not
+  assert the sandbox caused it unless the output shows that.
+
+  ```bash
+  echo "::warning::Possible sandbox denial in STEP 7c: 'make test' failed: make: pnpm: Operation not permitted. Not retried. Unverified: unit tests, lint"
+  ```
+
+- List the checks that remain unverified. Continue only with checks
+  that do not need the denied operation. If the remaining checks cannot
+  give a trustworthy result without it, do not commit; write structured
+  output and stop.
+- Repeat the warning and the unverified checks in the commit message,
+  the result's `summary`, and your final message. Set `tests_passed` to
+  `false` when a denied command kept tests from running.
+
+If the error points at the repository itself — a tracked file's mode,
+a project script missing its execute bit, a path the fix created — it
+is a project problem: investigate and fix it like any other failure.
 
 **7d. Self-review**
 

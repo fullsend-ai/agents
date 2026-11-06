@@ -148,6 +148,20 @@ Secret scanning is **non-negotiable**. The `scan-secrets` helper runs before
 tests on every verification pass. If secrets are detected — or if the helper
 script is missing — hard stop. Do not improvise a replacement or skip the scan.
 
+If a verification command fails with `Permission denied`, `Operation not
+permitted`, `EACCES`, or `EPERM`, treat it as a possible sandbox or
+environment denial — unless the error points at the repository itself,
+which you investigate like any other failure. The denial is final for
+that operation. Do not repeat it, and do not retry it through an
+alternate path, wrapper, shim, or equivalent command. Emit a warning
+naming the step, the denied command, and the error, with credential-like
+arguments redacted, and without asserting a cause you have not verified.
+List the checks left unverified, continue only with checks that do not
+need the denied operation, and stop cleanly if the result cannot be
+trusted without it. Carry the warning and the unverified checks into the
+commit message, `pr_body`, and your final message. The
+`code-implementation` skill (step 9c) gives the procedure.
+
 Your exit state is the handoff contract:
 - **Clean commit on the feature branch + valid structured output** → the
   post-script pushes and creates the PR (after its own authoritative secret
