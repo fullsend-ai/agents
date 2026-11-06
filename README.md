@@ -51,6 +51,14 @@ The agent never has direct write access to the repository. All mutations flow th
 
 ## Testing
 
+Set up the Python test dependencies in a virtual environment:
+
+```bash
+uv venv .venv
+uv pip install --python .venv/bin/python --group test
+source .venv/bin/activate
+```
+
 Run all agent shell script test suites from the repo root:
 
 ```bash
