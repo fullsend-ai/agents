@@ -834,9 +834,6 @@ here):
 - **Claude Code and pi:** all Agent calls in a single message; leave
   `run_in_background` unset (`false` blocks until all return). Wait
   for all; apply the Time budget checkpoint as each returns.
-  **Claude Code:** a background sub-agent running 600 s past the
-  orchestrator's last turn is silently killed; completions here start
-  new turns, other background dispatches must finish sooner.
 - **Codex roster:** at most four open. Start up to four, `correctness`
   and `security` first. Before each wait, check the Time budget: under
   240 s, close all and collect; if any selected is unfinished, write

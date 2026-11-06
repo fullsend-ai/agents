@@ -134,10 +134,6 @@ SKILL_TEXT="$(printf '%s\n' "$(cat "${SKILL}")" | tr '\n' ' ' | tr -s ' ')"
 TARGET="${SKILL_TEXT}"
 assert_contains "step 4 batch still leaves run_in_background unset" \
   'all Agent calls in a single message; leave `run_in_background` unset'
-assert_contains "Claude Code background-wait ceiling is documented" \
-  "a background sub-agent running 600 s past the orchestrator's last turn is silently killed"
-assert_contains "other background dispatches must finish within the ceiling" \
-  'other background dispatches must finish sooner'
 
 CHALLENGER_SCHEMA="$(printf '%s\n' "$(cat "${CHALLENGER}")" | tr '\n' ' ' | tr -s ' ')"
 TARGET="${CHALLENGER_SCHEMA}"
