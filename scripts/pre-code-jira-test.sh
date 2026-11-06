@@ -308,6 +308,18 @@ run_skip_test "human-pr-key-prefix-does-not-match" \
   "ISSUE_URL=https://acme.atlassian.net/browse/PROJ-42
 MOCK_GH_PRS=${HUMAN_PR_PREFIX_KEY}"
 
+run_skip_test "human-pr-key-letter-suffix-does-not-match" \
+  false \
+  "No existing human PRs found" \
+  "ISSUE_URL=https://acme.atlassian.net/browse/PROJ-42
+MOCK_GH_PRS=[{\"number\":5,\"title\":\"PROJ-42abc work\",\"body\":\"\",\"url\":\"https://github.com/test-org/test-repo/pull/5\",\"author\":{\"login\":\"alice\"}}]"
+
+run_skip_test "human-pr-key-underscore-suffix-does-not-match" \
+  false \
+  "No existing human PRs found" \
+  "ISSUE_URL=https://acme.atlassian.net/browse/PROJ-42
+MOCK_GH_PRS=[{\"number\":5,\"title\":\"PROJ-42_work\",\"body\":\"\",\"url\":\"https://github.com/test-org/test-repo/pull/5\",\"author\":{\"login\":\"alice\"}}]"
+
 run_skip_test "human-pr-shorter-key-not-matching-longer-issue-key" \
   false \
   "No existing human PRs found" \

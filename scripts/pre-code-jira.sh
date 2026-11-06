@@ -2192,7 +2192,7 @@ _jira_list_human_prs() {
     return 0
   fi
   printf '%s' "${prs}" | jq -r --arg key "${key}" --arg bot "${bot}" --arg coder "${coder}" '
-    ("(^|[^A-Za-z0-9])" + $key + "($|[^0-9])") as $re
+    ("(^|[^A-Za-z0-9])" + $key + "($|[^A-Za-z0-9_])") as $re
     | .[]
     | select(((.title // "") | test($re)) or ((.body // "") | test($re)))
     | select((.author | sub("^app/"; "") | sub("\\[bot\\]$"; "")) as $login
