@@ -123,9 +123,8 @@ fi
 
 Checkpoints:
 
-- **Before 6d:** under 600 s remaining, skip the challenger (2.5–6
-  minutes on any PR) as described there; a review without it is still
-  a review.
+- **Before 6d:** under 600 s remaining, skip the challenger as
+  described there; a review without it is still a review.
 - **When a sub-agent returns after step 4** under 240 s remaining with
   others still outstanding: stop waiting; write a `failure` result
   (step 7) with `reason` `time-budget` and no `body` (the post-script's
@@ -258,8 +257,8 @@ After SCOPED, use full PR inputs for security reviewers; keep 3c's re-review gat
 
 Based on the domain classification, select sub-agents for dispatch.
 Step 4 starts every selected sub-agent — `risk-assessment` (composed
-in step 3c-2) among them — except `challenger`, which, when step 6d
-dispatches it, runs by itself after all other sub-agents have finished.
+in step 3c-2) among them — except `challenger`, which step 6d runs
+alone afterwards.
 
 **Dispatch sub-agents based on the classification — typically 3-7.**
 Dispatch only relevant sub-agents; a complex PR may legitimately need all.
@@ -1028,9 +1027,10 @@ wait: under 240, close it; with no `completed` message, apply item 4.
    REVIEW_SUB_AGENT_TRUE
    ```
 
-2. Spawn the subagents with their `prompt` argument composed from parts
-   1–4 above, with the step 4 item 2 dispatch shape (persona
-   `challenger`).
+2. Spawn it with `prompt` from parts 1–4, in the step 4 item 2
+   dispatch shape (persona `challenger`), after step 4 completes —
+   Claude Code and pi: `run_in_background: false` (step 4); Codex:
+   once its children close.
 
    **Prompt size guard:** If the findings JSON alone exceeds 80 000
    tokens, withhold `low` and `info` findings from the challenger's
@@ -1039,10 +1039,6 @@ wait: under 240, close it; with no `completed` message, apply item 4.
    unchanged after step 3; they are line-less, non-actionable gaps the
    challenger cannot adjudicate against the diff. The diff and files are read
    from disk, not pasted.
-
-   The challenger runs **after** dimension sub-agents complete, so it
-   is dispatched sequentially, not in the step 4 batch; on Codex, after
-   those children are closed.
 
 3. Consume the challenger's output. The challenger returns a **different
    format** from dimension sub-agents: an object with
