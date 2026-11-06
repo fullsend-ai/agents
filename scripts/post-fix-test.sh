@@ -6686,6 +6686,511 @@ run_push_forge_conflict_merge_secret_lines_test author fail
 run_push_forge_conflict_merge_secret_lines_test committer fail
 run_push_blocked_mergeability_does_not_skip_test
 
+# ---------------------------------------------------------------------------
+# A sandbox-written object-graph rewrite must not decide
+# whether a concurrent human commit is kept. The runner works on the checkout
+# the agent's sandbox produced, so .git can carry refs/replace/*, info/grafts
+# or objects/info/commit-graph* — all of which rewrite ancestry for every Git
+# command, including the merge-base/rebase/push fast-forward checks that decide
+# whether the human's commit survives.
+#
+# The fix agent works from the old PR tip P and commits A. While it runs, a
+# human pushes H to the PR branch. Making A's parent read as H makes the
+# runner report "H is already contained": the replay is skipped and the plain
+# push sends A with its real parent, dropping H; the signed path rebuilds A
+# onto H but without H's content. Each rewrite variant must fail this fixture
+# before the graph policy and pass after it.
+# ---------------------------------------------------------------------------
+GRAPH_TMPDIR="${PUSH_REBASE_TMPDIR}/graph-policy"
+GRAPH_BIN="${GRAPH_TMPDIR}/bin"
+mkdir -p "${GRAPH_BIN}"
+cp "${PUSH_REBASE_MOCK_BIN}/gh" "${PUSH_REBASE_MOCK_BIN}/git" \
+  "${PUSH_REBASE_MOCK_BIN}/sleep" "${GRAPH_BIN}/"
+
+# The planted secret is a synthetic, non-credential GitHub-token shape ("ghp_"
+# plus four repeats of a digit cycle), built at runtime so this file holds no
+# credential-shaped literal. The bytes planted in the fixtures are unchanged.
+_GRAPH_TOKEN_DIGITS="0123456789"
+export GRAPH_SECRET_MARKER="ghp_${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}"
+
+# Stands in for gitleaks' real job: scan the patch of the range it is given,
+# through Git. A rewritten object graph has to be ignored for that scan to be
+# complete, so this is also the child-process check for the exported policy.
+cat > "${GRAPH_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+range=""
+for arg in "$@"; do
+  case "${arg}" in
+    --log-opts=*) range="${arg#--log-opts=}" ;;
+  esac
+done
+if [ -n "${GRAPH_CONFIG_PROBE:-}" ]; then
+  git config --get "${GRAPH_CONFIG_PROBE}" >> "${GRAPH_CONFIG_PROBE_LOG:-/dev/null}" 2>&1 || true
+fi
+# gitleaks splits --log-opts on spaces (e.g. "<range> ^<trusted target>"); a
+# git failure must not read as an empty, clean patch.
+read -r -a log_opts <<< "${range}"
+if ! patch="$(git log -p --no-color "${log_opts[@]}" 2>/dev/null)"; then
+  echo "mock gitleaks: git log failed for --log-opts=${range}" >&2
+  exit 2
+fi
+if printf '%s' "${patch}" | grep -q "${GRAPH_SECRET_MARKER:?GRAPH_SECRET_MARKER is required}"; then
+  echo "leaks found: 1"
+  exit 1
+fi
+exit 0
+MOCKEOF
+chmod +x "${GRAPH_BIN}/gitleaks"
+
+# Fixture commits carry a synthetic secret on purpose; the host's global Git
+# config (and any host-level pre-commit secret hook) must not block them.
+fixture_git() {
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    git -c core.hooksPath=/dev/null "$@"
+}
+
+# graph_pr_fixture DIR — DIR/repo is the fix agent's clone on the PR branch at
+# the old tip P with commit A; the branch on the remote is at the human commit
+# H (human.txt), which the agent's fetch picks up. Sets GRAPH_A and GRAPH_H.
+graph_pr_fixture() {
+  local base="$1"
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo base > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  git -C "${base}/seed" commit -q --allow-empty -m "pr base"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+
+  git clone -q -b agent/99-test-fix "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  echo agent > "${base}/repo/agent.txt"
+  git -C "${base}/repo" add agent.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+  GRAPH_A="$(git -C "${base}/repo" rev-parse HEAD)"
+
+  git clone -q -b agent/99-test-fix "${base}/remote.git" "${base}/human"
+  push_rebase_ident "${base}/human"
+  echo human > "${base}/human/human.txt"
+  git -C "${base}/human" add human.txt
+  git -C "${base}/human" commit -q -m "feat: human change"
+  git -C "${base}/human" push -q origin agent/99-test-fix
+  GRAPH_H="$(git -C "${base}/human" rev-parse HEAD)"
+
+  git -C "${base}/repo" fetch -q origin \
+    "+refs/heads/agent/99-test-fix:refs/remotes/origin/agent/99-test-fix"
+}
+
+# graph_commit_with REPO COMMIT TREE [PARENT] — a copy of COMMIT with TREE
+# and, when PARENT is given, PARENT in place of every parent line.
+graph_commit_with() {
+  local repo="$1" commit="$2" tree="$3" parent="${4:-}" body
+  body="$(git -C "${repo}" cat-file commit "${commit}" | sed -e "s/^tree .*/tree ${tree}/")"
+  if [ -n "${parent}" ]; then
+    body="$(printf '%s\n' "${body}" | sed -e "s/^parent .*/parent ${parent}/")"
+  fi
+  printf '%s\n' "${body}" | git -C "${repo}" hash-object -t commit -w --stdin
+}
+
+# graph_mutate_commit_graph FILE A H — repoint A's parent at H in a v1
+# commit-graph, recompute every topological level so generation cutoffs still
+# reach H, and refresh the trailing checksum. Git then reads the rewrite in
+# preference to the stored commit object whenever a walk reaches A through
+# the graph; a commit named on the command line is parsed from its object.
+graph_mutate_commit_graph() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import hashlib, os, struct, sys
+
+path, a_hex, h_hex = sys.argv[1:4]
+data = bytearray(open(path, 'rb').read())
+if data[:4] != b'CGPH' or data[4] != 1 or data[5] != 1:
+    raise SystemExit('unexpected commit-graph header')
+chunks = {}
+for i in range(data[6]):
+    chunks[data[8 + i * 12:12 + i * 12].decode()] = struct.unpack(
+        '>Q', data[12 + i * 12:20 + i * 12])[0]
+oidl, cdat = chunks['OIDL'], chunks['CDAT']
+
+def position(sha):
+    want = bytes.fromhex(sha)
+    for pos in range((cdat - oidl) // 20):
+        if data[oidl + pos * 20:oidl + pos * 20 + 20] == want:
+            return pos
+    raise SystemExit('commit not in graph: ' + sha)
+
+a, h = position(a_hex), position(h_hex)
+data[cdat + a * 36 + 20:cdat + a * 36 + 24] = struct.pack('>I', h)
+
+# CDAT word 28..32 is (topological_level << 2) | (commit_date >> 32): rewrite
+# the level, keep the two high date bits. Iterate to a fixed point so A sits
+# above H and every descendant of A above A.
+count = (cdat - oidl) // 20
+def word(pos, off):
+    return struct.unpack('>I', data[cdat + pos * 36 + off:cdat + pos * 36 + off + 4])[0]
+changed = True
+while changed:
+    changed = False
+    for pos in range(count):
+        level = 1
+        for off in (20, 24):
+            parent = word(pos, off)
+            if parent == 0x70000000:
+                continue
+            if parent & 0x80000000:
+                raise SystemExit('octopus merges are not supported')
+            level = max(level, (word(parent, 28) >> 2) + 1)
+        old = word(pos, 28)
+        if old >> 2 != level:
+            data[cdat + pos * 36 + 28:cdat + pos * 36 + 32] = struct.pack(
+                '>I', (level << 2) | (old & 3))
+            changed = True
+data[-20:] = hashlib.sha1(bytes(data[:-20])).digest()
+os.chmod(path, 0o644)
+open(path, 'wb').write(bytes(data))
+PY
+}
+
+# graph_forge REPO VARIANT A H — make A's ancestry read as H by VARIANT.
+graph_forge() {
+  local repo="$1" variant="$2" a="$3" h="$4"
+  case "${variant}" in
+    replace-loose | replace-packed)
+      git -C "${repo}" replace "${a}" \
+        "$(graph_commit_with "${repo}" "${a}" \
+          "$(git -C "${repo}" rev-parse "${a}^{tree}")" "${h}")"
+      if [ "${variant}" = "replace-packed" ]; then
+        git -C "${repo}" pack-refs --all
+      fi
+      ;;
+    graft)
+      mkdir -p "${repo}/.git/info"
+      printf '%s %s\n' "${a}" "${h}" > "${repo}/.git/info/grafts"
+      ;;
+    commit-graph)
+      # Git parses a commit named on the command line (HEAD) from its object,
+      # so forging the tip changes nothing; forge A below a follow-up commit,
+      # which walks from HEAD reach through the graph.
+      echo follow-up > "${repo}/agent-2.txt"
+      git -C "${repo}" add agent-2.txt
+      git -C "${repo}" commit -q -m "fix: agent follow-up"
+      git -C "${repo}" config core.commitGraph true
+      git -C "${repo}" -c commitGraph.generationVersion=1 commit-graph write --reachable
+      graph_mutate_commit_graph \
+        "${repo}/.git/objects/info/commit-graph" "${a}" "${h}"
+      ;;
+  esac
+}
+
+run_graph_spoof_test() {
+  local signed="$1" variant="$2"
+  local test_name="graph-policy-${variant}-signed-${signed}"
+  local base="${GRAPH_TMPDIR}/${variant}-${signed}"
+  mkdir -p "${base}"
+
+  if [ "${variant}" = "commit-graph" ] && ! command -v python3 >/dev/null 2>&1; then
+    echo "SKIP: ${test_name} — python3 unavailable"
+    return
+  fi
+
+  graph_pr_fixture "${base}"
+  graph_forge "${base}/repo" "${variant}" "${GRAPH_A}" "${GRAPH_H}"
+
+  # The fixture is only meaningful if the rewrite really spoofs ancestry.
+  if ! git -C "${base}/repo" merge-base --is-ancestor \
+       origin/agent/99-test-fix HEAD 2>/dev/null; then
+    echo "FAIL: ${test_name} — fixture does not spoof ancestry"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local stdout_log="${GRAPH_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  GITHUB_SIGNED_COMMITS="${signed}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${GRAPH_BIN}" || exit_code=$?
+
+  local bare="${base}/remote.git" problem=""
+  local tip_content
+  if [ "${exit_code}" -ne 0 ]; then
+    problem="post-fix exited ${exit_code}"
+  elif ! git --git-dir="${bare}" merge-base --is-ancestor \
+         "${GRAPH_H}" refs/heads/agent/99-test-fix; then
+    problem="human commit H is not an ancestor of the pushed tip"
+  fi
+  if [ -z "${problem}" ]; then
+    tip_content="$(git --git-dir="${bare}" show refs/heads/agent/99-test-fix:human.txt 2>/dev/null || true)"
+    [ "${tip_content}" = "human" ] || problem="human.txt content lost"
+  fi
+  if [ -z "${problem}" ]; then
+    tip_content="$(git --git-dir="${bare}" show refs/heads/agent/99-test-fix:agent.txt 2>/dev/null || true)"
+    [ "${tip_content}" = "agent" ] || problem="agent.txt content lost"
+  fi
+  if [ -z "${problem}" ]; then
+    tip_content="$(git --git-dir="${bare}" show refs/heads/agent/99-test-fix:file.txt 2>/dev/null || true)"
+    [ "${tip_content}" = "base" ] || problem="base file.txt content changed"
+  fi
+  # The signed path republishes through the API (bot author); the plain push
+  # publishes the agent's own commit and must not touch the API at all.
+  if [ -z "${problem}" ]; then
+    local author want_author="Test"
+    [ "${signed}" = "true" ] && want_author="fullsend-ai-coder[bot]"
+    author="$(git --git-dir="${bare}" log -1 --format=%an refs/heads/agent/99-test-fix)"
+    [ "${author}" = "${want_author}" ] \
+      || problem="pushed tip author '${author}', want '${want_author}'"
+  fi
+
+  if [ -n "${problem}" ]; then
+    echo "FAIL: ${test_name} — ${problem}"
+    git --git-dir="${bare}" log --oneline --graph refs/heads/agent/99-test-fix 2>/dev/null || true
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_graph_spoof_test false replace-loose
+run_graph_spoof_test true replace-loose
+run_graph_spoof_test false replace-packed
+run_graph_spoof_test true replace-packed
+run_graph_spoof_test false graft
+run_graph_spoof_test true graft
+run_graph_spoof_test false commit-graph
+run_graph_spoof_test true commit-graph
+
+# graph_agent_clone DIR — bare remote with main at P plus DIR/repo, a clone on
+# a local agent/99-test-fix branch. Sets GRAPH_P.
+graph_agent_clone() {
+  local base="$1"
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo base > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  GRAPH_P="$(git -C "${base}/seed" rev-parse HEAD)"
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -b agent/99-test-fix
+}
+
+# Replacing the agent's own last commit hides its content from every
+# diff/range scan while the push still sends the real objects. The scanner
+# must see the real patch and fail closed; before the policy it scans the
+# fake commit, passes, and publishes the secret.
+run_graph_scan_test() {
+  local test_name="graph-policy-replaced-agent-commit-scanned"
+  local base="${GRAPH_TMPDIR}/scan"
+  mkdir -p "${base}"
+  graph_agent_clone "${base}"
+
+  echo fix > "${base}/repo/fix.txt"
+  git -C "${base}/repo" add fix.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+  local agent_tip
+  agent_tip="$(git -C "${base}/repo" rev-parse HEAD)"
+  echo "token = ${GRAPH_SECRET_MARKER}" > "${base}/repo/leak.txt"
+  fixture_git -C "${base}/repo" add leak.txt
+  fixture_git -C "${base}/repo" commit -q -m "fix: follow-up"
+  local agent_last
+  agent_last="$(git -C "${base}/repo" rev-parse HEAD)"
+
+  # The forged copy of the last commit keeps A's tree, so its patch is empty.
+  git -C "${base}/repo" replace "${agent_last}" \
+    "$(graph_commit_with "${base}/repo" "${agent_last}" \
+      "$(git -C "${base}/repo" rev-parse "${agent_tip}^{tree}")" "${agent_tip}")"
+  if git -C "${base}/repo" log -p "${GRAPH_P}..HEAD" | grep -q "${GRAPH_SECRET_MARKER}"; then
+    echo "FAIL: ${test_name} — fixture does not hide the secret from the scan"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local stdout_log="${GRAPH_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${GRAPH_P}" GITHUB_SIGNED_COMMITS=false \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${GRAPH_BIN}" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — secret-scan rejection expected, run exited 0"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q 'leak.txt' "${stdout_log}"; then
+    echo "FAIL: ${test_name} — changed files omit the hidden leak.txt"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q 'Secret scan blocked' "${stdout_log}"; then
+    echo "FAIL: ${test_name} — rejected but not by the secret scan"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if git --git-dir="${base}/remote.git" show-ref --verify --quiet \
+       refs/heads/agent/99-test-fix; then
+    echo "FAIL: ${test_name} — branch was published despite the blocked scan"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_graph_scan_test
+
+# Replacing PRE_AGENT_HEAD (runner-set, but read back from the untrusted
+# checkout) changes the baseline diff: a forged P with HEAD's tree makes the
+# agent's delta look empty. The baseline must come from the stored objects.
+# A caller's own GIT_CONFIG_COUNT entry must survive the appended
+# core.commitGraph=false, and the child scan must inherit both.
+run_graph_baseline_test() {
+  local test_name="graph-policy-replaced-pre-agent-head-baseline"
+  local base="${GRAPH_TMPDIR}/baseline"
+  mkdir -p "${base}"
+  graph_agent_clone "${base}"
+
+  echo fix > "${base}/repo/fix.txt"
+  git -C "${base}/repo" add fix.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  # A forged copy of P carrying the agent commit's tree: P..HEAD is empty.
+  git -C "${base}/repo" replace "${GRAPH_P}" \
+    "$(graph_commit_with "${base}/repo" "${GRAPH_P}" \
+      "$(git -C "${base}/repo" rev-parse 'HEAD^{tree}')")"
+  if [ -n "$(git -C "${base}/repo" diff --name-only "${GRAPH_P}..HEAD")" ]; then
+    echo "FAIL: ${test_name} — fixture does not empty the baseline diff"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local probe_log="${GRAPH_TMPDIR}/probe.log"
+  : > "${probe_log}"
+  local stdout_log="${GRAPH_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  # Env for the child run only: these exports are meant to end with the
+  # subshell, not to reach the test script.
+  # shellcheck disable=SC2031
+  (
+    export PRE_AGENT_HEAD="${GRAPH_P}"
+    export GRAPH_CONFIG_PROBE="graphpolicy.probe"
+    export GRAPH_CONFIG_PROBE_LOG="${probe_log}"
+    export GIT_CONFIG_COUNT=1
+    export GIT_CONFIG_KEY_0="graphpolicy.probe"
+    export GIT_CONFIG_VALUE_0="kept"
+    GITHUB_SIGNED_COMMITS=false \
+      run_push_rebase_postfix "${base}" "${stdout_log}" "${GRAPH_BIN}"
+  ) || exit_code=$?
+
+  local problem=""
+  if [ "${exit_code}" -ne 0 ]; then
+    problem="post-fix exited ${exit_code}"
+  elif grep -q 'No changed files' "${stdout_log}"; then
+    problem="agent delta still looks empty to the baseline diff"
+  elif ! grep -q 'fix.txt' "${stdout_log}"; then
+    problem="changed files omit fix.txt"
+  # One line per scanner run; every run must still see the caller's entry.
+  elif [ ! -s "${probe_log}" ] || grep -qvx 'kept' "${probe_log}"; then
+    problem="caller GIT_CONFIG_COUNT entry lost ('$(cat "${probe_log}")')"
+  elif [ "$(git --git-dir="${base}/remote.git" show refs/heads/agent/99-test-fix:fix.txt 2>/dev/null || true)" != "fix" ]; then
+    problem="published tip does not carry fix.txt"
+  fi
+
+  if [ -n "${problem}" ]; then
+    echo "FAIL: ${test_name} — ${problem}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_graph_baseline_test
+
+# Real, pinned gitleaks: the checkout carries an info/grafts file, which makes
+# Git 2.5x print a deprecation hint on every command. Pinned gitleaks 8.30.1
+# treats that stderr as a git failure, stops after the first commit and reports
+# no leaks, so the secret in the last agent commit is published unscanned. With
+# the policy (grafts ignored, advice suppressed, commit-graph off) the same
+# scan must cover every commit in range, report the commit count and block the
+# push. The secret is a synthetic, non-credential GitHub token pattern that the
+# pinned rule set detects.
+run_graph_gitleaks_test() {
+  local test_name="graph-policy-real-gitleaks-complete-scan"
+  local base="${GRAPH_TMPDIR}/gitleaks"
+  local home="${GRAPH_TMPDIR}/gitleaks-home"
+  local real_bin="${GRAPH_TMPDIR}/bin-real-gitleaks"
+  mkdir -p "${base}" "${home}" "${real_bin}"
+  # Same mocks minus the gitleaks stand-in: the pinned binary must be used.
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${PUSH_REBASE_MOCK_BIN}/git" \
+    "${PUSH_REBASE_MOCK_BIN}/sleep" "${real_bin}/"
+  if ! HOME="${home}" bash -c 'source "$1" && install_gitleaks' _ \
+       "${SCRIPT_DIR}/lib/gitleaks-install.lib.sh" >"${GRAPH_TMPDIR}/gitleaks-install.log" 2>&1; then
+    # The only real-gitleaks regression: in CI (CI=true on GitHub Actions) a
+    # failed download must not turn it green.
+    if [[ -n "${CI:-}" ]]; then
+      echo "FAIL: ${test_name} — pinned gitleaks v8.30.1 could not be installed in CI"
+      cat "${GRAPH_TMPDIR}/gitleaks-install.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "SKIP: ${test_name} — pinned gitleaks v8.30.1 unavailable; local runs only, CI fails here (see ${GRAPH_TMPDIR}/gitleaks-install.log)"
+    return
+  fi
+
+  graph_agent_clone "${base}"
+  # The remote PR branch exists at P, so a blocked push leaves it untouched.
+  git -C "${base}/repo" push -q -u origin agent/99-test-fix
+  for n in 1 2 3; do
+    echo "filler ${n}" > "${base}/repo/filler-${n}.txt"
+    git -C "${base}/repo" add "filler-${n}.txt"
+    git -C "${base}/repo" commit -q -m "chore: filler ${n}"
+  done
+  echo "token = ${GRAPH_SECRET_MARKER}" > "${base}/repo/leak.txt"
+  fixture_git -C "${base}/repo" add leak.txt
+  fixture_git -C "${base}/repo" commit -q -m "fix: secret in the last commit"
+  # A graft file with the commit's real parents: present, semantically inert.
+  mkdir -p "${base}/repo/.git/info"
+  printf '%s %s\n' "$(git -C "${base}/repo" rev-parse HEAD)" \
+    "$(git -C "${base}/repo" rev-parse HEAD^)" > "${base}/repo/.git/info/grafts"
+
+  local bare="${base}/remote.git"
+  local pre_push_tip
+  pre_push_tip="$(git --git-dir="${bare}" rev-parse refs/heads/agent/99-test-fix)"
+  local stdout_log="${GRAPH_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  HOME="${home}" PRE_AGENT_HEAD="${GRAPH_P}" \
+    GITHUB_SIGNED_COMMITS=false \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${real_bin}" || exit_code=$?
+
+  local problem=""
+  if [ "${exit_code}" -eq 0 ]; then
+    problem="secret-scan rejection expected, run exited 0"
+  elif ! grep -q 'Secret scan blocked' "${stdout_log}"; then
+    problem="rejected but not by the secret scan"
+  elif ! grep -q '4 commits scanned' "${stdout_log}"; then
+    problem="scan did not cover the whole range (early return)"
+  elif grep -q 'hint: Support for' "${stdout_log}"; then
+    problem="graft deprecation hint still reached the scanner"
+  elif [ "$(git --git-dir="${bare}" rev-parse refs/heads/agent/99-test-fix)" != "${pre_push_tip}" ]; then
+    problem="branch moved despite the blocked scan"
+  fi
+
+  if [ -n "${problem}" ]; then
+    echo "FAIL: ${test_name} — ${problem}"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+run_graph_gitleaks_test
+
 rm -rf "${PUSH_REBASE_TMPDIR}"
 
 # ---------------------------------------------------------------------------

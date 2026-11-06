@@ -2248,6 +2248,105 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- A sandbox-written object-graph rewrite must not hide the agent's delta --
+# The checkout comes from the agent's sandbox, so it can carry refs/replace/*,
+# info/grafts or a forged commit-graph; Git honours all three by default, and
+# every diff or history walk here would then read the forged graph. Replacing
+# the agent's last commit with a copy that keeps its parent but not its tree
+# makes the changed-files list and the commit secret scan see nothing, while
+# the push (which sends objects, not diffs) publishes the secret. The graph
+# policy must expose the real patch and fail closed before anything is pushed.
+# Fixture commits carry a synthetic secret on purpose; the host's global Git
+# config (and any host-level pre-commit secret hook) must not block them.
+sec_fixture_git() {
+  GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+    ${REAL_GIT} -c core.hooksPath=/dev/null "$@"
+}
+
+# The planted secret is a synthetic, non-credential GitHub-token shape ("ghp_"
+# plus four repeats of a digit cycle), built at runtime so this file holds no
+# credential-shaped literal. The bytes planted in the fixture are unchanged.
+_GRAPH_TOKEN_DIGITS="0123456789"
+export GRAPH_SECRET_MARKER="ghp_${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}${_GRAPH_TOKEN_DIGITS}"
+
+CODE_GRAPH_BIN="${SEC_CODE_TMPDIR}/bin-graph-policy"
+mkdir -p "${CODE_GRAPH_BIN}"
+cat > "${CODE_GRAPH_BIN}/gitleaks" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+range=""
+for arg in "$@"; do
+  case "${arg}" in
+    --log-opts=*) range="${arg#--log-opts=}" ;;
+  esac
+done
+if git log -p --no-color "${range}" 2>/dev/null \
+   | grep -q "${GRAPH_SECRET_MARKER:?GRAPH_SECRET_MARKER is required}"; then
+  echo "leaks found: 1"
+  exit 1
+fi
+exit 0
+MOCKEOF
+chmod +x "${CODE_GRAPH_BIN}/gitleaks"
+
+_code_graph_dir="${SEC_CODE_TMPDIR}/run-graph-policy"
+setup_sec_code_repo "${_code_graph_dir}" "agent/99-test-fix"
+_code_repo="${_code_graph_dir}/repo"
+echo "token = ${GRAPH_SECRET_MARKER}" > "${_code_repo}/leak.txt"
+sec_fixture_git -C "${_code_repo}" add leak.txt
+sec_fixture_git -C "${_code_repo}" commit -q -m "fix: follow-up"
+_code_last="$(${REAL_GIT} -C "${_code_repo}" rev-parse HEAD)"
+_code_parent="$(${REAL_GIT} -C "${_code_repo}" rev-parse HEAD^)"
+# The forged copy keeps the parent and takes the parent's tree: an empty patch.
+_code_fake="$(printf '%s\n' "$(${REAL_GIT} -C "${_code_repo}" cat-file commit "${_code_last}" \
+    | sed -e "s/^tree .*/tree $(${REAL_GIT} -C "${_code_repo}" rev-parse "${_code_parent}^{tree}")/")" \
+  | ${REAL_GIT} -C "${_code_repo}" hash-object -t commit -w --stdin)"
+${REAL_GIT} -C "${_code_repo}" replace "${_code_last}" "${_code_fake}"
+if ${REAL_GIT} -C "${_code_repo}" log -p "${_code_parent}..HEAD" \
+     | grep -q "${GRAPH_SECRET_MARKER}"; then
+  echo "FAIL: graph-policy-replaced-agent-commit-scanned — fixture does not hide the secret"
+  FAILURES=$((FAILURES + 1))
+else
+  _code_graph_rc=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${_code_graph_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${CODE_GRAPH_BIN}:${SEC_CODE_MOCK_BIN}:${PATH}"
+    export PUSH_TOKEN="fake-token"
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="false"
+    bash "${POST_SCRIPT}"
+  ) > "${SEC_CODE_TMPDIR}/stdout-graph-policy.log" 2>&1 || _code_graph_rc=$?
+
+  _code_graph_log="${SEC_CODE_TMPDIR}/stdout-graph-policy.log"
+  _code_graph_pushed="yes"
+  ${REAL_GIT} -C "${_code_graph_dir}/remote.git" show-ref --verify --quiet \
+    refs/heads/agent/99-test-fix || _code_graph_pushed="no"
+  if [ "${_code_graph_rc}" -eq 0 ]; then
+    echo "FAIL: graph-policy-replaced-agent-commit-scanned — secret-scan rejection expected, run exited 0"
+    cat "${_code_graph_log}"
+    FAILURES=$((FAILURES + 1))
+  elif ! grep -q 'leak.txt' "${_code_graph_log}"; then
+    echo "FAIL: graph-policy-replaced-agent-commit-scanned — changed files omit the hidden leak.txt"
+    cat "${_code_graph_log}"
+    FAILURES=$((FAILURES + 1))
+  elif ! grep -q 'leaks found' "${_code_graph_log}"; then
+    echo "FAIL: graph-policy-replaced-agent-commit-scanned — rejected but not by the secret scan"
+    cat "${_code_graph_log}"
+    FAILURES=$((FAILURES + 1))
+  elif [ "${_code_graph_pushed}" = "yes" ]; then
+    echo "FAIL: graph-policy-replaced-agent-commit-scanned — branch published despite the blocked scan"
+    cat "${_code_graph_log}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: graph-policy-replaced-agent-commit-scanned"
+  fi
+fi
+
 # --- gh pr list API failure → fail closed (not delete branch and proceed) ---
 cat > "${SEC_CODE_MOCK_BIN}/gh" <<'MOCKEOF'
 #!/usr/bin/env bash

@@ -65,6 +65,8 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC2034
 SCRIPT_DIR="${SCRIPT_DIR_POST}"
 : "${FULLSEND_FORGE:?FULLSEND_FORGE is required — set to 'github' or 'gitlab'}"
+# shellcheck source=lib/git-graph-policy.lib.sh
+source "${SCRIPT_DIR_POST}/lib/git-graph-policy.lib.sh"
 # shellcheck source=lib/fix-ops.lib.sh
 source "${SCRIPT_DIR_POST}/lib/fix-ops.lib.sh"
 # shellcheck source=lib/post-failure-report.lib.sh
@@ -109,6 +111,10 @@ if [ "${REPO_DIR}" != "." ]; then
   fi
   cd "${REPO_DIR}"
 fi
+
+# The checkout came from the agent's sandbox and can rewrite ancestry
+# (refs/replace, grafts, commit-graph); pin Git to the stored graph first.
+git_graph_policy_init
 
 TARGET_BRANCH="${TARGET_BRANCH:-main}"
 
