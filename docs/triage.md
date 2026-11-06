@@ -263,7 +263,7 @@ GitHub/GitLab auth vars:
 | `FULLSEND_WORK_ITEM_URL` | The `https://<site>.atlassian.net/browse/<KEY>-<n>` URL of the issue to triage. |
 | `JIRA_TOKEN` | Jira API token. The harness maps the `FULLSEND_JIRA_TOKEN` repository secret to it in `env.runner` for post-script mutations; the sandbox receives the `jira-ro` provider's opaque placeholder instead of the real token. |
 | `JIRA_USER_EMAIL` | Optional. Email of a bot-user account. When set, requests use Basic auth with email and token; when unset or empty (a service account), Bearer auth with the token. The harness maps the optional `FULLSEND_JIRA_EMAIL` repository secret to it in `env.runner`; the sandbox gets `JIRA_USER_EMAIL` through `env/jira/triage.env`. |
-| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads the Jira site and API gateway from `tracker.jira` in its `config.yaml`. The harness sets it in `env.runner`. |
+| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads the Jira site and API gateway from `tracker.jira` in its `config.yaml`. The harness passes `${FULLSEND_DIR}` through to `env.runner` from the host environment, so the operator must set it. |
 | `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). Used for browse links. |
 | `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls; `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), which accepts both bot-account and service-account tokens. Falls back to `JIRA_BASE_URL` when unset. |
 

@@ -140,6 +140,8 @@ export JIRA_TOKEN="your-jira-api-token"
 export FULLSEND_JIRA_TOKEN="${JIRA_TOKEN}"
 export FULLSEND_JIRA_EMAIL="${JIRA_USER_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
+# The post-scripts require the .fullsend directory; nothing sets it for you.
+export FULLSEND_DIR="<path to the .fullsend directory>"
 export FULLSEND_FORGE="jira"
 
 # Transition names for closing issues — set to match your Jira workflow.
@@ -180,6 +182,8 @@ export JIRA_TOKEN="your-jira-api-token"
 export FULLSEND_JIRA_TOKEN="${JIRA_TOKEN}"
 export FULLSEND_JIRA_EMAIL="${JIRA_USER_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
+# The post-scripts require the .fullsend directory; nothing sets it for you.
+export FULLSEND_DIR="<path to the .fullsend directory>"
 
 # Target forge — the code agent still pushes/creates PRs on this forge
 export FULLSEND_FORGE="github"

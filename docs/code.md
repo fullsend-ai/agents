@@ -345,6 +345,10 @@ vars. Key differences from single-forge setup:
   gateway from `tracker.jira` in that directory's `config.yaml`. This needs
   a fullsend release that includes the config-backed Jira commands
   ([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)).
+  The sandbox `jira-ro` provider cannot expand `FULLSEND_JIRA_*`, so also
+  configure the `JIRA_TOKEN` secret for sandbox reads, as described in
+  [`docs/triage.md`](triage.md). With only `FULLSEND_JIRA_TOKEN` set, the
+  post-script write works but sandbox Jira reads fail.
   The post-script takes the Jira credentials out of its environment before
   it runs any git command, so repo-controlled hooks, including the one that
   fires when it renames the agent branch, cannot read them from their

@@ -208,7 +208,7 @@ deployment and keep CI logs and artifacts private, including on dry-runs.
 
 #### Supplying Jira credentials in CI
 
-Scribe resolves `${JIRA_BASE_URL}`, `${JIRA_TOKEN}`, and `${JIRA_USER_EMAIL}` host-side on the CI
+Scribe resolves `${JIRA_BASE_URL}`, `${JIRA_TOKEN}`, `${JIRA_USER_EMAIL}`, and `${FULLSEND_DIR}` host-side on the CI
 runner via `env.runner`. The token is never passed into the sandboxed agent
 container. Configure these credentials in your CI platform as follows:
 
@@ -222,7 +222,9 @@ container. Configure these credentials in your CI platform as follows:
    URL (`https://<site>.atlassian.net`).
 4. For a bot-user token, add `JIRA_USER_EMAIL` as a secret (or under the
    **Variables** tab). Skip it for a service-account token.
-5. In your workflow YAML (e.g. `.github/workflows/scribe.yml`), pass them into
+5. Export `FULLSEND_DIR` as the path to your `.fullsend` directory. The
+   workflow step below sets it. `pre-scribe.sh` fails when it is unset.
+6. In your workflow YAML (e.g. `.github/workflows/scribe.yml`), pass them into
    the job step's `env`:
 
 ```yaml
@@ -231,6 +233,7 @@ container. Configure these credentials in your CI platform as follows:
     JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
     JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
     JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+    FULLSEND_DIR: ${{ github.workspace }}
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     # ... other required inputs (SCRIBE_REPO, SCRIBE_SEARCH_QUERY, etc.)
   run: |
@@ -251,7 +254,10 @@ container. Configure these credentials in your CI platform as follows:
    - **Expand variable reference:** unchecked (raw string)
 4. For a bot-user token, add `JIRA_USER_EMAIL` with the associated account
    email. Skip it for a service-account token.
-5. GitLab CI automatically injects project variables into the runner
+5. Set `FULLSEND_DIR` to the path of your `.fullsend` directory, for example
+   `variables: FULLSEND_DIR: "${CI_PROJECT_DIR}"` in `.gitlab-ci.yml`.
+   `pre-scribe.sh` fails when it is unset.
+6. GitLab CI automatically injects project variables into the runner
    environment, so no extra workflow mapping is required.
 
 ### GitLab host validation
