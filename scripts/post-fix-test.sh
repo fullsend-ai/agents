@@ -2216,8 +2216,37 @@ run_push_rebase_matching_history_test() {
 
   local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
   local exit_code=0
-  run_push_rebase_postfix "${base}" "${stdout_log}" || exit_code=$?
+  # Merge enumeration succeeds but warns on stderr: the warning is not a merge
+  # SHA and must not block publishing.
+  local mock_bin="${PUSH_REBASE_TMPDIR}/bin-${test_name}"
+  mkdir -p "${mock_bin}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${PUSH_REBASE_MOCK_BIN}/gh" \
+    "${PUSH_REBASE_MOCK_BIN}/gitleaks" "${mock_bin}/"
+  cat > "${mock_bin}/git" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
+  exit 0
+fi
+if [ "\$1" = "rev-list" ]; then
+  for arg in "\$@"; do
+    case "\${arg}" in
+      --merges)
+        echo "warning: ignoring broken ref refs/heads/gone" >&2
+        : > "${base}/warning-injected"
+        ;;
+    esac
+  done
+fi
+exec ${PUSH_REBASE_REAL_GIT} "\$@"
+EOF
+  chmod +x "${mock_bin}/git"
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${mock_bin}" || exit_code=$?
 
+  if [ ! -f "${base}/warning-injected" ]; then
+    echo "FAIL: ${test_name} — fixture did not inject the enumeration warning"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
   if [ "${exit_code}" -ne 0 ]; then
     echo "FAIL: ${test_name} — exit code ${exit_code}"
     cat "${stdout_log}"
@@ -2403,8 +2432,16 @@ if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
   exit 0
 fi
 if [ "\$1" = "fetch" ]; then
-  echo "fatal: unable to access remote: Could not resolve host" >&2
-  exit 128
+  # Only the remote PR-branch fetch fails; the secret scan's earlier target
+  # fetch (+refs/heads/main:...) must reach the real git and succeed.
+  for arg in "\$@"; do
+    case "\${arg}" in
+      +refs/heads/agent/99-test-fix:*)
+        echo "fatal: unable to access remote: Could not resolve host" >&2
+        exit 128
+        ;;
+    esac
+  done
 fi
 exec ${fetch_fail_real_git} "\$@"
 MOCKEOF
@@ -2437,6 +2474,94 @@ MOCKEOF
   if [ "${remote_tip}" != "${real_a}" ]; then
     echo "FAIL: ${test_name} — remote branch moved on transient fetch failure (pushed anyway)"
     echo "  want ${real_a}, got ${remote_tip}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Pinning the trusted target tip fails transiently. That is a setup failure:
+# publishing must stop instead of continuing against an unverified target.
+run_push_target_fetch_failure_test() {
+  local test_name="push-target-fetch-failure-fails-closed"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "real A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  local real_a
+  real_a="$(git -C "${base}/seed" rev-parse HEAD)"
+
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q -B agent/99-test-fix origin/main
+  echo "pr-a" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "reconstructed A"
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local fetch_fail_bin="${base}/bin"
+  mkdir -p "${fetch_fail_bin}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${fetch_fail_bin}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gitleaks" "${fetch_fail_bin}/gitleaks"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${fetch_fail_bin}/gh"
+  local fetch_fail_real_git="${PUSH_REBASE_REAL_GIT}"
+  cat > "${fetch_fail_bin}/git" <<MOCKEOF
+#!/usr/bin/env bash
+if [ "\$1" = "remote" ] && [ "\$2" = "set-url" ]; then
+  exit 0
+fi
+if [ "\$1" = "fetch" ]; then
+  # Only the trusted-target fetch fails; everything else runs for real.
+  for arg in "\$@"; do
+    case "\${arg}" in
+      +refs/heads/main:*)
+        echo "fatal: unable to access remote: Could not resolve host" >&2
+        exit 128
+        ;;
+    esac
+  done
+fi
+exec ${fetch_fail_real_git} "\$@"
+MOCKEOF
+  chmod +x "${fetch_fail_bin}/git"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  run_push_rebase_postfix "${base}" "${stdout_log}" "${fetch_fail_bin}" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — expected non-zero exit on transient target fetch failure"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "Could not fetch target branch" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — missing actionable target fetch-failure message"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tip
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_tip}" != "${real_a}" ]; then
+    echo "FAIL: ${test_name} — remote branch moved despite the target fetch failure"
+    echo "  want ${real_a}, got ${remote_tip}"
+    cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -4736,6 +4861,7 @@ run_push_preserves_unflagged_target_merge_test clean
 run_push_preserves_unflagged_target_merge_test conflict
 run_push_rebase_conflict_test
 run_push_rebase_fetch_failure_test
+run_push_target_fetch_failure_test
 run_push_rebase_preserves_agent_rebase_onto_target_test
 run_push_rebase_reconstructed_target_advanced_test
 run_push_rebase_bot_trigger_ignores_marker_test
@@ -6023,15 +6149,11 @@ run_push_forge_conflict_merged_target_reconstruction_requires_actual_merge_test(
   echo "PASS: ${test_name}"
 }
 
-# Medium-severity finding: a forge-conflict merge's second parent (historical
-# target-branch commits) must stay out of scope for the pre-commit gate's
-# autofix re-scan, not just the initial authoritative gitleaks scan. Section 1
-# already scopes GITLEAKS_LOG_OPTS to --first-parent when a merge is in range;
-# this test drives the gate into its autofix retry (a mock pre-commit hook
-# that "reformats" a file and fails once) and verifies the re-scan inside
-# precommit_run_gate also uses that first-parent-scoped range instead of the
-# raw two-dot SCAN_RANGE, by planting a "secret" commit that only exists on
-# the merge's second parent (main) and asserting it is never seen.
+# Verify that the pre-commit autofix re-scan excludes historical target
+# commits reached through a merge's second parent: a mock hook modifies a file
+# and fails once to exercise the autofix retry path. The initial authoritative
+# scan walks all parents with trusted target history excluded; only this
+# re-scan is first-parent scoped.
 run_push_forge_conflict_precommit_gate_first_parent_test() {
   local test_name="push-forge-conflict-precommit-gate-first-parent"
   local base="${PUSH_REBASE_TMPDIR}/${test_name}"
@@ -6133,9 +6255,16 @@ EOF
 
   local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
   local exit_code=0
-  PRE_AGENT_HEAD="${pr_a_sha}" \
-    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
-    "fullsend-ai-review[bot]" || exit_code=$?
+  # Isolate HOME: post-fix prepends ${HOME}/.local/bin to PATH, and a real
+  # pre-commit installed there would shadow the mock and never autofix.
+  mkdir -p "${base}/home"
+  # shellcheck disable=SC2030,SC2031
+  (
+    export HOME="${base}/home"
+    PRE_AGENT_HEAD="${pr_a_sha}" \
+      run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+      "fullsend-ai-review[bot]"
+  ) || exit_code=$?
 
   if [ "${exit_code}" -ne 0 ]; then
     echo "FAIL: ${test_name} — exit code ${exit_code}"
@@ -6382,6 +6511,523 @@ EOF
   fi
   if ! grep -q "leaks found" "${stdout_log}"; then
     echo "FAIL: ${test_name} — failed for a reason other than the planted secret"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Regression: a side branch merged into the PR can carry a secret in an
+# intermediate commit and delete it again before the merge. The secret then
+# sits in no final tree and in neither parent's merge diff, so only a scan that
+# reaches that commit's own patch (transient cases) or a nested merge's
+# resolution diff (case below) can see it. Detected secrets must block the push.
+
+# Fixture: bare remote holding main plus one PR commit, and a clone of the PR
+# branch at ${base}/repo. Echoes the PR commit's sha.
+push_secret_fixture() {
+  local base="$1"
+  git init -q --bare -b main "${base}/remote.git"
+  git init -q -b main "${base}/seed"
+  push_rebase_ident "${base}/seed"
+  echo "base" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "init"
+  git -C "${base}/seed" remote add origin "${base}/remote.git"
+  git -C "${base}/seed" push -q -u origin main
+  git -C "${base}/seed" checkout -q -b agent/99-test-fix
+  echo "pr-a" > "${base}/seed/file.txt"
+  git -C "${base}/seed" add file.txt
+  git -C "${base}/seed" commit -q -m "pr A"
+  git -C "${base}/seed" push -q -u origin agent/99-test-fix
+  git clone -q "${base}/remote.git" "${base}/repo"
+  push_rebase_ident "${base}/repo"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/seed" rev-parse HEAD
+}
+
+# Commit a secret on a branch forked from <fork-ref>, then delete it on the same
+# branch, leaving it only in that branch's history. Echoes the secret's sha.
+plant_transient_secret() {
+  local repo="$1" fork_ref="$2"
+  git -C "${repo}" checkout -q -b evil-throwaway "${fork_ref}"
+  echo "sekrit" > "${repo}/secret.txt"
+  echo "side" > "${repo}/side.txt"
+  git -C "${repo}" add secret.txt side.txt
+  git -C "${repo}" commit -q -m "evil: plant secret"
+  git -C "${repo}" rev-parse HEAD
+  git -C "${repo}" rm -q secret.txt
+  git -C "${repo}" commit -q -m "evil: drop secret"
+}
+
+run_push_side_branch_transient_secret_test() {
+  # older-merge: the same leak is published PR history before PRE_AGENT_HEAD,
+  # so it is outside this run's range and must not fail the push.
+  local older_merge=false test_name="push-side-branch-transient-secret-blocked"
+  if [ "${1:-}" = "older-merge" ]; then
+    older_merge=true
+    test_name="push-side-branch-transient-secret-before-agent-head-not-rescanned"
+  fi
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  local pr_a_sha secret_sha
+  pr_a_sha="$(push_secret_fixture "${base}")"
+
+  if [ "${older_merge}" = true ]; then
+    # Fork from the PR branch and publish the merge, so PRE_AGENT_HEAD is a
+    # realistic already-published starting point with the leak behind it.
+    secret_sha="$(plant_transient_secret "${base}/repo" agent/99-test-fix)"
+    git -C "${base}/repo" checkout -q agent/99-test-fix
+    git -C "${base}/repo" merge -q --no-ff --no-edit evil-throwaway
+    git -C "${base}/repo" push -q origin agent/99-test-fix
+    git -C "${base}/repo" fetch -q origin
+    pr_a_sha="$(git -C "${base}/repo" rev-parse HEAD)"
+    if [ "$(git -C "${base}/repo" log -1 --format='%P' "${pr_a_sha}" | wc -w | tr -d ' ')" != "2" ]; then
+      echo "FAIL: ${test_name} — fixture invalid: PRE_AGENT_HEAD is not a two-parent merge"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    # A clean agent commit: the only commit in SCAN_RANGE, so no merge is in it.
+    echo "fixed" > "${base}/repo/file.txt"
+    git -C "${base}/repo" add file.txt
+    git -C "${base}/repo" commit -q -m "fix: agent change"
+    if [ -n "$(git -C "${base}/repo" rev-list --merges "${pr_a_sha}..HEAD")" ]; then
+      echo "FAIL: ${test_name} — fixture invalid: a merge is inside SCAN_RANGE"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if git -C "${base}/repo" rev-list "${pr_a_sha}..HEAD" \
+         "^$(git --git-dir="${base}/remote.git" rev-parse refs/heads/main)" \
+         | grep -qx "${secret_sha}"; then
+      echo "FAIL: ${test_name} — fixture invalid: the published secret is inside this run's range"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  else
+    # What a compromised session does: fork from the target branch, merge the
+    # throwaway branch into the PR branch.
+    secret_sha="$(plant_transient_secret "${base}/repo" origin/main)"
+    git -C "${base}/repo" checkout -q agent/99-test-fix
+    git -C "${base}/repo" merge -q --no-edit evil-throwaway
+    if [ "$(git -C "${base}/repo" log -1 --format='%P' | wc -w | tr -d ' ')" != "2" ]; then
+      echo "FAIL: ${test_name} — fixture invalid: side branch was not merged by a merge commit"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  fi
+  if [ -n "$(git -C "${base}/repo" ls-tree -r --name-only HEAD | grep -x secret.txt || true)" ]; then
+    echo "FAIL: ${test_name} — fixture invalid: secret.txt survives in the pushed tree"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-${test_name}"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+
+  cat > "${gate_mock}/gitleaks" <<EOF
+#!/usr/bin/env bash
+if [ "\$1" = version ]; then echo 8.30.1; exit 0; fi
+args=("\$@")
+printf '%s\n' "\${args[*]}" >> "${base}/gitleaks-argv.log"
+log_opts=""
+pipe_mode=false
+for ((i = 0; i < \${#args[@]}; i++)); do
+  case "\${args[i]}" in
+    --log-opts=*) log_opts="\${args[i]#--log-opts=}" ;;
+    --log-opts) log_opts="\${args[i + 1]:-}" ;;
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if [ -n "\${log_opts}" ]; then
+  if ! log_out="\$(git log \${log_opts} --format=%H 2>/dev/null)"; then
+    echo "mock gitleaks: git log failed for \${log_opts}" >&2
+    exit 2
+  fi
+  if printf '%s\n' "\${log_out}" | grep -qx "${secret_sha}"; then
+    echo "leaks found: transient secret commit ${secret_sha} is in the scan range" >&2
+    exit 1
+  fi
+fi
+if \${pipe_mode} && grep -qF sekrit; then
+  echo "leaks found: planted secret in --pipe scan" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  # Self-check the mock's failure semantics: a git log error must surface as a
+  # scanner error (exit 2), and a clean range as no findings (exit 0).
+  local scanner_rc=0
+  ( cd "${base}/repo" \
+      && "${gate_mock}/gitleaks" detect --source . --log-opts="no-such..range" --redact \
+    ) >/dev/null 2>&1 || scanner_rc=$?
+  if [ "${scanner_rc}" -ne 2 ]; then
+    echo "FAIL: ${test_name} — mock scanner returned ${scanner_rc} for a failing git log, expected 2"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  scanner_rc=0
+  ( cd "${base}/repo" \
+      && "${gate_mock}/gitleaks" detect --source . --log-opts="HEAD..HEAD" --redact \
+    ) >/dev/null 2>&1 || scanner_rc=$?
+  if [ "${scanner_rc}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — mock scanner returned ${scanner_rc} for a clean range, expected 0"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # Self-check invocations above are not part of the asserted scan history.
+  rm -f "${base}/gitleaks-argv.log"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  local remote_tip trusted_sha expected_scan
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  trusted_sha="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/main)"
+  # Exactly one history scan either way: the all-parent scan, trusted history
+  # excluded. Comparing every recorded --log-opts line checks count and flags.
+  expected_scan="detect --source . --log-opts=${pr_a_sha}..HEAD ^${trusted_sha} --redact"
+  if [ "$(grep -- '--log-opts' "${base}/gitleaks-argv.log")" != "${expected_scan}" ]; then
+    echo "FAIL: ${test_name} — expected exactly one history scan: ${expected_scan}"
+    cat "${base}/gitleaks-argv.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if [ "${older_merge}" = true ]; then
+    # Published before PRE_AGENT_HEAD, so nothing is rescanned and the clean
+    # follow-up commit pushes.
+    if [ "${exit_code}" -ne 0 ]; then
+      echo "FAIL: ${test_name} — clean follow-up push failed (exit ${exit_code}); a secret published before PRE_AGENT_HEAD must not be rescanned"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if grep -q "leaks found" "${stdout_log}"; then
+      echo "FAIL: ${test_name} — prior published PR history was rescanned"
+      cat "${stdout_log}"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    if [ "${remote_tip}" != "$(git -C "${base}/repo" rev-parse HEAD)" ]; then
+      echo "FAIL: ${test_name} — remote tip ${remote_tip} did not advance to the pushed commit"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name}"
+    return
+  fi
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — push succeeded; the merged side branch's transient secret commit was never scanned"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "leaks found" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — failed for a reason other than the planted secret"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [ "${remote_tip}" != "${pr_a_sha}" ]; then
+    echo "FAIL: ${test_name} — remote branch advanced to ${remote_tip} despite the planted secret"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Regression: a nested merge introduces the marker, then a later commit removes
+# it. Neither the final tree nor non-merge added lines contain it; the explicit
+# scan of the nested merge's resolution must block the push.
+run_push_nested_merge_resolution_secret_test() {
+  local test_name="push-nested-merge-resolution-secret-blocked"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  local pr_a_sha
+  pr_a_sha="$(push_secret_fixture "${base}")"
+
+  # Nested merge on the untrusted side branch: two branches add the same new
+  # path with different content, and the conflict resolution both settles that
+  # path and writes the secret — content that matches neither parent. The
+  # nested merge is enumerated from the full DAG, and its resolution shows up
+  # in the pairwise first-parent diff used when the second parent is not
+  # trusted target history.
+  git -C "${base}/repo" checkout -q -b side-a origin/main
+  echo "side-a" > "${base}/repo/conflict.txt"
+  git -C "${base}/repo" add conflict.txt
+  git -C "${base}/repo" commit -q -m "side a"
+  git -C "${base}/repo" checkout -q -b side-b origin/main
+  echo "side-b" > "${base}/repo/conflict.txt"
+  git -C "${base}/repo" add conflict.txt
+  git -C "${base}/repo" commit -q -m "side b"
+  git -C "${base}/repo" checkout -q side-a
+  if git -C "${base}/repo" merge side-b >/dev/null 2>&1; then
+    echo "FAIL: ${test_name} — fixture invalid: side branches merged without a conflict"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "resolved" > "${base}/repo/conflict.txt"
+  echo "sekrit" > "${base}/repo/secret.txt"
+  git -C "${base}/repo" add -A
+  git -C "${base}/repo" commit -q --no-edit -m "side: resolve conflict"
+  local nested_merge_sha
+  nested_merge_sha="$(git -C "${base}/repo" rev-parse HEAD)"
+  # Deleted again, so the secret survives in no final tree and in no non-merge
+  # commit's added lines.
+  git -C "${base}/repo" rm -q secret.txt
+  git -C "${base}/repo" commit -q -m "side: drop secret"
+
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-edit side-a
+  # Fixture guards: the nested merge must be reachable only through the side
+  # branch (never a first-parent merge) and the result must be clean of the
+  # secret, or this test could pass for the wrong reason.
+  if git -C "${base}/repo" rev-list --first-parent --merges "${pr_a_sha}..HEAD" \
+       | grep -qx "${nested_merge_sha}"; then
+    echo "FAIL: ${test_name} — fixture invalid: nested merge is a first-parent merge"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! git -C "${base}/repo" merge-base --is-ancestor \
+       "${nested_merge_sha}" "$(git -C "${base}/repo" rev-parse HEAD^2)"; then
+    echo "FAIL: ${test_name} — fixture invalid: nested merge is not on the merged side branch"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [ -n "$(git -C "${base}/repo" ls-tree -r --name-only HEAD | grep -x secret.txt || true)" ]; then
+    echo "FAIL: ${test_name} — fixture invalid: secret.txt survives in the merge result"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-nested-merge-resolution-secret"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+
+  # The all-parent scan omits merge patches, so only this nested merge's
+  # explicit --pipe diff should report the marker. Record history calls before
+  # the merge scan fails.
+  cat > "${gate_mock}/gitleaks" <<EOF
+#!/usr/bin/env bash
+if [ "\${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+args=("\$@")
+printf '%s\n' "\${args[*]}" >> "${base}/gitleaks-argv.log"
+pipe_mode=false
+for arg in "\$@"; do
+  case "\${arg}" in
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if \${pipe_mode} && grep -qF sekrit; then
+  echo "leaks found: planted secret in a merge resolution diff" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — push succeeded; the nested merge's resolution-only secret was never scanned"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "leaks found" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — failed for a reason other than the planted secret"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tip trusted_sha expected_scan
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_tip}" != "${pr_a_sha}" ]; then
+    echo "FAIL: ${test_name} — remote branch advanced to ${remote_tip} despite the planted secret"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # A merge is in range, so the single all-parent history scan must run clean
+  # before the per-merge --pipe scan fails.
+  trusted_sha="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/main)"
+  expected_scan="detect --source . --log-opts=${pr_a_sha}..HEAD ^${trusted_sha} --redact"
+  if [ "$(grep -- '--log-opts' "${base}/gitleaks-argv.log")" != "${expected_scan}" ]; then
+    echo "FAIL: ${test_name} — expected exactly one history scan: ${expected_scan}"
+    cat "${base}/gitleaks-argv.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Regression: the marker sits only in the message of a merge nested on the
+# agent's side branch. A first-parent traversal never reaches that merge, so
+# only an all-parent scan can block publication.
+run_push_nested_merge_metadata_secret_test() {
+  local test_name="push-nested-merge-metadata-secret-blocked"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  local pr_a_sha
+  pr_a_sha="$(push_secret_fixture "${base}")"
+
+  git -C "${base}/repo" checkout -q -b side-meta origin/main
+  git -C "${base}/repo" checkout -q -b side-inner origin/main
+  echo "inner" > "${base}/repo/inner.txt"
+  git -C "${base}/repo" add inner.txt
+  git -C "${base}/repo" commit -q -m "inner: add file"
+  git -C "${base}/repo" checkout -q side-meta
+  git -C "${base}/repo" merge -q --no-ff -m "side: merge inner sekrit marker" side-inner
+  local nested_merge_sha
+  nested_merge_sha="$(git -C "${base}/repo" rev-parse HEAD)"
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" merge -q --no-ff -m "pr: merge side-meta" side-meta
+
+  # Fixture guards: the nested merge is not a first-parent merge, and no tree
+  # content carries the marker, so only metadata can trip the scan.
+  if git -C "${base}/repo" rev-list --first-parent --merges "${pr_a_sha}..HEAD" \
+       | grep -qx "${nested_merge_sha}"; then
+    echo "FAIL: ${test_name} — fixture invalid: nested merge is a first-parent merge"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if git -C "${base}/repo" grep -q sekrit HEAD -- 2>/dev/null; then
+    echo "FAIL: ${test_name} — fixture invalid: marker is present in the tree"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-nested-merge-metadata-secret"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+  cat > "${gate_mock}/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+pipe_mode=false
+for arg in "$@"; do
+  case "${arg}" in
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if ${pipe_mode} && grep -qF sekrit; then
+  echo "leaks found: planted metadata secret" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -eq 0 ]; then
+    echo "FAIL: ${test_name} — push succeeded; the nested merge's metadata secret was never scanned"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! grep -q "leaks found" "${stdout_log}"; then
+    echo "FAIL: ${test_name} — failed for a reason other than the planted secret"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local remote_tip
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_tip}" != "${pr_a_sha}" ]; then
+    echo "FAIL: ${test_name} — remote branch advanced to ${remote_tip} despite the planted secret"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Regression: the marker sits only in a trusted target-branch commit message
+# that the agent merged in. That history is not this PR's content, so it must
+# not block the push.
+run_push_trusted_target_metadata_does_not_block_test() {
+  local test_name="push-trusted-target-metadata-does-not-block"
+  local base="${PUSH_REBASE_TMPDIR}/${test_name}"
+  mkdir -p "${base}"
+
+  local pr_a_sha
+  pr_a_sha="$(push_secret_fixture "${base}")"
+
+  git -C "${base}/seed" checkout -q main
+  echo "target" > "${base}/seed/target.txt"
+  git -C "${base}/seed" add target.txt
+  git -C "${base}/seed" commit -q -m "target: note sekrit marker"
+  git -C "${base}/seed" push -q origin main
+
+  git -C "${base}/repo" checkout -q agent/99-test-fix
+  git -C "${base}/repo" fetch -q origin
+  git -C "${base}/repo" merge -q --no-edit origin/main
+  echo "fixed" > "${base}/repo/file.txt"
+  git -C "${base}/repo" add file.txt
+  git -C "${base}/repo" commit -q -m "fix: agent change"
+
+  local gate_mock="${PUSH_REBASE_TMPDIR}/bin-trusted-target-metadata"
+  mkdir -p "${gate_mock}"
+  cp "${PUSH_REBASE_MOCK_BIN}/sleep" "${gate_mock}/sleep"
+  cp "${PUSH_REBASE_MOCK_BIN}/gh" "${gate_mock}/gh"
+  cp "${PUSH_REBASE_MOCK_BIN}/git" "${gate_mock}/git"
+  cat > "${gate_mock}/gitleaks" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = version ]; then echo 8.30.1; exit 0; fi
+pipe_mode=false
+for arg in "$@"; do
+  case "${arg}" in
+    --pipe) pipe_mode=true ;;
+  esac
+done
+if ${pipe_mode} && grep -qF sekrit; then
+  echo "leaks found: planted metadata secret" >&2
+  exit 1
+fi
+exit 0
+EOF
+  chmod +x "${gate_mock}/gitleaks"
+
+  local stdout_log="${PUSH_REBASE_TMPDIR}/stdout-${test_name}.log"
+  local exit_code=0
+  PRE_AGENT_HEAD="${pr_a_sha}" \
+    run_push_rebase_postfix "${base}" "${stdout_log}" "${gate_mock}" \
+    "fullsend-ai-review[bot]" || exit_code=$?
+
+  if [ "${exit_code}" -ne 0 ]; then
+    echo "FAIL: ${test_name} — trusted target metadata blocked the push"
+    cat "${stdout_log}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  local local_tip remote_tip
+  local_tip="$(git -C "${base}/repo" rev-parse HEAD)"
+  remote_tip="$(git --git-dir="${base}/remote.git" rev-parse refs/heads/agent/99-test-fix)"
+  if [ "${remote_tip}" != "${local_tip}" ]; then
+    echo "FAIL: ${test_name} — remote branch was not published (want ${local_tip}, got ${remote_tip})"
     cat "${stdout_log}"
     FAILURES=$((FAILURES + 1))
     return
@@ -6680,6 +7326,11 @@ run_push_forge_conflict_merge_secret_lines_test message fail
 run_push_forge_conflict_merge_secret_lines_test fixmsg fail
 run_push_forge_conflict_merge_secret_lines_test author fail
 run_push_forge_conflict_merge_secret_lines_test committer fail
+run_push_side_branch_transient_secret_test
+run_push_side_branch_transient_secret_test older-merge
+run_push_nested_merge_resolution_secret_test
+run_push_nested_merge_metadata_secret_test
+run_push_trusted_target_metadata_does_not_block_test
 run_push_blocked_mergeability_does_not_skip_test
 
 # ---------------------------------------------------------------------------
