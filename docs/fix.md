@@ -73,8 +73,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness `forge` block. |
-| `GITHUB_SIGNED_COMMITS` | `false` | `true` publishes the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](code.md#signed-commits)); anything else keeps `git push`. Set in the `forge.github` block of `harness/fix.yaml`; override via `base:` composition. |
+| `FULLSEND_FORGE` | `github` | Selects the forge platform (`github` or `gitlab`). Set automatically by the harness forge overlays (`overlays:` entries guarded by `runtime.forge`). |
+| `GITHUB_SIGNED_COMMITS` | `false` | `true` publishes the branch through the GitHub Git Data API so GitHub signs the commits (see [Signed commits](code.md#signed-commits)); anything else keeps `git push`. Set in the GitHub overlay (`runtime.forge == "github"`) of `harness/fix.yaml`; override via `base:` composition. |
 | `FIX_CONFLICT_UPDATE_STRATEGY` | `merge` | How the fix agent updates a PR/MR when the forge reports a **real** merge conflict: `merge` (default; creates a merge commit and preserves history) or `rebase` (replays the PR onto the target; the post-script force-pushes with `--force-with-lease`). Blocked/behind/unknown mergeability is never treated as a conflict. Override via `base:` composition. |
 
 ### Skill: `fix-review`
@@ -332,8 +332,10 @@ The fix agent enforces iteration caps to prevent infinite review-fix loops:
 
 ## Multi-forge support
 
-The fix agent supports both GitHub and GitLab. The harness `forge` block
-selects the platform at runtime via `FULLSEND_FORGE`. On GitHub, the agent
+The fix agent supports both GitHub and GitLab. The harness `overlays:`
+entries, guarded by `runtime.forge` CEL conditions, select the
+forge-specific providers, skills, and env (including `FULLSEND_FORGE`) at
+runtime. On GitHub, the agent
 uses `gh` for API access; on GitLab, it uses `curl` against the REST API.
 Scripts dispatch forge-specific operations through `fix-ops.lib.sh`, and
 forge-specific skills provide the appropriate CLI recipes.
