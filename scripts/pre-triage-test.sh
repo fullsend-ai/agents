@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# pre-triage-test.sh — Test pre-triage.sh with the Jira and GitLab trackers.
+# pre-triage-test.sh — Test pre-triage.sh with the Jira, GitLab, and GitHub
+# trackers.
 #
-# Uses a mock curl command to capture calls without hitting Jira Cloud or GitLab.
+# Uses mock curl and gh commands to capture calls without hitting Jira Cloud,
+# GitLab, or GitHub.
 # Run from the repo root: bash scripts/pre-triage-test.sh
 
 set -euo pipefail
@@ -342,6 +344,66 @@ run_test "gitlab-com-no-ci-server-url-ok" \
   "https://gitlab.com/api/v4/projects/group%2Fproject/issues/42"
 
 unset CI_SERVER_HOST GITLAB_TOKEN
+
+# --- GitHub host validation (#1865) ---
+# The issue URL must be on the GitHub host the run executes against
+# (GITHUB_SERVER_URL, default https://github.com), and REPO must parse as
+# owner/repo for it. Mock gh logs to the same calls log as mock curl.
+
+printf '#!/usr/bin/env bash\necho "gh $*" >> %s\n' "${CURL_LOG}" > "${MOCK_BIN}/gh"
+cat >> "${MOCK_BIN}/gh" <<'GHMOCK'
+echo '[]'
+exit 0
+GHMOCK
+chmod +x "${MOCK_BIN}/gh"
+
+export FULLSEND_TRACKER="github"
+export GH_TOKEN="fake-gh-token"
+unset GITHUB_SERVER_URL
+
+run_test "github-com-no-server-url-ok" \
+  "https://github.com/test-org/test-repo/issues/42" \
+  "gh api repos/test-org/test-repo/issues/42/labels"
+
+export GITHUB_SERVER_URL="https://ghe.example.com"
+run_test "github-custom-host-matching-url-ok" \
+  "https://ghe.example.com/acme/widgets/issues/79" \
+  "gh api repos/acme/widgets/issues/79/labels"
+
+run_test "github-custom-host-github-com-url-fails" \
+  "https://github.com/acme/widgets/issues/79" \
+  "ISSUE_URL does not match expected pattern" \
+  "true" "true"
+
+run_test "github-custom-host-lookalike-host-fails" \
+  "https://ghe.example.com.evil.test/acme/widgets/issues/79" \
+  "ISSUE_URL does not match expected pattern" \
+  "true" "true"
+
+run_test "github-custom-host-non-numeric-issue-fails" \
+  "https://ghe.example.com/acme/widgets/issues/abc" \
+  "ISSUE_URL does not match expected pattern" \
+  "true" "true"
+
+run_test "github-custom-host-extra-path-fails" \
+  "https://ghe.example.com/acme/widgets/extra/issues/79" \
+  "ISSUE_URL does not match expected pattern" \
+  "true" "true"
+
+# A trailing slash on GITHUB_SERVER_URL still matches.
+export GITHUB_SERVER_URL="https://ghe.example.com/"
+run_test "github-server-url-trailing-slash-ok" \
+  "https://ghe.example.com/acme/widgets/issues/79" \
+  "gh api repos/acme/widgets/issues/79/labels"
+
+# A non-HTTPS GITHUB_SERVER_URL fails closed.
+export GITHUB_SERVER_URL="http://ghe.example.com"
+run_test "github-non-https-server-url-fails" \
+  "http://ghe.example.com/acme/widgets/issues/79" \
+  "GITHUB_SERVER_URL is not an HTTPS origin" \
+  "true" "true"
+
+unset GITHUB_SERVER_URL GH_TOKEN
 
 # --- Summary ---
 
