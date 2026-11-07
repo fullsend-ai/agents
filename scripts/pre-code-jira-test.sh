@@ -46,10 +46,22 @@ GHEOF
   # Mock curl: Jira JQL search and GitLab MR listing.
   cat > "${mock_bin}/curl" <<'CURLEOF'
 #!/usr/bin/env bash
+data=""
+prev=""
+for arg in "$@"; do
+  [[ "${prev}" == "--data" ]] && data="${arg}"
+  prev="${arg}"
+done
 for arg in "$@"; do
   case "${arg}" in
     */rest/api/3/search/jql)
       [[ "${MOCK_JIRA_CHILD_FAIL:-}" == "1" ]] && exit 22
+      # MOCK_JIRA_SUBTASKS_ONLY=1: every child is a subtask, so a query
+      # that excludes subtask types finds none, as Jira would.
+      if [[ "${MOCK_JIRA_SUBTASKS_ONLY:-}" == "1" && "${data}" == *"issuetype not in subTaskIssueTypes()"* ]]; then
+        printf '{"issues":[]}\n'
+        exit 0
+      fi
       printf '%s\n' "${MOCK_JIRA_CHILDREN:-{\"issues\":[]\}}"
       exit 0
       ;;
@@ -427,6 +439,12 @@ run_skip_test "issue-with-children-skips" \
   true \
   "reason=PROJ-42 has child issue(s)" \
   "MOCK_JIRA_CHILDREN=${HAS_CHILDREN}"
+
+run_skip_test "issue-with-only-subtasks-does-not-skip" \
+  false \
+  "No child issues found" \
+  "MOCK_JIRA_CHILDREN=${HAS_CHILDREN}
+MOCK_JIRA_SUBTASKS_ONLY=1"
 
 run_skip_test "issue-with-children-force-does-not-skip" \
   false \

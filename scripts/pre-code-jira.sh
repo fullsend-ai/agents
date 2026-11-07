@@ -1649,7 +1649,8 @@ esac
 #   - an open human PR/MR on the target repo whose title or body names the
 #     Jira key as a whole word (this covers the "Related to <url>" line
 #     post-code.sh writes) skips the run; bot PRs do not;
-#   - an issue with child issues (JQL "parent = KEY") skips the run;
+#   - an issue with child issues (JQL "parent = KEY", subtasks excluded,
+#     so a story split into subtasks still runs) skips the run;
 #     a failed child query logs a warning and proceeds (fail open);
 #   - `/fs-code --force` on the trigger comment's first line, or
 #     CODE_FORCE=true, bypasses both checks.
@@ -1657,6 +1658,12 @@ esac
 # comment on the Jira issue; a failed Jira write still skips. A missing
 # forge token skips the PR check; missing Jira credentials skip the child
 # check and the comment.
+#
+# The child check and the comment use jira-triage-ops.lib.sh, which sends
+# Basic auth (JIRA_USER_EMAIL:JIRA_TOKEN) to JIRA_BASE_URL. A service-account
+# setup with no JIRA_USER_EMAIL therefore runs neither, and a scoped token
+# that the site URL rejects fails the query, which proceeds (fail open).
+# Service-account support for the agents' Jira calls is agents#1900.
 
 # jira-triage-ops.lib.sh validates JIRA_USER_EMAIL and JIRA_TOKEN when it is
 # loaded, so load it only when both are set.
@@ -2206,7 +2213,7 @@ _jira_list_human_prs() {
 _jira_child_count() {
   local resp
   resp="$(_jira_api POST "/search/jql" \
-    --data "$(jq -cn --arg jql "parent = ${ISSUE_KEY}" '{jql: $jql, maxResults: 1, fields: ["key"]}')" 2>/dev/null)" \
+    --data "$(jq -cn --arg jql "parent = ${ISSUE_KEY} AND issuetype not in subTaskIssueTypes()" '{jql: $jql, maxResults: 1, fields: ["key"]}')" 2>/dev/null)" \
     || return 1
   printf '%s' "${resp}" | jq -er '.issues | length' 2>/dev/null
 }
