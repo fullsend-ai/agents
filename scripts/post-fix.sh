@@ -544,10 +544,15 @@ forge_get_pr_labels() {
 
 # --- Push operations ---
 
+# forge_set_push_remote TOKEN — point origin at the GitHub host the run is
+# executing against (GITHUB_SERVER_URL, default github.com) with TOKEN.
 forge_set_push_remote() {
   local token="$1"
+  local host="${GITHUB_SERVER_URL:-https://github.com}"
+  host="${host#*://}"
+  host="${host%%/*}"
   git remote set-url origin \
-    "https://x-access-token:${token}@github.com/${REPO_FULL_NAME}.git"
+    "https://x-access-token:${token}@${host}/${REPO_FULL_NAME}.git"
 }
 
 forge_setup_push_token() {
