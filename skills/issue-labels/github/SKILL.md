@@ -56,6 +56,8 @@ The sub-agent should:
    ```
    gh issue list --repo OWNER/REPO --state all --json number,title,labels --limit 50
    ```
+   Closed issues in this listing inform label conventions only; they are
+   never duplicate targets.
 2. Analyze which labels appear together and in what contexts.
 3. Return a short summary (under 500 characters) describing the labeling
    conventions observed -- which labels are commonly used and any patterns in
