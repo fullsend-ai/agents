@@ -261,10 +261,17 @@ GitHub/GitLab auth vars:
 | Variable | Description |
 |----------|-------------|
 | `FULLSEND_WORK_ITEM_URL` | The `https://<site>.atlassian.net/browse/<KEY>-<n>` URL of the issue to triage. |
-| `JIRA_USER_EMAIL` | Email address of the Jira Cloud account used for Basic auth. |
-| `JIRA_TOKEN` | API token for that account. Available to the runner for post-script mutations; the sandbox receives the `jira-ro` provider's opaque placeholder instead of the real token. |
+| `JIRA_TOKEN` | Jira API token. The harness maps the `FULLSEND_JIRA_TOKEN` repository secret to it in `env.runner` for post-script mutations; the sandbox receives the `jira-ro` provider's opaque placeholder instead of the real token. |
+| `JIRA_USER_EMAIL` | Optional. Email of a bot-user account. When set, requests use Basic auth with email and token; when unset or empty (a service account), Bearer auth with the token. The harness maps the optional `FULLSEND_JIRA_EMAIL` repository secret to it in `env.runner`; the sandbox gets `JIRA_USER_EMAIL` through `env/jira/triage.env`. |
+| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads the Jira site and API gateway from `tracker.jira` in its `config.yaml`. The harness passes `${FULLSEND_DIR}` through to `env.runner` from the host environment, so the operator must set it. |
 | `JIRA_BASE_URL` | Base URL of the Jira Cloud site (e.g. `https://<site>.atlassian.net`). Used for browse links. |
 | `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls; `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`), which accepts both bot-account and service-account tokens. Falls back to `JIRA_BASE_URL` when unset. |
+
+Jira triage requires a fullsend release that includes the config-backed Jira
+commands
+([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)),
+so that `fullsend issues post-comment --tracker jira --fullsend-dir` can read
+`tracker.jira` from `FULLSEND_DIR`.
 
 Closing an issue (`duplicate`, `not-planned`, `completed`, `split` actions) performs a
 Jira workflow transition rather than a status field write, since Jira has no
@@ -359,20 +366,23 @@ If you use `base:` composition to override `harness/triage.yaml`:
 - **Jira credentials use provider-backed delivery**: The `jira-ro`
   provider and `fullsend-jira-ro` OpenShell profile handle Jira API
   token injection at the network layer. Sandbox curl commands use
-  `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` for Basic auth, but
+  `--user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}"` (Basic auth) when
+  `JIRA_USER_EMAIL` is set and `--oauth2-bearer "${JIRA_TOKEN}"`
+  (Bearer auth, for a service account) when it is empty, but
   `JIRA_TOKEN` inside the sandbox is the provider's opaque placeholder
   — the real API token is never expanded into sandbox config or env
-  files. OpenShell replaces the placeholder in the Basic Authorization
-  header at the proxy boundary. `JIRA_USER_EMAIL` and `JIRA_BASE_URL`
-  remain in `env.sandbox` as non-secret configuration; `JIRA_API_URL`
-  reaches the sandbox through `env/jira/triage.env`, so an unset value
-  expands to empty instead of failing the run. Runner-side
-  post-scripts retain the real `JIRA_TOKEN` via `env.runner` for
-  trusted mutations (label writes, transitions, comment posting).
-  Do not switch to bearer auth — both the Jira Cloud tenant URL
-  (`*.atlassian.net/rest/api/3/...`) and the API gateway
-  (`api.atlassian.com/ex/jira/<cloudId>/rest/api/3/...`) take Basic
-  auth with `email:api_token`.
+  files. OpenShell replaces the placeholder in the Authorization
+  header at the proxy boundary. `JIRA_BASE_URL` remains in
+  `env.sandbox` as non-secret configuration; `JIRA_USER_EMAIL` and
+  `JIRA_API_URL` reach the sandbox through `env/jira/triage.env`, so an
+  unset value expands to empty instead of failing the run. fullsend
+  refuses `FULLSEND_JIRA_*` in provider credentials, so the provider
+  reads the `JIRA_TOKEN` secret. Runner-side post-scripts get the real
+  token from `FULLSEND_JIRA_TOKEN` and the optional email from
+  `FULLSEND_JIRA_EMAIL` via `env.runner` for trusted mutations (label
+  writes, transitions, comment posting), and pick Basic or Bearer auth
+  the same way through `scripts/lib/jira-auth.lib.sh`. Both modes send
+  REST calls to `JIRA_API_URL`.
 - **GitHub and GitLab credentials use provider-backed delivery**:
   `GH_TOKEN` and `GITLAB_TOKEN` are not expanded into `env.sandbox` or
   host env files. The sandbox receives the `github-ro` / `gitlab-rw`

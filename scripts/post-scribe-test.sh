@@ -23,9 +23,12 @@ MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 
 # Mock fullsend CLI — handles `fullsend issues create --tracker jira`
+FULLSEND_ENV_LOG="${TMPDIR}/fullsend-env.log"
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 echo "fullsend \$*" >> "${FULLSEND_LOG}"
+# Record the Jira credentials the CLI reads from its environment.
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
 if [[ "\$1" == "issues" ]] && [[ "\$2" == "create" ]]; then
   if [[ "\$3" == "--help" ]]; then
     echo "Usage: fullsend issues create [flags]"
@@ -225,6 +228,7 @@ run_test() {
   : > "${GH_LOG}"
   : > "${CURL_LOG}"
   : > "${FULLSEND_LOG}"
+  : > "${FULLSEND_ENV_LOG}"
 
   local exit_code=0
   (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
@@ -281,6 +285,7 @@ run_test_stdout() {
   : > "${GH_LOG}"
   : > "${CURL_LOG}"
   : > "${FULLSEND_LOG}"
+  : > "${FULLSEND_ENV_LOG}"
 
   local exit_code=0
   (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
@@ -327,6 +332,7 @@ run_test_content_suppressed() {
   : > "${GH_LOG}"
   : > "${CURL_LOG}"
   : > "${FULLSEND_LOG}"
+  : > "${FULLSEND_ENV_LOG}"
 
   local exit_code=0
   (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
@@ -599,6 +605,7 @@ run_validated_dir_test() {
   : > "${GH_LOG}"
   : > "${CURL_LOG}"
   : > "${FULLSEND_LOG}"
+  : > "${FULLSEND_ENV_LOG}"
 
   local exit_code=0
   (
@@ -873,6 +880,7 @@ export FULLSEND_TRACKER="jira"
 export JIRA_BASE_URL="https://mock.atlassian.net"
 export JIRA_USER_EMAIL="bot@mock.example"
 export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
 export SCRIBE_JIRA_PROJECT="PROJ"
 export SCRIBE_MODE="all"
 
@@ -919,6 +927,54 @@ if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -qF -- 
 else
   echo "PASS: jira/live-create-no-token-arg"
 fi
+if grep -F 'fullsend issues create' "${FULLSEND_LOG}" 2>/dev/null | grep -v -- '--help' \
+  | grep -qF -- "--fullsend-dir ${FULLSEND_DIR}" \
+  && ! grep -qF -- '--jira-email' "${FULLSEND_LOG}"; then
+  echo "PASS: jira/live-create-uses-config-backed-cli"
+else
+  echo "FAIL: jira/live-create-uses-config-backed-cli — expected --fullsend-dir and no --jira-email"
+  cat "${FULLSEND_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "token=fake-jira-token email=bot@mock.example" "${FULLSEND_ENV_LOG}" 2>/dev/null \
+  && grep -qF -- '--user bot@mock.example:fake-jira-token' "${CURL_LOG}" \
+  && ! grep -qF -- '--oauth2-bearer' "${CURL_LOG}"; then
+  echo "PASS: jira/live-basic-auth-with-email"
+else
+  echo "FAIL: jira/live-basic-auth-with-email — expected Basic auth and FULLSEND_JIRA_EMAIL for the CLI"
+  cat "${FULLSEND_ENV_LOG}" "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Service account (#1900): an unset, empty, or blank email selects Bearer
+# auth for the REST calls and gives the CLI no FULLSEND_JIRA_EMAIL, even
+# when one is inherited.
+for email_case in unset empty blank; do
+  case "${email_case}" in
+    unset) unset JIRA_USER_EMAIL ;;
+    empty) export JIRA_USER_EMAIL="" ;;
+    blank) export JIRA_USER_EMAIL="  " ;;
+  esac
+  FULLSEND_JIRA_EMAIL="inherited@mock.example" \
+    run_test_stdout "jira/live-bearer-auth-email-${email_case}" "${JIRA_NEW_ISSUE}" \
+    "Created: https://mock.atlassian.net/browse/PROJ-100"
+  if grep -qF -- '--oauth2-bearer fake-jira-token' "${CURL_LOG}" \
+    && ! grep -qF -- '--user' "${CURL_LOG}" \
+    && grep -qF "token=fake-jira-token email=unset" "${FULLSEND_ENV_LOG}" \
+    && ! grep -qF "token=fake-jira-token email=inherited" "${FULLSEND_ENV_LOG}"; then
+    echo "PASS: jira/live-bearer-auth-email-${email_case}-no-basic"
+  else
+    echo "FAIL: jira/live-bearer-auth-email-${email_case}-no-basic — expected Bearer auth and no CLI email"
+    cat "${FULLSEND_ENV_LOG}" "${CURL_LOG}" 2>/dev/null || true
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+export JIRA_USER_EMAIL="bot@mock.example"
+
+# The config-backed CLI needs FULLSEND_DIR for tracker.jira.
+unset FULLSEND_DIR
+run_test_stdout "jira/live-missing-fullsend-dir-fails" "${JIRA_NEW_ISSUE}" "" true
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
 if grep -q '^gh issue create' "${GH_LOG}" 2>/dev/null; then
   echo "FAIL: jira/live-no-github-issue — GitHub issue created on Jira path"
   FAILURES=$((FAILURES + 1))

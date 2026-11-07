@@ -200,9 +200,11 @@ run_test "jira-api-url-non-https-fails" \
   "true" "true"
 unset JIRA_API_URL
 
-# --- Jira credential guard tests (#876) ---
-# Verify that source-time :? guards on JIRA_USER_EMAIL and JIRA_TOKEN reject
-# unset and empty values before any API call is made.
+# --- Jira credential guard tests (#876, #1900) ---
+# Verify that the source-time :? guard on JIRA_TOKEN rejects unset and empty
+# values before any API call is made. JIRA_USER_EMAIL is optional: with it
+# the REST calls use Basic auth, without it (unset, empty, or blank) Bearer
+# auth with the service-account token.
 
 unset JIRA_TOKEN
 run_test "jira-missing-token-fails" \
@@ -218,18 +220,53 @@ run_test "jira-empty-token-fails" \
   "true" "true"
 export JIRA_TOKEN="fake-jira-token"
 
-unset JIRA_USER_EMAIL
-run_test "jira-missing-email-fails" \
+echo '[]' > "${MOCK_LABELS_FILE}"
+run_test "jira-email-uses-basic-auth" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
-  "JIRA_USER_EMAIL must be set" \
-  "true" "true"
+  "--user triage@example.com:fake-jira-token"
+if grep -qF -- "--oauth2-bearer" "${CURL_LOG}"; then
+  echo "FAIL: jira-email-no-bearer-auth — Bearer auth sent alongside an email"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-email-no-bearer-auth"
+fi
+
+# Unset, empty, and whitespace-only emails all mean "no email": Bearer auth,
+# never an empty-user Basic header.
+for email_case in unset empty blank; do
+  case "${email_case}" in
+    unset) unset JIRA_USER_EMAIL ;;
+    empty) export JIRA_USER_EMAIL="" ;;
+    blank) export JIRA_USER_EMAIL="  " ;;
+  esac
+  run_test "jira-email-${email_case}-uses-bearer-auth" \
+    "https://test.atlassian.net/browse/TESTPROJ-42" \
+    "--oauth2-bearer fake-jira-token"
+  if grep -qF -- "--user" "${CURL_LOG}"; then
+    echo "FAIL: jira-email-${email_case}-no-basic-auth — Basic auth sent without an email"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-email-${email_case}-no-basic-auth"
+  fi
+done
 export JIRA_USER_EMAIL="triage@example.com"
 
-export JIRA_USER_EMAIL=""
-run_test "jira-empty-email-fails" \
+# Bearer mode uses the same JIRA_API_URL gateway path as Basic mode.
+unset JIRA_USER_EMAIL
+export JIRA_API_URL="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+run_test "jira-bearer-routes-to-api-url" \
   "https://test.atlassian.net/browse/TESTPROJ-42" \
-  "JIRA_USER_EMAIL must be set" \
-  "true" "true"
+  "--oauth2-bearer fake-jira-token --fail --silent --show-error --connect-timeout 10 --max-time 30 --header Content-Type: application/json --request GET ${JIRA_API_URL}/rest/api/3/issue/TESTPROJ-42"
+if grep -qF "atlassian.net/rest/api/3" "${CURL_LOG}"; then
+  echo "FAIL: jira-bearer-no-site-rest-calls — REST call sent to the site URL"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-bearer-no-site-rest-calls"
+fi
+unset JIRA_API_URL
 export JIRA_USER_EMAIL="triage@example.com"
 
 # --- GitLab origin validation (#1732) ---

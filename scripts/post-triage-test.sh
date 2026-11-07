@@ -19,6 +19,7 @@ trap 'rm -rf "${TMPDIR}"' EXIT
 
 # Mock gh: record all calls to a log file.
 GH_LOG="${TMPDIR}/gh-calls.log"
+FULLSEND_ENV_LOG="${TMPDIR}/fullsend-env.log"
 MOCK_BIN="${TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 cat > "${MOCK_BIN}/gh" <<MOCKEOF
@@ -63,6 +64,8 @@ chmod +x "${MOCK_BIN}/gh"
 
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
+# Record the Jira credentials the CLI reads from its environment.
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
 BODY=""
 PREV=""
 for arg in "\$@"; do
@@ -2211,6 +2214,7 @@ write_tracker_config jira
 export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
@@ -2465,8 +2469,10 @@ run_jira_test_stdout "jira-prerequisites-skips-disallowed-target" \
 
 # --- JIRA_API_URL routing (#1876) ---
 # With JIRA_API_URL set (as `fullsend run` exports it), the curl helpers send
-# REST calls to the API gateway — trailing slash stripped — while the
-# comment's --jira-url and created-issue links keep the site URL.
+# REST calls to the API gateway — trailing slash stripped — while
+# created-issue links keep the site URL. The comment goes through the
+# config-backed fullsend CLI, which takes the site and gateway from
+# tracker.jira in --fullsend-dir (#1900).
 JIRA_GATEWAY="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
 export JIRA_API_URL="${JIRA_GATEWAY}/"
 run_jira_test "jira-api-url-routes-label-writes" \
@@ -2479,10 +2485,11 @@ if grep -qF "atlassian.net/rest/api/3" "${JIRA_CURL_LOG}"; then
 else
   echo "PASS: jira-api-url-no-site-rest-calls"
 fi
-if grep -qF -- "--jira-url https://test.atlassian.net " "${GH_LOG}"; then
-  echo "PASS: jira-api-url-comment-keeps-site-url"
+if grep -qF -- "--fullsend-dir ${FULLSEND_DIR} " "${GH_LOG}" \
+  && ! grep -qE -- "--(jira-url|jira-email|token)" "${GH_LOG}"; then
+  echo "PASS: jira-comment-uses-config-backed-cli"
 else
-  echo "FAIL: jira-api-url-comment-keeps-site-url — --jira-url is not the site URL"
+  echo "FAIL: jira-comment-uses-config-backed-cli — expected --fullsend-dir and no --jira-url/--jira-email/--token"
   cat "${GH_LOG}"
   FAILURES=$((FAILURES + 1))
 fi
@@ -2758,14 +2765,16 @@ export FULLSEND_TRACKER="jira"
 export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
 unset GH_TOKEN
 
-# --- Jira credential guard tests (#876) ---
-# Verify that source-time :? guards reject unset/empty JIRA_TOKEN and
-# JIRA_USER_EMAIL before any API call is made.
+# --- Jira credential guard tests (#876, #1900) ---
+# Verify that the source-time :? guard rejects an unset/empty JIRA_TOKEN
+# before any API call is made. JIRA_USER_EMAIL is optional and selects the
+# auth mode.
 
 unset JIRA_TOKEN
 run_jira_test "jira-missing-token-fails" \
@@ -2781,19 +2790,52 @@ run_jira_test "jira-empty-token-fails" \
   "true"
 export JIRA_TOKEN="fake-jira-token"
 
-unset JIRA_USER_EMAIL
-run_jira_test "jira-missing-email-fails" \
+# Bot user: Basic auth for REST calls, and the CLI gets FULLSEND_JIRA_EMAIL.
+: > "${FULLSEND_ENV_LOG}"
+run_jira_test "jira-email-uses-basic-auth" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
-  "" \
-  "true"
+  "--user triage@example.com:fake-jira-token"
+if grep -qF "token=fake-jira-token email=triage@example.com" "${FULLSEND_ENV_LOG}" \
+  && ! grep -qF -- "--oauth2-bearer" "${JIRA_CURL_LOG}"; then
+  echo "PASS: jira-email-cli-gets-email"
+else
+  echo "FAIL: jira-email-cli-gets-email — CLI did not get FULLSEND_JIRA_EMAIL, or Bearer was sent"
+  cat "${FULLSEND_ENV_LOG}" "${JIRA_CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Service account: an unset, empty, or blank email selects Bearer auth for
+# the REST calls and gives the CLI no FULLSEND_JIRA_EMAIL, even when one is
+# inherited; never an empty-user Basic header.
+for email_case in unset empty blank; do
+  case "${email_case}" in
+    unset) unset JIRA_USER_EMAIL ;;
+    empty) export JIRA_USER_EMAIL="" ;;
+    blank) export JIRA_USER_EMAIL="  " ;;
+  esac
+  : > "${FULLSEND_ENV_LOG}"
+  FULLSEND_JIRA_EMAIL="inherited@example.com" run_jira_test "jira-email-${email_case}-uses-bearer-auth" \
+    '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
+    "--oauth2-bearer fake-jira-token"
+  if grep -qF -- "--user" "${JIRA_CURL_LOG}" \
+    || ! grep -qF "token=fake-jira-token email=unset" "${FULLSEND_ENV_LOG}" \
+    || grep -qF "email=inherited" "${FULLSEND_ENV_LOG}"; then
+    echo "FAIL: jira-email-${email_case}-no-basic-auth — Basic auth or a CLI email without a configured email"
+    cat "${FULLSEND_ENV_LOG}" "${JIRA_CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-email-${email_case}-no-basic-auth"
+  fi
+done
 export JIRA_USER_EMAIL="triage@example.com"
 
-export JIRA_USER_EMAIL=""
-run_jira_test "jira-empty-email-fails" \
+# The config-backed CLI needs FULLSEND_DIR for tracker.jira.
+unset FULLSEND_DIR
+run_jira_test "jira-missing-fullsend-dir-fails" \
   '{"action":"insufficient","reasoning":"missing repro","clarity_scores":{"symptom":0.6,"cause":0.3,"reproduction":0.1,"impact":0.5,"overall":0.39},"comment":"Could you share the exact steps to reproduce this?"}' \
   "" \
   "true"
-export JIRA_USER_EMAIL="triage@example.com"
+export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
 
 # --- Jira work-item output tests (#1841) ---
 # Jira-sourced runs get their identity from FULLSEND_WORK_ITEM_SOURCE/KEY/URL.
@@ -2837,6 +2879,8 @@ chmod +x "${MOCK_BIN}/curl"
 
 cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
+# Record the Jira credentials the CLI reads from its environment.
+echo "token=\${FULLSEND_JIRA_TOKEN-unset} email=\${FULLSEND_JIRA_EMAIL-unset}" >> "${FULLSEND_ENV_LOG}"
 BODY=""
 PREV=""
 for arg in "\$@"; do
@@ -2890,7 +2934,7 @@ WI_URL="https://test.atlassian.net/browse/TESTPROJ-42"
   run_jira_case "jira-work-item-source-routes-to-jira" "${JIRA_INSUFFICIENT_JSON}"
   if [[ ${JIRA_CASE_RC} -ne 0 ]]; then
     jira_case_fail "jira-work-item-source-routes-to-jira" "exit code ${JIRA_CASE_RC}"
-  elif ! grep -qF -- "--tracker jira --project TESTPROJ --number 42" "${GH_LOG}" \
+  elif ! grep -qF -- "--tracker jira --fullsend-dir ${FULLSEND_DIR} --project TESTPROJ --number 42" "${GH_LOG}" \
        || grep -q "^gh " "${GH_LOG}"; then
     jira_case_fail "jira-work-item-source-routes-to-jira" "comment not posted to TESTPROJ-42 via the Jira tracker"
   else
@@ -2975,10 +3019,11 @@ jira_comment_marker() {
 # Bot-loop prevention: every comment is written by the configured fullsend
 # Jira account (the identity the Jira poller recognizes as its own) and
 # carries a fullsend marker, so it never reads as a human comment.
+: > "${FULLSEND_ENV_LOG}"
 run_jira_case "jira-comment-uses-bot-identity" "${JIRA_INSUFFICIENT_JSON}"
 if [[ ${JIRA_CASE_RC} -ne 0 ]]; then
   jira_case_fail "jira-comment-uses-bot-identity" "exit code ${JIRA_CASE_RC}"
-elif ! grep -qF -- "--jira-email triage@example.com" "${GH_LOG}" || [[ -z "$(jira_comment_marker)" ]]; then
+elif ! grep -qF "token=fake-jira-token email=triage@example.com" "${FULLSEND_ENV_LOG}" || [[ -z "$(jira_comment_marker)" ]]; then
   jira_case_fail "jira-comment-uses-bot-identity" "comment not written as the configured Jira account with a fullsend marker"
 else
   echo "PASS: jira-comment-uses-bot-identity"

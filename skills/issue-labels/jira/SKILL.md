@@ -32,8 +32,14 @@ maintainers already established," list labels already used anywhere on the
 Jira site via the global label-suggestion endpoint (paginate with `startAt`
 until `isLast` is `true`):
 
+Pick the auth mode as the `jira` skill describes: Basic when
+`JIRA_USER_EMAIL` is set, Bearer when it is empty.
+
 ```bash
-curl --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/label?startAt=0&maxResults=200" \
   | jq -r '.values[]'
 ```
@@ -48,7 +54,10 @@ issues in the project. The sub-agent should:
 
 1. Query recent issues via JQL:
    ```bash
-   curl --fail-with-body --silent --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
+   JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+   JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
+   JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+   curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
      --header "Content-Type: application/json" \
      --get --data-urlencode "jql=project = ${PROJECT_KEY} ORDER BY updated DESC" \
      --data-urlencode "maxResults=50" \

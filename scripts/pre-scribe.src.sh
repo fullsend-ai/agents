@@ -16,7 +16,8 @@
 #   GITLAB_TOKEN   — GitLab token (when FULLSEND_FORGE=gitlab)
 #
 # Jira backlog (FULLSEND_TRACKER=jira): see lib/jira-scribe-ops.lib.sh for
-# JIRA_BASE_URL, JIRA_USER_EMAIL, JIRA_TOKEN, SCRIBE_JIRA_PROJECT.
+# JIRA_BASE_URL, JIRA_TOKEN, SCRIBE_JIRA_PROJECT, FULLSEND_DIR, and the
+# optional JIRA_USER_EMAIL (unset or empty selects Bearer auth).
 #
 # Optional env vars:
 #   SCRIBE_NAME_FILTER    — substring filter on doc names
@@ -30,6 +31,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/scribe-ops.lib.sh
 source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
+
+# Jira writes go through the fullsend CLI, which reads tracker.jira from
+# FULLSEND_DIR's config.yaml. Fail here, before the agent runs, rather than
+# in post-scribe.sh after the agent has already produced its result.
+if [[ "${FULLSEND_TRACKER}" == "jira" && -z "${FULLSEND_DIR:-}" ]]; then
+  echo "ERROR: FULLSEND_DIR must be set when FULLSEND_TRACKER=jira (the fullsend CLI reads tracker.jira from its config.yaml)" >&2
+  exit 1
+fi
 
 if [[ -n "${GH_TOKEN:-}" ]]; then
   echo "::add-mask::${GH_TOKEN}"

@@ -125,8 +125,11 @@ env:
     SCRIBE_JIRA_PROJECT: PROJ
     SCRIBE_JIRA_ISSUE_TYPE: Task
     JIRA_BASE_URL: ${JIRA_BASE_URL}
-    JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
     JIRA_TOKEN: ${JIRA_TOKEN}
+    # Bot user only. Omit this line for a service-account token, which
+    # uses Bearer auth.
+    JIRA_USER_EMAIL: ${JIRA_USER_EMAIL}
+    FULLSEND_DIR: ${FULLSEND_DIR}
 ```
 
 After creating the local harness, re-register the agent to use it:
@@ -143,8 +146,9 @@ fullsend agent add .fullsend/scribe.yaml --name scribe --fullsend-dir .
 | `SCRIBE_JIRA_LABELS` | no | Comma-separated allowlist of labels scribe may apply to Jira issues (default: `meeting-notes`) |
 | `JIRA_BASE_URL` | yes (Jira) | `https://<site>.atlassian.net` (Jira Cloud only); used for links |
 | `JIRA_API_URL` | no | Where REST calls go; `fullsend run` sets it to the Atlassian API gateway for the site and exports it to the scripts. Falls back to `JIRA_BASE_URL` |
-| `JIRA_USER_EMAIL` | yes (Jira) | Account email for the operator-provided API token |
-| `JIRA_TOKEN` | yes (Jira) | Jira Cloud API token |
+| `JIRA_TOKEN` | yes (Jira) | Jira API token |
+| `JIRA_USER_EMAIL` | no | Bot-user email. When set, requests use Basic auth with email and token; when unset or empty (a service account), Bearer auth with the token |
+| `FULLSEND_DIR` | yes (Jira) | The `.fullsend` directory. `fullsend issues create` reads the Jira site and API gateway from `tracker.jira` in its `config.yaml` |
 
 Behavior:
 
@@ -180,10 +184,13 @@ Behavior:
 Issue creation delegates to `fullsend issues create --tracker jira`
 ([#7083](https://github.com/fullsend-ai/fullsend/issues/7083)), which
 handles Markdown-to-ADF conversion and the Jira REST call. **This
-requires a fullsend release that includes `issues create --tracker jira`
-([#8499](https://github.com/fullsend-ai/fullsend/pull/8499)).** The
-post-script validates CLI availability at preflight time (including
-dry-run) and fails with a clear error if the subcommand is missing.
+requires a fullsend release that includes the config-backed Jira commands
+([#9078](https://github.com/fullsend-ai/fullsend/pull/9078)), which read
+the Jira site and API gateway from `tracker.jira` in the `.fullsend`
+directory's `config.yaml` (`FULLSEND_DIR`).** `pre-scribe.sh` fails before
+the agent runs when `FULLSEND_DIR` is unset. The post-script validates CLI
+availability at preflight time (including dry-run) and fails with a clear
+error if the subcommand is missing.
 Labels are applied in a follow-up REST `PUT /issue/{key}` call because
 the CLI does not yet support a `--labels` flag; a label PUT failure is
 recorded in the run summary and Slack notification so operators can fix
@@ -201,7 +208,7 @@ deployment and keep CI logs and artifacts private, including on dry-runs.
 
 #### Supplying Jira credentials in CI
 
-Scribe resolves `${JIRA_BASE_URL}`, `${JIRA_TOKEN}`, and `${JIRA_USER_EMAIL}` host-side on the CI
+Scribe resolves `${JIRA_BASE_URL}`, `${JIRA_TOKEN}`, `${JIRA_USER_EMAIL}`, and `${FULLSEND_DIR}` host-side on the CI
 runner via `env.runner`. The token is never passed into the sandboxed agent
 container. Configure these credentials in your CI platform as follows:
 
@@ -213,8 +220,11 @@ container. Configure these credentials in your CI platform as follows:
    token ([generated from your Atlassian account](https://id.atlassian.com/manage-profile/security/api-tokens)).
 3. Under the **Variables** tab, add `JIRA_BASE_URL` with your Jira Cloud instance
    URL (`https://<site>.atlassian.net`).
-4. Add `JIRA_USER_EMAIL` as a secret (or under the **Variables** tab).
-5. In your workflow YAML (e.g. `.github/workflows/scribe.yml`), pass them into
+4. For a bot-user token, add `JIRA_USER_EMAIL` as a secret (or under the
+   **Variables** tab). Skip it for a service-account token.
+5. Export `FULLSEND_DIR` as the path to your `.fullsend` directory. The
+   workflow step below sets it. `pre-scribe.sh` fails when it is unset.
+6. In your workflow YAML (e.g. `.github/workflows/scribe.yml`), pass them into
    the job step's `env`:
 
 ```yaml
@@ -223,6 +233,7 @@ container. Configure these credentials in your CI platform as follows:
     JIRA_BASE_URL: ${{ vars.JIRA_BASE_URL }}
     JIRA_TOKEN: ${{ secrets.JIRA_TOKEN }}
     JIRA_USER_EMAIL: ${{ secrets.JIRA_USER_EMAIL }}
+    FULLSEND_DIR: ${{ github.workspace }}
     GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     # ... other required inputs (SCRIBE_REPO, SCRIBE_SEARCH_QUERY, etc.)
   run: |
@@ -241,8 +252,12 @@ container. Configure these credentials in your CI platform as follows:
    - **Protect variable:** leave unchecked unless the Scribe job runs
      exclusively on protected branches
    - **Expand variable reference:** unchecked (raw string)
-4. Add `JIRA_USER_EMAIL` with the associated account email.
-5. GitLab CI automatically injects project variables into the runner
+4. For a bot-user token, add `JIRA_USER_EMAIL` with the associated account
+   email. Skip it for a service-account token.
+5. Set `FULLSEND_DIR` to the path of your `.fullsend` directory, for example
+   `variables: FULLSEND_DIR: "${CI_PROJECT_DIR}"` in `.gitlab-ci.yml`.
+   `pre-scribe.sh` fails when it is unset.
+6. GitLab CI automatically injects project variables into the runner
    environment, so no extra workflow mapping is required.
 
 ### GitLab host validation
