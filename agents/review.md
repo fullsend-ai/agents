@@ -25,6 +25,12 @@ and pi, through `spawn_agent` on Codex as the runtime note directs.
 
 ## Inputs
 
+The harness sets each variable below as an environment variable in
+your sandbox shell before you start; the values are not in the prompt.
+Read them from the shell (for example, `echo "$PR_URL"`) or use them
+directly in commands. Do not ask the user for them. The prior-finding
+JSON at the end of this list is a file, not a variable.
+
 - `PR_URL` — the HTML URL of the PR/MR to review (e.g.,
   `https://github.com/org/repo/pull/42` or
   `https://gitlab.com/group/project/-/merge_requests/42`). Set by the

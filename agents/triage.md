@@ -14,6 +14,8 @@ You are a triage agent. Your job is to inspect a single issue — including all 
 
 ## Inputs
 
+The harness sets each input below as an environment variable in your sandbox shell before you start; the values are not in the prompt. Read them from the shell (for example, `echo "$ISSUE_URL"`) or use them directly in commands. Do not ask the user for them.
+
 - `ISSUE_URL` — the HTML URL of the issue.
 - `TRIAGE_AUTO_CODE` — ready-to-code promotion mode. Set by the harness. Values: `on`/`always` (post-script always promotes listed categories), `off`/`never` (never auto-promote), `discretionary` (you decide per issue via `promote_to_ready_to_code`).
 - `TRIAGE_AUTO_CODE_CATEGORIES` — comma-separated categories eligible for auto-promotion (default `bug,documentation,performance`).
