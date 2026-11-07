@@ -19,6 +19,8 @@ GITHUB_FIX_OPS_SH_LOADED=1
 # API publish that gets the commits signed by GitHub.
 # shellcheck source=github-signed-push.lib.sh
 source "${BASH_SOURCE[0]%/*}/github-signed-push.lib.sh"
+# shellcheck source=github-host.lib.sh
+source "${BASH_SOURCE[0]%/*}/github-host.lib.sh"
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() {
@@ -33,8 +35,9 @@ fi
 # --- PR/MR operations ---
 
 forge_validate_pr_url() {
-  local url="${1:-${PR_URL:-}}"
-  if [[ ! "${url}" =~ ^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[1-9][0-9]*$ ]]; then
+  local url="${1:-${PR_URL:-}}" path
+  if ! path=$(_github_url_path "${url}") \
+    || [[ ! "${path}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+/pull/[1-9][0-9]*$ ]]; then
     echo "ERROR: PR_URL does not match expected GitHub pattern: ${url}" >&2
     return 1
   fi
@@ -42,7 +45,7 @@ forge_validate_pr_url() {
 
 forge_parse_pr_url() {
   local url="${1:-${PR_URL:-}}"
-  REPO_FULL_NAME=$(echo "${url}" | sed 's|https://github.com/||; s|/pull/.*||')
+  REPO_FULL_NAME=$(_github_url_path "${url}" | sed 's|/pull/.*||')
   # shellcheck disable=SC2034
   PR_NUMBER=$(basename "${url}")
 }
@@ -101,9 +104,10 @@ forge_get_pr_labels() {
 # --- Push operations ---
 
 forge_set_push_remote() {
-  local token="$1"
+  local token="$1" server
+  server=$(_github_server_url) || return 1
   git remote set-url origin \
-    "https://x-access-token:${token}@github.com/${REPO_FULL_NAME}.git"
+    "https://x-access-token:${token}@${server#https://}/${REPO_FULL_NAME}.git"
 }
 
 forge_setup_push_token() {
