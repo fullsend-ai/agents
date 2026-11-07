@@ -18,8 +18,10 @@
 # Optional environment variables:
 #   JIRA_BASE_URL      — Jira instance base URL; derived from ISSUE_URL when unset,
 #                         cross-checked when set
-#   JIRA_USER_EMAIL    — Jira credentials for the child-issue check and the
-#   JIRA_TOKEN           skip comment; both are skipped when either is unset
+#   JIRA_TOKEN         — Jira token for the child-issue check and the skip
+#                         comment; both are skipped when it is unset
+#   JIRA_USER_EMAIL    — bot-user email (Basic auth); unset means a
+#                         service-account token (Bearer auth)
 #   GH_TOKEN / GITLAB_TOKEN — target forge token for the existing-PR check;
 #                         the check is skipped when unset
 #   COMMENT_BODY       — trigger comment; when unset, read from the dispatch
@@ -93,19 +95,22 @@ source "${SCRIPT_DIR}/lib/code-ops.lib.sh"
 #     CODE_FORCE=true, bypasses both checks.
 # A skip writes skipped=true through prescript_output and posts one sticky
 # comment on the Jira issue; a failed Jira write still skips. A missing
-# forge token skips the PR check; missing Jira credentials skip the child
+# forge token skips the PR check; a missing JIRA_TOKEN skips the child
 # check and the comment.
 #
-# The child check and the comment use jira-triage-ops.lib.sh, which sends
-# Basic auth (JIRA_USER_EMAIL:JIRA_TOKEN) to JIRA_BASE_URL. A service-account
-# setup with no JIRA_USER_EMAIL therefore runs neither, and a scoped token
-# that the site URL rejects fails the query, which proceeds (fail open).
-# Service-account support for the agents' Jira calls is agents#1900.
+# The child check and the comment use jira-triage-ops.lib.sh: Basic auth
+# when JIRA_USER_EMAIL is set (bot user), Bearer when it is not (service
+# account), sent to JIRA_API_URL or else JIRA_BASE_URL (#1900, #1876).
+#
+# On a GitLab target, the trigger comment reaches neither COMMENT_BODY nor
+# the dispatch payload file, so `/fs-code --force` has no effect there until
+# fullsend exports COMMENT_BODY for Jira jobs (fullsend-ai/fullsend#9187).
+# The GitHub check reads the newest 500 open PRs.
 
-# jira-triage-ops.lib.sh validates JIRA_USER_EMAIL and JIRA_TOKEN when it is
-# loaded, so load it only when both are set.
+# jira-triage-ops.lib.sh exits at load time without JIRA_TOKEN, so load it
+# only when the token is set. JIRA_USER_EMAIL is optional.
 JIRA_CREDS_OK=0
-if [[ -n "${JIRA_USER_EMAIL:-}" && -n "${JIRA_TOKEN:-}" ]]; then
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
   # shellcheck source=lib/jira-triage-ops.lib.sh
   source "${SCRIPT_DIR}/lib/jira-triage-ops.lib.sh"
   JIRA_CREDS_OK=1
@@ -153,7 +158,7 @@ _jira_list_human_prs() {
     github)
       prs="$(gh pr list --repo "${REPO_FULL_NAME}" --state open --limit 500 \
         --json number,title,body,url,author 2>/dev/null \
-        | jq -c '[.[] | {number, title, body, url, author: (.author.login // "")}]' 2>/dev/null)" \
+        | jq -c '[.[] | {number, title, body, url, author: (.author.login // ""), is_bot: (.author.is_bot // false)}]' 2>/dev/null)" \
         || prs=""
       ;;
     gitlab)
@@ -180,13 +185,16 @@ _jira_list_human_prs() {
       ;;
   esac
   if [[ -z "${prs}" ]]; then
-    echo "::warning::Could not list open PRs on ${REPO_FULL_NAME} — failing open (treating as no existing PRs)" >&2
+    echo "::warning::Could not list open PRs on $(_gha_sanitize "${REPO_FULL_NAME}") — failing open (treating as no existing PRs)" >&2
     return 0
   fi
+  # Case-insensitive, so "fix/proj-42-..." matches PROJ-42. Any bot author
+  # is dropped (as pre-code.sh does), plus the app-set logins.
   printf '%s' "${prs}" | jq -r --arg key "${key}" --arg bot "${bot}" --arg coder "${coder}" '
     ("(^|[^A-Za-z0-9_])" + $key + "($|[^A-Za-z0-9_])") as $re
     | .[]
-    | select(((.title // "") | test($re)) or ((.body // "") | test($re)))
+    | select(((.title // "") | test($re; "i")) or ((.body // "") | test($re; "i")))
+    | select((.is_bot // false) | not)
     | select((.author | sub("^app/"; "") | sub("\\[bot\\]$"; "")) as $login
         | $login != $bot and $login != $coder)
     | "\(.number)\t\(.author)\t\(.url)"' 2>/dev/null || true

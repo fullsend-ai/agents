@@ -19,8 +19,10 @@
 # Optional environment variables:
 #   JIRA_BASE_URL      — Jira instance base URL; derived from ISSUE_URL when unset,
 #                         cross-checked when set
-#   JIRA_USER_EMAIL    — Jira credentials for the child-issue check and the
-#   JIRA_TOKEN           skip comment; both are skipped when either is unset
+#   JIRA_TOKEN         — Jira token for the child-issue check and the skip
+#                         comment; both are skipped when it is unset
+#   JIRA_USER_EMAIL    — bot-user email (Basic auth); unset means a
+#                         service-account token (Bearer auth)
 #   GH_TOKEN / GITLAB_TOKEN — target forge token for the existing-PR check;
 #                         the check is skipped when unset
 #   COMMENT_BODY       — trigger comment; when unset, read from the dispatch
@@ -1656,19 +1658,22 @@ esac
 #     CODE_FORCE=true, bypasses both checks.
 # A skip writes skipped=true through prescript_output and posts one sticky
 # comment on the Jira issue; a failed Jira write still skips. A missing
-# forge token skips the PR check; missing Jira credentials skip the child
+# forge token skips the PR check; a missing JIRA_TOKEN skips the child
 # check and the comment.
 #
-# The child check and the comment use jira-triage-ops.lib.sh, which sends
-# Basic auth (JIRA_USER_EMAIL:JIRA_TOKEN) to JIRA_BASE_URL. A service-account
-# setup with no JIRA_USER_EMAIL therefore runs neither, and a scoped token
-# that the site URL rejects fails the query, which proceeds (fail open).
-# Service-account support for the agents' Jira calls is agents#1900.
+# The child check and the comment use jira-triage-ops.lib.sh: Basic auth
+# when JIRA_USER_EMAIL is set (bot user), Bearer when it is not (service
+# account), sent to JIRA_API_URL or else JIRA_BASE_URL (#1900, #1876).
+#
+# On a GitLab target, the trigger comment reaches neither COMMENT_BODY nor
+# the dispatch payload file, so `/fs-code --force` has no effect there until
+# fullsend exports COMMENT_BODY for Jira jobs (fullsend-ai/fullsend#9187).
+# The GitHub check reads the newest 500 open PRs.
 
-# jira-triage-ops.lib.sh validates JIRA_USER_EMAIL and JIRA_TOKEN when it is
-# loaded, so load it only when both are set.
+# jira-triage-ops.lib.sh exits at load time without JIRA_TOKEN, so load it
+# only when the token is set. JIRA_USER_EMAIL is optional.
 JIRA_CREDS_OK=0
-if [[ -n "${JIRA_USER_EMAIL:-}" && -n "${JIRA_TOKEN:-}" ]]; then
+if [[ -n "${JIRA_TOKEN:-}" ]]; then
   # shellcheck source=lib/jira-triage-ops.lib.sh
 # BEGIN bundled: lib/jira-triage-ops.lib.sh
 # shellcheck shell=bash
@@ -1693,13 +1698,26 @@ if [[ -n "${JIRA_USER_EMAIL:-}" && -n "${JIRA_TOKEN:-}" ]]; then
 #
 # Expected env vars:
 #   ISSUE_URL       — HTML URL of the issue (https://<host>.atlassian.net/browse/PROJ-123)
-#   JIRA_USER_EMAIL — Jira account email for Basic auth
-#   JIRA_TOKEN      — Jira Cloud API token
+#   JIRA_TOKEN      — Jira API token (the triage harness maps
+#                     FULLSEND_JIRA_TOKEN to it)
+#   JIRA_USER_EMAIL — (optional) bot-user email (the triage harness maps
+#                     FULLSEND_JIRA_EMAIL to it). When set, requests use
+#                     Basic auth with email and token; when unset or
+#                     empty, Bearer auth with a service-account token.
+#                     See lib/jira-auth.lib.sh.
+#   FULLSEND_DIR    — .fullsend directory whose config.yaml holds
+#                     tracker.jira, for the `fullsend issues` shell-outs
+#   JIRA_API_URL    — (optional) where REST calls go, e.g. the Atlassian
+#                     API gateway https://api.atlassian.com/ex/jira/<cloudId>
+#                     that `fullsend run` resolves and exports. Falls back
+#                     to JIRA_BASE_URL when unset (older fullsend releases).
+#                     Browse links always use JIRA_BASE_URL.
 #
-# These are the same env var names the `fullsend issues` CLI commands read
-# by default (see `fullsend issues post-comment --help`) — using the same
-# names here means one set of credentials covers both the raw REST calls
-# in this file and the `fullsend` shell-outs below.
+# The `fullsend issues` CLI reads its credentials from FULLSEND_JIRA_TOKEN
+# and, for a bot user, FULLSEND_JIRA_EMAIL, and its Jira site and API
+# gateway from tracker.jira in --fullsend-dir. jira_auth_fullsend passes
+# the same token and email to it, so one set of credentials covers both
+# the raw REST calls in this file and the `fullsend` shell-outs below.
 #
 # Optional env vars:
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
@@ -1717,13 +1735,110 @@ JIRA_TRIAGE_OPS_SH_LOADED=1
 # stderr, before any call site can swallow the diagnostic with 2>/dev/null.
 # Matches the idiom pre-triage.src.sh / post-triage.src.sh already use for
 # ISSUE_URL and FULLSEND_TRACKER.
-: "${JIRA_USER_EMAIL:?JIRA_USER_EMAIL must be set}"
+# JIRA_USER_EMAIL is optional: without it, requests use Bearer auth.
 : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
+
+# shellcheck source=jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
+# shellcheck shell=bash
+# jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
+#
+# Shared by the Jira triage and scribe ops libraries and post-code.sh, and
+# bundled into each script that sources it. Two credential modes
+# (fullsend#9007):
+#
+#   token + email — bot user: Basic auth with email:token
+#   token only    — service account: Bearer auth with the token
+#
+# An email that is empty or only whitespace counts as absent. A harness
+# that maps an unset FULLSEND_JIRA_EMAIL to JIRA_USER_EMAIL yields an empty
+# string, and that must select Bearer, never an empty-user Basic header.
+#
+# Every helper takes the token and email as arguments, so callers that
+# withhold the credentials from their environment can pass saved copies.
+
+[[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
+JIRA_AUTH_SH_LOADED=1
+
+# Print the email with surrounding whitespace removed. Empty output means
+# no email, which selects Bearer auth.
+#
+# Usage: jira_auth_email <email>
+jira_auth_email() {
+  local email="$1"
+  email="${email#"${email%%[![:space:]]*}"}"
+  email="${email%"${email##*[![:space:]]}"}"
+  printf '%s' "${email}"
+}
+
+# Run curl with the Authorization for the selected mode, followed by the
+# caller's arguments. Fails without calling curl when the token is empty.
+#
+# Usage: jira_auth_curl <token> <email> [curl args...]
+jira_auth_curl() {
+  local token="$1"
+  local email
+  email="$(jira_auth_email "$2")"
+  shift 2
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    curl --user "${email}:${token}" "$@"
+  else
+    curl --oauth2-bearer "${token}" "$@"
+  fi
+}
+
+# Run the fullsend CLI with the Jira credentials it reads from its
+# environment: FULLSEND_JIRA_TOKEN always, FULLSEND_JIRA_EMAIL only for a
+# bot user. In Bearer mode an inherited FULLSEND_JIRA_EMAIL is removed, so
+# the CLI cannot pick Basic auth. The values go through the environment,
+# never the command line.
+#
+# Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
+jira_auth_fullsend() {
+  local bin="$1"
+  local token="$2"
+  local email
+  email="$(jira_auth_email "$3")"
+  shift 3
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    FULLSEND_JIRA_TOKEN="${token}" FULLSEND_JIRA_EMAIL="${email}" "${bin}" "$@"
+  else
+    (
+      unset FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_TOKEN="${token}" "${bin}" "$@"
+    )
+  fi
+}
+# END bundled: lib/jira-auth.lib.sh
+# JIRA_API_URL is optional, but the credentials are sent to it, so refuse
+# anything that is not https.
+if [[ -n "${JIRA_API_URL:-}" && "${JIRA_API_URL}" != https://* ]]; then
+  echo "ERROR: JIRA_API_URL must start with https://" >&2
+  exit 1
+fi
 
 # JIRA_BASE_URL is derived at runtime by tracker_parse_issue_url, so it
 # cannot be validated at source time — keep a per-call guard for it.
 _jira_require_vars() {
   if [[ -z "${JIRA_BASE_URL:-}" ]]; then echo "ERROR: JIRA_BASE_URL is not set" >&2; return 1; fi
+}
+
+# Print the base URL for REST calls: JIRA_API_URL when set, else
+# JIRA_BASE_URL, with trailing slash(es) stripped.
+_jira_api_base() {
+  local base="${JIRA_API_URL:-${JIRA_BASE_URL}}"
+  while [[ "${base}" == */ ]]; do
+    base="${base%/}"
+  done
+  printf '%s\n' "${base}"
 }
 
 _jira_api() {
@@ -1733,13 +1848,15 @@ _jira_api() {
   shift
 
   _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
 
-  curl --fail --silent --show-error \
+  jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
-    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     --header "Content-Type: application/json" \
     --request "${method}" \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${api_base}/rest/api/3${endpoint}" \
     "$@"
 }
 
@@ -1750,17 +1867,19 @@ _jira_api_with_status() {
   shift
 
   _jira_require_vars || return 1
+  local api_base
+  api_base=$(_jira_api_base) || return 1
 
   local err_file
   err_file=$(mktemp)
   local raw
-  raw=$(curl --silent --show-error \
+  raw=$(jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    --silent --show-error \
     --connect-timeout 10 --max-time 30 \
-    --user "${JIRA_USER_EMAIL}:${JIRA_TOKEN}" \
     --header "Content-Type: application/json" \
     --request "${method}" \
     --write-out '\n%{http_code}' \
-    "${JIRA_BASE_URL}/rest/api/3${endpoint}" \
+    "${api_base}/rest/api/3${endpoint}" \
     "$@" 2>"${err_file}") || {
     echo "Jira API error: curl failed — $(cat "${err_file}")" >&2
     rm -f "${err_file}"
@@ -1966,19 +2085,29 @@ tracker_post_comment() {
     fi
     marker="<!-- fullsend:triage-${stamp} -->"
   fi
-  printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
-    --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
-    --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
-    --marker "${marker}" --result -
+  _jira_post_comment "${body}" "${marker}"
 }
 
 tracker_post_sticky_comment() {
   local body="$1"
   local marker="$2"
   _jira_require_vars || return 1
-  printf '%s' "${body}" | fullsend issues post-comment --tracker jira \
+  _jira_post_comment "${body}" "${marker}"
+}
+
+# Post or update the comment carrying <marker> through the fullsend CLI,
+# which takes the Jira site and API gateway from tracker.jira in
+# FULLSEND_DIR's config.yaml and the credentials from its environment.
+_jira_post_comment() {
+  local body="$1"
+  local marker="$2"
+  if [[ -z "${FULLSEND_DIR:-}" ]]; then
+    echo "ERROR: FULLSEND_DIR is not set; the fullsend CLI needs it for the tracker.jira settings" >&2
+    return 1
+  fi
+  printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${REPO}" --number "${JIRA_ISSUE_NUM}" \
-    --jira-url "${JIRA_BASE_URL}" --jira-email "${JIRA_USER_EMAIL}" --token "${JIRA_TOKEN}" \
     --marker "${marker}" --result -
 }
 
@@ -2168,7 +2297,7 @@ _jira_list_human_prs() {
     github)
       prs="$(gh pr list --repo "${REPO_FULL_NAME}" --state open --limit 500 \
         --json number,title,body,url,author 2>/dev/null \
-        | jq -c '[.[] | {number, title, body, url, author: (.author.login // "")}]' 2>/dev/null)" \
+        | jq -c '[.[] | {number, title, body, url, author: (.author.login // ""), is_bot: (.author.is_bot // false)}]' 2>/dev/null)" \
         || prs=""
       ;;
     gitlab)
@@ -2195,13 +2324,16 @@ _jira_list_human_prs() {
       ;;
   esac
   if [[ -z "${prs}" ]]; then
-    echo "::warning::Could not list open PRs on ${REPO_FULL_NAME} — failing open (treating as no existing PRs)" >&2
+    echo "::warning::Could not list open PRs on $(_gha_sanitize "${REPO_FULL_NAME}") — failing open (treating as no existing PRs)" >&2
     return 0
   fi
+  # Case-insensitive, so "fix/proj-42-..." matches PROJ-42. Any bot author
+  # is dropped (as pre-code.sh does), plus the app-set logins.
   printf '%s' "${prs}" | jq -r --arg key "${key}" --arg bot "${bot}" --arg coder "${coder}" '
     ("(^|[^A-Za-z0-9_])" + $key + "($|[^A-Za-z0-9_])") as $re
     | .[]
-    | select(((.title // "") | test($re)) or ((.body // "") | test($re)))
+    | select(((.title // "") | test($re; "i")) or ((.body // "") | test($re; "i")))
+    | select((.is_bot // false) | not)
     | select((.author | sub("^app/"; "") | sub("\\[bot\\]$"; "")) as $login
         | $login != $bot and $login != $coder)
     | "\(.number)\t\(.author)\t\(.url)"' 2>/dev/null || true

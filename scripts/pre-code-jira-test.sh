@@ -56,6 +56,11 @@ for arg in "$@"; do
   case "${arg}" in
     */rest/api/3/search/jql)
       [[ "${MOCK_JIRA_CHILD_FAIL:-}" == "1" ]] && exit 22
+      # MOCK_JIRA_EXPECT_BEARER=1: fail unless service-account Bearer auth
+      # was used.
+      if [[ "${MOCK_JIRA_EXPECT_BEARER:-}" == "1" && " $* " != *" --oauth2-bearer "* ]]; then
+        exit 22
+      fi
       # MOCK_JIRA_SUBTASKS_ONLY=1: every child is a subtask, so a query
       # that excludes subtask types finds none, as Jira would.
       if [[ "${MOCK_JIRA_SUBTASKS_ONLY:-}" == "1" && "${data}" == *"issuetype not in subTaskIssueTypes()"* ]]; then
@@ -355,6 +360,16 @@ run_skip_test "custom-app-set-bot-pr-does-not-skip" \
   "FULLSEND_APP_SET=custom-app
 MOCK_GH_PRS=[{\"number\":9,\"title\":\"PROJ-42\",\"body\":\"\",\"url\":\"https://github.com/test-org/test-repo/pull/9\",\"author\":{\"login\":\"app/custom-app\"}}]"
 
+run_skip_test "third-party-bot-pr-does-not-skip" \
+  false \
+  "No existing human PRs found" \
+  "MOCK_GH_PRS=[{\"number\":11,\"title\":\"chore: bump deps for PROJ-42\",\"body\":\"\",\"url\":\"https://github.com/test-org/test-repo/pull/11\",\"author\":{\"login\":\"app/dependabot\",\"is_bot\":true}}]"
+
+run_skip_test "human-pr-lowercase-key-skips" \
+  true \
+  "reason=open PR #12 by @alice" \
+  "MOCK_GH_PRS=[{\"number\":12,\"title\":\"fix/proj-42-retry\",\"body\":\"\",\"url\":\"https://github.com/test-org/test-repo/pull/12\",\"author\":{\"login\":\"alice\",\"is_bot\":false}}]"
+
 run_skip_test "human-pr-force-on-line-1-does-not-skip" \
   false \
   "Force override" \
@@ -456,6 +471,13 @@ run_skip_test "child-query-failure-does-not-skip" \
   false \
   "::warning::Could not read child issues of PROJ-42" \
   "MOCK_JIRA_CHILD_FAIL=1"
+
+run_skip_test "service-account-token-only-runs-child-check" \
+  true \
+  "reason=PROJ-42 has child issue(s)" \
+  "MOCK_JIRA_CHILDREN=${HAS_CHILDREN}
+MOCK_JIRA_EXPECT_BEARER=1
+JIRA_USER_EMAIL="
 
 run_skip_test "no-jira-token-skips-child-check" \
   false \
