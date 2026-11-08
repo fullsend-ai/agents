@@ -1011,6 +1011,263 @@ unset GITLAB_TOKEN CI_SERVER_HOST
 # Smoke test: GitHub forge still works after GitLab section (catches state leakage).
 run_test "github-after-gitlab-smoke" "" 8
 
+# ---------------------------------------------------------------------------
+# Jira forge tests
+# Verify FULLSEND_FORGE=jira writes only the five RICE custom fields and a
+# sticky comment, and never calls gh or writes Rank/Priority.
+# ---------------------------------------------------------------------------
+
+export FULLSEND_FORGE="jira"
+export ISSUE_URL="https://redhat.atlassian.net/browse/AISDLC-8"
+export JIRA_TOKEN="fake-jira-token"
+export JIRA_USER_EMAIL="bot@example.com"
+export FULLSEND_DIR="${TEST_TMPDIR}/fullsend-dir"
+mkdir -p "${FULLSEND_DIR}"
+unset GH_TOKEN ORG PROJECT_NUMBER GITLAB_TOKEN CI_SERVER_HOST JIRA_API_URL
+unset JIRA_BASE_URL
+
+CURL_LOG="${TEST_TMPDIR}/jira-curl-calls.log"
+CURL_DATA_FILE="${TEST_TMPDIR}/jira-curl-data.json"
+MOCK_FIELDS_FILE="${TEST_TMPDIR}/jira-fields.json"
+
+DEFAULT_JIRA_FIELDS='[
+  {"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},
+  {"id":"customfield_10102","name":"RICE Impact","schema":{"type":"number"}},
+  {"id":"customfield_10103","name":"RICE Confidence","schema":{"type":"number"}},
+  {"id":"customfield_10104","name":"RICE Effort","schema":{"type":"number"}},
+  {"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},
+  {"id":"priority","name":"Priority","schema":{"type":"priority"}},
+  {"id":"customfield_10019","name":"Rank","schema":{"type":"any"}},
+  {"id":"assignee","name":"Assignee","schema":{"type":"user"}},
+  {"id":"status","name":"Status","schema":{"type":"status"}}
+]'
+echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
+
+cat > "${MOCK_BIN}/curl" <<CURLMOCK
+#!/usr/bin/env bash
+echo "curl \$*" >> "${CURL_LOG}"
+
+URL=""
+METHOD="GET"
+shift_next=""
+for arg in "\$@"; do
+  case "\${arg}" in
+    --request) shift_next=method ;;
+    --data) shift_next=data ;;
+    --user|--header|--connect-timeout|--max-time|--write-out|--oauth2-bearer)
+      shift_next=skip
+      ;;
+    --fail|--silent|--show-error) ;;
+    *)
+      if [[ "\${shift_next:-}" == "method" ]]; then
+        METHOD="\${arg}"
+        shift_next=""
+      elif [[ "\${shift_next:-}" == "data" ]]; then
+        printf '%s' "\${arg}" > "${CURL_DATA_FILE}"
+        shift_next=""
+      elif [[ "\${shift_next:-}" == "skip" ]]; then
+        shift_next=""
+      elif [[ "\${arg}" =~ ^https:// ]]; then
+        URL="\${arg}"
+      fi
+      ;;
+  esac
+done
+
+if [[ "\${URL}" == */rest/api/3/field ]]; then
+  cat "${MOCK_FIELDS_FILE}"
+  exit 0
+fi
+
+if [[ "\${URL}" == */rest/api/3/issue/* ]] && [[ "\${METHOD}" == "PUT" ]]; then
+  echo '{}'
+  exit 0
+fi
+
+echo '{"ok":true}'
+exit 0
+CURLMOCK
+chmod +x "${MOCK_BIN}/curl"
+
+run_jira_test() {
+  local test_name="$1"
+  local expect_failure="${2:-false}"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+  rm -f "${CURL_DATA_FILE}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+    echo "PASS: ${test_name} (expected failure)"
+    return
+  fi
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_jira_test_stdout() {
+  local test_name="$1"
+  local expected_stdout="$2"
+  local expect_failure="${3:-false}"
+
+  local run_dir="${TEST_TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${FIXTURE_JSON}" > "${run_dir}/iteration-1/output/agent-result.json"
+
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+  rm -f "${CURL_DATA_FILE}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TEST_TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ "${expect_failure}" == "true" ]]; then
+    if [[ ${exit_code} -eq 0 ]]; then
+      echo "FAIL: ${test_name} — expected failure but got success"
+      FAILURES=$((FAILURES + 1))
+      return
+    fi
+  elif [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! grep -qF -- "${expected_stdout}" "${TEST_TMPDIR}/stdout-${test_name}.log"; then
+    echo "FAIL: ${test_name} — expected output containing '${expected_stdout}'"
+    cat "${TEST_TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_jira_test "jira-happy-path"
+
+run_jira_test "jira-no-gh-calls"
+if grep -qE '^gh ' "${GH_LOG}"; then
+  echo "FAIL: jira-no-gh-calls — gh was called but should not be on jira forge"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-no-gh-calls-log-empty"
+fi
+
+# Happy path PUT payload is only the five RICE custom fields.
+run_jira_test "jira-writes-only-rice-custom-fields"
+if [[ ! -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-writes-only-rice-custom-fields — no PUT body captured"
+  FAILURES=$((FAILURES + 1))
+else
+  payload_keys=$(jq -r '.fields | keys | sort | join(",")' "${CURL_DATA_FILE}")
+  if [[ "${payload_keys}" != "customfield_10101,customfield_10102,customfield_10103,customfield_10104,customfield_10105" ]]; then
+    echo "FAIL: jira-writes-only-rice-custom-fields — unexpected keys: ${payload_keys}"
+    cat "${CURL_DATA_FILE}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-writes-only-rice-custom-fields-keys"
+  fi
+  if jq -e '.fields | has("priority") or has("rank") or has("assignee") or has("status")' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "FAIL: jira-writes-only-rice-custom-fields — payload includes Rank/Priority/status/assignee"
+    cat "${CURL_DATA_FILE}"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+
+# Rank (customfield_10019) and Priority must never appear in the PUT body
+# or the request URL.
+run_jira_test "jira-does-not-write-rank-or-priority"
+if grep -Eiq 'customfield_10019|"priority"|"Rank"|/rank' "${CURL_LOG}" "${CURL_DATA_FILE}"; then
+  echo "FAIL: jira-does-not-write-rank-or-priority — Rank/Priority mentioned in curl"
+  cat "${CURL_LOG}"
+  cat "${CURL_DATA_FILE}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-does-not-write-rank-or-priority-log"
+fi
+
+run_jira_test "jira-posts-sticky-comment"
+if ! grep -qF 'fullsend issues post-comment --tracker jira' "${GH_LOG}"; then
+  echo "FAIL: jira-posts-sticky-comment — missing fullsend issues post-comment --tracker jira"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-posts-sticky-comment-cli"
+fi
+if ! grep -qF 'fullsend:prioritize-agent' "${GH_LOG}"; then
+  echo "FAIL: jira-posts-sticky-comment — comment marker not posted"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-posts-sticky-comment-marker"
+fi
+
+# Missing RICE fields fail closed and must not PUT anything.
+echo '[{"id":"priority","name":"Priority","schema":{"type":"priority"}},{"id":"customfield_10019","name":"Rank","schema":{"type":"any"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-missing-fields-fails" "Jira field 'RICE Reach' not found" "true"
+if [[ -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-missing-fields-fails — PUT body was sent despite missing fields"
+  cat "${CURL_DATA_FILE}"
+  FAILURES=$((FAILURES + 1))
+fi
+echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
+
+# A system field that happens to be named "RICE Reach" must not be written.
+echo '[{"id":"priority","name":"RICE Reach","schema":{"type":"priority"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-rejects-system-field-named-rice" "not a custom number field" "true"
+if [[ -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-rejects-system-field-named-rice — PUT body was sent for a system field"
+  cat "${CURL_DATA_FILE}"
+  FAILURES=$((FAILURES + 1))
+fi
+echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
+
+SAVED_ISSUE_URL="${ISSUE_URL}"
+export ISSUE_URL="https://evil.example/browse/AISDLC-8"
+run_jira_test "jira-rejects-non-allowlisted-host" "true"
+export ISSUE_URL="${SAVED_ISSUE_URL}"
+
+export JIRA_BASE_URL="https://other.atlassian.net"
+run_jira_test_stdout "jira-base-url-mismatch-fails" "does not match ISSUE_URL host" "true"
+unset JIRA_BASE_URL
+
+SAVED_JIRA_TOKEN="${JIRA_TOKEN}"
+unset JIRA_TOKEN
+run_jira_test "jira-unset-token-fails" "true"
+export JIRA_TOKEN="${SAVED_JIRA_TOKEN}"
+
+# Restore GitHub forge and prove no Jira state leaked into it.
+export FULLSEND_FORGE="github"
+export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
+export GH_TOKEN="fake-token"
+export ORG="test-org"
+export PROJECT_NUMBER="1"
+unset JIRA_TOKEN JIRA_USER_EMAIL FULLSEND_DIR JIRA_BASE_URL JIRA_API_URL
+
+run_test "github-after-jira-smoke" "" 8
+
 # --- Summary ---
 
 if [[ ${FAILURES} -gt 0 ]]; then

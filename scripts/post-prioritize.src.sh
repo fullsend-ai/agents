@@ -6,7 +6,7 @@
 #
 # Required env vars:
 #   ISSUE_URL      — HTML URL of the issue
-#   FULLSEND_FORGE — "github" or "gitlab"
+#   FULLSEND_FORGE — "github", "gitlab", or "jira"
 #
 # GitHub-specific env vars (consumed inside github-prioritize-ops.lib.sh):
 #   GH_TOKEN       — GitHub token with project write + issues write scope
@@ -15,6 +15,12 @@
 #
 # GitLab-specific env vars (consumed inside gitlab-prioritize-ops.lib.sh):
 #   GITLAB_TOKEN   — GitLab personal/project access token
+#
+# Jira-specific env vars (consumed inside jira-prioritize-ops.lib.sh):
+#   JIRA_TOKEN      — Jira API token (from FULLSEND_JIRA_TOKEN)
+#   JIRA_USER_EMAIL — optional bot-user email (from FULLSEND_JIRA_EMAIL)
+#   FULLSEND_DIR    — .fullsend dir for tracker.jira (sticky comments)
+#   JIRA_BASE_URL   — Jira site URL; derived from ISSUE_URL when unset
 
 set -euo pipefail
 

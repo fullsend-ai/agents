@@ -2,9 +2,11 @@
 
 ![Prioritize agent icon](icons/prioritize.png)
 
-Scores an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces scores with reasoning for project board ranking. Supports both GitHub and GitLab forges.
+Scores an issue using the RICE framework (Reach, Impact, Confidence, Effort) and produces scores with reasoning for project board ranking. Supports GitHub and GitLab forges. A Jira Cloud forge exists in the harness but is **dark**: it is not dispatched, does not change `/fs-prioritize` on GitHub or GitLab, and is used only when `FULLSEND_FORGE=jira`.
 
 On GitHub, scores are written to Projects V2 custom fields and posted as a reasoning comment. On GitLab, scores are posted as a sticky issue comment. GitLab custom fields API integration is deferred — the Issues API silently ignores unknown keys, and the correct Custom Fields API requires Premium/Ultimate with runtime field ID resolution.
+
+On Jira, when that forge is explicitly selected, scores are written to five number custom fields named `RICE Reach`, `RICE Impact`, `RICE Confidence`, `RICE Effort`, and `RICE Score`, plus a sticky comment. Rank, Priority, and other Jira fields are never written. If those RICE fields do not exist yet, the post-script fails closed.
 
 ## Setup
 
@@ -20,7 +22,7 @@ No additional setup is required beyond the standard fullsend configuration.
 
 On GitHub, the prioritize agent runs on a schedule, polling the project board for unscored or stale issues. On GitLab, it is triggered manually.
 
-It can also be triggered manually on either forge with the `/fs-prioritize` command.
+It can also be triggered manually on GitHub or GitLab with the `/fs-prioritize` command. Jira has no `/fs-prioritize` dispatch in this release.
 
 The harness also declares a CEL `trigger:` for fullsend's harness dispatch that matches `/fs-prioritize` from a human on an issue, a PR or an MR. The scheduled path does not use it. Dispatch does not evaluate it for the built-in prioritize agent yet, so the routing above is what runs today.
 
@@ -41,7 +43,8 @@ skill data.
 The prioritize agent does not apply or consume control labels. It reads the
 issue content and produces a score. On GitHub, the project board is updated
 directly via Projects V2 custom fields. On GitLab, scores are posted as
-a sticky comment on the issue.
+a sticky comment on the issue. On Jira (opt-in forge only), the five RICE
+number fields and a sticky comment are updated; Rank and Priority are not.
 
 ## Configuration
 
@@ -70,11 +73,11 @@ about it" (Reach 2.0), instead of guessing from the issue text alone.
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"` |
+| `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"`, `"jira"` (jira is dark / not dispatched) |
 
 ## How the agent works
 
-The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update scores on the forge (GitHub Projects V2 fields or GitLab issue comment).
+The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update scores on the forge (GitHub Projects V2 fields, GitLab issue comment, or Jira RICE number fields when that forge is selected).
 
 ### Migration notes for custom harness overrides
 
@@ -95,8 +98,9 @@ If you use `base:` composition to override `harness/prioritize.yaml`:
   board update is skipped and scores are posted as a comment only.
 - **`providers`, `openshell`, `skills`, and `host_files` live in forge sections**: This
   harness defines providers, openshell profiles, skills, and the forge-specific
-  env file (`env/github/prioritize.env` / `env/gitlab/prioritize.env`) under
-  `forge.<platform>` rather than at the top level.
+  env file (`env/github/prioritize.env` / `env/gitlab/prioritize.env` /
+  `env/jira/prioritize.env`) under `forge.<platform>` rather than at the top
+  level. The Jira section is unused unless `FULLSEND_FORGE=jira`.
 
 ### GitLab host validation
 

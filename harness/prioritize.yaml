@@ -97,3 +97,35 @@ forge:
       sandbox:
         ISSUE_URL: "${GITLAB_ISSUE_URL}"
         FULLSEND_FORGE: gitlab
+  # Dark / opt-in. GitHub and GitLab /fs-prioritize comments, the GitHub
+  # project-board poller, and existing prioritize behavior are unchanged.
+  # This block is used only when runtime.forge is jira (FULLSEND_FORGE=jira).
+  # Nothing in this repo dispatches prioritize onto Jira yet.
+  jira:
+    providers:
+      - providers/jira-ro.yaml
+    openshell:
+      profiles:
+        - profiles/fullsend-jira-ro.yaml
+    skills:
+      - skills/jira-forge
+    # JIRA_API_URL and JIRA_USER_EMAIL reach the sandbox through this host
+    # file, not env.sandbox: a ${VAR} there fails the run when unset.
+    host_files:
+      - src: env/jira/prioritize.env
+        dest: /sandbox/workspace/.env.d/prioritize.env
+        expand: true
+    env:
+      runner:
+        ISSUE_URL: ${FULLSEND_WORK_ITEM_URL}
+        # Host-side Jira credentials from the FULLSEND_JIRA_TOKEN and
+        # optional FULLSEND_JIRA_EMAIL repository secrets (fullsend#9079).
+        JIRA_TOKEN: ${FULLSEND_JIRA_TOKEN}
+        JIRA_USER_EMAIL: ${FULLSEND_JIRA_EMAIL}
+        FULLSEND_DIR: ${FULLSEND_DIR}
+        JIRA_BASE_URL: ${JIRA_BASE_URL}
+        FULLSEND_FORGE: jira
+      sandbox:
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        FULLSEND_FORGE: jira

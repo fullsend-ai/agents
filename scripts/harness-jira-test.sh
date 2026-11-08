@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # harness-jira-test.sh — Verify Jira provider/profile configuration and
-# credential boundary in triage and code harness files.
+# credential boundary in triage, code, and prioritize harness files.
 #
 # Run from the repo root: bash scripts/harness-jira-test.sh
 
@@ -229,6 +229,110 @@ if jira_overlay_has "${CODE_HARNESS}" "(.env.runner // {}) | keys | .[]" "JIRA_I
   assert_fail "code-no-issue-context-file-env" "JIRA_ISSUE_CONTEXT_FILE still in runner env"
 else
   assert_pass "code-no-issue-context-file-env"
+fi
+
+# ---------------------------------------------------------------------------
+# Prioritize harness tests (forge.jira map, not overlays — dark / opt-in)
+# ---------------------------------------------------------------------------
+PRIORITIZE_HARNESS="${REPO_ROOT}/harness/prioritize.yaml"
+
+jira_forge_field() {
+  local harness_file="$1"
+  local yq_expr="$2"
+  yq -r ".forge.jira | ${yq_expr}" "${harness_file}"
+}
+
+jira_forge_has() {
+  local out
+  out="$(jira_forge_field "$1" "$2")"
+  grep -qF "$3" <<< "${out}"
+}
+
+if jira_forge_has "${PRIORITIZE_HARNESS}" ".providers[]" "providers/jira-ro.yaml"; then
+  assert_pass "prioritize-jira-provider-present"
+else
+  assert_fail "prioritize-jira-provider-present" "providers/jira-ro.yaml not in forge.jira"
+fi
+
+if jira_forge_has "${PRIORITIZE_HARNESS}" ".openshell.profiles[]" "profiles/fullsend-jira-ro.yaml"; then
+  assert_pass "prioritize-jira-profile-present"
+else
+  assert_fail "prioritize-jira-profile-present" "profiles/fullsend-jira-ro.yaml not in forge.jira"
+fi
+
+if jira_forge_has "${PRIORITIZE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_TOKEN"; then
+  assert_fail "prioritize-jira-token-not-in-sandbox" "JIRA_TOKEN found in sandbox env"
+else
+  assert_pass "prioritize-jira-token-not-in-sandbox"
+fi
+
+if jira_forge_has "${PRIORITIZE_HARNESS}" "(.env.runner // {}) | keys | .[]" "JIRA_TOKEN"; then
+  assert_pass "prioritize-jira-token-in-runner"
+else
+  assert_fail "prioritize-jira-token-in-runner" "JIRA_TOKEN missing from runner env"
+fi
+
+got="$(jira_forge_field "${PRIORITIZE_HARNESS}" '.env.runner.JIRA_TOKEN // ""')"
+if [[ "${got}" == '${FULLSEND_JIRA_TOKEN}' ]]; then
+  assert_pass "prioritize-runner-JIRA_TOKEN-mapping"
+else
+  assert_fail "prioritize-runner-JIRA_TOKEN-mapping" "env.runner.JIRA_TOKEN is '${got}', want '\${FULLSEND_JIRA_TOKEN}'"
+fi
+got="$(jira_forge_field "${PRIORITIZE_HARNESS}" '.env.runner.JIRA_USER_EMAIL // ""')"
+if [[ "${got}" == '${FULLSEND_JIRA_EMAIL}' ]]; then
+  assert_pass "prioritize-runner-JIRA_USER_EMAIL-mapping"
+else
+  assert_fail "prioritize-runner-JIRA_USER_EMAIL-mapping" "env.runner.JIRA_USER_EMAIL is '${got}', want '\${FULLSEND_JIRA_EMAIL}'"
+fi
+got="$(jira_forge_field "${PRIORITIZE_HARNESS}" '.env.runner.FULLSEND_DIR // ""')"
+if [[ "${got}" == '${FULLSEND_DIR}' ]]; then
+  assert_pass "prioritize-runner-FULLSEND_DIR-mapping"
+else
+  assert_fail "prioritize-runner-FULLSEND_DIR-mapping" "env.runner.FULLSEND_DIR is '${got}', want '\${FULLSEND_DIR}'"
+fi
+
+if jira_forge_has "${PRIORITIZE_HARNESS}" \
+  "(.env.sandbox // {}) | to_entries | .[] | .key + \"=\" + .value" \
+  "FULLSEND_JIRA_"; then
+  assert_fail "prioritize-no-fullsend-jira-in-sandbox" "FULLSEND_JIRA_* referenced in env.sandbox"
+else
+  assert_pass "prioritize-no-fullsend-jira-in-sandbox"
+fi
+
+PRIORITIZE_ENV="${REPO_ROOT}/env/jira/prioritize.env"
+if [ -f "${PRIORITIZE_ENV}" ]; then
+  if grep -qF "JIRA_TOKEN" "${PRIORITIZE_ENV}"; then
+    assert_fail "prioritize-env-file-no-token" "JIRA_TOKEN found in ${PRIORITIZE_ENV}"
+  else
+    assert_pass "prioritize-env-file-no-token"
+  fi
+  if grep -qxF 'export JIRA_API_URL="${JIRA_API_URL}"' "${PRIORITIZE_ENV}"; then
+    assert_pass "prioritize-jira-api-url-in-env-file"
+  else
+    assert_fail "prioritize-jira-api-url-in-env-file" "env/jira/prioritize.env must export JIRA_API_URL"
+  fi
+  if grep -qF 'export JIRA_USER_EMAIL=' "${PRIORITIZE_ENV}" \
+    && ! jira_forge_has "${PRIORITIZE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_USER_EMAIL"; then
+    assert_pass "prioritize-jira-email-in-sandbox-host-file"
+  else
+    assert_fail "prioritize-jira-email-in-sandbox-host-file" "JIRA_USER_EMAIL must come from env/jira/prioritize.env, not env.sandbox"
+  fi
+else
+  assert_fail "prioritize-env-file-no-token" "${PRIORITIZE_ENV} not found"
+fi
+
+if jira_forge_has "${PRIORITIZE_HARNESS}" \
+  '((.env.runner // {}) + (.env.sandbox // {})) | to_entries | .[] | .key + "=" + .value' \
+  "JIRA_API_URL"; then
+  assert_fail "prioritize-jira-api-url-not-required" "JIRA_API_URL must not be referenced in env.runner/env.sandbox"
+else
+  assert_pass "prioritize-jira-api-url-not-required"
+fi
+
+if jira_forge_has "${PRIORITIZE_HARNESS}" "(.env.sandbox // {}) | keys | .[]" "JIRA_BASE_URL"; then
+  assert_pass "prioritize-jira-base-url-in-sandbox"
+else
+  assert_fail "prioritize-jira-base-url-in-sandbox" "JIRA_BASE_URL missing from sandbox env"
 fi
 
 # ---------------------------------------------------------------------------
