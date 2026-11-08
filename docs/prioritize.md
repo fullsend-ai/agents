@@ -75,6 +75,16 @@ about it" (Reach 2.0), instead of guessing from the issue text alone.
 |----------|-------------|---------|--------------|
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness `forge.<platform>.env` section. | (set by harness) | `"github"`, `"gitlab"`, `"jira"` (jira is dark / not dispatched) |
 
+The following apply **only** when `FULLSEND_FORGE=jira`. GitHub and GitLab `/fs-prioritize` ignore them. Nothing in this repo dispatches the Jira forge yet.
+
+| Variable | Description |
+|----------|-------------|
+| `FULLSEND_JIRA_TOKEN` | Repository secret. The harness maps it to runner `JIRA_TOKEN` for post-script field writes and sticky comments. The sandbox never gets the real token; it receives the `jira-ro` provider's opaque placeholder. Required to actually run the Jira forge. |
+| `FULLSEND_JIRA_EMAIL` | Optional. Bot-user email. When set, requests use Basic auth (email + token); when unset or empty (service account), Bearer auth with the token. The harness maps it to runner `JIRA_USER_EMAIL`; the sandbox gets `JIRA_USER_EMAIL` through `env/jira/prioritize.env`. |
+| `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls. `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`). Falls back to `JIRA_BASE_URL` (derived from the issue URL) when unset. |
+| `JIRA_BASE_URL` | Jira Cloud site URL (e.g. `https://<site>.atlassian.net`). Used for browse links and as the REST fallback. Derived from `ISSUE_URL` when unset. |
+| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads `tracker.jira` from its `config.yaml`. Required for the sticky comment on Jira. |
+
 ## How the agent works
 
 The prioritize agent fetches the issue and all its context, then evaluates it across the four RICE dimensions. It can invoke customer-research skills to gather additional signal about reach and impact. The output is a structured JSON result with per-dimension scores and written reasoning, which the post-script uses to update scores on the forge (GitHub Projects V2 fields, GitLab issue comment, or Jira RICE number fields when that forge is selected).
