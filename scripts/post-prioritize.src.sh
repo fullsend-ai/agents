@@ -19,8 +19,11 @@
 # Jira-specific env vars (consumed inside jira-prioritize-ops.lib.sh):
 #   JIRA_TOKEN      — Jira API token (from FULLSEND_JIRA_TOKEN)
 #   JIRA_USER_EMAIL — optional bot-user email (from FULLSEND_JIRA_EMAIL)
-#   FULLSEND_DIR    — .fullsend dir for tracker.jira (sticky comments)
+#   FULLSEND_DIR    — .fullsend dir for tracker.jira (sticky comments and
+#                     host-side REST gateway when JIRA_API_URL is unset)
 #   JIRA_BASE_URL   — Jira site URL; derived from ISSUE_URL when unset
+#   JIRA_API_URL    — optional REST gateway; else tracker.jira.api_url in
+#                     FULLSEND_DIR/config.yaml; else JIRA_BASE_URL
 
 set -euo pipefail
 

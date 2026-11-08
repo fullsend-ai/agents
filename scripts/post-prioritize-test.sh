@@ -1224,6 +1224,78 @@ else
   echo "PASS: jira-posts-sticky-comment-marker"
 fi
 
+# Host-side curl does not see sandbox host files. When JIRA_API_URL is
+# unset, REST goes to tracker.jira.api_url in FULLSEND_DIR/config.yaml,
+# else the site URL. Env JIRA_API_URL still wins over config.
+write_jira_config_api_url() {
+  if [[ -z "${1:-}" ]]; then
+    rm -f "${FULLSEND_DIR}/config.yaml"
+    return
+  fi
+  cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
+tracker:
+  jira:
+    api_url: "${1}"
+CFGEOF
+}
+
+assert_jira_rest_base() {
+  local test_name="$1"
+  local expected_base="$2"
+  if grep -qF "${expected_base}/rest/api/3/field" "${CURL_LOG}" \
+    && grep -qF "${expected_base}/rest/api/3/issue/AISDLC-8" "${CURL_LOG}"; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — expected REST calls at ${expected_base}/rest/api/3"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+run_jira_test "jira-no-api-url-uses-site-url"
+assert_jira_rest_base "jira-no-api-url-uses-site-url-log" "https://redhat.atlassian.net"
+
+if ! command -v yq &>/dev/null; then
+  echo "SKIP: jira-config-api-url-* — yq not found"
+else
+  JIRA_GATEWAY="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
+  write_jira_config_api_url "${JIRA_GATEWAY}/"
+  run_jira_test "jira-config-api-url-routes-field-writes"
+  assert_jira_rest_base "jira-config-api-url-routes-field-writes-log" "${JIRA_GATEWAY}"
+  if grep -qF "atlassian.net/rest/api/3" "${CURL_LOG}"; then
+    echo "FAIL: jira-config-api-url-no-site-rest-calls — REST call sent to the site URL"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-config-api-url-no-site-rest-calls"
+  fi
+
+  JIRA_ENV_GATEWAY="https://api.atlassian.com/ex/jira/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  write_jira_config_api_url "${JIRA_GATEWAY}"
+  export JIRA_API_URL="${JIRA_ENV_GATEWAY}/"
+  run_jira_test "jira-env-api-url-wins-over-config"
+  assert_jira_rest_base "jira-env-api-url-wins-over-config-log" "${JIRA_ENV_GATEWAY}"
+  if grep -qF "${JIRA_GATEWAY}/rest/api/3" "${CURL_LOG}"; then
+    echo "FAIL: jira-env-api-url-wins-over-config — REST call used config gateway"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-env-api-url-wins-over-config-ignores-config"
+  fi
+  unset JIRA_API_URL
+
+  cat > "${FULLSEND_DIR}/config.yaml" <<'CFGEOF'
+tracker: jira
+CFGEOF
+  run_jira_test "jira-scalar-tracker-uses-site-url"
+  assert_jira_rest_base "jira-scalar-tracker-uses-site-url-log" "https://redhat.atlassian.net"
+
+  write_jira_config_api_url "http://evil.example"
+  run_jira_test_stdout "jira-config-api-url-requires-https" "Jira REST base must be https" "true"
+
+  write_jira_config_api_url
+fi
+
 # Missing RICE fields fail closed and must not PUT anything.
 echo '[{"id":"priority","name":"Priority","schema":{"type":"priority"}},{"id":"customfield_10019","name":"Rank","schema":{"type":"any"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test_stdout "jira-missing-fields-fails" "Jira field 'RICE Reach' not found" "true"

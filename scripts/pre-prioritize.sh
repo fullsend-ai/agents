@@ -742,7 +742,10 @@ ${body}"
 #   JIRA_TOKEN      — Jira API token (required for field writes and comments)
 #   JIRA_USER_EMAIL — optional bot-user email; empty selects Bearer auth
 #   FULLSEND_DIR    — .fullsend dir whose config.yaml holds tracker.jira
-#   JIRA_API_URL    — optional REST base (api gateway); falls back to JIRA_BASE_URL
+#   JIRA_API_URL    — optional REST base (api gateway). When unset, read
+#                     tracker.jira.api_url from ${FULLSEND_DIR}/config.yaml,
+#                     then fall back to JIRA_BASE_URL. Sandbox host files do
+#                     not reach host-side post-prioritize.sh.
 
 [[ -n "${JIRA_PRIORITIZE_OPS_SH_LOADED:-}" ]] && return 0
 JIRA_PRIORITIZE_OPS_SH_LOADED=1
@@ -840,8 +843,29 @@ _jira_require_vars() {
   fi
 }
 
+# REST base: JIRA_API_URL, else tracker.jira.api_url in FULLSEND_DIR/config.yaml,
+# else JIRA_BASE_URL. Trailing slashes stripped. Non-https values fail closed.
 _jira_api_base() {
-  local base="${JIRA_API_URL:-${JIRA_BASE_URL}}"
+  local base cfg url
+  base="${JIRA_API_URL:-}"
+  base="${base#"${base%%[![:space:]]*}"}"
+  base="${base%"${base##*[![:space:]]}"}"
+  if [[ -z "${base}" && -n "${FULLSEND_DIR:-}" ]]; then
+    cfg="${FULLSEND_DIR}/config.yaml"
+    if [[ -f "${cfg}" ]] && command -v yq &>/dev/null; then
+      url=$(yq -r '.tracker.jira.api_url // ""' "${cfg}" 2>/dev/null) || url=""
+      url="${url#"${url%%[![:space:]]*}"}"
+      url="${url%"${url##*[![:space:]]}"}"
+      base="${url}"
+    fi
+  fi
+  if [[ -z "${base}" ]]; then
+    base="${JIRA_BASE_URL}"
+  fi
+  if [[ -n "${base}" && "${base}" != https://* ]]; then
+    echo "ERROR: Jira REST base must be https, got: ${base}" >&2
+    return 1
+  fi
   while [[ "${base}" == */ ]]; do
     base="${base%/}"
   done

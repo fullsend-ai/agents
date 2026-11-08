@@ -81,9 +81,9 @@ The following apply **only** when `FULLSEND_FORGE=jira`. GitHub and GitLab `/fs-
 |----------|-------------|
 | `FULLSEND_JIRA_TOKEN` | Repository secret. The harness maps it to runner `JIRA_TOKEN` for post-script field writes and sticky comments. The sandbox never gets the real token; it receives the `jira-ro` provider's opaque placeholder. Required to actually run the Jira forge. |
 | `FULLSEND_JIRA_EMAIL` | Optional. Bot-user email. When set, requests use Basic auth (email + token); when unset or empty (service account), Bearer auth with the token. The harness maps it to runner `JIRA_USER_EMAIL`; the sandbox gets `JIRA_USER_EMAIL` through `env/jira/prioritize.env`. |
-| `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls. `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`). Falls back to `JIRA_BASE_URL` (derived from the issue URL) when unset. |
+| `JIRA_API_URL` | Optional. Where the post-script curl helpers and the sandboxed skills send REST calls. `fullsend run` sets it to the Atlassian API gateway for the site (`https://api.atlassian.com/ex/jira/<cloudId>`). The sandbox receives it via `env/jira/prioritize.env`; that file does not reach host-side `post-prioritize.sh`. On the host, when unset, the post-script reads `tracker.jira.api_url` from `${FULLSEND_DIR}/config.yaml`, then falls back to `JIRA_BASE_URL`. |
 | `JIRA_BASE_URL` | Jira Cloud site URL (e.g. `https://<site>.atlassian.net`). Used for browse links and as the REST fallback. Derived from `ISSUE_URL` when unset. |
-| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads `tracker.jira` from its `config.yaml`. Required for the sticky comment on Jira. |
+| `FULLSEND_DIR` | The `.fullsend` directory. The post-script passes it to `fullsend issues post-comment --fullsend-dir`, which reads `tracker.jira` from its `config.yaml`. Host-side curl also reads `tracker.jira.api_url` from that file when `JIRA_API_URL` is unset. Required for the sticky comment on Jira. |
 
 ## How the agent works
 
