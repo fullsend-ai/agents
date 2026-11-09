@@ -18,14 +18,15 @@ mkdir -p "${attach_dir}"
   gh api --paginate -H "Accept: application/vnd.github.html+json" \
     "repos/{owner}/{repo}/issues/${ISSUE_NUMBER}/comments" --jq '.[].body_html'
 } | grep -oE 'https://(private-)?user-images\.githubusercontent\.com/[^"]+' \
-  | sed 's/&amp;/\&/g' | sort -u > "${attach_dir}/urls.txt"
-n=0
-while IFS= read -r url; do
-  n=$((n + 1)); name="${url%%\?*}"; name="${name##*/}"
-  curl --fail --silent --show-error --max-filesize 20000000 \
-    --write-out '%{content_type} %{filename_effective}\n' \
-    --output "${attach_dir}/${n}-${name}" "${url}"
-done < "${attach_dir}/urls.txt"
+  | sed 's/&amp;/\&/g' | sort -u | {
+  n=0
+  while IFS= read -r url; do
+    n=$((n + 1)); name="${url%%\?*}"; name="${name##*/}"
+    curl --fail --silent --show-error --max-filesize 20000000 \
+      --write-out '%{content_type} %{filename_effective}\n' \
+      --output "${attach_dir}/${n}-${name}" "${url}"
+  done
+}
 ```
 
 - Each file name contains the attachment's `<uuid>`, which maps it back to
