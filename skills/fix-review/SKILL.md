@@ -17,11 +17,15 @@ produces fixes that introduce new issues or miss the reviewer's point.
 
 ## Tools reminder
 
-Use `Bash` for verification and committing. Use `Read`/`Write`/`Grep`/`Glob` for file operations. The `scan-secrets` helper is at `/usr/local/bin/scan-secrets` — verify with `command -v scan-secrets`. If missing, **STOP**.
+Use `Bash` for verification and committing — the exact step 3
+lint/test command, not a generic substitute. Use
+`Read`/`Write`/`Grep`/`Glob` for file operations. The `scan-secrets`
+helper is at `/usr/local/bin/scan-secrets` — verify with
+`command -v scan-secrets`. If missing, **STOP**.
 
 ## Progress markers
 
-At steps 1, 2, and 4: `echo "::notice::STEP <N>: <title>"`. The
+At steps 1, 2, 3, and 4: `echo "::notice::STEP <N>: <title>"`. The
 `fix-verification` skill emits its own markers for steps 7a, 7b, 7c,
 and 8.
 
@@ -112,7 +116,17 @@ For each finding, record: `finding`, `path`, `description`, `related_findings`. 
 
 ### 3. Discover repo conventions
 
-Read `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`. Discover test/lint commands from `Makefile`, `package.json`, linter configs. Determine test command, lint command, commit conventions.
+```bash
+echo "::notice::STEP 3: Discover repo conventions"
+```
+
+Use `Read`/`Glob` on `CLAUDE.md`, `CONTRIBUTING.md`, `AGENTS.md`,
+`Makefile`, `package.json`, `pyproject.toml`, and linter configs.
+
+AGENTS.md takes precedence over patterns in existing code. Determine
+the exact **test command** and **lint command** (package manager
+included, e.g. `pnpm lint-staged`), including stage-then-lint order —
+do not reorder around `git add` — and the **commit conventions**.
 
 ### 4. Plan fixes
 
