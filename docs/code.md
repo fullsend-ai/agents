@@ -372,6 +372,18 @@ vars. Key differences from single-forge setup:
   `CI_SERVER_HOST` is not set. The GitLab profile in
   `profiles/fullsend-gitlab-code.yaml` must also be updated.
 
+## Issue attachments
+
+On GitHub, the agent can download images attached to the issue or its
+comments (`github.com/user-attachments/assets/<uuid>`). The harness adds
+the credential-less `fullsend-github-attachments` profile, which allows
+read-only `curl` access to `private-user-images.githubusercontent.com`
+and `user-images.githubusercontent.com` and forwards no forge token. The
+agent takes the short-lived signed URLs from the issue's rendered HTML
+(`gh api` with `application/vnd.github.html+json`) and downloads them to
+`/tmp`; see `skills/code-implementation/references/attachments.md`.
+Non-image file attachments (`user-attachments/files/`) are not covered.
+
 ## Custom network policy
 
 If this agent needs to reach hosts beyond the defaults, see the
