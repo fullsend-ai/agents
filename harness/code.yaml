@@ -111,9 +111,13 @@ overlays:
   - when: 'runtime.forge == "github"'
     providers:
       - providers/github-code.yaml
+      # Credential-less: lets curl download images attached to the issue
+      # (skills/code-implementation/references/attachments.md).
+      - providers/github-attachments.yaml
     openshell:
       profiles:
         - profiles/fullsend-github-code.yaml
+        - profiles/fullsend-github-attachments.yaml
     skills:
       - skills/github-forge
     host_files:
