@@ -152,6 +152,9 @@ verify any claims about whether the PR is a draft (see step 6e).
 If no PR can be identified, stop and report the failure rather than
 guessing.
 
+In pipeline mode, write the provisional result (`agents/review.md`)
+before step 2; step 7 must still replace it.
+
 ### 2. Fetch PR context
 
 Retrieve PR metadata and the full diff using the forge-specific review
@@ -1397,7 +1400,8 @@ The table below lists the **additional** required fields per action:
 
 #### Pipeline mode (`$FULLSEND_OUTPUT_DIR` is set)
 
-Write the result to `$FULLSEND_OUTPUT_DIR/agent-result.json` following
+After the label step, even with no labels, write the result to
+`$FULLSEND_OUTPUT_DIR/agent-result.json` following
 the output schema in the agent definition (`agents/review.md`). Do NOT
 post the review directly — the post-script handles all forge mutations.
 

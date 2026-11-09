@@ -454,7 +454,15 @@ nothing:
   This PR was NOT reviewed. Do not count this as an approval.
   ```
 
-If the sandbox is killed anyway, the workflow log ends with
+As soon as the PR is identified, the orchestrator writes a provisional
+`failure` result with `reason: tool-failure`, and replaces it with the
+real result at the end. If the session ends early after that point
+(crash, kill, or stopping before the final write), the provisional
+result is what validation finds. The post-script then posts a
+`Reason: tool-failure` notice instead of posting nothing.
+
+If no result file exists at all (the session ended before the PR was
+identified), the workflow log ends with
 
 ```
   ⏳ Agent running (45m0s elapsed, 0s remaining)
@@ -495,6 +503,7 @@ lands.
 | `validation failed after 1 iteration(s)` right after `Agent running (45m0s elapsed, 0s remaining)` | the deadline; usually a huge diff or a stalled sub-agent | check the transcript for which phase was running; raise the budget via the overlay above |
 | review posted with a `low` finding `time budget: …` | challenger skipped to make the deadline | none — findings were still produced by the dimension sub-agents |
 | failure notice `Reason: time-budget` | dimensions were still running at the deadline | the PR is larger than the budget; raise it or split the PR |
+| failure notice `Reason: tool-failure` with no findings | the session ended before writing the final result, leaving the step 1 provisional result | check the transcript for the last phase reached; re-trigger with `/fs-review` |
 | `The model claude-sonnet-… is not available` in the transcript, sub-agents re-dispatched | `ANTHROPIC_DEFAULT_SONNET_MODEL` not served by your Vertex project | see the variable table above |
 
 ## Custom network policy

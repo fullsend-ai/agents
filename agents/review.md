@@ -176,14 +176,18 @@ review across all reviewed PRs.
 
 ## Contextual labels
 
-After producing the review verdict, invoke the `issue-labels` skill to
-recommend contextual labels for the PR based on the diff's area and domain.
+After deciding the review verdict and before writing the result file,
+invoke the `issue-labels` skill to recommend contextual labels for the PR
+based on the diff's area and domain.
 
 - Emit `label_actions` in the result JSON alongside the review verdict.
 - Labels target the PR itself -- issue labeling remains the triage agent's
   domain.
 - If no labels clearly apply, omit `label_actions` entirely. Silence is
   better than noise.
+- The label step never ends the run. With or without `label_actions`,
+  continue to write `agent-result.json` and run `fullsend-check-output`
+  (see "Pipeline mode output").
 
 ## Zero-trust principle
 
@@ -308,6 +312,23 @@ the post-script runs. **Only include fields listed below — the schema
 is strict (`additionalProperties: false`) and will reject unknown
 fields such as `outcome`, `summary`, `prior_review_sha`, or
 `prior_review_provenance`.**
+
+**Provisional result.** As soon as the PR number and repo are known
+(`pr-review` step 1), write a provisional `failure` result:
+
+```bash
+jq -n --argjson pr_number <number> --arg repo "<owner/repo>" \
+  '{action: "failure", pr_number: $pr_number, repo: $repo,
+    reason: "tool-failure"}' \
+  > "$FULLSEND_OUTPUT_DIR/agent-result.json"
+```
+
+A session that ends early (crash, kill, or stopping after synthesis or
+the label step) then still leaves a schema-valid file, and the
+post-script posts a "not reviewed" notice instead of nothing. This file
+is a fallback, not the review: overwrite it with the final result and
+run `fullsend-check-output` as the last actions of the run. Do not end
+the run before both have happened.
 
 **Top-level object** (`additionalProperties: false`):
 
