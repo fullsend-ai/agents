@@ -29,11 +29,15 @@ mkdir -p "${attach_dir}"
     name="${url%%\?*}"; name="${name##*/}"
     case "${seen}" in *" ${name} "*) continue ;; esac
     seen="${seen}${name} "
-    case "${name}" in *.mp4 | *.mov) echo "skipped video ${name}" >&2; continue ;; esac
+    ext="${name##*.}"
+    if test "${ext}" = mp4 || test "${ext}" = mov; then
+      echo "skipped video ${name}" >&2; continue
+    fi
     n=$((n + 1)); out="${attach_dir}/${n}-${name}"
     if type=$(curl --fail --silent --show-error --proto '=https' --max-time 60 \
       --max-filesize 20000000 --write-out '%{content_type}' \
-      --output "${out}" "${url}") && test -s "${out}" && [[ ${type} == image/* ]]; then
+      --output "${out}" "${url}") && test -s "${out}" &&
+      test "${type#image/}" != "${type}"; then
       ok=$((ok + 1)); echo "saved ${out} (${type})"
     else
       rm -f "${out}"; echo "FAILED ${n}-${name} (${type:-no response})" >&2
