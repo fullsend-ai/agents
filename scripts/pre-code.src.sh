@@ -6,8 +6,9 @@
 #
 # Skip signalling uses the pre-script output protocol
 # (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
-# when an open human PR already addresses the issue, or the issue has
-# sub-issues (a tracking/parent issue), this script writes skipped=true
+# when an open human PR already addresses the issue (or, on a
+# label-triggered run, an open non-draft coder-bot PR does), or the issue
+# has sub-issues (a tracking/parent issue), this script writes skipped=true
 # to the file named by FULLSEND_PRESCRIPT_OUTPUT and fullsend run stops
 # before creating the sandbox. Under a CLI that predates the protocol
 # the variable is unset and the write is skipped — the run proceeds,
@@ -23,6 +24,10 @@
 #   FULLSEND_APP_SET   — GitHub App identity prefix (default "fullsend-ai").
 #                         Used to derive the bot/coder bot logins excluded
 #                         from the existing-PR check.
+#   COMMENT_BODY       — trigger comment (empty on label-triggered runs).
+#   CODE_FORCE         — "true" bypasses the existing-PR and sub-issue checks.
+#   EVENT_TYPE         — GitLab dispatch event type; "issue_label" marks a
+#                         label-triggered run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -152,9 +157,22 @@ if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]]; then
   BOT_LOGIN="${APP_SET}[bot]"
   CODER_BOT_LOGIN="${APP_SET}-coder[bot]"
 
-  echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
+  # A label-triggered run (ready-to-code re-applied, e.g. by re-triage) also
+  # skips on an open non-draft coder-bot PR closing the issue (#1937); an
+  # explicit /fs-code still proceeds. GitHub's dispatch sets COMMENT_BODY
+  # only for comment events. GitLab never sets it for code runs, so there
+  # the signed EVENT_TYPE must say issue_label. Anything else proceeds.
+  INCLUDE_CODER_PRS="false"
+  if [[ -z "${COMMENT_BODY:-}" ]]; then
+    if [ "${FULLSEND_FORGE}" = "github" ] \
+       || { [ "${FULLSEND_FORGE}" = "gitlab" ] && [ "${EVENT_TYPE:-}" = "issue_label" ]; }; then
+      INCLUDE_CODER_PRS="true"
+    fi
+  fi
 
-  HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}")"
+  echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER} (label-triggered: ${INCLUDE_CODER_PRS})..."
+
+  HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}" "${INCLUDE_CODER_PRS}")"
 
   if [[ -n "${HUMAN_PR_LINES}" ]]; then
     # Parse the first PR for the notice.
@@ -167,7 +185,7 @@ if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]]; then
       _pr_prefix="!"
     fi
 
-    echo "::notice::Found existing human PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+    echo "::notice::Found existing PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
 
     # Apply pr-open label to signal work is already underway.
     forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"

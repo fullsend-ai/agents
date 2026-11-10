@@ -7,8 +7,9 @@
 #
 # Skip signalling uses the pre-script output protocol
 # (fullsend docs/normative/prescript-output/v1, fullsend-ai/fullsend#4718):
-# when an open human PR already addresses the issue, or the issue has
-# sub-issues (a tracking/parent issue), this script writes skipped=true
+# when an open human PR already addresses the issue (or, on a
+# label-triggered run, an open non-draft coder-bot PR does), or the issue
+# has sub-issues (a tracking/parent issue), this script writes skipped=true
 # to the file named by FULLSEND_PRESCRIPT_OUTPUT and fullsend run stops
 # before creating the sandbox. Under a CLI that predates the protocol
 # the variable is unset and the write is skipped — the run proceeds,
@@ -24,6 +25,10 @@
 #   FULLSEND_APP_SET   — GitHub App identity prefix (default "fullsend-ai").
 #                         Used to derive the bot/coder bot logins excluded
 #                         from the existing-PR check.
+#   COMMENT_BODY       — trigger comment (empty on label-triggered runs).
+#   CODE_FORCE         — "true" bypasses the existing-PR and sub-issue checks.
+#   EVENT_TYPE         — GitLab dispatch event type; "issue_label" marks a
+#                         label-triggered run.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -630,10 +635,15 @@ forge_post_pr_comment() {
 
 # --- PR/MR lifecycle ---
 
+# Arguments: issue_number [bot_login] [coder_bot_login] [include_coder]
+# With include_coder="true", open non-draft PRs by coder_bot_login are
+# reported too (label-triggered runs, #1937); otherwise both bots are
+# excluded.
 forge_list_prs_for_issue() {
   local issue_number="$1"
   local bot_login="${2:-fullsend-ai[bot]}"
   local coder_bot_login="${3:-fullsend-ai-coder[bot]}"
+  local include_coder="${4:-false}"
   local owner="${REPO_FULL_NAME%%/*}"
   local name="${REPO_FULL_NAME##*/}"
   # Use closedByPullRequestsReferences to find only PRs with closing keywords
@@ -643,6 +653,7 @@ forge_list_prs_for_issue() {
   # GraphQL's Bot.login has no "[bot]" suffix, so strip it and check
   # __typename == "Bot" to avoid false bot matches. `gh api` lacks --arg,
   # so pipe the JSON through a standalone `jq -r --arg ...` filter.
+  # A coder PR counts only when isDraft is explicitly false.
   gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
@@ -655,17 +666,22 @@ forge_list_prs_for_issue() {
               url
               author { login __typename }
               state
+              isDraft
             }
           }
         }
       }
     }' 2>/dev/null \
-    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" '
+    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" \
+        --arg include_coder "${include_coder}" '
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == "OPEN")
            | select(.author.__typename != "Bot"
                or (.author.login != $bot
-                   and .author.login != $coder))]
+                   and .author.login != $coder)
+               or ($include_coder == "true"
+                   and .author.login == $coder
+                   and .isDraft == false))]
     | .[] | "\(.number)\t\(.author.login)\t\(.url)"
   ' 2>/dev/null || true
 }
@@ -1147,10 +1163,14 @@ forge_post_pr_comment() {
 
 # --- MR lifecycle ---
 
+# Arguments: issue_number [bot_login] [coder_bot_login] [include_coder]
+# With include_coder="true", open non-draft coder MRs (source branch
+# agent/<IID>-*) are reported too (label-triggered runs, #1937).
 forge_list_prs_for_issue() {
   local issue_number="$1"
   local bot_login="${2:-}"
   local coder_bot_login="${3:-}"
+  local include_coder="${4:-false}"
   # GitLab API: search MRs referencing the issue. Best-effort — GitLab does not
   # have a direct "MRs linked to issue" endpoint. Fetch open MRs and filter for
   # closing keywords (Close, Fix, Resolve variants) targeting #<IID>. Plain
@@ -1174,19 +1194,22 @@ forge_list_prs_for_issue() {
   # Filter for MRs with closing keywords (Closes, Fixes, Resolves, etc.)
   # targeting #<IID>. Plain mentions without closing keywords are excluded
   # to avoid false positives (e.g., "Related: #42" should not block).
+  # A coder MR counts only when draft is explicitly false.
   echo "${all_mrs}" | jq -r --arg issue_number "${issue_number}" \
-    --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
+    --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" \
+    --arg include_coder "${include_coder}" '
     [.[] | select(
       ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
       ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
-    ) | select(
-      ((.source_branch // "") | test("^agent/" + $issue_number + "-") | not)
-    ) | select(
-      (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
-      (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and
-      (.author.username // "" | test("\\[bot\\]$") | not) and
-      (.author.username // "" | test("^fullsend") | not) and
-      (.author.username // "" | test("_bot$") | not)
+    ) | ((.source_branch // "") | test("^agent/" + $issue_number + "-")) as $coder_mr
+    | select(
+      (($coder_mr | not) and
+       (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
+       (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and
+       (.author.username // "" | test("\\[bot\\]$") | not) and
+       (.author.username // "" | test("^fullsend") | not) and
+       (.author.username // "" | test("_bot$") | not))
+      or ($include_coder == "true" and $coder_mr and .draft == false)
     )] | .[] | "\(.iid)\t\(.author.username)\t\(.web_url)"
   ' 2>/dev/null || true
 }
@@ -1715,9 +1738,22 @@ if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]]; then
   BOT_LOGIN="${APP_SET}[bot]"
   CODER_BOT_LOGIN="${APP_SET}-coder[bot]"
 
-  echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER}..."
+  # A label-triggered run (ready-to-code re-applied, e.g. by re-triage) also
+  # skips on an open non-draft coder-bot PR closing the issue (#1937); an
+  # explicit /fs-code still proceeds. GitHub's dispatch sets COMMENT_BODY
+  # only for comment events. GitLab never sets it for code runs, so there
+  # the signed EVENT_TYPE must say issue_label. Anything else proceeds.
+  INCLUDE_CODER_PRS="false"
+  if [[ -z "${COMMENT_BODY:-}" ]]; then
+    if [ "${FULLSEND_FORGE}" = "github" ] \
+       || { [ "${FULLSEND_FORGE}" = "gitlab" ] && [ "${EVENT_TYPE:-}" = "issue_label" ]; }; then
+      INCLUDE_CODER_PRS="true"
+    fi
+  fi
 
-  HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}")"
+  echo "Checking for existing open PRs linked to issue #${ISSUE_NUMBER} (label-triggered: ${INCLUDE_CODER_PRS})..."
+
+  HUMAN_PR_LINES="$(forge_list_prs_for_issue "${ISSUE_NUMBER}" "${BOT_LOGIN}" "${CODER_BOT_LOGIN}" "${INCLUDE_CODER_PRS}")"
 
   if [[ -n "${HUMAN_PR_LINES}" ]]; then
     # Parse the first PR for the notice.
@@ -1730,7 +1766,7 @@ if [[ "${SKIP_EXISTING_CHECKS}" -eq 0 ]]; then
       _pr_prefix="!"
     fi
 
-    echo "::notice::Found existing human PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
+    echo "::notice::Found existing PR ${_pr_prefix}${FIRST_PR_NUM} by @${FIRST_PR_AUTHOR}"
 
     # Apply pr-open label to signal work is already underway.
     forge_create_label "pr-open" "An open PR already addresses this issue" "D4C5F9"

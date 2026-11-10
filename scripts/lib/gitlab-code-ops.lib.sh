@@ -163,10 +163,14 @@ forge_post_pr_comment() {
 
 # --- MR lifecycle ---
 
+# Arguments: issue_number [bot_login] [coder_bot_login] [include_coder]
+# With include_coder="true", open non-draft coder MRs (source branch
+# agent/<IID>-*) are reported too (label-triggered runs, #1937).
 forge_list_prs_for_issue() {
   local issue_number="$1"
   local bot_login="${2:-}"
   local coder_bot_login="${3:-}"
+  local include_coder="${4:-false}"
   # GitLab API: search MRs referencing the issue. Best-effort — GitLab does not
   # have a direct "MRs linked to issue" endpoint. Fetch open MRs and filter for
   # closing keywords (Close, Fix, Resolve variants) targeting #<IID>. Plain
@@ -190,19 +194,22 @@ forge_list_prs_for_issue() {
   # Filter for MRs with closing keywords (Closes, Fixes, Resolves, etc.)
   # targeting #<IID>. Plain mentions without closing keywords are excluded
   # to avoid false positives (e.g., "Related: #42" should not block).
+  # A coder MR counts only when draft is explicitly false.
   echo "${all_mrs}" | jq -r --arg issue_number "${issue_number}" \
-    --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" '
+    --arg bot1 "${bot_login}" --arg bot2 "${coder_bot_login}" \
+    --arg include_coder "${include_coder}" '
     [.[] | select(
       ((.title // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i")) or
       ((.description // "") | test("\\b(?:close[sd]?|closing|fix(?:e[sd])?|fixing|resolve[sd]?|resolving):?\\s+(?:(?:[a-zA-Z0-9._/-]+)?#\\d+(?:\\s+and\\s+|\\s*,\\s*|\\s+))*(?:[a-zA-Z0-9._/-]+)?#" + $issue_number + "(?:$|\\W)"; "i"))
-    ) | select(
-      ((.source_branch // "") | test("^agent/" + $issue_number + "-") | not)
-    ) | select(
-      (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
-      (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and
-      (.author.username // "" | test("\\[bot\\]$") | not) and
-      (.author.username // "" | test("^fullsend") | not) and
-      (.author.username // "" | test("_bot$") | not)
+    ) | ((.source_branch // "") | test("^agent/" + $issue_number + "-")) as $coder_mr
+    | select(
+      (($coder_mr | not) and
+       (if $bot1 != "" then (.author.username // "") != $bot1 else true end) and
+       (if $bot2 != "" then (.author.username // "") != $bot2 else true end) and
+       (.author.username // "" | test("\\[bot\\]$") | not) and
+       (.author.username // "" | test("^fullsend") | not) and
+       (.author.username // "" | test("_bot$") | not))
+      or ($include_coder == "true" and $coder_mr and .draft == false)
     )] | .[] | "\(.iid)\t\(.author.username)\t\(.web_url)"
   ' 2>/dev/null || true
 }
