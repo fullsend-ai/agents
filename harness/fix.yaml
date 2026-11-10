@@ -136,8 +136,8 @@ env:
 
 timeout_minutes: 25
 
-forge:
-  github:
+overlays:
+  - when: 'runtime.forge == "github"'
     providers:
       - providers/github-code.yaml
       - github-artifacts
@@ -162,7 +162,7 @@ forge:
       sandbox:
         PR_NUMBER: "${PR_NUMBER}"
         FULLSEND_FORGE: github
-  gitlab:
+  - when: 'runtime.forge == "gitlab"'
     providers:
       - providers/gitlab-code.yaml
     openshell:
