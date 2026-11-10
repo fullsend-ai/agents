@@ -467,12 +467,12 @@ Before planning, determine what kind of work this issue requires:
 - **Test-only** — the issue asks for tests, not production code changes. Write
   tests that cover the described behavior. Do not modify production code unless
   tests require it (e.g., exporting a function for testability).
-- **Already-fixed** — if step 7 reveals the bug no longer exists, validate
-  structured output and stop cleanly. Do not implement a fix for a resolved
-  issue.
+- **Already-fixed** — if step 7 reveals the bug no longer exists, set
+  `pr_body` (agents/code.md), validate, and stop. Do not implement a fix for
+  a resolved issue.
 - **Label-gated** — if the issue has a label like `do-not-implement` or a gate
-  label that signals no work should be done, validate structured output and
-  stop cleanly:
+  label that signals no work should be done, set `pr_body`, validate, and
+  stop:
 
   ```bash
   fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"
@@ -487,7 +487,7 @@ Before implementing, confirm the reported behavior is still present:
 2. If there is a quick way to verify — run a targeted test, check a return
    value, trace the logic — do it.
 3. If the bug has already been fixed (by a recent commit, a dependency update,
-   or another PR), validate structured output and **stop**. Do not implement
+   or another PR), set `pr_body`, validate, and **stop**. Do not implement
    a fix for a resolved issue. Your exit state (no commit) tells the
    post-script to report accordingly.
 
