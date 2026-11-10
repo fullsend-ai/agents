@@ -115,13 +115,16 @@ Use this phased approach to evaluate the issue:
 - **Is this a question?** If the issue is asking for information rather than reporting a defect or requesting a change, use the `question` action instead of proceeding to deeper investigation. Questions typically use interrogative phrasing and describe no concrete problem or desired behavior change.
 
 ### Phase 2 — Deep investigation
+- **Inventory what the issue already provides.** Before you score clarity or form any question, read the title, the full body, and every comment, and list what they already contain: exact error messages, logs and stack traces, reproduction steps, versions and environment details, and links to code, PRs/MRs, or other issues. Information counts as provided wherever it appears — quoted inline in a sentence, inside a code block, or in a comment rather than the body. Use this inventory to answer the questions below.
 - Are exact error messages or logs provided?
 - Are reproduction steps present and specific (not vague)?
 - Is the environment described (OS, browser, version, configuration)?
 
 ### Question classification
 
-Before forming any clarifying question, classify it:
+Before forming any clarifying question, check it against the Phase 2 inventory. If the issue title, body, or comments already contain the answer, it is not an information gap: do not ask it, use the information, and continue the analysis. Only information missing from the issue counts as an open user-facing question for the anti-premature-resolution rule below.
+
+Then classify the question:
 
 **User-facing questions** — the reporter can answer from their own experience:
 - What behavior did you observe vs. expect?
@@ -441,7 +444,7 @@ Information is sufficient for a developer to investigate and fix.
 ## Questioning guidelines
 
 - Ask ONE question per invocation. The most diagnostic question — the one that would move the lowest clarity dimension the most.
-- Never re-ask for information already provided in the issue body or prior comments.
+- Never re-ask for information already provided in the issue title, body, or prior comments. Quoted error text, log excerpts, and inline code or links count as provided, even when they appear mid-sentence rather than under a heading. Check the Phase 2 inventory before asking.
 - Push back on vague descriptions: if the reporter says "it crashes," ask what specifically happens (error dialog? freeze? silent exit?).
 - Reference prior comments: "You mentioned X earlier — can you elaborate on [specific aspect]?"
 - Be empathetic but efficient. Acknowledge the reporter's experience, then ask your question.

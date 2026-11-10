@@ -1,0 +1,13 @@
+forge: github
+fixture:
+  type: issue
+  title: "Login page shows a server error when the email has a typo"
+  body: |
+    I mistyped my email on the login page as jane@ (forgot the domain)
+    and hit submit. Instead of telling me the email was wrong, the page
+    went blank with a 500 error, and the server log showed
+    `ValueError: invalid email format` coming from validate_email in
+    src/auth/validators.py, called from login_handler. It happens every
+    time I submit an email without a domain. I expected a normal
+    "please enter a valid email" message on the form. Running the
+    current main branch locally with Python 3.12.
