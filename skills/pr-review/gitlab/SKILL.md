@@ -12,15 +12,36 @@ This skill provides GitLab-specific CLI commands for the MR review
 orchestrator. The orchestrator (`pr-review` skill) delegates data
 fetching to these commands when `FULLSEND_FORGE=gitlab`.
 
-## Environment setup
+## Request values
+
+Run this first, in its own Bash tool call, before any other GitLab command.
+It extracts the host, project path, and MR IID from `PR_URL` and prints them:
 
 ```bash
-# Derive project variables from PR_URL
-GITLAB_HOST=$(echo "${PR_URL}" | sed -E 's|^https://([^/]+)/.*|\1|')
+GITLAB_HOST=$(echo "${PR_URL}" | sed -nE 's|^https://([^/]+)/.*|\1|p')
 REPO=$(echo "${PR_URL}" | sed -E 's|^https://[^/]+/(.+)/-/merge_requests/[0-9]+$|\1|')
 REPO_ENCODED=$(printf '%s' "${REPO}" | jq -sRr @uri)
 MR_IID=$(basename "${PR_URL}")
+test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: PR_URL is unset or not an https URL" >&2
+if printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$' && printf '%s' "${MR_IID}" | grep -Eqz '^[0-9]+$'; then
+  printf 'GITLAB_HOST=%s\nREPO_ENCODED=%s\nMR_IID=%s\n' "${GITLAB_HOST}" "${REPO_ENCODED}" "${MR_IID}"
+else
+  echo "GITLAB_HOST is not a plain hostname or MR_IID is not numeric" >&2
+fi
 ```
+
+If the command printed no values — `GITLAB_HOST` is empty, is not a plain
+hostname (it must match `^[A-Za-z0-9.-]+$`), or `MR_IID` is not numeric (it
+must match `^[0-9]+$`) — make no request. Produce a failure result (reason
+`tool-failure`) that says the GitLab request values could not be derived from
+`PR_URL`.
+
+Otherwise, write the printed values literally into every request URL below in
+place of `<GITLAB_HOST>`, `<REPO_ENCODED>`, and `<MR_IID>`. Never write
+`${GITLAB_HOST}` in a request URL. The sandbox's SSRF check reads the URL from
+the command text before the shell runs. It sees the unexpanded variable, cannot
+resolve it, and blocks the request even when the variable is set. Shell
+variables also do not carry over between Bash tool calls.
 
 ## MR data fetching
 
@@ -39,7 +60,7 @@ OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_T
 # the field reads below stay in the scanner's accepted dialect.
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<MR_IID>" \
   > /sandbox/workspace/mr-data.json
 HEAD_SHA=$(jq -r '.sha' /sandbox/workspace/mr-data.json)
 IS_DRAFT=$(jq -r '.draft' /sandbox/workspace/mr-data.json)
@@ -48,7 +69,7 @@ IS_DRAFT=$(jq -r '.draft' /sandbox/workspace/mr-data.json)
 # (shell variables do not survive between calls; files do)
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/merge_requests/${MR_IID}/changes" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/merge_requests/<MR_IID>/changes" \
   > /sandbox/workspace/mr-changes.json
 
 # Changed file paths
@@ -79,7 +100,7 @@ test -s /sandbox/workspace/pr-diff.txt || echo "EMPTY DIFF — produce a failure
 # its own call (see below) whether this one succeeded, failed or timed out.
 PR_HEAD=/sandbox/workspace/pr-head; WORK=/sandbox/workspace/pr-head.work; MANIFEST=/sandbox/workspace/pr-head.manifest
 CHANGES=/sandbox/workspace/mr-changes.json; CURLRC=/tmp/pr-head.curlrc
-API="https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/files"
+API="https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/repository/files"
 mkdir -p "$PR_HEAD" "$WORK"; : > "$MANIFEST"; : > "$WORK/failed"; FETCH_START=$(date +%s)
 OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\nfail\nsilent\n' "$GITLAB_TOKEN" > "$CURLRC"; umask "$OLDMASK"
 jq -r '.changes[] | select(.deleted_file) | "removed \(.new_path)"' "$CHANGES" >> "$MANIFEST"
@@ -121,13 +142,13 @@ OLDMASK=$(umask); umask 077; printf 'header = "PRIVATE-TOKEN: %s"\n' "${GITLAB_T
 # same-repository issue URLs only.
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>" \
   | jq '{title, description}'
 
 # Fetch issue notes (comments)
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/issues/<issue-iid>/notes"
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/issues/<issue-iid>/notes"
 
 : > /tmp/gitlab-api.curlrc
 ```
@@ -165,14 +186,14 @@ if ! curl --fail --silent --show-error --get \
   -K /tmp/gitlab-api.curlrc \
   --data-urlencode "refs[]=${PRIOR_REVIEW_SHA}" \
   --data-urlencode "refs[]=${HEAD_SHA}" \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/merge_base" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/repository/merge_base" \
   > "$MERGE_BASE_FILE" \
   || ! jq -e --arg prior "$PRIOR_REVIEW_SHA" \
     'type == "object" and (.id == $prior)' "$MERGE_BASE_FILE" >/dev/null; then
   echo "prior-review ancestry unproven; using full MR diff" >&2
 elif ! curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://${GITLAB_HOST}/api/v4/projects/${REPO_ENCODED}/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}&straight=true" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/repository/compare?from=${PRIOR_REVIEW_SHA}&to=${HEAD_SHA}&straight=true" \
   > "$COMPARE_FILE"; then
   echo "prior-review compare failed; using full MR diff" >&2
 elif jq -e "$COMPARE_COMPLETE_FILTER" "$COMPARE_FILE" >/dev/null \

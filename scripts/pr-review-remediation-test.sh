@@ -274,6 +274,11 @@ assert_contains "commit-message fetch marks successful context available" "${GIT
   "printf '%s\\n' true > \"\$COMMIT_MESSAGES_AVAILABLE_FILE\""
 assert_not_contains "GitLab leaves commit-message context unsupported" "${GITLAB_FORGE}" \
   '## Commit messages'
+# The SSRF pre-tool hook resolves the URL host before shell expansion (#1948).
+assert_not_contains "GitLab request URLs avoid the GITLAB_HOST variable" "${GITLAB_FORGE}" \
+  '//${GITLAB_HOST}'
+assert_contains "GitLab request URLs use the literal host placeholder" "${GITLAB_FORGE}" \
+  '//<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/'
 assert_contains "orchestrator requires forge commit-message fetch" "${SKILL}" \
   "forge's available **\"Commit messages\"** commands"
 assert_contains "orchestrator requires forge issue-context fetch" "${SKILL}" \
