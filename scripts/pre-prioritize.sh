@@ -725,9 +725,11 @@ ${body}"
 # This forge is dark: GitHub and GitLab /fs-prioritize dispatch is unchanged.
 # These functions run only when FULLSEND_FORGE=jira.
 #
-# Writes only the five RICE number custom fields, resolved by exact name:
-#   RICE Reach, RICE Impact, RICE Confidence, RICE Effort, RICE Score
-# Never writes Rank, Priority, status, assignee, or any other Jira field.
+# Writes only one number custom field, resolved by exact name:
+#   RICE PRIORITY SCORE
+# The Reach, Impact, Confidence, and Effort scores and their reasoning go in
+# the sticky comment, never in separate Jira fields. Never writes Rank,
+# Priority, status, assignee, or any other Jira field.
 #
 # Jira Cloud only (v1): the issue host must match *.atlassian.net.
 #
@@ -742,10 +744,17 @@ ${body}"
 #   JIRA_TOKEN      — Jira API token (required for field writes and comments)
 #   JIRA_USER_EMAIL — optional bot-user email; empty selects Bearer auth
 #   FULLSEND_DIR    — .fullsend dir whose config.yaml holds tracker.jira
-#   JIRA_API_URL    — optional REST base (api gateway). When unset, read
-#                     tracker.jira.api_url from ${FULLSEND_DIR}/config.yaml,
-#                     then fall back to JIRA_BASE_URL. Sandbox host files do
-#                     not reach host-side post-prioritize.sh.
+#
+# REST routing mirrors fullsend's Jira Scoped client
+# (internal/forge/jira/scoped.go): tracker.jira.api_url is the gateway base
+# (default https://api.atlassian.com), the cloud ID is discovered from the
+# site at tracker.jira.base_url (<base_url>/_edge/tenant_info), and every
+# REST call goes to
+#   <api_url>/ex/jira/<cloudId>/rest/api/3/...
+# The site must match the ISSUE_URL host, and credentials are never sent to
+# the tenant_info lookup. A JIRA_API_URL environment variable is not read
+# here: the gateway comes only from tracker.jira in the config, as it does
+# for the `fullsend issues` CLI.
 
 [[ -n "${JIRA_PRIORITIZE_OPS_SH_LOADED:-}" ]] && return 0
 JIRA_PRIORITIZE_OPS_SH_LOADED=1
@@ -831,11 +840,6 @@ jira_auth_fullsend() {
 }
 # END bundled: lib/jira-auth.lib.sh
 
-if [[ -n "${JIRA_API_URL:-}" && "${JIRA_API_URL}" != https://* ]]; then
-  echo "ERROR: JIRA_API_URL must start with https://" >&2
-  exit 1
-fi
-
 _jira_require_vars() {
   if [[ -z "${JIRA_BASE_URL:-}" ]]; then
     echo "ERROR: JIRA_BASE_URL is not set" >&2
@@ -843,51 +847,115 @@ _jira_require_vars() {
   fi
 }
 
-# REST base: JIRA_API_URL, else tracker.jira.api_url in FULLSEND_DIR/config.yaml,
-# else JIRA_BASE_URL. Trailing slashes stripped. Non-https values fail closed.
-_jira_api_base() {
-  local base cfg url
-  base="${JIRA_API_URL:-}"
-  base="${base#"${base%%[![:space:]]*}"}"
-  base="${base%"${base##*[![:space:]]}"}"
-  if [[ -z "${base}" && -n "${FULLSEND_DIR:-}" ]]; then
-    cfg="${FULLSEND_DIR}/config.yaml"
-    if [[ -f "${cfg}" ]] && command -v yq &>/dev/null; then
-      url=$(yq -r '.tracker.jira.api_url // ""' "${cfg}" 2>/dev/null) || url=""
-      url="${url#"${url%%[![:space:]]*}"}"
-      url="${url%"${url##*[![:space:]]}"}"
-      base="${url}"
-    fi
-  fi
-  if [[ -z "${base}" ]]; then
-    base="${JIRA_BASE_URL}"
-  fi
-  if [[ -n "${base}" && "${base}" != https://* ]]; then
-    echo "ERROR: Jira REST base must be https, got: ${base}" >&2
-    return 1
-  fi
-  while [[ "${base}" == */ ]]; do
-    base="${base%/}"
-  done
-  printf '%s\n' "${base}"
+# Print the trimmed string value at a tracker.jira key in
+# ${FULLSEND_DIR}/config.yaml, or nothing when unavailable.
+_jira_config_value() {
+  local key="$1" cfg val
+  [[ -n "${FULLSEND_DIR:-}" ]] || return 0
+  cfg="${FULLSEND_DIR}/config.yaml"
+  [[ -f "${cfg}" ]] && command -v yq &>/dev/null || return 0
+  val=$(yq -r ".tracker.jira.${key} // \"\"" "${cfg}" 2>/dev/null) || val=""
+  val="${val#"${val%%[![:space:]]*}"}"
+  val="${val%"${val##*[![:space:]]}"}"
+  printf '%s' "${val}"
 }
 
+# Validate an https URL that credentials or lookups will be sent to: no
+# userinfo, query, fragment, or whitespace. Trailing slashes are stripped.
+_jira_clean_https_url() {
+  local what="$1" url="$2"
+  while [[ "${url}" == */ ]]; do
+    url="${url%/}"
+  done
+  if [[ ! "${url}" =~ ^https:// ]]; then
+    echo "ERROR: Jira ${what} must be https, got: $(_gha_sanitize "${url}")" >&2
+    return 1
+  fi
+  if [[ ! "${url}" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+    echo "ERROR: Jira ${what} is not a plain https URL: $(_gha_sanitize "${url}")" >&2
+    return 1
+  fi
+  printf '%s\n' "${url}"
+}
+
+# Gateway base: tracker.jira.api_url, default https://api.atlassian.com.
+_jira_gateway_base() {
+  local url
+  url=$(_jira_config_value api_url)
+  _jira_clean_https_url "REST base" "${url:-https://api.atlassian.com}"
+}
+
+# Site URL used for cloud-ID discovery: tracker.jira.base_url when set,
+# else JIRA_BASE_URL (already tied to the ISSUE_URL host). It must be the
+# tenant that owns the issue, so a config pointing at another site fails
+# closed instead of routing writes to a different tenant.
+_jira_site_base() {
+  local cfg_base site
+  _jira_require_vars || return 1
+  cfg_base=$(_jira_config_value base_url)
+  if [[ -n "${cfg_base}" ]]; then
+    cfg_base=$(_jira_clean_https_url "tracker.jira.base_url" "${cfg_base}") || return 1
+    if [[ "${cfg_base}" != "${JIRA_BASE_URL}" ]]; then
+      echo "ERROR: tracker.jira.base_url ('$(_gha_sanitize "${cfg_base}")') does not match ISSUE_URL host ('$(_gha_sanitize "${JIRA_BASE_URL}")') — refusing to route Jira calls to a different tenant" >&2
+      return 1
+    fi
+  fi
+  site=$(_jira_clean_https_url "site URL" "${JIRA_BASE_URL}") || return 1
+  case "${site#https://}" in
+    *.atlassian.net) ;;
+    *)
+      echo "ERROR: Jira site '$(_gha_sanitize "${site}")' is not in the allowed host list" >&2
+      return 1
+      ;;
+  esac
+  printf '%s\n' "${site}"
+}
+
+# Resolve the site's cloud ID once from <site>/_edge/tenant_info. The
+# lookup is unauthenticated and does not follow redirects. The value must
+# be a UUID before it is placed in a URL path.
+#
+# Sets JIRA_CLOUD_ID and JIRA_CLOUD_ID_SITE in the caller's shell (do not
+# call it inside $(...), or the cache is lost).
+_jira_resolve_cloud_id() {
+  local site resp id
+  site=$(_jira_site_base) || return 1
+  if [[ "${JIRA_CLOUD_ID_SITE:-}" == "${site}" && -n "${JIRA_CLOUD_ID:-}" ]]; then
+    return 0
+  fi
+  resp=$(curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    "${site}/_edge/tenant_info") || {
+    echo "ERROR: failed to discover Jira cloud ID from ${site}/_edge/tenant_info" >&2
+    return 1
+  }
+  id=$(printf '%s' "${resp}" | jq -r '.cloudId // empty' 2>/dev/null) || id=""
+  if [[ ! "${id}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+    echo "ERROR: Jira cloud ID discovery from ${site} returned no valid cloudId" >&2
+    return 1
+  fi
+  JIRA_CLOUD_ID="${id}"
+  JIRA_CLOUD_ID_SITE="${site}"
+}
+
+# REST calls go to <api_url>/ex/jira/<cloudId>/rest/api/3<endpoint>.
 _jira_api() {
   local method="$1"
   shift
   local endpoint="$1"
   shift
 
-  _jira_require_vars || return 1
-  local api_base
-  api_base=$(_jira_api_base) || return 1
+  local gateway rest_root
+  gateway=$(_jira_gateway_base) || return 1
+  _jira_resolve_cloud_id || return 1
+  rest_root="${gateway}/ex/jira/${JIRA_CLOUD_ID}/rest/api/3"
 
   jira_auth_curl "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
     --fail --silent --show-error \
     --connect-timeout 10 --max-time 30 \
     --header "Content-Type: application/json" \
     --request "${method}" \
-    "${api_base}/rest/api/3${endpoint}" \
+    "${rest_root}${endpoint}" \
     "$@"
 }
 
@@ -926,8 +994,9 @@ forge_parse_issue_url() {
   JIRA_ISSUE_NUM="${ISSUE_NUMBER##*-}"
 }
 
-# Resolve one RICE field by exact name. Fail closed unless it is a unique
-# customfield_[0-9]+ number field — never Rank, Priority, or system fields.
+# Resolve the RICE PRIORITY SCORE field by exact name. Fail closed unless it
+# is a unique customfield_[0-9]+ number field — never Rank, Priority, or
+# system fields.
 _jira_custom_number_field_id() {
   local fields_json="$1"
   local name="$2"
@@ -938,7 +1007,7 @@ _jira_custom_number_field_id() {
   }
   count=$(echo "${matches}" | jq 'length')
   if [[ "${count}" -ne 1 ]]; then
-    echo "ERROR: Jira field '${name}' not found or not unique (matches=${count}). Create the five RICE number fields (RICE Reach, RICE Impact, RICE Confidence, RICE Effort, RICE Score) before running prioritize on Jira." >&2
+    echo "ERROR: Jira field '${name}' not found or not unique (matches=${count}). Create one custom number field named exactly '${name}' before running prioritize on Jira." >&2
     return 1
   fi
   id=$(echo "${matches}" | jq -r '.[0].id // empty')
@@ -967,6 +1036,10 @@ _jira_assert_rice_only_payload() {
     return 1
   fi
   keys=$(echo "${payload}" | jq -r '.fields | keys[]')
+  if [[ "$(echo "${keys}" | grep -c .)" -ne 1 ]]; then
+    echo "ERROR: refusing Jira payload that does not contain exactly one field" >&2
+    return 1
+  fi
   while IFS= read -r key; do
     [[ -z "${key}" ]] && continue
     if [[ ! "${key}" =~ ^customfield_[0-9]+$ ]]; then
@@ -978,12 +1051,10 @@ _jira_assert_rice_only_payload() {
 
 # --- Project / issue field operations ---
 
+# Reach, impact, confidence, and effort ($1-$4) go in the sticky comment;
+# only the computed score ($5) is written to Jira.
 forge_update_project_scores() {
   : "${JIRA_TOKEN:?JIRA_TOKEN must be set}"
-  local reach="$1"
-  local impact="$2"
-  local confidence="$3"
-  local effort="$4"
   local score="$5"
 
   if [[ -z "${ISSUE_NUMBER:-}" ]]; then
@@ -991,39 +1062,35 @@ forge_update_project_scores() {
     return 1
   fi
 
+  # Validate the gateway, then resolve the cloud ID in this shell so the
+  # $(_jira_api ...) calls below reuse the cache.
+  _jira_gateway_base >/dev/null || return 1
+  _jira_resolve_cloud_id || return 1
+
   local fields_json
   fields_json=$(_jira_api GET "/field") || {
-    echo "ERROR: failed to list Jira fields while resolving RICE custom fields" >&2
+    echo "ERROR: failed to list Jira fields while resolving the RICE PRIORITY SCORE field" >&2
     return 1
   }
 
-  local reach_id impact_id confidence_id effort_id score_id
-  reach_id=$(_jira_custom_number_field_id "${fields_json}" "RICE Reach") || return 1
-  impact_id=$(_jira_custom_number_field_id "${fields_json}" "RICE Impact") || return 1
-  confidence_id=$(_jira_custom_number_field_id "${fields_json}" "RICE Confidence") || return 1
-  effort_id=$(_jira_custom_number_field_id "${fields_json}" "RICE Effort") || return 1
-  score_id=$(_jira_custom_number_field_id "${fields_json}" "RICE Score") || return 1
+  local score_id
+  score_id=$(_jira_custom_number_field_id "${fields_json}" "RICE PRIORITY SCORE") || return 1
 
   local payload
-  payload=$(jq -n \
-    --arg rid "${reach_id}" --argjson r "${reach}" \
-    --arg iid "${impact_id}" --argjson i "${impact}" \
-    --arg cid "${confidence_id}" --argjson c "${confidence}" \
-    --arg eid "${effort_id}" --argjson e "${effort}" \
-    --arg sid "${score_id}" --argjson s "${score}" \
-    '{fields: {($rid): $r, ($iid): $i, ($cid): $c, ($eid): $e, ($sid): $s}}') || {
+  payload=$(jq -n --arg sid "${score_id}" --argjson s "${score}" \
+    '{fields: {($sid): $s}}') || {
     echo "ERROR: failed to build Jira RICE field payload" >&2
     return 1
   }
 
   _jira_assert_rice_only_payload "${payload}" || return 1
 
-  echo "Writing RICE scores to Jira fields on ${ISSUE_NUMBER}..."
+  echo "Writing RICE PRIORITY SCORE to Jira field ${score_id} on ${ISSUE_NUMBER}..."
   if ! _jira_api PUT "/issue/${ISSUE_NUMBER}" --data "${payload}" >/dev/null; then
-    echo "ERROR: failed to write RICE fields on ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
+    echo "ERROR: failed to write RICE PRIORITY SCORE on ${ISSUE_NUMBER} via PUT /issue/${ISSUE_NUMBER}" >&2
     return 1
   fi
-  echo "Jira RICE fields updated."
+  echo "Jira RICE PRIORITY SCORE updated."
 }
 
 # --- Comments ---

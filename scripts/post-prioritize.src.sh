@@ -19,11 +19,11 @@
 # Jira-specific env vars (consumed inside jira-prioritize-ops.lib.sh):
 #   JIRA_TOKEN      — Jira API token (from FULLSEND_JIRA_TOKEN)
 #   JIRA_USER_EMAIL — optional bot-user email (from FULLSEND_JIRA_EMAIL)
-#   FULLSEND_DIR    — .fullsend dir for tracker.jira (sticky comments and
-#                     host-side REST gateway when JIRA_API_URL is unset)
+#   FULLSEND_DIR    — .fullsend dir for tracker.jira: base_url (site for
+#                     cloud-ID discovery), api_url (gateway base, default
+#                     https://api.atlassian.com), and the sticky comment.
+#                     REST goes to <api_url>/ex/jira/<cloudId>/rest/api/3.
 #   JIRA_BASE_URL   — Jira site URL; derived from ISSUE_URL when unset
-#   JIRA_API_URL    — optional REST gateway; else tracker.jira.api_url in
-#                     FULLSEND_DIR/config.yaml; else JIRA_BASE_URL
 
 set -euo pipefail
 
@@ -150,6 +150,31 @@ COMMENT=$(jq -n \
 **Formula:** (\($reach) x \($impact) x \($confidence)) / \($effort) = **\($score)**
 
 </details>"')
+
+# Jira keeps only the computed score in its RICE PRIORITY SCORE field, so the
+# sticky comment carries the whole breakdown. Jira renders the comment from
+# markdown, where a <details> block and a table do not survive, so use a
+# heading and a bullet list. Reasoning has HTML tags and newlines removed.
+if [[ "${FULLSEND_FORGE}" == "jira" ]]; then
+  COMMENT=$(jq -r \
+    --arg score "${SCORE}" \
+    --arg reach "${REACH}" \
+    --arg impact "${IMPACT}" \
+    --arg confidence "${CONFIDENCE}" \
+    --arg effort "${EFFORT}" \
+    'def clean: tostring | gsub("<[^>]*>"; "") | gsub("[\r\n]+"; " ");
+    "**RICE PRIORITY SCORE: \($score)**
+
+**Score breakdown**
+
+* **Reach: \($reach)** — \(.reasoning.reach | clean)
+* **Impact: \($impact)** — \(.reasoning.impact | clean)
+* **Confidence: \($confidence)** — \(.reasoning.confidence | clean)
+* **Effort: \($effort)** — \(.reasoning.effort | clean)
+
+**Formula:** (Reach \($reach) x Impact \($impact) x Confidence \($confidence)) / Effort \($effort) = **\($score)**"' \
+    "${RESULT_FILE}")
+fi
 
 echo "Posting RICE comment..."
 forge_post_sticky_comment "${COMMENT}" "<!-- fullsend:prioritize-agent -->"

@@ -17,6 +17,7 @@ trap 'rm -rf "${TEST_TMPDIR}"' EXIT
 
 GH_LOG="${TEST_TMPDIR}/gh-calls.log"
 GH_FAIL_COUNT="${TEST_TMPDIR}/gh-fail-count"
+FS_ENV_LOG="${TEST_TMPDIR}/fullsend-env.log"
 MOCK_BIN="${TEST_TMPDIR}/bin"
 mkdir -p "${MOCK_BIN}"
 
@@ -113,6 +114,7 @@ cat > "${MOCK_BIN}/fullsend" <<MOCKEOF
 #!/usr/bin/env bash
 BODY=""
 PREV=""
+echo "email=\${FULLSEND_JIRA_EMAIL-<unset>} token=\${FULLSEND_JIRA_TOKEN-<unset>}" >> "${FS_ENV_LOG}"
 for arg in "\$@"; do
   if [[ "\${arg}" == "-" ]] && [[ "\${PREV}" == "--result" ]]; then
     BODY=\$(cat)
@@ -1013,8 +1015,10 @@ run_test "github-after-gitlab-smoke" "" 8
 
 # ---------------------------------------------------------------------------
 # Jira forge tests
-# Verify FULLSEND_FORGE=jira writes only the five RICE custom fields and a
-# sticky comment, and never calls gh or writes Rank/Priority.
+# Verify FULLSEND_FORGE=jira routes REST through the upstream gateway
+# (<api_url>/ex/jira/<cloudId>/rest/api/3), writes only the single
+# RICE PRIORITY SCORE custom field, posts the full breakdown in the sticky
+# comment, and never calls gh or writes Rank/Priority.
 # ---------------------------------------------------------------------------
 
 export FULLSEND_FORGE="jira"
@@ -1029,19 +1033,22 @@ unset JIRA_BASE_URL
 CURL_LOG="${TEST_TMPDIR}/jira-curl-calls.log"
 CURL_DATA_FILE="${TEST_TMPDIR}/jira-curl-data.json"
 MOCK_FIELDS_FILE="${TEST_TMPDIR}/jira-fields.json"
+MOCK_TENANT_FILE="${TEST_TMPDIR}/jira-tenant-info.json"
+
+JIRA_CLOUD_ID_VALUE="11111111-2222-3333-4444-555555555555"
+JIRA_DEFAULT_GATEWAY="https://api.atlassian.com"
+JIRA_DEFAULT_REST="${JIRA_DEFAULT_GATEWAY}/ex/jira/${JIRA_CLOUD_ID_VALUE}/rest/api/3"
 
 DEFAULT_JIRA_FIELDS='[
+  {"id":"customfield_10105","name":"RICE PRIORITY SCORE","schema":{"type":"number"}},
   {"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},
-  {"id":"customfield_10102","name":"RICE Impact","schema":{"type":"number"}},
-  {"id":"customfield_10103","name":"RICE Confidence","schema":{"type":"number"}},
-  {"id":"customfield_10104","name":"RICE Effort","schema":{"type":"number"}},
-  {"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}},
   {"id":"priority","name":"Priority","schema":{"type":"priority"}},
   {"id":"customfield_10019","name":"Rank","schema":{"type":"any"}},
   {"id":"assignee","name":"Assignee","schema":{"type":"user"}},
   {"id":"status","name":"Status","schema":{"type":"status"}}
 ]'
 echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
+echo "{\"cloudId\":\"${JIRA_CLOUD_ID_VALUE}\"}" > "${MOCK_TENANT_FILE}"
 
 cat > "${MOCK_BIN}/curl" <<CURLMOCK
 #!/usr/bin/env bash
@@ -1074,6 +1081,11 @@ for arg in "\$@"; do
   esac
 done
 
+if [[ "\${URL}" == */_edge/tenant_info ]]; then
+  cat "${MOCK_TENANT_FILE}"
+  exit 0
+fi
+
 if [[ "\${URL}" == */rest/api/3/field ]]; then
   cat "${MOCK_FIELDS_FILE}"
   exit 0
@@ -1099,6 +1111,7 @@ run_jira_test() {
 
   : > "${CURL_LOG}"
   : > "${GH_LOG}"
+  : > "${FS_ENV_LOG}"
   rm -f "${CURL_DATA_FILE}"
 
   local exit_code=0
@@ -1136,6 +1149,7 @@ run_jira_test_stdout() {
 
   : > "${CURL_LOG}"
   : > "${GH_LOG}"
+  : > "${FS_ENV_LOG}"
   rm -f "${CURL_DATA_FILE}"
 
   local exit_code=0
@@ -1164,6 +1178,31 @@ run_jira_test_stdout() {
   echo "PASS: ${test_name}"
 }
 
+# Assert no REST write happened and nothing was sent to a gateway.
+assert_jira_no_writes() {
+  local test_name="$1"
+  if [[ -f "${CURL_DATA_FILE}" ]] || grep -qF -- '--request PUT' "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — a Jira write was sent"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}-no-writes"
+  fi
+}
+
+# Assert a log has no /rest/api/3 call outside <rest_root>.
+assert_jira_only_rest_root() {
+  local test_name="$1"
+  local rest_root="$2"
+  if grep -F '/rest/api/3' "${CURL_LOG}" | grep -vqF "${rest_root}/"; then
+    echo "FAIL: ${test_name} — REST call outside ${rest_root}"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}"
+  fi
+}
+
 run_jira_test "jira-happy-path"
 
 run_jira_test "jira-no-gh-calls"
@@ -1175,25 +1214,245 @@ else
   echo "PASS: jira-no-gh-calls-log-empty"
 fi
 
-# Happy path PUT payload is only the five RICE custom fields.
-run_jira_test "jira-writes-only-rice-custom-fields"
-if [[ ! -f "${CURL_DATA_FILE}" ]]; then
-  echo "FAIL: jira-writes-only-rice-custom-fields — no PUT body captured"
+# --- Gateway URL format and cloud-ID routing ---
+
+# Default gateway: the cloud ID comes from the site's tenant_info and REST
+# goes to https://api.atlassian.com/ex/jira/<cloudId>/rest/api/3, never to
+# the site or to <gateway>/rest/api/3 directly.
+run_jira_test "jira-default-gateway-url-format"
+if grep -qF "curl --fail --silent --show-error --connect-timeout 10 --max-time 30 https://redhat.atlassian.net/_edge/tenant_info" "${CURL_LOG}"; then
+  echo "PASS: jira-cloud-id-discovered-from-site-tenant-info"
+else
+  echo "FAIL: jira-cloud-id-discovered-from-site-tenant-info"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "${JIRA_DEFAULT_REST}/field" "${CURL_LOG}" \
+  && grep -qF "${JIRA_DEFAULT_REST}/issue/AISDLC-8" "${CURL_LOG}"; then
+  echo "PASS: jira-default-gateway-routes-field-list-and-update"
+else
+  echo "FAIL: jira-default-gateway-routes-field-list-and-update — expected calls at ${JIRA_DEFAULT_REST}"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+assert_jira_only_rest_root "jira-default-gateway-only-ex-jira-rest" "${JIRA_DEFAULT_REST}"
+if grep -qF "atlassian.net/rest/api/3" "${CURL_LOG}" \
+  || grep -qF "${JIRA_DEFAULT_GATEWAY}/rest/api/3" "${CURL_LOG}"; then
+  echo "FAIL: jira-no-direct-rest-api — /rest/api/3 appended directly to a base"
+  cat "${CURL_LOG}"
   FAILURES=$((FAILURES + 1))
 else
-  payload_keys=$(jq -r '.fields | keys | sort | join(",")' "${CURL_DATA_FILE}")
-  if [[ "${payload_keys}" != "customfield_10101,customfield_10102,customfield_10103,customfield_10104,customfield_10105" ]]; then
-    echo "FAIL: jira-writes-only-rice-custom-fields — unexpected keys: ${payload_keys}"
-    cat "${CURL_DATA_FILE}"
+  echo "PASS: jira-no-direct-rest-api"
+fi
+# The cloud ID is looked up once per run.
+if [[ "$(grep -cF '/_edge/tenant_info' "${CURL_LOG}")" -eq 1 ]]; then
+  echo "PASS: jira-cloud-id-resolved-once"
+else
+  echo "FAIL: jira-cloud-id-resolved-once"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+write_jira_config() {
+  # $1 = api_url (optional), $2 = base_url (optional)
+  rm -f "${FULLSEND_DIR}/config.yaml"
+  [[ -n "${1:-}${2:-}" ]] || return 0
+  {
+    echo "tracker:"
+    echo "  jira:"
+    [[ -n "${1:-}" ]] && echo "    api_url: \"${1}\""
+    [[ -n "${2:-}" ]] && echo "    base_url: \"${2}\""
+  } > "${FULLSEND_DIR}/config.yaml"
+  return 0
+}
+
+if ! command -v yq &>/dev/null; then
+  echo "SKIP: jira-config-* — yq not found"
+else
+  # tracker.jira.api_url is the gateway base; /ex/jira/<cloudId> is appended.
+  write_jira_config "https://gateway.example.test/" "https://redhat.atlassian.net/"
+  GATEWAY_REST="https://gateway.example.test/ex/jira/${JIRA_CLOUD_ID_VALUE}/rest/api/3"
+  run_jira_test "jira-config-api-url-is-gateway-base"
+  if grep -qF "${GATEWAY_REST}/field" "${CURL_LOG}" \
+    && grep -qF "${GATEWAY_REST}/issue/AISDLC-8" "${CURL_LOG}"; then
+    echo "PASS: jira-config-api-url-routes-through-ex-jira"
+  else
+    echo "FAIL: jira-config-api-url-routes-through-ex-jira — expected calls at ${GATEWAY_REST}"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+  assert_jira_only_rest_root "jira-config-api-url-no-other-rest-base" "${GATEWAY_REST}"
+  # Cloud ID still comes from the site, not from the gateway.
+  if grep -F '_edge/tenant_info' "${CURL_LOG}" | grep -qvF "https://redhat.atlassian.net/_edge/tenant_info"; then
+    echo "FAIL: jira-config-tenant-info-from-site-only"
+    cat "${CURL_LOG}"
     FAILURES=$((FAILURES + 1))
   else
-    echo "PASS: jira-writes-only-rice-custom-fields-keys"
+    echo "PASS: jira-config-tenant-info-from-site-only"
   fi
-  if jq -e '.fields | has("priority") or has("rank") or has("assignee") or has("status")' "${CURL_DATA_FILE}" >/dev/null; then
-    echo "FAIL: jira-writes-only-rice-custom-fields — payload includes Rank/Priority/status/assignee"
+
+  # A JIRA_API_URL environment variable (which fullsend run sets to a full
+  # gateway URL for the sandbox) must not redirect host-side calls.
+  export JIRA_API_URL="https://env-gateway.example.test/ex/jira/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+  run_jira_test "jira-env-api-url-ignored"
+  if grep -qF "env-gateway.example.test" "${CURL_LOG}"; then
+    echo "FAIL: jira-env-api-url-ignored — REST call used JIRA_API_URL"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-env-api-url-ignored-log"
+  fi
+  unset JIRA_API_URL
+
+  # Scalar `tracker: jira` carries no connection settings: default gateway.
+  printf 'tracker: jira\n' > "${FULLSEND_DIR}/config.yaml"
+  run_jira_test "jira-scalar-tracker-uses-default-gateway"
+  assert_jira_only_rest_root "jira-scalar-tracker-uses-default-gateway-log" "${JIRA_DEFAULT_REST}"
+
+  # --- Invalid or mismatched destinations ---
+
+  write_jira_config "http://evil.example"
+  run_jira_test_stdout "jira-config-api-url-requires-https" "Jira REST base must be https" "true"
+  assert_jira_no_writes "jira-config-api-url-requires-https"
+
+  write_jira_config "https://user:pw@evil.example"
+  run_jira_test_stdout "jira-config-api-url-rejects-userinfo" "is not a plain https URL" "true"
+  assert_jira_no_writes "jira-config-api-url-rejects-userinfo"
+
+  write_jira_config "https://evil.example/path?x=1"
+  run_jira_test_stdout "jira-config-api-url-rejects-query" "is not a plain https URL" "true"
+  assert_jira_no_writes "jira-config-api-url-rejects-query"
+
+  write_jira_config "" "https://other.atlassian.net"
+  run_jira_test_stdout "jira-config-base-url-tenant-mismatch" "does not match ISSUE_URL host" "true"
+  assert_jira_no_writes "jira-config-base-url-tenant-mismatch"
+  if grep -qF '_edge/tenant_info' "${CURL_LOG}"; then
+    echo "FAIL: jira-config-base-url-tenant-mismatch — tenant lookup ran for a mismatched site"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-config-base-url-tenant-mismatch-no-lookup"
+  fi
+
+  write_jira_config "" "http://redhat.atlassian.net"
+  run_jira_test_stdout "jira-config-base-url-requires-https" "Jira tracker.jira.base_url must be https" "true"
+
+  write_jira_config
+fi
+
+# Cloud-ID discovery failures fail closed and send no credentials or writes.
+echo '{"cloudId":"../../evil"}' > "${MOCK_TENANT_FILE}"
+run_jira_test_stdout "jira-invalid-cloud-id-fails" "returned no valid cloudId" "true"
+assert_jira_no_writes "jira-invalid-cloud-id"
+if grep -qF '/rest/api/3' "${CURL_LOG}"; then
+  echo "FAIL: jira-invalid-cloud-id — REST call made with an invalid cloud ID"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-invalid-cloud-id-no-rest-calls"
+fi
+echo '{}' > "${MOCK_TENANT_FILE}"
+run_jira_test_stdout "jira-missing-cloud-id-fails" "returned no valid cloudId" "true"
+assert_jira_no_writes "jira-missing-cloud-id"
+echo "{\"cloudId\":\"${JIRA_CLOUD_ID_VALUE}\"}" > "${MOCK_TENANT_FILE}"
+
+# The tenant_info lookup is unauthenticated: no credentials go to the site.
+run_jira_test "jira-tenant-info-lookup-unauthenticated"
+if grep -F '_edge/tenant_info' "${CURL_LOG}" | grep -qE -- '--user|--oauth2-bearer|fake-jira-token'; then
+  echo "FAIL: jira-tenant-info-lookup-unauthenticated — credentials sent to tenant_info"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-tenant-info-lookup-sends-no-credentials"
+fi
+
+SAVED_ISSUE_URL="${ISSUE_URL}"
+export ISSUE_URL="https://evil.example/browse/AISDLC-8"
+run_jira_test "jira-rejects-non-allowlisted-host" "true"
+assert_jira_no_writes "jira-rejects-non-allowlisted-host"
+export ISSUE_URL="${SAVED_ISSUE_URL}"
+
+export JIRA_BASE_URL="https://other.atlassian.net"
+run_jira_test_stdout "jira-base-url-mismatch-fails" "does not match ISSUE_URL host" "true"
+assert_jira_no_writes "jira-base-url-mismatch"
+unset JIRA_BASE_URL
+
+# --- Authentication: bot user (Basic) and service account (Bearer) ---
+
+# Bot user: JIRA_USER_EMAIL set -> Basic auth for the REST calls, and the
+# sticky-comment CLI gets both FULLSEND_JIRA_TOKEN and FULLSEND_JIRA_EMAIL.
+run_jira_test "jira-bot-user-auth"
+if grep -F "${JIRA_DEFAULT_REST}/" "${CURL_LOG}" | grep -vqF -- "--user bot@example.com:fake-jira-token"; then
+  echo "FAIL: jira-bot-user-auth — a REST call lacked Basic auth"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
+elif grep -qF -- '--oauth2-bearer' "${CURL_LOG}"; then
+  echo "FAIL: jira-bot-user-auth — Bearer auth used with an email set"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-bot-user-auth-rest-basic"
+fi
+if grep -qF "email=bot@example.com token=fake-jira-token" "${FS_ENV_LOG}"; then
+  echo "PASS: jira-bot-user-auth-cli-env"
+else
+  echo "FAIL: jira-bot-user-auth-cli-env"
+  cat "${FS_ENV_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Service account: no email (or whitespace only) -> Bearer auth, and the CLI
+# must not see an inherited FULLSEND_JIRA_EMAIL.
+for sa_email in "" "   "; do
+  export JIRA_USER_EMAIL="${sa_email}"
+  export FULLSEND_JIRA_EMAIL="stale@example.com"
+  run_jira_test "jira-service-account-auth"
+  if grep -F "${JIRA_DEFAULT_REST}/" "${CURL_LOG}" | grep -vqF -- "--oauth2-bearer fake-jira-token"; then
+    echo "FAIL: jira-service-account-auth — a REST call lacked Bearer auth (email='${sa_email}')"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  elif grep -qF -- '--user' "${CURL_LOG}"; then
+    echo "FAIL: jira-service-account-auth — Basic auth used without an email"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: jira-service-account-auth-rest-bearer"
+  fi
+  if grep -qF "email=<unset> token=fake-jira-token" "${FS_ENV_LOG}"; then
+    echo "PASS: jira-service-account-auth-cli-env"
+  else
+    echo "FAIL: jira-service-account-auth-cli-env (email='${sa_email}')"
+    cat "${FS_ENV_LOG}"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+unset FULLSEND_JIRA_EMAIL
+export JIRA_USER_EMAIL="bot@example.com"
+
+# --- Single-field update payload ---
+
+# The PUT body is exactly one field: RICE PRIORITY SCORE, set to the score
+# (3 * 2 * 0.8 / 2 = 2.4). No Reach/Impact/Confidence/Effort fields.
+run_jira_test "jira-writes-single-rice-priority-score-field"
+if [[ ! -f "${CURL_DATA_FILE}" ]]; then
+  echo "FAIL: jira-writes-single-rice-priority-score-field — no PUT body captured"
+  FAILURES=$((FAILURES + 1))
+else
+  if [[ "$(jq -c '.' "${CURL_DATA_FILE}")" == '{"fields":{"customfield_10105":2.4}}' ]]; then
+    echo "PASS: jira-writes-single-rice-priority-score-field-payload"
+  else
+    echo "FAIL: jira-writes-single-rice-priority-score-field — unexpected payload"
     cat "${CURL_DATA_FILE}"
     FAILURES=$((FAILURES + 1))
   fi
+  if jq -e '.fields | has("priority") or has("rank") or has("assignee") or has("status")' "${CURL_DATA_FILE}" >/dev/null; then
+    echo "FAIL: jira-writes-single-rice-priority-score-field — payload includes Rank/Priority/status/assignee"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+if [[ "$(grep -cF -- '--request PUT' "${CURL_LOG}")" -eq 1 ]]; then
+  echo "PASS: jira-single-put-request"
+else
+  echo "FAIL: jira-single-put-request"
+  cat "${CURL_LOG}"
+  FAILURES=$((FAILURES + 1))
 fi
 
 # Rank (customfield_10019) and Priority must never appear in the PUT body
@@ -1207,6 +1466,8 @@ if grep -Eiq 'customfield_10019|"priority"|"Rank"|/rank' "${CURL_LOG}" "${CURL_D
 else
   echo "PASS: jira-does-not-write-rank-or-priority-log"
 fi
+
+# --- Sticky comment carries the complete breakdown ---
 
 run_jira_test "jira-posts-sticky-comment"
 if ! grep -qF 'fullsend issues post-comment --tracker jira' "${GH_LOG}"; then
@@ -1223,107 +1484,74 @@ if ! grep -qF 'fullsend:prioritize-agent' "${GH_LOG}"; then
 else
   echo "PASS: jira-posts-sticky-comment-marker"
 fi
-
-# Host-side curl does not see sandbox host files. When JIRA_API_URL is
-# unset, REST goes to tracker.jira.api_url in FULLSEND_DIR/config.yaml,
-# else the site URL. Env JIRA_API_URL still wins over config.
-write_jira_config_api_url() {
-  if [[ -z "${1:-}" ]]; then
-    rm -f "${FULLSEND_DIR}/config.yaml"
-    return
-  fi
-  cat > "${FULLSEND_DIR}/config.yaml" <<CFGEOF
-tracker:
-  jira:
-    api_url: "${1}"
-CFGEOF
-}
-
-assert_jira_rest_base() {
-  local test_name="$1"
-  local expected_base="$2"
-  if grep -qF "${expected_base}/rest/api/3/field" "${CURL_LOG}" \
-    && grep -qF "${expected_base}/rest/api/3/issue/AISDLC-8" "${CURL_LOG}"; then
-    echo "PASS: ${test_name}"
+for expected in \
+  'RICE PRIORITY SCORE: 2.4' \
+  'Reach: 3** — Many users affected.' \
+  'Impact: 2** — Moderate workflow improvement.' \
+  'Confidence: 0.8** — Some customer signal.' \
+  'Effort: 2** — Small scoped change.' \
+  'Formula:** (Reach 3 x Impact 2 x Confidence 0.8) / Effort 2 = **2.4**'; do
+  if grep -qF -- "${expected}" "${GH_LOG}"; then
+    echo "PASS: jira-sticky-comment-contains: ${expected}"
   else
-    echo "FAIL: ${test_name} — expected REST calls at ${expected_base}/rest/api/3"
-    cat "${CURL_LOG}"
+    echo "FAIL: jira-sticky-comment-contains: ${expected}"
+    cat "${GH_LOG}"
     FAILURES=$((FAILURES + 1))
   fi
-}
-
-run_jira_test "jira-no-api-url-uses-site-url"
-assert_jira_rest_base "jira-no-api-url-uses-site-url-log" "https://redhat.atlassian.net"
-
-if ! command -v yq &>/dev/null; then
-  echo "SKIP: jira-config-api-url-* — yq not found"
+done
+# Jira renders markdown, so the GitHub <details> table is not used.
+if grep -qF '<details>' "${GH_LOG}"; then
+  echo "FAIL: jira-sticky-comment-no-details-block"
+  FAILURES=$((FAILURES + 1))
 else
-  JIRA_GATEWAY="https://api.atlassian.com/ex/jira/11111111-2222-3333-4444-555555555555"
-  write_jira_config_api_url "${JIRA_GATEWAY}/"
-  run_jira_test "jira-config-api-url-routes-field-writes"
-  assert_jira_rest_base "jira-config-api-url-routes-field-writes-log" "${JIRA_GATEWAY}"
-  if grep -qF "atlassian.net/rest/api/3" "${CURL_LOG}"; then
-    echo "FAIL: jira-config-api-url-no-site-rest-calls — REST call sent to the site URL"
-    cat "${CURL_LOG}"
-    FAILURES=$((FAILURES + 1))
-  else
-    echo "PASS: jira-config-api-url-no-site-rest-calls"
-  fi
-
-  JIRA_ENV_GATEWAY="https://api.atlassian.com/ex/jira/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-  write_jira_config_api_url "${JIRA_GATEWAY}"
-  export JIRA_API_URL="${JIRA_ENV_GATEWAY}/"
-  run_jira_test "jira-env-api-url-wins-over-config"
-  assert_jira_rest_base "jira-env-api-url-wins-over-config-log" "${JIRA_ENV_GATEWAY}"
-  if grep -qF "${JIRA_GATEWAY}/rest/api/3" "${CURL_LOG}"; then
-    echo "FAIL: jira-env-api-url-wins-over-config — REST call used config gateway"
-    cat "${CURL_LOG}"
-    FAILURES=$((FAILURES + 1))
-  else
-    echo "PASS: jira-env-api-url-wins-over-config-ignores-config"
-  fi
-  unset JIRA_API_URL
-
-  cat > "${FULLSEND_DIR}/config.yaml" <<'CFGEOF'
-tracker: jira
-CFGEOF
-  run_jira_test "jira-scalar-tracker-uses-site-url"
-  assert_jira_rest_base "jira-scalar-tracker-uses-site-url-log" "https://redhat.atlassian.net"
-
-  write_jira_config_api_url "http://evil.example"
-  run_jira_test_stdout "jira-config-api-url-requires-https" "Jira REST base must be https" "true"
-
-  write_jira_config_api_url
+  echo "PASS: jira-sticky-comment-no-details-block"
 fi
 
-# Missing RICE fields fail closed and must not PUT anything.
+# Reasoning from the agent has HTML stripped and newlines collapsed.
+HTML_FIXTURE_JSON='{"reach":3,"impact":2,"confidence":0.8,"effort":2,"reasoning":{"reach":"Many <b>users</b>\nare affected.","impact":"i","confidence":"c","effort":"e"}}'
+SAVED_FIXTURE_JSON="${FIXTURE_JSON}"
+FIXTURE_JSON="${HTML_FIXTURE_JSON}"
+run_jira_test "jira-sticky-comment-sanitizes-reasoning"
+FIXTURE_JSON="${SAVED_FIXTURE_JSON}"
+if grep -qF 'Reach: 3** — Many users are affected.' "${GH_LOG}"; then
+  echo "PASS: jira-sticky-comment-sanitizes-reasoning-body"
+else
+  echo "FAIL: jira-sticky-comment-sanitizes-reasoning-body"
+  cat "${GH_LOG}"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# --- Field resolution fails closed ---
+
+# Missing RICE PRIORITY SCORE field: nothing is written.
 echo '[{"id":"priority","name":"Priority","schema":{"type":"priority"}},{"id":"customfield_10019","name":"Rank","schema":{"type":"any"}}]' > "${MOCK_FIELDS_FILE}"
-run_jira_test_stdout "jira-missing-fields-fails" "Jira field 'RICE Reach' not found" "true"
-if [[ -f "${CURL_DATA_FILE}" ]]; then
-  echo "FAIL: jira-missing-fields-fails — PUT body was sent despite missing fields"
-  cat "${CURL_DATA_FILE}"
+run_jira_test_stdout "jira-missing-field-fails" "Jira field 'RICE PRIORITY SCORE' not found" "true"
+assert_jira_no_writes "jira-missing-field"
+if grep -qF 'post-comment' "${GH_LOG}"; then
+  echo "FAIL: jira-missing-field — comment posted after a failed field write"
   FAILURES=$((FAILURES + 1))
 fi
-echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
 
-# A system field that happens to be named "RICE Reach" must not be written.
-echo '[{"id":"priority","name":"RICE Reach","schema":{"type":"priority"}}]' > "${MOCK_FIELDS_FILE}"
+# The old five-field names are not enough.
+echo '[{"id":"customfield_10101","name":"RICE Reach","schema":{"type":"number"}},{"id":"customfield_10105","name":"RICE Score","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-legacy-five-fields-not-accepted" "Jira field 'RICE PRIORITY SCORE' not found" "true"
+assert_jira_no_writes "jira-legacy-five-fields"
+
+# Duplicate field name: ambiguous, so fail closed.
+echo '[{"id":"customfield_10105","name":"RICE PRIORITY SCORE","schema":{"type":"number"}},{"id":"customfield_10106","name":"RICE PRIORITY SCORE","schema":{"type":"number"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-duplicate-field-fails" "not found or not unique (matches=2)" "true"
+assert_jira_no_writes "jira-duplicate-field"
+
+# A system field that happens to be named "RICE PRIORITY SCORE" must not be written.
+echo '[{"id":"priority","name":"RICE PRIORITY SCORE","schema":{"type":"priority"}}]' > "${MOCK_FIELDS_FILE}"
 run_jira_test_stdout "jira-rejects-system-field-named-rice" "not a custom number field" "true"
-if [[ -f "${CURL_DATA_FILE}" ]]; then
-  echo "FAIL: jira-rejects-system-field-named-rice — PUT body was sent for a system field"
-  cat "${CURL_DATA_FILE}"
-  FAILURES=$((FAILURES + 1))
-fi
+assert_jira_no_writes "jira-rejects-system-field-named-rice"
+
+# A custom field of the wrong type must not be written.
+echo '[{"id":"customfield_10105","name":"RICE PRIORITY SCORE","schema":{"type":"string"}}]' > "${MOCK_FIELDS_FILE}"
+run_jira_test_stdout "jira-rejects-non-number-custom-field" "expected number" "true"
+assert_jira_no_writes "jira-rejects-non-number-custom-field"
 echo "${DEFAULT_JIRA_FIELDS}" > "${MOCK_FIELDS_FILE}"
-
-SAVED_ISSUE_URL="${ISSUE_URL}"
-export ISSUE_URL="https://evil.example/browse/AISDLC-8"
-run_jira_test "jira-rejects-non-allowlisted-host" "true"
-export ISSUE_URL="${SAVED_ISSUE_URL}"
-
-export JIRA_BASE_URL="https://other.atlassian.net"
-run_jira_test_stdout "jira-base-url-mismatch-fails" "does not match ISSUE_URL host" "true"
-unset JIRA_BASE_URL
 
 SAVED_JIRA_TOKEN="${JIRA_TOKEN}"
 unset JIRA_TOKEN
