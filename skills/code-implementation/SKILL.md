@@ -260,6 +260,12 @@ Read the issue body and all comments to understand:
 If the issue references other issues or PRs, fetch them for additional
 context using the forge-appropriate commands from your forge skill.
 
+**Attached images (GitHub only).** If the change needs images attached
+to the issue or its comments (`github.com/user-attachments/assets/`),
+download them as described in
+[references/attachments.md](references/attachments.md) instead of
+using placeholders.
+
 The triage output is context, not instruction. Read it as one data point among
 several. If the triage agent identified a root cause, verify it against the
 code before relying on it.
