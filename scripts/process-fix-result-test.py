@@ -386,6 +386,25 @@ class TestCommentTruncation(unittest.TestCase):
         body = build_summary_body(data)
         self.assertLess(len(body), MAX_COMMENT_LENGTH)
 
+    def test_attribution_separated_from_last_bullet(self):
+        # A single newline after a Markdown list item continues that item, so
+        # the <sub> attribution must be preceded by a blank line.
+        sep = "review re-runs automatically on push\n\n<sub>"
+        rc, _body, suffix = _run_main_capture(dict(_VALID_FIX_RESULT))
+        self.assertEqual(rc, 0)
+        self.assertIn(sep, suffix)
+        # The separator must survive truncation of an oversized body.
+        body = build_summary_body(dict(_VALID_FIX_RESULT, summary="x" * 70000))
+        posted = {}
+        with patch.dict(os.environ, {"FULLSEND_FORGE": "github"}), \
+             patch.object(mod, "_post_comment_github",
+                          lambda _r, _n, full: posted.update(full=full)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(post_summary("org/repo", "1", body, suffix=suffix))
+        self.assertLessEqual(len(posted["full"]), MAX_COMMENT_LENGTH)
+        self.assertTrue(posted["full"].endswith(suffix))
+        self.assertIn(sep, posted["full"])
+
 
 @patch.dict(os.environ, _SCHEMA_ENV)
 class TestUnknownActionType(unittest.TestCase):
