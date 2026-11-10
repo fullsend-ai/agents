@@ -866,13 +866,23 @@ _jira_require_vars() {
 }
 
 # Print the trimmed string value at a tracker.jira key in
-# ${FULLSEND_DIR}/config.yaml, or nothing when unavailable.
+# ${FULLSEND_DIR}/config.yaml. Prints nothing when there is no config file
+# or the key is unset. Fails closed (non-zero) when the config file exists
+# but cannot be read: yq missing or a yq parse error must not be treated as
+# "no config", or Jira writes could be routed to the default gateway.
 _jira_config_value() {
   local key="$1" cfg val
   [[ -n "${FULLSEND_DIR:-}" ]] || return 0
   cfg="${FULLSEND_DIR}/config.yaml"
-  [[ -f "${cfg}" ]] && command -v yq &>/dev/null || return 0
-  val=$(yq -r ".tracker.jira.${key} // \"\"" "${cfg}" 2>/dev/null) || val=""
+  [[ -f "${cfg}" ]] || return 0
+  if ! command -v yq &>/dev/null; then
+    echo "ERROR: ${cfg} exists but yq is not installed — cannot read tracker.jira.${key}" >&2
+    return 1
+  fi
+  val=$(yq -r ".tracker.jira.${key} // \"\"" "${cfg}" 2>/dev/null) || {
+    echo "ERROR: failed to parse tracker.jira.${key} from ${cfg}" >&2
+    return 1
+  }
   val="${val#"${val%%[![:space:]]*}"}"
   val="${val%"${val##*[![:space:]]}"}"
   printf '%s' "${val}"
@@ -899,7 +909,7 @@ _jira_clean_https_url() {
 # Gateway base: tracker.jira.api_url, default https://api.atlassian.com.
 _jira_gateway_base() {
   local url
-  url=$(_jira_config_value api_url)
+  url=$(_jira_config_value api_url) || return 1
   _jira_clean_https_url "REST base" "${url:-https://api.atlassian.com}"
 }
 
@@ -910,7 +920,7 @@ _jira_gateway_base() {
 _jira_site_base() {
   local cfg_base site
   _jira_require_vars || return 1
-  cfg_base=$(_jira_config_value base_url)
+  cfg_base=$(_jira_config_value base_url) || return 1
   if [[ -n "${cfg_base}" ]]; then
     cfg_base=$(_jira_clean_https_url "tracker.jira.base_url" "${cfg_base}") || return 1
     if [[ "${cfg_base}" != "${JIRA_BASE_URL}" ]]; then

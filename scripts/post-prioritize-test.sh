@@ -1339,6 +1339,78 @@ else
   write_jira_config
 fi
 
+# --- config.yaml present but unreadable: fail closed ---
+# A missing yq or a yq parse error must not be treated as "no config": that
+# would silently route writes to the default gateway.
+
+# Print a PATH equal to the current one but with every yq hidden: any
+# directory that holds a yq is replaced by a directory of symlinks to its
+# other executables.
+path_without_yq() {
+  local dir out="" shim idx=0 f
+  local -a dirs
+  IFS=: read -r -a dirs <<< "${PATH}"
+  for dir in "${dirs[@]}"; do
+    if [[ -x "${dir}/yq" ]]; then
+      idx=$((idx + 1))
+      shim="${TEST_TMPDIR}/no-yq-bin-${idx}"
+      mkdir -p "${shim}"
+      for f in "${dir}"/*; do
+        [[ -x "${f}" && ! -d "${f}" && "${f##*/}" != "yq" ]] || continue
+        ln -sf "${f}" "${shim}/${f##*/}"
+      done
+      dir="${shim}"
+    fi
+    out="${out:+${out}:}${dir}"
+  done
+  printf '%s' "${out}"
+}
+
+# Assert the run failed before any Jira REST call or tenant lookup.
+assert_jira_no_rest_calls() {
+  local test_name="$1"
+  if grep -qE '/rest/api/3|_edge/tenant_info' "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — Jira call made despite unreadable config"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${test_name}-no-rest-calls"
+  fi
+}
+
+SAVED_PATH="${PATH}"
+PATH_NO_YQ=$(path_without_yq)
+
+# config.yaml present + yq missing → fail, no field PUT.
+write_jira_config "https://gateway.example.test"
+export PATH="${PATH_NO_YQ}"
+run_jira_test_stdout "jira-config-present-yq-missing" "yq is not installed" "true"
+export PATH="${SAVED_PATH}"
+assert_jira_no_writes "jira-config-present-yq-missing"
+assert_jira_no_rest_calls "jira-config-present-yq-missing"
+
+# config.yaml present + yq parse error → fail, no field PUT.
+printf '#!/usr/bin/env bash\necho "yq: parse error" >&2\nexit 1\n' > "${MOCK_BIN}/yq"
+chmod +x "${MOCK_BIN}/yq"
+write_jira_config "https://gateway.example.test"
+run_jira_test_stdout "jira-config-present-yq-parse-error" "failed to parse tracker.jira" "true"
+assert_jira_no_writes "jira-config-present-yq-parse-error"
+assert_jira_no_rest_calls "jira-config-present-yq-parse-error"
+
+# config.yaml present + yq succeeds with empty keys → default gateway.
+printf '#!/usr/bin/env bash\nprintf "\\n"\n' > "${MOCK_BIN}/yq"
+printf 'tracker:\n  jira: {}\n' > "${FULLSEND_DIR}/config.yaml"
+run_jira_test "jira-config-present-empty-keys-uses-default-gateway"
+assert_jira_only_rest_root "jira-config-present-empty-keys-uses-default-gateway-log" "${JIRA_DEFAULT_REST}"
+rm -f "${MOCK_BIN}/yq"
+
+# config.yaml absent + yq missing → today's behavior (default gateway).
+write_jira_config
+export PATH="${PATH_NO_YQ}"
+run_jira_test "jira-config-absent-yq-missing-uses-default-gateway"
+export PATH="${SAVED_PATH}"
+assert_jira_only_rest_root "jira-config-absent-yq-missing-uses-default-gateway-log" "${JIRA_DEFAULT_REST}"
+
 # Cloud-ID discovery failures fail closed and send no credentials or writes.
 echo '{"cloudId":"../../evil"}' > "${MOCK_TENANT_FILE}"
 run_jira_test_stdout "jira-invalid-cloud-id-fails" "returned no valid cloudId" "true"
