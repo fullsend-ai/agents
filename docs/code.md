@@ -71,13 +71,17 @@ This separation ensures the agent never has direct write access to the repositor
 
 When the fix belongs in another repository, the agent reports the upstream
 repository, file, and required change without making a commit or restructuring
-this repository. On GitHub/GitLab source issues, the no-PR path sanitizes
-`pr_body`, keeps only its last 30 lines by default, and posts it as "Agent
-context" under a generic "No PR created — agent determined no changes needed"
-notice with retry guidance. Keep escalation text under 25 lines, put the
-repository, file, and required change first, and omit the normal PR template.
-External-tracker runs (such as Jira) emit only a generic notice; the upstream
-explanation remains in the agent's final message in the run transcript.
+this repository. The agent also sets `pr_body` to a short explanation
+whenever it stops without a commit for another reason (gate label, already
+fixed, blocked, missing acceptance criteria). On GitHub, GitLab and Jira
+source issues, the no-PR path sanitizes `pr_body`, keeps only its last 30
+lines by default, and posts it as "Agent context" under a generic "No PR
+created — agent determined no changes needed" notice with retry guidance.
+Keep escalation text under 25 lines, put the repository, file, and required
+change first, and omit the normal PR template. On a Jira issue the notice
+goes to an outcome comment with its own marker, so a rerun edits it and it
+never replaces the PR/MR link comment. Other external trackers emit only a
+generic notice in the job log.
 
 If the target is referenced by a pinned SHA and the upstream fix has not
 landed in a newer commit reachable from the intended upstream reference, the
@@ -100,7 +104,7 @@ text scan. If a text scan finds a secret or cannot complete, the issue comment
 omits optional context, and the PR/MR description uses a generic fallback. A
 rejected PR body falls back to the normalized commit body only if that text
 passes the same scan. Raw text-scan diagnostics are not logged.
-Jira-source no-PR runs still emit only their existing generic notice.
+The Jira no-PR notice gets the same sanitization and context secret scan.
 
 ### Signed commits
 
@@ -352,13 +356,21 @@ vars. Key differences from single-forge setup:
   The post-script takes the Jira credentials out of its environment before
   it runs any git command, so repo-controlled hooks, including the one that
   fires when it renames the agent branch, cannot read them from their
-  environment or from a parent's `/proc/<pid>/environ`; only this Jira write
-  receives them. These are the same account the Jira poller treats as its own, so the update does not
+  environment or from a parent's `/proc/<pid>/environ`; only the Jira writes
+  receive them. These are the same account the Jira poller treats as its own, so the update does not
   dispatch agents. If the Jira write fails,
   the step fails, even though the PR/MR already exists. The branch, commits,
   PR/MR, review and merge stay on the code host: GitHub targets get a GitHub
   PR and GitLab targets get a GitLab MR. For GitLab targets the GitLab host
   is taken from `CI_SERVER_HOST`, because `ISSUE_URL` is the Jira URL.
+  A run that ends without a PR/MR writes its outcome to a separate comment
+  with the marker `<!-- fullsend:code-agent-outcome -->`: the no-PR notice
+  with the agent's explanation, or the failure category and sanitized detail
+  when the post-script fails. A rerun edits that comment, and it never
+  replaces the PR/MR link, so a later successful run leaves the earlier
+  outcome comment in place alongside its link. These writes are best-effort: a
+  failed write is a warning and the run keeps its exit code. Every Jira
+  write has the Jira token redacted from its text.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom
   harnesses using `base:` composition should override at the forge level

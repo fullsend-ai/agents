@@ -1645,26 +1645,33 @@ report_post_failure_to_issue() {
   fi
   POST_FAILURE_REPORTED=true
 
+  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
+  local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
+  local body
+  # REPO_FULL_NAME is required by post-code.src.sh before sourcing.
+  # shellcheck disable=SC2153
+  body="$(build_post_failure_comment \
+    "code" "${exit_code}" "${category}" "${detail}" \
+    "${REPO_FULL_NAME}" "/fs-code")"
+
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
-  # target issue number and risk commenting on unrelated work.
+  # target issue number and risk commenting on unrelated work. A caller that
+  # can write to the tracker defines report_post_failure_to_external_tracker
+  # (post-code does, for Jira); its result never changes this exit path.
   if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
     gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
+    if declare -F report_post_failure_to_external_tracker >/dev/null 2>&1; then
+      report_post_failure_to_external_tracker "${body}" || true
+    fi
     return 0
   fi
 
   _post_failure_ensure_token
 
-  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
-  local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
-  local body
+  # ISSUE_NUMBER is required by post-code.src.sh for forge work items.
   # shellcheck disable=SC2153
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
-  # ISSUE_NUMBER and REPO_FULL_NAME are required by post-code.src.sh before sourcing.
-  # shellcheck disable=SC2153
-  body="$(build_post_failure_comment \
-    "code" "${exit_code}" "${category}" "${detail}" \
-    "${REPO_FULL_NAME}" "/fs-code")"
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
   if declare -F forge_post_issue_comment >/dev/null 2>&1; then

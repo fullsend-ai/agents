@@ -15,7 +15,7 @@
     "pr_body": {
       "type": "string",
       "maxLength": 60000,
-      "description": "PR description used as PR body instead of commit body. Supports markdown formatting and template-compliant structure without gitlint line-length constraints."
+      "description": "PR description used as PR body instead of commit body. Supports markdown formatting and template-compliant structure without gitlint line-length constraints. When the agent stops with no commit and a clean working tree, a short explanation of why, posted with the no-PR notice (see docs/code.md)."
     },
     "closes_issue": {
       "type": "boolean",

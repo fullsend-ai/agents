@@ -32,7 +32,8 @@
 # Jira-sourced runs (FULLSEND_TRACKER or FULLSEND_WORK_ITEM_SOURCE is "jira")
 # also need FULLSEND_WORK_ITEM_URL, JIRA_TOKEN, and FULLSEND_DIR (whose
 # config.yaml holds tracker.jira for the fullsend CLI) to write the
-# code-stage update and PR/MR URL to the Jira issue. JIRA_USER_EMAIL is
+# code-stage update and PR/MR URL, or the no-PR or failure outcome, to the
+# Jira issue. JIRA_USER_EMAIL is
 # optional: when set, the write uses bot-user Basic auth; when unset or
 # empty, service-account Bearer auth. JIRA_BASE_URL is optional and
 # cross-checked against the work-item URL. GitLab targets take the GitLab
@@ -79,7 +80,8 @@ set -euo pipefail
 # from the environment. The re-exec'd process reads them into shell variables
 # and closes the file at once, before any repo-controlled code can run. They
 # then live only in this process's memory, and reach the one trusted
-# consumer, post_jira_stage_update, after all hooks have finished. The
+# consumer, post_jira_code_comment, after any hooks have finished; the
+# script exits after every Jira write. The
 # FULLSEND_JIRA_* names are what the harness maps from and what the CLI
 # reads, so inherited copies are withheld as well.
 #
@@ -727,26 +729,33 @@ report_post_failure_to_issue() {
   fi
   POST_FAILURE_REPORTED=true
 
+  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
+  local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
+  local body
+  # REPO_FULL_NAME is required by post-code.src.sh before sourcing.
+  # shellcheck disable=SC2153
+  body="$(build_post_failure_comment \
+    "code" "${exit_code}" "${category}" "${detail}" \
+    "${REPO_FULL_NAME}" "/fs-code")"
+
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
-  # target issue number and risk commenting on unrelated work.
+  # target issue number and risk commenting on unrelated work. A caller that
+  # can write to the tracker defines report_post_failure_to_external_tracker
+  # (post-code does, for Jira); its result never changes this exit path.
   if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
     gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
+    if declare -F report_post_failure_to_external_tracker >/dev/null 2>&1; then
+      report_post_failure_to_external_tracker "${body}" || true
+    fi
     return 0
   fi
 
   _post_failure_ensure_token
 
-  local category="${POST_FAILURE_CATEGORY:-post-script-error}"
-  local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
-  local body
+  # ISSUE_NUMBER is required by post-code.src.sh for forge work items.
   # shellcheck disable=SC2153
   safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
-  # ISSUE_NUMBER and REPO_FULL_NAME are required by post-code.src.sh before sourcing.
-  # shellcheck disable=SC2153
-  body="$(build_post_failure_comment \
-    "code" "${exit_code}" "${category}" "${detail}" \
-    "${REPO_FULL_NAME}" "/fs-code")"
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
   if declare -F forge_post_issue_comment >/dev/null 2>&1; then
@@ -3333,6 +3342,90 @@ enable_auto_merge() {
 }
 
 # ---------------------------------------------------------------------------
+# Jira code-agent comment
+#
+# Writes <body> to the originating Jira issue under <marker>, so a rerun
+# edits the comment an earlier run left instead of adding another. The PR/MR
+# link uses JIRA_CODE_MARKER; no-PR and failure outcomes use
+# JIRA_OUTCOME_MARKER, so a later run without a PR/MR never replaces an
+# existing link. Returns non-zero when the write cannot be made; callers
+# decide whether that fails the step.
+#
+# Usage: post_jira_code_comment <marker> <body>
+# ---------------------------------------------------------------------------
+JIRA_CODE_MARKER="<!-- fullsend:code-agent -->"
+JIRA_OUTCOME_MARKER="<!-- fullsend:code-agent-outcome -->"
+
+post_jira_code_comment() {
+  local marker="$1"
+  local body="$2"
+
+  if [[ ! "${WORK_ITEM_URL}" =~ ^https://([a-zA-Z0-9.-]+\.atlassian\.net)/browse/([A-Z][A-Z0-9]*)-([0-9]+)$ ]]; then
+    gha_echo error "FULLSEND_WORK_ITEM_URL is not a Jira Cloud issue URL"
+    return 1
+  fi
+  local jira_url="https://${BASH_REMATCH[1]}"
+  local project="${BASH_REMATCH[2]}"
+  local number="${BASH_REMATCH[3]}"
+  if [ "${project}-${number}" != "${WORK_ITEM_KEY}" ]; then
+    gha_echo error "FULLSEND_WORK_ITEM_KEY does not match the Jira issue in FULLSEND_WORK_ITEM_URL"
+    return 1
+  fi
+  local base_url="${JIRA_BASE_URL:-}"
+  while [[ "${base_url}" == */ ]]; do
+    base_url="${base_url%/}"
+  done
+  if [ -n "${base_url}" ] && [ "${base_url}" != "${jira_url}" ]; then
+    gha_echo error "JIRA_BASE_URL does not match the Jira host in FULLSEND_WORK_ITEM_URL"
+    return 1
+  fi
+  # The credentials were withheld from the environment at the start of the
+  # script (see "Jira credential isolation"); they are passed to the trusted
+  # CLI below and nowhere else. The email is optional: without it the CLI
+  # uses service-account Bearer auth.
+  if [ -z "${_jira_token_saved:-}" ]; then
+    gha_echo error "JIRA_TOKEN is required to write to Jira"
+    return 1
+  fi
+  if [ -z "${FULLSEND_DIR:-}" ]; then
+    gha_echo error "FULLSEND_DIR is required to write to Jira (the fullsend CLI reads tracker.jira from its config.yaml)"
+    return 1
+  fi
+  if [ -z "${_jira_fullsend_bin:-}" ]; then
+    gha_echo error "fullsend CLI not found; cannot write to Jira"
+    return 1
+  fi
+
+  # Defense in depth: the text may carry agent-written context.
+  body="$(_redact_literal_token "${body}" "${_jira_token_saved}")"
+
+  # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
+  # bot user only, FULLSEND_JIRA_EMAIL, never through command-line flags,
+  # keeping them out of the process list. The Jira site and API gateway
+  # come from tracker.jira in FULLSEND_DIR's config.yaml.
+  printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
+    "${_jira_token_saved}" "${_jira_email_saved:-}" \
+    issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${project}" --number "${number}" \
+    --marker "${marker}" --result -
+}
+
+# Called by report_post_failure_to_issue (post-failure-report.lib.sh) for an
+# external work item, with the sanitized failure comment. Writes it to a Jira
+# issue; other external trackers keep the log-only warning. Best-effort: the
+# caller ignores the status, so the original failure exit code stands.
+report_post_failure_to_external_tracker() {
+  local body="$1"
+
+  if [ "${WORK_ITEM_TRACKER}" != "jira" ]; then
+    return 0
+  fi
+  if ! post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
+    gha_echo warning "Failed to post the failure comment to Jira issue ${WORK_ITEM_KEY}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Setup
 # ---------------------------------------------------------------------------
 REPO_DIR="${REPO_DIR:-repo}"
@@ -3369,6 +3462,15 @@ else
     post_fail_to_issue setup-error "ISSUE_NUMBER must be numeric, got '${ISSUE_NUMBER}'"
   WORK_ITEM_KEY="${ISSUE_NUMBER}"
 fi
+
+# The Jira credentials were taken out of the environment at the top of this
+# script and are passed only to post_jira_code_comment. Resolve the trusted
+# tracker CLI now, before the failure trap or a no-op exit can write to Jira
+# and before repo-controlled installs can put a binary of the same name
+# earlier on PATH.
+_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
+# A relative PATH entry would resolve inside the repo after the cd below.
+[[ "${_jira_fullsend_bin}" == /* ]] || _jira_fullsend_bin=""
 trap 'report_post_failure_to_issue' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
@@ -3532,21 +3634,24 @@ scan_public_text() (
 # No-op comment helper
 #
 # Posts an informational comment on the source issue when the agent
-# determines no changes are needed (no-op exit path). Best-effort —
-# a failure to post does not change the exit code.
+# determines no changes are needed (no-op exit path). For a Jira work item
+# the comment goes to the Jira issue; other external trackers get a log
+# notice only. Best-effort — a failure to post does not change the exit code.
 # ---------------------------------------------------------------------------
 post_noop_comment() {
   local reason="$1"
+  local issue_ref
 
   if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
     gha_echo notice "No PR created for ${WORK_ITEM_KEY}: ${reason}"
-    return 0
+    if [ "${WORK_ITEM_TRACKER}" != "jira" ]; then
+      return 0
+    fi
+    issue_ref="${WORK_ITEM_KEY}"
+  else
+    issue_ref="issue #$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
+    _post_failure_ensure_token
   fi
-
-  local safe_issue_number
-  safe_issue_number="$(_sanitize_workflow_value "${ISSUE_NUMBER}")"
-
-  _post_failure_ensure_token
 
   local run_url
   run_url="$(forge_get_workflow_run_url)"
@@ -3577,7 +3682,7 @@ ${sanitized_context}"
   local body
   body="ℹ️ **No PR created** — agent determined no changes needed
 
-The code agent ran and evaluated issue #${safe_issue_number}, but did not produce changes to submit as a pull request.
+The code agent ran and evaluated ${issue_ref}, but did not produce changes to submit as a pull request.
 
 **Reason:** ${reason}
 ${detail_block}
@@ -3586,8 +3691,12 @@ ${detail_block}
 
 Retry with \`/fs-code\` if appropriate."
 
-  if ! forge_retry_transient forge_post_issue_comment "${body}"; then
-    gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    if ! post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
+      gha_echo warning "Failed to post no-op comment to Jira issue ${WORK_ITEM_KEY}"
+    fi
+  elif ! forge_retry_transient forge_post_issue_comment "${body}"; then
+    gha_echo warning "Failed to post no-op comment to ${issue_ref}"
   fi
 }
 
@@ -3614,61 +3723,15 @@ post_jira_stage_update() {
     gha_echo error "No PR/MR URL to report to the Jira issue"
     return 1
   fi
-  if [[ ! "${WORK_ITEM_URL}" =~ ^https://([a-zA-Z0-9.-]+\.atlassian\.net)/browse/([A-Z][A-Z0-9]*)-([0-9]+)$ ]]; then
-    gha_echo error "FULLSEND_WORK_ITEM_URL is not a Jira Cloud issue URL"
-    return 1
-  fi
-  local jira_url="https://${BASH_REMATCH[1]}"
-  local project="${BASH_REMATCH[2]}"
-  local number="${BASH_REMATCH[3]}"
-  if [ "${project}-${number}" != "${WORK_ITEM_KEY}" ]; then
-    gha_echo error "FULLSEND_WORK_ITEM_KEY does not match the Jira issue in FULLSEND_WORK_ITEM_URL"
-    return 1
-  fi
-  local base_url="${JIRA_BASE_URL:-}"
-  while [[ "${base_url}" == */ ]]; do
-    base_url="${base_url%/}"
-  done
-  if [ -n "${base_url}" ] && [ "${base_url}" != "${jira_url}" ]; then
-    gha_echo error "JIRA_BASE_URL does not match the Jira host in FULLSEND_WORK_ITEM_URL"
-    return 1
-  fi
-  # The credentials were withheld from the environment at the start of the
-  # script (see "Jira credential isolation"); they are passed to the trusted
-  # CLI below and nowhere else. The email is optional: without it the CLI
-  # uses service-account Bearer auth.
-  if [ -z "${_jira_token_saved:-}" ]; then
-    gha_echo error "JIRA_TOKEN is required to write to Jira"
-    return 1
-  fi
-  if [ -z "${FULLSEND_DIR:-}" ]; then
-    gha_echo error "FULLSEND_DIR is required to write to Jira (the fullsend CLI reads tracker.jira from its config.yaml)"
-    return 1
-  fi
-  if [ -z "${_jira_fullsend_bin:-}" ]; then
-    gha_echo error "fullsend CLI not found; cannot write to Jira"
-    return 1
-  fi
 
   local noun="pull request"
   if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
     noun="merge request"
   fi
 
-  local body
-  body="**Code stage:** ${verb} ${noun} ${pr_url} for ${WORK_ITEM_KEY}.
+  post_jira_code_comment "${JIRA_CODE_MARKER}" "**Code stage:** ${verb} ${noun} ${pr_url} for ${WORK_ITEM_KEY}.
 
 Review and merge happen on the ${noun}."
-
-  # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
-  # bot user only, FULLSEND_JIRA_EMAIL, never through command-line flags,
-  # keeping them out of the process list. The Jira site and API gateway
-  # come from tracker.jira in FULLSEND_DIR's config.yaml.
-  printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
-    "${_jira_token_saved}" "${_jira_email_saved:-}" \
-    issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
-    --project "${project}" --number "${number}" \
-    --marker "<!-- fullsend:code-agent -->" --result -
 }
 
 # ---------------------------------------------------------------------------
@@ -3818,12 +3881,6 @@ BRANCH="${SAFE_BRANCH}"
 
 echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
-
-# The Jira credentials were taken out of the environment at the top of this
-# script and are passed only to post_jira_stage_update. Resolve the trusted
-# tracker CLI now, before repo-controlled installs can put a binary of the
-# same name earlier on PATH.
-_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
 # 2. Compute changed files
