@@ -240,10 +240,14 @@ sanitize_slack_text() {
 # Markdown link brackets (`[ ]`) and code backticks, so a crafted title cannot
 # render an active link or raw HTML in the run summary.
 sanitize_md_text() {
+  # Escape backslashes first (s/\\/\\\\/g): otherwise a pre-escaped title such as
+  # `\[click\](url)` would become `\\[click\\]...`, which Markdown reads as a
+  # literal backslash followed by an *active* link. Doubling first makes the
+  # later `[`/`]` escaping effective.
   printf '%s' "$1" \
     | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
     | tr -d '\000-\037\177' \
-    | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g'
+    | sed 's/\\/\\\\/g; s/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g'
 }
 
 CONTENT_GATE_REJECTIONS=0

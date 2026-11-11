@@ -1566,7 +1566,7 @@ run_md_summary_test() {
   if ! grep -qF -- "${must_contain}" "${summary}"; then
     echo "FAIL: ${test_name} — expected '${must_contain}' in step summary"; cat "${summary}"; FAILURES=$((FAILURES + 1)); return
   fi
-  if grep -qF -- "${must_not}" "${summary}"; then
+  if [[ -n "${must_not}" ]] && grep -qF -- "${must_not}" "${summary}"; then
     echo "FAIL: ${test_name} — unexpected '${must_not}' in step summary"; cat "${summary}"; FAILURES=$((FAILURES + 1)); return
   fi
   echo "PASS: ${test_name}"
@@ -1583,6 +1583,12 @@ run_md_summary_test "meeting/step-summary-html-escaped" \
 run_md_summary_test "meeting/step-summary-percent-colon-readable" \
   '{"docs_downloaded":1,"doc_names":["100% Review :: Q3"]}' \
   '100% Review :: Q3' '%25'
+# A pre-escaped title must stay inert: backslashes are doubled before the bracket
+# escaping, so `\[click\](url)` cannot leave the brackets active as a link. The
+# triple-backslash-bracket form only appears when backslashes are escaped first.
+run_md_summary_test "meeting/step-summary-preescaped-brackets-inert" \
+  '{"docs_downloaded":1,"doc_names":["\\[click\\](http://evil.example)"]}' \
+  '\\\[click\\\](http://evil.example)' ''
 
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 
