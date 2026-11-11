@@ -1255,6 +1255,11 @@ sanitize_slack_mrkdwn() {
     _patsub=1
     shopt -u patsub_replacement
   fi
+  # Double backslashes first: SLACK_TEXT is later expanded with `printf '%b'`, so
+  # a literal `\n` in untrusted input would otherwise become a real newline (a
+  # forged report line) and `\c` would truncate the message. Doubling makes the
+  # backslash survive %b as a literal (issue #706).
+  val="${val//\\/\\\\}"
   val="${val//&/&amp;}"
   val="${val//</&lt;}"
   val="${val//>/&gt;}"
@@ -1270,6 +1275,15 @@ sanitize_slack_text() {
   local v
   v=$(printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
   sanitize_slack_mrkdwn "${v}"
+}
+
+# Sanitize untrusted text for a GitHub step-summary (Markdown/HTML) line (e.g.
+# Drive document titles, issue #706). _gha_sanitize strips control chars, ANSI,
+# and workflow-command delimiters; additionally escape HTML (`& < >`) and the
+# Markdown link brackets (`[ ]`) and code backticks, so a crafted title cannot
+# render an active link or raw HTML in the run summary.
+sanitize_md_text() {
+  _gha_sanitize "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g'
 }
 
 CONTENT_GATE_REJECTIONS=0
@@ -1661,7 +1675,11 @@ else
   # Meeting titles (#706): NUL-delimited so a title containing a newline stays a
   # single element (untrusted input); sanitized at each display site.
   while IFS= read -r -d '' _title; do
-    [[ -n "${_title}" ]] && MEETING_TITLES+=("${_title}")
+    # Explicit if (not `[[ … ]] && …`) so skipping an empty title keeps a
+    # success status and cannot trip `set -e` on the loop body.
+    if [[ -n "${_title}" ]]; then
+      MEETING_TITLES+=("${_title}")
+    fi
   done < <(jq -j '(.doc_names // [])[] | . + "\u0000"' "${SCRIBE_META_FILE}")
 fi
 
@@ -1691,12 +1709,12 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo "### Scribe agent report (${RUN_MODE_LABEL})"
   echo ""
   if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
-    echo "**Meeting:** $(_gha_sanitize "${MEETING_TITLES[0]}")"
+    echo "**Meeting:** $(sanitize_md_text "${MEETING_TITLES[0]}")"
     echo ""
   elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
     echo "**Meetings (${#MEETING_TITLES[@]}):**"
     for _title in "${MEETING_TITLES[@]}"; do
-      echo "- $(_gha_sanitize "${_title}")"
+      echo "- $(sanitize_md_text "${_title}")"
     done
     echo ""
   fi

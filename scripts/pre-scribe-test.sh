@@ -964,7 +964,7 @@ elif [[ "${URL}" == *googleapis.com/drive/v3/files/*/export* ]]; then
   if [[ -n "${OUT_FILE}" ]]; then printf 'Summary\nSome notes.\n' > "${OUT_FILE}"; echo "200"; else printf 'Summary\nSome notes.\n'; fi
   exit 0
 elif [[ "${URL}" == *googleapis.com/drive/v3/files* ]]; then
-  body='{"files":[{"id":"doc1","name":"Team \"Sync\" <notes>","createdTime":"2026-08-06T09:00:00Z","webViewLink":"https://docs.google.com/document/d/doc1"}]}'
+  body='{"files":[{"id":"doc1","name":"Team \"Sync\" <notes>","createdTime":"2026-08-06T09:00:00Z","webViewLink":"https://docs.google.com/document/d/doc1"},{"id":"doc2","name":"-Weekly sync","createdTime":"2026-08-06T10:00:00Z","webViewLink":"https://docs.google.com/document/d/doc2"}]}'
   if [[ -n "${OUT_FILE}" ]]; then echo "${body}" > "${OUT_FILE}"; echo "200"; else echo "${body}"; fi
   exit 0
 elif [[ "${URL}" == */search/jql* ]]; then
@@ -1011,12 +1011,15 @@ MOCKEOF
     return
   fi
 
-  local count name0
+  local count name0 name1
   count=$(jq '.doc_names | length' "${meta_file}")
-  if ! assert_eq "${test_name}: doc_names length" "1" "${count}"; then return; fi
+  if ! assert_eq "${test_name}: doc_names length" "2" "${count}"; then return; fi
   # The untrusted name round-trips as a safe JSON string (no injection, exact value).
   name0=$(jq -r '.doc_names[0]' "${meta_file}")
   if ! assert_eq "${test_name}: doc_names[0]" 'Team "Sync" <notes>' "${name0}"; then return; fi
+  # A dash-leading title must not be read by jq as an option (would abort the run).
+  name1=$(jq -r '.doc_names[1]' "${meta_file}")
+  if ! assert_eq "${test_name}: doc_names[1]" '-Weekly sync' "${name1}"; then return; fi
 
   echo "PASS: ${test_name}"
 }

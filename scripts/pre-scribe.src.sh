@@ -390,10 +390,14 @@ if [[ -f "${NOTES_DIR}/doc-0.url" ]]; then
   NOTES_URL=$(cat "${NOTES_DIR}/doc-0.url")
 fi
 
-# Serialize the processed meeting-document titles (issue #706). jq -n with
-# --args builds a JSON string array that escapes any character in the untrusted
-# titles; the ${arr[@]+...} form is safe under `set -u` when the array is empty.
-DOC_NAMES_JSON=$(jq -n '$ARGS.positional' --args ${DOC_NAMES[@]+"${DOC_NAMES[@]}"})
+# Serialize the processed meeting-document titles (issue #706) as a JSON string
+# array. Feed the untrusted titles through stdin (NUL-delimited), not as jq
+# `--args` positionals: jq reads a positional beginning with `-` (e.g. a doc
+# titled "-Weekly" or "-h") as an option and aborts. jq -Rs JSON-escapes every
+# character; the trailing NUL yields an empty final element that is filtered out.
+# The ${arr[@]+...} form keeps `printf` safe under `set -u` when the array is empty.
+DOC_NAMES_JSON=$(printf '%s\0' ${DOC_NAMES[@]+"${DOC_NAMES[@]}"} \
+  | jq -Rs 'split("\u0000") | map(select(length > 0))')
 
 jq -n \
   --arg cutoff "${CUTOFF_DATE}" \

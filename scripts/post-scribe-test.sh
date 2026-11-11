@@ -1526,6 +1526,53 @@ run_meeting_test "meeting/untrusted-title-mrkdwn-escaped" \
   '{"docs_downloaded":1,"doc_names":["<https://evil|x> & <y>"]}' \
   "&lt;https://evil¦x&gt; &amp; &lt;y&gt;" ""
 
+# Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
+# printf '%b', so an un-doubled "\c" would truncate the message (dropping the
+# counters and View run link) and "\n" would inject a line. The backslash is now
+# doubled before display, so the full message is still delivered.
+run_meeting_test "meeting/untrusted-title-backslash-no-truncate" \
+  '{"docs_downloaded":1,"doc_names":["Evil\\cTITLE"]}' \
+  "View run" ""
+
+# Empty title must be skipped without aborting the run (notification still sent).
+run_meeting_test "meeting/empty-title-skipped" \
+  '{"docs_downloaded":1,"doc_names":[""]}' \
+  "View run" "Meeting"
+
+rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
+
+# Step-summary (GitHub Markdown/HTML): an untrusted title with a Markdown link or
+# raw HTML must be escaped so it does not render as an active link (issue #706).
+run_md_summary_test() {
+  local test_name="$1" meta_json="$2" must_contain="$3" must_not="$4"
+  local run_dir="${TMPDIR}/run-${test_name//\//-}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${EMPTY_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
+  printf '%s' "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
+  local summary="${TMPDIR}/step-summary-${test_name//\//-}.md"
+  : > "${summary}"
+  local exit_code=0
+  (cd "${run_dir}" && GITHUB_STEP_SUMMARY="${summary}" bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"; cat "${TMPDIR}/stdout.log"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if ! grep -qF -- "${must_contain}" "${summary}"; then
+    echo "FAIL: ${test_name} — expected '${must_contain}' in step summary"; cat "${summary}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if grep -qF -- "${must_not}" "${summary}"; then
+    echo "FAIL: ${test_name} — unexpected '${must_not}' in step summary"; cat "${summary}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_md_summary_test "meeting/step-summary-markdown-link-escaped" \
+  '{"docs_downloaded":1,"doc_names":["[click](http://evil.example)"]}' \
+  '\[click\](http://evil.example)' '[click](http://evil.example)'
+run_md_summary_test "meeting/step-summary-html-escaped" \
+  '{"docs_downloaded":1,"doc_names":["<a href=\"http://evil\">x</a>"]}' \
+  '&lt;a href=' '<a href='
+
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 
 echo ""
