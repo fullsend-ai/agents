@@ -1579,6 +1579,18 @@ run_meeting_test "meeting/sensitive-title-backtick-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["123-45-`6789`"]}' \
   "Meeting: [redacted]" "123-45-6789"
 
+# Titles also carry the PII pre-scribe scrubs from note bodies (phone / IP /
+# card); a matching title is redacted, not published verbatim.
+run_meeting_test "meeting/sensitive-title-phone-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Call 555-123-4567 re Q3"]}' \
+  "Meeting: [redacted]" "555-123-4567"
+run_meeting_test "meeting/sensitive-title-ip-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Incident on 10.0.0.5 postmortem"]}' \
+  "Meeting: [redacted]" "10.0.0.5"
+run_meeting_test "meeting/sensitive-title-card-redacted" \
+  '{"docs_downloaded":1,"doc_names":["card 4111 1111 1111 1111 dispute"]}' \
+  "Meeting: [redacted]" "4111 1111 1111 1111"
+
 # Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
 # printf '%b', so an un-doubled "\c" would truncate the message (dropping the
 # counters and View run link) and "\n" would inject a line. The backslash is now

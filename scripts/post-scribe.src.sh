@@ -188,6 +188,24 @@ contains_sensitive() {
   return 1
 }
 
+# Sensitive-content check for meeting titles (issue #706). Titles are raw,
+# never-scrubbed Drive document names, so in addition to contains_sensitive
+# (keys, tokens, emails, SSNs, ...) also catch the PII that pre-scribe scrubs
+# from note bodies — phone numbers, IPv4 addresses and card-like digit runs —
+# since a matching title is displayed verbatim in Slack and the step summary.
+title_is_sensitive() {
+  local text="$1"
+  contains_sensitive "${text}" && return 0
+  # Phone (NANP, optional +1) and international
+  grep -qE '\b(\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b' <<< "${text}" && return 0
+  grep -qE '\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b' <<< "${text}" && return 0
+  # IPv4
+  grep -qE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' <<< "${text}" && return 0
+  # Card-like 13-19 digit run (optionally space/dash grouped)
+  grep -qE '\b([0-9][ -]?){13,19}\b' <<< "${text}" && return 0
+  return 1
+}
+
 contains_suspicious_unicode() {
   local text="$1"
   # Tag characters (U+E0000–E007F), zero-width chars, BOM, bidi overrides/isolates
@@ -659,7 +677,7 @@ if [[ -f "${SCRIBE_TITLES_FILE}" ]] && jq -e 'type == "object"' "${SCRIBE_TITLES
     # Explicit if (not `[[ … ]] && …`) so skipping an empty title keeps a success
     # status and cannot trip `set -e` on the loop body.
     if [[ -n "${_title}" ]]; then
-      if contains_sensitive "${_title}"; then
+      if title_is_sensitive "${_title}"; then
         MEETING_TITLES+=("[redacted]")
       else
         MEETING_TITLES+=("${_title}")
