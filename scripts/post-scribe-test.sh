@@ -1388,8 +1388,10 @@ run_no_notes_test() {
   : > "${CURL_LOG}"
   : > "${GH_LOG}"
 
+  # Scope the webhook to the command (not a top-level export) so it does not
+  # collide with run_slack_test's subshell-local use (shellcheck SC2030/SC2031).
   local exit_code=0
-  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  (cd "${run_dir}" && SCRIBE_SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_FAKE}" bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
   if [[ ${exit_code} -ne 0 ]]; then
     echo "FAIL: ${test_name} — exit code ${exit_code}"
     cat "${TMPDIR}/stdout.log"
@@ -1411,7 +1413,6 @@ run_no_notes_test() {
   echo "PASS: ${test_name}"
 }
 
-export SCRIBE_SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_FAKE}"
 export SCRIBE_MODE="all"
 
 export SCRIBE_DRY_RUN="true"
@@ -1441,7 +1442,6 @@ run_no_notes_test "no-notes/non-numeric-meta-no-false-positive" \
   "Topics processed" "No meeting notes found for today."
 
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
-unset SCRIBE_SLACK_WEBHOOK_URL
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
