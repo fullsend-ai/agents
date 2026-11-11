@@ -1534,6 +1534,12 @@ run_meeting_test "meeting/untrusted-title-backslash-no-truncate" \
   '{"docs_downloaded":1,"doc_names":["Evil\\cTITLE"]}' \
   "View run" ""
 
+# Hex escape must not be decoded by printf '%b' into a Slack mention/link that
+# bypasses the mrkdwn escaping — "\x3c!channel\x3e" must stay literal, not "<!channel>".
+run_meeting_test "meeting/untrusted-title-hex-escape-not-decoded" \
+  '{"docs_downloaded":1,"doc_names":["\\x3c!channel\\x3e ping"]}' \
+  "View run" "<!channel>"
+
 # Empty title must be skipped without aborting the run (notification still sent).
 run_meeting_test "meeting/empty-title-skipped" \
   '{"docs_downloaded":1,"doc_names":[""]}' \

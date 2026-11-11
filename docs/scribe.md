@@ -294,6 +294,7 @@ The agent produces JSON validated against `schemas/scribe-result.schema.json`:
 
 ### Notifications
 
+When `SCRIBE_SLACK_WEBHOOK_URL` is set, the post-script sends a Slack message
 (and writes a step summary) after each run. The message keeps the run-mode label
 (`LIVE` or `DRY RUN`) and a `View run` link.
 
