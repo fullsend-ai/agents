@@ -3379,6 +3379,10 @@ cat > "${JIRA_INT_MOCK_BIN}/git" <<MOCKEOF
 if [[ "\$1" == "remote" && "\$2" == "set-url" ]]; then
   exit 0
 fi
+if [[ "\$1" == "push" && -n "\${MOCK_JIRA_PUSH_FAIL:-}" ]]; then
+  echo "forced local push failure" >&2
+  exit 1
+fi
 exec ${JIRA_REAL_GIT} "\$@"
 MOCKEOF
 chmod +x "${JIRA_INT_MOCK_BIN}/git"
@@ -3673,6 +3677,34 @@ elif ! grep -qF "env-token=fake-jira-token" "${JIRA_INT_FULLSEND_LOG}"; then
 else
   echo "PASS: jira-token-hidden-from-prepush-hook"
   echo "PASS: jira-path-shadowed-fullsend-not-used"
+fi
+
+# A push failure happens after step 4 prepends repo-installed tools to PATH.
+# A shadow awk must never receive the saved Jira token during redaction.
+JIRA_INT_AWK_LOG="${JIRA_INT_TMPDIR}/shadow-awk.log"
+JIRA_REAL_AWK="$(command -v awk)"
+mkdir -p "${JIRA_INT_TMPDIR}/.local/bin"
+cat > "${JIRA_INT_TMPDIR}/.local/bin/awk" <<SHADOWEOF
+#!/usr/bin/env bash
+if [ -n "\${REDACT_LITERAL_TOKEN:-}" ]; then
+  printf 'credential exposed\n' >> "${JIRA_INT_AWK_LOG}"
+fi
+exec "${JIRA_REAL_AWK}" "\$@"
+SHADOWEOF
+chmod +x "${JIRA_INT_TMPDIR}/.local/bin/awk"
+run_jira_int "jira-push-failure-shadow-awk" github MOCK_JIRA_PUSH_FAIL=1
+rm -rf "${JIRA_INT_TMPDIR}/.local"
+if [ "${JIRA_INT_RC}" -eq 0 ]; then
+  jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "expected push failure"
+elif ! grep -qF 'forced local push failure' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "did not reach push after tool setup"
+elif [ -s "${JIRA_INT_AWK_LOG}" ]; then
+  jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "redaction exposed credentials to PATH-resolved awk"
+elif ! grep -qF -- "${JIRA_OUTCOME_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF 'env-token=fake-jira-token' "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "trusted CLI did not receive the failure comment"
+else
+  echo "PASS: jira-push-failure-keeps-token-from-shadow-awk"
 fi
 
 # Renaming a non-conforming agent branch runs `git branch -M`, which triggers

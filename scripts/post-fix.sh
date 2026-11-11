@@ -1314,31 +1314,10 @@ _redact_literal_token() {
     return 0
   fi
 
-  export REDACT_LITERAL_TOKEN="${token}"
-  awk '
-    BEGIN {
-      token = ENVIRON["REDACT_LITERAL_TOKEN"]
-      repl = "[REDACTED]"
-    }
-    {
-      s = $0
-      while ((i = index(s, token)) > 0) {
-        s = substr(s, 1, i - 1) repl substr(s, i + length(token))
-      }
-      print s
-    }
-  ' <<< "${detail}" | {
-    local line result=""
-    while IFS= read -r line || [ -n "${line}" ]; do
-      if [ -n "${result}" ]; then
-        result="${result}"$'\n'"${line}"
-      else
-        result="${line}"
-      fi
-    done
-    printf '%s' "${result}"
-  }
-  unset REDACT_LITERAL_TOKEN
+  # Keep credentials inside Bash: PATH may include repo-installed tools by
+  # the time a failure is reported. Quoting the pattern makes glob characters
+  # in tokens literal, and replacement text is not scanned again.
+  printf '%s' "${detail//"${token}"/[REDACTED]}"
 }
 
 # Strip tokens and truncate noisy command output before posting publicly.
