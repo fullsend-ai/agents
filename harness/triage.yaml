@@ -34,19 +34,23 @@ slug: fullsend-ai-triage
 # dispatches triage also matches Jira issues opened or edited.
 # harness/triggertest/trigger_test.go evaluates this against the
 # NormalizedEvent fixtures.
+# DRAFT: a work item labelled `cve` belongs to the cve agent.
+# Triage reads the whole work item; the cve agent's pre-script is what keeps
+# tracker text away from a model, so triage must not run first.
 trigger: >
-  (event.entity.kind == "work_item"
-    && event.transition.kind in ["opened", "edited"]
-    && event.actor.kind == "human")
-  || (event.entity.kind == "work_item"
-    && event.transition.kind == "label_changed"
-    && event.transition.label.name == "ready-for-triage"
-    && event.transition.label.action == "added")
-  || (event.entity.kind in ["work_item", "change_proposal"]
-    && event.transition.kind == "comment_added"
-    && has(event.transition.comment.command)
-    && event.transition.comment.command == "/fs-triage"
-    && event.actor.kind == "human")
+  !("cve" in event.state.labels)
+  && ((event.entity.kind == "work_item"
+      && event.transition.kind in ["opened", "edited"]
+      && event.actor.kind == "human")
+    || (event.entity.kind == "work_item"
+      && event.transition.kind == "label_changed"
+      && event.transition.label.name == "ready-for-triage"
+      && event.transition.label.action == "added")
+    || (event.entity.kind in ["work_item", "change_proposal"]
+      && event.transition.kind == "comment_added"
+      && has(event.transition.comment.command)
+      && event.transition.comment.command == "/fs-triage"
+      && event.actor.kind == "human"))
 
 host_files:
   - src: env/gcp-vertex.env

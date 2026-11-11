@@ -1,0 +1,186 @@
+---
+# harness/cve.yaml — DRAFT skeleton (not registered, not tested).
+#
+# Assess one public vulnerability finding against one target commit and
+# propose a VEX-shaped verdict plus, when affected, a remediation plan.
+# It never changes code. Remediation is handed to the EXISTING code agent
+# through the ready-to-code label, so this harness only needs the triage
+# role (issues, labels, comments) — no new mint role (ADR 0124).
+#
+# Flow:
+#   pre_script  : disclosure guard (fail closed) → normalize the work item
+#                 into cve-finding.json (validated fields only, no tracker
+#                 free text) → fetch public advisories (OSV + aliases, and
+#                 the adopter's vendor VEX sources) on the host, where
+#                 egress is allowed
+#   agent       : cve-assessment skill + cve-evidence tools (pi plugin, or the
+#                 same CLI through Bash on the Claude runtime)
+#   post_script : binding check → sticky comment on the source tracker →
+#                 labels → optional ready-to-code promotion
+agent: agents/cve.md
+doc: docs/cve.md
+model: opus
+effort: high
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:850b728ce6e6269884a96d7c81bfbcbec3a75f6e4c0a1809ece6f9c6d628ef44
+policy: policies/base.yaml
+providers:
+  - vertex-ai
+  - package-registries
+  - openai
+
+role: triage
+slug: fullsend-ai-triage
+
+# The assessment reads the repository; enforcement, not just a prompt request.
+readonly_repo: true
+
+# Dispatch: the `cve` label added to a work item (by a human, the Dependabot
+# bridge workflow, or the Jira poller), or `/fs-cve` from a human.
+# Label-added events skip the bot-role lookup, so the bridge workflow's
+# github-actions[bot] can start a run without a mint registration.
+# Embargo/visibility is NOT checked here: pre-cve owns that and fails closed.
+trigger: >
+  event.entity.kind == "work_item"
+    && !has(event.entity.linked_change_proposal)
+    && ((event.transition.kind == "label_changed"
+        && event.transition.label.name == "cve"
+        && event.transition.label.action == "added")
+      || (event.transition.kind == "comment_added"
+        && has(event.transition.comment.command)
+        && event.transition.comment.command == "/fs-cve"
+        && event.actor.kind == "human"))
+
+host_files:
+  - src: env/gcp-vertex.env
+    dest: /sandbox/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/.gcp-credentials.json
+    optional: true
+  - src: ${GCP_OIDC_TOKEN_FILE}
+    dest: /sandbox/workspace/.gcp-oidc-token
+    optional: true
+  # Written by pre-cve on the host; host_files are copied after the
+  # pre-script runs (same pattern as harness/scribe.yaml). host_files copies
+  # single files, so the advisories travel as one JSON bundle.
+  - src: ${RUNNER_TEMP}/fullsend-cve-stage/cve-finding.json
+    dest: /sandbox/workspace/cve-finding.json
+  - src: ${RUNNER_TEMP}/fullsend-cve-stage/cve-evidence.json
+    dest: /sandbox/workspace/cve-evidence.json
+  # The ticket's own text, or {"staged": false, "reason": …}. pre-cve stages
+  # the text only where it cannot become more visible than it already is.
+  - src: ${RUNNER_TEMP}/fullsend-cve-stage/cve-ticket.json
+    dest: /sandbox/workspace/cve-ticket.json
+  # The deterministic evidence CLI, at a path that is the same on every
+  # runtime (a skill's directory is not: each runtime has its own config dir).
+  - src: scripts/cve/cve-evidence.py
+    dest: /sandbox/workspace/bin/cve-evidence.py
+
+pre_script: scripts/pre-cve.sh
+post_script: scripts/post-cve.sh
+
+skills:
+  - skills/cve-assessment
+
+# Pi loads this extension (ADR 0094). The Claude runtime names and skips it;
+# the skill then calls the same CLI through Bash, so the agent still works.
+# Pi caveats this design follows:
+#   - agents/cve.md declares NO `tools:` — a declared list hides extension
+#     tools on Pi (docs/runtimes/pi.md "Extension tools and tools:").
+#   - sub-agents do not inherit harness plugins, so the parent calls
+#     cve_evidence_* tools and passes results to any child as text.
+plugins:
+  - plugins/cve-evidence
+
+validation_loop:
+  script: scripts/validate-output-schema.sh
+  preflight_check: 'python3 -c "import jsonschema"'
+  schema: schemas/cve-result.schema.json
+  max_iterations: 2
+  feedback_mode: append
+
+env:
+  runner:
+    TARGET_REPO_DIR: "${TARGET_REPO_DIR}"
+    REPO_FULL_NAME: "${REPO_FULL_NAME}"
+    ISSUE_NUMBER: "${ISSUE_NUMBER}"
+    RUNNER_TEMP: "${RUNNER_TEMP}"
+    # off | on. on = post-cve adds ready-to-code for a ready known_affected
+    # plan. Default off: a human reviews the verdict and applies the label.
+    CVE_AUTO_CODE: "off"
+    # Behavior settings are harness defaults (fullsend ADR 0080): literals
+    # here, overridden per repository or organization by a harness that
+    # composes this one with `base:` and restates the key. They are not
+    # config.yaml fields and are not set from the CI workflow (ADR 0081).
+    #
+    # auto | on | off. auto stages the ticket's title, description and
+    # comments when the target repository is private or internal, or the
+    # tracker is itself public. `on` for a public repository with a private
+    # tracker is UNSAFE: private text can surface in public comments, pull
+    # requests and logs.
+    CVE_TICKET_TEXT: "auto"
+    # Maintained branches, exact names, comma-separated. "none" = assess only
+    # the branch that is checked out. Otherwise a work item with no branch
+    # becomes a parent and gets one child issue per branch.
+    CVE_BRANCHES: "none"
+    # Branches still synced from another branch: never assessed or changed
+    # on their own. "none" = no such branch.
+    CVE_BRANCHES_FOLLOW: "none"
+    # The prefix of the Jira label that names a tracker's component, for
+    # example "component:". "none" = take no component from labels.
+    CVE_COMPONENT_LABEL_PREFIX: "none"
+    # Vendor VEX sources: publishers of one CSAF VEX document per CVE. Each
+    # entry is name=url, separated by spaces or commas. In the URL, {id} is
+    # the CVE id in lower case, {ID} the id as written, {year} its year:
+    #   "acme=https://security.example.com/csaf/vex/{year}/{id}.json"
+    # https only. "none" = fetch no vendor VEX. The agent knows the CSAF
+    # format and no particular vendor (scripts/lib/cve-vex.lib.sh).
+    CVE_VEX_SOURCES: "none"
+    # on | off. off withholds every vendor VEX file, for accuracy evaluation
+    # on closed tickets where that file states the answer.
+    CVE_VENDOR_VEX: "on"
+    # Jira security levels that may be read when the repository is private
+    # or internal, as exact names separated by commas. "none" keeps the
+    # strict rule: any security level stops the run.
+    CVE_JIRA_SECURITY_LEVELS: "none"
+  sandbox:
+    CVE_FINDING: /sandbox/workspace/cve-finding.json
+    CVE_EVIDENCE: /sandbox/workspace/cve-evidence.json
+    CVE_TICKET: /sandbox/workspace/cve-ticket.json
+    TIMEOUT_SECONDS: "2400"
+
+timeout_minutes: 40
+
+overlays:
+  - when: 'runtime.forge == "github"'
+    providers:
+      - github-ro
+    skills:
+      - skills/github-forge
+    env:
+      runner:
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        GH_TOKEN: "${GH_TOKEN}"
+        FULLSEND_FORGE: github
+        FULLSEND_TRACKER: github
+  - when: 'runtime.forge == "gitlab"'
+    skills:
+      - skills/gitlab-forge
+    env:
+      runner:
+        ISSUE_URL: "${GITLAB_ISSUE_URL}"
+        GITLAB_TOKEN: "${GITLAB_TOKEN}"
+        FULLSEND_FORGE: gitlab
+        FULLSEND_TRACKER: gitlab
+  # Jira-sourced: mirror harness/code.yaml. The sandbox gets no Jira
+  # credential and no Jira text — pre-cve stages validated fields only.
+  - when: 'has(event.source) && event.source.system == "jira"'
+    env:
+      runner:
+        JIRA_BASE_URL: "${JIRA_BASE_URL}"
+        JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"
+        JIRA_USER_EMAIL: "${FULLSEND_JIRA_EMAIL}"
+        FULLSEND_DIR: "${FULLSEND_DIR}"
+        ISSUE_URL: "${FULLSEND_WORK_ITEM_URL}"
+        ISSUE_NUMBER: ""
+        FULLSEND_TRACKER: jira

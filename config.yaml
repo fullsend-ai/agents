@@ -34,3 +34,5 @@ agents:
     model: sonnet
   - source: harness/prioritize.yaml
     model: sonnet
+  # DRAFT: the cve assessment agent, registered for local runs.
+  - source: harness/cve.yaml
