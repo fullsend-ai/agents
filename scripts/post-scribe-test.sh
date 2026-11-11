@@ -1526,6 +1526,13 @@ run_meeting_test "meeting/untrusted-title-mrkdwn-escaped" \
   '{"docs_downloaded":1,"doc_names":["<https://evil|x> & <y>"]}' \
   "&lt;https://evil¦x&gt; &amp; &lt;y&gt;" ""
 
+# Control chars (VT \u000b), Unicode line separator (U+2028) and bidi override
+# (U+202E) must be stripped from the Slack title (they reach the title as raw
+# bytes after jq decodes the JSON escapes). If stripped, the title is contiguous.
+run_meeting_test "meeting/untrusted-title-control-unicode-stripped" \
+  '{"docs_downloaded":1,"doc_names":["A\u000bB C‮D"]}' \
+  "Meeting: ABCD" ""
+
 # Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
 # printf '%b', so an un-doubled "\c" would truncate the message (dropping the
 # counters and View run link) and "\n" would inject a line. The backslash is now

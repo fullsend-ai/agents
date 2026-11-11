@@ -294,20 +294,27 @@ The agent produces JSON validated against `schemas/scribe-result.schema.json`:
 
 ### Notifications
 
-When `SCRIBE_SLACK_WEBHOOK_URL` is set, the post-script sends a Slack message
-(and writes a step summary) after each run. The message keeps the run-mode label
-(`LIVE` or `DRY RUN`) and a `View run` link.
+The post-script produces two independent outputs after each run:
 
-When the run processed one or more meeting documents, the message includes a
+- a **step summary**, written whenever `GITHUB_STEP_SUMMARY` is available (i.e.
+  on any GitHub Actions run), regardless of whether a Slack webhook is set; and
+- a **Slack message**, sent only when `SCRIBE_SLACK_WEBHOOK_URL` is set, which
+  keeps the run-mode label (`LIVE` or `DRY RUN`) and a `View run` link.
+
+When the run processed one or more meeting documents, **both** outputs include a
 **`Meeting:`** line naming the processed document(s) — a single
 `Meeting: <title>` for one doc, or a `Meetings (N):` list for several — so
 operators can tell which meeting produced the results without opening the Actions
 run. The titles come from the Drive document names that `pre-scribe` records in
-`scribe-meta.json` (`doc_names`). Document names are **untrusted input**: they
-are sanitized before display (control characters and ANSI escapes stripped so a
-crafted title cannot inject extra lines, and Slack mrkdwn/link metacharacters
-escaped). If the metadata or `doc_names` field is absent, the message omits the
-meeting line and is otherwise unchanged.
+`scribe-meta.json` (`doc_names`). Document names are **untrusted input** and are
+sanitized before display: control characters, ANSI escapes, and dangerous
+Unicode (line/paragraph separators, bidi overrides, zero-width and tag
+characters) are stripped so a crafted title cannot inject extra lines or reorder
+text. In Slack, mrkdwn/link metacharacters are then escaped; in the step summary,
+each title is shown inside an inline code span (backticks), which renders it
+literally and suppresses Markdown links, raw HTML, and bare-URL autolinking. If
+the metadata or `doc_names` field is absent, the meeting line is omitted and the
+outputs are otherwise unchanged.
 
 The concise **"No meeting notes found for today."** message replaces the usual
 activity counters only when **both** conditions hold: the runner-side

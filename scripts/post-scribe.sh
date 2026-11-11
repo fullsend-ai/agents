@@ -1268,13 +1268,27 @@ sanitize_slack_mrkdwn() {
   printf '%s' "${val}"
 }
 
+# Strip the characters that let untrusted text (e.g. Drive document titles,
+# issue #706) break out of a single display line or hide/reorder content:
+# - CSI ANSI escape sequences;
+# - every C0 control char and DEL (\000-\037\177), which covers CR, LF, VT, FF,
+#   TAB and a bare ESC — so a title cannot inject extra lines;
+# - Unicode line/paragraph separators (U+2028/U+2029), bidi overrides and
+#   isolates (U+202A-202E, U+2066-2069), zero-width chars, BOM, and tag chars
+#   (the same class as contains_suspicious_unicode).
+# Shared by the Slack and step-summary sanitizers so both paths are equally
+# strong. perl is already a runner dependency (see pre-scribe.sh).
+strip_unsafe_chars() {
+  printf '%s' "$1" \
+    | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
+    | tr -d '\000-\037\177' \
+    | perl -CS -pe 's/[\x{2028}\x{2029}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{E0000}-\x{E007F}]//g'
+}
+
 # Sanitize untrusted text for a Slack mrkdwn body line (e.g. Drive document
-# titles, issue #706). Strip CR/LF — otherwise a crafted title could inject
-# extra message lines — and ANSI escapes, then escape mrkdwn metacharacters.
+# titles, issue #706): strip unsafe chars, then escape mrkdwn metacharacters.
 sanitize_slack_text() {
-  local v
-  v=$(printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
-  sanitize_slack_mrkdwn "${v}"
+  sanitize_slack_mrkdwn "$(strip_unsafe_chars "$1")"
 }
 
 # Sanitize an untrusted title for display inside an inline code span in the
@@ -1282,13 +1296,11 @@ sanitize_slack_text() {
 # the result in backticks; a code span renders its content literally, which
 # suppresses Markdown links, raw HTML, AND GitHub bare-URL autolinking in one
 # step, while keeping readable text like "100% sync" or "Q3 :: Planning" intact
-# (so _gha_sanitize's `%`/`::` encoding is deliberately not used here). We only
-# strip ANSI sequences and C0/DEL control chars (so a title cannot break the line
-# or the span) and remove backticks (so the title cannot close the code span).
+# (so _gha_sanitize's `%`/`::` encoding is deliberately not used here). Strip
+# unsafe chars, and additionally remove backticks so the title cannot close the
+# code span.
 sanitize_md_text() {
-  printf '%s' "$1" \
-    | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
-    | tr -d '\000-\037\177\140'
+  strip_unsafe_chars "$1" | tr -d '\140'
 }
 
 CONTENT_GATE_REJECTIONS=0
