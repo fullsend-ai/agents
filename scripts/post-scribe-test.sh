@@ -1441,6 +1441,18 @@ run_no_notes_test "no-notes/non-numeric-meta-no-false-positive" \
   '{"docs_downloaded":"nan"}' "${EMPTY_RESULT}" \
   "Topics processed" "No meeting notes found for today."
 
+# Invalid JSON must hit the `jq -e .` guard and not trigger the no-notes message.
+run_no_notes_test "no-notes/malformed-meta-no-false-positive" \
+  '{"docs_downloaded":' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+# Zero-document search but the agent still produced an actionable result: the
+# post-script acts on it, so the activity report must win over the no-notes line.
+run_no_notes_test "no-notes/empty-search-with-actionable-result-keeps-report" \
+  '{"docs_downloaded":0}' \
+  '{"topics":[{"topic":"leftover","summary":"s","confidence":0.99,"public_safe":true,"public_safe_category":null,"existing_issue":1}],"new_issues":[]}' \
+  "Topics processed" "No meeting notes found for today."
+
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 
 echo ""

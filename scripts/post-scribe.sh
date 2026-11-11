@@ -1600,14 +1600,22 @@ RUN_MODE_LABEL="LIVE"
 # matching-document count; a confirmed numeric 0 is the successful empty-search
 # path. Trust only a well-formed meta with a numeric docs_downloaded: missing,
 # malformed, or non-numeric metadata must NOT be read as "no notes", and a
-# search/export failure never reaches this file with docs_downloaded: 0. This is
-# deliberately independent of TOPIC_COUNT, so a run that found notes but
-# extracted zero topics still gets the normal activity report.
+# search/export failure never reaches this file with docs_downloaded: 0.
+#
+# The empty-search *signal* comes from the metadata, not the topic count, so a
+# run that found notes but extracted zero topics still gets the normal report.
+# The concise *message* additionally requires the run to have produced nothing
+# (no topics, comments, new issues, or gate rejections): a zero-document search
+# should yield an empty result, but if the agent produced actionable output
+# anyway, the post-script acts on it, so fall back to the activity report rather
+# than hide that work behind "No meeting notes found".
 SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
 NO_NOTES=false
 if [[ -f "${SCRIBE_META_FILE}" ]] && jq -e . "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
   if [[ "$(jq -r '(.docs_downloaded | numbers) // "nan"' "${SCRIBE_META_FILE}")" == "0" ]]; then
-    NO_NOTES=true
+    if [[ "${TOPIC_COUNT}" -eq 0 && ${#COMMENT_TOPICS[@]} -eq 0 && ${#NEW_ISSUE_TITLES[@]} -eq 0 && "${REJECTED}" -eq 0 ]]; then
+      NO_NOTES=true
+    fi
   fi
 fi
 

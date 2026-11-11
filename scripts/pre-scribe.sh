@@ -1105,6 +1105,12 @@ META_FILE="${WORK_DIR}/scribe-meta.json"
 
 mkdir -p "${NOTES_DIR}"
 
+# Clear any scribe-meta.json left by a previous run before this run can fail.
+# This script exits non-zero on an auth/search/export failure *before* writing
+# META_FILE, so on a reused workspace a stale docs_downloaded: 0 could otherwise
+# be read by post-scribe as a confirmed empty search for this run (issue #1618).
+rm -f "${META_FILE}"
+
 LOOKBACK="${SCRIBE_LOOKBACK_HOURS:-3}"
 # RFC3339 with Z suffix — matches the Go code's time.RFC3339 format
 CUTOFF_DATE=$(date -u -d "${LOOKBACK} hours ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
