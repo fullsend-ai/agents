@@ -396,8 +396,8 @@ using the forge-appropriate command from your forge skill (e.g.,
 `curl` on GitLab).
 
 - **Open PR/MR exists for this branch:** The work is already done and under
-  review. Set `no_pr_reason` (see `agents/code.md`), validate, and **stop**.
-  Recreate step 3’s result file if a validation retry cleared it. Do not add
+  review. Recreate step 3's result file if a validation retry cleared it, then
+  set `no_pr_reason` (see `agents/code.md`), validate, and **stop**. Do not add
   commits to a working implementation; no new commit signals no new work.
 
   ```bash
