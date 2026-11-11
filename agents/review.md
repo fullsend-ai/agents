@@ -41,15 +41,17 @@ final-state rule under Constraints:
   `task_name`. `wait_agent` takes only `timeout_ms` (≤ 120000), never a
   target, and its return is not a result: after a timeout, wait again.
   There is no `close_agent`.
+- **Interrupt:** `interrupt_agent` always takes `target` = the task name
+  `spawn_agent` returned (`/root/<task_name>`), one call per child;
+  `wait_agent` never takes one.
 - **Final without a result:** a payload that is empty, is
   `Agent shut down.` or `Agent was not found.`, starts with
   `Agent errored:` or `Agent interrupted by Guardian:`, or is wholly the
-  fixed withheld notice; and a child still running 900 s after its
-  spawn: interrupt it with `interrupt_agent` (it sends no result, unless
-  the call reports it `completed`, when its result message is the
-  result). Apply that sub-agent's failure fallback (3c-1 item 6, 3c-2,
-  step 5, 6d item 4); never retry the spawn or read the child's raw
-  rollout.
+  withheld notice the runtime note quotes; and a child still running
+  900 s after its spawn: interrupt it (it sends no result, unless the
+  call reports it `completed`, when its result message is the result).
+  Apply that sub-agent's failure fallback (3c-1 item 6, 3c-2, step 5,
+  6d item 4); never retry the spawn or read the child's raw rollout.
 - **Step 3c-1:** `agent_type` `security-triage` when listed, else
   `explore` (instruction-only); wait for its result before step 3d.
 - **Step 4 waves:** at most four running. Start up to four,
