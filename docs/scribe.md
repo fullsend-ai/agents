@@ -315,9 +315,12 @@ characters) are stripped so a crafted title cannot inject extra lines or reorder
 text. In Slack, mrkdwn/link metacharacters are then escaped; in the step summary,
 each title is shown inside an inline code span (backticks), which renders it
 literally and suppresses Markdown links, raw HTML, and bare-URL autolinking.
-Each title is also run through the same sensitive-content check that gates topics
-and new issues (emails, SSNs, keys/tokens, and similar patterns); a title that
-matches is shown as `[redacted]` rather than published. If the metadata or
+Each title is also run through a sensitive-content check: the same check that
+gates topics and new issues (emails, SSNs, keys/tokens, and similar patterns),
+plus — because titles are raw, never-scrubbed Drive names — the phone-number,
+IPv4-address and card-number detection that `pre-scribe` applies to note bodies.
+A title that matches any of these is shown as `[redacted]` rather than published.
+If the metadata or
 `doc_names` field is absent, the meeting line is omitted and the outputs are
 otherwise unchanged.
 
