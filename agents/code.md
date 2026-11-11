@@ -74,7 +74,7 @@ bump after the upstream change lands. When you find this:
    and path the reference resolves to. A similarly named file in this
    repository is not the target unless the reference resolves to it.
 2. If the upstream change has not landed in a newer commit reachable from
-   the intended upstream reference, add `pr_body` naming the external
+   the intended upstream reference, add `no_pr_reason` naming the external
    repository, file, and exact change needed. If the reference is pinned,
    include its current SHA and say this repository's pin must be bumped after
    the upstream change lands. Keep this escalation under 25 lines, put the
@@ -125,7 +125,7 @@ PR, even if the issue did not separately ask for the pin bump.
 
 You MUST produce a JSON file at `$FULLSEND_OUTPUT_DIR/agent-result.json`
 with `target_branch` (required) and optionally `pr_body` for the PR
-description, or, when you make no commit, a short explanation of why (see
+description, or `no_pr_reason` when you make no commit (see
 "Stopping without a commit"). Delivery of no-commit context is described in
 `docs/code.md`. The `code-implementation` skill describes the schema and
 the exact steps where you write each field. The post-script reads this
@@ -147,11 +147,11 @@ JSON you have and exit.
 Whenever you stop with no commits ahead of the target branch (including
 commits from an earlier run) and a clean working tree (no `ready-to-code`
 signal, a gate label, the bug is already fixed, an open PR already covers
-the issue, the issue is blocked or lacks acceptance criteria), set `pr_body`
+the issue, the issue is blocked or lacks acceptance criteria), set `no_pr_reason`
 to a short explanation before validating. The
 post-script posts it on the source issue (see `docs/code.md` for which
 trackers) as the reason no PR was opened. Put
-the reason first, then what would unblock the work, in under 25 lines, with
+the reason first, then what would unblock the work, in under 25 lines and at most 4,000 characters, with
 no credentials, tokens, or secret-bearing URLs. For a repository-boundary
 escalation, use the format in "Repository boundary". If you stop before the
 skill's step 3 wrote the result file, run step 3's default-branch discovery
@@ -159,12 +159,12 @@ and write the file as step 3 does first; a guessed `target_branch` can fail
 the run. Then add the explanation:
 
 ```bash
-pr_body=$(cat <<'PRBODY'
+no_pr_reason=$(cat <<'PRBODY'
 <why no PR, then what would unblock it>
 PRBODY
 )
 f="${FULLSEND_OUTPUT_DIR}/agent-result.json"
-jq --arg pb "$pr_body" '. + {pr_body: $pb}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+jq --arg pb "$no_pr_reason" '. + {no_pr_reason: $pb}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
 fullsend-check-output "$f"
 ```
 
@@ -181,7 +181,7 @@ Your exit state is the handoff contract:
 - **No commit** → the post-script reads your transcript and exit code to
   report the failure. Structured output should still be written when possible
   so the post-script knows which branch was targeted. With a clean working
-  tree, `pr_body` carries the reason (see "Stopping without a commit"); for
+  tree, `no_pr_reason` carries the reason (see "Stopping without a commit"); for
   a repository-boundary escalation, the upstream change to report.
 
 ## Validation retry behavior

@@ -561,13 +561,13 @@ post_noop_comment() {
   local run_url
   run_url="$(forge_get_workflow_run_url)"
 
-  # Try to extract agent reasoning from result file.
+  # Prefer the explicit no-PR reason; retain pr_body for older agent outputs.
   # Note: RESULT_FILE is set at the top of the script and may point to a
   # prior iteration's output when the current run exits before producing one.
   # This is acceptable — context is sanitized and the comment is best-effort.
   local agent_context=""
   if [ -n "${RESULT_FILE:-}" ] && [ -f "${RESULT_FILE}" ]; then
-    agent_context="$(jq -r '.pr_body // empty' "${RESULT_FILE}" 2>/dev/null || true)"
+    agent_context="$(jq -r '.no_pr_reason // .pr_body // empty' "${RESULT_FILE}" 2>/dev/null || true)"
   fi
 
   local detail_block=""

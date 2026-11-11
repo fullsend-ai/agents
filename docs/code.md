@@ -71,10 +71,11 @@ This separation ensures the agent never has direct write access to the repositor
 
 When the fix belongs in another repository, the agent reports the upstream
 repository, file, and required change without making a commit or restructuring
-this repository. The agent also sets `pr_body` to a short explanation
+this repository. The agent also sets `no_pr_reason` to a short explanation
 whenever it stops without a commit for another reason (gate label, already
 fixed, blocked, missing acceptance criteria). On GitHub, GitLab and Jira
-source issues, the no-PR path sanitizes `pr_body`, keeps only its last 30
+source issues, the no-PR path prefers `no_pr_reason`, falling back to `pr_body` for older
+agent outputs. It sanitizes the selected explanation, keeps only its last 30
 lines by default, and posts it as "Agent context" under a generic "No PR
 created — agent determined no changes needed" notice with retry guidance.
 Keep escalation text under 25 lines, put the repository, file, and required

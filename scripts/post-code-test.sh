@@ -3815,9 +3815,9 @@ else
 fi
 
 # No-PR outcomes reach the Jira issue (#1953). A run that stops without a
-# feature branch writes the no-op reason, with the agent's pr_body as
+# feature branch writes the no-op reason, with the agent's no_pr_reason as
 # context, to its own sticky outcome comment, never to the PR-link comment.
-JIRA_NOOP_RESULT='{"target_branch":"main","pr_body":"Stopped: the issue has no acceptance criteria."}'
+JIRA_NOOP_RESULT='{"target_branch":"main","no_pr_reason":"Stopped: the issue has no acceptance criteria."}'
 for _jira_noop_forge in github gitlab; do
   JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${JIRA_NOOP_RESULT}" \
     run_jira_int "jira-noop-${_jira_noop_forge}" "${_jira_noop_forge}"
@@ -3843,6 +3843,24 @@ for _jira_noop_forge in github gitlab; do
   fi
 done
 
+# Prefer the new field when both are present; preserve old-output compatibility.
+for _reason_case in preferred legacy absent; do
+  case "${_reason_case}" in
+    preferred) _reason_json='{"target_branch":"main","no_pr_reason":"Explicit stop reason","pr_body":"Legacy stop reason"}'; _reason_expected='Explicit stop reason' ;;
+    legacy) _reason_json='{"target_branch":"main","pr_body":"Legacy stop reason"}'; _reason_expected='Legacy stop reason' ;;
+    absent) _reason_json='{"target_branch":"main"}'; _reason_expected="Agent did not create a feature branch" ;;
+  esac
+  JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${_reason_json}" \
+    run_jira_int "jira-reason-${_reason_case}" github
+  if [ "${JIRA_INT_RC}" -ne 0 ] || ! grep -qF "${_reason_expected}" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-reason-${_reason_case}" "expected selected reason"
+  elif [ "${_reason_case}" = preferred ] && grep -qF 'Legacy stop reason' "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-reason-${_reason_case}" "legacy field overrode explicit reason"
+  else
+    echo "PASS: jira-reason-${_reason_case}"
+  fi
+done
+
 # Agent context that fails the secret scan is left out of the Jira comment;
 # the generic reason is still written.
 JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${JIRA_NOOP_RESULT}" \
@@ -3861,7 +3879,7 @@ fi
 # Known tokens in the context, including the Jira token itself, are redacted
 # before the Jira write.
 JIRA_INT_NO_BRANCH=1 \
-  JIRA_INT_RESULT_JSON='{"target_branch":"main","pr_body":"Blocked. token ghp_abcdefghijklmnopqrstuvwxyz0123456789\nleak: fake-jira-token"}' \
+  JIRA_INT_RESULT_JSON='{"target_branch":"main","no_pr_reason":"Blocked. token ghp_abcdefghijklmnopqrstuvwxyz0123456789\nleak: fake-jira-token"}' \
   run_jira_int "jira-noop-redacted" github
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-noop-context-sanitized" "post-code failed"

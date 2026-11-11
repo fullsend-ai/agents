@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "code-result.schema.json",
   "title": "Code Agent Result",
-  "description": "Structured output from the code agent documenting the target branch and PR body for PR creation.",
+  "description": "Structured output from the code agent documenting the target branch, PR body, or reason no PR is needed.",
   "type": "object",
   "required": ["target_branch"],
   "additionalProperties": false,
@@ -15,7 +15,13 @@
     "pr_body": {
       "type": "string",
       "maxLength": 60000,
-      "description": "PR description used as PR body instead of commit body. Supports markdown formatting and template-compliant structure without gitlint line-length constraints. When the agent stops with no commit and a clean working tree, a short explanation of why, posted with the no-PR notice (see docs/code.md)."
+      "description": "PR description used as PR body instead of commit body. Supports markdown formatting and template-compliant structure without gitlint line-length constraints."
+    },
+    "no_pr_reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000,
+      "description": "Explain why no pull request is needed or why implementation could not proceed, including any clarification or next step needed. Set when stopping without a commit and with a clean working tree."
     },
     "closes_issue": {
       "type": "boolean",
