@@ -1034,6 +1034,80 @@ MOCKEOF
   echo "PASS: ${test_name}"
 }
 
+# ===================================================================
+# Phone-number scrubbing — run the production sed expressions
+# ===================================================================
+# The Drive/notes loop that applies the PII scrubbers cannot run here
+# (no Drive credentials), so the two phone expressions are read verbatim
+# from the script under test rather than copied into this file. All
+# numbers below are synthetic (555 exchange / UK drama range).
+PHONE_US_EXPR=""
+PHONE_INTL_EXPR=""
+load_phone_scrub_exprs() {
+  local line expr re="sed -E '([^']*)'"
+  while IFS= read -r line; do
+    [[ "${line}" =~ ${re} ]] || continue
+    expr="${BASH_REMATCH[1]}"
+    case "${expr}" in
+      's/\b(\+?1[-. ]?)?'*) PHONE_US_EXPR="${expr}" ;;
+      's/\+'*) PHONE_INTL_EXPR="${expr}" ;;
+    esac
+  done < "${PRE_SCRIPT}"
+}
+load_phone_scrub_exprs
+
+# Apply both phone expressions in production order (US, then intl).
+scrub_phone() {
+  printf '%s\n' "$1" | sed -E "${PHONE_US_EXPR}" | sed -E "${PHONE_INTL_EXPR}"
+}
+
+test_phone_scrub_exprs_extracted() {
+  local test_name="phone-scrub/exprs-extracted"
+  if [[ -z "${PHONE_US_EXPR}" || -z "${PHONE_INTL_EXPR}" ]]; then
+    echo "FAIL: ${test_name} — could not find both phone expressions in ${PRE_SCRIPT}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # GNU sed ERE treats \d as a literal 'd', not a digit class.
+  if [[ "${PHONE_US_EXPR}${PHONE_INTL_EXPR}" == *'\d'* ]]; then
+    echo "FAIL: ${test_name} — phone expressions use unsupported \\d"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+test_phone_scrub_us() {
+  local test_name="phone-scrub/us"
+  local out
+  out=$(printf '%s\n' 'Call 212-555-0199 please' | sed -E "${PHONE_US_EXPR}")
+  if ! assert_eq "${test_name}: dashed" 'Call [REDACTED] please' "${out}"; then return; fi
+  # Leading "(" survives because \b anchors on the first digit; the
+  # digits are what matter.
+  out=$(printf '%s\n' 'Call (212) 555-0199 now' | sed -E "${PHONE_US_EXPR}")
+  if ! assert_eq "${test_name}: parenthesized" 'Call ([REDACTED] now' "${out}"; then return; fi
+  out=$(printf '%s\n' '+1 212.555.0199' | sed -E "${PHONE_US_EXPR}")
+  if ! assert_eq "${test_name}: country code" '+[REDACTED]' "${out}"; then return; fi
+  echo "PASS: ${test_name}"
+}
+
+test_phone_scrub_intl() {
+  local test_name="phone-scrub/intl"
+  local out
+  out=$(printf '%s\n' 'intl +44 7700900123 end' | sed -E "${PHONE_INTL_EXPR}")
+  if ! assert_eq "${test_name}: intl" 'intl [REDACTED] end' "${out}"; then return; fi
+  echo "PASS: ${test_name}"
+}
+
+test_phone_scrub_non_phone_unchanged() {
+  local test_name="phone-scrub/non-phone-unchanged"
+  local input
+  for input in 'meeting at 10:30, room 42' 'ddd-ddd-dddd'; do
+    if ! assert_eq "${test_name}: ${input}" "${input}" "$(scrub_phone "${input}")"; then return; fi
+  done
+  echo "PASS: ${test_name}"
+}
+
 # --- Run tests ---
 
 # GitHub tests
@@ -1060,6 +1134,12 @@ test_jira_closed_issues
 test_jira_closed_issues_failure_fallback
 test_jira_api_url_routing
 test_jira_missing_fullsend_dir_fails_preflight
+
+# Phone-number scrubbing tests
+test_phone_scrub_exprs_extracted
+test_phone_scrub_us
+test_phone_scrub_intl
+test_phone_scrub_non_phone_unchanged
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
