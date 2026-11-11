@@ -231,23 +231,18 @@ sanitize_slack_text() {
   sanitize_slack_mrkdwn "${v}"
 }
 
-# Sanitize untrusted text for a GitHub step-summary (Markdown/HTML) line (e.g.
-# Drive document titles, issue #706). The step summary is a Markdown file, not a
-# workflow-command channel, so do NOT use _gha_sanitize (its `%`->`%25` and
-# `::`->`%3A%3A` encoding would mangle readable titles like "100% sync" or
-# "Q3 :: Planning"). Instead: strip ANSI sequences and all C0/DEL control chars
-# (so a title cannot inject extra Markdown lines), then escape HTML (`& < >`) and
-# Markdown link brackets (`[ ]`) and code backticks, so a crafted title cannot
-# render an active link or raw HTML in the run summary.
+# Sanitize an untrusted title for display inside an inline code span in the
+# GitHub step summary (e.g. Drive document titles, issue #706). The caller wraps
+# the result in backticks; a code span renders its content literally, which
+# suppresses Markdown links, raw HTML, AND GitHub bare-URL autolinking in one
+# step, while keeping readable text like "100% sync" or "Q3 :: Planning" intact
+# (so _gha_sanitize's `%`/`::` encoding is deliberately not used here). We only
+# strip ANSI sequences and C0/DEL control chars (so a title cannot break the line
+# or the span) and remove backticks (so the title cannot close the code span).
 sanitize_md_text() {
-  # Escape backslashes first (s/\\/\\\\/g): otherwise a pre-escaped title such as
-  # `\[click\](url)` would become `\\[click\\]...`, which Markdown reads as a
-  # literal backslash followed by an *active* link. Doubling first makes the
-  # later `[`/`]` escaping effective.
   printf '%s' "$1" \
     | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
-    | tr -d '\000-\037\177' \
-    | sed 's/\\/\\\\/g; s/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g'
+    | tr -d '\000-\037\177\140'
 }
 
 CONTENT_GATE_REJECTIONS=0
@@ -673,12 +668,12 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   echo "### Scribe agent report (${RUN_MODE_LABEL})"
   echo ""
   if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
-    echo "**Meeting:** $(sanitize_md_text "${MEETING_TITLES[0]}")"
+    echo "**Meeting:** \`$(sanitize_md_text "${MEETING_TITLES[0]}")\`"
     echo ""
   elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
     echo "**Meetings (${#MEETING_TITLES[@]}):**"
     for _title in "${MEETING_TITLES[@]}"; do
-      echo "- $(sanitize_md_text "${_title}")"
+      echo "- \`$(sanitize_md_text "${_title}")\`"
     done
     echo ""
   fi

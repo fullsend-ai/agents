@@ -1572,23 +1572,25 @@ run_md_summary_test() {
   echo "PASS: ${test_name}"
 }
 
-run_md_summary_test "meeting/step-summary-markdown-link-escaped" \
+# Titles are rendered inside an inline code span (`...`), which suppresses
+# Markdown links, raw HTML, and GitHub bare-URL autolinking. Each test asserts
+# the title appears backtick-wrapped (i.e. inert), and % / :: stay readable.
+run_md_summary_test "meeting/step-summary-markdown-link-codespan" \
   '{"docs_downloaded":1,"doc_names":["[click](http://evil.example)"]}' \
-  '\[click\](http://evil.example)' '[click](http://evil.example)'
-run_md_summary_test "meeting/step-summary-html-escaped" \
+  '`[click](http://evil.example)`' ''
+run_md_summary_test "meeting/step-summary-html-codespan" \
   '{"docs_downloaded":1,"doc_names":["<a href=\"http://evil\">x</a>"]}' \
-  '&lt;a href=' '<a href='
-# Readability: % and :: must NOT be percent-encoded in the Markdown summary
-# (that encoding is only for workflow-command stdout, not the summary file).
+  '`<a href="http://evil">x</a>`' ''
 run_md_summary_test "meeting/step-summary-percent-colon-readable" \
   '{"docs_downloaded":1,"doc_names":["100% Review :: Q3"]}' \
-  '100% Review :: Q3' '%25'
-# A pre-escaped title must stay inert: backslashes are doubled before the bracket
-# escaping, so `\[click\](url)` cannot leave the brackets active as a link. The
-# triple-backslash-bracket form only appears when backslashes are escaped first.
-run_md_summary_test "meeting/step-summary-preescaped-brackets-inert" \
+  '`100% Review :: Q3`' '%25'
+run_md_summary_test "meeting/step-summary-preescaped-brackets-codespan" \
   '{"docs_downloaded":1,"doc_names":["\\[click\\](http://evil.example)"]}' \
-  '\\\[click\\\](http://evil.example)' ''
+  '`\[click\](http://evil.example)`' ''
+# Bare URL must not autolink: it is wrapped in a code span, not left as plain text.
+run_md_summary_test "meeting/step-summary-bare-url-codespan" \
+  '{"docs_downloaded":1,"doc_names":["https://evil.example/pwn"]}' \
+  '`https://evil.example/pwn`' ''
 
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 
