@@ -1595,10 +1595,57 @@ fi
 RUN_MODE_LABEL="LIVE"
 [[ "${DRY_RUN}" == "true" ]] && RUN_MODE_LABEL="DRY RUN"
 
+# No-notes detection (issue #1618). pre-scribe writes a runner-side
+# scribe-meta.json whose docs_downloaded field holds the meeting-note search's
+# matching-document count; a confirmed numeric 0 is the successful empty-search
+# path. Trust only a well-formed meta with a numeric docs_downloaded: missing,
+# malformed, or non-numeric metadata must NOT be read as "no notes", and a
+# search/export failure never reaches this file with docs_downloaded: 0.
+#
+# The empty-search *signal* comes from the metadata. The concise *message*
+# additionally requires the agent to have produced nothing at the source: zero
+# topics and zero new-issue proposals in its result. We read those counts
+# straight from RESULT_FILE rather than from TOPIC_COUNT / NEW_COUNT, because
+# those are zeroed by mode handling (new_issues_only zeroes TOPIC_COUNT,
+# comments_only zeroes NEW_COUNT) and would misreport a run that produced items
+# the mode then skipped. Gating on the raw result covers every "something
+# happened" case in one place — comments posted, issues created, issues skipped
+# by mode (SKIPPED_NEW_ISSUES), gate rejections (REJECTED), and create/dedup
+# failures (CREATE_FAILURES / JIRA_DEDUP_FAILURES) can only arise when there were
+# topics or proposals to begin with. So a zero-document search that nonetheless
+# returned proposals falls back to the activity report (which shows the
+# skipped/failed lines) instead of hiding that work behind "No meeting notes
+# found". A run that found notes but extracted zero topics has docs_downloaded
+# > 0, so it is unaffected and keeps the normal report.
+SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
+NO_NOTES=false
+# NO_NOTES_DOCS records why the branch did/did not fire so a silent fallback is
+# diagnosable from the job log (printed in the summary below): "missing" (no
+# meta), "invalid" (unparseable JSON or a non-object root), or the numeric
+# docs_downloaded value. The guard requires an object root: valid JSON with a
+# non-object root ([], "x", 123, true) passes a bare `jq -e .` but then errors
+# on `.docs_downloaded` (jq exit 5), which under `set -e` would abort the run
+# before the summary and Slack delivery.
+if [[ ! -f "${SCRIBE_META_FILE}" ]]; then
+  NO_NOTES_DOCS="missing"
+elif ! jq -e 'type == "object"' "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
+  NO_NOTES_DOCS="invalid"
+else
+  NO_NOTES_DOCS="$(jq -r '(.docs_downloaded | numbers) // "nan"' "${SCRIBE_META_FILE}")"
+  if [[ "${NO_NOTES_DOCS}" == "0" ]]; then
+    RESULT_TOPIC_TOTAL=$(jq '.topics | length' "${RESULT_FILE}")
+    RESULT_NEW_ISSUE_TOTAL=$(jq '.new_issues | length' "${RESULT_FILE}")
+    if [[ "${RESULT_TOPIC_TOTAL}" -eq 0 && "${RESULT_NEW_ISSUE_TOTAL}" -eq 0 ]]; then
+      NO_NOTES=true
+    fi
+  fi
+fi
+
 echo ""
 echo "=== Scribe Post-Script Summary ==="
 echo "  Run mode: ${RUN_MODE_LABEL}"
 echo "  Agent mode: ${SCRIBE_MODE}"
+echo "  No-notes check: docs_downloaded=${NO_NOTES_DOCS} -> NO_NOTES=${NO_NOTES}"
 echo "  Topics processed: ${TOPIC_COUNT}"
 echo "  Comments ${WOULD_BE}posted: ${#COMMENT_TOPICS[@]}"
 echo "  New issues ${WOULD_BE}created: ${#NEW_ISSUE_TITLES[@]}"
@@ -1678,39 +1725,43 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   RUN_URL=$(forge_run_url "${SCRIBE_REPO}")
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
-  SLACK_TEXT+="\nMode: \`${SCRIBE_MODE}\` · Confidence: \`${MIN_CONFIDENCE}\`"
-  SLACK_TEXT+="\n• Topics processed: *${TOPIC_COUNT}*"
-  SLACK_TEXT+="\n• Comments: *${#COMMENT_TOPICS[@]}*"
-  SLACK_TEXT+="\n• New issues: *${#NEW_ISSUE_TITLES[@]}*"
-  SLACK_TEXT+="\n• Gate rejections: *${REJECTED}*"
-  if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
-    SLACK_TEXT+=" (${CONTENT_GATE_REJECTIONS} content)"
-  fi
-  if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
-    SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
-  fi
-  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
-    SLACK_TEXT+="\n• :warning: Label failures: *${JIRA_LABEL_FAILURES}* (${JIRA_LABEL_FAILURE_KEYS[*]})"
-  fi
+  if [[ "${NO_NOTES}" == "true" ]]; then
+    SLACK_TEXT+="\nNo meeting notes found for today."
+  else
+    SLACK_TEXT+="\nMode: \`${SCRIBE_MODE}\` · Confidence: \`${MIN_CONFIDENCE}\`"
+    SLACK_TEXT+="\n• Topics processed: *${TOPIC_COUNT}*"
+    SLACK_TEXT+="\n• Comments: *${#COMMENT_TOPICS[@]}*"
+    SLACK_TEXT+="\n• New issues: *${#NEW_ISSUE_TITLES[@]}*"
+    SLACK_TEXT+="\n• Gate rejections: *${REJECTED}*"
+    if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
+      SLACK_TEXT+=" (${CONTENT_GATE_REJECTIONS} content)"
+    fi
+    if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
+      SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
+    fi
+    if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+      SLACK_TEXT+="\n• :warning: Label failures: *${JIRA_LABEL_FAILURES}* (${JIRA_LABEL_FAILURE_KEYS[*]})"
+    fi
 
-  if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
-    SLACK_TEXT+="\n\n*Comments:*"
-    for idx in "${!COMMENT_TOPICS[@]}"; do
-      SLACK_TOPIC=$(sanitize_slack_mrkdwn "${COMMENT_TOPICS[$idx]}")
-      SLACK_TEXT+="\n  • <${ISSUE_BASE}/${COMMENT_ISSUES[$idx]}|#${COMMENT_ISSUES[$idx]} — ${SLACK_TOPIC}>"
-    done
-  fi
+    if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
+      SLACK_TEXT+="\n\n*Comments:*"
+      for idx in "${!COMMENT_TOPICS[@]}"; do
+        SLACK_TOPIC=$(sanitize_slack_mrkdwn "${COMMENT_TOPICS[$idx]}")
+        SLACK_TEXT+="\n  • <${ISSUE_BASE}/${COMMENT_ISSUES[$idx]}|#${COMMENT_ISSUES[$idx]} — ${SLACK_TOPIC}>"
+      done
+    fi
 
-  if [[ ${#NEW_ISSUE_TITLES[@]} -gt 0 ]]; then
-    SLACK_TEXT+="\n\n*New issues:*"
-    for idx in "${!NEW_ISSUE_TITLES[@]}"; do
-      SLACK_TITLE=$(sanitize_slack_mrkdwn "${NEW_ISSUE_TITLES[$idx]}")
-      if [[ -n "${NEW_ISSUE_URLS[$idx]:-}" ]]; then
-        SLACK_TEXT+="\n  • <${NEW_ISSUE_URLS[$idx]}|${SLACK_TITLE}>"
-      else
-        SLACK_TEXT+="\n  • ${SLACK_TITLE}"
-      fi
-    done
+    if [[ ${#NEW_ISSUE_TITLES[@]} -gt 0 ]]; then
+      SLACK_TEXT+="\n\n*New issues:*"
+      for idx in "${!NEW_ISSUE_TITLES[@]}"; do
+        SLACK_TITLE=$(sanitize_slack_mrkdwn "${NEW_ISSUE_TITLES[$idx]}")
+        if [[ -n "${NEW_ISSUE_URLS[$idx]:-}" ]]; then
+          SLACK_TEXT+="\n  • <${NEW_ISSUE_URLS[$idx]}|${SLACK_TITLE}>"
+        else
+          SLACK_TEXT+="\n  • ${SLACK_TITLE}"
+        fi
+      done
+    fi
   fi
 
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"

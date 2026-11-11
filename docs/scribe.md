@@ -292,6 +292,25 @@ The agent produces JSON validated against `schemas/scribe-result.schema.json`:
 - `new_issues[]` — proposals for issues not yet in the backlog
 - `stats` — counts for observability
 
+### Notifications
+
+When `SCRIBE_SLACK_WEBHOOK_URL` is set, the post-script sends a Slack message
+after each run. The message keeps the run-mode label (`LIVE` or `DRY RUN`) and
+a `View run` link.
+
+The concise **"No meeting notes found for today."** message replaces the usual
+activity counters only when **both** conditions hold: the runner-side
+`scribe-meta.json` that `pre-scribe` writes reports `docs_downloaded: 0` (a
+successful search that matched no documents), **and** the agent produced nothing
+to act on (no topics and no new-issue proposals in its result). This keeps an
+empty run from being mistaken for one that processed notes but produced no
+topics, while still showing the activity report — including any skipped or
+failed items — if a zero-document search nonetheless returned proposals. A run
+that *found* notes but extracted zero topics has `docs_downloaded > 0` and keeps
+the normal report. Missing, malformed, or non-numeric metadata, and search or
+export failures, never produce the no-notes message. An unset webhook skips the
+notification entirely.
+
 ## Custom network policy
 
 If this agent needs to reach hosts beyond the defaults, see the

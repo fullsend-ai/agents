@@ -175,6 +175,10 @@ if [[ "\${URL}" == *"hooks.slack.com"* ]]; then
   if [[ -f "${TMPDIR}/slack-fail" ]]; then
     exit 1
   fi
+  # Capture the piped payload (sent via --data-binary @-) so tests can assert
+  # on the notification text (issue #1618).
+  SLACK_BODY="\$(cat 2>/dev/null || true)"
+  printf 'SLACK_PAYLOAD=%s\n' "\$(printf '%s' "\${SLACK_BODY}" | tr '\n' ' ')" >> "${CURL_LOG}"
   echo "ok"
   exit 0
 fi
@@ -210,6 +214,9 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/bc"
 
 export PATH="${MOCK_BIN}:${PATH}"
+# Isolate the runner-side scribe workspace so the no-notes meta file (issue
+# #1618) lives under the test tempdir, not the real ${RUNNER_TEMP:-/tmp}.
+export RUNNER_TEMP="${TMPDIR}"
 export SCRIBE_REPO="mock-org/mock-repo"
 export GH_TOKEN="fake-token"
 export SCRIBE_DRY_RUN="true"
@@ -1357,6 +1364,133 @@ export JIRA_BASE_URL="https://jira.example.com"
 run_test_stdout "jira/non-cloud-base-url-rejected" "${JIRA_NEW_ISSUE}" "" true
 
 unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN SCRIBE_JIRA_PROJECT
+
+# ============================================================
+# No-meeting-notes notification (issue #1618)
+# ============================================================
+# pre-scribe writes ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json; post-scribe
+# reads docs_downloaded from it. A confirmed numeric 0 is the successful
+# empty-search path and yields a concise Slack message instead of all-zero
+# counters. Missing/malformed/non-numeric metadata must not trigger it, and a
+# run that found notes but extracted zero topics keeps the normal report.
+SCRIBE_META_DIR="${RUNNER_TEMP}/scribe-workspace"
+mkdir -p "${SCRIBE_META_DIR}"
+EMPTY_RESULT='{"topics":[],"new_issues":[]}'
+
+run_no_notes_test() {
+  local test_name="$1" meta_json="$2" result_json="$3" must_contain="$4" must_not="$5"
+  local run_dir="${TMPDIR}/run-${test_name//\//-}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
+  rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
+  [[ -n "${meta_json}" ]] && echo "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  # Scope the webhook to the command (not a top-level export) so it does not
+  # collide with run_slack_test's subshell-local use (shellcheck SC2030/SC2031).
+  local exit_code=0
+  (cd "${run_dir}" && SCRIBE_SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_FAKE}" bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${must_contain}" ]] && ! grep -qF "${must_contain}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected '${must_contain}' in Slack payload"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${must_not}" ]] && grep -qF "${must_not}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — unexpected '${must_not}' in Slack payload"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+export SCRIBE_MODE="all"
+
+export SCRIBE_DRY_RUN="true"
+run_no_notes_test "no-notes/empty-search-message" \
+  '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
+  "No meeting notes found for today." "Topics processed"
+
+# DRY RUN: label is kept on the no-notes path (must_not proves the branch fired,
+# since "Topics processed" only appears in the normal activity report).
+run_no_notes_test "no-notes/dry-run-keeps-label" \
+  '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
+  "Scribe agent* (DRY RUN)" "Topics processed"
+
+# LIVE: label and View run link are kept on the no-notes path. must_not is
+# "Topics processed" so these fail if the no-notes branch stops firing.
+export SCRIBE_DRY_RUN="false"
+run_no_notes_test "no-notes/live-keeps-label" \
+  '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
+  "Scribe agent* (LIVE)" "Topics processed"
+run_no_notes_test "no-notes/live-keeps-view-run-link" \
+  '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
+  "View run" "Topics processed"
+export SCRIBE_DRY_RUN="true"
+
+run_no_notes_test "no-notes/notes-with-zero-topics-keeps-report" \
+  '{"docs_downloaded":3}' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+run_no_notes_test "no-notes/missing-meta-no-false-positive" \
+  "" "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+run_no_notes_test "no-notes/non-numeric-meta-no-false-positive" \
+  '{"docs_downloaded":"nan"}' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+# Invalid JSON must hit the `jq -e .` guard and not trigger the no-notes message.
+run_no_notes_test "no-notes/malformed-meta-no-false-positive" \
+  '{"docs_downloaded":' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+# Valid JSON with a NON-object root must not abort the run (reading
+# .docs_downloaded on it errors with jq exit 5): treat as invalid, keep the
+# normal report. run_no_notes_test fails on any non-zero exit, so these also
+# guard against the script aborting before summary/Slack delivery.
+run_no_notes_test "no-notes/array-root-meta-no-abort" \
+  '[]' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+run_no_notes_test "no-notes/string-root-meta-no-abort" \
+  '"bad"' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+run_no_notes_test "no-notes/number-root-meta-no-abort" \
+  '123' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+run_no_notes_test "no-notes/bool-root-meta-no-abort" \
+  'true' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+# Zero-document search but the agent still produced an actionable result: the
+# post-script acts on it, so the activity report must win over the no-notes line.
+run_no_notes_test "no-notes/empty-search-with-actionable-result-keeps-report" \
+  '{"docs_downloaded":0}' \
+  '{"topics":[{"topic":"leftover","summary":"s","confidence":0.99,"public_safe":true,"public_safe_category":null,"existing_issue":1}],"new_issues":[]}' \
+  "Topics processed" "No meeting notes found for today."
+
+# comments_only + zero-document search + leftover new_issues: the proposals are
+# skipped by mode (so never created), but the agent still produced them, so the
+# activity report must win over the no-notes message. The gate reads the raw
+# .topics/.new_issues counts from RESULT_FILE, so mode zeroing of
+# NEW_COUNT/TOPIC_COUNT cannot hide these proposals.
+export SCRIBE_MODE="comments_only"
+run_no_notes_test "no-notes/empty-search-skipped-new-issues-keeps-report" \
+  '{"docs_downloaded":0}' \
+  '{"topics":[],"new_issues":[{"title":"Leftover proposal","summary":"s","body":"b","confidence":0.99,"public_safe":true,"public_safe_category":null,"labels":[]}]}' \
+  "Topics processed" "No meeting notes found for today."
+export SCRIBE_MODE="all"
+
+rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
