@@ -575,10 +575,14 @@ SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
 NO_NOTES=false
 # NO_NOTES_DOCS records why the branch did/did not fire so a silent fallback is
 # diagnosable from the job log (printed in the summary below): "missing" (no
-# meta), "invalid" (unparseable meta), or the numeric docs_downloaded value.
+# meta), "invalid" (unparseable JSON or a non-object root), or the numeric
+# docs_downloaded value. The guard requires an object root: valid JSON with a
+# non-object root ([], "x", 123, true) passes a bare `jq -e .` but then errors
+# on `.docs_downloaded` (jq exit 5), which under `set -e` would abort the run
+# before the summary and Slack delivery.
 if [[ ! -f "${SCRIBE_META_FILE}" ]]; then
   NO_NOTES_DOCS="missing"
-elif ! jq -e . "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
+elif ! jq -e 'type == "object"' "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
   NO_NOTES_DOCS="invalid"
 else
   NO_NOTES_DOCS="$(jq -r '(.docs_downloaded | numbers) // "nan"' "${SCRIBE_META_FILE}")"

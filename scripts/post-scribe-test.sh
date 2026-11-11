@@ -1454,6 +1454,23 @@ run_no_notes_test "no-notes/malformed-meta-no-false-positive" \
   '{"docs_downloaded":' "${EMPTY_RESULT}" \
   "Topics processed" "No meeting notes found for today."
 
+# Valid JSON with a NON-object root must not abort the run (reading
+# .docs_downloaded on it errors with jq exit 5): treat as invalid, keep the
+# normal report. run_no_notes_test fails on any non-zero exit, so these also
+# guard against the script aborting before summary/Slack delivery.
+run_no_notes_test "no-notes/array-root-meta-no-abort" \
+  '[]' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+run_no_notes_test "no-notes/string-root-meta-no-abort" \
+  '"bad"' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+run_no_notes_test "no-notes/number-root-meta-no-abort" \
+  '123' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+run_no_notes_test "no-notes/bool-root-meta-no-abort" \
+  'true' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
 # Zero-document search but the agent still produced an actionable result: the
 # post-script acts on it, so the activity report must win over the no-notes line.
 run_no_notes_test "no-notes/empty-search-with-actionable-result-keeps-report" \
