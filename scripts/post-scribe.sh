@@ -1695,7 +1695,14 @@ else
     # Explicit if (not `[[ … ]] && …`) so skipping an empty title keeps a
     # success status and cannot trip `set -e` on the loop body.
     if [[ -n "${_title}" ]]; then
-      MEETING_TITLES+=("${_title}")
+      # Gate the untrusted title through the same sensitive-content check topics
+      # and new issues pass (emails, SSNs, keys/tokens, ...): a matching title is
+      # redacted rather than published verbatim to Slack and the step summary.
+      if contains_sensitive "${_title}"; then
+        MEETING_TITLES+=("[redacted]")
+      else
+        MEETING_TITLES+=("${_title}")
+      fi
     fi
   done < <(jq -j '(.doc_names // [])[] | . + "\u0000"' "${SCRIBE_META_FILE}")
 fi

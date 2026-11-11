@@ -1533,6 +1533,12 @@ run_meeting_test "meeting/untrusted-title-control-unicode-stripped" \
   '{"docs_downloaded":1,"doc_names":["A\u000bB C‮D"]}' \
   "Meeting: ABCD" ""
 
+# A title with sensitive content (email, key/token, SSN, ...) is redacted, not
+# published verbatim — same gate topics and new issues pass.
+run_meeting_test "meeting/sensitive-title-redacted" \
+  '{"docs_downloaded":1,"doc_names":["1:1 jane.doe@corp.example - performance"]}' \
+  "Meeting: [redacted]" "jane.doe@corp.example"
+
 # Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
 # printf '%b', so an un-doubled "\c" would truncate the message (dropping the
 # counters and View run link) and "\n" would inject a line. The backslash is now
