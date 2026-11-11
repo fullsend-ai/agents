@@ -1602,18 +1602,28 @@ RUN_MODE_LABEL="LIVE"
 # malformed, or non-numeric metadata must NOT be read as "no notes", and a
 # search/export failure never reaches this file with docs_downloaded: 0.
 #
-# The empty-search *signal* comes from the metadata, not the topic count, so a
-# run that found notes but extracted zero topics still gets the normal report.
-# The concise *message* additionally requires the run to have produced nothing
-# (no topics, comments, new issues, or gate rejections): a zero-document search
-# should yield an empty result, but if the agent produced actionable output
-# anyway, the post-script acts on it, so fall back to the activity report rather
-# than hide that work behind "No meeting notes found".
+# The empty-search *signal* comes from the metadata. The concise *message*
+# additionally requires the agent to have produced nothing at the source: zero
+# topics and zero new-issue proposals in its result. We read those counts
+# straight from RESULT_FILE rather than from TOPIC_COUNT / NEW_COUNT, because
+# those are zeroed by mode handling (new_issues_only zeroes TOPIC_COUNT,
+# comments_only zeroes NEW_COUNT) and would misreport a run that produced items
+# the mode then skipped. Gating on the raw result covers every "something
+# happened" case in one place — comments posted, issues created, issues skipped
+# by mode (SKIPPED_NEW_ISSUES), gate rejections (REJECTED), and create/dedup
+# failures (CREATE_FAILURES / JIRA_DEDUP_FAILURES) can only arise when there were
+# topics or proposals to begin with. So a zero-document search that nonetheless
+# returned proposals falls back to the activity report (which shows the
+# skipped/failed lines) instead of hiding that work behind "No meeting notes
+# found". A run that found notes but extracted zero topics has docs_downloaded
+# > 0, so it is unaffected and keeps the normal report.
 SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
 NO_NOTES=false
 if [[ -f "${SCRIBE_META_FILE}" ]] && jq -e . "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
   if [[ "$(jq -r '(.docs_downloaded | numbers) // "nan"' "${SCRIBE_META_FILE}")" == "0" ]]; then
-    if [[ "${TOPIC_COUNT}" -eq 0 && ${#COMMENT_TOPICS[@]} -eq 0 && ${#NEW_ISSUE_TITLES[@]} -eq 0 && "${REJECTED}" -eq 0 ]]; then
+    RESULT_TOPIC_TOTAL=$(jq '.topics | length' "${RESULT_FILE}")
+    RESULT_NEW_ISSUE_TOTAL=$(jq '.new_issues | length' "${RESULT_FILE}")
+    if [[ "${RESULT_TOPIC_TOTAL}" -eq 0 && "${RESULT_NEW_ISSUE_TOTAL}" -eq 0 ]]; then
       NO_NOTES=true
     fi
   fi

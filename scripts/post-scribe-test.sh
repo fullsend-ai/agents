@@ -1453,6 +1453,17 @@ run_no_notes_test "no-notes/empty-search-with-actionable-result-keeps-report" \
   '{"topics":[{"topic":"leftover","summary":"s","confidence":0.99,"public_safe":true,"public_safe_category":null,"existing_issue":1}],"new_issues":[]}' \
   "Topics processed" "No meeting notes found for today."
 
+# comments_only + zero-document search + leftover new_issues: the proposals are
+# skipped by mode (so never created), but the agent still produced them, so the
+# activity report must win over the no-notes message (gate uses NEW_COUNT, the
+# source proposal count, not the processed/created count).
+export SCRIBE_MODE="comments_only"
+run_no_notes_test "no-notes/empty-search-skipped-new-issues-keeps-report" \
+  '{"docs_downloaded":0}' \
+  '{"topics":[],"new_issues":[{"title":"Leftover proposal","summary":"s","body":"b","confidence":0.99,"public_safe":true,"public_safe_category":null,"labels":[]}]}' \
+  "Topics processed" "No meeting notes found for today."
+export SCRIBE_MODE="all"
+
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 
 echo ""
