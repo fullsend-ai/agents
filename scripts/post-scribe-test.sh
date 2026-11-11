@@ -1455,8 +1455,9 @@ run_no_notes_test "no-notes/empty-search-with-actionable-result-keeps-report" \
 
 # comments_only + zero-document search + leftover new_issues: the proposals are
 # skipped by mode (so never created), but the agent still produced them, so the
-# activity report must win over the no-notes message (gate uses NEW_COUNT, the
-# source proposal count, not the processed/created count).
+# activity report must win over the no-notes message. The gate reads the raw
+# .topics/.new_issues counts from RESULT_FILE, so mode zeroing of
+# NEW_COUNT/TOPIC_COUNT cannot hide these proposals.
 export SCRIBE_MODE="comments_only"
 run_no_notes_test "no-notes/empty-search-skipped-new-issues-keeps-report" \
   '{"docs_downloaded":0}' \
