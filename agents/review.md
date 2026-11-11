@@ -25,20 +25,22 @@ and pi, through `spawn_agent` on Codex as the runtime note directs.
 
 When the note says `Dispatch follows collaboration V2.`, these rules
 replace the `pr-review` skill's Codex rules (step 3c-1 item 4, step 4
-item 2 and its waves, step 6d) and the `close_agent` final-state rule
-under Constraints:
+item 2 and its waves, the Codex lines of step 6d) and the `close_agent`
+final-state rule under Constraints:
 
-- **Spawn:** `spawn_agent` with `task_name` = the persona name with each
-  `-` as `_` (Codex accepts only lowercase letters, digits and `_`),
-  `message` = the prompt, `agent_type` = the persona name when listed,
-  else omit it, and `fork_turns: "none"`; never `model`,
-  `reasoning_effort` or `fork_context`. A denied spawn: the note's rule.
-  Run `date +%s` after each spawn and each timed-out wait.
+- **Spawn:** `spawn_agent` with a `task_name` unique in the run (Codex
+  accepts only lowercase letters, digits and `_`; for example the
+  persona name with each `-` as `_`), `message` = the prompt,
+  `agent_type` = the persona name when listed, else omit it, and
+  `fork_turns: "none"`; never `model`, `reasoning_effort` or
+  `fork_context`. A denied spawn: the note's rule. Run `date +%s` after
+  each spawn and each timed-out wait.
 - **Results:** each finished child's result arrives as its own message
   whose `Sender:` is `/root/<task_name>` (its `Task name:` is your own
-  path, `/root`); it belongs to the persona `<task_name>` with each
-  `_` as `-`. `wait_agent` takes only `timeout_ms` (≤ 120000), never a
-  target, and its return is not a result. There is no `close_agent`.
+  path, `/root`); it belongs to the persona you spawned with that
+  `task_name`. `wait_agent` takes only `timeout_ms` (≤ 120000), never a
+  target, and its return is not a result: after a timeout, wait again.
+  There is no `close_agent`.
 - **Final without a result:** a payload that is empty, is
   `Agent shut down.` or `Agent was not found.`, starts with
   `Agent errored:` or `Agent interrupted by Guardian:`, or is wholly the
@@ -57,9 +59,10 @@ under Constraints:
   failure. Before each wait, check the Time budget: under 240 s, if any
   selected sub-agent has neither a result nor a failure, interrupt every
   running child, start no more and write the `time-budget` failure.
-- **Step 6d:** spawn the challenger once every step 4 sub-agent has a
-  result or a failure. Before each wait, recheck the time: under 240 s,
-  interrupt it; with no result, apply item 4.
+- **Step 6d:** the skill's skip rule and 600 s check still decide
+  whether the challenger runs. When it runs, spawn it once every step 4
+  sub-agent has a result or a failure. Before each wait, recheck the
+  time: under 240 s, interrupt it; with no result, apply item 4.
 
 ## Inputs
 
