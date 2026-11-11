@@ -223,19 +223,24 @@ sanitize_slack_mrkdwn() {
 }
 
 # Strip the characters that let untrusted text (e.g. Drive document titles,
-# issue #706) break out of a single display line or hide/reorder content:
+# issue #706) break out of a single display line, hide/reorder content, or be
+# removed later and reassemble a secret past the sensitive-content gate:
 # - CSI ANSI escape sequences;
 # - every C0 control char and DEL (\000-\037\177), which covers CR, LF, VT, FF,
 #   TAB and a bare ESC — so a title cannot inject extra lines;
+# - backticks (\140), which the step-summary code span removes anyway — stripping
+#   them here means contains_sensitive sees the same text that is published, so a
+#   title like `123-45-<bt>6789<bt>` cannot pass the SSN check and then reassemble;
 # - Unicode line/paragraph separators (U+2028/U+2029), bidi overrides and
 #   isolates (U+202A-202E, U+2066-2069), zero-width chars, BOM, and tag chars
 #   (the same class as contains_suspicious_unicode).
 # Shared by the Slack and step-summary sanitizers so both paths are equally
-# strong. perl is already a runner dependency (see pre-scribe.sh).
+# strong, and run before the gate so the gate matches what is published. perl is
+# already a runner dependency (see pre-scribe.sh).
 strip_unsafe_chars() {
   printf '%s' "$1" \
     | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
-    | tr -d '\000-\037\177' \
+    | tr -d '\000-\037\177\140' \
     | perl -CS -pe 's/[\x{2028}\x{2029}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{E0000}-\x{E007F}]//g'
 }
 
@@ -250,11 +255,11 @@ sanitize_slack_text() {
 # the result in backticks; a code span renders its content literally, which
 # suppresses Markdown links, raw HTML, AND GitHub bare-URL autolinking in one
 # step, while keeping readable text like "100% sync" or "Q3 :: Planning" intact
-# (so _gha_sanitize's `%`/`::` encoding is deliberately not used here). Strip
-# unsafe chars, and additionally remove backticks so the title cannot close the
+# (so _gha_sanitize's `%`/`::` encoding is deliberately not used here).
+# strip_unsafe_chars already removes backticks, so the title cannot close the
 # code span.
 sanitize_md_text() {
-  strip_unsafe_chars "$1" | tr -d '\140'
+  strip_unsafe_chars "$1"
 }
 
 CONTENT_GATE_REJECTIONS=0

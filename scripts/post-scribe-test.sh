@@ -1572,6 +1572,13 @@ run_meeting_test "meeting/sensitive-title-zwsp-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["jane@​corp.example"]}' \
   "Meeting: [redacted]" "corp.example"
 
+# Backtick-split secret: backticks are stripped by strip_unsafe_chars BEFORE the
+# gate (not only later by the step-summary sanitizer), so an SSN split by a
+# backtick is normalized to 123-45-6789, caught, and redacted — not reassembled.
+run_meeting_test "meeting/sensitive-title-backtick-split-redacted" \
+  '{"docs_downloaded":1,"doc_names":["123-45-`6789`"]}' \
+  "Meeting: [redacted]" "123-45-6789"
+
 # Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
 # printf '%b', so an un-doubled "\c" would truncate the message (dropping the
 # counters and View run link) and "\n" would inject a line. The backslash is now
