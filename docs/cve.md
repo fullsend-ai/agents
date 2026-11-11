@@ -406,6 +406,11 @@ GitLab project, on the `claude` and `pi` runtimes, and nothing else.
     `cve-intake` property, so nothing maps a tracker's component and stream
     to a repository and a branch yet. The hosted trackers carried the
     property, written by hand.
+    The `cve-workflow-experiment` repository has both missing halves: a
+    `fullsend.cve.intake` property that names a product, release and stream,
+    and a reviewed mapping file from those to a repository and branch. This
+    agent reads neither yet, and its own property has a different name and
+    shape.
 14. A trigger can read labels and nothing else about a work item, and a
     child harness replaces a trigger whole. An adopter whose trackers carry
     their own label therefore restates the triage and code triggers
