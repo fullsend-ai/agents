@@ -1245,11 +1245,31 @@ contains_suspicious_unicode() {
 # Escape Slack mrkdwn metacharacters in link labels.
 sanitize_slack_mrkdwn() {
   local val="$1"
+  # Bash 5.2+ enables patsub_replacement by default, which makes a bare `&` in a
+  # ${var//pat/repl} replacement expand to the matched text — turning `<` into
+  # `<lt;` instead of `&lt;`. Disable it locally so the HTML entities below are
+  # inserted literally (restored afterward). Matters for untrusted input such as
+  # Drive document titles (issue #706) that may contain `<`, `>`, or `&`.
+  local _patsub=0
+  if shopt -q patsub_replacement 2>/dev/null; then
+    _patsub=1
+    shopt -u patsub_replacement
+  fi
   val="${val//&/&amp;}"
   val="${val//</&lt;}"
   val="${val//>/&gt;}"
   val="${val//|/¦}"
+  [[ ${_patsub} -eq 1 ]] && shopt -s patsub_replacement
   printf '%s' "${val}"
+}
+
+# Sanitize untrusted text for a Slack mrkdwn body line (e.g. Drive document
+# titles, issue #706). Strip CR/LF — otherwise a crafted title could inject
+# extra message lines — and ANSI escapes, then escape mrkdwn metacharacters.
+sanitize_slack_text() {
+  local v
+  v=$(printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g')
+  sanitize_slack_mrkdwn "${v}"
 }
 
 CONTENT_GATE_REJECTIONS=0
@@ -1595,37 +1615,36 @@ fi
 RUN_MODE_LABEL="LIVE"
 [[ "${DRY_RUN}" == "true" ]] && RUN_MODE_LABEL="DRY RUN"
 
-# No-notes detection (issue #1618). pre-scribe writes a runner-side
-# scribe-meta.json whose docs_downloaded field holds the meeting-note search's
-# matching-document count; a confirmed numeric 0 is the successful empty-search
-# path. Trust only a well-formed meta with a numeric docs_downloaded: missing,
-# malformed, or non-numeric metadata must NOT be read as "no notes", and a
-# search/export failure never reaches this file with docs_downloaded: 0.
+# No-notes detection (issue #1618) and meeting titles (issue #706). pre-scribe
+# writes a runner-side scribe-meta.json: docs_downloaded holds the search's
+# matching-document count (a confirmed numeric 0 is the successful empty search),
+# and doc_names lists the processed Drive document titles.
 #
-# The empty-search *signal* comes from the metadata. The concise *message*
-# additionally requires the agent to have produced nothing at the source: zero
-# topics and zero new-issue proposals in its result. We read those counts
-# straight from RESULT_FILE rather than from TOPIC_COUNT / NEW_COUNT, because
-# those are zeroed by mode handling (new_issues_only zeroes TOPIC_COUNT,
-# comments_only zeroes NEW_COUNT) and would misreport a run that produced items
-# the mode then skipped. Gating on the raw result covers every "something
-# happened" case in one place — comments posted, issues created, issues skipped
-# by mode (SKIPPED_NEW_ISSUES), gate rejections (REJECTED), and create/dedup
-# failures (CREATE_FAILURES / JIRA_DEDUP_FAILURES) can only arise when there were
-# topics or proposals to begin with. So a zero-document search that nonetheless
-# returned proposals falls back to the activity report (which shows the
-# skipped/failed lines) instead of hiding that work behind "No meeting notes
-# found". A run that found notes but extracted zero topics has docs_downloaded
-# > 0, so it is unaffected and keeps the normal report.
+# No-notes: the empty-search *signal* comes from the metadata; the concise
+# *message* additionally requires the agent to have produced nothing at the
+# source — zero topics and zero new-issue proposals, read straight from
+# RESULT_FILE rather than TOPIC_COUNT / NEW_COUNT (which mode handling zeroes:
+# new_issues_only zeroes TOPIC_COUNT, comments_only zeroes NEW_COUNT). Gating on
+# the raw result covers every "something happened" case at once — comments
+# posted, issues created, issues skipped by mode (SKIPPED_NEW_ISSUES), gate
+# rejections (REJECTED), and create/dedup failures (CREATE_FAILURES /
+# JIRA_DEDUP_FAILURES) only arise when there were topics or proposals to begin
+# with — so a zero-document search that still returned proposals keeps the
+# activity report. A run that found notes but extracted zero topics has
+# docs_downloaded > 0 and keeps the normal report.
+#
+# Meeting titles are untrusted Drive input, read NUL-delimited so a title
+# containing a newline stays one element; they are sanitized at each display site.
 SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
 NO_NOTES=false
-# NO_NOTES_DOCS records why the branch did/did not fire so a silent fallback is
-# diagnosable from the job log (printed in the summary below): "missing" (no
-# meta), "invalid" (unparseable JSON or a non-object root), or the numeric
-# docs_downloaded value. The guard requires an object root: valid JSON with a
-# non-object root ([], "x", 123, true) passes a bare `jq -e .` but then errors
-# on `.docs_downloaded` (jq exit 5), which under `set -e` would abort the run
-# before the summary and Slack delivery.
+MEETING_TITLES=()
+# NO_NOTES_DOCS records why the no-notes branch did/did not fire so a silent
+# fallback is diagnosable from the job log (printed in the summary below):
+# "missing" (no meta), "invalid" (unparseable JSON or a non-object root), or the
+# numeric docs_downloaded value. The guard requires an object root: valid JSON
+# with a non-object root ([], "x", 123, true) passes a bare `jq -e .` but then
+# errors on `.docs_downloaded` (jq exit 5), which under `set -e` would abort the
+# run before the summary and Slack delivery.
 if [[ ! -f "${SCRIBE_META_FILE}" ]]; then
   NO_NOTES_DOCS="missing"
 elif ! jq -e 'type == "object"' "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
@@ -1639,6 +1658,11 @@ else
       NO_NOTES=true
     fi
   fi
+  # Meeting titles (#706): NUL-delimited so a title containing a newline stays a
+  # single element (untrusted input); sanitized at each display site.
+  while IFS= read -r -d '' _title; do
+    [[ -n "${_title}" ]] && MEETING_TITLES+=("${_title}")
+  done < <(jq -j '(.doc_names // [])[] | . + "\u0000"' "${SCRIBE_META_FILE}")
 fi
 
 echo ""
@@ -1666,6 +1690,16 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 {
   echo "### Scribe agent report (${RUN_MODE_LABEL})"
   echo ""
+  if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
+    echo "**Meeting:** $(_gha_sanitize "${MEETING_TITLES[0]}")"
+    echo ""
+  elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
+    echo "**Meetings (${#MEETING_TITLES[@]}):**"
+    for _title in "${MEETING_TITLES[@]}"; do
+      echo "- $(_gha_sanitize "${_title}")"
+    done
+    echo ""
+  fi
   echo "| Metric | Count |"
   echo "|--------|------:|"
   echo "| Topics processed | ${TOPIC_COUNT} |"
@@ -1725,6 +1759,14 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   RUN_URL=$(forge_run_url "${SCRIBE_REPO}")
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
+  if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
+    SLACK_TEXT+="\nMeeting: $(sanitize_slack_text "${MEETING_TITLES[0]}")"
+  elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
+    SLACK_TEXT+="\nMeetings (${#MEETING_TITLES[@]}):"
+    for _title in "${MEETING_TITLES[@]}"; do
+      SLACK_TEXT+="\n  • $(sanitize_slack_text "${_title}")"
+    done
+  fi
   if [[ "${NO_NOTES}" == "true" ]]; then
     SLACK_TEXT+="\nNo meeting notes found for today."
   else

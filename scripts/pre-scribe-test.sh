@@ -928,6 +928,99 @@ MOCKEOF
   echo "PASS: ${test_name}"
 }
 
+test_meeting_doc_names_persisted() {
+  local test_name="meeting-doc-names-persisted"
+  local runner_temp="${TMPDIR}/runner-doc-names"
+  local bin="${TMPDIR}/bin-doc-names"
+  mkdir -p "${runner_temp}" "${bin}"
+
+  local sa_key="${TMPDIR}/sa-key-doc-names.json"
+  local priv_key="${TMPDIR}/priv-doc-names.key"
+  openssl genrsa 2048 > "${priv_key}" 2>/dev/null
+  local priv_key_json
+  priv_key_json=$(awk '{printf "%s\\n", $0}' "${priv_key}")
+  cat > "${sa_key}" <<EOF
+{
+  "client_email": "test-sa@example.iam.gserviceaccount.com",
+  "private_key": "${priv_key_json}"
+}
+EOF
+
+  # Mock curl: OAuth ok; Drive search returns one doc with an untrusted name
+  # (quotes + angle brackets); Drive export returns plain text; Jira jql empty.
+  cat > "${bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+URL=""
+OUT_FILE=""
+PREV=""
+for arg in "$@"; do
+  [[ "${arg}" == https://* ]] && URL="${arg}"
+  [[ "${PREV}" == "-o" ]] && OUT_FILE="${arg}"
+  PREV="${arg}"
+done
+if [[ "${URL}" == *oauth2.googleapis.com/token* ]]; then
+  echo '{"access_token":"fake-token"}'; exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files/*/export* ]]; then
+  if [[ -n "${OUT_FILE}" ]]; then printf 'Summary\nSome notes.\n' > "${OUT_FILE}"; echo "200"; else printf 'Summary\nSome notes.\n'; fi
+  exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files* ]]; then
+  body='{"files":[{"id":"doc1","name":"Team \"Sync\" <notes>","createdTime":"2026-08-06T09:00:00Z","webViewLink":"https://docs.google.com/document/d/doc1"}]}'
+  if [[ -n "${OUT_FILE}" ]]; then echo "${body}" > "${OUT_FILE}"; echo "200"; else echo "${body}"; fi
+  exit 0
+elif [[ "${URL}" == */search/jql* ]]; then
+  echo '{"issues":[],"isLast":true}'; exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/curl"
+
+  cat > "${bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/git/trees"* ]]; then echo '{"tree":[]}'; else echo '[]'; fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/gh"
+
+  local out
+  if ! out=$(
+    PATH="${bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${sa_key}" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake-jira-token" \
+    FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    SCRIBE_JIRA_MAX_PAGES="1" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — script failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local meta_file="${runner_temp}/scribe-workspace/scribe-meta.json"
+  if [[ ! -f "${meta_file}" ]]; then
+    echo "FAIL: ${test_name} — scribe-meta.json was not generated"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local count name0
+  count=$(jq '.doc_names | length' "${meta_file}")
+  if ! assert_eq "${test_name}: doc_names length" "1" "${count}"; then return; fi
+  # The untrusted name round-trips as a safe JSON string (no injection, exact value).
+  name0=$(jq -r '.doc_names[0]' "${meta_file}")
+  if ! assert_eq "${test_name}: doc_names[0]" 'Team "Sync" <notes>' "${name0}"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
 test_jira_closed_issues() {
   local test_name="jira/closed-issues"
   local closed_file="${TMPDIR}/jira-closed.json"
@@ -1156,6 +1249,7 @@ test_jira_closed_issues_failure_fallback
 test_jira_api_url_routing
 test_jira_missing_fullsend_dir_fails_preflight
 test_stale_meta_cleared_on_failed_search
+test_meeting_doc_names_persisted
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

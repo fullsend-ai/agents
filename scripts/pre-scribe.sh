@@ -1305,7 +1305,7 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
     --arg tracker "${FULLSEND_TRACKER}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, tracker: $tracker, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, tracker: $tracker, docs_downloaded: $doc_count, doc_names: [], backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
@@ -1351,6 +1351,7 @@ export_doc_with_retry() {
 
 DOC_INDEX=0
 DOCS_FAILED=0
+DOC_NAMES=()
 while read -r doc; do
   DOC_ID=$(echo "${doc}" | jq -r '.id')
   DOC_NAME=$(echo "${doc}" | jq -r '.name')
@@ -1418,6 +1419,11 @@ while read -r doc; do
   echo "${SCRUBBED}" > "${NOTES_DIR}/doc-${DOC_INDEX}.txt"
   echo "${DOC_URL}" > "${NOTES_DIR}/doc-${DOC_INDEX}.url"
 
+  # Record the title of each successfully-processed doc for the run's
+  # notifications (issue #706). This is untrusted Drive input; it is stored as a
+  # jq-escaped JSON string here and sanitized again before display in post-scribe.
+  DOC_NAMES+=("${DOC_NAME}")
+
   DOC_INDEX=$((DOC_INDEX + 1))
 done < <(jq -c '.files[]' "${WORK_DIR}/drive-response.json")
 
@@ -1430,11 +1436,17 @@ if [[ -f "${NOTES_DIR}/doc-0.url" ]]; then
   NOTES_URL=$(cat "${NOTES_DIR}/doc-0.url")
 fi
 
+# Serialize the processed meeting-document titles (issue #706). jq -n with
+# --args builds a JSON string array that escapes any character in the untrusted
+# titles; the ${arr[@]+...} form is safe under `set -u` when the array is empty.
+DOC_NAMES_JSON=$(jq -n '$ARGS.positional' --args ${DOC_NAMES[@]+"${DOC_NAMES[@]}"})
+
 jq -n \
   --arg cutoff "${CUTOFF_DATE}" \
   --arg notes_url "${NOTES_URL}" \
   --arg repo "${SCRIBE_REPO}" \
   --argjson doc_count "${DOC_COUNT}" \
+  --argjson doc_names "${DOC_NAMES_JSON}" \
   --argjson issue_count "${ISSUE_COUNT}" \
   --argjson open_total "${OPEN_ISSUE_TOTAL}" \
   --argjson truncated "${BACKLOG_TRUNCATED}" \
@@ -1448,6 +1460,7 @@ jq -n \
     repo: $repo,
     tracker: $tracker,
     docs_downloaded: $doc_count,
+    doc_names: $doc_names,
     backlog_issues: $issue_count,
     open_issue_total: $open_total,
     backlog_truncated: $truncated,

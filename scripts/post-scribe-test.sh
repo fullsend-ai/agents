@@ -176,7 +176,7 @@ if [[ "\${URL}" == *"hooks.slack.com"* ]]; then
     exit 1
   fi
   # Capture the piped payload (sent via --data-binary @-) so tests can assert
-  # on the notification text (issue #1618).
+  # on the notification text (issues #1618, #706).
   SLACK_BODY="\$(cat 2>/dev/null || true)"
   printf 'SLACK_PAYLOAD=%s\n' "\$(printf '%s' "\${SLACK_BODY}" | tr '\n' ' ')" >> "${CURL_LOG}"
   echo "ok"
@@ -214,8 +214,8 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/bc"
 
 export PATH="${MOCK_BIN}:${PATH}"
-# Isolate the runner-side scribe workspace so the no-notes meta file (issue
-# #1618) lives under the test tempdir, not the real ${RUNNER_TEMP:-/tmp}.
+# Isolate the runner-side scribe workspace so the meta file (no-notes #1618 and
+# meeting-title #706) lives under the test tempdir, not the real ${RUNNER_TEMP:-/tmp}.
 export RUNNER_TEMP="${TMPDIR}"
 export SCRIBE_REPO="mock-org/mock-repo"
 export GH_TOKEN="fake-token"
@@ -1366,13 +1366,12 @@ run_test_stdout "jira/non-cloud-base-url-rejected" "${JIRA_NEW_ISSUE}" "" true
 unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN SCRIBE_JIRA_PROJECT
 
 # ============================================================
-# No-meeting-notes notification (issue #1618)
+# No-notes notification (#1618) and meeting title (#706)
 # ============================================================
 # pre-scribe writes ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json; post-scribe
-# reads docs_downloaded from it. A confirmed numeric 0 is the successful
-# empty-search path and yields a concise Slack message instead of all-zero
-# counters. Missing/malformed/non-numeric metadata must not trigger it, and a
-# run that found notes but extracted zero topics keeps the normal report.
+# reads docs_downloaded (no-notes gate) and doc_names (meeting title) from it. A
+# confirmed numeric 0 with an empty result yields the concise no-notes message;
+# doc_names are untrusted Drive titles rendered on a sanitized "Meeting:" line.
 SCRIBE_META_DIR="${RUNNER_TEMP}/scribe-workspace"
 mkdir -p "${SCRIBE_META_DIR}"
 EMPTY_RESULT='{"topics":[],"new_issues":[]}'
@@ -1384,7 +1383,7 @@ run_no_notes_test() {
   echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
   rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
   rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
-  [[ -n "${meta_json}" ]] && echo "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
+  [[ -n "${meta_json}" ]] && printf '%s' "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
   : > "${CURL_LOG}"
   : > "${GH_LOG}"
 
@@ -1411,6 +1410,12 @@ run_no_notes_test() {
     return
   fi
   echo "PASS: ${test_name}"
+}
+
+# run_meeting_test NAME META_JSON MUST_CONTAIN MUST_NOT — a no-notes test with an
+# empty agent result, used for the meeting-title (#706) Slack assertions.
+run_meeting_test() {
+  run_no_notes_test "$1" "$2" "${EMPTY_RESULT}" "$3" "$4"
 }
 
 export SCRIBE_MODE="all"
@@ -1489,6 +1494,37 @@ run_no_notes_test "no-notes/empty-search-skipped-new-issues-keeps-report" \
   '{"topics":[],"new_issues":[{"title":"Leftover proposal","summary":"s","body":"b","confidence":0.99,"public_safe":true,"public_safe_category":null,"labels":[]}]}' \
   "Topics processed" "No meeting notes found for today."
 export SCRIBE_MODE="all"
+
+# --- Meeting title cases (issue #706) ---
+export SCRIBE_DRY_RUN="true"
+
+# Single doc: title appears on a Meeting: line.
+run_meeting_test "meeting/single-doc-title" \
+  '{"docs_downloaded":1,"doc_names":["Team Sync - 2026/08/06"]}' \
+  "Meeting: Team Sync - 2026/08/06" ""
+
+# Multiple docs: count header plus each title listed.
+run_meeting_test "meeting/multi-doc-titles" \
+  '{"docs_downloaded":2,"doc_names":["Team Sync","User Forum"]}' \
+  "Meetings (2):" ""
+run_meeting_test "meeting/multi-doc-second-title" \
+  '{"docs_downloaded":2,"doc_names":["Team Sync","User Forum"]}' \
+  "User Forum" ""
+
+# Missing meta / absent field: no Meeting line, no crash.
+run_meeting_test "meeting/missing-meta-no-line" \
+  "" "View run" "Meeting"
+run_meeting_test "meeting/absent-field-no-line" \
+  '{"docs_downloaded":1}' "View run" "Meeting"
+
+# Untrusted title: newline must not inject an extra line, and mrkdwn/link
+# metacharacters must be escaped (issue #706 — doc names are untrusted input).
+run_meeting_test "meeting/untrusted-title-newline-stripped" \
+  '{"docs_downloaded":1,"doc_names":["Evil\n• Topics processed: *999*"]}' \
+  "Meeting: Evil• Topics processed:" "Meeting: Evil\n"
+run_meeting_test "meeting/untrusted-title-mrkdwn-escaped" \
+  '{"docs_downloaded":1,"doc_names":["<https://evil|x> & <y>"]}' \
+  "&lt;https://evil¦x&gt; &amp; &lt;y&gt;" ""
 
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 

@@ -294,22 +294,31 @@ The agent produces JSON validated against `schemas/scribe-result.schema.json`:
 
 ### Notifications
 
-When `SCRIBE_SLACK_WEBHOOK_URL` is set, the post-script sends a Slack message
-after each run. The message keeps the run-mode label (`LIVE` or `DRY RUN`) and
-a `View run` link.
+(and writes a step summary) after each run. The message keeps the run-mode label
+(`LIVE` or `DRY RUN`) and a `View run` link.
+
+When the run processed one or more meeting documents, the message includes a
+**`Meeting:`** line naming the processed document(s) — a single
+`Meeting: <title>` for one doc, or a `Meetings (N):` list for several — so
+operators can tell which meeting produced the results without opening the Actions
+run. The titles come from the Drive document names that `pre-scribe` records in
+`scribe-meta.json` (`doc_names`). Document names are **untrusted input**: they
+are sanitized before display (control characters and ANSI escapes stripped so a
+crafted title cannot inject extra lines, and Slack mrkdwn/link metacharacters
+escaped). If the metadata or `doc_names` field is absent, the message omits the
+meeting line and is otherwise unchanged.
 
 The concise **"No meeting notes found for today."** message replaces the usual
 activity counters only when **both** conditions hold: the runner-side
-`scribe-meta.json` that `pre-scribe` writes reports `docs_downloaded: 0` (a
-successful search that matched no documents), **and** the agent produced nothing
-to act on (no topics and no new-issue proposals in its result). This keeps an
-empty run from being mistaken for one that processed notes but produced no
-topics, while still showing the activity report — including any skipped or
-failed items — if a zero-document search nonetheless returned proposals. A run
-that *found* notes but extracted zero topics has `docs_downloaded > 0` and keeps
-the normal report. Missing, malformed, or non-numeric metadata, and search or
-export failures, never produce the no-notes message. An unset webhook skips the
-notification entirely.
+`scribe-meta.json` reports `docs_downloaded: 0` (a successful search that matched
+no documents), **and** the agent produced nothing to act on (no topics and no
+new-issue proposals in its result). This keeps an empty run from being mistaken
+for one that processed notes but produced no topics, while still showing the
+activity report — including any skipped or failed items — if a zero-document
+search nonetheless returned proposals. A run that *found* notes but extracted
+zero topics has `docs_downloaded > 0` and keeps the normal report. Missing,
+malformed, or non-numeric metadata, and search or export failures, never produce
+the no-notes message. An unset webhook skips the notification entirely.
 
 ## Custom network policy
 
