@@ -305,8 +305,10 @@ When the run processed one or more meeting documents, **both** outputs include a
 **`Meeting:`** line naming the processed document(s) — a single
 `Meeting: <title>` for one doc, or a `Meetings (N):` list for several — so
 operators can tell which meeting produced the results without opening the Actions
-run. The titles come from the Drive document names that `pre-scribe` records in
-`scribe-meta.json` (`doc_names`). Document names are **untrusted input** and are
+run. The titles come from the Drive document names that `pre-scribe` records in a
+runner-only `scribe-titles.json` (`doc_names`), which — unlike `scribe-meta.json`
+— is **not** mounted into the agent sandbox, so untrusted titles never enter the
+agent's context. Document names are **untrusted input** and are
 sanitized before display: control characters, ANSI escapes, and dangerous
 Unicode (line/paragraph separators, bidi overrides, zero-width and tag
 characters) are stripped so a crafted title cannot inject extra lines or reorder

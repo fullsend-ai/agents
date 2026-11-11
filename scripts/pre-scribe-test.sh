@@ -1004,21 +1004,30 @@ MOCKEOF
     return
   fi
 
+  # Titles go to the runner-only scribe-titles.json, NOT the sandbox-mounted
+  # scribe-meta.json (issue #706: untrusted titles must not enter the agent).
   local meta_file="${runner_temp}/scribe-workspace/scribe-meta.json"
-  if [[ ! -f "${meta_file}" ]]; then
-    echo "FAIL: ${test_name} — scribe-meta.json was not generated"
+  local titles_file="${runner_temp}/scribe-workspace/scribe-titles.json"
+  if [[ ! -f "${titles_file}" ]]; then
+    echo "FAIL: ${test_name} — scribe-titles.json was not generated"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # The sandbox-mounted meta must NOT carry the untrusted titles.
+  if [[ -f "${meta_file}" ]] && [[ "$(jq 'has("doc_names")' "${meta_file}")" == "true" ]]; then
+    echo "FAIL: ${test_name} — doc_names leaked into sandbox-mounted scribe-meta.json"
     FAILURES=$((FAILURES + 1))
     return
   fi
 
   local count name0 name1
-  count=$(jq '.doc_names | length' "${meta_file}")
+  count=$(jq '.doc_names | length' "${titles_file}")
   if ! assert_eq "${test_name}: doc_names length" "2" "${count}"; then return; fi
   # The untrusted name round-trips as a safe JSON string (no injection, exact value).
-  name0=$(jq -r '.doc_names[0]' "${meta_file}")
+  name0=$(jq -r '.doc_names[0]' "${titles_file}")
   if ! assert_eq "${test_name}: doc_names[0]" 'Team "Sync" <notes>' "${name0}"; then return; fi
   # A dash-leading title must not be read by jq as an option (would abort the run).
-  name1=$(jq -r '.doc_names[1]' "${meta_file}")
+  name1=$(jq -r '.doc_names[1]' "${titles_file}")
   if ! assert_eq "${test_name}: doc_names[1]" '-Weekly sync' "${name1}"; then return; fi
 
   echo "PASS: ${test_name}"

@@ -1102,14 +1102,20 @@ WORK_DIR="${RUNNER_TEMP:-/tmp}/scribe-workspace"
 NOTES_DIR="${WORK_DIR}/notes"
 BACKLOG_FILE="${WORK_DIR}/backlog.json"
 META_FILE="${WORK_DIR}/scribe-meta.json"
+# Meeting-document titles (issue #706) are kept in a separate, runner-only file
+# that is NOT mounted into the sandbox (unlike META_FILE, which the agent reads),
+# so untrusted Drive titles never enter the agent's context. post-scribe reads
+# this file for notifications.
+TITLES_FILE="${WORK_DIR}/scribe-titles.json"
 
 mkdir -p "${NOTES_DIR}"
 
-# Clear any scribe-meta.json left by a previous run before this run can fail.
-# This script exits non-zero on an auth/search/export failure *before* writing
-# META_FILE, so on a reused workspace a stale docs_downloaded: 0 could otherwise
-# be read by post-scribe as a confirmed empty search for this run (issue #1618).
-rm -f "${META_FILE}"
+# Clear files left by a previous run before this run can fail. This script exits
+# non-zero on an auth/search/export failure *before* writing META_FILE, so on a
+# reused workspace a stale docs_downloaded: 0 could otherwise be read by
+# post-scribe as a confirmed empty search for this run (issue #1618); a stale
+# titles file would likewise show the previous run's meeting names.
+rm -f "${META_FILE}" "${TITLES_FILE}"
 
 LOOKBACK="${SCRIBE_LOOKBACK_HOURS:-3}"
 # RFC3339 with Z suffix — matches the Go code's time.RFC3339 format
@@ -1305,8 +1311,9 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --argjson pr_count "${PR_COUNT}" \
     --argjson doc_path_count "${DOC_PATH_COUNT}" \
     --arg tracker "${FULLSEND_TRACKER}" \
-    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, tracker: $tracker, docs_downloaded: $doc_count, doc_names: [], backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
+    '{cutoff_date: $cutoff, notes_url: "", repo: $repo, tracker: $tracker, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
+  echo '{"doc_names": []}' > "${TITLES_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
 fi
@@ -1437,20 +1444,22 @@ if [[ -f "${NOTES_DIR}/doc-0.url" ]]; then
 fi
 
 # Serialize the processed meeting-document titles (issue #706) as a JSON string
-# array. Feed the untrusted titles through stdin (NUL-delimited), not as jq
-# `--args` positionals: jq reads a positional beginning with `-` (e.g. a doc
-# titled "-Weekly" or "-h") as an option and aborts. jq -Rs JSON-escapes every
-# character; the trailing NUL yields an empty final element that is filtered out.
-# The ${arr[@]+...} form keeps `printf` safe under `set -u` when the array is empty.
+# array, written to the runner-only TITLES_FILE (NOT the sandbox-mounted
+# META_FILE, so untrusted titles never enter the agent context). Feed the titles
+# through stdin (NUL-delimited), not as jq `--args` positionals: jq reads a
+# positional beginning with `-` (e.g. a doc titled "-Weekly" or "-h") as an
+# option and aborts. jq -Rs JSON-escapes every character; the trailing NUL yields
+# an empty final element that is filtered out. The ${arr[@]+...} form keeps
+# `printf` safe under `set -u` when the array is empty.
 DOC_NAMES_JSON=$(printf '%s\0' ${DOC_NAMES[@]+"${DOC_NAMES[@]}"} \
   | jq -Rs 'split("\u0000") | map(select(length > 0))')
+jq -n --argjson doc_names "${DOC_NAMES_JSON}" '{doc_names: $doc_names}' > "${TITLES_FILE}"
 
 jq -n \
   --arg cutoff "${CUTOFF_DATE}" \
   --arg notes_url "${NOTES_URL}" \
   --arg repo "${SCRIBE_REPO}" \
   --argjson doc_count "${DOC_COUNT}" \
-  --argjson doc_names "${DOC_NAMES_JSON}" \
   --argjson issue_count "${ISSUE_COUNT}" \
   --argjson open_total "${OPEN_ISSUE_TOTAL}" \
   --argjson truncated "${BACKLOG_TRUNCATED}" \
@@ -1464,7 +1473,6 @@ jq -n \
     repo: $repo,
     tracker: $tracker,
     docs_downloaded: $doc_count,
-    doc_names: $doc_names,
     backlog_issues: $issue_count,
     open_issue_total: $open_total,
     backlog_truncated: $truncated,

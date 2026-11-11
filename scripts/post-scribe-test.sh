@@ -1382,7 +1382,7 @@ run_no_notes_test() {
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
   rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
-  rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json" "${SCRIBE_META_DIR}/scribe-titles.json"
   [[ -n "${meta_json}" ]] && printf '%s' "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
   : > "${CURL_LOG}"
   : > "${GH_LOG}"
@@ -1414,8 +1414,34 @@ run_no_notes_test() {
 
 # run_meeting_test NAME META_JSON MUST_CONTAIN MUST_NOT — a no-notes test with an
 # empty agent result, used for the meeting-title (#706) Slack assertions.
+# run_meeting_test NAME TITLES_JSON MUST_CONTAIN MUST_NOT
+# TITLES_JSON is written to the runner-only scribe-titles.json (where post-scribe
+# reads doc_names); a minimal meta with docs_downloaded>0 keeps the no-notes
+# branch off. An empty TITLES_JSON leaves the titles file absent.
 run_meeting_test() {
-  run_no_notes_test "$1" "$2" "${EMPTY_RESULT}" "$3" "$4"
+  local test_name="$1" titles_json="$2" must_contain="$3" must_not="$4"
+  local run_dir="${TMPDIR}/run-${test_name//\//-}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${EMPTY_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json" "${SCRIBE_META_DIR}/scribe-titles.json"
+  echo '{"docs_downloaded":1}' > "${SCRIBE_META_DIR}/scribe-meta.json"
+  [[ -n "${titles_json}" ]] && printf '%s' "${titles_json}" > "${SCRIBE_META_DIR}/scribe-titles.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && SCRIBE_SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_FAKE}" bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"; cat "${TMPDIR}/stdout.log"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if [[ -n "${must_contain}" ]] && ! grep -qF -- "${must_contain}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected '${must_contain}' in Slack payload"; cat "${CURL_LOG}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if [[ -n "${must_not}" ]] && grep -qF -- "${must_not}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — unexpected '${must_not}' in Slack payload"; cat "${CURL_LOG}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  echo "PASS: ${test_name}"
 }
 
 export SCRIBE_MODE="all"
@@ -1539,6 +1565,13 @@ run_meeting_test "meeting/sensitive-title-redacted" \
   '{"docs_downloaded":1,"doc_names":["1:1 jane.doe@corp.example - performance"]}' \
   "Meeting: [redacted]" "jane.doe@corp.example"
 
+# Obfuscated secret: a zero-width space splits the email so the raw title would
+# pass the gate, but strip_unsafe_chars runs BEFORE contains_sensitive, so the
+# normalized "jane@corp.example" is caught and redacted (not published).
+run_meeting_test "meeting/sensitive-title-zwsp-split-redacted" \
+  '{"docs_downloaded":1,"doc_names":["jane@​corp.example"]}' \
+  "Meeting: [redacted]" "corp.example"
+
 # Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
 # printf '%b', so an un-doubled "\c" would truncate the message (dropping the
 # counters and View run link) and "\n" would inject a line. The backslash is now
@@ -1563,12 +1596,13 @@ rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 # Step-summary (GitHub Markdown/HTML): an untrusted title with a Markdown link or
 # raw HTML must be escaped so it does not render as an active link (issue #706).
 run_md_summary_test() {
-  local test_name="$1" meta_json="$2" must_contain="$3" must_not="$4"
+  local test_name="$1" titles_json="$2" must_contain="$3" must_not="$4"
   local run_dir="${TMPDIR}/run-${test_name//\//-}"
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${EMPTY_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
-  rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
-  printf '%s' "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json" "${SCRIBE_META_DIR}/scribe-titles.json"
+  echo '{"docs_downloaded":1}' > "${SCRIBE_META_DIR}/scribe-meta.json"
+  printf '%s' "${titles_json}" > "${SCRIBE_META_DIR}/scribe-titles.json"
   local summary="${TMPDIR}/step-summary-${test_name//\//-}.md"
   : > "${summary}"
   local exit_code=0

@@ -600,29 +600,23 @@ fi
 RUN_MODE_LABEL="LIVE"
 [[ "${DRY_RUN}" == "true" ]] && RUN_MODE_LABEL="DRY RUN"
 
-# No-notes detection (issue #1618) and meeting titles (issue #706). pre-scribe
-# writes a runner-side scribe-meta.json: docs_downloaded holds the search's
-# matching-document count (a confirmed numeric 0 is the successful empty search),
-# and doc_names lists the processed Drive document titles.
+# No-notes detection (issue #1618). pre-scribe writes a runner-side
+# scribe-meta.json whose docs_downloaded holds the search's matching-document
+# count (a confirmed numeric 0 is the successful empty search).
 #
-# No-notes: the empty-search *signal* comes from the metadata; the concise
-# *message* additionally requires the agent to have produced nothing at the
-# source — zero topics and zero new-issue proposals, read straight from
-# RESULT_FILE rather than TOPIC_COUNT / NEW_COUNT (which mode handling zeroes:
-# new_issues_only zeroes TOPIC_COUNT, comments_only zeroes NEW_COUNT). Gating on
-# the raw result covers every "something happened" case at once — comments
-# posted, issues created, issues skipped by mode (SKIPPED_NEW_ISSUES), gate
-# rejections (REJECTED), and create/dedup failures (CREATE_FAILURES /
-# JIRA_DEDUP_FAILURES) only arise when there were topics or proposals to begin
-# with — so a zero-document search that still returned proposals keeps the
-# activity report. A run that found notes but extracted zero topics has
-# docs_downloaded > 0 and keeps the normal report.
-#
-# Meeting titles are untrusted Drive input, read NUL-delimited so a title
-# containing a newline stays one element; they are sanitized at each display site.
+# The empty-search *signal* comes from the metadata; the concise *message*
+# additionally requires the agent to have produced nothing at the source — zero
+# topics and zero new-issue proposals, read straight from RESULT_FILE rather than
+# TOPIC_COUNT / NEW_COUNT (which mode handling zeroes: new_issues_only zeroes
+# TOPIC_COUNT, comments_only zeroes NEW_COUNT). Gating on the raw result covers
+# every "something happened" case at once — comments posted, issues created,
+# issues skipped by mode (SKIPPED_NEW_ISSUES), gate rejections (REJECTED), and
+# create/dedup failures (CREATE_FAILURES / JIRA_DEDUP_FAILURES) only arise when
+# there were topics or proposals to begin with — so a zero-document search that
+# still returned proposals keeps the activity report. A run that found notes but
+# extracted zero topics has docs_downloaded > 0 and keeps the normal report.
 SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
 NO_NOTES=false
-MEETING_TITLES=()
 # NO_NOTES_DOCS records why the no-notes branch did/did not fire so a silent
 # fallback is diagnosable from the job log (printed in the summary below):
 # "missing" (no meta), "invalid" (unparseable JSON or a non-object root), or the
@@ -643,22 +637,30 @@ else
       NO_NOTES=true
     fi
   fi
-  # Meeting titles (#706): NUL-delimited so a title containing a newline stays a
-  # single element (untrusted input); sanitized at each display site.
+fi
+
+# Meeting titles (issue #706) come from a runner-only scribe-titles.json that is
+# NOT mounted into the sandbox, so untrusted Drive titles never enter the agent
+# context. Normalize each title with strip_unsafe_chars FIRST, then gate the
+# normalized text with contains_sensitive — so the sensitive-content check sees
+# exactly what will be published (a zero-width char cannot split a secret/email
+# past the gate and then be stripped at display). Read NUL-delimited so a title
+# containing a newline stays one element.
+SCRIBE_TITLES_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-titles.json"
+MEETING_TITLES=()
+if [[ -f "${SCRIBE_TITLES_FILE}" ]] && jq -e 'type == "object"' "${SCRIBE_TITLES_FILE}" >/dev/null 2>&1; then
   while IFS= read -r -d '' _title; do
-    # Explicit if (not `[[ … ]] && …`) so skipping an empty title keeps a
-    # success status and cannot trip `set -e` on the loop body.
+    _title=$(strip_unsafe_chars "${_title}")
+    # Explicit if (not `[[ … ]] && …`) so skipping an empty title keeps a success
+    # status and cannot trip `set -e` on the loop body.
     if [[ -n "${_title}" ]]; then
-      # Gate the untrusted title through the same sensitive-content check topics
-      # and new issues pass (emails, SSNs, keys/tokens, ...): a matching title is
-      # redacted rather than published verbatim to Slack and the step summary.
       if contains_sensitive "${_title}"; then
         MEETING_TITLES+=("[redacted]")
       else
         MEETING_TITLES+=("${_title}")
       fi
     fi
-  done < <(jq -j '(.doc_names // [])[] | . + "\u0000"' "${SCRIBE_META_FILE}")
+  done < <(jq -j '(.doc_names // [])[] | . + "\u0000"' "${SCRIBE_TITLES_FILE}")
 fi
 
 echo ""
