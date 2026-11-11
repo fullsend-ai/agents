@@ -232,12 +232,18 @@ sanitize_slack_text() {
 }
 
 # Sanitize untrusted text for a GitHub step-summary (Markdown/HTML) line (e.g.
-# Drive document titles, issue #706). _gha_sanitize strips control chars, ANSI,
-# and workflow-command delimiters; additionally escape HTML (`& < >`) and the
+# Drive document titles, issue #706). The step summary is a Markdown file, not a
+# workflow-command channel, so do NOT use _gha_sanitize (its `%`->`%25` and
+# `::`->`%3A%3A` encoding would mangle readable titles like "100% sync" or
+# "Q3 :: Planning"). Instead: strip ANSI sequences and all C0/DEL control chars
+# (so a title cannot inject extra Markdown lines), then escape HTML (`& < >`) and
 # Markdown link brackets (`[ ]`) and code backticks, so a crafted title cannot
 # render an active link or raw HTML in the run summary.
 sanitize_md_text() {
-  _gha_sanitize "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g'
+  printf '%s' "$1" \
+    | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
+    | tr -d '\000-\037\177' \
+    | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/\[/\\[/g; s/\]/\\]/g; s/`/\\`/g'
 }
 
 CONTENT_GATE_REJECTIONS=0

@@ -1578,6 +1578,11 @@ run_md_summary_test "meeting/step-summary-markdown-link-escaped" \
 run_md_summary_test "meeting/step-summary-html-escaped" \
   '{"docs_downloaded":1,"doc_names":["<a href=\"http://evil\">x</a>"]}' \
   '&lt;a href=' '<a href='
+# Readability: % and :: must NOT be percent-encoded in the Markdown summary
+# (that encoding is only for workflow-command stdout, not the summary file).
+run_md_summary_test "meeting/step-summary-percent-colon-readable" \
+  '{"docs_downloaded":1,"doc_names":["100% Review :: Q3"]}' \
+  '100% Review :: Q3' '%25'
 
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 
