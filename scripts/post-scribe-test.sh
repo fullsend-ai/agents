@@ -175,6 +175,10 @@ if [[ "\${URL}" == *"hooks.slack.com"* ]]; then
   if [[ -f "${TMPDIR}/slack-fail" ]]; then
     exit 1
   fi
+  # Capture the piped payload (sent via --data-binary @-) so tests can assert
+  # on the notification text (issue #1618).
+  SLACK_BODY="\$(cat 2>/dev/null || true)"
+  printf 'SLACK_PAYLOAD=%s\n' "\$(printf '%s' "\${SLACK_BODY}" | tr '\n' ' ')" >> "${CURL_LOG}"
   echo "ok"
   exit 0
 fi
@@ -210,6 +214,9 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/bc"
 
 export PATH="${MOCK_BIN}:${PATH}"
+# Isolate the runner-side scribe workspace so the no-notes meta file (issue
+# #1618) lives under the test tempdir, not the real ${RUNNER_TEMP:-/tmp}.
+export RUNNER_TEMP="${TMPDIR}"
 export SCRIBE_REPO="mock-org/mock-repo"
 export GH_TOKEN="fake-token"
 export SCRIBE_DRY_RUN="true"
@@ -1357,6 +1364,84 @@ export JIRA_BASE_URL="https://jira.example.com"
 run_test_stdout "jira/non-cloud-base-url-rejected" "${JIRA_NEW_ISSUE}" "" true
 
 unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN SCRIBE_JIRA_PROJECT
+
+# ============================================================
+# No-meeting-notes notification (issue #1618)
+# ============================================================
+# pre-scribe writes ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json; post-scribe
+# reads docs_downloaded from it. A confirmed numeric 0 is the successful
+# empty-search path and yields a concise Slack message instead of all-zero
+# counters. Missing/malformed/non-numeric metadata must not trigger it, and a
+# run that found notes but extracted zero topics keeps the normal report.
+SCRIBE_META_DIR="${RUNNER_TEMP}/scribe-workspace"
+mkdir -p "${SCRIBE_META_DIR}"
+EMPTY_RESULT='{"topics":[],"new_issues":[]}'
+
+run_no_notes_test() {
+  local test_name="$1" meta_json="$2" result_json="$3" must_contain="$4" must_not="$5"
+  local run_dir="${TMPDIR}/run-${test_name//\//-}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
+  rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
+  [[ -n "${meta_json}" ]] && echo "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${must_contain}" ]] && ! grep -qF "${must_contain}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected '${must_contain}' in Slack payload"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -n "${must_not}" ]] && grep -qF "${must_not}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — unexpected '${must_not}' in Slack payload"
+    cat "${CURL_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+export SCRIBE_SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_FAKE}"
+export SCRIBE_MODE="all"
+
+export SCRIBE_DRY_RUN="true"
+run_no_notes_test "no-notes/empty-search-message" \
+  '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
+  "No meeting notes found for today." "Topics processed"
+
+export SCRIBE_DRY_RUN="false"
+run_no_notes_test "no-notes/live-keeps-label" \
+  '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
+  "Scribe agent* (LIVE)" ""
+run_no_notes_test "no-notes/live-keeps-view-run-link" \
+  '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
+  "View run" ""
+export SCRIBE_DRY_RUN="true"
+
+run_no_notes_test "no-notes/notes-with-zero-topics-keeps-report" \
+  '{"docs_downloaded":3}' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+run_no_notes_test "no-notes/missing-meta-no-false-positive" \
+  "" "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+run_no_notes_test "no-notes/non-numeric-meta-no-false-positive" \
+  '{"docs_downloaded":"nan"}' "${EMPTY_RESULT}" \
+  "Topics processed" "No meeting notes found for today."
+
+rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
+unset SCRIBE_SLACK_WEBHOOK_URL
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

@@ -1595,6 +1595,22 @@ fi
 RUN_MODE_LABEL="LIVE"
 [[ "${DRY_RUN}" == "true" ]] && RUN_MODE_LABEL="DRY RUN"
 
+# No-notes detection (issue #1618). pre-scribe writes a runner-side
+# scribe-meta.json whose docs_downloaded field holds the meeting-note search's
+# matching-document count; a confirmed numeric 0 is the successful empty-search
+# path. Trust only a well-formed meta with a numeric docs_downloaded: missing,
+# malformed, or non-numeric metadata must NOT be read as "no notes", and a
+# search/export failure never reaches this file with docs_downloaded: 0. This is
+# deliberately independent of TOPIC_COUNT, so a run that found notes but
+# extracted zero topics still gets the normal activity report.
+SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
+NO_NOTES=false
+if [[ -f "${SCRIBE_META_FILE}" ]] && jq -e . "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
+  if [[ "$(jq -r '(.docs_downloaded | numbers) // "nan"' "${SCRIBE_META_FILE}")" == "0" ]]; then
+    NO_NOTES=true
+  fi
+fi
+
 echo ""
 echo "=== Scribe Post-Script Summary ==="
 echo "  Run mode: ${RUN_MODE_LABEL}"
@@ -1678,39 +1694,43 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   RUN_URL=$(forge_run_url "${SCRIBE_REPO}")
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
-  SLACK_TEXT+="\nMode: \`${SCRIBE_MODE}\` · Confidence: \`${MIN_CONFIDENCE}\`"
-  SLACK_TEXT+="\n• Topics processed: *${TOPIC_COUNT}*"
-  SLACK_TEXT+="\n• Comments: *${#COMMENT_TOPICS[@]}*"
-  SLACK_TEXT+="\n• New issues: *${#NEW_ISSUE_TITLES[@]}*"
-  SLACK_TEXT+="\n• Gate rejections: *${REJECTED}*"
-  if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
-    SLACK_TEXT+=" (${CONTENT_GATE_REJECTIONS} content)"
-  fi
-  if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
-    SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
-  fi
-  if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
-    SLACK_TEXT+="\n• :warning: Label failures: *${JIRA_LABEL_FAILURES}* (${JIRA_LABEL_FAILURE_KEYS[*]})"
-  fi
+  if [[ "${NO_NOTES}" == "true" ]]; then
+    SLACK_TEXT+="\nNo meeting notes found for today."
+  else
+    SLACK_TEXT+="\nMode: \`${SCRIBE_MODE}\` · Confidence: \`${MIN_CONFIDENCE}\`"
+    SLACK_TEXT+="\n• Topics processed: *${TOPIC_COUNT}*"
+    SLACK_TEXT+="\n• Comments: *${#COMMENT_TOPICS[@]}*"
+    SLACK_TEXT+="\n• New issues: *${#NEW_ISSUE_TITLES[@]}*"
+    SLACK_TEXT+="\n• Gate rejections: *${REJECTED}*"
+    if [[ "${CONTENT_GATE_REJECTIONS}" -gt 0 ]]; then
+      SLACK_TEXT+=" (${CONTENT_GATE_REJECTIONS} content)"
+    fi
+    if [[ "${SKIPPED_NEW_ISSUES}" -gt 0 ]]; then
+      SLACK_TEXT+="\n• Skipped (${SCRIBE_MODE}): *${SKIPPED_NEW_ISSUES}*"
+    fi
+    if [[ "${JIRA_LABEL_FAILURES}" -gt 0 ]]; then
+      SLACK_TEXT+="\n• :warning: Label failures: *${JIRA_LABEL_FAILURES}* (${JIRA_LABEL_FAILURE_KEYS[*]})"
+    fi
 
-  if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
-    SLACK_TEXT+="\n\n*Comments:*"
-    for idx in "${!COMMENT_TOPICS[@]}"; do
-      SLACK_TOPIC=$(sanitize_slack_mrkdwn "${COMMENT_TOPICS[$idx]}")
-      SLACK_TEXT+="\n  • <${ISSUE_BASE}/${COMMENT_ISSUES[$idx]}|#${COMMENT_ISSUES[$idx]} — ${SLACK_TOPIC}>"
-    done
-  fi
+    if [[ ${#COMMENT_TOPICS[@]} -gt 0 ]]; then
+      SLACK_TEXT+="\n\n*Comments:*"
+      for idx in "${!COMMENT_TOPICS[@]}"; do
+        SLACK_TOPIC=$(sanitize_slack_mrkdwn "${COMMENT_TOPICS[$idx]}")
+        SLACK_TEXT+="\n  • <${ISSUE_BASE}/${COMMENT_ISSUES[$idx]}|#${COMMENT_ISSUES[$idx]} — ${SLACK_TOPIC}>"
+      done
+    fi
 
-  if [[ ${#NEW_ISSUE_TITLES[@]} -gt 0 ]]; then
-    SLACK_TEXT+="\n\n*New issues:*"
-    for idx in "${!NEW_ISSUE_TITLES[@]}"; do
-      SLACK_TITLE=$(sanitize_slack_mrkdwn "${NEW_ISSUE_TITLES[$idx]}")
-      if [[ -n "${NEW_ISSUE_URLS[$idx]:-}" ]]; then
-        SLACK_TEXT+="\n  • <${NEW_ISSUE_URLS[$idx]}|${SLACK_TITLE}>"
-      else
-        SLACK_TEXT+="\n  • ${SLACK_TITLE}"
-      fi
-    done
+    if [[ ${#NEW_ISSUE_TITLES[@]} -gt 0 ]]; then
+      SLACK_TEXT+="\n\n*New issues:*"
+      for idx in "${!NEW_ISSUE_TITLES[@]}"; do
+        SLACK_TITLE=$(sanitize_slack_mrkdwn "${NEW_ISSUE_TITLES[$idx]}")
+        if [[ -n "${NEW_ISSUE_URLS[$idx]:-}" ]]; then
+          SLACK_TEXT+="\n  • <${NEW_ISSUE_URLS[$idx]}|${SLACK_TITLE}>"
+        else
+          SLACK_TEXT+="\n  • ${SLACK_TITLE}"
+        fi
+      done
+    fi
   fi
 
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"
