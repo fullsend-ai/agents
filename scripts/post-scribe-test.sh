@@ -1420,13 +1420,21 @@ run_no_notes_test "no-notes/empty-search-message" \
   '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
   "No meeting notes found for today." "Topics processed"
 
+# DRY RUN: label is kept on the no-notes path (must_not proves the branch fired,
+# since "Topics processed" only appears in the normal activity report).
+run_no_notes_test "no-notes/dry-run-keeps-label" \
+  '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
+  "Scribe agent* (DRY RUN)" "Topics processed"
+
+# LIVE: label and View run link are kept on the no-notes path. must_not is
+# "Topics processed" so these fail if the no-notes branch stops firing.
 export SCRIBE_DRY_RUN="false"
 run_no_notes_test "no-notes/live-keeps-label" \
   '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
-  "Scribe agent* (LIVE)" ""
+  "Scribe agent* (LIVE)" "Topics processed"
 run_no_notes_test "no-notes/live-keeps-view-run-link" \
   '{"docs_downloaded":0}' "${EMPTY_RESULT}" \
-  "View run" ""
+  "View run" "Topics processed"
 export SCRIBE_DRY_RUN="true"
 
 run_no_notes_test "no-notes/notes-with-zero-topics-keeps-report" \

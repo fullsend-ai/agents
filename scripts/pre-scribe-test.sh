@@ -830,6 +830,14 @@ MOCKEOF
     return
   fi
 
+  # Pin the zero-document contract on the writing side: the real pre-scribe path
+  # must record docs_downloaded: 0, which post-scribe's no-notes gate reads.
+  local docs_downloaded
+  docs_downloaded=$(jq -r '.docs_downloaded' "${meta_file}")
+  if ! assert_eq "${test_name}: docs_downloaded in scribe-meta.json" "0" "${docs_downloaded}"; then
+    return
+  fi
+
   echo "PASS: ${test_name}"
 }
 

@@ -1619,8 +1619,16 @@ RUN_MODE_LABEL="LIVE"
 # > 0, so it is unaffected and keeps the normal report.
 SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
 NO_NOTES=false
-if [[ -f "${SCRIBE_META_FILE}" ]] && jq -e . "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
-  if [[ "$(jq -r '(.docs_downloaded | numbers) // "nan"' "${SCRIBE_META_FILE}")" == "0" ]]; then
+# NO_NOTES_DOCS records why the branch did/did not fire so a silent fallback is
+# diagnosable from the job log (printed in the summary below): "missing" (no
+# meta), "invalid" (unparseable meta), or the numeric docs_downloaded value.
+if [[ ! -f "${SCRIBE_META_FILE}" ]]; then
+  NO_NOTES_DOCS="missing"
+elif ! jq -e . "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
+  NO_NOTES_DOCS="invalid"
+else
+  NO_NOTES_DOCS="$(jq -r '(.docs_downloaded | numbers) // "nan"' "${SCRIBE_META_FILE}")"
+  if [[ "${NO_NOTES_DOCS}" == "0" ]]; then
     RESULT_TOPIC_TOTAL=$(jq '.topics | length' "${RESULT_FILE}")
     RESULT_NEW_ISSUE_TOTAL=$(jq '.new_issues | length' "${RESULT_FILE}")
     if [[ "${RESULT_TOPIC_TOTAL}" -eq 0 && "${RESULT_NEW_ISSUE_TOTAL}" -eq 0 ]]; then
@@ -1633,6 +1641,7 @@ echo ""
 echo "=== Scribe Post-Script Summary ==="
 echo "  Run mode: ${RUN_MODE_LABEL}"
 echo "  Agent mode: ${SCRIBE_MODE}"
+echo "  No-notes check: docs_downloaded=${NO_NOTES_DOCS} -> NO_NOTES=${NO_NOTES}"
 echo "  Topics processed: ${TOPIC_COUNT}"
 echo "  Comments ${WOULD_BE}posted: ${#COMMENT_TOPICS[@]}"
 echo "  New issues ${WOULD_BE}created: ${#NEW_ISSUE_TITLES[@]}"
