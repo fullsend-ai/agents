@@ -106,9 +106,17 @@ redact_sensitive_title() {
     s/\b(?:\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b/$R/g;
     s/\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b/$R/g;
     s/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/$R/g;
-    # Card-like run (13-19 digits, optional single space/dash between digits):
-    # only redact when it passes Luhn, so numeric IDs/versions survive.
-    s/(?<![0-9])([0-9](?:[ -]?[0-9]){12,18})(?![0-9])/ luhn($1) ? $R : $1 /ge;
+    # Card-like run: a well-formed shape only — contiguous 13-19 digits, or
+    # exactly-4-digit groups (the common PAN grouping) with a 1-7 digit final
+    # group — not an arbitrary mix of digit-group widths. This isolates a real
+    # PAN from an adjacent unrelated number ("card 4111 1111 1111 1111 12
+    # review" redacts only the 16-digit card) without widening the Luhn check
+    # to arbitrary sub-windows of the run: a short numeric ID (a Sprint or OKR
+    # number) has a much higher chance of some short substring coincidentally
+    # passing the Luhn checksum than the run as a whole does, so only a
+    # well-formed card shape is Luhn-checked at all. Only redact when Luhn
+    # passes, so IDs/versions in this shape still survive.
+    s/(?<![0-9])((?:[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{1,7})|[0-9]{13,19})(?![0-9])/ luhn($1) ? $R : $1 /ge;
   '
 }
 
@@ -1358,14 +1366,21 @@ echo "Found ${DOC_COUNT} matching document(s)"
 if [[ "${DOC_COUNT}" -gt 0 ]]; then
   # Drive names are untrusted input (issue #706). Raw `jq -r` would print them to
   # the Actions log verbatim — leaking PII that post-scribe redacts from the same
-  # run's notification, and letting a newline in a name forge log lines. Route
-  # each name through strip_unsafe_chars + redact_sensitive_title (NUL-delimited
-  # so a newline stays one record) so the log honors the same redaction promise.
+  # run's notification, letting a newline in a name forge log lines, and letting
+  # a name starting with "::" inject a GHA workflow command (this line has only
+  # whitespace before the name). Route each name through strip_unsafe_chars +
+  # redact_sensitive_title, then _gha_sanitize (encodes `%`/`::` — readability
+  # matters less in the job log than in the notification, so unlike the Slack/
+  # step-summary sanitizers this one is applied here). Read NUL-delimited so a
+  # newline stays one record; strip embedded NULs from each field in jq first —
+  # jq would otherwise emit a literal NUL byte for a `\u0000` in a Drive name,
+  # shifting the delimiter and letting an attacker-controlled name's tail land
+  # unredacted in ${_ctime} (which is only stripped, not redacted).
   while IFS= read -r -d '' _name && IFS= read -r -d '' _ctime; do
-    _name=$(redact_sensitive_title "$(strip_unsafe_chars "${_name}")")
-    _ctime=$(strip_unsafe_chars "${_ctime}")
+    _name=$(_gha_sanitize "$(redact_sensitive_title "$(strip_unsafe_chars "${_name}")")")
+    _ctime=$(_gha_sanitize "$(strip_unsafe_chars "${_ctime}")")
     echo "  ${_name} (created: ${_ctime})"
-  done < <(jq -j '.files[] | (.name // "") + "\u0000" + (.createdTime // "") + "\u0000"' "${WORK_DIR}/drive-response.json")
+  done < <(jq -j '.files[] | ((.name // "") | gsub("\u0000"; "")) + "\u0000" + ((.createdTime // "") | gsub("\u0000"; "")) + "\u0000"' "${WORK_DIR}/drive-response.json")
 fi
 
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
@@ -1438,9 +1453,11 @@ while read -r doc; do
   DOC_NAME=$(echo "${doc}" | jq -r '.name')
   DOC_URL=$(echo "${doc}" | jq -r '.webViewLink')
 
-  # DOC_NAME is untrusted; sanitize/redact for the log only (the raw value is
-  # still needed below for download and for scribe-titles.json).
-  echo "  Downloading: $(redact_sensitive_title "$(strip_unsafe_chars "${DOC_NAME}")")"
+  # DOC_NAME is untrusted; sanitize/redact/_gha_sanitize for the log only (the
+  # raw value is still needed below for download and for scribe-titles.json).
+  # This line has a non-whitespace prefix so a `::` is less exposed than the
+  # listing above, but _gha_sanitize is applied for the same defense-in-depth.
+  echo "  Downloading: $(_gha_sanitize "$(redact_sensitive_title "$(strip_unsafe_chars "${DOC_NAME}")")")"
 
   set +e
   RAW_TEXT=$(export_doc_with_retry "${DOC_ID}")

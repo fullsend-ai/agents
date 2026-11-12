@@ -108,9 +108,17 @@ redact_sensitive_title() {
     s/\b(?:\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b/$R/g;
     s/\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b/$R/g;
     s/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/$R/g;
-    # Card-like run (13-19 digits, optional single space/dash between digits):
-    # only redact when it passes Luhn, so numeric IDs/versions survive.
-    s/(?<![0-9])([0-9](?:[ -]?[0-9]){12,18})(?![0-9])/ luhn($1) ? $R : $1 /ge;
+    # Card-like run: a well-formed shape only — contiguous 13-19 digits, or
+    # exactly-4-digit groups (the common PAN grouping) with a 1-7 digit final
+    # group — not an arbitrary mix of digit-group widths. This isolates a real
+    # PAN from an adjacent unrelated number ("card 4111 1111 1111 1111 12
+    # review" redacts only the 16-digit card) without widening the Luhn check
+    # to arbitrary sub-windows of the run: a short numeric ID (a Sprint or OKR
+    # number) has a much higher chance of some short substring coincidentally
+    # passing the Luhn checksum than the run as a whole does, so only a
+    # well-formed card shape is Luhn-checked at all. Only redact when Luhn
+    # passes, so IDs/versions in this shape still survive.
+    s/(?<![0-9])((?:[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{1,7})|[0-9]{13,19})(?![0-9])/ luhn($1) ? $R : $1 /ge;
   '
 }
 

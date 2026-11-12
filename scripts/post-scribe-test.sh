@@ -1594,6 +1594,16 @@ run_meeting_test "meeting/sensitive-title-card-redacted" \
   '{"docs_downloaded":1,"doc_names":["card 4111 1111 1111 1111 dispute"]}' \
   "Meeting: card [redacted] dispute" "4111 1111 1111 1111"
 
+# fullsend-ai-review finding on 129bd76: a valid PAN adjacent to an unrelated
+# number must still be redacted (the card regex must not swallow the extra
+# digits into one non-Luhn candidate and miss the real card inside it).
+run_meeting_test "meeting/card-with-trailing-digits-redacted" \
+  '{"docs_downloaded":1,"doc_names":["card 4111 1111 1111 1111 12 review"]}' \
+  "Meeting: card [redacted] 12 review" "4111 1111 1111 1111"
+run_meeting_test "meeting/card-with-leading-digit-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Item 1 4111 1111 1111 1111"]}' \
+  "Meeting: Item 1 [redacted]" "4111 1111 1111 1111"
+
 # Negative controls (finding from waynesun09): numeric IDs/versions must NOT be
 # blanked. Luhn clears card false positives entirely; a version number redacts
 # only its span (an IPv4 regex cannot tell 4.18.0.1 from an IP), so the rest of
