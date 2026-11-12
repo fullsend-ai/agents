@@ -321,6 +321,17 @@ run_pem_redaction_test() {
   local test_name="$1"
   local pem_input="${2:-}"
   local pem_end
+  # Trailing context after the END marker (issue #239 finding, waynesun09):
+  # once is_pem_begin sets in_pem=1, ONLY is_pem_end clears it — if the END
+  # pattern fails to match (e.g. a format-specific regex change landed on
+  # BEGIN but not END), every remaining line is silently dropped, and the two
+  # checks below alone would not catch it (the payload line is gone and
+  # [REDACTED PRIVATE KEY] was already printed, either way). Appending this
+  # sentinel after the END line and asserting it survives pins that the END
+  # match actually re-enables passthrough, not just that something was
+  # redacted. Appended unconditionally (default and custom fixtures alike)
+  # so every call gets the check without repeating it in each fixture.
+  local sentinel="trailing-context-after-key"
 
   if [ -z "${pem_input}" ]; then
     pem_input="$(printf '%s\n' \
@@ -331,6 +342,7 @@ run_pem_redaction_test() {
   else
     pem_end="MIIEowIBAAKCAQEAfake"
   fi
+  pem_input="$(printf '%s\n%s' "${pem_input}" "${sentinel}")"
 
   local actual
   actual="$(sanitize_failure_detail "${pem_input}")"
@@ -344,6 +356,12 @@ run_pem_redaction_test() {
   if ! echo "${actual}" | grep -qF '[REDACTED PRIVATE KEY]'; then
     echo "FAIL: ${test_name}"
     echo "  expected [REDACTED PRIVATE KEY] in output"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if ! echo "${actual}" | grep -qF "${sentinel}"; then
+    echo "FAIL: ${test_name}"
+    echo "  expected trailing content after the END marker to survive (the END pattern may not be matching)"
     FAILURES=$((FAILURES + 1))
     return
   fi
