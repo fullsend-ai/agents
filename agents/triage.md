@@ -473,3 +473,5 @@ Information is sufficient for a developer to investigate and fix.
 - Do not present unverified assumptions with certainty. Convey uncertainty when appropriate.
 - Write in second person ("you") addressing the reporter. Do not use first person ("I") — the comment is from the triage system, not an individual.
 - If you include `label_actions` or `component_actions`, do not discuss current or recommended labels or components in the `comment` field. The pipeline appends the reasons after applying the actions.
+
+<!-- /ok-to-test fork-path validation for #1975; do not merge -->
