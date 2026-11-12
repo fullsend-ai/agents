@@ -359,6 +359,22 @@ run_pem_redaction_test "sanitize-redacts-lowercase-pem-block" \
     "MIIEowIBAAKCAQEAfake" \
     "-----end rsa private key-----")"
 
+# issue #239: OpenPGP's ASCII-armor format ends in "...private key
+# block-----" (an extra "BLOCK" token), which the original PEM-only pattern
+# did not match, so a PGP key reaching stray CI output would have posted to a
+# public comment unredacted.
+run_pem_redaction_test "sanitize-redacts-pgp-private-key-block" \
+  "$(printf '%s\n' \
+    "-----BEGIN PGP PRIVATE KEY BLOCK-----" \
+    "MIIEowIBAAKCAQEAfake" \
+    "-----END PGP PRIVATE KEY BLOCK-----")"
+
+run_pem_redaction_test "sanitize-redacts-lowercase-pgp-private-key-block" \
+  "$(printf '%s\n' \
+    "-----begin pgp private key block-----" \
+    "MIIEowIBAAKCAQEAfake" \
+    "-----end pgp private key block-----")"
+
 run_push_token_redaction_test() {
   local test_name="$1"
   local token="$2"
