@@ -1,0 +1,184 @@
+name: ok-to-test
+
+# Writer-authorized functional and behaviour tests for fork PRs (#1975). Fork
+# PRs get no secrets on pull_request, so both suites skip until a user with
+# write access reviews the latest push and comments `/ok-to-test <sha>` on the
+# PR, naming the reviewed commit; only a PR head that matches that sha runs.
+# This is gh-aw's inline slash-command model: issue_comment plus a commenter
+# role gate, with the workflow file always taken from the default branch.
+#
+# Called jobs report as "functional / ..." and "behaviour / ..." on the
+# default-branch commit, not on the PR. So `authorize` creates check runs
+# named functional-tests-complete and behaviour on the authorized head sha,
+# and `report` completes them from the called workflows' results. Only these
+# two jobs hold write scopes; the jobs that run PR code never do (gh-aw's
+# safe-outputs split).
+#
+# No caller-level concurrency: each called workflow queues /ok-to-test runs
+# in its own *-ok-to-test-{n} group, and sharing a group with a callee
+# deadlocks.
+
+permissions: {}
+
+on:
+  issue_comment:
+    types: [created]
+
+jobs:
+  authorize:
+    if: >-
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      !github.event.repository.fork &&
+      startsWith(github.event.comment.body, '/ok-to-test')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: write
+    outputs:
+      authorized: ${{ steps.auth.outputs.authorized }}
+      head_sha: ${{ steps.auth.outputs.head_sha }}
+      functional_check_id: ${{ steps.checks.outputs.functional }}
+      behaviour_check_id: ${{ steps.checks.outputs.behaviour }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}  # Default branch only — never check out PR head here
+          persist-credentials: false
+
+      # Commenter must have write+; authorizes the PR head only when it is the
+      # sha the comment names. Posts the refusal comment itself.
+      - name: Check /ok-to-test authorization
+        id: auth
+        uses: ./.github/actions/check-e2e-authorization
+        with:
+          pr_number: ${{ github.event.issue.number }}
+          repository: ${{ github.repository }}
+          event_name: ${{ github.event_name }}
+          commenter_login: ${{ github.event.comment.user.login }}
+          comment_id: ${{ github.event.comment.id }}
+
+      - name: Validate authorized head sha
+        if: steps.auth.outputs.authorized == 'true'
+        env:
+          HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+        run: |
+          [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad head sha '${HEAD_SHA}'"; exit 1; }
+
+      - name: Create check runs on the PR head
+        id: checks
+        if: steps.auth.outputs.authorized == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for pair in functional:functional-tests-complete behaviour:behaviour; do
+            key="${pair%%:*}"
+            name="${pair#*:}"
+            id=$(gh api -X POST "repos/${REPO}/check-runs" \
+              -f name="${name}" -f head_sha="${HEAD_SHA}" -f status=in_progress \
+              -f details_url="${RUN_URL}" \
+              -f 'output[title]=Running after /ok-to-test' \
+              -f "output[summary]=ok-to-test run: ${RUN_URL}" \
+              --jq .id)
+            echo "${key}=${id}" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Reply on the PR
+        if: steps.checks.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          HEAD_SHA: ${{ steps.auth.outputs.head_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body="Functional and behaviour tests authorized for \`${HEAD_SHA}\` ([run](${RUN_URL})). A new push needs a new \`/ok-to-test <sha>\`."
+          gh api -X POST "repos/${REPO}/issues/${PR_NUMBER}/comments" -f body="${body}" --silent
+
+  functional:
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    # Caller permissions are a ceiling for the reusable workflow: grant the
+    # union of its job permissions, even for the gate job that skips here.
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/functional-tests.yml
+    with:
+      pr_number: ${{ format('{0}', github.event.issue.number) }}
+      head_sha: ${{ needs.authorize.outputs.head_sha }}
+      # Same tier as a pull_request run: full with the eval-full label.
+      tier: ${{ contains(github.event.issue.labels.*.name, 'eval-full') && 'full' || 'release' }}
+    secrets: inherit
+
+  behaviour:
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    uses: ./.github/workflows/behaviour-tests.yml
+    with:
+      pr_number: ${{ format('{0}', github.event.issue.number) }}
+      head_sha: ${{ needs.authorize.outputs.head_sha }}
+    secrets: inherit
+
+  report:
+    needs: [authorize, functional, behaviour]
+    if: always() && needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      checks: write
+    steps:
+      - name: Complete check runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FUNCTIONAL_ID: ${{ needs.authorize.outputs.functional_check_id }}
+          FUNCTIONAL_CALL: ${{ needs.functional.result }}
+          FUNCTIONAL_RESULT: ${{ needs.functional.outputs.result }}
+          BEHAVIOUR_ID: ${{ needs.authorize.outputs.behaviour_check_id }}
+          BEHAVIOUR_CALL: ${{ needs.behaviour.result }}
+          BEHAVIOUR_RESULT: ${{ needs.behaviour.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # The called workflow's result output is success, failure or
+          # cancelled. Empty means the job never reported (the call failed to
+          # start, was cancelled, or behaviour was skipped as not relevant,
+          # which the call's own result then shows as success).
+          conclusion() {
+            case "$1" in
+              success|failure|cancelled) echo "$1" ;;
+              *)
+                case "$2" in
+                  success) echo success ;;
+                  cancelled) echo cancelled ;;
+                  *) echo failure ;;
+                esac
+                ;;
+            esac
+          }
+          status=0
+          for row in \
+            "functional-tests-complete:${FUNCTIONAL_ID}:${FUNCTIONAL_RESULT}:${FUNCTIONAL_CALL}" \
+            "behaviour:${BEHAVIOUR_ID}:${BEHAVIOUR_RESULT}:${BEHAVIOUR_CALL}"; do
+            IFS=: read -r name id result call <<<"${row}"
+            [[ -n "${id}" ]] || { echo "::error::no ${name} check run id"; status=1; continue; }
+            c=$(conclusion "${result}" "${call}")
+            gh api -X PATCH "repos/${REPO}/check-runs/${id}" \
+              -f status=completed -f conclusion="${c}" \
+              -f "output[title]=${name}: ${c}" \
+              -f "output[summary]=ok-to-test run: ${RUN_URL}" --silent
+            echo "${name}: ${c}"
+          done
+          exit "${status}"

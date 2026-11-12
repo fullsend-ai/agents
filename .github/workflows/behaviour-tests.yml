@@ -1,8 +1,11 @@
 name: Behaviour Tests
 
-# Live behaviour tests use pull_request_target so authorized PRs can receive
-# the dev-environment secrets. The gate runs on the base checkout before this
-# job checks out and executes the PR head.
+# Same-repo PRs run on pull_request (dev-environment secrets available; the
+# gate runs on the base checkout before this job checks out and executes the
+# PR head). Fork PRs get no secrets on pull_request: behaviour skips until a
+# writer comments `/ok-to-test <sha>`, and ok-to-test.yml calls this workflow
+# for that sha (event_name issue_comment, inputs.head_sha). No
+# pull_request_target: GitHub blocks it by default from 2026-12-02 (#1975).
 
 permissions: {}
 
@@ -24,27 +27,48 @@ on:
       - '.github/workflows/behaviour-tests.yml'
       - '.github/actions/check-e2e-authorization/**'
       - '.github/scripts/check-e2e-authorization.sh'
-  pull_request_target:
-    types: [opened, synchronize, reopened, labeled]
+  pull_request:
+    # Fork PRs: /ok-to-test is handled by ok-to-test.yml via workflow_call.
+    types: [opened, synchronize, reopened]
   merge_group:
   workflow_dispatch:
+  workflow_call:
+    # Only ok-to-test.yml calls this, from an authorized /ok-to-test comment.
+    inputs:
+      pr_number:
+        description: Pull request number the /ok-to-test comment authorized
+        type: string
+        required: true
+      head_sha:
+        description: PR head sha the /ok-to-test comment authorized (checked out by behaviour)
+        type: string
+        required: true
+    outputs:
+      result:
+        description: behaviour job status (success, failure or cancelled)
+        value: ${{ jobs.behaviour.outputs.result }}
 
+# /ok-to-test runs get their own group: in a called workflow github.workflow
+# is the caller's name, shared with the functional-tests.yml call. They are
+# never cancelled; the caller reports their result.
 concurrency:
   group: >-
-    ${{ github.event_name == 'pull_request_target'
+    ${{ github.event_name == 'pull_request'
         && format('behaviour-{0}', github.event.pull_request.number)
+        || github.event_name == 'issue_comment'
+        && format('behaviour-ok-to-test-{0}', inputs.pr_number)
         || format('{0}-{1}', github.workflow, github.ref) }}
   cancel-in-progress: >-
-    ${{ (github.event_name == 'pull_request_target'
-        && github.event.action != 'labeled')
-        || (github.event_name != 'pull_request_target'
-        && github.ref != 'refs/heads/main') }}
+    ${{ github.event_name == 'pull_request'
+        || (github.event_name != 'issue_comment' && github.ref != 'refs/heads/main') }}
 
 jobs:
   gate:
+    # Same-repo PRs only (gh-aw's guard): a fork PR's pull_request token is
+    # read-only and it gets no secrets, so forks go through /ok-to-test.
     if: >-
-      github.event_name == 'pull_request_target' &&
-      (github.event.action != 'labeled' || github.event.label.name == 'ok-to-test')
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.id == github.repository_id
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -55,7 +79,8 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.base.sha }}  # Base only — never check out PR head in gate
+          persist-credentials: false
 
       - name: Check PR authorization
         id: auth
@@ -78,8 +103,9 @@ jobs:
         (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
         github.event_name == 'merge_group' ||
         github.event_name == 'workflow_dispatch' ||
-        (github.event_name == 'pull_request_target' &&
-         needs.gate.outputs.authorized == 'true')
+        (github.event_name == 'pull_request' &&
+         needs.gate.outputs.authorized == 'true') ||
+        (github.event_name == 'issue_comment' && inputs.head_sha != '')
       )
     environment: dev
     runs-on: ubuntu-24.04
@@ -94,6 +120,8 @@ jobs:
       BEHAVIOUR_INSTALL_MODE: per-repo
       BEHAVIOUR_APP_SET: fullsend-test
       BEHAVIOUR_SUITE_NAME: agents-bt
+    outputs:
+      result: ${{ steps.result.outputs.result }}
     steps:
       - name: Check for behaviour-relevant changes
         id: changes
@@ -104,12 +132,15 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          # /ok-to-test runs: diff the authorized sha, not whatever the PR head is now.
+          HEAD_SHA: ${{ inputs.head_sha }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         shell: bash
         run: |
           set -euo pipefail
 
           case "$EVENT_NAME" in
-            pull_request_target)
+            pull_request)
               if ! files="$(gh api --paginate \
                 "repos/${REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100" \
                 --jq '.[].filename')"; then
@@ -118,11 +149,16 @@ jobs:
                 exit 0
               fi
               ;;
-            merge_group)
+            merge_group|issue_comment)
+              if [[ "$EVENT_NAME" == merge_group ]]; then
+                range="${MERGE_GROUP_BASE_SHA}...${MERGE_GROUP_HEAD_SHA}"
+              else
+                range="${DEFAULT_BRANCH}...${HEAD_SHA}"
+              fi
               if ! files="$(gh api \
-                "repos/${REPOSITORY}/compare/${MERGE_GROUP_BASE_SHA}...${MERGE_GROUP_HEAD_SHA}" \
+                "repos/${REPOSITORY}/compare/${range}" \
                 --jq '.files[].filename')"; then
-                echo '::warning::could not inspect merge-group files; running behaviour tests'
+                echo "::warning::could not inspect ${EVENT_NAME} files; running behaviour tests"
                 echo 'relevant=true' >> "$GITHUB_OUTPUT"
                 exit 0
               fi
@@ -153,9 +189,13 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: steps.changes.outputs.relevant != 'false'
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.head.sha || github.sha }}
+          ref: >-
+            ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha
+                || github.event_name == 'issue_comment' && inputs.head_sha
+                || github.sha }}
           persist-credentials: false
-          allow-unsafe-pr-checkout: ${{ github.event_name == 'pull_request_target' }}
+          # Fork code only after a writer's /ok-to-test for this exact sha.
+          allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         if: steps.changes.outputs.relevant != 'false'
@@ -238,6 +278,7 @@ jobs:
           PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          OK_TO_TEST_SHA: ${{ inputs.head_sha }}
           MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
           WORKFLOW_SHA: ${{ github.sha }}
         shell: bash
@@ -254,7 +295,7 @@ jobs:
           source_repository="$BASE_REPOSITORY"
           source_ref="$WORKFLOW_SHA"
           case "$EVENT_NAME" in
-            pull_request_target)
+            pull_request)
               # GitHub's synthetic merge commit is preferred because it is the
               # same source revision normally used for PR validation. It lives
               # in the base repository, including for fork pull requests.
@@ -267,6 +308,11 @@ jobs:
               ;;
             merge_group)
               source_ref="$MERGE_GROUP_HEAD_SHA"
+              ;;
+            issue_comment)
+              # The authorized fork head; its commits are reachable from the
+              # base repository through refs/pull/N/head.
+              source_ref="$OK_TO_TEST_SHA"
               ;;
           esac
 
@@ -294,7 +340,7 @@ jobs:
           }
 
           if ! fetch_harnesses "$source_repository" "$source_ref"; then
-            if [[ "$EVENT_NAME" == 'pull_request_target' ]] && \
+            if [[ "$EVENT_NAME" == 'pull_request' ]] && \
               valid_repo "$PR_HEAD_REPOSITORY" && valid_sha "$PR_HEAD_SHA"; then
               echo '::notice::synthetic merge ref unavailable; using pull request head for agent sources'
               source_repository="$PR_HEAD_REPOSITORY"
@@ -441,7 +487,14 @@ jobs:
         if: always() && steps.changes.outputs.relevant != 'false' && steps.redact.outcome == 'success'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: behaviour-artifacts-${{ github.event_name == 'pull_request_target' && github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
+          name: behaviour-artifacts-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/behaviour-artifacts/
           if-no-files-found: ignore
           retention-days: 5
+
+      - name: Record result
+        id: result
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: echo "result=${JOB_STATUS}" >> "$GITHUB_OUTPUT"
