@@ -315,11 +315,22 @@ characters) are stripped so a crafted title cannot inject extra lines or reorder
 text. In Slack, mrkdwn/link metacharacters are then escaped; in the step summary,
 each title is shown inside an inline code span (backticks), which renders it
 literally and suppresses Markdown links, raw HTML, and bare-URL autolinking.
-Each title is also run through a sensitive-content check: the same check that
-gates topics and new issues (emails, SSNs, keys/tokens, and similar patterns),
-plus — because titles are raw, never-scrubbed Drive names — the phone-number,
+Each title is also run through a sensitive-content redactor: the same patterns
+that gate topics and new issues (emails, SSNs, keys/tokens, and similar), plus —
+because titles are raw, never-scrubbed Drive names — the phone-number,
 IPv4-address and card-number detection that `pre-scribe` applies to note bodies.
-A title that matches any of these is shown as `[redacted]` rather than published.
+Only the **matching substring** is replaced with `[redacted]` (e.g. `Call
+[redacted] re Q3`), so the rest of the title still identifies the meeting.
+Card-like digit runs are Luhn-validated before redaction so version numbers and
+meeting IDs (e.g. `OKR 1234567890123`) are not blanked; an IPv4-shaped version
+such as `4.18.0.1` still has that span redacted, since a pattern cannot tell it
+from an address.
+
+The same stripping and redaction are applied to the document names `pre-scribe`
+writes to the **job log** (the "Found …" and "Downloading: …" lines), so a
+sensitive name is redacted there too — not shown in full on the same run page —
+and a newline in a name cannot forge an extra log line.
+
 If the metadata or
 `doc_names` field is absent, the meeting line is omitted and the outputs are
 otherwise unchanged.

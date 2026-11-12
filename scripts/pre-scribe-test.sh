@@ -1033,6 +1033,107 @@ MOCKEOF
   echo "PASS: ${test_name}"
 }
 
+# Drive names are untrusted; the pre-script logs them to the Actions log. A
+# sensitive name (phone) must be redacted there (not just in post-scribe's
+# notification), and a newline in a name must not forge a new log line
+# (issue #706; waynesun09 finding).
+test_log_doc_names_sanitized() {
+  local test_name="log-doc-names-sanitized"
+  local runner_temp="${TMPDIR}/runner-log-names"
+  local bin="${TMPDIR}/bin-log-names"
+  mkdir -p "${runner_temp}" "${bin}"
+
+  local sa_key="${TMPDIR}/sa-key-log-names.json"
+  local priv_key="${TMPDIR}/priv-log-names.key"
+  openssl genrsa 2048 > "${priv_key}" 2>/dev/null
+  local priv_key_json
+  priv_key_json=$(awk '{printf "%s\\n", $0}' "${priv_key}")
+  cat > "${sa_key}" <<EOF
+{
+  "client_email": "test-sa@example.iam.gserviceaccount.com",
+  "private_key": "${priv_key_json}"
+}
+EOF
+
+  # doc1 name carries a phone number (PII); doc2 name embeds a newline (\n) to
+  # attempt a forged log line. Jira tracker (as in the persisted-names test) keeps
+  # the mock minimal — the log sanitization under test is tracker-independent.
+  cat > "${bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+URL=""
+OUT_FILE=""
+PREV=""
+for arg in "$@"; do
+  [[ "${arg}" == https://* ]] && URL="${arg}"
+  [[ "${PREV}" == "-o" ]] && OUT_FILE="${arg}"
+  PREV="${arg}"
+done
+if [[ "${URL}" == *oauth2.googleapis.com/token* ]]; then
+  echo '{"access_token":"fake-token"}'; exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files/*/export* ]]; then
+  if [[ -n "${OUT_FILE}" ]]; then printf 'Summary\nSome notes.\n' > "${OUT_FILE}"; echo "200"; else printf 'Summary\nSome notes.\n'; fi
+  exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files* ]]; then
+  body='{"files":[{"id":"doc1","name":"Call 555-123-4567 standup","createdTime":"2026-08-06T09:00:00Z","webViewLink":"https://docs.google.com/document/d/doc1"},{"id":"doc2","name":"Evil\nINJECTED","createdTime":"2026-08-06T10:00:00Z","webViewLink":"https://docs.google.com/document/d/doc2"}]}'
+  if [[ -n "${OUT_FILE}" ]]; then echo "${body}" > "${OUT_FILE}"; echo "200"; else echo "${body}"; fi
+  exit 0
+elif [[ "${URL}" == */search/jql* ]]; then
+  echo '{"issues":[],"isLast":true}'; exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/curl"
+
+  cat > "${bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/git/trees"* ]]; then echo '{"tree":[]}'; else echo '[]'; fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/gh"
+
+  local out
+  if ! out=$(
+    PATH="${bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${sa_key}" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake-jira-token" \
+    FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    SCRIBE_JIRA_MAX_PAGES="1" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — script failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Phone is redacted in the log, with the surrounding words kept.
+  if ! grep -qF -- "Downloading: Call [redacted] standup" <<< "${out}"; then
+    echo "FAIL: ${test_name} — phone not redacted in Downloading log line"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  # The raw phone number must appear nowhere in the log.
+  if grep -qF -- "555-123-4567" <<< "${out}"; then
+    echo "FAIL: ${test_name} — raw phone number leaked to the log"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  # The newline in doc2's name is stripped, so the forged marker stays on one
+  # line ("EvilINJECTED") and cannot appear as its own log line.
+  if ! grep -qF -- "EvilINJECTED" <<< "${out}"; then
+    echo "FAIL: ${test_name} — newline not stripped from logged name"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if grep -qxF -- "INJECTED" <<< "${out}"; then
+    echo "FAIL: ${test_name} — name newline forged a standalone log line"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
 test_jira_closed_issues() {
   local test_name="jira/closed-issues"
   local closed_file="${TMPDIR}/jira-closed.json"
@@ -1262,6 +1363,7 @@ test_jira_api_url_routing
 test_jira_missing_fullsend_dir_fails_preflight
 test_stale_meta_cleared_on_failed_search
 test_meeting_doc_names_persisted
+test_log_doc_names_sanitized
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

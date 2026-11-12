@@ -245,7 +245,16 @@ DOC_COUNT=$(jq '.files | length' "${WORK_DIR}/drive-response.json")
 echo "Found ${DOC_COUNT} matching document(s)"
 
 if [[ "${DOC_COUNT}" -gt 0 ]]; then
-  jq -r '.files[] | "  \(.name) (created: \(.createdTime))"' "${WORK_DIR}/drive-response.json"
+  # Drive names are untrusted input (issue #706). Raw `jq -r` would print them to
+  # the Actions log verbatim — leaking PII that post-scribe redacts from the same
+  # run's notification, and letting a newline in a name forge log lines. Route
+  # each name through strip_unsafe_chars + redact_sensitive_title (NUL-delimited
+  # so a newline stays one record) so the log honors the same redaction promise.
+  while IFS= read -r -d '' _name && IFS= read -r -d '' _ctime; do
+    _name=$(redact_sensitive_title "$(strip_unsafe_chars "${_name}")")
+    _ctime=$(strip_unsafe_chars "${_ctime}")
+    echo "  ${_name} (created: ${_ctime})"
+  done < <(jq -j '.files[] | (.name // "") + "\u0000" + (.createdTime // "") + "\u0000"' "${WORK_DIR}/drive-response.json")
 fi
 
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
@@ -318,7 +327,9 @@ while read -r doc; do
   DOC_NAME=$(echo "${doc}" | jq -r '.name')
   DOC_URL=$(echo "${doc}" | jq -r '.webViewLink')
 
-  echo "  Downloading: ${DOC_NAME}"
+  # DOC_NAME is untrusted; sanitize/redact for the log only (the raw value is
+  # still needed below for download and for scribe-titles.json).
+  echo "  Downloading: $(redact_sensitive_title "$(strip_unsafe_chars "${DOC_NAME}")")"
 
   set +e
   RAW_TEXT=$(export_doc_with_retry "${DOC_ID}")

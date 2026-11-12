@@ -165,6 +165,9 @@ REJECTED=0
 # The detectors feed their input via here-strings rather than `echo | grep -q`:
 # with pipefail, an early-exiting reader makes the writer die of SIGPIPE on
 # large inputs, the pipeline fails, and the helper wrongly reports "clean".
+# Boolean sensitive-content gate for topics/new-issues (titles+bodies+labels).
+# The per-span title redactor `redact_sensitive_title` in scribe-ops.lib.sh
+# mirrors these secret patterns — keep the two in sync.
 contains_sensitive() {
   local text="$1"
   # GitHub PATs, AWS access keys, private keys
@@ -185,24 +188,6 @@ contains_sensitive() {
   # Generic key=value secrets
   grep -qEi '(api[_-]?key|token|secret|password|bearer)[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+/-]{20,}' <<< "${text}" \
     && return 0
-  return 1
-}
-
-# Sensitive-content check for meeting titles (issue #706). Titles are raw,
-# never-scrubbed Drive document names, so in addition to contains_sensitive
-# (keys, tokens, emails, SSNs, ...) also catch the PII that pre-scribe scrubs
-# from note bodies — phone numbers, IPv4 addresses and card-like digit runs —
-# since a matching title is displayed verbatim in Slack and the step summary.
-title_is_sensitive() {
-  local text="$1"
-  contains_sensitive "${text}" && return 0
-  # Phone (NANP, optional +1) and international
-  grep -qE '\b(\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b' <<< "${text}" && return 0
-  grep -qE '\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b' <<< "${text}" && return 0
-  # IPv4
-  grep -qE '\b([0-9]{1,3}\.){3}[0-9]{1,3}\b' <<< "${text}" && return 0
-  # Card-like 13-19 digit run (optionally space/dash grouped)
-  grep -qE '\b([0-9][ -]?){13,19}\b' <<< "${text}" && return 0
   return 1
 }
 
@@ -240,27 +225,9 @@ sanitize_slack_mrkdwn() {
   printf '%s' "${val}"
 }
 
-# Strip the characters that let untrusted text (e.g. Drive document titles,
-# issue #706) break out of a single display line, hide/reorder content, or be
-# removed later and reassemble a secret past the sensitive-content gate:
-# - CSI ANSI escape sequences;
-# - every C0 control char and DEL (\000-\037\177), which covers CR, LF, VT, FF,
-#   TAB and a bare ESC — so a title cannot inject extra lines;
-# - backticks (\140), which the step-summary code span removes anyway — stripping
-#   them here means contains_sensitive sees the same text that is published, so a
-#   title like `123-45-<bt>6789<bt>` cannot pass the SSN check and then reassemble;
-# - Unicode line/paragraph separators (U+2028/U+2029), bidi overrides and
-#   isolates (U+202A-202E, U+2066-2069), zero-width chars, BOM, and tag chars
-#   (the same class as contains_suspicious_unicode).
-# Shared by the Slack and step-summary sanitizers so both paths are equally
-# strong, and run before the gate so the gate matches what is published. perl is
-# already a runner dependency (see pre-scribe.sh).
-strip_unsafe_chars() {
-  printf '%s' "$1" \
-    | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
-    | tr -d '\000-\037\177\140' \
-    | perl -CS -pe 's/[\x{2028}\x{2029}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{E0000}-\x{E007F}]//g'
-}
+# strip_unsafe_chars and redact_sensitive_title are defined in
+# scribe-ops.lib.sh (sourced above) so pre-scribe can apply the same
+# normalization/redaction to the document names it logs.
 
 # Sanitize untrusted text for a Slack mrkdwn body line (e.g. Drive document
 # titles, issue #706): strip unsafe chars, then escape mrkdwn metacharacters.
@@ -664,11 +631,12 @@ fi
 
 # Meeting titles (issue #706) come from a runner-only scribe-titles.json that is
 # NOT mounted into the sandbox, so untrusted Drive titles never enter the agent
-# context. Normalize each title with strip_unsafe_chars FIRST, then gate the
-# normalized text with contains_sensitive — so the sensitive-content check sees
-# exactly what will be published (a zero-width char cannot split a secret/email
-# past the gate and then be stripped at display). Read NUL-delimited so a title
-# containing a newline stays one element.
+# context. Normalize each title with strip_unsafe_chars FIRST, then redact
+# sensitive spans on the normalized text — so the redactor sees exactly what will
+# be published (a zero-width char cannot split a secret/email past it and then be
+# stripped at display). redact_sensitive_title replaces only the matching span,
+# so a non-sensitive remainder keeps the meeting identifiable. Read NUL-delimited
+# so a title containing a newline stays one element.
 SCRIBE_TITLES_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-titles.json"
 MEETING_TITLES=()
 if [[ -f "${SCRIBE_TITLES_FILE}" ]] && jq -e 'type == "object"' "${SCRIBE_TITLES_FILE}" >/dev/null 2>&1; then
@@ -677,11 +645,7 @@ if [[ -f "${SCRIBE_TITLES_FILE}" ]] && jq -e 'type == "object"' "${SCRIBE_TITLES
     # Explicit if (not `[[ … ]] && …`) so skipping an empty title keeps a success
     # status and cannot trip `set -e` on the loop body.
     if [[ -n "${_title}" ]]; then
-      if title_is_sensitive "${_title}"; then
-        MEETING_TITLES+=("[redacted]")
-      else
-        MEETING_TITLES+=("${_title}")
-      fi
+      MEETING_TITLES+=("$(redact_sensitive_title "${_title}")")
     fi
   done < <(jq -j '(.doc_names // [])[] | . + "\u0000"' "${SCRIBE_TITLES_FILE}")
 fi

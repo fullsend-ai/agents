@@ -1559,37 +1559,58 @@ run_meeting_test "meeting/untrusted-title-control-unicode-stripped" \
   '{"docs_downloaded":1,"doc_names":["A\u000bB C‮D"]}' \
   "Meeting: ABCD" ""
 
-# A title with sensitive content (email, key/token, SSN, ...) is redacted, not
-# published verbatim — same gate topics and new issues pass.
+# A title with sensitive content (email, key/token, SSN, ...) has only the
+# matching span replaced with [redacted] — the rest stays readable so the
+# meeting is still identifiable (span-level redaction, not whole-title blanking).
 run_meeting_test "meeting/sensitive-title-redacted" \
   '{"docs_downloaded":1,"doc_names":["1:1 jane.doe@corp.example - performance"]}' \
-  "Meeting: [redacted]" "jane.doe@corp.example"
+  "Meeting: 1:1 [redacted] - performance" "jane.doe@corp.example"
 
 # Obfuscated secret: a zero-width space splits the email so the raw title would
-# pass the gate, but strip_unsafe_chars runs BEFORE contains_sensitive, so the
-# normalized "jane@corp.example" is caught and redacted (not published).
+# evade the check, but strip_unsafe_chars runs BEFORE redaction, so the
+# normalized "jane@corp.example" is caught and redacted (not published). Here the
+# whole title is the email, so the span is the whole title.
 run_meeting_test "meeting/sensitive-title-zwsp-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["jane@​corp.example"]}' \
   "Meeting: [redacted]" "corp.example"
 
-# Backtick-split secret: backticks are stripped by strip_unsafe_chars BEFORE the
-# gate (not only later by the step-summary sanitizer), so an SSN split by a
+# Backtick-split secret: backticks are stripped by strip_unsafe_chars BEFORE
+# redaction (not only later by the step-summary sanitizer), so an SSN split by a
 # backtick is normalized to 123-45-6789, caught, and redacted — not reassembled.
 run_meeting_test "meeting/sensitive-title-backtick-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["123-45-`6789`"]}' \
   "Meeting: [redacted]" "123-45-6789"
 
 # Titles also carry the PII pre-scribe scrubs from note bodies (phone / IP /
-# card); a matching title is redacted, not published verbatim.
+# card); only the matching span is redacted, the surrounding words stay.
 run_meeting_test "meeting/sensitive-title-phone-redacted" \
   '{"docs_downloaded":1,"doc_names":["Call 555-123-4567 re Q3"]}' \
-  "Meeting: [redacted]" "555-123-4567"
+  "Meeting: Call [redacted] re Q3" "555-123-4567"
 run_meeting_test "meeting/sensitive-title-ip-redacted" \
   '{"docs_downloaded":1,"doc_names":["Incident on 10.0.0.5 postmortem"]}' \
-  "Meeting: [redacted]" "10.0.0.5"
+  "Meeting: Incident on [redacted] postmortem" "10.0.0.5"
+# A Luhn-valid card number (Visa test 4111...) is redacted.
 run_meeting_test "meeting/sensitive-title-card-redacted" \
   '{"docs_downloaded":1,"doc_names":["card 4111 1111 1111 1111 dispute"]}' \
-  "Meeting: [redacted]" "4111 1111 1111 1111"
+  "Meeting: card [redacted] dispute" "4111 1111 1111 1111"
+
+# Negative controls (finding from waynesun09): numeric IDs/versions must NOT be
+# blanked. Luhn clears card false positives entirely; a version number redacts
+# only its span (an IPv4 regex cannot tell 4.18.0.1 from an IP), so the rest of
+# the title still names the meeting.
+run_meeting_test "meeting/version-number-span-only" \
+  '{"docs_downloaded":1,"doc_names":["Release 4.18.0.1 planning"]}' \
+  "Meeting: Release [redacted] planning" ""
+run_meeting_test "meeting/card-id-not-redacted-luhn" \
+  '{"docs_downloaded":1,"doc_names":["OKR 1234567890123"]}' \
+  "Meeting: OKR 1234567890123" "[redacted]"
+run_meeting_test "meeting/sprint-id-not-redacted-luhn" \
+  '{"docs_downloaded":1,"doc_names":["Sprint 20260806 101500 retro"]}' \
+  "Meeting: Sprint 20260806 101500 retro" "[redacted]"
+# The issue's own default Gemini title format must pass through untouched.
+run_meeting_test "meeting/issue-example-title-not-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Issue review take 2 - 2026/08/06 09:00 EDT - Notes by Gemini"]}' \
+  "Meeting: Issue review take 2 - 2026/08/06 09:00 EDT - Notes by Gemini" "[redacted]"
 
 # Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
 # printf '%b', so an un-doubled "\c" would truncate the message (dropping the
