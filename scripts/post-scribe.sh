@@ -133,7 +133,15 @@ redact_sensitive_title() {
         my $start = 0;
         while ($start < $n) {
           my $committed = 0;
-          for (my $end = $n - 1; $end >= $start; $end--) {
+          # A valid PAN has at most 19 digits and every token has at least one,
+          # so a window can never need more than 19 tokens. Capping $end here
+          # bounds the inner loop (and the O(count) window/width rebuild inside
+          # it) to a constant, making the scan linear in the number of tokens
+          # instead of cubic — important because titles are untrusted (issue
+          # #706) and a long digit-heavy title is otherwise an algorithmic DoS.
+          my $max_end = $start + 18;
+          $max_end = $n - 1 if $max_end > $n - 1;
+          for (my $end = $max_end; $end >= $start; $end--) {
             my @window = @idx[$start .. $end];
             my $count = scalar @window;
             my @widths = map { length($tokens[$_]{text}) } @window;

@@ -1706,6 +1706,45 @@ run_md_summary_test "meeting/step-summary-bare-url-codespan" \
 
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
 
+# fullsend-ai-review finding on 8c6bf43: redact_cards' window scan was O(n^3) in
+# the number of digit tokens (for every start, scan every end down to start,
+# rebuilding an O(count) window/widths array each time), reachable because
+# Drive titles are untrusted (issue #706) and the Drive search returns any doc
+# whose name contains the query string. Measured ~23s for a 1000-token
+# ("1 " * 1000) title before the fix; a 2500-token (~5000-char) title would
+# have run far longer. Bound the window size to the max possible PAN length
+# (19 digits) so the scan is linear in the number of tokens, and assert a
+# ~5000-char digit-heavy title still completes quickly.
+test_redact_cards_linear_time() {
+  local test_name="redact-cards-linear-time"
+  local title
+  title="$(python3 -c "print('1 ' * 2500, end='')")"
+  local out
+  if ! out=$(
+    timeout 5 bash -c '
+      SCRIPT_DIR="$1"
+      FULLSEND_FORGE=github
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
+      redact_sensitive_title "$2"
+    ' _ "${SCRIPT_DIR}" "${title}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — did not complete within 5s (or errored): ${out:0:200}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # A run of all "1"s has no Luhn-valid card-shaped window, so it must survive
+  # unredacted — this also confirms the function actually ran to completion
+  # rather than timing out silently on a partial result.
+  if [[ "${out}" != "${title}" ]]; then
+    echo "FAIL: ${test_name} — unexpected output for an all-1s title"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+test_redact_cards_linear_time
+
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
   echo "${FAILURES} test(s) failed"
