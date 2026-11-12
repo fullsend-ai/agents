@@ -176,7 +176,7 @@ if [[ "\${URL}" == *"hooks.slack.com"* ]]; then
     exit 1
   fi
   # Capture the piped payload (sent via --data-binary @-) so tests can assert
-  # on the notification text (issue #1618).
+  # on the notification text (issues #1618, #706).
   SLACK_BODY="\$(cat 2>/dev/null || true)"
   printf 'SLACK_PAYLOAD=%s\n' "\$(printf '%s' "\${SLACK_BODY}" | tr '\n' ' ')" >> "${CURL_LOG}"
   echo "ok"
@@ -214,8 +214,8 @@ MOCKEOF
 chmod +x "${MOCK_BIN}/bc"
 
 export PATH="${MOCK_BIN}:${PATH}"
-# Isolate the runner-side scribe workspace so the no-notes meta file (issue
-# #1618) lives under the test tempdir, not the real ${RUNNER_TEMP:-/tmp}.
+# Isolate the runner-side scribe workspace so the meta file (no-notes #1618 and
+# meeting-title #706) lives under the test tempdir, not the real ${RUNNER_TEMP:-/tmp}.
 export RUNNER_TEMP="${TMPDIR}"
 export SCRIBE_REPO="mock-org/mock-repo"
 export GH_TOKEN="fake-token"
@@ -1366,13 +1366,14 @@ run_test_stdout "jira/non-cloud-base-url-rejected" "${JIRA_NEW_ISSUE}" "" true
 unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN SCRIBE_JIRA_PROJECT
 
 # ============================================================
-# No-meeting-notes notification (issue #1618)
+# No-notes notification (#1618) and meeting title (#706)
 # ============================================================
-# pre-scribe writes ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json; post-scribe
-# reads docs_downloaded from it. A confirmed numeric 0 is the successful
-# empty-search path and yields a concise Slack message instead of all-zero
-# counters. Missing/malformed/non-numeric metadata must not trigger it, and a
-# run that found notes but extracted zero topics keeps the normal report.
+# pre-scribe writes ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json (post-scribe
+# reads docs_downloaded, the no-notes gate, from it) and scribe-titles.json
+# (post-scribe reads doc_names, the meeting title, from there instead — kept
+# out of the sandbox-mounted meta file since titles are untrusted). A
+# confirmed numeric 0 with an empty result yields the concise no-notes message;
+# doc_names are untrusted Drive titles rendered on a sanitized "Meeting:" line.
 SCRIBE_META_DIR="${RUNNER_TEMP}/scribe-workspace"
 mkdir -p "${SCRIBE_META_DIR}"
 EMPTY_RESULT='{"topics":[],"new_issues":[]}'
@@ -1383,8 +1384,8 @@ run_no_notes_test() {
   mkdir -p "${run_dir}/iteration-1/output"
   echo "${result_json}" > "${run_dir}/iteration-1/output/agent-result.json"
   rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
-  rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
-  [[ -n "${meta_json}" ]] && echo "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json" "${SCRIBE_META_DIR}/scribe-titles.json"
+  [[ -n "${meta_json}" ]] && printf '%s' "${meta_json}" > "${SCRIBE_META_DIR}/scribe-meta.json"
   : > "${CURL_LOG}"
   : > "${GH_LOG}"
 
@@ -1409,6 +1410,37 @@ run_no_notes_test() {
     cat "${CURL_LOG}"
     FAILURES=$((FAILURES + 1))
     return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# run_meeting_test NAME TITLES_JSON MUST_CONTAIN MUST_NOT — a no-notes test with
+# an empty agent result, used for the meeting-title (#706) Slack assertions.
+# TITLES_JSON is written to the runner-only scribe-titles.json (where post-scribe
+# reads doc_names); a minimal meta with docs_downloaded>0 keeps the no-notes
+# branch off. An empty TITLES_JSON leaves the titles file absent.
+run_meeting_test() {
+  local test_name="$1" titles_json="$2" must_contain="$3" must_not="$4"
+  local run_dir="${TMPDIR}/run-${test_name//\//-}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${EMPTY_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  rm -f "${TMPDIR}/slack-fail" "${TMPDIR}/slack-timeout"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json" "${SCRIBE_META_DIR}/scribe-titles.json"
+  echo '{"docs_downloaded":1}' > "${SCRIBE_META_DIR}/scribe-meta.json"
+  [[ -n "${titles_json}" ]] && printf '%s' "${titles_json}" > "${SCRIBE_META_DIR}/scribe-titles.json"
+  : > "${CURL_LOG}"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  (cd "${run_dir}" && SCRIBE_SLACK_WEBHOOK_URL="${SLACK_WEBHOOK_FAKE}" bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"; cat "${TMPDIR}/stdout.log"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if [[ -n "${must_contain}" ]] && ! grep -qF -- "${must_contain}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — expected '${must_contain}' in Slack payload"; cat "${CURL_LOG}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if [[ -n "${must_not}" ]] && grep -qF -- "${must_not}" "${CURL_LOG}"; then
+    echo "FAIL: ${test_name} — unexpected '${must_not}' in Slack payload"; cat "${CURL_LOG}"; FAILURES=$((FAILURES + 1)); return
   fi
   echo "PASS: ${test_name}"
 }
@@ -1490,7 +1522,364 @@ run_no_notes_test "no-notes/empty-search-skipped-new-issues-keeps-report" \
   "Topics processed" "No meeting notes found for today."
 export SCRIBE_MODE="all"
 
+# --- Meeting title cases (issue #706) ---
+export SCRIBE_DRY_RUN="true"
+
+# Single doc: title appears on a Meeting: line.
+run_meeting_test "meeting/single-doc-title" \
+  '{"docs_downloaded":1,"doc_names":["Team Sync - 2026/08/06"]}' \
+  "Meeting: \`Team Sync - 2026/08/06\`" ""
+
+# Multiple docs: count header plus each title listed.
+run_meeting_test "meeting/multi-doc-titles" \
+  '{"docs_downloaded":2,"doc_names":["Team Sync","User Forum"]}' \
+  "Meetings (2):" ""
+run_meeting_test "meeting/multi-doc-second-title" \
+  '{"docs_downloaded":2,"doc_names":["Team Sync","User Forum"]}' \
+  "User Forum" ""
+
+# Missing meta / absent field: no Meeting line, no crash.
+run_meeting_test "meeting/missing-meta-no-line" \
+  "" "View run" "Meeting"
+run_meeting_test "meeting/absent-field-no-line" \
+  '{"docs_downloaded":1}' "View run" "Meeting"
+
+# Untrusted title: newline must not inject an extra line, and mrkdwn/link
+# metacharacters must be escaped (issue #706 — doc names are untrusted input).
+run_meeting_test "meeting/untrusted-title-newline-stripped" \
+  '{"docs_downloaded":1,"doc_names":["Evil\n• Topics processed: *999*"]}' \
+  "Meeting: \`Evil• Topics processed: *999*\`" "Meeting: Evil\n"
+run_meeting_test "meeting/untrusted-title-mrkdwn-escaped" \
+  '{"docs_downloaded":1,"doc_names":["<https://evil|x> & <y>"]}' \
+  "&lt;https://evil¦x&gt; &amp; &lt;y&gt;" ""
+
+# fullsend-ai-review finding: sanitize_slack_mrkdwn only escapes \ & < > |, not
+# Slack's emphasis metacharacters (* _ ~), so an untrusted title could render
+# as bold/italic/strikethrough. The Slack Meeting line is now rendered inside a
+# code span (backtick-wrapped, matching the step summary), which Slack does not
+# apply mrkdwn formatting inside — so the asterisks/underscores/tildes must
+# appear literally, un-interpreted, within the backticks.
+run_meeting_test "meeting/untrusted-title-slack-formatting-codespan" \
+  '{"docs_downloaded":1,"doc_names":["*bold* _italic_ ~strike~"]}' \
+  "Meeting: \`*bold* _italic_ ~strike~\`" ""
+
+# A bare URL in a title must stay inside the code span, not as plain text.
+run_meeting_test "meeting/untrusted-title-slack-bare-url-codespan" \
+  '{"docs_downloaded":1,"doc_names":["Action required https://attacker.example/login"]}' \
+  "Meeting: \`Action required https://attacker.example/login\`" ""
+
+# fullsend-ai-review finding on 51cb6c8: the code span alone is not relied on
+# to stop Slack from generating a link-preview card for a URL in an untrusted
+# title — the payload explicitly disables unfurling too.
+run_meeting_test "meeting/slack-payload-disables-unfurl" \
+  '{"docs_downloaded":1,"doc_names":["Action required https://attacker.example/login"]}' \
+  '"unfurl_links": false' ""
+run_meeting_test "meeting/slack-payload-disables-media-unfurl" \
+  '{"docs_downloaded":1,"doc_names":["Action required https://attacker.example/login"]}' \
+  '"unfurl_media": false' ""
+
+# Control chars (VT \u000b), Unicode line separator (U+2028) and bidi override
+# (U+202E) must be stripped from the Slack title (they reach the title as raw
+# bytes after jq decodes the JSON escapes). If stripped, the title is contiguous.
+run_meeting_test "meeting/untrusted-title-control-unicode-stripped" \
+  '{"docs_downloaded":1,"doc_names":["A\u000bB C‮D"]}' \
+  "Meeting: \`ABCD\`" ""
+
+# A title with sensitive content (email, key/token, SSN, ...) has only the
+# matching span replaced with [redacted] — the rest stays readable so the
+# meeting is still identifiable (span-level redaction, not whole-title blanking).
+run_meeting_test "meeting/sensitive-title-redacted" \
+  '{"docs_downloaded":1,"doc_names":["1:1 jane.doe@corp.example - performance"]}' \
+  "Meeting: \`1:1 [redacted] - performance\`" "jane.doe@corp.example"
+
+# Obfuscated secret: a zero-width space splits the email so the raw title would
+# evade the check, but strip_unsafe_chars runs BEFORE redaction, so the
+# normalized "jane@corp.example" is caught and redacted (not published). Here the
+# whole title is the email, so the span is the whole title.
+run_meeting_test "meeting/sensitive-title-zwsp-split-redacted" \
+  '{"docs_downloaded":1,"doc_names":["jane@​corp.example"]}' \
+  "Meeting: \`[redacted]\`" "corp.example"
+
+# Backtick-split secret: backticks are stripped by strip_unsafe_chars BEFORE
+# redaction (not only later by the step-summary sanitizer), so an SSN split by a
+# backtick is normalized to 123-45-6789, caught, and redacted — not reassembled.
+run_meeting_test "meeting/sensitive-title-backtick-split-redacted" \
+  '{"docs_downloaded":1,"doc_names":["123-45-`6789`"]}' \
+  "Meeting: \`[redacted]\`" "123-45-6789"
+
+# fullsend-ai-review findings on 51cb6c8 and 99e3cae: strip_unsafe_chars hand-
+# picked Cf code points, missing invisible characters like the soft hyphen
+# (U+00AD), word joiner (U+2060), and variation selectors (U+FE00-FE0F,
+# U+E0100-E01EF — category Mn, not Cf). Any of these could split a secret/PII
+# pattern so neither half matched, while rendering invisibly — exposing the
+# full value unredacted. strip_unsafe_chars now matches the
+# Default_Ignorable_Code_Point property, which covers all of these (and
+# similar invisible-by-design code points) in one property instead of an
+# enumerated list or general-category class.
+run_meeting_test "meeting/sensitive-title-soft-hyphen-split-redacted" \
+  '{"docs_downloaded":1,"doc_names":["jane­oe@example.com"]}' \
+  "Meeting: \`[redacted]\`" "example.com"
+run_meeting_test "meeting/sensitive-title-word-joiner-split-redacted" \
+  '{"docs_downloaded":1,"doc_names":["SSN 123⁠-45-6789"]}' \
+  "Meeting: \`SSN [redacted]\`" "123-45-6789"
+run_meeting_test "meeting/sensitive-title-variation-selector-split-redacted" \
+  '{"docs_downloaded":1,"doc_names":["SSN 123️-45-6789"]}' \
+  "Meeting: \`SSN [redacted]\`" "123-45-6789"
+
+# Titles also carry the PII pre-scribe scrubs from note bodies (phone / IP /
+# card); only the matching span is redacted, the surrounding words stay.
+run_meeting_test "meeting/sensitive-title-phone-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Call 555-123-4567 re Q3"]}' \
+  "Meeting: \`Call [redacted] re Q3\`" "555-123-4567"
+run_meeting_test "meeting/sensitive-title-ip-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Incident on 10.0.0.5 postmortem"]}' \
+  "Meeting: \`Incident on [redacted] postmortem\`" "10.0.0.5"
+# A Luhn-valid card number (Visa test 4111...) is redacted.
+run_meeting_test "meeting/sensitive-title-card-redacted" \
+  '{"docs_downloaded":1,"doc_names":["card 4111 1111 1111 1111 dispute"]}' \
+  "Meeting: \`card [redacted] dispute\`" "4111 1111 1111 1111"
+
+# fullsend-ai-review finding on 129bd76: a valid PAN adjacent to an unrelated
+# number must still be redacted (the card regex must not swallow the extra
+# digits into one non-Luhn candidate and miss the real card inside it).
+run_meeting_test "meeting/card-with-trailing-digits-redacted" \
+  '{"docs_downloaded":1,"doc_names":["card 4111 1111 1111 1111 12 review"]}' \
+  "Meeting: \`card [redacted] 12 review\`" "4111 1111 1111 1111"
+run_meeting_test "meeting/card-with-leading-digit-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Item 1 4111 1111 1111 1111"]}' \
+  "Meeting: \`Item 1 [redacted]\`" "4111 1111 1111 1111"
+
+# fullsend-ai-review finding on ea95e04: a real PAN directly preceded by an
+# unrelated FOUR-digit number must still be redacted — a single s///g cannot
+# retry starting one token later once the greedy (unrelated-number + PAN)
+# candidate fails Luhn, so the overlapping valid card was missed.
+run_meeting_test "meeting/card-after-four-digit-id-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Item 1234 4111 1111 1111 1111"]}' \
+  "Meeting: \`Item 1234 [redacted]\`" "4111 1111 1111 1111"
+run_meeting_test "meeting/card-after-year-like-id-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Item 2026 4111 1111 1111 1111"]}' \
+  "Meeting: \`Item 2026 [redacted]\`" "4111 1111 1111 1111"
+# Amex 4-6-5 grouping (not recognized by the 4-4-4-4 shape) must also redact.
+run_meeting_test "meeting/amex-4-6-5-grouping-redacted" \
+  '{"docs_downloaded":1,"doc_names":["card 3782 822463 10005 dispute"]}' \
+  "Meeting: \`card [redacted] dispute\`" "3782 822463 10005"
+
+# Negative controls (finding from waynesun09): numeric IDs/versions must NOT be
+# blanked. Luhn clears card false positives entirely; a version number redacts
+# only its span (an IPv4 regex cannot tell 4.18.0.1 from an IP), so the rest of
+# the title still names the meeting.
+run_meeting_test "meeting/version-number-span-only" \
+  '{"docs_downloaded":1,"doc_names":["Release 4.18.0.1 planning"]}' \
+  "Meeting: \`Release [redacted] planning\`" ""
+run_meeting_test "meeting/card-id-not-redacted-luhn" \
+  '{"docs_downloaded":1,"doc_names":["OKR 1234567890123"]}' \
+  "Meeting: \`OKR 1234567890123\`" "[redacted]"
+run_meeting_test "meeting/sprint-id-not-redacted-luhn" \
+  '{"docs_downloaded":1,"doc_names":["Sprint 20260806 101500 retro"]}' \
+  "Meeting: \`Sprint 20260806 101500 retro\`" "[redacted]"
+# The issue's own default Gemini title format must pass through untouched.
+run_meeting_test "meeting/issue-example-title-not-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Issue review take 2 - 2026/08/06 09:00 EDT - Notes by Gemini"]}' \
+  "Meeting: \`Issue review take 2 - 2026/08/06 09:00 EDT - Notes by Gemini\`" "[redacted]"
+
+# Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
+# printf '%b', so an un-doubled "\c" would truncate the message (dropping the
+# counters and View run link) and "\n" would inject a line. The backslash is now
+# doubled before display, so the full message is still delivered.
+run_meeting_test "meeting/untrusted-title-backslash-no-truncate" \
+  '{"docs_downloaded":1,"doc_names":["Evil\\cTITLE"]}' \
+  "View run" ""
+
+# Hex escape must not be decoded by printf '%b' into a Slack mention/link that
+# bypasses the mrkdwn escaping — "\x3c!channel\x3e" must stay literal, not "<!channel>".
+run_meeting_test "meeting/untrusted-title-hex-escape-not-decoded" \
+  '{"docs_downloaded":1,"doc_names":["\\x3c!channel\\x3e ping"]}' \
+  "View run" "<!channel>"
+
+# Empty title must be skipped without aborting the run (notification still sent).
+run_meeting_test "meeting/empty-title-skipped" \
+  '{"docs_downloaded":1,"doc_names":[""]}' \
+  "View run" "Meeting"
+
 rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
+
+# Step-summary (GitHub Markdown/HTML): an untrusted title with a Markdown link or
+# raw HTML must be escaped so it does not render as an active link (issue #706).
+run_md_summary_test() {
+  local test_name="$1" titles_json="$2" must_contain="$3" must_not="$4"
+  local run_dir="${TMPDIR}/run-${test_name//\//-}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo "${EMPTY_RESULT}" > "${run_dir}/iteration-1/output/agent-result.json"
+  rm -f "${SCRIBE_META_DIR}/scribe-meta.json" "${SCRIBE_META_DIR}/scribe-titles.json"
+  echo '{"docs_downloaded":1}' > "${SCRIBE_META_DIR}/scribe-meta.json"
+  printf '%s' "${titles_json}" > "${SCRIBE_META_DIR}/scribe-titles.json"
+  local summary="${TMPDIR}/step-summary-${test_name//\//-}.md"
+  : > "${summary}"
+  local exit_code=0
+  (cd "${run_dir}" && GITHUB_STEP_SUMMARY="${summary}" bash "${POST_SCRIPT}") > "${TMPDIR}/stdout.log" 2>&1 || exit_code=$?
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"; cat "${TMPDIR}/stdout.log"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if ! grep -qF -- "${must_contain}" "${summary}"; then
+    echo "FAIL: ${test_name} — expected '${must_contain}' in step summary"; cat "${summary}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if [[ -n "${must_not}" ]] && grep -qF -- "${must_not}" "${summary}"; then
+    echo "FAIL: ${test_name} — unexpected '${must_not}' in step summary"; cat "${summary}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+# Titles are rendered inside an inline code span (`...`), which suppresses
+# Markdown links, raw HTML, and GitHub bare-URL autolinking. Each test asserts
+# the title appears backtick-wrapped (i.e. inert), and % / :: stay readable.
+run_md_summary_test "meeting/step-summary-markdown-link-codespan" \
+  '{"docs_downloaded":1,"doc_names":["[click](http://evil.example)"]}' \
+  '`[click](http://evil.example)`' ''
+run_md_summary_test "meeting/step-summary-html-codespan" \
+  '{"docs_downloaded":1,"doc_names":["<a href=\"http://evil\">x</a>"]}' \
+  '`<a href="http://evil">x</a>`' ''
+run_md_summary_test "meeting/step-summary-percent-colon-readable" \
+  '{"docs_downloaded":1,"doc_names":["100% Review :: Q3"]}' \
+  '`100% Review :: Q3`' '%25'
+run_md_summary_test "meeting/step-summary-preescaped-brackets-codespan" \
+  '{"docs_downloaded":1,"doc_names":["\\[click\\](http://evil.example)"]}' \
+  '`\[click\](http://evil.example)`' ''
+# Bare URL must not autolink: it is wrapped in a code span, not left as plain text.
+run_md_summary_test "meeting/step-summary-bare-url-codespan" \
+  '{"docs_downloaded":1,"doc_names":["https://evil.example/pwn"]}' \
+  '`https://evil.example/pwn`' ''
+
+rm -f "${SCRIBE_META_DIR}/scribe-meta.json"
+
+# fullsend-ai-review finding on 8c6bf43: redact_cards' window scan was O(n^3) in
+# the number of digit tokens (for every start, scan every end down to start,
+# rebuilding an O(count) window/widths array each time), reachable because
+# Drive titles are untrusted (issue #706) and the Drive search returns any doc
+# whose name contains the query string. Measured ~23s for a 1000-token
+# ("1 " * 1000) title before the fix; a 2500-token (~5000-char) title would
+# have run far longer. Bound the window size to the max possible PAN length
+# (19 digits) so the scan is linear in the number of tokens, and assert a
+# ~5000-char digit-heavy title still completes quickly.
+test_redact_cards_linear_time() {
+  local test_name="redact-cards-linear-time"
+  local title
+  title="$(python3 -c "print('1 ' * 2500, end='')")"
+  local out_file="${TMPDIR}/${test_name}.out"
+  : > "${out_file}"
+
+  # Stock macOS has no `timeout` (GNU coreutils only, not shipped by default),
+  # so enforce the bound with background-job + poll + kill instead — portable
+  # across Linux and macOS with only bash builtins, no external dependency.
+  bash -c '
+    SCRIPT_DIR="$1"
+    FULLSEND_FORGE=github
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
+    redact_sensitive_title "$2"
+  ' _ "${SCRIPT_DIR}" "${title}" > "${out_file}" 2>&1 &
+  local pid=$!
+
+  local waited=0
+  while kill -0 "${pid}" 2>/dev/null && [[ ${waited} -lt 5 ]]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if kill -0 "${pid}" 2>/dev/null; then
+    kill -9 "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+    echo "FAIL: ${test_name} — did not complete within 5s"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local rc=0
+  wait "${pid}" || rc=$?
+  local out
+  out="$(cat "${out_file}")"
+  if [[ ${rc} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — errored: ${out:0:200}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # A run of all "1"s has no Luhn-valid card-shaped window, so it must survive
+  # unredacted — this also confirms the function actually ran to completion
+  # rather than timing out silently on a partial result.
+  if [[ "${out}" != "${title}" ]]; then
+    echo "FAIL: ${test_name} — unexpected output for an all-1s title"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+test_redact_cards_linear_time
+
+# fullsend-ai-review finding on 73322ac: redact_sensitive_title (titles) and
+# scrub_note_pii (note bodies, scripts/lib/scribe-ops.lib.sh) are two
+# hand-copied secret/PII pattern lists — this table-driven check runs a shared
+# sample set through both and fails if either stops redacting a sample the
+# other still catches, so the lists cannot silently drift apart again. (A
+# third list, contains_sensitive in post-scribe.src.sh, is not included here:
+# it has no standalone entry point to call in isolation the way these two
+# shared-lib functions do. Its topic/new-issue gating behavior is covered by
+# the existing end-to-end post-scribe tests instead.)
+test_title_and_body_redaction_agree() {
+  local test_name="title-and-body-redaction-agree"
+  # Flat (name, sample) pairs — each sample must contain exactly one
+  # PII/secret span to redact.
+  local samples=(
+    "email" "contact jane.doe@corp.example please"
+    "ssn" "id 123-45-6789 on file"
+    "phone-nanp" "call 555-123-4567 today"
+    "phone-intl" "call +44 2079460958 today"
+    "ipv4" "host 10.0.0.5 is down"
+    "card" "card 4111 1111 1111 1111 on file"
+    "github-pat" "token ghp_abcdefghij1234567890abcdefghij123456 set"
+    "aws-akid" "key AKIA1234567890ABCDEF set"
+    "aws-secret" "aws_secret_access_key=abcdefghij1234567890ABCDEFGHIJ1234567890"
+    "private-key-id" "private_key_id: 1234567890abcdef1234567890abcdef12345678"
+    "jwt" "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U set"
+    "generic-kv" "secret: abcdefghijklmnopqrstuvwxyz123456 set"
+  )
+  # Note: the Slack-incoming-webhook pattern (hooks.slack.com/services/T.../
+  # B.../...) is deliberately not covered here, and has no redaction-specific
+  # test elsewhere in this suite either — any value matching that exact URL
+  # shape trips GitHub push protection regardless of how obviously fake the ID
+  # segments are (SLACK_WEBHOOK_FAKE above avoids the shape entirely for the
+  # same reason). The pattern itself is unchanged by this PR.
+  local out
+  if ! out=$(
+    bash -c '
+      SCRIPT_DIR="$1"; shift
+      FULLSEND_FORGE=github
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
+      fail=0
+      while [[ $# -ge 2 ]]; do
+        name="$1"; sample="$2"; shift 2
+        title_out=$(redact_sensitive_title "${sample}")
+        body_out=$(scrub_note_pii "${sample}")
+        title_ok=0; [[ "${title_out}" == *"[redacted]"* ]] && title_ok=1
+        body_ok=0; [[ "${body_out}" == *"[REDACTED]"* ]] && body_ok=1
+        if [[ "${title_ok}" -ne "${body_ok}" ]]; then
+          echo "DISAGREE ${name}: title_redacted=${title_ok} body_redacted=${body_ok}"
+          fail=1
+        elif [[ "${title_ok}" -eq 0 ]]; then
+          echo "NEITHER ${name}: sample=${sample}"
+          fail=1
+        fi
+      done
+      exit "${fail}"
+    ' _ "${SCRIPT_DIR}" "${samples[@]}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — lists disagree or both miss a sample:"
+    echo "${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+test_title_and_body_redaction_agree
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

@@ -849,6 +849,9 @@ test_stale_meta_cleared_on_failed_search() {
 
   # A stale meta left by a previous run in a reused workspace (issue #1618).
   echo '{"docs_downloaded":0}' > "${runner_temp}/scribe-workspace/scribe-meta.json"
+  # A stale titles file (issue #706): without clearing it, a failed run would
+  # show the PREVIOUS run's meeting names on its "Meeting:" line.
+  echo '{"doc_names":["Stale Old Meeting"]}' > "${runner_temp}/scribe-workspace/scribe-titles.json"
 
   local sa_key="${TMPDIR}/sa-key-stale.json"
   local priv_key="${TMPDIR}/priv-stale.key"
@@ -924,7 +927,428 @@ MOCKEOF
     FAILURES=$((FAILURES + 1))
     return
   fi
+  if [[ -f "${runner_temp}/scribe-workspace/scribe-titles.json" ]]; then
+    echo "FAIL: ${test_name} — stale scribe-titles.json survived a failed run"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
 
+  echo "PASS: ${test_name}"
+}
+
+test_meeting_doc_names_persisted() {
+  local test_name="meeting-doc-names-persisted"
+  local runner_temp="${TMPDIR}/runner-doc-names"
+  local bin="${TMPDIR}/bin-doc-names"
+  mkdir -p "${runner_temp}" "${bin}"
+
+  local sa_key="${TMPDIR}/sa-key-doc-names.json"
+  local priv_key="${TMPDIR}/priv-doc-names.key"
+  openssl genrsa 2048 > "${priv_key}" 2>/dev/null
+  local priv_key_json
+  priv_key_json=$(awk '{printf "%s\\n", $0}' "${priv_key}")
+  cat > "${sa_key}" <<EOF
+{
+  "client_email": "test-sa@example.iam.gserviceaccount.com",
+  "private_key": "${priv_key_json}"
+}
+EOF
+
+  # Mock curl: OAuth ok; Drive search returns one doc with an untrusted name
+  # (quotes + angle brackets); Drive export returns plain text; Jira jql empty.
+  cat > "${bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+URL=""
+OUT_FILE=""
+PREV=""
+for arg in "$@"; do
+  [[ "${arg}" == https://* ]] && URL="${arg}"
+  [[ "${PREV}" == "-o" ]] && OUT_FILE="${arg}"
+  PREV="${arg}"
+done
+if [[ "${URL}" == *oauth2.googleapis.com/token* ]]; then
+  echo '{"access_token":"fake-token"}'; exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files/*/export* ]]; then
+  if [[ -n "${OUT_FILE}" ]]; then printf 'Summary\nSome notes.\n' > "${OUT_FILE}"; echo "200"; else printf 'Summary\nSome notes.\n'; fi
+  exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files* ]]; then
+  body='{"files":[{"id":"doc1","name":"Team \"Sync\" <notes>","createdTime":"2026-08-06T09:00:00Z","webViewLink":"https://docs.google.com/document/d/doc1"},{"id":"doc2","name":"-Weekly sync","createdTime":"2026-08-06T10:00:00Z","webViewLink":"https://docs.google.com/document/d/doc2"}]}'
+  if [[ -n "${OUT_FILE}" ]]; then echo "${body}" > "${OUT_FILE}"; echo "200"; else echo "${body}"; fi
+  exit 0
+elif [[ "${URL}" == */search/jql* ]]; then
+  echo '{"issues":[],"isLast":true}'; exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/curl"
+
+  cat > "${bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/git/trees"* ]]; then echo '{"tree":[]}'; else echo '[]'; fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/gh"
+
+  local out
+  if ! out=$(
+    PATH="${bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${sa_key}" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake-jira-token" \
+    FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    SCRIBE_JIRA_MAX_PAGES="1" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — script failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Titles go to the runner-only scribe-titles.json, NOT the sandbox-mounted
+  # scribe-meta.json (issue #706: untrusted titles must not enter the agent).
+  local meta_file="${runner_temp}/scribe-workspace/scribe-meta.json"
+  local titles_file="${runner_temp}/scribe-workspace/scribe-titles.json"
+  if [[ ! -f "${titles_file}" ]]; then
+    echo "FAIL: ${test_name} — scribe-titles.json was not generated"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  # The sandbox-mounted meta must NOT carry the untrusted titles.
+  if [[ -f "${meta_file}" ]] && [[ "$(jq 'has("doc_names")' "${meta_file}")" == "true" ]]; then
+    echo "FAIL: ${test_name} — doc_names leaked into sandbox-mounted scribe-meta.json"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local count name0 name1
+  count=$(jq '.doc_names | length' "${titles_file}")
+  if ! assert_eq "${test_name}: doc_names length" "2" "${count}"; then return; fi
+  # The untrusted name round-trips as a safe JSON string (no injection, exact value).
+  name0=$(jq -r '.doc_names[0]' "${titles_file}")
+  if ! assert_eq "${test_name}: doc_names[0]" 'Team "Sync" <notes>' "${name0}"; then return; fi
+  # A dash-leading title must not be read by jq as an option (would abort the run).
+  name1=$(jq -r '.doc_names[1]' "${titles_file}")
+  if ! assert_eq "${test_name}: doc_names[1]" '-Weekly sync' "${name1}"; then return; fi
+
+  echo "PASS: ${test_name}"
+}
+
+# Drive names are untrusted; the pre-script logs them to the Actions log. A
+# sensitive name (phone) must be redacted there (not just in post-scribe's
+# notification), and a newline in a name must not forge a new log line
+# (issue #706; waynesun09 finding).
+test_log_doc_names_sanitized() {
+  local test_name="log-doc-names-sanitized"
+  local runner_temp="${TMPDIR}/runner-log-names"
+  local bin="${TMPDIR}/bin-log-names"
+  mkdir -p "${runner_temp}" "${bin}"
+
+  local sa_key="${TMPDIR}/sa-key-log-names.json"
+  local priv_key="${TMPDIR}/priv-log-names.key"
+  openssl genrsa 2048 > "${priv_key}" 2>/dev/null
+  local priv_key_json
+  priv_key_json=$(awk '{printf "%s\\n", $0}' "${priv_key}")
+  cat > "${sa_key}" <<EOF
+{
+  "client_email": "test-sa@example.iam.gserviceaccount.com",
+  "private_key": "${priv_key_json}"
+}
+EOF
+
+  # doc1 name carries a phone number (PII); doc2 name embeds a newline (\n) to
+  # attempt a forged log line. Jira tracker (as in the persisted-names test) keeps
+  # the mock minimal — the log sanitization under test is tracker-independent.
+  cat > "${bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+URL=""
+OUT_FILE=""
+PREV=""
+for arg in "$@"; do
+  [[ "${arg}" == https://* ]] && URL="${arg}"
+  [[ "${PREV}" == "-o" ]] && OUT_FILE="${arg}"
+  PREV="${arg}"
+done
+if [[ "${URL}" == *oauth2.googleapis.com/token* ]]; then
+  echo '{"access_token":"fake-token"}'; exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files/*/export* ]]; then
+  if [[ -n "${OUT_FILE}" ]]; then printf 'Summary\nSome notes.\n' > "${OUT_FILE}"; echo "200"; else printf 'Summary\nSome notes.\n'; fi
+  exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files* ]]; then
+  body='{"files":[{"id":"doc1","name":"Call 555-123-4567 standup","createdTime":"2026-08-06T09:00:00Z","webViewLink":"https://docs.google.com/document/d/doc1"},{"id":"doc2","name":"Evil\nINJECTED","createdTime":"2026-08-06T10:00:00Z","webViewLink":"https://docs.google.com/document/d/doc2"}]}'
+  if [[ -n "${OUT_FILE}" ]]; then echo "${body}" > "${OUT_FILE}"; echo "200"; else echo "${body}"; fi
+  exit 0
+elif [[ "${URL}" == */search/jql* ]]; then
+  echo '{"issues":[],"isLast":true}'; exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/curl"
+
+  cat > "${bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/git/trees"* ]]; then echo '{"tree":[]}'; else echo '[]'; fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/gh"
+
+  local out
+  if ! out=$(
+    PATH="${bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${sa_key}" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake-jira-token" \
+    FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    SCRIBE_JIRA_MAX_PAGES="1" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — script failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # Phone is redacted in the log, with the surrounding words kept.
+  if ! grep -qF -- "Downloading: Call [redacted] standup" <<< "${out}"; then
+    echo "FAIL: ${test_name} — phone not redacted in Downloading log line"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  # The raw phone number must appear nowhere in the log.
+  if grep -qF -- "555-123-4567" <<< "${out}"; then
+    echo "FAIL: ${test_name} — raw phone number leaked to the log"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  # The newline in doc2's name is stripped, so the forged marker stays on one
+  # line ("EvilINJECTED") and cannot appear as its own log line.
+  if ! grep -qF -- "EvilINJECTED" <<< "${out}"; then
+    echo "FAIL: ${test_name} — newline not stripped from logged name"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if grep -qxF -- "INJECTED" <<< "${out}"; then
+    echo "FAIL: ${test_name} — name newline forged a standalone log line"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# fullsend-ai-review finding on 129bd76: a Drive name beginning with "::" (after
+# only whitespace) could be read by the runner as a GHA workflow command
+# (e.g. ::error::) in the document-list log line. _gha_sanitize must encode `::`
+# there (and in the Downloading: line), same as everywhere else in this codebase
+# that echoes untrusted/external text to the Actions log.
+test_log_doc_names_no_command_injection() {
+  local test_name="log-doc-names-no-command-injection"
+  local runner_temp="${TMPDIR}/runner-log-injection"
+  local bin="${TMPDIR}/bin-log-injection"
+  mkdir -p "${runner_temp}" "${bin}"
+
+  local sa_key="${TMPDIR}/sa-key-log-injection.json"
+  local priv_key="${TMPDIR}/priv-log-injection.key"
+  openssl genrsa 2048 > "${priv_key}" 2>/dev/null
+  local priv_key_json
+  priv_key_json=$(awk '{printf "%s\\n", $0}' "${priv_key}")
+  cat > "${sa_key}" <<EOF
+{
+  "client_email": "test-sa@example.iam.gserviceaccount.com",
+  "private_key": "${priv_key_json}"
+}
+EOF
+
+  cat > "${bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+URL=""
+OUT_FILE=""
+PREV=""
+for arg in "$@"; do
+  [[ "${arg}" == https://* ]] && URL="${arg}"
+  [[ "${PREV}" == "-o" ]] && OUT_FILE="${arg}"
+  PREV="${arg}"
+done
+if [[ "${URL}" == *oauth2.googleapis.com/token* ]]; then
+  echo '{"access_token":"fake-token"}'; exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files/*/export* ]]; then
+  if [[ -n "${OUT_FILE}" ]]; then printf 'Summary\nSome notes.\n' > "${OUT_FILE}"; echo "200"; else printf 'Summary\nSome notes.\n'; fi
+  exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files* ]]; then
+  body='{"files":[{"id":"doc1","name":"::error::Forged failure","createdTime":"2026-08-06T09:00:00Z","webViewLink":"https://docs.google.com/document/d/doc1"}]}'
+  if [[ -n "${OUT_FILE}" ]]; then echo "${body}" > "${OUT_FILE}"; echo "200"; else echo "${body}"; fi
+  exit 0
+elif [[ "${URL}" == */search/jql* ]]; then
+  echo '{"issues":[],"isLast":true}'; exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/curl"
+
+  cat > "${bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/git/trees"* ]]; then echo '{"tree":[]}'; else echo '[]'; fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/gh"
+
+  local out
+  if ! out=$(
+    PATH="${bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${sa_key}" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake-jira-token" \
+    FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    SCRIBE_JIRA_MAX_PAGES="1" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — script failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # A line starting with "::" (after only whitespace/sanitized text) must never
+  # appear — the name is `::`-encoded so it cannot be read as a workflow command.
+  if grep -qE '^[[:space:]]*::error::' <<< "${out}"; then
+    echo "FAIL: ${test_name} — unencoded :: reached the log as a workflow command"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  if ! grep -qF -- "%3A%3Aerror%3A%3AForged failure" <<< "${out}"; then
+    echo "FAIL: ${test_name} — expected :: to be %3A%3A-encoded in the log"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# fullsend-ai-review finding on 129bd76: jq emits a literal NUL byte for a
+# `\u0000` inside a Drive name, shifting the NUL-delimited _name/_ctime fields
+# so the name's tail (here an email) lands in ${_ctime}, which is only
+# strip_unsafe_chars'd, not redacted. pre-scribe must strip embedded NULs from
+# each field before framing them with the real delimiter.
+test_log_doc_names_nul_embedded_in_name() {
+  local test_name="log-doc-names-nul-embedded-in-name"
+  local runner_temp="${TMPDIR}/runner-log-nul"
+  local bin="${TMPDIR}/bin-log-nul"
+  mkdir -p "${runner_temp}" "${bin}"
+
+  local sa_key="${TMPDIR}/sa-key-log-nul.json"
+  local priv_key="${TMPDIR}/priv-log-nul.key"
+  openssl genrsa 2048 > "${priv_key}" 2>/dev/null
+  local priv_key_json
+  priv_key_json=$(awk '{printf "%s\\n", $0}' "${priv_key}")
+  cat > "${sa_key}" <<EOF
+{
+  "client_email": "test-sa@example.iam.gserviceaccount.com",
+  "private_key": "${priv_key_json}"
+}
+EOF
+
+  # name contains a literal embedded NUL (\u0000 in the JSON) followed by an
+  # email; createdTime is a plainly recognizable sentinel so a field-shift is
+  # visible if the email ends up there instead of being redacted in the name.
+  cat > "${bin}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+URL=""
+OUT_FILE=""
+PREV=""
+for arg in "$@"; do
+  [[ "${arg}" == https://* ]] && URL="${arg}"
+  [[ "${PREV}" == "-o" ]] && OUT_FILE="${arg}"
+  PREV="${arg}"
+done
+if [[ "${URL}" == *oauth2.googleapis.com/token* ]]; then
+  echo '{"access_token":"fake-token"}'; exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files/*/export* ]]; then
+  if [[ -n "${OUT_FILE}" ]]; then printf 'Summary\nSome notes.\n' > "${OUT_FILE}"; echo "200"; else printf 'Summary\nSome notes.\n'; fi
+  exit 0
+elif [[ "${URL}" == *googleapis.com/drive/v3/files* ]]; then
+  body='{"files":[{"id":"doc1","name":"Safe\u0000jane@corp.example","createdTime":"2026-08-06T09:00:00Z","webViewLink":"https://docs.google.com/document/d/doc1"}]}'
+  if [[ -n "${OUT_FILE}" ]]; then echo "${body}" > "${OUT_FILE}"; echo "200"; else echo "${body}"; fi
+  exit 0
+elif [[ "${URL}" == */search/jql* ]]; then
+  echo '{"issues":[],"isLast":true}'; exit 0
+fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/curl"
+
+  cat > "${bin}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"/git/trees"* ]]; then echo '{"tree":[]}'; else echo '[]'; fi
+exit 0
+MOCKEOF
+  chmod +x "${bin}/gh"
+
+  local out
+  if ! out=$(
+    PATH="${bin}:${PATH}" \
+    RUNNER_TEMP="${runner_temp}" \
+    FULLSEND_FORGE="github" \
+    FULLSEND_TRACKER="jira" \
+    SCRIBE_REPO="mock-org/mock-repo" \
+    SCRIBE_SEARCH_QUERY="test query" \
+    GOOGLE_APPLICATION_CREDENTIALS="${sa_key}" \
+    GH_TOKEN="fake-gh-token" \
+    JIRA_BASE_URL="https://mock.atlassian.net" \
+    JIRA_USER_EMAIL="bot@mock.example" \
+    JIRA_TOKEN="fake-jira-token" \
+    FULLSEND_DIR="${TMPDIR}/dot-fullsend" \
+    SCRIBE_JIRA_PROJECT="PROJ" \
+    SCRIBE_JIRA_MAX_PAGES="1" \
+    bash "${PRE_SCRIPT}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — script failed: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  # The real createdTime must not be shifted out by the embedded NUL.
+  if ! grep -qF -- "created: 2026-08-06T09:00:00Z" <<< "${out}"; then
+    echo "FAIL: ${test_name} — createdTime field was shifted by the embedded NUL"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+  # The email (merged with "Safe" once the NUL is stripped) must be redacted,
+  # not leaked raw anywhere in the log — including via a shifted ${_ctime}.
+  if grep -qF -- "jane@corp.example" <<< "${out}"; then
+    echo "FAIL: ${test_name} — email leaked to the log via a NUL-shifted field"; echo "${out}"; FAILURES=$((FAILURES + 1)); return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+# fullsend-ai-review finding on 73322ac: GNU sed's ERE has no `\d` digit class,
+# so the two phone-number scrub lines in scrub_note_pii (moved from pre-scribe
+# into scribe-ops.lib.sh; originally inline here) silently never matched —
+# phone numbers in note bodies reached the sandboxed agent unredacted. Fixed
+# by using `[0-9]` instead of `\d`, as every other pattern in this scrub
+# already does.
+test_scrub_note_pii_redacts_phone() {
+  local test_name="scrub-note-pii-redacts-phone"
+  local out
+  out=$(
+    SCRIPT_DIR="${SCRIPT_DIR}" FULLSEND_FORGE=github bash -c '
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
+      scrub_note_pii "call 555-123-4567 or +44 2079460958"
+    '
+  )
+  if [[ "${out}" != *"[REDACTED]"* ]] || [[ "${out}" == *"555-123-4567"* ]] || [[ "${out}" == *"2079460958"* ]]; then
+    echo "FAIL: ${test_name} — phone number not redacted from note body: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
   echo "PASS: ${test_name}"
 }
 
@@ -1156,6 +1580,11 @@ test_jira_closed_issues_failure_fallback
 test_jira_api_url_routing
 test_jira_missing_fullsend_dir_fails_preflight
 test_stale_meta_cleared_on_failed_search
+test_meeting_doc_names_persisted
+test_log_doc_names_sanitized
+test_log_doc_names_no_command_injection
+test_log_doc_names_nul_embedded_in_name
+test_scrub_note_pii_redacts_phone
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

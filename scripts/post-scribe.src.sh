@@ -165,6 +165,9 @@ REJECTED=0
 # The detectors feed their input via here-strings rather than `echo | grep -q`:
 # with pipefail, an early-exiting reader makes the writer die of SIGPIPE on
 # large inputs, the pipeline fails, and the helper wrongly reports "clean".
+# Boolean sensitive-content gate for topics/new-issues (titles+bodies+labels).
+# The per-span title redactor `redact_sensitive_title` in scribe-ops.lib.sh
+# mirrors these secret patterns — keep the two in sync.
 contains_sensitive() {
   local text="$1"
   # GitHub PATs, AWS access keys, private keys
@@ -199,11 +202,49 @@ contains_suspicious_unicode() {
 # Escape Slack mrkdwn metacharacters in link labels.
 sanitize_slack_mrkdwn() {
   local val="$1"
+  # Bash 5.2+ enables patsub_replacement by default, which makes a bare `&` in a
+  # ${var//pat/repl} replacement expand to the matched text — turning `<` into
+  # `<lt;` instead of `&lt;`. Disable it locally so the HTML entities below are
+  # inserted literally (restored afterward). Matters for untrusted input such as
+  # Drive document titles (issue #706) that may contain `<`, `>`, or `&`.
+  local _patsub=0
+  if shopt -q patsub_replacement 2>/dev/null; then
+    _patsub=1
+    shopt -u patsub_replacement
+  fi
+  # Double backslashes first: SLACK_TEXT is later expanded with `printf '%b'`, so
+  # a literal `\n` in untrusted input would otherwise become a real newline (a
+  # forged report line) and `\c` would truncate the message. Doubling makes the
+  # backslash survive %b as a literal (issue #706).
+  val="${val//\\/\\\\}"
   val="${val//&/&amp;}"
   val="${val//</&lt;}"
   val="${val//>/&gt;}"
   val="${val//|/¦}"
+  [[ ${_patsub} -eq 1 ]] && shopt -s patsub_replacement
   printf '%s' "${val}"
+}
+
+# strip_unsafe_chars and redact_sensitive_title are defined in
+# scribe-ops.lib.sh (sourced above) so pre-scribe can apply the same
+# normalization/redaction to the document names it logs.
+
+# Sanitize untrusted text for a Slack mrkdwn body line (e.g. Drive document
+# titles, issue #706): strip unsafe chars, then escape mrkdwn metacharacters.
+sanitize_slack_text() {
+  sanitize_slack_mrkdwn "$(strip_unsafe_chars "$1")"
+}
+
+# Sanitize an untrusted title for display inside an inline code span in the
+# GitHub step summary (e.g. Drive document titles, issue #706). The caller wraps
+# the result in backticks; a code span renders its content literally, which
+# suppresses Markdown links, raw HTML, AND GitHub bare-URL autolinking in one
+# step, while keeping readable text like "100% sync" or "Q3 :: Planning" intact
+# (so _gha_sanitize's `%`/`::` encoding is deliberately not used here).
+# strip_unsafe_chars already removes backticks, so the title cannot close the
+# code span.
+sanitize_md_text() {
+  strip_unsafe_chars "$1"
 }
 
 CONTENT_GATE_REJECTIONS=0
@@ -550,36 +591,29 @@ RUN_MODE_LABEL="LIVE"
 [[ "${DRY_RUN}" == "true" ]] && RUN_MODE_LABEL="DRY RUN"
 
 # No-notes detection (issue #1618). pre-scribe writes a runner-side
-# scribe-meta.json whose docs_downloaded field holds the meeting-note search's
-# matching-document count; a confirmed numeric 0 is the successful empty-search
-# path. Trust only a well-formed meta with a numeric docs_downloaded: missing,
-# malformed, or non-numeric metadata must NOT be read as "no notes", and a
-# search/export failure never reaches this file with docs_downloaded: 0.
+# scribe-meta.json whose docs_downloaded holds the search's matching-document
+# count (a confirmed numeric 0 is the successful empty search).
 #
-# The empty-search *signal* comes from the metadata. The concise *message*
-# additionally requires the agent to have produced nothing at the source: zero
-# topics and zero new-issue proposals in its result. We read those counts
-# straight from RESULT_FILE rather than from TOPIC_COUNT / NEW_COUNT, because
-# those are zeroed by mode handling (new_issues_only zeroes TOPIC_COUNT,
-# comments_only zeroes NEW_COUNT) and would misreport a run that produced items
-# the mode then skipped. Gating on the raw result covers every "something
-# happened" case in one place — comments posted, issues created, issues skipped
-# by mode (SKIPPED_NEW_ISSUES), gate rejections (REJECTED), and create/dedup
-# failures (CREATE_FAILURES / JIRA_DEDUP_FAILURES) can only arise when there were
-# topics or proposals to begin with. So a zero-document search that nonetheless
-# returned proposals falls back to the activity report (which shows the
-# skipped/failed lines) instead of hiding that work behind "No meeting notes
-# found". A run that found notes but extracted zero topics has docs_downloaded
-# > 0, so it is unaffected and keeps the normal report.
+# The empty-search *signal* comes from the metadata; the concise *message*
+# additionally requires the agent to have produced nothing at the source — zero
+# topics and zero new-issue proposals, read straight from RESULT_FILE rather than
+# TOPIC_COUNT / NEW_COUNT (which mode handling zeroes: new_issues_only zeroes
+# TOPIC_COUNT, comments_only zeroes NEW_COUNT). Gating on the raw result covers
+# every "something happened" case at once — comments posted, issues created,
+# issues skipped by mode (SKIPPED_NEW_ISSUES), gate rejections (REJECTED), and
+# create/dedup failures (CREATE_FAILURES / JIRA_DEDUP_FAILURES) only arise when
+# there were topics or proposals to begin with — so a zero-document search that
+# still returned proposals keeps the activity report. A run that found notes but
+# extracted zero topics has docs_downloaded > 0 and keeps the normal report.
 SCRIBE_META_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-meta.json"
 NO_NOTES=false
-# NO_NOTES_DOCS records why the branch did/did not fire so a silent fallback is
-# diagnosable from the job log (printed in the summary below): "missing" (no
-# meta), "invalid" (unparseable JSON or a non-object root), or the numeric
-# docs_downloaded value. The guard requires an object root: valid JSON with a
-# non-object root ([], "x", 123, true) passes a bare `jq -e .` but then errors
-# on `.docs_downloaded` (jq exit 5), which under `set -e` would abort the run
-# before the summary and Slack delivery.
+# NO_NOTES_DOCS records why the no-notes branch did/did not fire so a silent
+# fallback is diagnosable from the job log (printed in the summary below):
+# "missing" (no meta), "invalid" (unparseable JSON or a non-object root), or the
+# numeric docs_downloaded value. The guard requires an object root: valid JSON
+# with a non-object root ([], "x", 123, true) passes a bare `jq -e .` but then
+# errors on `.docs_downloaded` (jq exit 5), which under `set -e` would abort the
+# run before the summary and Slack delivery.
 if [[ ! -f "${SCRIBE_META_FILE}" ]]; then
   NO_NOTES_DOCS="missing"
 elif ! jq -e 'type == "object"' "${SCRIBE_META_FILE}" >/dev/null 2>&1; then
@@ -593,6 +627,27 @@ else
       NO_NOTES=true
     fi
   fi
+fi
+
+# Meeting titles (issue #706) come from a runner-only scribe-titles.json that is
+# NOT mounted into the sandbox, so untrusted Drive titles never enter the agent
+# context. Normalize each title with strip_unsafe_chars FIRST, then redact
+# sensitive spans on the normalized text — so the redactor sees exactly what will
+# be published (a zero-width char cannot split a secret/email past it and then be
+# stripped at display). redact_sensitive_title replaces only the matching span,
+# so a non-sensitive remainder keeps the meeting identifiable. Read NUL-delimited
+# so a title containing a newline stays one element.
+SCRIBE_TITLES_FILE="${RUNNER_TEMP:-/tmp}/scribe-workspace/scribe-titles.json"
+MEETING_TITLES=()
+if [[ -f "${SCRIBE_TITLES_FILE}" ]] && jq -e 'type == "object"' "${SCRIBE_TITLES_FILE}" >/dev/null 2>&1; then
+  while IFS= read -r -d '' _title; do
+    _title=$(strip_unsafe_chars "${_title}")
+    # Explicit if (not `[[ … ]] && …`) so skipping an empty title keeps a success
+    # status and cannot trip `set -e` on the loop body.
+    if [[ -n "${_title}" ]]; then
+      MEETING_TITLES+=("$(redact_sensitive_title "${_title}")")
+    fi
+  done < <(jq -j '(.doc_names // [])[] | . + "\u0000"' "${SCRIBE_TITLES_FILE}")
 fi
 
 echo ""
@@ -620,6 +675,16 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
 {
   echo "### Scribe agent report (${RUN_MODE_LABEL})"
   echo ""
+  if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
+    echo "**Meeting:** \`$(sanitize_md_text "${MEETING_TITLES[0]}")\`"
+    echo ""
+  elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
+    echo "**Meetings (${#MEETING_TITLES[@]}):**"
+    for _title in "${MEETING_TITLES[@]}"; do
+      echo "- \`$(sanitize_md_text "${_title}")\`"
+    done
+    echo ""
+  fi
   echo "| Metric | Count |"
   echo "|--------|------:|"
   echo "| Topics processed | ${TOPIC_COUNT} |"
@@ -679,6 +744,26 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
   RUN_URL=$(forge_run_url "${SCRIBE_REPO}")
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
+  if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
+    # Render in a code span (backtick-wrapped), like the step summary: per
+    # Slack's formatting reference, text in inline code is not reformatted
+    # with other mrkdwn syntax, so an untrusted title cannot inject emphasis
+    # (*bold*, _italic_, ~strike~) into the notification. Slack's docs do not
+    # explicitly state whether a bare URL is still auto-linked/clickable
+    # inside a code span, so this is not relied on alone: unfurl_links/
+    # unfurl_media are disabled on the payload below, independently closing
+    # the link-preview risk regardless of code-span semantics.
+    # strip_unsafe_chars already removed any backtick from the title, so it
+    # cannot close the span early. The entity escaping above (&, <, >) is kept
+    # as defense-in-depth against Slack's own link/mention syntax, even though
+    # whether it is still decoded inside a code span is similarly unverified.
+    SLACK_TEXT+="\nMeeting: \`$(sanitize_slack_text "${MEETING_TITLES[0]}")\`"
+  elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
+    SLACK_TEXT+="\nMeetings (${#MEETING_TITLES[@]}):"
+    for _title in "${MEETING_TITLES[@]}"; do
+      SLACK_TEXT+="\n  • \`$(sanitize_slack_text "${_title}")\`"
+    done
+  fi
   if [[ "${NO_NOTES}" == "true" ]]; then
     SLACK_TEXT+="\nNo meeting notes found for today."
   else
@@ -720,7 +805,11 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
 
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"
 
-  SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: .}')
+  # unfurl_links/unfurl_media: false — independent of whether Slack's code-span
+  # rendering suppresses auto-linking, this unconditionally stops Slack from
+  # generating a link-preview card for a URL in an untrusted meeting title
+  # (issue #706). No other URL in this message needs an unfurl.
+  SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: ., unfurl_links: false, unfurl_media: false}')
   # Slack is best-effort: bound the request so a stalled webhook cannot hang the job.
   if printf '%s' "${SLACK_PAYLOAD}" \
       | curl -fsSL --connect-timeout 10 --max-time 30 \

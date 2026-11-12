@@ -56,14 +56,20 @@ WORK_DIR="${RUNNER_TEMP:-/tmp}/scribe-workspace"
 NOTES_DIR="${WORK_DIR}/notes"
 BACKLOG_FILE="${WORK_DIR}/backlog.json"
 META_FILE="${WORK_DIR}/scribe-meta.json"
+# Meeting-document titles (issue #706) are kept in a separate, runner-only file
+# that is NOT mounted into the sandbox (unlike META_FILE, which the agent reads),
+# so untrusted Drive titles never enter the agent's context. post-scribe reads
+# this file for notifications.
+TITLES_FILE="${WORK_DIR}/scribe-titles.json"
 
 mkdir -p "${NOTES_DIR}"
 
-# Clear any scribe-meta.json left by a previous run before this run can fail.
-# This script exits non-zero on an auth/search/export failure *before* writing
-# META_FILE, so on a reused workspace a stale docs_downloaded: 0 could otherwise
-# be read by post-scribe as a confirmed empty search for this run (issue #1618).
-rm -f "${META_FILE}"
+# Clear files left by a previous run before this run can fail. This script exits
+# non-zero on an auth/search/export failure *before* writing META_FILE, so on a
+# reused workspace a stale docs_downloaded: 0 could otherwise be read by
+# post-scribe as a confirmed empty search for this run (issue #1618); a stale
+# titles file would likewise show the previous run's meeting names.
+rm -f "${META_FILE}" "${TITLES_FILE}"
 
 LOOKBACK="${SCRIBE_LOOKBACK_HOURS:-3}"
 # RFC3339 with Z suffix — matches the Go code's time.RFC3339 format
@@ -239,7 +245,23 @@ DOC_COUNT=$(jq '.files | length' "${WORK_DIR}/drive-response.json")
 echo "Found ${DOC_COUNT} matching document(s)"
 
 if [[ "${DOC_COUNT}" -gt 0 ]]; then
-  jq -r '.files[] | "  \(.name) (created: \(.createdTime))"' "${WORK_DIR}/drive-response.json"
+  # Drive names are untrusted input (issue #706). Raw `jq -r` would print them to
+  # the Actions log verbatim — leaking PII that post-scribe redacts from the same
+  # run's notification, letting a newline in a name forge log lines, and letting
+  # a name starting with "::" inject a GHA workflow command (this line has only
+  # whitespace before the name). Route each name through strip_unsafe_chars +
+  # redact_sensitive_title, then _gha_sanitize (encodes `%`/`::` — readability
+  # matters less in the job log than in the notification, so unlike the Slack/
+  # step-summary sanitizers this one is applied here). Read NUL-delimited so a
+  # newline stays one record; strip embedded NULs from each field in jq first —
+  # jq would otherwise emit a literal NUL byte for a `\u0000` in a Drive name,
+  # shifting the delimiter and letting an attacker-controlled name's tail land
+  # unredacted in ${_ctime} (which is only stripped, not redacted).
+  while IFS= read -r -d '' _name && IFS= read -r -d '' _ctime; do
+    _name=$(_gha_sanitize "$(redact_sensitive_title "$(strip_unsafe_chars "${_name}")")")
+    _ctime=$(_gha_sanitize "$(strip_unsafe_chars "${_ctime}")")
+    echo "  ${_name} (created: ${_ctime})"
+  done < <(jq -j '.files[] | ((.name // "") | gsub("\u0000"; "")) + "\u0000" + ((.createdTime // "") | gsub("\u0000"; "")) + "\u0000"' "${WORK_DIR}/drive-response.json")
 fi
 
 if [[ "${DOC_COUNT}" -eq 0 ]]; then
@@ -261,6 +283,7 @@ if [[ "${DOC_COUNT}" -eq 0 ]]; then
     --arg tracker "${FULLSEND_TRACKER}" \
     '{cutoff_date: $cutoff, notes_url: "", repo: $repo, tracker: $tracker, docs_downloaded: $doc_count, backlog_issues: $issue_count, open_issue_total: $open_total, backlog_truncated: $truncated, closed_issues: $closed_count, open_prs: $pr_count, repo_docs: $doc_path_count}' \
     > "${META_FILE}"
+  echo '{"doc_names": []}' > "${TITLES_FILE}"
   echo "Workspace: ${WORK_DIR}"
   exit 0
 fi
@@ -305,12 +328,17 @@ export_doc_with_retry() {
 
 DOC_INDEX=0
 DOCS_FAILED=0
+DOC_NAMES=()
 while read -r doc; do
   DOC_ID=$(echo "${doc}" | jq -r '.id')
   DOC_NAME=$(echo "${doc}" | jq -r '.name')
   DOC_URL=$(echo "${doc}" | jq -r '.webViewLink')
 
-  echo "  Downloading: ${DOC_NAME}"
+  # DOC_NAME is untrusted; sanitize/redact/_gha_sanitize for the log only (the
+  # raw value is still needed below for download and for scribe-titles.json).
+  # This line has a non-whitespace prefix so a `::` is less exposed than the
+  # listing above, but _gha_sanitize is applied for the same defense-in-depth.
+  echo "  Downloading: $(_gha_sanitize "$(redact_sensitive_title "$(strip_unsafe_chars "${DOC_NAME}")")")"
 
   set +e
   RAW_TEXT=$(export_doc_with_retry "${DOC_ID}")
@@ -352,25 +380,18 @@ while read -r doc; do
     | sed -E 's/^([[:space:]]*[-*][[:space:]]*)[A-Z][a-zA-Z]+ [A-Z][a-zA-Z .-]+:/\1[attendee]:/g')
 
   # --- PII pattern scrubbing ---
-  # Ordered: specific patterns first, generic last (matches Go sanitizer.go)
-  SCRUBBED=$(echo "${STRUCTURAL_SCRUB}" \
-    | sed -E 's/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/[REDACTED]/g' \
-    | sed -E 's/\b(\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b/[REDACTED]/g' \
-    | sed -E 's/\+\d{1,3}[-. ]?\d{4,14}\b/[REDACTED]/g' \
-    | sed -E 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/[REDACTED]/g' \
-    | sed -E 's/\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b/[REDACTED]/g' \
-    | sed -E 's/\b([0-9][ -]?){13,19}\b/[REDACTED]/g' \
-    | sed -E 's/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/[REDACTED]/g' \
-    | sed -E 's/[Aa][Ww][Ss].?[Ss][Ee][Cc][Rr][Ee][Tt].?([Aa][Cc][Cc][Ee][Ss][Ss])?.?[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[A-Za-z0-9\/+=]{40}/[REDACTED]/g' \
-    | sed -E 's/\b(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,255}\b/[REDACTED]/g' \
-    | sed -E 's|https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+|[REDACTED]|g' \
-    | sed -E 's/-----BEGIN[[:space:]]+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*/[REDACTED]/g' \
-    | sed -E 's/[Pp][Rr][Ii][Vv][Aa][Tt][Ee]_[Kk][Ee][Yy]_[Ii][Dd][[:space:]]*[:=][[:space:]]*['"'"'"]?[a-f0-9]{40}['"'"'"]?/[REDACTED]/g' \
-    | sed -E 's/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/[REDACTED]/g' \
-    | sed -E 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Bb][Ee][Aa][Rr][Ee][Rr])[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+\/-]{20,}['"'"'"]?/[REDACTED]/g')
+  # scrub_note_pii lives in scribe-ops.lib.sh (sourced above), alongside
+  # redact_sensitive_title, so the two pattern lists stay next to each other
+  # and are independently testable.
+  SCRUBBED=$(scrub_note_pii "${STRUCTURAL_SCRUB}")
 
   echo "${SCRUBBED}" > "${NOTES_DIR}/doc-${DOC_INDEX}.txt"
   echo "${DOC_URL}" > "${NOTES_DIR}/doc-${DOC_INDEX}.url"
+
+  # Record the title of each successfully-processed doc for the run's
+  # notifications (issue #706). This is untrusted Drive input; it is stored as a
+  # jq-escaped JSON string here and sanitized again before display in post-scribe.
+  DOC_NAMES+=("${DOC_NAME}")
 
   DOC_INDEX=$((DOC_INDEX + 1))
 done < <(jq -c '.files[]' "${WORK_DIR}/drive-response.json")
@@ -383,6 +404,18 @@ NOTES_URL=""
 if [[ -f "${NOTES_DIR}/doc-0.url" ]]; then
   NOTES_URL=$(cat "${NOTES_DIR}/doc-0.url")
 fi
+
+# Serialize the processed meeting-document titles (issue #706) as a JSON string
+# array, written to the runner-only TITLES_FILE (NOT the sandbox-mounted
+# META_FILE, so untrusted titles never enter the agent context). Feed the titles
+# through stdin (NUL-delimited), not as jq `--args` positionals: jq reads a
+# positional beginning with `-` (e.g. a doc titled "-Weekly" or "-h") as an
+# option and aborts. jq -Rs JSON-escapes every character; the trailing NUL yields
+# an empty final element that is filtered out. The ${arr[@]+...} form keeps
+# `printf` safe under `set -u` when the array is empty.
+DOC_NAMES_JSON=$(printf '%s\0' ${DOC_NAMES[@]+"${DOC_NAMES[@]}"} \
+  | jq -Rs 'split("\u0000") | map(select(length > 0))')
+jq -n --argjson doc_names "${DOC_NAMES_JSON}" '{doc_names: $doc_names}' > "${TITLES_FILE}"
 
 jq -n \
   --arg cutoff "${CUTOFF_DATE}" \
