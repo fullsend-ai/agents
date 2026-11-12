@@ -6,6 +6,12 @@
 > of this branch. [The MVP test guide](cve-mvp-test.md) says how to prove
 > the agent works.
 
+> **Variant.** [`harness/cve-workflow.yaml`](cve-workflow.md) is the same
+> agent with its evidence work done by a pi extension: the model has one
+> tool and no shell, and host code builds the result from the extension's
+> record. It reads npm lockfiles on GitHub checkouts only. Register one of
+> the two, not both.
+
 ## What it does
 
 Given **one public vulnerability** and **one repository commit**, the cve agent

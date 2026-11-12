@@ -1,0 +1,28 @@
+{
+  "id": "CVE-2099-0001",
+  "aliases": [
+    "GHSA-2c3f-4g5h-6j7m"
+  ],
+  "summary": "Template injection in tinytemplate-demo",
+  "affected": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "tinytemplate-demo"
+      },
+      "ranges": [
+        {
+          "type": "SEMVER",
+          "events": [
+            {
+              "introduced": "0"
+            },
+            {
+              "fixed": "1.2.1"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

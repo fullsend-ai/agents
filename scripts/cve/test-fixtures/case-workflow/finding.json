@@ -1,0 +1,26 @@
+{
+  "schema_version": "0",
+  "vulnerability": {
+    "id": "CVE-2099-0001",
+    "aliases": [
+      "GHSA-2c3f-4g5h-6j7m"
+    ],
+    "severity": "high"
+  },
+  "target": {
+    "repository": "example/app",
+    "ref": "main",
+    "commit": "4c52ee7aff97e8e64f9eccc8692c5b385da0b65a"
+  },
+  "source": {
+    "kind": "github-issue",
+    "ref": "https://github.com/example/app/issues/7"
+  },
+  "disclosure": {
+    "public": true,
+    "checked_by": [
+      "no-embargo-label",
+      "osv-published"
+    ]
+  }
+}

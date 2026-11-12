@@ -1,0 +1,18 @@
+{
+ "alert_sha256": "3b3e73eb457ceb483a5e50f395791c6eef50ab2e3844b8d19bf33c9c07093791",
+ "branch": "main",
+ "case_id": "cve-2099-0001-4c52ee7aff97",
+ "commit": "4c52ee7aff97e8e64f9eccc8692c5b385da0b65a",
+ "cve": "CVE-2099-0001",
+ "dependency_files": 2,
+ "first_patched": "1.2.1",
+ "ghsa": "GHSA-2c3f-4g5h-6j7m",
+ "lockfile": "package-lock.json",
+ "manifest": "package.json",
+ "package": "tinytemplate-demo",
+ "profile_sha256": "14691a15b6b520d5773a7bb1e87c635c941d8152d11e58ccf2605d95f7d3d012",
+ "repository": "example/app",
+ "schema_version": "0",
+ "source_paths": 1,
+ "vulnerable_range": "< 1.2.1"
+}

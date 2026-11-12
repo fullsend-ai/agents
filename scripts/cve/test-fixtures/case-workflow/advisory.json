@@ -1,0 +1,23 @@
+{
+  "ghsa_id": "GHSA-2c3f-4g5h-6j7m",
+  "cve_id": "CVE-2099-0001",
+  "summary": "Template injection in tinytemplate-demo",
+  "description": "`render()` compiles template text as code. A caller that passes attacker-controlled template text to `render()` can run code.",
+  "severity": "high",
+  "references": [
+    "https://example.invalid/advisories/tinytemplate-demo"
+  ],
+  "vulnerabilities": [
+    {
+      "package": {
+        "ecosystem": "npm",
+        "name": "tinytemplate-demo"
+      },
+      "vulnerable_version_range": "< 1.2.1",
+      "first_patched_version": "1.2.1",
+      "vulnerable_functions": [
+        "render"
+      ]
+    }
+  ]
+}

@@ -32,6 +32,14 @@
 # The branch is a request from the work item; the list is the adopter's, and
 # the commit is resolved here.
 #
+# Engine (CVE_ENGINE). "lookups", the default, stages the advisories for the
+# agent's own evidence lookups (harness/cve.yaml). "workflow" also builds the
+# inputs of the cve case extension (harness/cve-workflow.yaml,
+# lib/cve-case.lib.sh): one alert built from the public advisory, a profile
+# of the repository's npm files, the files the model may read, and the
+# dependency's published source. A case that extension cannot read (not npm,
+# no GitHub origin) is skipped with the reason.
+#
 # Evaluation: CVE_VENDOR_VEX=off withholds the vendor VEX file. For a closed
 # historical ticket that file states the answer, so a retrospective accuracy
 # run must not stage it.
@@ -42,12 +50,16 @@
 #   cve-evidence.json  {"osv": [records…], "vendor_vex": [{"source", "document"}…], "withheld": [names…]}
 #   cve-ticket.json    {"staged": true, title, description, comments[…]} or
 #                      {"staged": false, "reason": "…"}
+# and, with CVE_ENGINE=workflow:
+#   cve-inputs/        operator.json, alert.json, profile.json, external/*
+#   case-binding.json  what the case record must be bound to (host only)
 #
 # Required env: ISSUE_URL, FULLSEND_TRACKER (or FULLSEND_FORGE),
 #   TARGET_REPO_DIR, REPO_FULL_NAME, RUNNER_TEMP; GH_TOKEN (github) or
 #   JIRA_BASE_URL + JIRA_TOKEN [+ JIRA_USER_EMAIL] (jira).
 # Optional env: CVE_TICKET_TEXT (auto | on | off), CVE_JIRA_SECURITY_LEVELS, CVE_BRANCHES,
 #   CVE_BRANCHES_FOLLOW, CVE_VEX_SOURCES (lib/cve-vex.lib.sh), CVE_VENDOR_VEX,
+#   CVE_ENGINE (lookups | workflow), CVE_NPM_REGISTRY,
 #   POST_CVE_DRY_RUN (a parent then prints the children instead of creating them).
 
 set -euo pipefail
@@ -72,6 +84,14 @@ source "${SCRIPT_DIR}/lib/cve-fanout.lib.sh"
 source "${SCRIPT_DIR}/lib/cve-git.lib.sh"
 # shellcheck source=lib/cve-vex.lib.sh
 source "${SCRIPT_DIR}/lib/cve-vex.lib.sh"
+# shellcheck source=lib/cve-case.lib.sh
+source "${SCRIPT_DIR}/lib/cve-case.lib.sh"
+
+CVE_ENGINE="${CVE_ENGINE:-lookups}"
+case "${CVE_ENGINE}" in
+  lookups|workflow) ;;
+  *) echo "::error::cve: CVE_ENGINE must be lookups or workflow"; exit 1 ;;
+esac
 
 # The harness default is the literal "none" (an empty harness value is not a
 # usable default); treat it, and unset, as "no list".
@@ -370,5 +390,44 @@ jq -n --slurpfile osv "${WORK}/osv-all.json" --slurpfile vex "${WORK}/vex-all.js
   '{osv: $osv[0], vendor_vex: $vex[0], withheld: $withheld}' > "${STAGE}/cve-evidence.json"
 jq '.disclosure.checked_by += ["osv-published"]' "${WORK}/cve-finding.json" > "${STAGE}/cve-finding.json"
 cp "${WORK}/cve-ticket.json" "${STAGE}/cve-ticket.json"
+
+# --- 8. The case extension's inputs (CVE_ENGINE=workflow) ---------------------
+# Last on purpose: a skip here removes everything staged above, so a run the
+# extension cannot serve reaches no model at all.
+if [[ "${CVE_ENGINE}" == "workflow" ]]; then
+  GHSA=$(jq -r '[.[] | (.id // empty), ((.aliases // [])[])] | map(select(test("^GHSA-"))) | first // empty' "${WORK}/osv-all.json")
+  [[ -n "${GHSA}" ]] || skip "${VULN_ID} has no GitHub advisory id, which the evidence extension needs"
+  cve_case_fetch_advisory "${GHSA}" "${WORK}/gh-advisory.json" \
+    || { echo "::error::cve: could not fetch the public advisory record for ${GHSA}"; exit 1; }
+  set +e
+  CASE_NOTE=$(cve_case_py plan --finding "${STAGE}/cve-finding.json" --advisory "${WORK}/gh-advisory.json" \
+    --repo "${TARGET_REPO_DIR}" --repository "${REPO_FULL_NAME}" --out "${WORK}/case-plan.json")
+  rc=$?
+  set -e
+  [[ ${rc} -eq 3 ]] && skip "${CASE_NOTE}"
+  [[ ${rc} -ne 0 ]] && { echo "::error::cve: could not plan the case: ${CASE_NOTE}"; exit 1; }
+  CASE_PACKAGE=$(jq -r '.package' "${WORK}/case-plan.json")
+  CASE_VERSION=$(jq -r '.version // empty' "${WORK}/case-plan.json")
+  # The dependency's source as published, fetched here because the sandbox
+  # has no route to a registry. Without it the model can only say uncertain.
+  TARBALL=""; TARBALL_URL=""
+  if [[ -n "${CASE_VERSION}" ]] && TARBALL_URL=$(cve_case_tarball_url "${CASE_PACKAGE}" "${CASE_VERSION}") \
+      && cve_case_fetch_tarball "${CASE_PACKAGE}" "${CASE_VERSION}" "${WORK}/dependency.tgz"; then
+    TARBALL="${WORK}/dependency.tgz"
+  else
+    echo "::warning::cve: the published source of ${CASE_PACKAGE} ${CASE_VERSION:-(not installed)} could not be fetched"
+    TARBALL_URL=""
+  fi
+  # fullsend uploads the checkout to /sandbox/workspace/<its directory name>.
+  SANDBOX_REPO="/sandbox/workspace/$(basename "$(realpath -s "${TARGET_REPO_DIR}")")"
+  CASE_NOTE=$(cve_case_py stage --plan "${WORK}/case-plan.json" --finding "${STAGE}/cve-finding.json" \
+    --advisory "${WORK}/gh-advisory.json" --repo "${TARGET_REPO_DIR}" --out "${STAGE}" \
+    --sandbox-repo "${SANDBOX_REPO}" --sandbox-inputs /sandbox/workspace/cve-inputs \
+    --sandbox-case /sandbox/workspace/output/cve-case \
+    --tarball "${TARBALL}" --tarball-url "${TARBALL_URL}" \
+    --ticket "${STAGE}/cve-ticket.json" --ticket-url "${ISSUE_URL}") \
+    || { echo "::error::cve: could not stage the case: ${CASE_NOTE}"; exit 1; }
+  echo "::notice::cve: ${CASE_NOTE}"
+fi
 
 echo "::notice::cve: staged ${VULN_ID} for ${REPO_FULL_NAME} ${REF}@${COMMIT:0:12} ($(jq '.osv | length' "${STAGE}/cve-evidence.json") OSV record(s); vendor VEX: $(jq -r 'if (.withheld | index("vendor_vex")) then "withheld" elif (.vendor_vex | length) == 0 then "no source configured" else ([.vendor_vex[] | .source + (if .document then " yes" else " no" end)] | join(", ")) end' "${STAGE}/cve-evidence.json"); ticket text: $(jq -r 'if .staged then "staged" else "not staged — " + .reason end' "${STAGE}/cve-ticket.json"))"
