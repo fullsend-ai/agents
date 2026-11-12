@@ -94,6 +94,87 @@ redact_sensitive_title() {
       }
       return $sum % 10 == 0;
     }
+    # Find and redact card-shaped spans in $s, returning the modified string.
+    # A single `s///g` cannot do this: once a greedy candidate (e.g. an
+    # unrelated 4-digit number immediately before a real PAN) is tried and
+    # fails Luhn, `/g` resumes scanning AFTER it and never retries starting
+    # one token later, so the real PAN underneath is never checked. Instead,
+    # tokenize into digit-runs ("tokens") and the single-space/dash gaps that
+    # chain them into a "run", then within each run try candidate WINDOWS of
+    # consecutive tokens (longest-first at each start) against known PAN
+    # shapes — contiguous 13-19 digits, 4-digit groups with a 1-7 digit final
+    # group (the common grouping), or Amex'"'"'s 4-6-5 grouping — Luhn-checking
+    # only shape-valid windows. On the first Luhn-valid window, commit it and
+    # resume scanning right after; otherwise advance the start by one token so
+    # an overlapping later window still gets tried. Restricting candidates to
+    # whole-token windows of a recognized shape (rather than arbitrary digit
+    # sub-strings) keeps the false-positive rate low: a short numeric ID
+    # (Sprint/OKR) never has the right token shape to be tried at all, so it
+    # never reaches Luhn.
+    sub redact_cards {
+      my ($s) = @_;
+      my @tokens;
+      while ($s =~ /([0-9]+)/g) {
+        push @tokens, { text => $1, start => $-[1], end => $+[1] };
+      }
+      return $s unless @tokens;
+      my @runs;
+      my @cur = (0);
+      for my $i (1 .. $#tokens) {
+        my $gap = substr($s, $tokens[$i - 1]{end}, $tokens[$i]{start} - $tokens[$i - 1]{end});
+        if ($gap eq " " || $gap eq "-") { push @cur, $i; }
+        else { push @runs, [@cur]; @cur = ($i); }
+      }
+      push @runs, [@cur];
+      my @replacements;
+      for my $run (@runs) {
+        my @idx = @$run;
+        my $n = scalar @idx;
+        my $start = 0;
+        while ($start < $n) {
+          my $committed = 0;
+          for (my $end = $n - 1; $end >= $start; $end--) {
+            my @window = @idx[$start .. $end];
+            my $count = scalar @window;
+            my @widths = map { length($tokens[$_]{text}) } @window;
+            my $total = 0; $total += $_ for @widths;
+            my $shape_ok = 0;
+            if ($count == 1 && $widths[0] >= 13 && $widths[0] <= 19) {
+              $shape_ok = 1; # standalone contiguous 13-19 digit run
+            } elsif ($count >= 1) {
+              my $last = $widths[-1];
+              my $all4 = 1;
+              for my $w (@widths[0 .. $count - 2]) { $all4 = 0 if $w != 4; }
+              if ($all4 && $last >= 1 && $last <= 7 && $total >= 13 && $total <= 19) {
+                $shape_ok = 1; # 4-4-...-(1-7) grouping
+              }
+            }
+            if (!$shape_ok && $count == 3 && $widths[0] == 4 && $widths[1] == 6 && $widths[2] == 5) {
+              $shape_ok = 1; # Amex 4-6-5 grouping
+            }
+            next unless $shape_ok;
+            my $digits = join("", map { $tokens[$_]{text} } @window);
+            if (luhn($digits)) {
+              push @replacements, [$tokens[$idx[$start]]{start}, $tokens[$idx[$end]]{end}, "[redacted]"];
+              $start = $end + 1;
+              $committed = 1;
+              last;
+            }
+          }
+          $start++ unless $committed;
+        }
+      }
+      return $s unless @replacements;
+      my $out = ""; my $pos = 0;
+      for my $r (@replacements) {
+        my ($rs, $re, $txt) = @$r;
+        $out .= substr($s, $pos, $rs - $pos);
+        $out .= $txt;
+        $pos = $re;
+      }
+      $out .= substr($s, $pos);
+      return $out;
+    }
     my $R = "[redacted]";
     # Secrets / credentials (mirror contains_sensitive in post-scribe.sh).
     s/(?:ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}/$R/gi;
@@ -108,17 +189,7 @@ redact_sensitive_title() {
     s/\b(?:\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b/$R/g;
     s/\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b/$R/g;
     s/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/$R/g;
-    # Card-like run: a well-formed shape only — contiguous 13-19 digits, or
-    # exactly-4-digit groups (the common PAN grouping) with a 1-7 digit final
-    # group — not an arbitrary mix of digit-group widths. This isolates a real
-    # PAN from an adjacent unrelated number ("card 4111 1111 1111 1111 12
-    # review" redacts only the 16-digit card) without widening the Luhn check
-    # to arbitrary sub-windows of the run: a short numeric ID (a Sprint or OKR
-    # number) has a much higher chance of some short substring coincidentally
-    # passing the Luhn checksum than the run as a whole does, so only a
-    # well-formed card shape is Luhn-checked at all. Only redact when Luhn
-    # passes, so IDs/versions in this shape still survive.
-    s/(?<![0-9])((?:[0-9]{4}[ -][0-9]{4}[ -][0-9]{4}[ -][0-9]{1,7})|[0-9]{13,19})(?![0-9])/ luhn($1) ? $R : $1 /ge;
+    $_ = redact_cards($_);
   '
 }
 

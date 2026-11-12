@@ -1604,6 +1604,21 @@ run_meeting_test "meeting/card-with-leading-digit-redacted" \
   '{"docs_downloaded":1,"doc_names":["Item 1 4111 1111 1111 1111"]}' \
   "Meeting: Item 1 [redacted]" "4111 1111 1111 1111"
 
+# fullsend-ai-review finding on ea95e04: a real PAN directly preceded by an
+# unrelated FOUR-digit number must still be redacted — a single s///g cannot
+# retry starting one token later once the greedy (unrelated-number + PAN)
+# candidate fails Luhn, so the overlapping valid card was missed.
+run_meeting_test "meeting/card-after-four-digit-id-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Item 1234 4111 1111 1111 1111"]}' \
+  "Meeting: Item 1234 [redacted]" "4111 1111 1111 1111"
+run_meeting_test "meeting/card-after-year-like-id-redacted" \
+  '{"docs_downloaded":1,"doc_names":["Item 2026 4111 1111 1111 1111"]}' \
+  "Meeting: Item 2026 [redacted]" "4111 1111 1111 1111"
+# Amex 4-6-5 grouping (not recognized by the 4-4-4-4 shape) must also redact.
+run_meeting_test "meeting/amex-4-6-5-grouping-redacted" \
+  '{"docs_downloaded":1,"doc_names":["card 3782 822463 10005 dispute"]}' \
+  "Meeting: card [redacted] dispute" "3782 822463 10005"
+
 # Negative controls (finding from waynesun09): numeric IDs/versions must NOT be
 # blanked. Luhn clears card false positives entirely; a version number redacts
 # only its span (an IPv4 regex cannot tell 4.18.0.1 from an IP), so the rest of
