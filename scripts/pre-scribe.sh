@@ -57,19 +57,22 @@ _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]
 #   them here means the redactor sees the same text that is published, so a title
 #   like `123-45-<bt>6789<bt>` cannot evade the SSN check and then reassemble;
 # - Unicode line/paragraph separators (U+2028/U+2029);
-# - every Unicode "Format" (Cf) character — soft hyphen, word joiner, LRM/RLM/
-#   ALM, bidi embeds/overrides/isolates, zero-width chars, BOM, Mongolian vowel
-#   separator, tag characters, and similar invisible-by-design code points —
-#   plus every "Control" (Cc) character, which additionally covers the C1
-#   range (U+0080-009F) that the C0/DEL `tr` above does not reach. An earlier
-#   version hand-picked individual Cf code points; a single invisible
-#   character outside that list (e.g. U+00AD soft hyphen, U+2060 word joiner)
-#   could split a secret/PII pattern so neither half matched, passing the
-#   gate below while rendering invisibly — exposing the full, unredacted
-#   value. Matching by Unicode category instead of an enumerated list closes
-#   that gap categorically;
-# - U+034F (combining grapheme joiner), which is category Mn, not Cf/Cc, but
-#   is equally invisible and usable for the same obfuscation.
+# - every Unicode "Default_Ignorable_Code_Point" (DI) character: this is the
+#   Unicode property specifically defined for characters "recommended to be
+#   ignored during rendering" — it covers soft hyphen, word joiner, LRM/RLM/
+#   ALM, bidi embeds/overrides/isolates, zero-width chars, BOM, Mongolian
+#   vowel separator, tag characters, AND variation selectors (U+FE00-FE0F,
+#   U+E0100-E01EF, category Mn — not Cf/Cc, so earlier revisions that matched
+#   by general-category class alone missed them). A single invisible
+#   character of ANY of these kinds could split a secret/PII pattern so
+#   neither half matched, passing the gate below while rendering
+#   invisibly — exposing the full, unredacted value. Matching the DI property
+#   instead of a general-category class or an enumerated list closes that
+#   gap for the whole class of invisible-by-design code points at once,
+#   rather than one newly-discovered exception at a time;
+# - every Unicode "Control" (Cc) character, which additionally covers the C1
+#   range (U+0080-009F) that the C0/DEL `tr` above does not reach — not
+#   itself part of DI.
 # Shared by the Slack, step-summary and pre-scribe log paths so all are equally
 # strong, and run before redaction so the redactor matches what is published.
 # perl is already a runner dependency (see pre-scribe.sh).
@@ -77,7 +80,7 @@ strip_unsafe_chars() {
   printf '%s' "$1" \
     | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
     | tr -d '\000-\037\177\140' \
-    | perl -CS -pe 's/[\p{Cf}\p{Cc}\x{2028}\x{2029}\x{034F}]//g'
+    | perl -CS -pe 's/[\p{Default_Ignorable_Code_Point}\p{Cc}\x{2028}\x{2029}]//g'
 }
 
 # Redact sensitive spans in a meeting title / Drive document name (issue #706).

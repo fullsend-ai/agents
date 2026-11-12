@@ -1607,17 +1607,23 @@ run_meeting_test "meeting/sensitive-title-backtick-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["123-45-`6789`"]}' \
   "Meeting: \`[redacted]\`" "123-45-6789"
 
-# fullsend-ai-review finding on 51cb6c8: strip_unsafe_chars hand-picked Cf code
-# points, missing invisible characters like the soft hyphen (U+00AD) and word
-# joiner (U+2060). Either could split a secret/PII pattern so neither half
-# matched, while rendering invisibly — exposing the full value unredacted.
-# strip_unsafe_chars now matches by Unicode category (\p{Cf}\p{Cc}) instead of
-# an enumerated list, so these are caught too.
+# fullsend-ai-review findings on 51cb6c8 and 99e3cae: strip_unsafe_chars hand-
+# picked Cf code points, missing invisible characters like the soft hyphen
+# (U+00AD), word joiner (U+2060), and variation selectors (U+FE00-FE0F,
+# U+E0100-E01EF — category Mn, not Cf). Any of these could split a secret/PII
+# pattern so neither half matched, while rendering invisibly — exposing the
+# full value unredacted. strip_unsafe_chars now matches the
+# Default_Ignorable_Code_Point property, which covers all of these (and
+# similar invisible-by-design code points) in one property instead of an
+# enumerated list or general-category class.
 run_meeting_test "meeting/sensitive-title-soft-hyphen-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["jane­oe@example.com"]}' \
   "Meeting: \`[redacted]\`" "example.com"
 run_meeting_test "meeting/sensitive-title-word-joiner-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["SSN 123⁠-45-6789"]}' \
+  "Meeting: \`SSN [redacted]\`" "123-45-6789"
+run_meeting_test "meeting/sensitive-title-variation-selector-split-redacted" \
+  '{"docs_downloaded":1,"doc_names":["SSN 123️-45-6789"]}' \
   "Meeting: \`SSN [redacted]\`" "123-45-6789"
 
 # Titles also carry the PII pre-scribe scrubs from note bodies (phone / IP /
