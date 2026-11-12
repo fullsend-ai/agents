@@ -1320,6 +1320,30 @@ MOCKEOF
   echo "PASS: ${test_name}"
 }
 
+# fullsend-ai-review finding on 73322ac: GNU sed's ERE has no `\d` digit class,
+# so the two phone-number scrub lines in scrub_note_pii (moved from pre-scribe
+# into scribe-ops.lib.sh; originally inline here) silently never matched —
+# phone numbers in note bodies reached the sandboxed agent unredacted. Fixed
+# by using `[0-9]` instead of `\d`, as every other pattern in this scrub
+# already does.
+test_scrub_note_pii_redacts_phone() {
+  local test_name="scrub-note-pii-redacts-phone"
+  local out
+  out=$(
+    SCRIPT_DIR="${SCRIPT_DIR}" FULLSEND_FORGE=github bash -c '
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
+      scrub_note_pii "call 555-123-4567 or +44 2079460958"
+    '
+  )
+  if [[ "${out}" != *"[REDACTED]"* ]] || [[ "${out}" == *"555-123-4567"* ]] || [[ "${out}" == *"2079460958"* ]]; then
+    echo "FAIL: ${test_name} — phone number not redacted from note body: ${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
 test_jira_closed_issues() {
   local test_name="jira/closed-issues"
   local closed_file="${TMPDIR}/jira-closed.json"
@@ -1552,6 +1576,7 @@ test_meeting_doc_names_persisted
 test_log_doc_names_sanitized
 test_log_doc_names_no_command_injection
 test_log_doc_names_nul_embedded_in_name
+test_scrub_note_pii_redacts_phone
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then

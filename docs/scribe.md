@@ -324,7 +324,10 @@ Only the **matching substring** is replaced with `[redacted]` (e.g. `Call
 Card-like digit runs are Luhn-validated before redaction so version numbers and
 meeting IDs (e.g. `OKR 1234567890123`) are not blanked; an IPv4-shaped version
 such as `4.18.0.1` still has that span redacted, since a pattern cannot tell it
-from an address.
+from an address. This redaction is **pattern-based only**: unlike topics and new
+issues, titles skip the agent's `public_safe` gate, so free-text PII that does
+not match one of these patterns — a person's name, for example — is published
+as-is (`1:1 with Jane Doe - performance review` is not redacted).
 
 The same stripping and redaction are applied to the document names `pre-scribe`
 writes to the **job log** (the "Found …" and "Downloading: …" lines), so a

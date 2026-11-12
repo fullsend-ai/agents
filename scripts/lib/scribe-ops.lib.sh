@@ -149,10 +149,17 @@ redact_sensitive_title() {
       return $out;
     }
     my $R = "[redacted]";
-    # Secrets / credentials (mirror contains_sensitive in post-scribe.sh).
+    # Secrets / credentials (mirror contains_sensitive in post-scribe.sh — its
+    # ghp/AKIA/BEGIN alternation is grepped with -i, so match case-insensitively
+    # here too). Also add the AWS-secret-access-key and private_key_id patterns
+    # pre-scribe scrubs from note bodies (pre-scribe.src.sh): contains_sensitive
+    # itself does not have them, but titles are raw/never-scrubbed like bodies,
+    # so the same credential patterns apply. Keep all three lists in sync.
     s/(?:ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,}/$R/gi;
-    s/\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/$R/g;
-    s/-----BEGIN[^\n]*PRIVATE KEY[^\n]*/$R/g;
+    s/\b(?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/$R/gi;
+    s/-----BEGIN[^\n]*PRIVATE KEY[^\n]*/$R/gi;
+    s/aws.?secret.?(?:access)?.?key\s*[:=]\s*[A-Za-z0-9\/+=]{40}/$R/gi;
+    s/(?i:private_key_id)\s*[:=]\s*[\x27\x22]?[a-f0-9]{40}[\x27\x22]?/$R/g;
     s/https:\/\/hooks\.slack\.com\/services\/T[A-Z0-9]+\/B[A-Z0-9]+\/[A-Za-z0-9]+/$R/g;
     s/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/$R/g;
     s/(?i:(?:api[_-]?key|token|secret|password|bearer)\s*[:=]\s*[\x27\x22]?[A-Za-z0-9_.~+\/-]{20,})/$R/g;
@@ -164,6 +171,29 @@ redact_sensitive_title() {
     s/\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/$R/g;
     $_ = redact_cards($_);
   '
+}
+
+# Redact PII patterns from Google Meet note bodies before the sandboxed agent
+# sees them. Predates issue #706; moved here (from inline in pre-scribe.src.sh)
+# so it is directly testable alongside redact_sensitive_title above — the two
+# functions mirror each other's secret/PII patterns and must be kept in sync.
+# Ordered: specific patterns first, generic last (matches Go sanitizer.go).
+scrub_note_pii() {
+  printf '%s\n' "$1" \
+    | sed -E 's/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/[REDACTED]/g' \
+    | sed -E 's/\b(\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b/[REDACTED]/g' \
+    | sed -E 's/\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b/[REDACTED]/g' \
+    | sed -E 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/[REDACTED]/g' \
+    | sed -E 's/\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b/[REDACTED]/g' \
+    | sed -E 's/\b([0-9][ -]?){13,19}\b/[REDACTED]/g' \
+    | sed -E 's/\b(AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16}\b/[REDACTED]/g' \
+    | sed -E 's/[Aa][Ww][Ss].?[Ss][Ee][Cc][Rr][Ee][Tt].?([Aa][Cc][Cc][Ee][Ss][Ss])?.?[Kk][Ee][Yy][[:space:]]*[:=][[:space:]]*[A-Za-z0-9\/+=]{40}/[REDACTED]/g' \
+    | sed -E 's/\b(ghp|gho|ghs|ghr)_[A-Za-z0-9_]{36,255}\b/[REDACTED]/g' \
+    | sed -E 's|https://hooks\.slack\.com/services/T[A-Z0-9]+/B[A-Z0-9]+/[A-Za-z0-9]+|[REDACTED]|g' \
+    | sed -E 's/-----BEGIN[[:space:]]+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----.*/[REDACTED]/g' \
+    | sed -E 's/[Pp][Rr][Ii][Vv][Aa][Tt][Ee]_[Kk][Ee][Yy]_[Ii][Dd][[:space:]]*[:=][[:space:]]*['"'"'"]?[a-f0-9]{40}['"'"'"]?/[REDACTED]/g' \
+    | sed -E 's/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/[REDACTED]/g' \
+    | sed -E 's/([Aa][Pp][Ii][_-]?[Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Bb][Ee][Aa][Rr][Ee][Rr])[[:space:]]*[:=][[:space:]]*['"'"'"]?[A-Za-z0-9_.~+\/-]{20,}['"'"'"]?/[REDACTED]/g'
 }
 
 case "${FULLSEND_FORGE:-}" in

@@ -1719,17 +1719,41 @@ test_redact_cards_linear_time() {
   local test_name="redact-cards-linear-time"
   local title
   title="$(python3 -c "print('1 ' * 2500, end='')")"
+  local out_file="${TMPDIR}/${test_name}.out"
+  : > "${out_file}"
+
+  # Stock macOS has no `timeout` (GNU coreutils only, not shipped by default),
+  # so enforce the bound with background-job + poll + kill instead — portable
+  # across Linux and macOS with only bash builtins, no external dependency.
+  bash -c '
+    SCRIPT_DIR="$1"
+    FULLSEND_FORGE=github
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
+    redact_sensitive_title "$2"
+  ' _ "${SCRIPT_DIR}" "${title}" > "${out_file}" 2>&1 &
+  local pid=$!
+
+  local waited=0
+  while kill -0 "${pid}" 2>/dev/null && [[ ${waited} -lt 5 ]]; do
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if kill -0 "${pid}" 2>/dev/null; then
+    kill -9 "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+    echo "FAIL: ${test_name} — did not complete within 5s"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local rc=0
+  wait "${pid}" || rc=$?
   local out
-  if ! out=$(
-    timeout 5 bash -c '
-      SCRIPT_DIR="$1"
-      FULLSEND_FORGE=github
-      # shellcheck disable=SC1091
-      source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
-      redact_sensitive_title "$2"
-    ' _ "${SCRIPT_DIR}" "${title}" 2>&1
-  ); then
-    echo "FAIL: ${test_name} — did not complete within 5s (or errored): ${out:0:200}"
+  out="$(cat "${out_file}")"
+  if [[ ${rc} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — errored: ${out:0:200}"
     FAILURES=$((FAILURES + 1))
     return
   fi
@@ -1744,6 +1768,73 @@ test_redact_cards_linear_time() {
   echo "PASS: ${test_name}"
 }
 test_redact_cards_linear_time
+
+# fullsend-ai-review finding on 73322ac: redact_sensitive_title (titles) and
+# scrub_note_pii (note bodies, scripts/lib/scribe-ops.lib.sh) are two
+# hand-copied secret/PII pattern lists — this table-driven check runs a shared
+# sample set through both and fails if either stops redacting a sample the
+# other still catches, so the lists cannot silently drift apart again. (A
+# third list, contains_sensitive in post-scribe.src.sh, is not included here:
+# it has no standalone entry point to call in isolation the way these two
+# shared-lib functions do. Its topic/new-issue gating behavior is covered by
+# the existing end-to-end post-scribe tests instead.)
+test_title_and_body_redaction_agree() {
+  local test_name="title-and-body-redaction-agree"
+  # Flat (name, sample) pairs — each sample must contain exactly one
+  # PII/secret span to redact.
+  local samples=(
+    "email" "contact jane.doe@corp.example please"
+    "ssn" "id 123-45-6789 on file"
+    "phone-nanp" "call 555-123-4567 today"
+    "phone-intl" "call +44 2079460958 today"
+    "ipv4" "host 10.0.0.5 is down"
+    "card" "card 4111 1111 1111 1111 on file"
+    "github-pat" "token ghp_abcdefghij1234567890abcdefghij123456 set"
+    "aws-akid" "key AKIA1234567890ABCDEF set"
+    "aws-secret" "aws_secret_access_key=abcdefghij1234567890ABCDEFGHIJ1234567890"
+    "private-key-id" "private_key_id: 1234567890abcdef1234567890abcdef12345678"
+    "jwt" "token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U set"
+    "generic-kv" "secret: abcdefghijklmnopqrstuvwxyz123456 set"
+  )
+  # Note: the Slack-incoming-webhook pattern (hooks.slack.com/services/T.../
+  # B.../...) is deliberately not covered here, and has no redaction-specific
+  # test elsewhere in this suite either — any value matching that exact URL
+  # shape trips GitHub push protection regardless of how obviously fake the ID
+  # segments are (SLACK_WEBHOOK_FAKE above avoids the shape entirely for the
+  # same reason). The pattern itself is unchanged by this PR.
+  local out
+  if ! out=$(
+    bash -c '
+      SCRIPT_DIR="$1"; shift
+      FULLSEND_FORGE=github
+      # shellcheck disable=SC1091
+      source "${SCRIPT_DIR}/lib/scribe-ops.lib.sh"
+      fail=0
+      while [[ $# -ge 2 ]]; do
+        name="$1"; sample="$2"; shift 2
+        title_out=$(redact_sensitive_title "${sample}")
+        body_out=$(scrub_note_pii "${sample}")
+        title_ok=0; [[ "${title_out}" == *"[redacted]"* ]] && title_ok=1
+        body_ok=0; [[ "${body_out}" == *"[REDACTED]"* ]] && body_ok=1
+        if [[ "${title_ok}" -ne "${body_ok}" ]]; then
+          echo "DISAGREE ${name}: title_redacted=${title_ok} body_redacted=${body_ok}"
+          fail=1
+        elif [[ "${title_ok}" -eq 0 ]]; then
+          echo "NEITHER ${name}: sample=${sample}"
+          fail=1
+        fi
+      done
+      exit "${fail}"
+    ' _ "${SCRIPT_DIR}" "${samples[@]}" 2>&1
+  ); then
+    echo "FAIL: ${test_name} — lists disagree or both miss a sample:"
+    echo "${out}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+test_title_and_body_redaction_agree
 
 echo ""
 if [[ ${FAILURES} -gt 0 ]]; then
