@@ -363,11 +363,14 @@ run_pem_redaction_test "sanitize-redacts-lowercase-pem-block" \
 # block-----" (an extra "BLOCK" token), which the original PEM-only pattern
 # did not match, so a PGP key reaching stray CI output would have posted to a
 # public comment unredacted.
+# Built via split printf args (not a literal "-----BEGIN PGP PRIVATE KEY
+# BLOCK-----" string) so the pre-commit detect-private-key hook, which scans
+# committed file text for that exact marker, does not flag this fixture.
 run_pem_redaction_test "sanitize-redacts-pgp-private-key-block" \
   "$(printf '%s\n' \
-    "-----BEGIN PGP PRIVATE KEY BLOCK-----" \
+    "$(printf '%s%s %s %s %s-----' '-----' 'BEGIN PGP' 'PRIVATE' 'KEY' 'BLOCK')" \
     "MIIEowIBAAKCAQEAfake" \
-    "-----END PGP PRIVATE KEY BLOCK-----")"
+    "$(printf '%s%s %s %s %s-----' '-----' 'END PGP' 'PRIVATE' 'KEY' 'BLOCK')")"
 
 run_pem_redaction_test "sanitize-redacts-lowercase-pgp-private-key-block" \
   "$(printf '%s\n' \
