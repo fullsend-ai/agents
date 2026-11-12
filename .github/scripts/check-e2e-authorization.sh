@@ -2,8 +2,11 @@
 # check-e2e-authorization.sh — Decide whether a PR may run e2e tests in CI.
 #
 # Authorized when the PR author is a trusted bot, when the collaborator
-# permission API confirms write+ access (admin, maintain, write), or when this
-# run is an ok-to-test labeled event from a user with write+ access.
+# permission API confirms write+ access (admin, maintain, write), when this
+# run is an ok-to-test labeled event from a user with write+ access, or when
+# a user with write+ access comments `/ok-to-test <sha>` naming the PR head.
+# The PR workflows no longer trigger on `labeled`, so in practice the label
+# path only clears a stale ok-to-test label.
 #
 # Do not base trust on author_association: GitHub reports MEMBER or COLLABORATOR
 # for users with read or triage roles, which must not run credentialed CI.
@@ -15,7 +18,20 @@
 # timestamp is left for the labeled workflow and does not authorize this run
 # (reason=fresh_ok_to_test). Does not use committer.date (author-controlled).
 #
-# Security tradeoff: trusted bots bypass the ok-to-test label gate entirely.
+# /ok-to-test command mode (EVENT_NAME=issue_comment): a maintainer reviews a
+# commit and comments `/ok-to-test <sha>` naming it. Only that commit can run.
+# The comment is read from the API by COMMENT_ID (never from the event
+# payload); it must be on PR_NUMBER and by COMMENTER_LOGIN. The commenter must
+# have admin, maintain or write (collaborator permission API), else
+# reason=untrusted_commenter. The first line of the comment must be
+# `/ok-to-test` followed by the full 40-character sha, else reason=missing_sha.
+# A short prefix is refused: the author controls the reviewed commit and can
+# grind another commit with the same prefix ahead of time. The run is
+# authorized (reason=ok_to_test) only when the PR head sha, read when this
+# script runs, equals the named sha. Any other head means the
+# PR changed since the review (reason=stale_ok_to_test). No timing is used.
+#
+# Security tradeoff: trusted bots bypass the /ok-to-test gate entirely.
 # A compromise of the bot's GitHub App credentials would auto-qualify its PRs
 # for credentialed e2e runs. Mitigated by gitleaks + pre-commit running
 # upstream in post-code.sh before the bot opens a PR.
@@ -29,9 +45,16 @@
 #   EVENT_ACTION  — github.event.action
 #   LABEL_ACTOR_LOGIN — github.event.sender.login (who applied the label on
 #     labeled events)
+#   EVENT_NAME — github.event_name; issue_comment selects /ok-to-test mode
+#   COMMENTER_LOGIN — github.event.comment.user.login (/ok-to-test mode)
+#   COMMENT_ID — github.event.comment.id (/ok-to-test mode, required). The
+#     comment and its body are read from the API; it must belong to
+#     PR_NUMBER and to COMMENTER_LOGIN.
 #
-# Writes authorized, reason, and label_removed to GITHUB_OUTPUT when set.
-# Exits 0 always; callers inspect outputs.
+# Writes authorized, reason, label_removed and head_sha to GITHUB_OUTPUT when
+# set. head_sha is the current PR head in /ok-to-test mode once the commenter
+# passes the role check, and empty otherwise. Exits 0 always; callers inspect
+# outputs.
 
 set -euo pipefail
 
@@ -43,7 +66,7 @@ OK_TO_TEST_LABEL="ok-to-test"
 
 emit_denial_warning() {
   local reason="$1"
-  echo "::warning::Functional tests did not run (reason: ${reason}). External contributors need a maintainer to apply the ok-to-test label after the latest push — see CONTRIBUTING.md."
+  echo "::warning::Functional tests did not run (reason: ${reason}). External contributors and fork PRs need someone with write access to comment /ok-to-test <full sha of the latest push> — see CONTRIBUTING.md."
 }
 
 write_error_output() {
@@ -54,9 +77,23 @@ write_error_output() {
       echo "authorized=false"
       echo "reason=error"
       echo "label_removed=false"
+      echo "head_sha="
     } >>"${GITHUB_OUTPUT}"
   fi
-  printf 'authorized=false reason=error label_removed=false\n'
+  printf 'authorized=false reason=error label_removed=false head_sha=\n'
+}
+
+write_outputs() {
+  if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    {
+      echo "authorized=${authorized}"
+      echo "reason=${reason}"
+      echo "label_removed=${label_removed}"
+      echo "head_sha=${head_sha}"
+    } >>"${GITHUB_OUTPUT}"
+  fi
+  printf 'authorized=%s reason=%s label_removed=%s head_sha=%s\n' \
+    "${authorized}" "${reason}" "${label_removed}" "${head_sha}"
 }
 
 trap 'write_error_output; exit 0' ERR
@@ -154,6 +191,70 @@ latest_labeler() {
 label_removed=false
 authorized=false
 reason="unauthorized"
+head_sha=""
+
+# --- /ok-to-test command mode -------------------------------------------------
+# Kept at top level (not in a function) so the ERR trap covers every API call.
+if [[ "${EVENT_NAME:-}" == "issue_comment" ]]; then
+  commenter="${COMMENTER_LOGIN:-}"
+
+  # The body names the reviewed commit, so it must come from the API by id.
+  if [[ ! "${COMMENT_ID:-}" =~ ^[0-9]+$ ]]; then
+    echo "check-e2e-authorization: COMMENT_ID must be a numeric comment id" >&2
+    write_error_output
+    exit 0
+  fi
+  comment_json="$(gh api "repos/${REPOSITORY}/issues/comments/${COMMENT_ID}")"
+  comment_login="$(jq -r '.user.login // empty' <<<"${comment_json}")"
+  comment_issue_url="$(jq -r '.issue_url // empty' <<<"${comment_json}")"
+  # Fail closed when the comment is on another issue or by someone else.
+  if [[ -z "${comment_login}" ]] ||
+    [[ "${comment_issue_url}" != *"/repos/${REPOSITORY}/issues/${PR_NUMBER}" ]] ||
+    [[ -n "${commenter}" && "${comment_login}" != "${commenter}" ]]; then
+    echo "check-e2e-authorization: comment ${COMMENT_ID} does not match PR ${PR_NUMBER} / ${commenter}" >&2
+    write_error_output
+    exit 0
+  fi
+  commenter="${comment_login}"
+  comment_body="$(jq -r '.body // ""' <<<"${comment_json}")"
+
+  if ! commenter_role="$(get_collaborator_role "${commenter}")"; then
+    write_error_output
+    exit 0
+  fi
+
+  if ! is_write_role "${commenter_role}"; then
+    reason="untrusted_commenter"
+  else
+    first_line="${comment_body%%$'\n'*}"
+    first_line="${first_line%$'\r'}"
+    ok_to_test_re='^/ok-to-test[[:space:]]+([0-9a-fA-F]{40})[[:space:]]*$'
+    named_sha=""
+    if [[ "${first_line}" =~ ${ok_to_test_re} ]]; then
+      named_sha="$(tr '[:upper:]' '[:lower:]' <<<"${BASH_REMATCH[1]}")"
+    fi
+
+    pr_json="$(gh api "repos/${REPOSITORY}/pulls/${PR_NUMBER}")"
+    head_sha="$(jq -er '.head.sha' <<<"${pr_json}")"
+
+    if [[ -z "${named_sha}" ]]; then
+      reason="missing_sha"
+    elif [[ "${head_sha}" == "${named_sha}" ]]; then
+      authorized=true
+      reason="ok_to_test"
+    else
+      # The head is not the commit the maintainer reviewed.
+      reason="stale_ok_to_test"
+    fi
+  fi
+
+  trap - ERR
+  if [[ "${authorized}" != "true" ]]; then
+    emit_denial_warning "${reason}"
+  fi
+  write_outputs
+  exit 0
+fi
 
 # Ensure PR_AUTHOR_LOGIN is populated if not provided via environment.
 if [[ -z "${PR_AUTHOR_LOGIN:-}" ]]; then
@@ -261,12 +362,4 @@ if [[ "${authorized}" != "true" && "${reason}" != "fresh_ok_to_test" ]]; then
   emit_denial_warning "${reason}"
 fi
 
-if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
-  {
-    echo "authorized=${authorized}"
-    echo "reason=${reason}"
-    echo "label_removed=${label_removed}"
-  } >>"${GITHUB_OUTPUT}"
-fi
-
-printf 'authorized=%s reason=%s label_removed=%s\n' "${authorized}" "${reason}" "${label_removed}"
+write_outputs

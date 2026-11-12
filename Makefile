@@ -121,7 +121,8 @@ script-test:
 	$(call run-timed,bash eval/scripts/aggregate-nightly-test.sh)
 	$(call run-timed,bash eval/run-functional-test.sh)
 	$(call run-timed,bash .github/scripts/check-rollup-result-test.sh)
-	$(call run-timed,bash .github/scripts/vouch-check-test.sh)
+	$(call run-timed,bash .github/scripts/vouch-sweep-test.sh)
+	$(call run-timed,bash .github/scripts/workflow-triggers-test.sh)
 	$(call run-timed,test "$(SCRIPT_TEST_TARGET)" = bundled || (cd harness/triggertest && GOWORK=off GOFLAGS= go test -count=1 ./...))
 	$(call run-timed,bash .github/scripts/check-dco-signoff-test.sh)
 

@@ -61,17 +61,32 @@ Small adjustments in response to review feedback are normal iteration — this g
 ### Functional tests for external contributors
 
 Functional tests (the `Functional Tests` and `Behaviour Tests` workflows) run
-automatically for pull requests authored by users with **write access or higher**
-(`write`, `maintain`, or `admin`). For contributors without write access (including
-those with read or triage roles), a maintainer with write access must add the
-`ok-to-test` label **after** the latest push.
+automatically for same-repository pull requests authored by users with
+**write access or higher** (`write`, `maintain`, or `admin`).
+
+They need `/ok-to-test <sha>` for:
+
+- contributors without write access (including those with read or triage
+  roles);
+- any pull request from a fork, **including one whose author has write
+  access**: `pull_request` runs from forks get no secrets.
+
+Someone with write access reviews the latest push and comments on the PR:
+
+```text
+/ok-to-test <full 40-character sha of the latest push>
+```
+
+The comment's first line must be `/ok-to-test` and the full sha; a short
+prefix is refused. The tests run only when that sha is still the PR head, and
+the `functional-tests-complete` and `behaviour` checks report on that commit.
+**A later push needs a new comment** naming the new head. The `ok-to-test`
+label no longer starts a run.
 
 This is a separate gate from GitHub's own first-time-contributor
 workflow-approval prompt (the "Approve and run workflows" button). Approving
-that prompt unblocks `pull_request`-triggered workflows (like `CI`) but has
-no effect on `pull_request_target`-triggered functional tests — those still
-need the `ok-to-test` label. If new commits land after `ok-to-test` is
-applied, the label is automatically removed and must be re-applied.
+that prompt lets `pull_request`-triggered workflows start, but a fork PR's
+functional tests still need `/ok-to-test <sha>`.
 
 ### Merging
 
