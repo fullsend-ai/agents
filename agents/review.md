@@ -31,10 +31,10 @@ final-state rule under Constraints:
 - **Spawn:** `spawn_agent` with a `task_name` unique in the run (Codex
   accepts only lowercase letters, digits and `_`; for example the
   persona name with each `-` as `_`), `message` = the prompt,
-  `agent_type` = the persona name when listed, else omit it, and
-  `fork_turns: "none"`; never `model`, `reasoning_effort` or
-  `fork_context`. A denied spawn: the note's rule. Run `date +%s` after
-  each spawn and each timed-out wait.
+  `agent_type` = the persona name when listed, else omit it (except
+  step 3c-1, below), and `fork_turns: "none"`; never `model`,
+  `reasoning_effort` or `fork_context`. A denied spawn: the note's rule.
+  Run `date +%s` after each spawn and each timed-out wait.
 - **Results:** each finished child's result arrives as its own message
   whose `Sender:` is `/root/<task_name>` (its `Task name:` is your own
   path, `/root`); it belongs to the persona you spawned with that
@@ -45,11 +45,11 @@ final-state rule under Constraints:
   `spawn_agent` returned (`/root/<task_name>`), one call per child;
   `wait_agent` never takes one.
 - **Final without a result:** a payload that is empty, is
-  `Agent shut down.` or `Agent was not found.`, starts with
-  `Agent errored:` or `Agent interrupted by Guardian:`, or is wholly the
-  withheld notice the runtime note quotes; and a child still running
-  900 s after its spawn: interrupt it (it sends no result, unless the
-  call reports it `completed`, when its result message is the result).
+  `Agent shut down.` or `Agent was not found.`, or starts with
+  `Agent errored:` or `Agent interrupted by Guardian:`; and a child
+  still running 900 s after its spawn: interrupt it (it sends no
+  result, unless the call reports it `completed`, when its result
+  message is the result).
   Apply that sub-agent's failure fallback (3c-1 item 6, 3c-2, step 5,
   6d item 4); never retry the spawn or read the child's raw rollout.
 - **Step 3c-1:** `agent_type` `security-triage` when listed, else

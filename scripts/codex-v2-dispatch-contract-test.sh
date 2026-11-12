@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # codex-v2-dispatch-contract-test.sh — Verify the Codex V2 dispatch gate.
 #
-# fullsend's runtime note marks a collaboration V2 parent with the sentence
-# below (codexV2DispatchMarker in fullsend's internal/runtime/codex_bootstrap.go).
-# The review and retro agents gate their V2 rules on it, so a wording change
-# on either side must change both.
+# fullsend's runtime note carries the sentence below once fullsend admits
+# collaboration V2 parents (fullsend-ai/fullsend#9085). The review and retro
+# agents gate their V2 rules on it, so a wording change on either side must
+# change both.
 #
 # Run from the repo root:
 #   bash scripts/codex-v2-dispatch-contract-test.sh
