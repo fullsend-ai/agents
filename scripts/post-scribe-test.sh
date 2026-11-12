@@ -1368,8 +1368,10 @@ unset FULLSEND_TRACKER JIRA_BASE_URL JIRA_USER_EMAIL JIRA_TOKEN SCRIBE_JIRA_PROJ
 # ============================================================
 # No-notes notification (#1618) and meeting title (#706)
 # ============================================================
-# pre-scribe writes ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json; post-scribe
-# reads docs_downloaded (no-notes gate) and doc_names (meeting title) from it. A
+# pre-scribe writes ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json (post-scribe
+# reads docs_downloaded, the no-notes gate, from it) and scribe-titles.json
+# (post-scribe reads doc_names, the meeting title, from there instead — kept
+# out of the sandbox-mounted meta file since titles are untrusted). A
 # confirmed numeric 0 with an empty result yields the concise no-notes message;
 # doc_names are untrusted Drive titles rendered on a sanitized "Meeting:" line.
 SCRIBE_META_DIR="${RUNNER_TEMP}/scribe-workspace"
@@ -1412,9 +1414,8 @@ run_no_notes_test() {
   echo "PASS: ${test_name}"
 }
 
-# run_meeting_test NAME META_JSON MUST_CONTAIN MUST_NOT — a no-notes test with an
-# empty agent result, used for the meeting-title (#706) Slack assertions.
-# run_meeting_test NAME TITLES_JSON MUST_CONTAIN MUST_NOT
+# run_meeting_test NAME TITLES_JSON MUST_CONTAIN MUST_NOT — a no-notes test with
+# an empty agent result, used for the meeting-title (#706) Slack assertions.
 # TITLES_JSON is written to the runner-only scribe-titles.json (where post-scribe
 # reads doc_names); a minimal meta with docs_downloaded>0 keeps the no-notes
 # branch off. An empty TITLES_JSON leaves the titles file absent.
@@ -1527,7 +1528,7 @@ export SCRIBE_DRY_RUN="true"
 # Single doc: title appears on a Meeting: line.
 run_meeting_test "meeting/single-doc-title" \
   '{"docs_downloaded":1,"doc_names":["Team Sync - 2026/08/06"]}' \
-  "Meeting: Team Sync - 2026/08/06" ""
+  "Meeting: \`Team Sync - 2026/08/06\`" ""
 
 # Multiple docs: count header plus each title listed.
 run_meeting_test "meeting/multi-doc-titles" \
@@ -1547,24 +1548,40 @@ run_meeting_test "meeting/absent-field-no-line" \
 # metacharacters must be escaped (issue #706 — doc names are untrusted input).
 run_meeting_test "meeting/untrusted-title-newline-stripped" \
   '{"docs_downloaded":1,"doc_names":["Evil\n• Topics processed: *999*"]}' \
-  "Meeting: Evil• Topics processed:" "Meeting: Evil\n"
+  "Meeting: \`Evil• Topics processed: *999*\`" "Meeting: Evil\n"
 run_meeting_test "meeting/untrusted-title-mrkdwn-escaped" \
   '{"docs_downloaded":1,"doc_names":["<https://evil|x> & <y>"]}' \
   "&lt;https://evil¦x&gt; &amp; &lt;y&gt;" ""
+
+# fullsend-ai-review finding: sanitize_slack_mrkdwn only escapes \ & < > |, not
+# Slack's emphasis metacharacters (* _ ~), so an untrusted title could render
+# as bold/italic/strikethrough. The Slack Meeting line is now rendered inside a
+# code span (backtick-wrapped, matching the step summary), which Slack does not
+# apply mrkdwn formatting inside — so the asterisks/underscores/tildes must
+# appear literally, un-interpreted, within the backticks.
+run_meeting_test "meeting/untrusted-title-slack-formatting-codespan" \
+  '{"docs_downloaded":1,"doc_names":["*bold* _italic_ ~strike~"]}' \
+  "Meeting: \`*bold* _italic_ ~strike~\`" ""
+
+# A bare URL in a title must not be left as plain text in the Slack message —
+# wrapped in a code span, Slack does not auto-link it into a clickable URL.
+run_meeting_test "meeting/untrusted-title-slack-bare-url-codespan" \
+  '{"docs_downloaded":1,"doc_names":["Action required https://attacker.example/login"]}' \
+  "Meeting: \`Action required https://attacker.example/login\`" ""
 
 # Control chars (VT \u000b), Unicode line separator (U+2028) and bidi override
 # (U+202E) must be stripped from the Slack title (they reach the title as raw
 # bytes after jq decodes the JSON escapes). If stripped, the title is contiguous.
 run_meeting_test "meeting/untrusted-title-control-unicode-stripped" \
   '{"docs_downloaded":1,"doc_names":["A\u000bB C‮D"]}' \
-  "Meeting: ABCD" ""
+  "Meeting: \`ABCD\`" ""
 
 # A title with sensitive content (email, key/token, SSN, ...) has only the
 # matching span replaced with [redacted] — the rest stays readable so the
 # meeting is still identifiable (span-level redaction, not whole-title blanking).
 run_meeting_test "meeting/sensitive-title-redacted" \
   '{"docs_downloaded":1,"doc_names":["1:1 jane.doe@corp.example - performance"]}' \
-  "Meeting: 1:1 [redacted] - performance" "jane.doe@corp.example"
+  "Meeting: \`1:1 [redacted] - performance\`" "jane.doe@corp.example"
 
 # Obfuscated secret: a zero-width space splits the email so the raw title would
 # evade the check, but strip_unsafe_chars runs BEFORE redaction, so the
@@ -1572,37 +1589,37 @@ run_meeting_test "meeting/sensitive-title-redacted" \
 # whole title is the email, so the span is the whole title.
 run_meeting_test "meeting/sensitive-title-zwsp-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["jane@​corp.example"]}' \
-  "Meeting: [redacted]" "corp.example"
+  "Meeting: \`[redacted]\`" "corp.example"
 
 # Backtick-split secret: backticks are stripped by strip_unsafe_chars BEFORE
 # redaction (not only later by the step-summary sanitizer), so an SSN split by a
 # backtick is normalized to 123-45-6789, caught, and redacted — not reassembled.
 run_meeting_test "meeting/sensitive-title-backtick-split-redacted" \
   '{"docs_downloaded":1,"doc_names":["123-45-`6789`"]}' \
-  "Meeting: [redacted]" "123-45-6789"
+  "Meeting: \`[redacted]\`" "123-45-6789"
 
 # Titles also carry the PII pre-scribe scrubs from note bodies (phone / IP /
 # card); only the matching span is redacted, the surrounding words stay.
 run_meeting_test "meeting/sensitive-title-phone-redacted" \
   '{"docs_downloaded":1,"doc_names":["Call 555-123-4567 re Q3"]}' \
-  "Meeting: Call [redacted] re Q3" "555-123-4567"
+  "Meeting: \`Call [redacted] re Q3\`" "555-123-4567"
 run_meeting_test "meeting/sensitive-title-ip-redacted" \
   '{"docs_downloaded":1,"doc_names":["Incident on 10.0.0.5 postmortem"]}' \
-  "Meeting: Incident on [redacted] postmortem" "10.0.0.5"
+  "Meeting: \`Incident on [redacted] postmortem\`" "10.0.0.5"
 # A Luhn-valid card number (Visa test 4111...) is redacted.
 run_meeting_test "meeting/sensitive-title-card-redacted" \
   '{"docs_downloaded":1,"doc_names":["card 4111 1111 1111 1111 dispute"]}' \
-  "Meeting: card [redacted] dispute" "4111 1111 1111 1111"
+  "Meeting: \`card [redacted] dispute\`" "4111 1111 1111 1111"
 
 # fullsend-ai-review finding on 129bd76: a valid PAN adjacent to an unrelated
 # number must still be redacted (the card regex must not swallow the extra
 # digits into one non-Luhn candidate and miss the real card inside it).
 run_meeting_test "meeting/card-with-trailing-digits-redacted" \
   '{"docs_downloaded":1,"doc_names":["card 4111 1111 1111 1111 12 review"]}' \
-  "Meeting: card [redacted] 12 review" "4111 1111 1111 1111"
+  "Meeting: \`card [redacted] 12 review\`" "4111 1111 1111 1111"
 run_meeting_test "meeting/card-with-leading-digit-redacted" \
   '{"docs_downloaded":1,"doc_names":["Item 1 4111 1111 1111 1111"]}' \
-  "Meeting: Item 1 [redacted]" "4111 1111 1111 1111"
+  "Meeting: \`Item 1 [redacted]\`" "4111 1111 1111 1111"
 
 # fullsend-ai-review finding on ea95e04: a real PAN directly preceded by an
 # unrelated FOUR-digit number must still be redacted — a single s///g cannot
@@ -1610,14 +1627,14 @@ run_meeting_test "meeting/card-with-leading-digit-redacted" \
 # candidate fails Luhn, so the overlapping valid card was missed.
 run_meeting_test "meeting/card-after-four-digit-id-redacted" \
   '{"docs_downloaded":1,"doc_names":["Item 1234 4111 1111 1111 1111"]}' \
-  "Meeting: Item 1234 [redacted]" "4111 1111 1111 1111"
+  "Meeting: \`Item 1234 [redacted]\`" "4111 1111 1111 1111"
 run_meeting_test "meeting/card-after-year-like-id-redacted" \
   '{"docs_downloaded":1,"doc_names":["Item 2026 4111 1111 1111 1111"]}' \
-  "Meeting: Item 2026 [redacted]" "4111 1111 1111 1111"
+  "Meeting: \`Item 2026 [redacted]\`" "4111 1111 1111 1111"
 # Amex 4-6-5 grouping (not recognized by the 4-4-4-4 shape) must also redact.
 run_meeting_test "meeting/amex-4-6-5-grouping-redacted" \
   '{"docs_downloaded":1,"doc_names":["card 3782 822463 10005 dispute"]}' \
-  "Meeting: card [redacted] dispute" "3782 822463 10005"
+  "Meeting: \`card [redacted] dispute\`" "3782 822463 10005"
 
 # Negative controls (finding from waynesun09): numeric IDs/versions must NOT be
 # blanked. Luhn clears card false positives entirely; a version number redacts
@@ -1625,17 +1642,17 @@ run_meeting_test "meeting/amex-4-6-5-grouping-redacted" \
 # the title still names the meeting.
 run_meeting_test "meeting/version-number-span-only" \
   '{"docs_downloaded":1,"doc_names":["Release 4.18.0.1 planning"]}' \
-  "Meeting: Release [redacted] planning" ""
+  "Meeting: \`Release [redacted] planning\`" ""
 run_meeting_test "meeting/card-id-not-redacted-luhn" \
   '{"docs_downloaded":1,"doc_names":["OKR 1234567890123"]}' \
-  "Meeting: OKR 1234567890123" "[redacted]"
+  "Meeting: \`OKR 1234567890123\`" "[redacted]"
 run_meeting_test "meeting/sprint-id-not-redacted-luhn" \
   '{"docs_downloaded":1,"doc_names":["Sprint 20260806 101500 retro"]}' \
-  "Meeting: Sprint 20260806 101500 retro" "[redacted]"
+  "Meeting: \`Sprint 20260806 101500 retro\`" "[redacted]"
 # The issue's own default Gemini title format must pass through untouched.
 run_meeting_test "meeting/issue-example-title-not-redacted" \
   '{"docs_downloaded":1,"doc_names":["Issue review take 2 - 2026/08/06 09:00 EDT - Notes by Gemini"]}' \
-  "Meeting: Issue review take 2 - 2026/08/06 09:00 EDT - Notes by Gemini" "[redacted]"
+  "Meeting: \`Issue review take 2 - 2026/08/06 09:00 EDT - Notes by Gemini\`" "[redacted]"
 
 # Untrusted title with a literal backslash escape: SLACK_TEXT is expanded with
 # printf '%b', so an un-doubled "\c" would truncate the message (dropping the

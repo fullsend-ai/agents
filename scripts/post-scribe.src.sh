@@ -745,11 +745,17 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
   if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
-    SLACK_TEXT+="\nMeeting: $(sanitize_slack_text "${MEETING_TITLES[0]}")"
+    # Render in a code span (backtick-wrapped), like the step summary: Slack
+    # does not apply mrkdwn formatting (*bold*, _italic_, ~strike~) or
+    # auto-link bare URLs inside inline code, so an untrusted title cannot
+    # inject emphasis or a clickable link into the notification. strip_unsafe_chars
+    # already removed any backtick from the title, so it cannot close the span
+    # early. The entity escaping above is kept as defense-in-depth.
+    SLACK_TEXT+="\nMeeting: \`$(sanitize_slack_text "${MEETING_TITLES[0]}")\`"
   elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
     SLACK_TEXT+="\nMeetings (${#MEETING_TITLES[@]}):"
     for _title in "${MEETING_TITLES[@]}"; do
-      SLACK_TEXT+="\n  • $(sanitize_slack_text "${_title}")"
+      SLACK_TEXT+="\n  • \`$(sanitize_slack_text "${_title}")\`"
     done
   fi
   if [[ "${NO_NOTES}" == "true" ]]; then
