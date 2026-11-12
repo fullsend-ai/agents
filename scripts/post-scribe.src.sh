@@ -745,12 +745,18 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
 
   SLACK_TEXT=":memo: *Scribe agent* (${RUN_MODE_LABEL})"
   if [[ ${#MEETING_TITLES[@]} -eq 1 ]]; then
-    # Render in a code span (backtick-wrapped), like the step summary: Slack
-    # does not apply mrkdwn formatting (*bold*, _italic_, ~strike~) or
-    # auto-link bare URLs inside inline code, so an untrusted title cannot
-    # inject emphasis or a clickable link into the notification. strip_unsafe_chars
-    # already removed any backtick from the title, so it cannot close the span
-    # early. The entity escaping above is kept as defense-in-depth.
+    # Render in a code span (backtick-wrapped), like the step summary: per
+    # Slack's formatting reference, text in inline code is not reformatted
+    # with other mrkdwn syntax, so an untrusted title cannot inject emphasis
+    # (*bold*, _italic_, ~strike~) into the notification. Slack's docs do not
+    # explicitly state whether a bare URL is still auto-linked/clickable
+    # inside a code span, so this is not relied on alone: unfurl_links/
+    # unfurl_media are disabled on the payload below, independently closing
+    # the link-preview risk regardless of code-span semantics.
+    # strip_unsafe_chars already removed any backtick from the title, so it
+    # cannot close the span early. The entity escaping above (&, <, >) is kept
+    # as defense-in-depth against Slack's own link/mention syntax, even though
+    # whether it is still decoded inside a code span is similarly unverified.
     SLACK_TEXT+="\nMeeting: \`$(sanitize_slack_text "${MEETING_TITLES[0]}")\`"
   elif [[ ${#MEETING_TITLES[@]} -gt 1 ]]; then
     SLACK_TEXT+="\nMeetings (${#MEETING_TITLES[@]}):"
@@ -799,7 +805,11 @@ if [[ -n "${SLACK_WEBHOOK}" ]]; then
 
   SLACK_TEXT+="\n\n<${RUN_URL}|View run>"
 
-  SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: .}')
+  # unfurl_links/unfurl_media: false — independent of whether Slack's code-span
+  # rendering suppresses auto-linking, this unconditionally stops Slack from
+  # generating a link-preview card for a URL in an untrusted meeting title
+  # (issue #706). No other URL in this message needs an unfurl.
+  SLACK_PAYLOAD=$(printf '%b' "${SLACK_TEXT}" | jq -Rs '{text: ., unfurl_links: false, unfurl_media: false}')
   # Slack is best-effort: bound the request so a stalled webhook cannot hang the job.
   if printf '%s' "${SLACK_PAYLOAD}" \
       | curl -fsSL --connect-timeout 10 --max-time 30 \

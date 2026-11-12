@@ -23,8 +23,20 @@ _gha_sanitize() { printf '%s' "$1" | tr -d '\n\r' | sed 's/\x1b\[[0-9;]*[a-zA-Z]
 # - backticks (\140), which the step-summary code span removes anyway — stripping
 #   them here means the redactor sees the same text that is published, so a title
 #   like `123-45-<bt>6789<bt>` cannot evade the SSN check and then reassemble;
-# - Unicode line/paragraph separators (U+2028/U+2029), bidi overrides and
-#   isolates (U+202A-202E, U+2066-2069), zero-width chars, BOM, and tag chars.
+# - Unicode line/paragraph separators (U+2028/U+2029);
+# - every Unicode "Format" (Cf) character — soft hyphen, word joiner, LRM/RLM/
+#   ALM, bidi embeds/overrides/isolates, zero-width chars, BOM, Mongolian vowel
+#   separator, tag characters, and similar invisible-by-design code points —
+#   plus every "Control" (Cc) character, which additionally covers the C1
+#   range (U+0080-009F) that the C0/DEL `tr` above does not reach. An earlier
+#   version hand-picked individual Cf code points; a single invisible
+#   character outside that list (e.g. U+00AD soft hyphen, U+2060 word joiner)
+#   could split a secret/PII pattern so neither half matched, passing the
+#   gate below while rendering invisibly — exposing the full, unredacted
+#   value. Matching by Unicode category instead of an enumerated list closes
+#   that gap categorically;
+# - U+034F (combining grapheme joiner), which is category Mn, not Cf/Cc, but
+#   is equally invisible and usable for the same obfuscation.
 # Shared by the Slack, step-summary and pre-scribe log paths so all are equally
 # strong, and run before redaction so the redactor matches what is published.
 # perl is already a runner dependency (see pre-scribe.sh).
@@ -32,7 +44,7 @@ strip_unsafe_chars() {
   printf '%s' "$1" \
     | sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' \
     | tr -d '\000-\037\177\140' \
-    | perl -CS -pe 's/[\x{2028}\x{2029}\x{200B}\x{200C}\x{200D}\x{FEFF}\x{202A}-\x{202E}\x{2066}-\x{2069}\x{E0000}-\x{E007F}]//g'
+    | perl -CS -pe 's/[\p{Cf}\p{Cc}\x{2028}\x{2029}\x{034F}]//g'
 }
 
 # Redact sensitive spans in a meeting title / Drive document name (issue #706).

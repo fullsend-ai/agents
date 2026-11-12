@@ -313,12 +313,15 @@ sanitized before display: control characters, ANSI escapes, and dangerous
 Unicode (line/paragraph separators, bidi overrides, zero-width and tag
 characters) are stripped so a crafted title cannot inject extra lines or reorder
 text. Titles are then rendered inside an inline code span (backticks) in
-**both** the Slack message and the step summary, which displays them literally
-and suppresses Markdown links, raw HTML, bare-URL autolinking, and — in
-Slack — mrkdwn emphasis (`*bold*`, `_italic_`, `~strike~`) that an unescaped
-title could otherwise use to alter the notification's appearance. Slack's own
-mrkdwn/link metacharacters (`& < > |`) are also escaped beforehand as
-defense-in-depth.
+**both** the Slack message and the step summary. In the step summary this
+suppresses Markdown links, raw HTML, and bare-URL autolinking. In Slack,
+inline code is documented to suppress other mrkdwn formatting (`*bold*`,
+`_italic_`, `~strike~`), so an unescaped title cannot use emphasis to alter
+the notification's appearance; whether a bare URL remains clickable inside a
+Slack code span is not relied on alone — the Slack payload also sets
+`unfurl_links`/`unfurl_media` to `false`, independently preventing a
+link-preview card for a URL in an untrusted title. Slack's own mrkdwn/link
+metacharacters (`& < > |`) are also escaped beforehand as defense-in-depth.
 Each title is also run through a sensitive-content redactor: the same patterns
 that gate topics and new issues (emails, SSNs, keys/tokens, and similar), plus —
 because titles are raw, never-scrubbed Drive names — the phone-number,

@@ -849,6 +849,9 @@ test_stale_meta_cleared_on_failed_search() {
 
   # A stale meta left by a previous run in a reused workspace (issue #1618).
   echo '{"docs_downloaded":0}' > "${runner_temp}/scribe-workspace/scribe-meta.json"
+  # A stale titles file (issue #706): without clearing it, a failed run would
+  # show the PREVIOUS run's meeting names on its "Meeting:" line.
+  echo '{"doc_names":["Stale Old Meeting"]}' > "${runner_temp}/scribe-workspace/scribe-titles.json"
 
   local sa_key="${TMPDIR}/sa-key-stale.json"
   local priv_key="${TMPDIR}/priv-stale.key"
@@ -921,6 +924,11 @@ MOCKEOF
 
   if [[ -f "${runner_temp}/scribe-workspace/scribe-meta.json" ]]; then
     echo "FAIL: ${test_name} — stale scribe-meta.json survived a failed run"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  if [[ -f "${runner_temp}/scribe-workspace/scribe-titles.json" ]]; then
+    echo "FAIL: ${test_name} — stale scribe-titles.json survived a failed run"
     FAILURES=$((FAILURES + 1))
     return
   fi
