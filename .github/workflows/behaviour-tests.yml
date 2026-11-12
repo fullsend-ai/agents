@@ -194,7 +194,8 @@ jobs:
                 || github.event_name == 'issue_comment' && inputs.head_sha
                 || github.sha }}
           persist-credentials: false
-          # Fork code only after a writer's /ok-to-test for this exact sha.
+          # Fork code runs only on issue_comment, after ok-to-test.yml has
+          # authorized this exact sha (checkout itself does not enforce it).
           allow-unsafe-pr-checkout: ${{ github.event_name == 'issue_comment' }}
 
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0

@@ -153,9 +153,9 @@ jobs:
         run: |
           set -euo pipefail
           # The called workflow's result output is success, failure or
-          # cancelled. Empty means the job never reported (the call failed to
-          # start, was cancelled, or behaviour was skipped as not relevant,
-          # which the call's own result then shows as success).
+          # cancelled. It is empty only when its job never ran: the call
+          # failed to start or was cancelled (then the call's own result
+          # decides), or the job was skipped outright.
           conclusion() {
             case "$1" in
               success|failure|cancelled) echo "$1" ;;
