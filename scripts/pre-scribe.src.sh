@@ -355,8 +355,8 @@ while read -r doc; do
   # Ordered: specific patterns first, generic last (matches Go sanitizer.go)
   SCRUBBED=$(echo "${STRUCTURAL_SCRUB}" \
     | sed -E 's/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/[REDACTED]/g' \
-    | sed -E 's/\b(\+?1[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}\b/[REDACTED]/g' \
-    | sed -E 's/\+\d{1,3}[-. ]?\d{4,14}\b/[REDACTED]/g' \
+    | sed -E 's/\b(\+?1[-. ]?)?\(?[0-9]{3}\)?[-. ]?[0-9]{3}[-. ]?[0-9]{4}\b/[REDACTED]/g' \
+    | sed -E 's/\+[0-9]{1,3}[-. ]?[0-9]{4,14}\b/[REDACTED]/g' \
     | sed -E 's/\b([0-9]{1,3}\.){3}[0-9]{1,3}\b/[REDACTED]/g' \
     | sed -E 's/\b[0-9]{3}-[0-9]{2}-[0-9]{4}\b/[REDACTED]/g' \
     | sed -E 's/\b([0-9][ -]?){13,19}\b/[REDACTED]/g' \
