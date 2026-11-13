@@ -146,8 +146,9 @@ export FULLSEND_FORGE="jira"
 ```
 
 The Jira harness (`harness/triage.yaml`) sets default transition names in `env.runner`
-(`JIRA_COMPLETED_TRANSITION="Closed"`, `JIRA_DUPLICATE_TRANSITION="Duplicate"`,
-`JIRA_NOT_PLANNED_TRANSITION="Won't Do"`, and `JIRA_SPLIT_TRANSITION="Obsolete"`).
+(`JIRA_DUPLICATE_TRANSITION="Duplicate"`, `JIRA_NOT_PLANNED_TRANSITION="Won't Do"`,
+and `JIRA_SPLIT_TRANSITION="Obsolete"`, with `JIRA_COMPLETED_TRANSITION` unset by
+default so `completed` falls back to `JIRA_SPLIT_TRANSITION` unless explicitly set).
 To test with different transition names for your Jira workflow, override them in
 a custom harness YAML overlay under `env.runner`, or export them when invoking
 `scripts/post-triage.sh` directly.

@@ -393,14 +393,19 @@ tracker_close_issue() {
     current_category=$(echo "${current_status_json}" | jq -r '.fields.status.statusCategory.key // empty')
     current_status_name=$(echo "${current_status_json}" | jq -r '.fields.status.name // empty')
     if [[ "${current_category}" == "done" ]]; then
+      if [[ -n "${current_status_name}" && "${current_status_name,,}" == "${transition_name,,}" ]]; then
+        echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (${current_category}); skipping transition for reason '${reason}'"
+        return 0
+      fi
+
       local is_rejection_status=0
       local dup_name="${JIRA_DUPLICATE_TRANSITION:-}"
       local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
       if echo "${current_status_name}" | grep -qiE "won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon"; then
         is_rejection_status=1
-      elif [[ -n "${dup_name}" ]] && echo "${current_status_name}" | grep -qiF "${dup_name}"; then
+      elif [[ -n "${dup_name}" && "${dup_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${dup_name,,}" ]]; then
         is_rejection_status=1
-      elif [[ -n "${not_planned_name}" ]] && echo "${current_status_name}" | grep -qiF "${not_planned_name}"; then
+      elif [[ -n "${not_planned_name}" && "${not_planned_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${not_planned_name,,}" ]]; then
         is_rejection_status=1
       fi
 
@@ -434,12 +439,13 @@ tracker_close_issue() {
       local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
       transition_id=$(echo "${transitions}" | jq -r \
         --arg dup "${dup_name}" \
-        --arg not_planned "${not_planned_name}" '
+        --arg not_planned "${not_planned_name}" \
+        --arg target "${transition_name}" '
         [ .transitions[]
           | select((.to.statusCategory.key // "") == "done")
           | select(
-              ($dup != "" and (.name | ascii_downcase) == ($dup | ascii_downcase)) or
-              ($not_planned != "" and (.name | ascii_downcase) == ($not_planned | ascii_downcase)) or
+              ($dup != "" and ($dup | ascii_downcase) != ($target | ascii_downcase) and (.name | ascii_downcase) == ($dup | ascii_downcase)) or
+              ($not_planned != "" and ($not_planned | ascii_downcase) != ($target | ascii_downcase) and (.name | ascii_downcase) == ($not_planned | ascii_downcase)) or
               (.name | test("(?i)won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon"))
               | not
             )

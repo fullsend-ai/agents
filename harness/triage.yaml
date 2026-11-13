@@ -151,7 +151,6 @@ overlays:
         # `fullsend issues` reads tracker.jira from this directory's config.
         FULLSEND_DIR: ${FULLSEND_DIR}
         JIRA_BASE_URL: ${JIRA_BASE_URL}
-        JIRA_COMPLETED_TRANSITION: "Closed"
         JIRA_DUPLICATE_TRANSITION: "Duplicate"
         JIRA_NOT_PLANNED_TRANSITION: "Won't Do"
         JIRA_SPLIT_TRANSITION: "Obsolete"

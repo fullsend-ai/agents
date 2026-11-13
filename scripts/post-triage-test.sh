@@ -2259,7 +2259,9 @@ fi
 
 # Return status for the issue (used by idempotency check).
 if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
-  if [[ -n "${MOCK_JIRA_STATUS_REJECTED:-}" ]]; then
+  if [[ -n "${MOCK_JIRA_STATUS_OBSOLETE:-}" ]]; then
+    echo '{"fields":{"status":{"name":"Obsolete","statusCategory":{"key":"done","name":"Done"}}}}'
+  elif [[ -n "${MOCK_JIRA_STATUS_REJECTED:-}" ]]; then
     echo '{"fields":{"status":{"name":"Won'\''t Do","statusCategory":{"key":"done","name":"Done"}}}}'
   elif [[ -n "${MOCK_JIRA_STATUS_DONE:-}" ]]; then
     echo '{"fields":{"status":{"name":"Done","statusCategory":{"key":"done","name":"Done"}}}}'
@@ -2434,12 +2436,15 @@ run_jira_test "jira-completed-fallback-refuses-rejection-only" \
   "" true
 
 # Jira completed action falls back to JIRA_SPLIT_TRANSITION when JIRA_COMPLETED_TRANSITION is unset.
-(
-  unset JIRA_COMPLETED_TRANSITION
-  run_jira_test_stdout "jira-completed-fallback-to-split-var" \
-    '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
-    "falling back to JIRA_SPLIT_TRANSITION"
-)
+_saved_jira_completed="${JIRA_COMPLETED_TRANSITION:-}"
+unset JIRA_COMPLETED_TRANSITION
+run_jira_test_stdout "jira-completed-fallback-to-split-var" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "falling back to JIRA_SPLIT_TRANSITION"
+if [[ -n "${_saved_jira_completed}" ]]; then
+  export JIRA_COMPLETED_TRANSITION="${_saved_jira_completed}"
+fi
+unset _saved_jira_completed
 
 # Jira completed action skips transition if issue is already in positive Done category (idempotent).
 MOCK_JIRA_STATUS_DONE=1 \
@@ -2458,6 +2463,52 @@ run_jira_test "jira-completed-rejection-status-transitions" \
 run_jira_test "jira-split-closes-via-transition" \
   '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
   '{"transition":{"id":"51"}}'
+
+# Jira split action skips transition if issue is already in configured JIRA_SPLIT_TRANSITION ('Obsolete').
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_STATUS_OBSOLETE=1 \
+run_jira_test_stdout "jira-split-idempotent-obsolete" \
+  '{"action":"split","reasoning":"already split previously","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  "is already in status 'Obsolete' (done); skipping transition for reason 'split'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-split-idempotent-obsolete — expected no transition POST when already Obsolete"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-split-idempotent-obsolete-no-transition-post"
+fi
+
+# Jira split action falls back to Done when configured Obsolete transition is unavailable.
+JIRA_SPLIT_TRANSITION="Obsolete" \
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Won'\''t Do","to":{"statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"statusCategory":{"key":"done"}}}]}' \
+run_jira_test "jira-split-fallback-done" \
+  '{"action":"split","reasoning":"bundles two independent features","sub_issues":[{"title":"Feature A","body":"Do A"},{"title":"Feature B","body":"Do B"}],"comment":"Splitting into two sub-issues."}' \
+  '{"transition":{"id":"51"}}'
+
+# Documented setup where all four transition variables share "Done" skips idempotently when already Done
+# and resolves Done when transitioning even if duplicate/not-planned equal the same name.
+_saved_comp="${JIRA_COMPLETED_TRANSITION:-}"
+_saved_dup="${JIRA_DUPLICATE_TRANSITION:-}"
+_saved_np="${JIRA_NOT_PLANNED_TRANSITION:-}"
+_saved_split="${JIRA_SPLIT_TRANSITION:-}"
+export JIRA_COMPLETED_TRANSITION="Done"
+export JIRA_DUPLICATE_TRANSITION="Done"
+export JIRA_NOT_PLANNED_TRANSITION="Done"
+export JIRA_SPLIT_TRANSITION="Done"
+MOCK_JIRA_STATUS_DONE=1 \
+run_jira_test_stdout "jira-all-four-done-idempotent-completed" \
+  '{"action":"completed","reasoning":"all child issues closed","comment":"Done."}' \
+  "is already in status 'Done' (done); skipping transition for reason 'completed'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-all-four-done-idempotent-completed — expected no transition POST"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-all-four-done-idempotent-completed-no-post"
+fi
+export JIRA_COMPLETED_TRANSITION="${_saved_comp}"
+export JIRA_DUPLICATE_TRANSITION="${_saved_dup}"
+export JIRA_NOT_PLANNED_TRANSITION="${_saved_np}"
+export JIRA_SPLIT_TRANSITION="${_saved_split}"
+unset _saved_comp _saved_dup _saved_np _saved_split
 
 # Jira split: triage dispatch adds ready-for-triage label to created sub-issues (#1123).
 run_jira_test "jira-split-dispatches-triage" \
