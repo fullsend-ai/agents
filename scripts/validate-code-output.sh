@@ -247,11 +247,15 @@ gha_echo() {
 
 _redact_multiline_pem() {
   awk '
+    # OpenSSH/RSA/EC/DSA/PKCS8 PEM headers end in "...private key-----".
+    # OpenPGP'"'"'s ASCII-armor format instead ends in "...private key
+    # block-----" (issue #239) -- the optional "( block)?" covers both
+    # without requiring a separate pattern per key format.
     function is_pem_begin(line) {
-      return tolower(line) ~ /-----begin .*private key-----/
+      return tolower(line) ~ /-----begin .*private key( block)?-----/
     }
     function is_pem_end(line) {
-      return tolower(line) ~ /-----end .*private key-----/
+      return tolower(line) ~ /-----end .*private key( block)?-----/
     }
     is_pem_begin($0) {
       print "[REDACTED PRIVATE KEY]"
