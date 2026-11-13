@@ -726,10 +726,9 @@ forge_resolve_outdated_review_threads() {
     return 0
   fi
 
-  local current_user bot_user_id bot_username
+  local current_user bot_user_id
   current_user=$(_gitlab_api GET "/user" 2>/dev/null) || current_user="{}"
   bot_user_id=$(echo "${current_user}" | jq -r '.id // empty' 2>/dev/null) || bot_user_id=""
-  bot_username=$(echo "${current_user}" | jq -r '.username // empty' 2>/dev/null) || bot_username=""
 
   local page=1 all_discussions="[]"
   while [[ "${page}" -le 10 ]]; do
@@ -749,7 +748,7 @@ forge_resolve_outdated_review_threads() {
   done
 
   local discussion_ids
-  discussion_ids=$(echo "${all_discussions}" | jq -r --arg current_sha "${current_sha}" --arg bot_id "${bot_user_id}" --arg bot_user "${bot_username}" '
+  discussion_ids=$(echo "${all_discussions}" | jq -r --arg current_sha "${current_sha}" --arg bot_id "${bot_user_id}" '
     .[]
     | select(.id != null)
     | .notes |= (map(select(.system != true)) // [])
@@ -757,9 +756,9 @@ forge_resolve_outdated_review_threads() {
     | select(.notes | any(.resolvable == true and .resolved == false))
     | select(
         if ($bot_id != "") then
-          .notes | all((.author.id | tostring) == $bot_id or (.author.username // "" | ascii_downcase) == ($bot_user | ascii_downcase))
+          .notes | all((.author.id | tostring) == $bot_id)
         else
-          .notes | all((.author.username // "" | test("(^|[-_])bot([-_]|$)|\\[bot\\]$|fullsend"; "i")) or (.body // "" | test("<!--[ ]*fullsend|🤖 Fullsend"; "i")))
+          .notes | all((.body // "" | test("<!--[ ]*fullsend|🤖 Fullsend"; "i")))
         end
       )
     | select(

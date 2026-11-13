@@ -4802,6 +4802,15 @@ MOCK_GITLAB_USER_FAIL=1 \
 run_gitlab_outdated_test "gitlab-user-fail-human-no-mutation" \
   "${GITLAB_USERFAIL_HUMAN_DISC}" no-curl-call "discussions/disc_userfail_human?resolved=true"
 
+GITLAB_SAME_USERNAME_DIFF_ID_DISC='[{"id":"disc_diff_id","notes":[{"id":20,"author":{"id":999,"username":"review-bot"},"body":"Impersonated username","resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}}]}]'
+run_gitlab_outdated_test "gitlab-different-id-same-username-no-mutation" \
+  "${GITLAB_SAME_USERNAME_DIFF_ID_DISC}" no-curl-call "discussions/disc_diff_id?resolved=true"
+
+GITLAB_USERFAIL_OTHER_BOT_DISC='[{"id":"disc_other_bot","notes":[{"id":21,"author":{"id":400,"username":"project_1_bot_abc"},"body":"SAST bot note","resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}}]},{"id":"disc_renovate","notes":[{"id":22,"author":{"id":401,"username":"renovate-bot"},"body":"Renovate note","resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}}]}]'
+MOCK_GITLAB_USER_FAIL=1 \
+run_gitlab_outdated_test "gitlab-user-fail-other-bot-no-mutation" \
+  "${GITLAB_USERFAIL_OTHER_BOT_DISC}" no-curl-call "resolved=true"
+
 # No label-actions output line may carry '::' after its own '::cmd::' prefix.
 shopt -s nullglob
 LABEL_LOGS=("${TMPDIR}"/stdout-label-actions-*.log)
