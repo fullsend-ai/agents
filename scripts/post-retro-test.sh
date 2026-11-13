@@ -2519,6 +2519,14 @@ else
   cat "${GH_STDIN_LOG}" 2>/dev/null || true
   FAILURES=$((FAILURES + 1))
 fi
+if grep -qF 'project = \"PROJ\" AND summary ~ \"handling\"' "${CURL_LOG}" 2>/dev/null \
+  && ! grep -qF 'summary ~ \"\\\"' "${CURL_LOG}" 2>/dev/null; then
+  echo "PASS: jira/duplicate-jql-unphrased"
+else
+  echo "FAIL: jira/duplicate-jql-unphrased — expected unphrased terms in JQL search"
+  cat "${CURL_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
 unset JIRA_MOCK_DUP
 
 # 4. Duplicate search failure: refuses to create blindly
@@ -2718,6 +2726,26 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# 12b. Allowlist: primary project with explicit empty targets list revokes access (fail closed)
+cat > "${JIRA_WORKSPACE}/config.yaml" <<CFGEOF
+version: "1"
+tracker:
+  jira:
+    project: PROJ
+    allowed_targets:
+      projects: []
+CFGEOF
+run_test_stdout "jira/allowlist-primary-with-empty-targets-denies" \
+  "${FIXTURE_ONE_PROPOSAL}" \
+  "Skipping issue creation in Jira project 'PROJ' — not in tracker.jira.allowed_targets"
+
+if grep -qF "Proposals skipped (target repo not allowed)" "${GH_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/allowlist-primary-with-empty-targets-summary"
+else
+  echo "FAIL: jira/allowlist-primary-with-empty-targets-summary — proposal missing from skipped section"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # 13. Allowlist: config parse error fails closed
 printf 'version: "1"\ntracker: [invalid yaml\n' > "${JIRA_WORKSPACE}/config.yaml"
 run_test_stdout "jira/allowlist-parse-failure-denies" \
@@ -2858,6 +2886,59 @@ if grep -qF "**Target repository:** test-org/target-repo" "${FULLSEND_STDIN_LOG}
 else
   echo "FAIL: jira/body-target-repo-and-forge-url — body missing target repo or full forge URL"
   cat "${FULLSEND_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 20b. Target repository line and GitLab self-managed URL rendered in Jira issue body
+export FULLSEND_FORGE="gitlab"
+export ORIGINATING_URL="https://gitlab.example.com/test-org/source-repo/-/merge_requests/10"
+export GITLAB_HOST="gitlab.example.com"
+export CI_SERVER_HOST="gitlab.example.com"
+export CI_PROJECT_DIR="${JIRA_WORKSPACE}"
+run_test_stdout "jira/body-target-repo-and-gitlab-url" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "**Target repository:** test-org/target-repo" "${FULLSEND_STDIN_LOG}" 2>/dev/null \
+  && grep -qF "https://gitlab.example.com/test-org/target-repo/-/issues/2476" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-target-repo-and-gitlab-url"
+else
+  echo "FAIL: jira/body-target-repo-and-gitlab-url — body missing target repo or self-managed GitLab URL"
+  cat "${FULLSEND_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+
+# 20c. Target repository line and GitLab fallback reference when host is unknown
+unset GITLAB_HOST CI_SERVER_HOST
+export ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123"
+export CI_PROJECT_DIR="${JIRA_WORKSPACE}"
+run_test_stdout "jira/body-target-repo-and-gitlab-no-host" \
+  "${FIXTURE_RECEIPT_FOUND}" \
+  "Created: https://mock.atlassian.net/browse/PROJ-100"
+if grep -qF "test-org/target-repo#2476" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/body-target-repo-and-gitlab-no-host"
+else
+  echo "FAIL: jira/body-target-repo-and-gitlab-no-host — body missing repo#number format when host unknown"
+  cat "${FULLSEND_STDIN_LOG}" 2>/dev/null || true
+  FAILURES=$((FAILURES + 1))
+fi
+export FULLSEND_FORGE="github"
+
+# 21. Comment truncation at 32000 chars for Jira-originated runs
+ORIGINATING_URL="https://mock.atlassian.net/browse/PROJ-123" \
+  run_test_stdout "jira/comment-truncated-at-32000" \
+  "${FIXTURE_OVERSIZED}" \
+  "Posting summary comment on PROJ#PROJ-123"
+JIRA_COMMENT_LEN=$(wc -c < "${FULLSEND_STDIN_LOG}")
+if [[ ${JIRA_COMMENT_LEN} -le 32000 ]]; then
+  echo "PASS: jira/comment-truncated-length"
+else
+  echo "FAIL: jira/comment-truncated-length — comment length ${JIRA_COMMENT_LEN} exceeds 32000"
+  FAILURES=$((FAILURES + 1))
+fi
+if grep -qF "...(truncated)" "${FULLSEND_STDIN_LOG}" 2>/dev/null; then
+  echo "PASS: jira/comment-truncated-marker"
+else
+  echo "FAIL: jira/comment-truncated-marker — missing truncation notice"
   FAILURES=$((FAILURES + 1))
 fi
 

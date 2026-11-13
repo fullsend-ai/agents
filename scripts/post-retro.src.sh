@@ -171,9 +171,13 @@ if command -v yq &>/dev/null; then
     (if type == "object" then . else {} end) as $t
     | [("github", "gitlab", "jira") | select($t[.] != null)] as $providers
     | if $provider == "jira" then
-      (if (type == "object" and has("jira") and (.jira | type == "object") and (.jira | has("project")) and (.jira.project | type == "string")) then [.jira.project] else [] end)
-      +
-      (if $providers == [$provider] and (.jira | type == "object") and (.jira.allowed_targets | type == "object") and (.jira.allowed_targets.projects | type == "array") then .jira.allowed_targets.projects else [] end)
+      if $providers == [$provider] and (.jira | type == "object") and (.jira.allowed_targets | type == "object") and (.jira.allowed_targets.projects | type == "array") then
+        .jira.allowed_targets.projects
+      elif (type == "object" and has("jira") and (.jira | type == "object") and (.jira | has("project")) and (.jira.project | type == "string")) then
+        [.jira.project]
+      else
+        []
+      end
       | map(strings) | unique | .[]
     else
       (if $providers == [$provider] then (($t[$provider].allowed_targets // {}).repos // []) else [] end)
@@ -365,7 +369,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     # Build the issue body from the four sections, plus the dedup receipt.
-    BODY=$(jq -r --arg url "${ORIGINATING_URL}" --arg tracker "${FULLSEND_TRACKER}" --arg tr "${TARGET_REPO}" --arg forge "${FULLSEND_FORGE}" "
+    BODY=$(jq -r --arg url "${ORIGINATING_URL}" --arg tracker "${FULLSEND_TRACKER}" --arg tr "${TARGET_REPO}" --arg forge "${FULLSEND_FORGE}" --arg gl_host "${GITLAB_HOST:-${CI_SERVER_HOST:-}}" "
       .proposals[$i] |
       \"## What happened\n\n\" + .what_happened +
       \"\n\n## What could go better\n\n\" + .what_could_go_better +
@@ -378,7 +382,9 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
         \"\nConsidered: \" + (.related_issues.found | map(
           if type == \"number\" then
             (if \$tracker == \"jira\" then
-              (if \$forge == \"gitlab\" then \"https://gitlab.com/\" + \$tr + \"/-/issues/\" + tostring
+              (if \$forge == \"gitlab\" then
+                (if (\$gl_host // \"\") != \"\" then \"https://\" + \$gl_host + \"/\" + \$tr + \"/-/issues/\" + tostring
+                 else \$tr + \"#\" + tostring end)
                else \"https://github.com/\" + \$tr + \"/issues/\" + tostring end)
              else \"#\" + tostring end)
           else tostring end
@@ -439,7 +445,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     # proposals, and report it in the summary comment.
     CREATE_RC=0
     ISSUE_URL=$(forge_create_issue "${TARGET_REPO}" "${TITLE}" "${BODY}" "ready-for-triage") || CREATE_RC=$?
-    if [[ ${CREATE_RC} -ne 0 && ${CREATE_RC} -ne 2 ]]; then
+    if [[ ${CREATE_RC} -ne 0 ]] && ! [[ "${FULLSEND_TRACKER}" == "jira" && ${CREATE_RC} -eq 2 ]]; then
       SAFE_OUTPUT=$(_gha_sanitize "${ISSUE_URL}")
       if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
         echo "::warning::Failed to create Jira issue in ${RETRO_JIRA_PROJECT} for proposal[$i] (${SAFE_TITLE}): ${SAFE_OUTPUT}"

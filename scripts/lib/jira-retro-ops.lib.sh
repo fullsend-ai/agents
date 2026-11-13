@@ -275,13 +275,15 @@ tracker_validate_create() {
 
 tracker_find_existing_issue() {
   local title="$1" raw_file jql terms match rc=0
-  terms=$(printf '%s' "${title}" | jq -Rr '[scan("[\\p{L}\\p{N}]+")] | join(" ")') || return 1
-  if [[ -z "${terms}" ]]; then
+  terms=$(printf '%s' "${title}" | jq -Rr '[scan("[\\p{L}\\p{N}]+")] | unique | sort_by(-length) | .[0:3]') || return 1
+  if [[ "$(printf '%s' "${terms}" | jq 'length')" -eq 0 ]]; then
     echo "ERROR: Jira duplicate check has no searchable terms in the issue title" >&2
     return 1
   fi
   raw_file=$(mktemp)
-  jql="project = $(_retro_jql_quote "${RETRO_JIRA_PROJECT}") AND summary ~ $(_retro_jql_quote "$(_retro_jql_quote "${terms}")")"
+  jql=$(printf '%s' "${terms}" | jq -r --arg proj "$(_retro_jql_quote "${RETRO_JIRA_PROJECT}")" '
+    ["project = " + $proj] + map("summary ~ \"" + (gsub("\\\\"; "\\\\\\\\") | gsub("\""; "\\\"")) + "\"") | join(" AND ")
+  ')
   _retro_jira_search_paginated "${jql}" '["summary"]' "${raw_file}" || rc=$?
   if [[ ${rc} -ne 0 && ${rc} -ne 2 ]]; then
     rm -f "${raw_file}"
