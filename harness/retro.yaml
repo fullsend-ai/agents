@@ -53,6 +53,7 @@ host_files:
 
 skills:
   - skills/retro-analysis
+  - skills/retro-ci-analysis
   - skills/finding-agent-runs
   - skills/agent-scaffolding
   - skills/autonomy-readiness
@@ -85,6 +86,7 @@ forge:
     skills:
       - skills/github-forge
       - skills/retro-analysis/github
+      - skills/retro-ci-analysis/github
       - skills/finding-agent-runs/github
     host_files:
       - src: env/github/retro.env
@@ -105,6 +107,7 @@ forge:
     skills:
       - skills/gitlab-forge
       - skills/retro-analysis/gitlab
+      - skills/retro-ci-analysis/gitlab
       - skills/finding-agent-runs/gitlab
     host_files:
       - src: env/gitlab/retro.env
