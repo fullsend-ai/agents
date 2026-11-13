@@ -181,7 +181,14 @@ if [[ "$EVAL_TIER" == "release" ]]; then
   for case_dir in "${CASES_DIR}"/*/; do
     case_name="$(basename "$case_dir")"
     annotations="${case_dir}annotations.yaml"
-    if [[ -f "$annotations" ]] && [[ "$(yq '.release // false' "$annotations")" == "true" ]]; then
+    [[ -f "$annotations" ]] || continue
+    # A read failure must not look like release:false: that would skip the
+    # agent with exit 0 without knowing which cases to run.
+    if ! release_flag="$(yq '.release // false' "$annotations")"; then
+      echo "ERROR: could not read ${annotations} — cannot select release cases" >&2
+      exit 1
+    fi
+    if [[ "$release_flag" == "true" ]]; then
       cp -a "$case_dir" "${RELEASE_STAGE_DIR}/${case_name}"
       release_case_count=$((release_case_count + 1))
     fi
