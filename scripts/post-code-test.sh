@@ -3688,6 +3688,12 @@ for arg in "\$@"; do
   PREV="\${arg}"
 done
 echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
+# Count from the durable call log: every retry starts a new CLI process.
+ATTEMPT=\$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")
+if [ "\${ATTEMPT}" -le "\${MOCK_FULLSEND_TRANSIENT_FAILURES:-0}" ]; then
+  echo "\${MOCK_FULLSEND_TRANSIENT_ERROR:-Error: posting comment: jira api: 503 temporary upstream failure}" >&2
+  exit 1
+fi
 if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
   echo "Error: Jira API returned 401" >&2
   exit 1
@@ -4143,11 +4149,41 @@ JIRA_INT_NO_BRANCH=1 run_jira_int "jira-noop-write-failure" github MOCK_FULLSEND
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-noop-write-failure-still-succeeds" "expected exit 0, got ${JIRA_INT_RC}"
 elif ! grep -qF "Failed to post no-op comment to Jira issue TESTPROJ-42" "${JIRA_INT_OUT}" \
-     || ! grep -q "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}"; then
+     || [ "$(grep -c "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || grep -qF "Transient forge error" "${JIRA_INT_OUT}"; then
   jira_int_fail "jira-noop-write-failure-still-succeeds" "missing write attempt or warning"
 else
   echo "PASS: jira-noop-write-failure-still-succeeds"
 fi
+
+# Transient Jira no-op failures retry the same marker/body. Recovery and
+# exhaustion remain successful no-op runs; exhaustion emits the fallback.
+for _jira_retry_case in server-error timeout exhausted; do
+  _jira_retry_failures=2
+  _jira_retry_error='Error: posting comment: jira api: 503 temporary upstream failure'
+  if [ "${_jira_retry_case}" = timeout ]; then
+    _jira_retry_error='Error: posting Jira comment: context deadline exceeded'
+  elif [ "${_jira_retry_case}" = exhausted ]; then
+    _jira_retry_failures=3
+  fi
+  JIRA_INT_NO_BRANCH=1 JIRA_INT_RESULT_JSON="${JIRA_NOOP_RESULT}" \
+    run_jira_int "jira-noop-retry-${_jira_retry_case}" github \
+      MOCK_FULLSEND_TRANSIENT_FAILURES="${_jira_retry_failures}" \
+      MOCK_FULLSEND_TRANSIENT_ERROR="${_jira_retry_error}" \
+      FORGE_TRANSIENT_RETRY_ATTEMPTS=3 FORGE_TRANSIENT_RETRY_BASE_DELAY=0
+  if [ "${JIRA_INT_RC}" -ne 0 ] \
+     || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 3 ] \
+     || [ "$(grep -cF -- "${JIRA_OUTCOME_MARKER}" "${JIRA_INT_FULLSEND_LOG}")" -ne 3 ] \
+     || [ "$(grep -cF 'Stopped: the issue has no acceptance criteria.' "${JIRA_INT_FULLSEND_LOG}")" -ne 3 ] \
+     || [ "$(grep -cF 'Transient forge error' "${JIRA_INT_OUT}")" -ne 2 ]; then
+    jira_int_fail "jira-noop-retry-${_jira_retry_case}" "expected three writes with the same outcome marker/reason, two retries and exit 0"
+  elif { [ "${_jira_retry_case}" = exhausted ] && ! grep -qF 'Failed to post no-op comment' "${JIRA_INT_OUT}"; } \
+       || { [ "${_jira_retry_case}" != exhausted ] && grep -qF 'Failed to post no-op comment' "${JIRA_INT_OUT}"; }; then
+    jira_int_fail "jira-noop-retry-${_jira_retry_case}" "fallback warning must occur only after exhausted retries"
+  else
+    echo "PASS: jira-noop-retry-${_jira_retry_case}"
+  fi
+done
 
 # A post-script failure is written to the Jira issue. Branch validation fails
 # before the agent branch is checked, so this also proves the trusted CLI is

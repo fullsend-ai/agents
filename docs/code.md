@@ -394,7 +394,9 @@ vars. Key differences from single-forge setup:
   replace another author's commits. Retries update the matching comment;
   neither comment replaces the PR/MR link. A later successful run leaves
   earlier no-op or failure comments alongside its link. These writes are best-effort: a
-  failed write is a warning and the run keeps its exit code. Every Jira
+  failed write is a warning and the run keeps its exit code. No-op comments
+  retry transient 5xx and timeout failures with the same backoff as forge comments;
+  permanent errors return immediately. Every Jira
   write has the Jira token redacted from its text.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
   provided by profiles (`fullsend-gitlab-code` for GitLab). Custom

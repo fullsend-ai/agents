@@ -193,7 +193,7 @@ forge_is_transient_error() {
   lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
 
   if echo "${lower}" | grep -qE \
-    'http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
+    'jira api:[[:space:]]*5[0-9][0-9]([[:space:]]|$)|http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
     return 0
   fi
   if echo "${lower}" | grep -qE \
@@ -3702,7 +3702,7 @@ ${detail_block}
 Retry with \`/fs-code\` if appropriate."
 
   if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
-    if ! post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
+    if ! forge_retry_transient post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
       gha_echo warning "Failed to post no-op comment to Jira issue ${WORK_ITEM_KEY}"
     fi
   elif ! forge_retry_transient forge_post_issue_comment "${body}"; then

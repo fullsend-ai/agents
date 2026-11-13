@@ -595,7 +595,7 @@ ${detail_block}
 Retry with \`/fs-code\` if appropriate."
 
   if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
-    if ! post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
+    if ! forge_retry_transient post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
       gha_echo warning "Failed to post no-op comment to Jira issue ${WORK_ITEM_KEY}"
     fi
   elif ! forge_retry_transient forge_post_issue_comment "${body}"; then

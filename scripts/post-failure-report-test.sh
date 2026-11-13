@@ -517,6 +517,11 @@ run_transient_detector_test() {
   fi
 }
 
+run_transient_detector_test "transient-jira-503" \
+  "posting comment: jira api: 503 temporary upstream failure" "yes"
+run_transient_detector_test "non-transient-jira-401" \
+  "posting comment: jira api: 401 unauthorized" "no"
+
 run_transient_detector_test "transient-http-503" \
   "HTTP 503: Server Error" "yes"
 run_transient_detector_test "transient-internal-server-error" \
