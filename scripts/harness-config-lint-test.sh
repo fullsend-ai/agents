@@ -72,7 +72,8 @@ check_validation_loop_at_path() {
 
   local has_validation_loop
   has_validation_loop="$(yq "${selector}" "${harness}")" || {
-    return 0
+    echo "${harness_name}: yq failed to check validation_loop at ${location}"
+    return 1
   }
   if [[ "${has_validation_loop}" != "true" ]]; then
     return 0
@@ -364,7 +365,8 @@ check_schema_files_at_path() {
 
   local has_validation_loop
   has_validation_loop="$(yq "${has_validation_loop_selector}" "${harness}")" || {
-    return 0
+    echo "${harness_name}: yq failed to check validation_loop at ${location}"
+    return 1
   }
   if [[ "${has_validation_loop}" != "true" ]]; then
     return 0
@@ -379,7 +381,8 @@ check_schema_files_at_path() {
 
   local has_schema
   has_schema="$(yq "${has_schema_selector}" "${harness}")" || {
-    return 0
+    echo "${harness_name}: yq failed to check schema at ${location}"
+    return 1
   }
   if [[ "${has_schema}" != "true" ]]; then
     return 0
