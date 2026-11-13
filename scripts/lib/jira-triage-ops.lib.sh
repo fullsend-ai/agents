@@ -364,7 +364,8 @@ tracker_close_issue() {
   case "${reason}" in
     duplicate) transition_var="JIRA_DUPLICATE_TRANSITION" ;;
     "not planned") transition_var="JIRA_NOT_PLANNED_TRANSITION" ;;
-    completed) transition_var="JIRA_SPLIT_TRANSITION" ;;
+    completed) transition_var="JIRA_COMPLETED_TRANSITION" ;;
+    split) transition_var="JIRA_SPLIT_TRANSITION" ;;
     *)
       echo "ERROR: unknown close reason '${reason}' — no Jira transition mapping" >&2
       return 1
@@ -377,6 +378,18 @@ tracker_close_issue() {
     return 1
   fi
 
+  # Idempotency pre-flight: check if the issue is already in a Done status category.
+  local current_status_json
+  current_status_json=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status" 2>/dev/null) || true
+  if [[ -n "${current_status_json}" ]]; then
+    local current_category
+    current_category=$(echo "${current_status_json}" | jq -r '.fields.status.statusCategory.key // empty')
+    if [[ "${current_category}" == "done" ]]; then
+      echo "Issue ${ISSUE_NUMBER} is already in status category 'done'; skipping transition for reason '${reason}'"
+      return 0
+    fi
+  fi
+
   local transitions
   transitions=$(_jira_api GET "/issue/${ISSUE_NUMBER}/transitions" 2>/dev/null) || {
     echo "ERROR: failed to list transitions for issue ${ISSUE_NUMBER}" >&2
@@ -385,6 +398,26 @@ tracker_close_issue() {
   local transition_id
   transition_id=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
     '[.transitions[] | select(.name == $name)][0].id // empty')
+
+  # Fallback resolution when configured transition name is not directly available
+  if [[ -z "${transition_id}" ]]; then
+    if [[ "${reason}" == "completed" || "${reason}" == "split" ]]; then
+      transition_id=$(echo "${transitions}" | jq -r '
+        [ .transitions[]
+          | select((.to.statusCategory.key // "") == "done")
+          | select(.name | test("(?i)won.?t do|duplicate|obsolete|reject|cancel") | not)
+        ] as $done_transitions
+        | ([$done_transitions[] | select(.name | test("(?i)^(done|closed|resolved)$"))][0].id // $done_transitions[0].id // empty)
+      ')
+      if [[ -n "${transition_id}" ]]; then
+        local fallback_name
+        fallback_name=$(echo "${transitions}" | jq -r --arg id "${transition_id}" '.transitions[] | select(.id == $id).name')
+        echo "Transition '${transition_name}' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}; falling back to '${fallback_name}'"
+        transition_name="${fallback_name}"
+      fi
+    fi
+  fi
+
   if [[ -z "${transition_id}" ]]; then
     echo "ERROR: transition '${transition_name}' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}" >&2
     return 1

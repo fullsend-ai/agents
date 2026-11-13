@@ -2215,6 +2215,7 @@ export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export JIRA_COMPLETED_TRANSITION="Closed"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
@@ -2248,7 +2249,21 @@ done
 
 # List transitions available on the issue.
 if [[ "${URL}" =~ /transitions$ ]] && [[ "${METHOD}" == "GET" ]]; then
-  echo '{"transitions":[{"id":"31","name":"Duplicate"},{"id":"41","name":"Not Planned"},{"id":"51","name":"Done"}]}'
+  if [[ -n "${MOCK_JIRA_TRANSITIONS:-}" ]]; then
+    echo "${MOCK_JIRA_TRANSITIONS}"
+  else
+    echo '{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Not Planned","to":{"statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"statusCategory":{"key":"done"}}},{"id":"61","name":"Closed","to":{"statusCategory":{"key":"done"}}}]}'
+  fi
+  exit 0
+fi
+
+# Return status for the issue (used by idempotency check).
+if [[ "${URL}" =~ /issue/[A-Z]+-[0-9]+\?fields=status ]] && [[ "${METHOD}" == "GET" ]]; then
+  if [[ -n "${MOCK_JIRA_STATUS_DONE:-}" ]]; then
+    echo '{"fields":{"status":{"statusCategory":{"key":"done","name":"Done"}}}}'
+  else
+    echo '{"fields":{"status":{"statusCategory":{"key":"indeterminate","name":"In Progress"}}}}'
+  fi
   exit 0
 fi
 
@@ -2397,10 +2412,23 @@ run_jira_test "jira-not-planned-transitions" \
   '{"action":"not-planned","reasoning":"out of scope","comment":"This request is out of scope."}' \
   '{"transition":{"id":"41"}}'
 
-# Jira completed action reuses JIRA_SPLIT_TRANSITION (close reason "completed").
+# Jira completed action transitions the issue via JIRA_COMPLETED_TRANSITION.
 run_jira_test "jira-completed-transitions" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
-  '{"transition":{"id":"51"}}'
+  '{"transition":{"id":"61"}}'
+
+# Jira completed action falls back to available Done transition if configured name is not present.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Won'\''t Do","to":{"statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test_stdout "jira-completed-fallback-done" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "falling back to 'Done'"
+
+# Jira completed action skips transition if issue is already in Done category (idempotent).
+MOCK_JIRA_STATUS_DONE=1 \
+run_jira_test_stdout "jira-completed-idempotent-done" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  "is already in status category 'done'"
 
 # Jira split action closes the original issue via JIRA_SPLIT_TRANSITION
 # after creating both sub-issues (defaulting to the source project).
@@ -2754,7 +2782,7 @@ run_jira_test "jira-component-actions-with-labels" \
 export FULLSEND_TRACKER="github"
 export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 export GH_TOKEN="fake-token"
-unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
+unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_COMPLETED_TRANSITION JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
 
 run_test_stdout "github-component-actions-ignored" \
   '{"action":"sufficient","reasoning":"all clear","clarity_scores":{"symptom":0.9,"cause":0.85,"reproduction":0.9,"impact":0.8,"overall":0.87},"triage_summary":{"title":"Fix crash","severity":"high","category":"bug","problem":"Crash","root_cause_hypothesis":"Buffer overflow","reproduction_steps":["step 1"],"environment":"Linux","impact":"All users","recommended_fix":"Fix buffer","proposed_test_case":"test_crash"},"comment":"## Triage Summary\n\nReady.","component_actions":{"reason":"Backend component.","actions":[{"action":"add","component":"backend"}]}}' \
@@ -2766,6 +2794,7 @@ export ISSUE_URL="https://test.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="triage@example.com"
 export JIRA_TOKEN="fake-jira-token"
 export FULLSEND_DIR="${TMPDIR}/dot-fullsend"
+export JIRA_COMPLETED_TRANSITION="Closed"
 export JIRA_DUPLICATE_TRANSITION="Duplicate"
 export JIRA_NOT_PLANNED_TRANSITION="Not Planned"
 export JIRA_SPLIT_TRANSITION="Done"
@@ -3110,7 +3139,7 @@ export ISSUE_URL="https://github.com/test-org/test-repo/issues/42"
 # shellcheck disable=SC2031
 export GH_TOKEN="fake-token"
 unset GITLAB_TOKEN CI_SERVER_HOST
-unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
+unset JIRA_USER_EMAIL JIRA_TOKEN JIRA_COMPLETED_TRANSITION JIRA_DUPLICATE_TRANSITION JIRA_NOT_PLANNED_TRANSITION JIRA_SPLIT_TRANSITION
 
 # --- Summary ---
 

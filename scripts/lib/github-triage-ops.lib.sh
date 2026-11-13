@@ -115,6 +115,9 @@ tracker_post_sticky_comment() {
 
 tracker_close_issue() {
   local reason="$1"
+  if [[ "${reason}" == "split" ]]; then
+    reason="completed"
+  fi
   gh issue close "${ISSUE_NUMBER}" --repo "${REPO}" --reason "${reason}"
 }
 
