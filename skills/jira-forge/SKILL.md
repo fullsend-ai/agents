@@ -25,7 +25,7 @@ between commands, so start every command that calls Jira with the line that
 sets `JIRA_AUTH_FLAG` and `JIRA_AUTH`:
 
 ```bash
-JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
 curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
@@ -35,9 +35,16 @@ curl --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 
 Extract the issue key and project key from the issue URL:
 ```bash
-ISSUE_KEY=$(echo "${ISSUE_URL}" | sed -E 's|.*/browse/||')
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 PROJECT_KEY="${ISSUE_KEY%-*}"
+echo "issue ${ISSUE_KEY}, project ${PROJECT_KEY}"
 ```
+
+Shell variables do not carry over between commands either, so the blocks
+below derive `ISSUE_KEY` again where they use it. In JQL, replace
+`<PROJECT_KEY>` with the project key printed above (the issue key up to
+its last `-`). The sandbox command check blocks a shell variable inside
+`--data-urlencode`.
 
 Jira Cloud only (v1) — the issue host must be `*.atlassian.net`. Jira
 Server/Data Center is not supported.
@@ -45,9 +52,10 @@ Server/Data Center is not supported.
 ## Issues
 
 ```bash
-JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 
 # View an issue with full details
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
@@ -60,7 +68,7 @@ curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 # List open issues in the project
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  --get --data-urlencode "jql=project = ${PROJECT_KEY} AND statusCategory != Done" \
+  --get --data-urlencode "jql=project = <PROJECT_KEY> AND statusCategory != Done" \
   --data-urlencode "fields=summary,status,labels" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 ```
@@ -85,14 +93,14 @@ that could be mistaken for an empty result set.
 ## Searching for Duplicates and Related Issues
 
 ```bash
-JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
 
 # Search issues by keyword (JQL text search)
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
   --header "Content-Type: application/json" \
-  --get --data-urlencode "jql=project = ${PROJECT_KEY} AND text ~ \"keyword\"" \
+  --get --data-urlencode "jql=project = <PROJECT_KEY> AND text ~ \"keyword\"" \
   --data-urlencode "fields=summary,status,labels" \
   "${JIRA_API_URL:-${JIRA_BASE_URL}}/rest/api/3/search/jql"
 
@@ -107,7 +115,7 @@ curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
 ## Cross-Project Searches
 
 ```bash
-JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
 
@@ -125,9 +133,10 @@ Jira has no pull/merge requests of its own. A PR that someone attached to the
 issue as a web link shows up as a remote link:
 
 ```bash
-JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
 JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
 JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
+ISSUE_KEY="${ISSUE_URL##*/browse/}"
 
 # List remote links on an issue (may include manually linked PRs/MRs)
 curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \
