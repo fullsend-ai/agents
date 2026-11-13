@@ -6,13 +6,16 @@ repos:
     hooks:
       - id: check-yaml
         args: ["--unsafe"]
+        exclude: ^scripts/test-fixtures/
       - id: end-of-file-fixer
+        exclude: ^scripts/test-fixtures/
       - id: trailing-whitespace
       - id: detect-private-key
       - id: check-added-large-files
         args: ["--maxkb=1000"]
       - id: check-merge-conflict
       - id: check-json
+        exclude: ^scripts/test-fixtures/
       - id: check-toml
       - id: mixed-line-ending
 
