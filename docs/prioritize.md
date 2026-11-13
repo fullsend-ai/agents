@@ -386,13 +386,17 @@ jobs:
             # re-dispatch the same unscored issue on every poll. The API does
             # not expose which issue a run was dispatched for, so this skips
             # the whole repo; on single-repo boards that serializes scoring
-            # to roughly one issue per run duration. The check fails closed:
-            # if the run list cannot be fetched, the script exits rather
-            # than dispatching blindly.
+            # to roughly one issue per run duration. Any status other than
+            # "completed" counts as active, which covers queued, in_progress,
+            # requested, pending and waiting. The check fails closed: if the
+            # run list cannot be fetched, the script exits rather than
+            # dispatching blindly. The guard is best-effort: the check and
+            # the dispatch below are not atomic, so a manually triggered run
+            # can start in between and be cancelled by the per-issue group.
             ACTIVE_RUNS=$(GH_TOKEN="${DISPATCH_TOKEN}" gh run list \
               --repo "${SOURCE_REPO}" --workflow "${WORKFLOW}" \
               --json status \
-              --jq '[.[] | select(.status == "queued" or .status == "in_progress")] | length')
+              --jq '[.[] | select(.status != "completed")] | length')
             if [[ "${ACTIVE_RUNS}" -gt 0 ]]; then
               echo "Skipping ${SOURCE_REPO}#${ISSUE_NUMBER} — scoring run already active."
               continue
