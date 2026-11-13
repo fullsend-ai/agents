@@ -11,18 +11,16 @@ description: >
 ## Request values
 
 Run this first, in its own Bash tool call, before any other GitLab command.
-It derives the host and the encoded dispatch and source project paths and
-prints them:
+It derives the host and the encoded dispatch project path and prints them:
 
 ```bash
 GITLAB_HOST=$(printf '%s\n' "$ORIGINATING_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
 ORG="${REPO_FULL_NAME%%/*}"
 DISPATCH_REPO="${ORG}/.fullsend"
 DISPATCH_ENCODED=$(printf '%s' "$DISPATCH_REPO" | jq -sRr @uri)
-REPO_ENCODED=$(printf '%s' "$REPO_FULL_NAME" | jq -sRr @uri)
 test -n "${GITLAB_HOST}" || echo "GITLAB_HOST is empty: ORIGINATING_URL is unset or not an https URL" >&2
 if test -n "${ORG}" && printf '%s' "${GITLAB_HOST}" | grep -Eqz '^[A-Za-z0-9.-]+$'; then
-  printf 'GITLAB_HOST=%s\nDISPATCH_ENCODED=%s\nREPO_ENCODED=%s\n' "${GITLAB_HOST}" "${DISPATCH_ENCODED}" "${REPO_ENCODED}"
+  printf 'GITLAB_HOST=%s\nDISPATCH_ENCODED=%s\n' "${GITLAB_HOST}" "${DISPATCH_ENCODED}"
 else
   echo "REPO_FULL_NAME is empty or GITLAB_HOST is not a plain hostname" >&2
 fi

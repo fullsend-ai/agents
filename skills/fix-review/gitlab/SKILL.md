@@ -14,7 +14,8 @@ The environment provides `GITLAB_TOKEN` for authentication.
 ## Request values
 
 Run this first, in its own Bash tool call, before any other GitLab command.
-It derives the host, project path, and MR IID and prints them:
+It derives the host and encoded project path, checks that `PR_NUMBER` is
+numeric, and prints them:
 
 ```bash
 GITLAB_HOST=$(printf '%s\n' "$PR_URL" | sed -nE 's|^https://([^/]+)/.*|\1|p')
@@ -142,15 +143,17 @@ name starts with `dispatch-`. Do not add excluded jobs to `ci_inspections`.
 
 **Failed project jobs — logs and artifacts:**
 
+Take `<JOB_ID>` from the failed job's `id` in the jobs listing above.
+
 ```bash
 # Job log (trace). Read the failure; do not dump an entire successful log.
 curl --silent -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/jobs/${JOB_ID}/trace"
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/jobs/<JOB_ID>/trace"
 
 # Artifacts (skip when the job published none)
 curl --silent --fail -K /tmp/gitlab-api.curlrc \
-  -o "/tmp/ci-artifacts-${JOB_ID}.zip" \
-  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/jobs/${JOB_ID}/artifacts"
+  -o "/tmp/ci-artifacts-<JOB_ID>.zip" \
+  "https://<GITLAB_HOST>/api/v4/projects/<REPO_ENCODED>/jobs/<JOB_ID>/artifacts"
 ```
 
 If a log or artifact cannot be fetched, record that in the diagnosis and

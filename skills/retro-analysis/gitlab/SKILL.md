@@ -59,15 +59,17 @@ All API calls use:
 curl --fail --silent --show-error \
   --connect-timeout 10 --max-time 30 \
   -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4${ENDPOINT}"
+  "https://<GITLAB_HOST>/api/v4<ENDPOINT>"
 ```
+
+`<ENDPOINT>` is a path from the recipes below.
 
 ## Pipeline tracing
 
 ### List recent pipelines in the dispatch project
 
-Agent workflows run in the dispatch project (`${DISPATCH_REPO}`), not the
-source project.
+Agent workflows run in the dispatch project (`<org>/.fullsend`, the printed
+`DISPATCH_REPO_ENCODED`), not the source project.
 
 ```bash
 curl --fail --silent --show-error \
@@ -114,13 +116,20 @@ can land in different layers. GitLab's issue search is per-project, so run the
 root-cause query once per layer project and merge the results. Do not use a
 group-wide search — it reaches private/unrelated sibling projects.
 
+First, in its own Bash call, encode the target project and print it:
+
 ```bash
 TARGET_ENCODED=$(printf '%s' "<target_repo>" | jq -sRr @uri)
+printf 'TARGET_ENCODED=%s\n' "${TARGET_ENCODED}"
+```
 
+Paste the printed value into `<TARGET_ENCODED>` below.
+
+```bash
 # Fix-keyed: keywords drawn from the proposed change, open issues
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4/projects/${TARGET_ENCODED}/issues?search=<fix+keywords>&state=opened&per_page=20" \
+  "https://<GITLAB_HOST>/api/v4/projects/<TARGET_ENCODED>/issues?search=<fix+keywords>&state=opened&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, web_url: .web_url, description: .description}'
 
 # Root-cause-keyed: run once per layer project (platform, agents, source),
@@ -143,7 +152,7 @@ curl --fail --silent --show-error \
 #     than guessed. closed_at is still available for the 30-day window.
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4/projects/${TARGET_ENCODED}/issues?search=<keywords>&per_page=20" \
+  "https://<GITLAB_HOST>/api/v4/projects/<TARGET_ENCODED>/issues?search=<keywords>&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, closed_as_duplicate_of: ._links.closed_as_duplicate_of, web_url: .web_url, description: .description}'
 
 # Follow a duplicate chain to its canonical. Prefer the structured link
@@ -154,11 +163,11 @@ curl --fail --silent --show-error \
 # does not find its canonical.)
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>" \
+  "https://<GITLAB_HOST>/api/v4/projects/<TARGET_ENCODED>/issues/<candidate-iid>" \
   | jq '{iid: .iid, title: .title, state: .state, description: .description, closed_as_duplicate_of: ._links.closed_as_duplicate_of}'
 curl --fail --silent --show-error \
   -K /tmp/gitlab-api.curlrc \
-  "https://<GITLAB_HOST>/api/v4/projects/${TARGET_ENCODED}/issues/<candidate-iid>/notes?per_page=50" \
+  "https://<GITLAB_HOST>/api/v4/projects/<TARGET_ENCODED>/issues/<candidate-iid>/notes?per_page=50" \
   | jq '.[] | {body: .body}'
 # Then fetch the referenced canonical directly (follow further links if it is
 # itself a duplicate). Note its project: the canonical may live in another layer.

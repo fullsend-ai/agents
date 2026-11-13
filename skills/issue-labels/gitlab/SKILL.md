@@ -57,7 +57,10 @@ setup with a request.
 
 Make the requests in later Bash tool calls, never in the token setup call,
 with the printed request values pasted in. Requests in the same block below
-may share one call.
+may share one call. When you have made your last GitLab request, wherever the
+flow ends (including when you skip labeling), scrub the token in its own Bash
+call: `: > /tmp/gitlab-api.curlrc`. Run the token setup command again before
+any later GitLab request.
 
 ## Step 1: Discover available labels
 
@@ -90,9 +93,7 @@ prompt. The sub-agent should:
 Do not dump raw issue data into the parent context. Only use the sub-agent's
 summary to inform your recommendations.
 
-After the sub-agent returns, scrub the token in its own Bash call:
-`: > /tmp/gitlab-api.curlrc`. Run the token setup command again before any
-later GitLab request.
+After the sub-agent returns, scrub the token as Step 0 describes.
 
 ## Step 3: Recommend labels
 
