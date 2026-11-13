@@ -6,7 +6,8 @@
 # agents gate their V2 rules on it, so a wording change on either side must
 # change both. The same holds for fullsend's withheld notice (its
 # codexWithheldNotice), which the V2 rules treat as a final result with no
-# content.
+# content. This test sees only this repository's copies of both strings: a
+# change on the fullsend side does not fail it.
 #
 # The test checks three things:
 # - both agents gate on the sentence;
@@ -116,7 +117,7 @@ for rule in \
   'one call per child' \
   'a payload that is empty, is `Agent shut down.` or `Agent was not found.`' \
   '`Agent errored:` or `Agent interrupted by Guardian:`' \
-  "a payload that is exactly ${NOTICE} (the runtime sends it in place of a result it withheld)" \
+  "a payload that is ${NOTICE}, ignoring whitespace around it (the runtime sends it in place of a result it withheld)" \
   'still running 900 s after its spawn: interrupt it' \
   'it sends no result, unless the call reports it `completed`, when its result message is the result' \
   "Apply that sub-agent's failure fallback" \
@@ -164,7 +165,7 @@ for rule in \
   'run `date +%s` after each spawn and at each timed-out wait' \
   'a payload that is empty, is `Agent shut down.` or `Agent was not found.`' \
   '`Agent errored:` or `Agent interrupted by Guardian:`' \
-  "a payload that is exactly ${NOTICE} (the runtime sends it in place of a result it withheld)" \
+  "a payload that is ${NOTICE}, ignoring whitespace around it (the runtime sends it in place of a result it withheld)" \
   'a task still running 900 s after its spawn (interrupt it with `interrupt_agent`' \
   '`target` = the task name `spawn_agent` returned, `/root/<task_name>`; it sends no result' \
   'is final for that task' \
