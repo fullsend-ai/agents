@@ -29,10 +29,13 @@ setup with a request.
 (umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
-Make every `curl -K /tmp/gitlab-api.curlrc` request in a separate, later Bash
-tool call. When you have made your last GitLab request, scrub the token in its
-own Bash call: `: > /tmp/gitlab-api.curlrc`. Run the setup command again before
-any later GitLab request.
+Make the requests in later Bash tool calls, never in the setup call. Requests
+in the same block below may share one call. Shell variables do not carry over
+between calls, so start each request call with the two derivation lines above
+(`GITLAB_HOST` and `REPO_ENCODED`). When you have made your last GitLab
+request, scrub the token in its own Bash call: `: > /tmp/gitlab-api.curlrc`.
+Run the setup command again before any later GitLab request, or if the file
+may already have been scrubbed.
 
 ## MR Metadata
 
@@ -79,8 +82,10 @@ curl --silent -K /tmp/gitlab-api.curlrc \
 
 Inspect project CI during context gathering. Follow the
 `fix-ci-inspection` skill for classification, authorization,
-untrusted-log handling, and `ci_inspections` recording. Reuse
-`GITLAB_HOST` and `REPO_ENCODED` from above.
+untrusted-log handling, and `ci_inspections` recording. Start the
+call with the `GITLAB_HOST` and `REPO_ENCODED` derivation lines from
+above, and run the block below in one call so `PIPELINE_ID` carries
+through.
 
 ```bash
 # Current MR metadata: top-level SHA (source-branch HEAD) and head pipeline

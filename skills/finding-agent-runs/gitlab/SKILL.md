@@ -12,6 +12,8 @@ description: >
 
 ```bash
 GITLAB_HOST=$(printf '%s\n' "$ORIGINATING_URL" | sed -E 's|^https://([^/]+)/.*|\1|')
+ORG="${REPO_FULL_NAME%%/*}"
+DISPATCH_REPO="${ORG}/.fullsend"
 DISPATCH_ENCODED=$(printf '%s' "$DISPATCH_REPO" | jq -sRr @uri)
 REPO_ENCODED=$(printf '%s' "$REPO_FULL_NAME" | jq -sRr @uri)
 ```
@@ -27,10 +29,13 @@ setup with a request.
 (umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
-Make every `curl -K /tmp/gitlab-api.curlrc` request in a separate, later Bash
-tool call. When you have made your last GitLab request, scrub the token in its
-own Bash call: `: > /tmp/gitlab-api.curlrc`. Run the setup command again before
-any later GitLab request.
+Make the requests in later Bash tool calls, never in the setup call. Requests
+in the same block below may share one call. Shell variables do not carry over
+between calls, so start each request call with the derivation lines from
+"Environment setup". When you have made your last GitLab request, scrub the
+token in its own Bash call: `: > /tmp/gitlab-api.curlrc`. Run the setup command
+again before any later GitLab request, or if the file may already have been
+scrubbed.
 
 ## Pipeline listing
 

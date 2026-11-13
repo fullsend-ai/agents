@@ -40,8 +40,10 @@ setup with a request.
 (umask 077; set -C; rm -f /tmp/gitlab-api.curlrc; printf 'header = "PRIVATE-TOKEN: %s"\nsilent\n' "$GITLAB_TOKEN" > /tmp/gitlab-api.curlrc)
 ```
 
-Make every `curl -K /tmp/gitlab-api.curlrc` request in a separate, later Bash
-tool call.
+Make the requests in later Bash tool calls, never in the setup call. Requests
+in the same block below may share one call. Shell variables do not carry over
+between calls, so start each request call with the derivation lines from
+Step 0.
 
 ## Step 1: Discover available labels
 
