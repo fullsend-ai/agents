@@ -494,18 +494,34 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# Multi-commit pipefail regression test — verify sed drains stream without SIGPIPE 141
-# Generate enough commits (>64KB total subject text) to saturate kernel pipe buffers,
-# ensuring git log would trigger SIGPIPE (141) under pipefail if a premature reader (head -n 1) was used.
-for _mc_i in $(seq 1 120); do
-  echo "pad ${_mc_i}" >> "${_mc_repo}/fix.txt"
-  ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -am "fix(#42): padding commit ${_mc_i} $(printf 'x%.0s' {1..600})"
+# Verify post-code.src.sh and bundled post-code.sh actually use sed -n '1p' (not head -).
+for _mc_script in "${SCRIPT_DIR}/post-code.src.sh" "${SCRIPT_DIR}/post-code.sh"; do
+  if ! grep -qE "COMMIT_SUBJECT=.*sed -n '1p'" "${_mc_script}" || grep -qE "COMMIT_SUBJECT=.*head -" "${_mc_script}"; then
+    echo "FAIL: multi-commit-script-uses-sed (${_mc_script})"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: multi-commit-script-uses-sed (${_mc_script##*/})"
+  fi
 done
 
+# Multi-commit pipefail regression test — exercise the exact COMMIT_SUBJECT= pipeline
+# from POST_SCRIPT against >64KB of commit subject output to prove sed drains the stream without SIGPIPE 141.
+_mc_pad="$(printf 'x%.0s' {1..8192})"
+for _mc_i in $(seq 1 12); do
+  echo "pad ${_mc_i}" >> "${_mc_repo}/fix.txt"
+  ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -am "fix(#42): padding commit ${_mc_i} ${_mc_pad}"
+done
+
+_mc_pipefail_line="$(grep -m1 -E "COMMIT_SUBJECT=.*sed -n '1p'" "${POST_SCRIPT}")"
 _mc_pipefail_exit=0
 _mc_pipefail_subject="$(
   set -eo pipefail
-  ${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | sed -n '1p'
+  cd "${_mc_repo}"
+  # shellcheck disable=SC2030,SC2034,SC2153
+  MERGE_BASE="${_mc_merge_base}"
+  PATH="$(dirname "${MC_REAL_GIT}"):${PATH}"
+  eval "${_mc_pipefail_line}"
+  printf '%s' "${COMMIT_SUBJECT}"
 )" || _mc_pipefail_exit=$?
 
 if [ "${_mc_pipefail_exit}" -eq 0 ] && [ "${_mc_pipefail_subject}" = "feat(#42): add primary feature" ]; then
