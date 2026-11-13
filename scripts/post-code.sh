@@ -4181,7 +4181,7 @@ else
   COMMIT_COUNT=1
 fi
 if [ "${COMMIT_COUNT}" -gt 1 ]; then
-  COMMIT_SUBJECT="$(git log --format='%s' --reverse "${MERGE_BASE}..HEAD" | head -1)"
+  COMMIT_SUBJECT="$(git log --format='%s' --reverse "${MERGE_BASE}..HEAD" | sed -n '1p')"
 else
   COMMIT_SUBJECT="$(git log -1 --format='%s' HEAD)"
 fi

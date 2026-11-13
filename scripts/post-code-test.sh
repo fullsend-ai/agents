@@ -471,6 +471,7 @@ ${MC_REAL_GIT} -C "${_mc_repo}" checkout -q -b agent/42-test
 echo "feature" > "${_mc_repo}/feature.txt"
 ${MC_REAL_GIT} -C "${_mc_repo}" add feature.txt
 ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "feat(#42): add primary feature"
+_mc_first_commit="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-parse HEAD)"
 echo "fix" > "${_mc_repo}/fix.txt"
 ${MC_REAL_GIT} -C "${_mc_repo}" add fix.txt
 ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
@@ -478,7 +479,7 @@ ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
 # Reimplement the multi-commit title selection from post-code.src.sh
 _mc_count="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
 if [ "${_mc_count}" -gt 1 ]; then
-  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | sed -n '1p')"
 else
   _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
 fi
@@ -493,11 +494,32 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# Single-commit case: rewind to one commit and verify
-${MC_REAL_GIT} -C "${_mc_repo}" reset -q --hard HEAD~1
+# Multi-commit pipefail regression test — verify sed drains stream without SIGPIPE 141
+# Generate enough commits (>64KB total subject text) to saturate kernel pipe buffers,
+# ensuring git log would trigger SIGPIPE (141) under pipefail if a premature reader (head -n 1) was used.
+for _mc_i in $(seq 1 120); do
+  echo "pad ${_mc_i}" >> "${_mc_repo}/fix.txt"
+  ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -am "fix(#42): padding commit ${_mc_i} $(printf 'x%.0s' {1..600})"
+done
+
+_mc_pipefail_exit=0
+_mc_pipefail_subject="$(
+  set -eo pipefail
+  ${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | sed -n '1p'
+)" || _mc_pipefail_exit=$?
+
+if [ "${_mc_pipefail_exit}" -eq 0 ] && [ "${_mc_pipefail_subject}" = "feat(#42): add primary feature" ]; then
+  echo "PASS: multi-commit-git-integration-pipefail-safe"
+else
+  echo "FAIL: multi-commit-git-integration-pipefail-safe (exit=${_mc_pipefail_exit}, subject='${_mc_pipefail_subject}')"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Single-commit case: rewind to initial feature commit and verify
+${MC_REAL_GIT} -C "${_mc_repo}" reset -q --hard "${_mc_first_commit}"
 _mc_count_single="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
 if [ "${_mc_count_single}" -gt 1 ]; then
-  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | sed -n '1p')"
 else
   _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
 fi
