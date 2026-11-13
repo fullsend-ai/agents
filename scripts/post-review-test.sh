@@ -691,6 +691,10 @@ fi
 
 # GET /user → authenticated GitLab review-token identity
 if [[ "\${URL}" == *"/user" ]]; then
+  if [[ -n "\${MOCK_GITLAB_USER_FAIL:-}" ]]; then
+    echo "mock user fetch failure" >&2
+    exit 1
+  fi
   echo '{"id":100,"username":"'"\${MOCK_GITLAB_REVIEW_ACTOR:-review-bot}"'"}'
   exit 0
 fi
@@ -4775,6 +4779,28 @@ run_gitlab_outdated_test "gitlab-current-thread-no-mutation" \
 
 run_gitlab_outdated_test "gitlab-resolve-fail-nonfatal" \
   "${GITLAB_OUTDATED_DISC}" stdout "Failed to resolve review thread" "1"
+
+GITLAB_MIXED_DISC='[{"id":"disc_mixed","notes":[{"id":16,"author":{"id":100,"username":"review-bot"},"resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}},{"id":17,"author":{"id":200,"username":"alice"},"resolvable":true,"resolved":false,"body":"Please keep this note"}]}]'
+run_gitlab_outdated_test "gitlab-mixed-bot-human-no-mutation" \
+  "${GITLAB_MIXED_DISC}" no-curl-call "discussions/disc_mixed?resolved=true"
+
+MOCK_GITLAB_DISCUSSIONS_FAIL=1 \
+run_gitlab_outdated_test "gitlab-discussions-fail-warning" \
+  "" stdout "Failed to fetch MR discussions for #99 while resolving outdated threads"
+
+MOCK_GITLAB_DISCUSSIONS_FAIL=1 \
+run_gitlab_outdated_test "gitlab-discussions-fail-no-mutation" \
+  "${GITLAB_OUTDATED_DISC}" no-curl-call "resolved=true"
+
+GITLAB_MARKER_BOT_DISC='[{"id":"disc_marker","notes":[{"id":18,"author":{"id":300,"username":"custom-ci-user"},"body":"<!-- fullsend:review:id=abc -->\nOutdated finding","resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}}]}]'
+MOCK_GITLAB_USER_FAIL=1 \
+run_gitlab_outdated_test "gitlab-user-fail-marker-fallback" \
+  "${GITLAB_MARKER_BOT_DISC}" curl-call "discussions/disc_marker?resolved=true"
+
+GITLAB_USERFAIL_HUMAN_DISC='[{"id":"disc_userfail_human","notes":[{"id":19,"author":{"id":200,"username":"alice"},"body":"Human note","resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}}]}]'
+MOCK_GITLAB_USER_FAIL=1 \
+run_gitlab_outdated_test "gitlab-user-fail-human-no-mutation" \
+  "${GITLAB_USERFAIL_HUMAN_DISC}" no-curl-call "discussions/disc_userfail_human?resolved=true"
 
 # No label-actions output line may carry '::' after its own '::cmd::' prefix.
 shopt -s nullglob

@@ -734,7 +734,10 @@ forge_resolve_outdated_review_threads() {
   local page=1 all_discussions="[]"
   while [[ "${page}" -le 10 ]]; do
     local response
-    response=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions?per_page=100&page=${page}" 2>/dev/null) || break
+    response=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions?per_page=100&page=${page}" 2>/dev/null) || {
+      echo "::warning::Failed to fetch MR discussions for #${PR_NUMBER} while resolving outdated threads" >&2
+      break
+    }
     if [[ -z "${response}" || "${response}" == "[]" || "${response}" != "["* ]]; then
       break
     fi
