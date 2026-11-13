@@ -31,6 +31,7 @@ FAILURES=0
 # Add new entries here when onboarding provider-backed credentials.
 DENYLIST=(
   JIRA_TOKEN
+  FULLSEND_JIRA_TOKEN
   OPENAI_API_KEY
   GH_TOKEN
   GITLAB_TOKEN

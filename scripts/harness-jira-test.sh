@@ -105,8 +105,10 @@ check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_TOKEN '${FULLSEND_JIRA_TOKE
 check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_USER_EMAIL '${FULLSEND_JIRA_EMAIL}'
 check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_DIR '${FULLSEND_DIR}'
 
-# fullsend refuses FULLSEND_JIRA_* at sandbox-bound sites, so no sandbox
-# env, Jira host file, or provider may reference them.
+# The real FULLSEND_JIRA_* values must never reach the sandbox, so no
+# sandbox env or Jira host file may reference them. The jira-ro provider is
+# the one exception (below): it holds the token host-side and gives the
+# sandbox only a placeholder.
 for f in "${TRIAGE_HARNESS}" "${REPO_ROOT}/harness/code.yaml"; do
   name="$(basename "${f}" .yaml)"
   if jira_overlay_field "${f}" "(.env.sandbox // {}) | to_entries | .[] | .key + \"=\" + .value" | grep -qF 'FULLSEND_JIRA_'; then
@@ -115,10 +117,20 @@ for f in "${TRIAGE_HARNESS}" "${REPO_ROOT}/harness/code.yaml"; do
     assert_pass "${name}-no-fullsend-jira-in-sandbox"
   fi
 done
-if grep -hv '^[[:space:]]*#' "${REPO_ROOT}"/env/jira/*.env "${REPO_ROOT}/providers/jira-ro.yaml" | grep -qF 'FULLSEND_JIRA_'; then
-  assert_fail "no-fullsend-jira-in-host-files-or-provider" "FULLSEND_JIRA_* referenced in a Jira host file or the provider"
+if grep -hv '^[[:space:]]*#' "${REPO_ROOT}"/env/jira/*.env | grep -qF 'FULLSEND_JIRA_'; then
+  assert_fail "no-fullsend-jira-in-host-files" "FULLSEND_JIRA_* referenced in a Jira host file"
 else
-  assert_pass "no-fullsend-jira-in-host-files-or-provider"
+  assert_pass "no-fullsend-jira-in-host-files"
+fi
+
+# The jira-ro provider reads the FULLSEND_JIRA_TOKEN repository secret
+# (fullsend-ai/fullsend#9411) under the JIRA_TOKEN placeholder name, and
+# nothing else: no JIRA_TOKEN secret is needed.
+provider_creds="$(yq -r '.credentials // {} | to_entries | .[] | .key + "=" + .value' "${REPO_ROOT}/providers/jira-ro.yaml")"
+if [[ "${provider_creds}" == 'JIRA_TOKEN=${FULLSEND_JIRA_TOKEN}' ]]; then
+  assert_pass "provider-reads-fullsend-jira-token"
+else
+  assert_fail "provider-reads-fullsend-jira-token" "jira-ro credentials are '${provider_creds}', want 'JIRA_TOKEN=\${FULLSEND_JIRA_TOKEN}'"
 fi
 
 # JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
