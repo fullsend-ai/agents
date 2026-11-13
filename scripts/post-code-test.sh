@@ -16,6 +16,15 @@ parse_script_test_args "$@"
 
 FAILURES=0
 
+# /proc exposes initial parent environments on Linux; macOS has no equivalent
+# fixture here. Both platforms still check inherited child environments and
+# restoration for trusted Jira calls below.
+JIRA_EXPECTED_PROC_LEAK=no
+if [[ "$(uname -s)" != Linux ]]; then
+  JIRA_EXPECTED_PROC_LEAK=unavailable
+  echo 'SKIP: Jira parent /proc environment inspection (non-Linux host)'
+fi
+
 POST_SCRIPT="$(resolve_agent_script post-code "${SCRIPT_DIR}")"
 if ! grep -q 'gha_echo' "${POST_SCRIPT}" || ! grep -q 'post_fail_to_issue' "${POST_SCRIPT}"; then
   echo "FAIL: bundled-script-has-failure-reporting"
@@ -3625,7 +3634,18 @@ case "\$1 \$2" in
   "api -X")      echo "unexpected Git Data API call: \$*" >&2; exit 99 ;;
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then echo "7"; fi; exit 0 ;;
-  "pr view")     echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "pr view")
+    if [[ " \$* " == *" state,isDraft "* ]]; then
+      if [[ -n "\${MOCK_READINESS_FAIL:-}" ]]; then exit 1; fi
+      if [[ -n "\${MOCK_PR_DETAILS:-}" ]]; then
+        echo "\${MOCK_PR_DETAILS}"
+      else
+        echo '{"state":"OPEN","isDraft":false}'
+      fi
+    else
+      echo "https://github.com/test-org/test-repo/pull/7"
+    fi
+    exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
   *)             exit 0 ;;
 esac
@@ -3649,8 +3669,20 @@ for arg in "\$@"; do
   prev="\${arg}"
 done
 case "\${method} \${url}" in
-  *merge_requests\?state=opened*) echo '[]' ;;
+  *merge_requests\?state=opened*)
+    if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then
+      echo '[{"iid":7,"source_project_id":1}]'
+    else
+      echo '[]'
+    fi ;;
   POST*merge_requests) echo '{"iid":1,"web_url":"https://gitlab.com/test-group/test-project/-/merge_requests/1"}' ;;
+  GET*merge_requests/*)
+    if [[ -n "\${MOCK_READINESS_FAIL:-}" ]]; then exit 1; fi
+    if [[ -n "\${MOCK_PR_DETAILS:-}" ]]; then
+      echo "\${MOCK_PR_DETAILS}"
+    else
+      echo '{"state":"opened","draft":false,"web_url":"https://gitlab.com/test-group/test-project/-/merge_requests/7","description":"Related to https://test.atlassian.net/browse/TESTPROJ-42"}'
+    fi ;;
   *projects/*) echo '{"id":1,"default_branch":"main","merge_method":"merge"}' ;;
   *users*) echo '[]' ;;
   *) echo '{}' ;;
@@ -3678,6 +3710,10 @@ done
 echo "fullsend \$* env-token=\${FULLSEND_JIRA_TOKEN:-unset} env-email=\${FULLSEND_JIRA_EMAIL-unset} <<BODY:\${BODY}:BODY>>" >> "${JIRA_INT_FULLSEND_LOG}"
 if [[ -n "\${MOCK_FULLSEND_FAIL:-}" ]]; then
   echo "Error: Jira API returned 401" >&2
+  exit 1
+fi
+if [[ "\$1 \$2" == "issues transition" && -n "\${MOCK_TRANSITION_FAIL:-}" ]]; then
+  echo "Error: transition failed \${FULLSEND_JIRA_TOKEN}" >&2
   exit 1
 fi
 MOCKEOF
@@ -3733,13 +3769,16 @@ write_jira_int_hook() {
 #!/usr/bin/env bash
 # The reference-transaction hook reads its stdin; drain it.
 cat > /dev/null
-read -r _ _ _ gp _ < "/proc/\${PPID}/stat"
-leak=no
-for pid in "\${PPID}" "\${gp}"; do
-  if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL)=.'; then
-    leak=yes
-  fi
-done
+leak=unavailable
+if [[ "\$(uname -s)" == Linux ]]; then
+  leak=no
+  read -r _ _ _ gp _ < "/proc/\${PPID}/stat"
+  for pid in "\${PPID}" "\${gp}"; do
+    if tr '\\0' '\\n' < "/proc/\${pid}/environ" 2>/dev/null | grep -qE '^(JIRA_TOKEN|JIRA_USER_EMAIL|FULLSEND_JIRA_TOKEN|FULLSEND_JIRA_EMAIL)=.'; then
+      leak=yes
+    fi
+  done
+fi
 echo "${hook_name} jira-token=\${JIRA_TOKEN:-unset} jira-email=\${JIRA_USER_EMAIL:-unset} fullsend-token=\${FULLSEND_JIRA_TOKEN:-unset} fullsend-email=\${FULLSEND_JIRA_EMAIL:-unset} proc-environ-leak=\${leak}" >> "${log_path}"
 exit 0
 HOOKEOF
@@ -3762,7 +3801,7 @@ run_jira_int() {
   # shellcheck disable=SC2030,SC2031
   (
     cd "${run_dir}"
-    unset GITLAB_HOST CI_SERVER_URL GH_TOKEN GITLAB_TOKEN
+    unset GITLAB_HOST CI_SERVER_URL GH_TOKEN GITLAB_TOKEN CODE_JIRA_PR_READY_TRANSITION
     export HOME="${JIRA_INT_TMPDIR}"
     export PATH="${JIRA_INT_MOCK_BIN}:${PATH}"
     export PUSH_TOKEN="fake-token"
@@ -3840,7 +3879,7 @@ fi
 for _jira_email_case in "empty|" "blank|  "; do
   _jira_email_name="${_jira_email_case%%|*}"
   run_jira_int "jira-service-account-${_jira_email_name}" github \
-    "JIRA_USER_EMAIL=${_jira_email_case#*|}" FULLSEND_JIRA_EMAIL=inherited@example.com
+    "JIRA_USER_EMAIL=${_jira_email_case#*|}" FULLSEND_JIRA_EMAIL=inherited@example.com CODE_JIRA_PR_READY_TRANSITION=Review
   if [ "${JIRA_INT_RC}" -ne 0 ]; then
     jira_int_fail "jira-service-account-${_jira_email_name}-email" "post-code failed"
   elif ! grep -qF "env-token=fake-jira-token env-email=unset" "${JIRA_INT_FULLSEND_LOG}" \
@@ -3854,7 +3893,7 @@ done
 # Jira credentials are withheld from pre-commit hooks (repo-controlled code)
 # but still reach the Jira stage update afterwards.
 : > "${JIRA_INT_PRECOMMIT_LOG}"
-JIRA_INT_WITH_PRECOMMIT=1 run_jira_int "jira-precommit-hidden" github
+JIRA_INT_WITH_PRECOMMIT=1 run_jira_int "jira-precommit-hidden" github CODE_JIRA_PR_READY_TRANSITION=Review
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-token-hidden-from-precommit" "post-code failed"
 elif ! grep -q "^pre-commit " "${JIRA_INT_PRECOMMIT_LOG}"; then
@@ -3888,7 +3927,7 @@ if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "post-code failed"
 elif ! grep -q "^pre-push " "${JIRA_INT_PREPUSH_LOG}"; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "pre-push hook did not run"
-elif ! grep -qF "pre-push jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=no" "${JIRA_INT_PREPUSH_LOG}"; then
+elif ! grep -qF "pre-push jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=${JIRA_EXPECTED_PROC_LEAK}" "${JIRA_INT_PREPUSH_LOG}"; then
   jira_int_fail "jira-token-hidden-from-prepush-hook" "Jira credentials visible to a pre-push hook"
 elif [ -s "${JIRA_INT_SHADOW_LOG}" ]; then
   jira_int_fail "jira-path-shadowed-fullsend-not-used" "a binary from the repo-controlled PATH entry received the Jira write"
@@ -3907,13 +3946,13 @@ fi
 JIRA_INT_REFTX_LOG="${JIRA_INT_TMPDIR}/reftx.log"
 : > "${JIRA_INT_REFTX_LOG}"
 JIRA_INT_BRANCH="feature/rename-me" JIRA_INT_REFTX_HOOK="${JIRA_INT_REFTX_LOG}" \
-  run_jira_int "jira-rename-hook-hidden" github
+  run_jira_int "jira-rename-hook-hidden" github CODE_JIRA_PR_READY_TRANSITION=Review
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "jira-token-hidden-from-rename-hook" "post-code failed"
 elif ! grep -qF "Renaming agent branch 'feature/rename-me' to 'agent/TESTPROJ-42-rename-me'" "${JIRA_INT_OUT}"; then
   jira_int_fail "jira-token-hidden-from-rename-hook" "agent branch was not renamed"
 elif grep -q "^reference-transaction " "${JIRA_INT_REFTX_LOG}" \
-     && ! grep -qF "reference-transaction jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=no" "${JIRA_INT_REFTX_LOG}"; then
+     && ! grep -qF "reference-transaction jira-token=unset jira-email=unset fullsend-token=unset fullsend-email=unset proc-environ-leak=${JIRA_EXPECTED_PROC_LEAK}" "${JIRA_INT_REFTX_LOG}"; then
   jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials visible to a hook during the branch rename"
 elif grep -qF "proc-environ-leak=yes" "${JIRA_INT_REFTX_LOG}"; then
   jira_int_fail "jira-token-hidden-from-rename-hook" "Jira credentials readable from a parent's /proc environ"
@@ -3999,7 +4038,7 @@ else
 fi
 
 # A work-item key that disagrees with the URL is not written anywhere in Jira.
-run_jira_int "jira-key-mismatch" github FULLSEND_WORK_ITEM_KEY=TESTPROJ-7
+run_jira_int "jira-key-mismatch" github FULLSEND_WORK_ITEM_KEY=TESTPROJ-7 CODE_JIRA_PR_READY_TRANSITION=Review
 if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
   jira_int_fail "jira-key-mismatch-not-written" "expected failure with no Jira write"
 else
@@ -4010,7 +4049,7 @@ fi
 # GitHub issue flow, no Jira write.
 run_jira_int "forge-originated" github FULLSEND_TRACKER= FULLSEND_WORK_ITEM_SOURCE=github \
   FULLSEND_WORK_ITEM_KEY= FULLSEND_WORK_ITEM_URL= ISSUE_NUMBER=42 \
-  ISSUE_URL=https://github.com/test-org/test-repo/issues/42 JIRA_TOKEN= JIRA_USER_EMAIL=
+  ISSUE_URL=https://github.com/test-org/test-repo/issues/42 JIRA_TOKEN= JIRA_USER_EMAIL= CODE_JIRA_PR_READY_TRANSITION=Review
 if [ "${JIRA_INT_RC}" -ne 0 ]; then
   jira_int_fail "forge-originated-run-no-jira-write" "post-code failed"
 elif [ -s "${JIRA_INT_FULLSEND_LOG}" ]; then
@@ -4028,6 +4067,90 @@ if [ "${JIRA_INT_RC}" -eq 0 ] || [ -s "${JIRA_INT_FORGE_LOG}" ]; then
   jira_int_fail "jira-tracker-source-conflict-fails" "expected failure before any forge call"
 else
   echo "PASS: jira-tracker-source-conflict-fails (expected failure, got exit ${JIRA_INT_RC})"
+fi
+
+# Optional PR-ready transition shares the verified Jira identity and credentials.
+if [ "$(yq -r '.env.runner.CODE_JIRA_PR_READY_TRANSITION' "${CODE_HARNESS}")" = "off" ] \
+   && [ "$(yq -r '.env.sandbox.CODE_JIRA_PR_READY_TRANSITION' "${CODE_HARNESS}")" = "null" ]; then
+  echo "PASS: jira-pr-ready-harness-runner-only-disabled"
+else
+  jira_int_fail "jira-pr-ready-harness-runner-only-disabled" "invalid harness setting"
+fi
+
+for _transition_forge in github gitlab; do
+  run_jira_int "transition-${_transition_forge}" "${_transition_forge}" CODE_JIRA_PR_READY_TRANSITION="Ready for Review"
+  if [ "${JIRA_INT_RC}" -ne 0 ] \
+     || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "--project TESTPROJ --number 42 --transition Ready for Review env-token=fake-jira-token env-email=fullsend-bot@example.com" "${JIRA_INT_FULLSEND_LOG}"; then
+    jira_int_fail "jira-pr-ready-${_transition_forge}" "expected one transition using trusted credentials and identity"
+  else
+    echo "PASS: jira-pr-ready-${_transition_forge}"
+  fi
+
+  for _transition_details in \
+    '{"state":"OPEN","isDraft":true}' \
+    '{"state":"CLOSED","isDraft":false}' \
+    '{"state":"MERGED","isDraft":false}' \
+    '{"state":"opened","draft":true}' \
+    '{"state":"closed","draft":false}' \
+    '{"state":"merged","draft":false}' \
+    '{"state":"OPEN"}' '{"state":"opened"}' 'invalid-json'; do
+    # Each case gets a new local repo, so use a counter in its fixture name.
+    _transition_case="${_transition_case:-0}"
+    _transition_case=$((_transition_case + 1))
+    run_jira_int "transition-skip-${_transition_case}" "${_transition_forge}" \
+      CODE_JIRA_PR_READY_TRANSITION=Review "MOCK_PR_DETAILS=${_transition_details}"
+    if [ "${JIRA_INT_RC}" -ne 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}"; then
+      jira_int_fail "jira-pr-ready-skip-${_transition_forge}-${_transition_case}" "unconfirmed readiness must not transition"
+    else
+      echo "PASS: jira-pr-ready-skip-${_transition_forge}-${_transition_case}"
+    fi
+  done
+done
+
+for _transition_forge in github gitlab; do
+  run_jira_int "transition-existing-${_transition_forge}" "${_transition_forge}" MOCK_EXISTING_PR=1 CODE_JIRA_PR_READY_TRANSITION=Review
+  if [ "${JIRA_INT_RC}" -ne 0 ] || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -q 'pushed new commits to' "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qE '^gh pr create|^curl .*--request POST .*merge_requests' "${JIRA_INT_FORGE_LOG}"; then
+    jira_int_fail "jira-pr-ready-existing-${_transition_forge}" "existing ready PR/MR must transition once without creating another"
+  else
+    echo "PASS: jira-pr-ready-existing-${_transition_forge}"
+  fi
+done
+
+for _disabled_setting in '' off; do
+  run_jira_int "transition-disabled-${_disabled_setting:-empty}" github "CODE_JIRA_PR_READY_TRANSITION=${_disabled_setting}"
+  if [ "${JIRA_INT_RC}" -ne 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -q 'state,isDraft' "${JIRA_INT_FORGE_LOG}"; then
+    jira_int_fail "jira-pr-ready-disabled-${_disabled_setting:-empty}" "disabled setting must not look up readiness or transition"
+  else
+    echo "PASS: jira-pr-ready-disabled-${_disabled_setting:-empty}"
+  fi
+done
+
+run_jira_int "transition-lookup-failure" github CODE_JIRA_PR_READY_TRANSITION=Review MOCK_READINESS_FAIL=1
+if [ "${JIRA_INT_RC}" -ne 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}" \
+   || ! grep -q 'Could not verify PR/MR readiness' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-pr-ready-read-failure" "lookup failure must warn and skip"
+else
+  echo "PASS: jira-pr-ready-read-failure"
+fi
+
+run_jira_int "transition-write-failure" github CODE_JIRA_PR_READY_TRANSITION=Review MOCK_TRANSITION_FAIL=1
+if [ "${JIRA_INT_RC}" -ne 0 ] || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+   || ! grep -q 'Optional Jira PR-ready transition failed' "${JIRA_INT_OUT}" \
+   || grep -q 'fake-jira-token' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-pr-ready-write-failure" "transition must warn without retrying or leaking its token"
+else
+  echo "PASS: jira-pr-ready-write-failure"
+fi
+
+run_jira_int "transition-comment-failure" github CODE_JIRA_PR_READY_TRANSITION=Review MOCK_FULLSEND_FAIL=1
+if [ "${JIRA_INT_RC}" -eq 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}"; then
+  jira_int_fail "jira-pr-ready-comment-failure" "comment failure must still fail the step before transition"
+else
+  echo "PASS: jira-pr-ready-comment-failure"
 fi
 
 rm -rf "${JIRA_INT_TMPDIR}"

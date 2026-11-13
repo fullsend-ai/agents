@@ -78,8 +78,8 @@ set -euo pipefail
 # to an unlinked private file, then re-exec this script with them removed
 # from the environment. The re-exec'd process reads them into shell variables
 # and closes the file at once, before any repo-controlled code can run. They
-# then live only in this process's memory, and reach the one trusted
-# consumer, post_jira_stage_update, after all hooks have finished. The
+# then live only in this process's memory, and reach the trusted CLI for
+# Jira stage comments and optional transitions after all hooks finish. The
 # FULLSEND_JIRA_* names are what the harness maps from and what the CLI
 # reads, so inherited copies are withheld as well.
 #
@@ -93,14 +93,16 @@ if [[ -n "${_POST_CODE_JIRA_FD:-}" ]]; then
   _jira_stash_fd="${_POST_CODE_JIRA_FD}"
   unset _POST_CODE_JIRA_FD
   { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true; } \
-    < "/proc/self/fd/${_jira_stash_fd}"
+    <&"${_jira_stash_fd}"
   exec {_jira_stash_fd}<&-
   unset _jira_stash_fd
 elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}" ]]; then
   _jira_stash_file="$(mktemp)"
-  exec {_jira_stash_fd}<>"${_jira_stash_file}"
+  printf '%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" >"${_jira_stash_file}"
+  # Open a fresh reader at offset zero before unlinking. Direct descriptor
+  # redirection works on both Linux and macOS without /proc/self/fd.
+  exec {_jira_stash_fd}<"${_jira_stash_file}"
   rm -f "${_jira_stash_file}"
-  printf '%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" >&"${_jira_stash_fd}"
   exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
     _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
 fi
@@ -3692,7 +3694,50 @@ Review and merge happen on the ${noun}."
     "${_jira_token_saved}" "${_jira_email_saved:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${project}" --number "${number}" \
-    --marker "<!-- fullsend:code-agent -->" --result -
+    --marker "<!-- fullsend:code-agent -->" --result - || return $?
+
+  maybe_transition_jira_pr_ready "${project}" "${number}" "${pr_url##*/}"
+}
+
+# Called only after post_jira_stage_update validates the Jira identity and
+# successfully writes its comment. This optional update must not fail an
+# otherwise successful code run. Jira owns the allowed source states.
+maybe_transition_jira_pr_ready() {
+  local project="$1" number="$2" pr_number="$3"
+  local transition="${CODE_JIRA_PR_READY_TRANSITION:-off}"
+  if [ "${transition}" = "off" ]; then
+    return 0
+  fi
+
+  local pr_json ready_filter
+  if ! pr_json="$(forge_get_pr_details "${pr_number}" "state,isDraft")"; then
+    gha_echo warning "Could not verify PR/MR readiness; skipping the optional Jira transition"
+    return 0
+  fi
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    ready_filter='.state == "opened" and .draft == false'
+  else
+    ready_filter='.state == "OPEN" and .isDraft == false'
+  fi
+  # Require explicit false, not a missing/null draft flag. Closed, merged,
+  # draft and malformed responses never cause a transition.
+  if ! jq -e "${ready_filter}" <<< "${pr_json}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local output
+  # Do not retry: a Jira transition can have side effects even if it leaves
+  # the issue in the same status. Credentials reach only the trusted CLI.
+  if ! output="$(jira_auth_fullsend "${_jira_fullsend_bin}" \
+    "${_jira_token_saved}" "${_jira_email_saved:-}" \
+    issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${project}" --number "${number}" \
+    --transition "${transition}" 2>&1)"; then
+    output="$(_redact_literal_token "${output}" "${_jira_token_saved}")"
+    print_sanitized_gha_log "${output}"
+    gha_echo warning "Optional Jira PR-ready transition failed; inspect the issue before retrying"
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------

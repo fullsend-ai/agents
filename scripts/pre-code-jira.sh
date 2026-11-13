@@ -27,10 +27,35 @@
 #                         the check is skipped when unset
 #   COMMENT_BODY       — trigger comment; when unset, read from the dispatch
 #                         event payload (${FULLSEND_DIR}/dispatch/event-payload.json)
+#   CODE_JIRA_STARTED_TRANSITION — optional Jira transition after preflight; "off"
+#                         (default) disables it; not proof the sandbox started
 #   CODE_FORCE         — "true" bypasses the existing-PR and child-issue checks
 #   FULLSEND_APP_SET   — GitHub App identity prefix (default "fullsend-ai"),
 #                         used to exclude bot-authored PRs
 set -euo pipefail
+
+# Withhold Jira credentials before repository dependency tools can run.
+# As in post-code, re-exec without them: plain unset leaves the initial
+# environment readable through /proc. Existing Jira helpers use the restored
+# unexported variables; only trusted API calls receive the token. This is not
+# isolation from a same-user process with ptrace access.
+if [[ -n "${_PRE_CODE_JIRA_FD:-}" ]]; then
+  _jira_stash_fd="${_PRE_CODE_JIRA_FD}"
+  unset _PRE_CODE_JIRA_FD
+  { IFS= read -r -d '' JIRA_TOKEN || true; IFS= read -r -d '' JIRA_USER_EMAIL || true; } \
+    <&"${_jira_stash_fd}"
+  exec {_jira_stash_fd}<&-
+  unset _jira_stash_fd
+elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}" ]]; then
+  _jira_stash_file="$(mktemp)"
+  printf '%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" >"${_jira_stash_file}"
+  # Open a fresh reader at offset zero before unlinking. Direct descriptor
+  # redirection works on both Linux and macOS without /proc/self/fd.
+  exec {_jira_stash_fd}<"${_jira_stash_file}"
+  rm -f "${_jira_stash_file}"
+  exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
+    _PRE_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/prescript-output.lib.sh
@@ -2463,6 +2488,10 @@ The code agent implements leaf work items. Use the child issues for implementati
   fi
 fi
 
+# Resolve the trusted CLI before repository-controlled tool installation or
+# the ~/.local/bin PATH prepend. The optional write happens only at the end.
+_JIRA_STARTED_FULLSEND_BIN="$(command -v fullsend 2>/dev/null || true)"
+
 # ---------------------------------------------------------------------------
 # Auto-detect and install pre-commit tool dependencies
 # ---------------------------------------------------------------------------
@@ -2519,3 +2548,34 @@ if [ -f "${TARGET_REPO}/.pre-commit-config.yaml" ] \
 fi
 export PATH="${HOME}/.local/bin:${PATH}"
 forge_append_path "${HOME}/.local/bin"
+
+# Preflight accepted: this is still before sandbox creation. A later sandbox
+# failure does not roll back the workflow transition. Skip/failure exits above
+# never reach this optional write, including a failed dependency installer.
+_jira_transition_started() {
+  local transition="${CODE_JIRA_STARTED_TRANSITION:-off}"
+  if [[ "${transition}" == "off" ]]; then
+    return 0
+  fi
+  if [[ ( -n "${FULLSEND_TRACKER:-}" && "${FULLSEND_TRACKER}" != jira ) \
+     || ( -n "${FULLSEND_WORK_ITEM_SOURCE:-}" && "${FULLSEND_WORK_ITEM_SOURCE}" != jira ) \
+     || ( -n "${FULLSEND_WORK_ITEM_KEY:-}" && "${FULLSEND_WORK_ITEM_KEY}" != "${ISSUE_KEY}" ) \
+     || ( -n "${FULLSEND_WORK_ITEM_URL:-}" && "${FULLSEND_WORK_ITEM_URL}" != "${ISSUE_URL}" ) ]]; then
+    echo "::warning::Jira source identity does not match ISSUE_URL; skipping the optional started transition"
+    return 0
+  fi
+  if [[ -z "${JIRA_TOKEN:-}" || -z "${FULLSEND_DIR:-}" || -z "${_JIRA_STARTED_FULLSEND_BIN}" ]]; then
+    echo "::warning::Optional Jira started transition requires JIRA_TOKEN, FULLSEND_DIR and the fullsend CLI; skipping"
+    return 0
+  fi
+  # No retry: transitions can have side effects even when the status stays
+  # the same. Suppress raw CLI output, which may contain credential material.
+  if ! jira_auth_fullsend "${_JIRA_STARTED_FULLSEND_BIN}" "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+    issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${PROJECT_KEY}" --number "${ISSUE_KEY##*-}" \
+    --transition "${transition}" >/dev/null 2>&1; then
+    echo "::warning::Optional Jira started transition failed; coding will proceed. Inspect the issue before retrying"
+  fi
+  return 0
+}
+_jira_transition_started
