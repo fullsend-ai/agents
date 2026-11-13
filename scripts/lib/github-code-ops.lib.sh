@@ -91,10 +91,15 @@ forge_post_pr_comment() {
 
 # --- PR/MR lifecycle ---
 
+# Arguments: issue_number [bot_login] [coder_bot_login] [include_coder]
+# With include_coder="true", open non-draft PRs by coder_bot_login are
+# reported too (label-triggered runs, #1937); otherwise both bots are
+# excluded.
 forge_list_prs_for_issue() {
   local issue_number="$1"
   local bot_login="${2:-fullsend-ai[bot]}"
   local coder_bot_login="${3:-fullsend-ai-coder[bot]}"
+  local include_coder="${4:-false}"
   local owner="${REPO_FULL_NAME%%/*}"
   local name="${REPO_FULL_NAME##*/}"
   # Use closedByPullRequestsReferences to find only PRs with closing keywords
@@ -104,6 +109,7 @@ forge_list_prs_for_issue() {
   # GraphQL's Bot.login has no "[bot]" suffix, so strip it and check
   # __typename == "Bot" to avoid false bot matches. `gh api` lacks --arg,
   # so pipe the JSON through a standalone `jq -r --arg ...` filter.
+  # A coder PR counts only when isDraft is explicitly false.
   gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
@@ -116,17 +122,22 @@ forge_list_prs_for_issue() {
               url
               author { login __typename }
               state
+              isDraft
             }
           }
         }
       }
     }' 2>/dev/null \
-    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" '
+    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" \
+        --arg include_coder "${include_coder}" '
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == "OPEN")
            | select(.author.__typename != "Bot"
                or (.author.login != $bot
-                   and .author.login != $coder))]
+                   and .author.login != $coder)
+               or ($include_coder == "true"
+                   and .author.login == $coder
+                   and .isDraft == false))]
     | .[] | "\(.number)\t\(.author.login)\t\(.url)"
   ' 2>/dev/null || true
 }

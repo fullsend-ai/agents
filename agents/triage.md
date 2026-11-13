@@ -46,8 +46,9 @@ PR/MR gate below cannot silently miss it.
 
 A PR/MR authored by the pipeline's own coder bot counts for this gate the same as
 a human-authored one — the work is in flight either way. (The code agent's
-pre-check filters bot PRs/MRs out, but that filter answers a different question:
-whether to skip dispatching a *new* implementation.)
+pre-check excludes coder-bot PRs/MRs on explicit `/fs-code` runs and for draft
+PRs/MRs; on label-triggered runs it also considers open non-draft coder-bot
+PRs/MRs that close the issue.)
 
 Compare issue titles and descriptions for semantic overlap. An issue is a duplicate if it describes the same root problem, even if the symptoms or wording differ.
 

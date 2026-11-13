@@ -447,7 +447,7 @@ run_test "multiple-human-prs-block" \
 
 run_test_stdout "multiple-human-prs-notice" \
   "${MULTI_HUMAN_PR_JSON}" \
-  "Found existing human PR #50 by @dev-a" \
+  "Found existing PR #50 by @dev-a" \
   0
 
 # PR label gets created.
@@ -948,7 +948,7 @@ run_test_stdout "missing-sub-issues-field-proceeds" \
 # Human PR takes precedence: both present → skip with the existing-PR message.
 run_test_stdout "human-pr-precedes-sub-issues" \
   "${SUB_ISSUES_AND_HUMAN_PR_JSON}" \
-  "Found existing human PR #99 by @human-dev" \
+  "Found existing PR #99 by @human-dev" \
   0
 
 run_test_stdout_excludes "human-pr-precedes-sub-issues-no-tracking-skip" \
@@ -1006,6 +1006,96 @@ run_test_prescript_output "protocol-empty-on-zero-sub-issues" \
   "" \
   0
 
+# --- Label-triggered coder-bot PR skip (issue #1937) ---
+# A label-triggered run (no COMMENT_BODY) also skips on an open, non-draft
+# coder-bot PR that closes the issue. An explicit /fs-code still proceeds,
+# --force bypasses, and draft or closed coder PRs never block.
+
+_coder_pr_node() {
+  # $1 — state, $2 — isDraft, $3 — bare bot login (default fullsend-ai-coder)
+  printf '{"number":11,"url":"https://github.com/test-org/test-repo/pull/11","author":{"login":"%s","__typename":"Bot"},"state":"%s","isDraft":%s}' \
+    "${3:-fullsend-ai-coder}" "$1" "$2"
+}
+
+READY_CODER_PR_JSON="$(_gql_wrap "[$(_coder_pr_node OPEN false)]")"
+DRAFT_CODER_PR_JSON="$(_gql_wrap "[$(_coder_pr_node OPEN true)]")"
+CLOSED_CODER_PR_JSON="$(_gql_wrap "[$(_coder_pr_node CLOSED false)]")"
+READY_APP_BOT_PR_JSON="$(_gql_wrap "[$(_coder_pr_node OPEN false fullsend-ai)]")"
+READY_CUSTOM_CODER_PR_JSON="$(_gql_wrap "[$(_coder_pr_node OPEN false custom-app-coder)]")"
+
+# (a) Label-triggered + open non-draft coder PR → skipped=true, pr-open label.
+run_test_prescript_output "label-trigger-ready-coder-pr-skips" \
+  "${READY_CODER_PR_JSON}" \
+  "skipped=true${NL}reason=open PR #11 by @fullsend-ai-coder already addresses issue #42${NL}" \
+  0
+
+run_test "label-trigger-ready-coder-pr-applies-label" \
+  "${READY_CODER_PR_JSON}" \
+  "gh api repos/test-org/test-repo/issues/42/labels -f labels[]=pr-open --silent" \
+  0
+
+# Custom app set: the derived coder identity is recognized.
+run_test_prescript_output "label-trigger-custom-coder-pr-skips" \
+  "${READY_CUSTOM_CODER_PR_JSON}" \
+  "skipped=true${NL}reason=open PR #11 by @custom-app-coder already addresses issue #42${NL}" \
+  0 \
+  "FULLSEND_APP_SET=custom-app"
+
+# The app-set bot (non-coder) PR still does not block.
+run_test_prescript_output "label-trigger-app-bot-pr-proceeds" \
+  "${READY_APP_BOT_PR_JSON}" \
+  "" \
+  0
+
+# (b) Explicit /fs-code + open coder PR → proceeds as before.
+run_test_prescript_output "fs-code-ready-coder-pr-proceeds" \
+  "${READY_CODER_PR_JSON}" \
+  "" \
+  0 \
+  "COMMENT_BODY=/fs-code"
+
+run_test_stdout "fs-code-ready-coder-pr-not-label-triggered" \
+  "${READY_CODER_PR_JSON}" \
+  "(label-triggered: false)" \
+  0 \
+  "COMMENT_BODY=/fs-code please redo"
+
+# (c) --force / CODE_FORCE bypass the check entirely.
+run_test_prescript_output "fs-code-force-ready-coder-pr-bypasses" \
+  "${READY_CODER_PR_JSON}" \
+  "" \
+  0 \
+  "COMMENT_BODY=/fs-code --force"
+
+run_test_prescript_output "code-force-ready-coder-pr-bypasses" \
+  "${READY_CODER_PR_JSON}" \
+  "" \
+  0 \
+  "CODE_FORCE=true"
+
+# (d) Draft, closed, or isDraft-less coder PRs never block.
+run_test_prescript_output "label-trigger-draft-coder-pr-proceeds" \
+  "${DRAFT_CODER_PR_JSON}" \
+  "" \
+  0
+
+run_test_prescript_output "label-trigger-closed-coder-pr-proceeds" \
+  "${CLOSED_CODER_PR_JSON}" \
+  "" \
+  0
+
+run_test_prescript_output "label-trigger-coder-pr-missing-isdraft-proceeds" \
+  "${CODER_BOT_PR_JSON}" \
+  "" \
+  0
+
+# (e) Human PR still skips on an explicit /fs-code.
+run_test_prescript_output "fs-code-human-pr-skips" \
+  "${HUMAN_PR_JSON}" \
+  "skipped=true${NL}reason=open PR #99 by @human-dev already addresses issue #42${NL}" \
+  0 \
+  "COMMENT_BODY=/fs-code"
+
 # --- GitLab forge_list_prs_for_issue — fail open on API error (issue #1585) ---
 # Exercises gitlab-code-ops.lib.sh directly, mocking the low-level API call.
 
@@ -1014,6 +1104,7 @@ run_gl_list_prs_test() {
   local mock_body="$2"
   local expect_exit="$3"
   local expect_output="$4"
+  local include_coder="${5:-false}"
 
   local gl_stderr_log="${TMPDIR}/gl-list-prs-stderr.log"
   local gl_output
@@ -1027,7 +1118,7 @@ run_gl_list_prs_test() {
     eval "${mock_body}"
 
     export REPO_ENCODED="test-group%2Ftest-project"
-    forge_list_prs_for_issue "42" "bot-login" "coder-bot-login" 2>"${gl_stderr_log}"
+    forge_list_prs_for_issue "42" "bot-login" "coder-bot-login" "${include_coder}" 2>"${gl_stderr_log}"
   ) || gl_exit=$?
 
   if [[ ${gl_exit} -ne ${expect_exit} ]]; then
@@ -1055,6 +1146,30 @@ _gitlab_code_api() { return 1; }
 run_gl_list_prs_test "gitlab-list-prs-zero-mrs-confirmed" '
 _gitlab_code_api() { echo "[]"; }
 ' 0 ""
+
+# --- GitLab coder MRs on label-triggered runs (issue #1937) ---
+# A coder MR has source branch agent/<IID>-* and closes the issue. It is
+# reported only with include_coder=true and draft explicitly false.
+GL_CODER_MR='{"iid":7,"title":"fix: thing","description":"Closes #42","source_branch":"agent/42-thing","draft":DRAFT,"author":{"username":"project_1_bot_abc"},"web_url":"https://gitlab.com/g/p/-/merge_requests/7"}'
+GL_HUMAN_MR='{"iid":8,"title":"fix: thing","description":"Fixes #42","source_branch":"dev/thing","draft":false,"author":{"username":"human-dev"},"web_url":"https://gitlab.com/g/p/-/merge_requests/8"}'
+_gl_mrs_mock() {
+  # $1 — JSON array served on page 1; later pages are empty.
+  printf '_gitlab_code_api() { case "$2" in *page=1) printf %%s %q;; *) echo "[]";; esac; }' "$1"
+}
+
+run_gl_list_prs_test "gitlab-list-prs-ready-coder-mr-excluded-by-default" \
+  "$(_gl_mrs_mock "[${GL_CODER_MR/DRAFT/false}]")" 0 ""
+
+run_gl_list_prs_test "gitlab-list-prs-ready-coder-mr-included" \
+  "$(_gl_mrs_mock "[${GL_CODER_MR/DRAFT/false}]")" 0 \
+  "7	project_1_bot_abc	https://gitlab.com/g/p/-/merge_requests/7" "true"
+
+run_gl_list_prs_test "gitlab-list-prs-draft-coder-mr-excluded" \
+  "$(_gl_mrs_mock "[${GL_CODER_MR/DRAFT/true}]")" 0 "" "true"
+
+run_gl_list_prs_test "gitlab-list-prs-human-mr-included-either-way" \
+  "$(_gl_mrs_mock "[${GL_HUMAN_MR}]")" 0 \
+  "8	human-dev	https://gitlab.com/g/p/-/merge_requests/8"
 
 # --- GitLab forge_list_prs_for_issue — production pre-script regression (#1585) ---
 # End-to-end run of pre-code.sh with FULLSEND_FORGE=gitlab and every curl
@@ -1118,6 +1233,79 @@ run_gitlab_prescript_output_test() {
 run_gitlab_prescript_output_test "protocol-empty-on-gitlab-api-failure" \
   "" \
   0
+
+# --- GitLab pre-script: label trigger comes from EVENT_TYPE (issue #1937) ---
+# GitLab never sets COMMENT_BODY for code runs, so only EVENT_TYPE=issue_label
+# marks a label-triggered run. A /fs-code note (issue_note) or a missing
+# EVENT_TYPE proceeds past an open coder MR.
+run_gitlab_coder_mr_test() {
+  local test_name="$1"
+  local expected_content="$2"
+  local event_type="$3"
+
+  local mock_bin="${TMPDIR}/gl-mr-bin"
+  rm -rf "${mock_bin}"
+  mkdir -p "${mock_bin}"
+  printf '[%s]' "${GL_CODER_MR/DRAFT/false}" > "${TMPDIR}/gl-mrs.json"
+  cat > "${mock_bin}/curl" <<MOCKEOF
+#!/usr/bin/env bash
+for a in "\$@"; do
+  case "\${a}" in
+    *merge_requests\?state=opened*page=1) cat "${TMPDIR}/gl-mrs.json"; exit 0 ;;
+    *merge_requests\?state=opened*) echo "[]"; exit 0 ;;
+  esac
+done
+echo "{}"
+MOCKEOF
+  chmod +x "${mock_bin}/curl"
+
+  local proto_out="${TMPDIR}/gl-prescript-output.txt"
+  : > "${proto_out}"
+
+  local env_cmd=(
+    env -u FULLSEND_PRESCRIPT_OUTPUT -u CODE_FORCE -u COMMENT_BODY -u EVENT_TYPE -u REPO_DIR -u CI_PROJECT_DIR
+    PATH="${mock_bin}:${PATH}"
+    ISSUE_NUMBER="42"
+    REPO_FULL_NAME="test-group/test-project"
+    ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/42"
+    CI_SERVER_HOST="gitlab.com"
+    FULLSEND_FORGE="gitlab"
+    GITLAB_TOKEN="fake-token"
+    FULLSEND_PRESCRIPT_OUTPUT="${proto_out}"
+  )
+  [[ -n "${event_type}" ]] && env_cmd+=("EVENT_TYPE=${event_type}")
+
+  local exit_code=0
+  "${env_cmd[@]}" bash "${PRE_SCRIPT}" > "${TMPDIR}/gl-stdout.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — expected exit 0, got ${exit_code}"
+    cat "${TMPDIR}/gl-stdout.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  if ! diff <(printf '%s' "${expected_content}") "${proto_out}" > "${TMPDIR}/gl-proto-diff.log" 2>&1; then
+    echo "FAIL: ${test_name} — protocol output mismatch"
+    cat "${TMPDIR}/gl-proto-diff.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  echo "PASS: ${test_name}"
+}
+
+run_gitlab_coder_mr_test "gitlab-label-trigger-ready-coder-mr-skips" \
+  "skipped=true${NL}reason=open PR !7 by @project_1_bot_abc already addresses issue #42${NL}" \
+  "issue_label"
+
+run_gitlab_coder_mr_test "gitlab-note-trigger-ready-coder-mr-proceeds" \
+  "" \
+  "issue_note"
+
+run_gitlab_coder_mr_test "gitlab-unknown-trigger-ready-coder-mr-proceeds" \
+  "" \
+  ""
 
 # --- Regression: forge_retry_transient must be defined for every forge ---
 # The pre-code scripts call forge_retry_transient outside the forge-specific
