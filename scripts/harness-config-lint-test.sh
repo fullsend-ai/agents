@@ -13,7 +13,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="${SCRIPT_DIR}/.."
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HARNESS_DIR="${REPO_ROOT}/harness"
 FAILURES=0
 
@@ -37,6 +37,7 @@ run_test() {
 
 # Test 1: Every validation_loop with script must have schema
 test_validation_loop_schema() {
+  local found_error=0
   for harness in "${HARNESS_DIR}"/*.yaml; do
     local harness_name
     harness_name="$(basename "${harness}")"
@@ -44,6 +45,7 @@ test_validation_loop_schema() {
     local has_validation_loop
     local has_script
     local has_schema
+    local schema_value
 
     has_validation_loop="$(yq eval 'has("validation_loop")' "${harness}" 2>/dev/null)" || has_validation_loop="false"
     if [[ "${has_validation_loop}" != "true" ]]; then
@@ -58,10 +60,17 @@ test_validation_loop_schema() {
     has_schema="$(yq eval '.validation_loop | has("schema")' "${harness}" 2>/dev/null)" || has_schema="false"
     if [[ "${has_schema}" != "true" ]]; then
       echo "${harness_name}: validation_loop has script but no schema"
-      return 1
+      found_error=1
+      continue
+    fi
+
+    schema_value="$(yq eval '.validation_loop.schema' "${harness}" 2>/dev/null)" || schema_value=""
+    if [[ -z "${schema_value}" || "${schema_value}" == "null" ]]; then
+      echo "${harness_name}: validation_loop.schema is empty or null"
+      found_error=1
     fi
   done
-  return 0
+  return ${found_error}
 }
 
 # Test 2: No env.runner contains FULLSEND_OUTPUT_SCHEMA
@@ -77,13 +86,21 @@ test_no_hardcoded_schema() {
       echo "${harness_name}: env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA (should be declared in validation_loop.schema)"
       found_hardcoded=1
     fi
+
+    local platforms
+    platforms="$(yq eval '.forge | keys | .[]' "${harness}" 2>/dev/null)"
+    while IFS= read -r platform; do
+      [[ -z "${platform}" ]] && continue
+      local forge_env_schema
+      forge_env_schema="$(yq eval ".forge.${platform}.env.runner.FULLSEND_OUTPUT_SCHEMA" "${harness}" 2>/dev/null)" || forge_env_schema="null"
+      if [[ "${forge_env_schema}" != "null" ]] && [[ -n "${forge_env_schema}" ]]; then
+        echo "${harness_name}: forge.${platform}.env.runner contains hardcoded FULLSEND_OUTPUT_SCHEMA"
+        found_hardcoded=1
+      fi
+    done <<< "${platforms}"
   done
 
-  if [[ ${found_hardcoded} -eq 0 ]]; then
-    return 0
-  else
-    return 1
-  fi
+  return ${found_hardcoded}
 }
 
 # Test 3: All referenced schemas exist and are valid JSON
@@ -120,8 +137,8 @@ test_schema_files_exist_and_valid() {
       continue
     fi
 
-    if ! jq empty "${full_schema_path}" 2>/dev/null; then
-      echo "${harness_name}: schema file is not valid JSON: ${schema_path}"
+    if ! jq -s -e 'length == 1' "${full_schema_path}" 2>/dev/null; then
+      echo "${harness_name}: schema file is not valid JSON (must be exactly one JSON document): ${schema_path}"
       found_error=1
     fi
   done
