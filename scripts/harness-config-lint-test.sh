@@ -429,63 +429,104 @@ check_schema_files_at_path() {
 # Test 3: All referenced schemas exist and are valid JSON
 test_schema_files_exist_and_valid() {
   local found_error=0
-  # Process each glob with its appropriate resolution root to match engine's ResolveRelativeTo
-  local harnesses_and_roots=(
-    "${HARNESS_DIR}/*.yaml:${REPO_ROOT}"
-    "${REPO_ROOT}/examples/*/harness/*.yaml:${REPO_ROOT}/examples/*"
-    "${REPO_ROOT}/eval/harness/*.yaml:${REPO_ROOT}"
-  )
-  for harness_spec in "${harnesses_and_roots[@]}"; do
-    local pattern="${harness_spec%%:*}"
-    local resolve_root="${harness_spec#*:}"
-    for harness in ${pattern}; do
-      [[ -f "${harness}" ]] || continue
-      local harness_name
-      harness_name="$(basename "${harness}")"
+  local file_count=0
 
-      # For examples/*/harness/*.yaml, resolve_root needs to be the example root, not examples/*
-      if [[ "${harness}" == */examples/*/harness/*.yaml ]]; then
-        resolve_root="$(dirname "$(dirname "${harness}")")"
-      fi
+  # Process harness/ and eval/harness/ with REPO_ROOT as resolve root
+  for harness in "${HARNESS_DIR}"/*.yaml "${REPO_ROOT}"/eval/harness/*.yaml; do
+    [[ -f "${harness}" ]] || continue
+    file_count=$((file_count + 1))
+    local harness_name
+    harness_name="$(basename "${harness}")"
 
-      # Check top-level schema
-      check_schema_files_at_path "${harness}" "." "top-level" "${resolve_root}" || found_error=1
+    # Check top-level schema
+    check_schema_files_at_path "${harness}" "." "top-level" "${REPO_ROOT}" || found_error=1
 
-      # Check forge-specific schemas
-      local has_forge
-      has_forge="$(yq 'has("forge")' "${harness}")" || {
-        echo "${harness_name}: yq failed to check forge"
+    # Check forge-specific schemas
+    local has_forge
+    has_forge="$(yq 'has("forge")' "${harness}")" || {
+      echo "${harness_name}: yq failed to check forge"
+      found_error=1
+      continue
+    }
+    if [[ "${has_forge}" == "true" ]]; then
+      local platforms
+      platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
+        echo "${harness_name}: yq failed to get forge keys"
         found_error=1
         continue
       }
-      if [[ "${has_forge}" == "true" ]]; then
-        local platforms
-        platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
-          echo "${harness_name}: yq failed to get forge keys"
-          found_error=1
-          continue
-        }
-        while IFS= read -r platform; do
-          [[ -z "${platform}" ]] && continue
-          check_schema_files_at_path "${harness}" ".forge.${platform}" "forge.${platform}" "${resolve_root}" || found_error=1
-        done <<< "${platforms}"
-      fi
+      while IFS= read -r platform; do
+        [[ -z "${platform}" ]] && continue
+        check_schema_files_at_path "${harness}" ".forge.${platform}" "forge.${platform}" "${REPO_ROOT}" || found_error=1
+      done <<< "${platforms}"
+    fi
 
-      # Check overlay schemas
-      local overlay_count
-      overlay_count="$(yq '.overlays | length' "${harness}")" || {
-        echo "${harness_name}: yq failed to get overlay count"
-        found_error=1
-        continue
-      }
-      if [[ ${overlay_count} -gt 0 ]]; then
-        local i
-        for ((i=0; i<overlay_count; i++)); do
-          check_schema_files_at_path "${harness}" ".overlays[${i}]" "overlays[${i}]" "${resolve_root}" || found_error=1
-        done
-      fi
-    done
+    # Check overlay schemas
+    local overlay_count
+    overlay_count="$(yq '.overlays | length' "${harness}")" || {
+      echo "${harness_name}: yq failed to get overlay count"
+      found_error=1
+      continue
+    }
+    if [[ ${overlay_count} -gt 0 ]]; then
+      local i
+      for ((i=0; i<overlay_count; i++)); do
+        check_schema_files_at_path "${harness}" ".overlays[${i}]" "overlays[${i}]" "${REPO_ROOT}" || found_error=1
+      done
+    fi
   done
+
+  # Process examples/*/harness/ with dirname(dirname(harness)) as resolve root
+  for harness in "${REPO_ROOT}"/examples/*/harness/*.yaml; do
+    [[ -f "${harness}" ]] || continue
+    file_count=$((file_count + 1))
+    local harness_name
+    harness_name="$(basename "${harness}")"
+    local resolve_root
+    resolve_root="$(dirname "$(dirname "${harness}")")"
+
+    # Check top-level schema
+    check_schema_files_at_path "${harness}" "." "top-level" "${resolve_root}" || found_error=1
+
+    # Check forge-specific schemas
+    local has_forge
+    has_forge="$(yq 'has("forge")' "${harness}")" || {
+      echo "${harness_name}: yq failed to check forge"
+      found_error=1
+      continue
+    }
+    if [[ "${has_forge}" == "true" ]]; then
+      local platforms
+      platforms="$(yq '.forge | keys | .[]' "${harness}")" || {
+        echo "${harness_name}: yq failed to get forge keys"
+        found_error=1
+        continue
+      }
+      while IFS= read -r platform; do
+        [[ -z "${platform}" ]] && continue
+        check_schema_files_at_path "${harness}" ".forge.${platform}" "forge.${platform}" "${resolve_root}" || found_error=1
+      done <<< "${platforms}"
+    fi
+
+    # Check overlay schemas
+    local overlay_count
+    overlay_count="$(yq '.overlays | length' "${harness}")" || {
+      echo "${harness_name}: yq failed to get overlay count"
+      found_error=1
+      continue
+    }
+    if [[ ${overlay_count} -gt 0 ]]; then
+      local i
+      for ((i=0; i<overlay_count; i++)); do
+        check_schema_files_at_path "${harness}" ".overlays[${i}]" "overlays[${i}]" "${resolve_root}" || found_error=1
+      done
+    fi
+  done
+
+  if [[ ${file_count} -eq 0 ]]; then
+    echo "no harness files found in ${HARNESS_DIR}, examples, or eval/harness"
+    return 1
+  fi
 
   if [[ ${found_error} -eq 0 ]]; then
     return 0
