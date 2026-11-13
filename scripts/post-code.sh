@@ -39,6 +39,8 @@
 # host from CI_SERVER_HOST.
 #
 # Optional environment variables:
+#   CODE_JIRA_PR_READY_TRANSITION — named Jira transition after an open, non-draft
+#                       PR/MR is confirmed; "off" (default) disables it
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
 #   CODE_ALLOWED_TARGET_BRANCHES
 #                     — comma-separated list of branches the agent may target,
@@ -3722,6 +3724,7 @@ maybe_transition_jira_pr_ready() {
   # Require explicit false, not a missing/null draft flag. Closed, merged,
   # draft and malformed responses never cause a transition.
   if ! jq -e "${ready_filter}" <<< "${pr_json}" >/dev/null 2>&1; then
+    echo "PR/MR is not confirmed open and non-draft; skipping the optional Jira PR-ready transition"
     return 0
   fi
 
@@ -3733,7 +3736,12 @@ maybe_transition_jira_pr_ready() {
     issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${project}" --number "${number}" \
     --transition "${transition}" 2>&1)"; then
-    output="$(_redact_literal_token "${output}" "${_jira_token_saved}")"
+    # Repository hooks can shadow PATH utilities. Redact in-process before
+    # passing diagnostics to any external sanitizer; never export the token.
+    output="${output//"${_jira_token_saved}"/[REDACTED]}"
+    if [ -n "${_jira_email_saved:-}" ]; then
+      output="${output//"${_jira_email_saved}"/[REDACTED]}"
+    fi
     print_sanitized_gha_log "${output}"
     gha_echo warning "Optional Jira PR-ready transition failed; inspect the issue before retrying"
   fi

@@ -2569,11 +2569,19 @@ _jira_transition_started() {
     return 0
   fi
   # No retry: transitions can have side effects even when the status stays
-  # the same. Suppress raw CLI output, which may contain credential material.
-  if ! jira_auth_fullsend "${_JIRA_STARTED_FULLSEND_BIN}" "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
+  # the same. Redact in-process before passing diagnostics to PATH utilities.
+  local output line
+  if ! output="$(jira_auth_fullsend "${_JIRA_STARTED_FULLSEND_BIN}" "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
     issues transition --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${PROJECT_KEY}" --number "${ISSUE_KEY##*-}" \
-    --transition "${transition}" >/dev/null 2>&1; then
+    --transition "${transition}" 2>&1)"; then
+    output="${output//"${JIRA_TOKEN}"/[REDACTED]}"
+    if [[ -n "${JIRA_USER_EMAIL:-}" ]]; then
+      output="${output//"${JIRA_USER_EMAIL}"/[REDACTED]}"
+    fi
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      printf '%s\n' "$(_gha_sanitize "${line}")"
+    done <<< "${output}"
     echo "::warning::Optional Jira started transition failed; coding will proceed. Inspect the issue before retrying"
   fi
   return 0

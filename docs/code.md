@@ -50,8 +50,8 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 
 | Variable | Description | Default | Valid values |
 |----------|-------------|---------|--------------|
-| `CODE_JIRA_STARTED_TRANSITION` | Named Jira transition after Jira preflight accepts the run, before sandbox creation; configure through a derived harness’s `env.runner`. See [Jira workflow transitions](#jira-workflow-transitions). | `"off"` (disabled) | Exact Jira transition name, or `"off"` |
-| `CODE_JIRA_PR_READY_TRANSITION` | Named Jira transition to execute after the post-script confirms an open, non-draft PR/MR; configure through a derived harness’s `env.runner`. See [Jira workflow transitions](#jira-workflow-transitions). | `"off"` (disabled) | Exact Jira transition name, or `"off"` |
+| `CODE_JIRA_STARTED_TRANSITION` | Named Jira transition after Jira preflight accepts the run, before sandbox creation; configure through a derived harness's `env.runner`. See [Jira workflow transitions](#jira-workflow-transitions). | `"off"` (disabled) | Exact Jira transition name, or `"off"` |
+| `CODE_JIRA_PR_READY_TRANSITION` | Named Jira transition to execute after the post-script confirms an open, non-draft PR/MR; configure through a derived harness's `env.runner`. See [Jira workflow transitions](#jira-workflow-transitions). | `"off"` (disabled) | Exact Jira transition name, or `"off"` |
 | `CODE_ALLOWED_TARGET_BRANCHES` | Restricts which branches the code agent can target when pushing. The post-code script reads it from the runner when present and validates the agent's chosen target branch before pushing. It is never injected into the sandbox. | Repo default branch (auto-detected via forge API; falls back to `main`) | Comma-separated branch names (e.g. `main,develop`) or `*` for any branch |
 | `FULLSEND_FORGE` | Forge platform. Set automatically by the harness overlay `env` section (matched via `when: 'runtime.forge == "<platform>"'`). | (set by harness) | `"github"`, `"gitlab"` |
 | `FULLSEND_TRACKER` | Source tracker for the work item (matches triage convention). When set to `"jira"`, the code agent reads the Jira work item directly via provider-backed Jira API access (the `jira-ro` provider handles credential injection at the network layer). Set by the Jira-source overlay in `harness/code.yaml`. | (unset — forge-native) | `"jira"` |
@@ -401,7 +401,7 @@ env:
 These are independent optional settings. Each value is a transition name,
 not a destination status. Jira defines which source states allow it and
 where it leads. The example assumes your workflow has transitions named
-`In Progress` and `Review`; replace them with your team’s transition names.
+`In Progress` and `Review`; replace them with your team's transition names.
 Choose a workflow transition
 that restricts source states appropriately; a global transition can still
 be available from Blocked or Closed. The literal `off` is reserved for
@@ -426,7 +426,7 @@ and skip the optional write without stopping coding. As with post-code,
 this does not provide isolation from a same-user process with ptrace access.
 
 After the existing Jira stage comment succeeds, the post-script fetches the
-PR/MR’s current state from GitHub or GitLab. Only an explicitly open,
+PR/MR's current state from GitHub or GitLab. Only an explicitly open,
 non-draft PR/MR permits the shared `fullsend issues transition --transition`
 command to run. It uses the same validated source issue and runner-only
 Jira credentials as the comment. Both transition settings require a fullsend

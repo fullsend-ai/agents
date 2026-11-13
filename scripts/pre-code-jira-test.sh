@@ -105,7 +105,7 @@ CURLEOF
   fi
 } >> "${FULLSEND_CALLS}"
 if [[ "$1 $2" == "issues transition" && "${MOCK_FULLSEND_EXIT:-0}" != 0 ]]; then
-  echo "API error ${FULLSEND_JIRA_TOKEN}" >&2
+  printf 'API error %s %s\n::error::untrusted diagnostic\n' "${FULLSEND_JIRA_TOKEN}" "${FULLSEND_JIRA_EMAIL:-}" >&2
 fi
 exit "${MOCK_FULLSEND_EXIT:-0}"
 FSEOF
@@ -628,7 +628,10 @@ else
 fi
 run_started_test started-write-failure-warns-no-retry 0 1 'CODE_JIRA_STARTED_TRANSITION=Start
 MOCK_FULLSEND_EXIT=1' 'Optional Jira started transition failed'
-if grep -qF 'fake-jira-token' "${TMPDIR}/stdout.log"; then
+if grep -qF 'fake-jira-token' "${TMPDIR}/stdout.log" \
+   || grep -qF 'bot@acme.com' "${TMPDIR}/stdout.log" \
+   || ! grep -qF 'API error [REDACTED]' "${TMPDIR}/stdout.log" \
+   || ! grep -qF '%3A%3Aerror%3A%3Auntrusted diagnostic' "${TMPDIR}/stdout.log"; then
   echo 'FAIL: started-write-failure-token-disclosure'
   FAILURES=$((FAILURES + 1))
 else

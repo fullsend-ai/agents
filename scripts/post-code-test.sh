@@ -4100,7 +4100,8 @@ for _transition_forge in github gitlab; do
     _transition_case=$((_transition_case + 1))
     run_jira_int "transition-skip-${_transition_case}" "${_transition_forge}" \
       CODE_JIRA_PR_READY_TRANSITION=Review "MOCK_PR_DETAILS=${_transition_details}"
-    if [ "${JIRA_INT_RC}" -ne 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}"; then
+    if [ "${JIRA_INT_RC}" -ne 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}" \
+       || ! grep -qF 'not confirmed open and non-draft; skipping' "${JIRA_INT_OUT}"; then
       jira_int_fail "jira-pr-ready-skip-${_transition_forge}-${_transition_case}" "unconfirmed readiness must not transition"
     else
       echo "PASS: jira-pr-ready-skip-${_transition_forge}-${_transition_case}"
@@ -4137,14 +4138,42 @@ else
   echo "PASS: jira-pr-ready-read-failure"
 fi
 
-run_jira_int "transition-write-failure" github CODE_JIRA_PR_READY_TRANSITION=Review MOCK_TRANSITION_FAIL=1
-if [ "${JIRA_INT_RC}" -ne 0 ] || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
-   || ! grep -q 'Optional Jira PR-ready transition failed' "${JIRA_INT_OUT}" \
-   || grep -q 'fake-jira-token' "${JIRA_INT_OUT}"; then
-  jira_int_fail "jira-pr-ready-write-failure" "transition must warn without retrying or leaking its token"
-else
-  echo "PASS: jira-pr-ready-write-failure"
+# A repository hook can plant utilities in the directory post-code prepends.
+# Catch credential exposure to a child process, not merely token-free stdout.
+JIRA_REAL_AWK="$(command -v awk)"
+JIRA_AWK_LEAK="${JIRA_INT_TMPDIR}/awk-secret-leak"
+mkdir -p "${JIRA_INT_TMPDIR}/.local/bin"
+cat > "${JIRA_INT_TMPDIR}/.local/bin/awk" <<MOCKEOF
+#!/usr/bin/env bash
+if [[ -n "\${REDACT_LITERAL_TOKEN:-}\${JIRA_TOKEN:-}\${FULLSEND_JIRA_TOKEN:-}" ]]; then
+  printf 'credential reached shadow awk\n' >> "${JIRA_AWK_LEAK}"
 fi
+exec "${JIRA_REAL_AWK}" "\$@"
+MOCKEOF
+chmod +x "${JIRA_INT_TMPDIR}/.local/bin/awk"
+for _failure_forge in github gitlab; do
+  run_jira_int "transition-write-failure-${_failure_forge}" "${_failure_forge}" \
+    CODE_JIRA_PR_READY_TRANSITION=Review MOCK_TRANSITION_FAIL=1
+  if [ "${JIRA_INT_RC}" -ne 0 ] || [ "$(grep -c '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -q 'Optional Jira PR-ready transition failed' "${JIRA_INT_OUT}" \
+     || ! grep -qF 'Error: transition failed [REDACTED]' "${JIRA_INT_OUT}" \
+     || grep -q 'fake-jira-token' "${JIRA_INT_OUT}" || [ -s "${JIRA_AWK_LEAK}" ]; then
+    jira_int_fail "jira-pr-ready-write-failure-${_failure_forge}" "transition must warn once without leaking to logs or PATH utilities"
+  else
+    echo "PASS: jira-pr-ready-write-failure-${_failure_forge}"
+  fi
+done
+# Pattern characters in credentials must remain literal during substitution.
+run_jira_int "transition-literal-token" github CODE_JIRA_PR_READY_TRANSITION=Review \
+  MOCK_TRANSITION_FAIL=1 'JIRA_TOKEN=jira.*[?]/&-token'
+if [ "${JIRA_INT_RC}" -ne 0 ] \
+   || ! grep -qF 'Error: transition failed [REDACTED]' "${JIRA_INT_OUT}" \
+   || grep -qF 'jira.*[?]/&-token' "${JIRA_INT_OUT}" || [ -s "${JIRA_AWK_LEAK}" ]; then
+  jira_int_fail "jira-pr-ready-literal-redaction" "credential patterns must be redacted literally without subprocess exposure"
+else
+  echo "PASS: jira-pr-ready-literal-redaction"
+fi
+rm -f "${JIRA_INT_TMPDIR}/.local/bin/awk"
 
 run_jira_int "transition-comment-failure" github CODE_JIRA_PR_READY_TRANSITION=Review MOCK_FULLSEND_FAIL=1
 if [ "${JIRA_INT_RC}" -eq 0 ] || grep -q '^fullsend issues transition ' "${JIRA_INT_FULLSEND_LOG}"; then
