@@ -168,14 +168,23 @@ if command -v yq &>/dev/null; then
     | if type == "array" then .[] | strings else empty end
   ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
   ALLOWED_REPOS=$(jq -r --arg provider "${TRACKER_PROVIDER}" '
-    (if $provider == "jira" then .projects else .repos end)
-    | if type == "array" then .[] | strings else empty end
-  ' <<<"${ALLOWED_TARGETS_JSON}" 2>/dev/null || true)
+    (if type == "object" then . else {} end) as $t
+    | [("github", "gitlab", "jira") | select($t[.] != null)] as $providers
+    | if $provider == "jira" then
+      (if (type == "object" and has("jira") and (.jira | type == "object") and (.jira | has("project")) and (.jira.project | type == "string")) then [.jira.project] else [] end)
+      +
+      (if $providers == [$provider] and (.jira | type == "object") and (.jira.allowed_targets | type == "object") and (.jira.allowed_targets.projects | type == "array") then .jira.allowed_targets.projects else [] end)
+      | map(strings) | unique | .[]
+    else
+      (if $providers == [$provider] then (($t[$provider].allowed_targets // {}).repos // []) else [] end)
+      | if type == "array" then .[] | strings else empty end
+    end
+  ' <<<"${TRACKER_JSON}" 2>/dev/null || true)
   if [[ "${TRACKER_PROVIDER}" == "jira" && "${JIRA_ALLOWLIST_STATE}" != "failed" ]]; then
     if [[ "${TRACKER_JSON}" != "null" && -n "${TRACKER_JSON}" ]]; then
       projects_status=$(jq -r '
         if type != "object" or (has("jira") | not) or (.jira | type != "object") then
-          "unset"
+          "failed"
         elif (.jira | has("allowed_targets")) then
           if (.jira.allowed_targets | type == "object") and (.jira.allowed_targets | has("projects")) then
             if (.jira.allowed_targets.projects | type == "array") then
@@ -209,9 +218,6 @@ is_target_allowed() {
   local scope
 
   if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
-    if [[ "${target_repo}" == "${ORIGINATING_REPO}" ]]; then
-      return 0
-    fi
     case "${JIRA_ALLOWLIST_STATE}" in
       failed)
         return 1
@@ -277,14 +283,7 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 fi
 echo "All ${PROPOSAL_COUNT} proposal(s) validated"
 
-# Jira: fail before any create call if the configured project/issue type
-# needs required fields retro does not set.
-if [[ "${FULLSEND_TRACKER}" == "jira" && "${PROPOSAL_COUNT}" -gt 0 && "${RETRO_MODE}" != "summary_only" ]]; then
-  if ! tracker_validate_create; then
-    echo "ERROR: Jira project validation failed — no issues created" >&2
-    exit 1
-  fi
-fi
+JIRA_CREATEMETA_VALIDATED="false"
 
 ISSUE_LINKS=""
 EVIDENCE_NOTES=""
@@ -366,16 +365,24 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
     fi
 
     # Build the issue body from the four sections, plus the dedup receipt.
-    BODY=$(jq -r --arg url "${ORIGINATING_URL}" "
+    BODY=$(jq -r --arg url "${ORIGINATING_URL}" --arg tracker "${FULLSEND_TRACKER}" --arg tr "${TARGET_REPO}" --arg forge "${FULLSEND_FORGE}" "
       .proposals[$i] |
       \"## What happened\n\n\" + .what_happened +
       \"\n\n## What could go better\n\n\" + .what_could_go_better +
       \"\n\n## Proposed change\n\n\" + .proposed_change +
+      (if \$tracker == \"jira\" then \"\n\n**Target repository:** \" + \$tr else \"\" end) +
       \"\n\n## Validation criteria\n\n\" + .validation_criteria +
       \"\n\n## Related issues checked\n\nSearched: \" +
       (.related_issues.searched | join(\"; \")) +
       (if (.related_issues.found // []) | length > 0 then
-        \"\nConsidered: \" + (.related_issues.found | map(if type == \"number\" then \"#\" + tostring else tostring end) | join(\", \")) +
+        \"\nConsidered: \" + (.related_issues.found | map(
+          if type == \"number\" then
+            (if \$tracker == \"jira\" then
+              (if \$forge == \"gitlab\" then \"https://gitlab.com/\" + \$tr + \"/-/issues/\" + tostring
+               else \"https://github.com/\" + \$tr + \"/issues/\" + tostring end)
+             else \"#\" + tostring end)
+          else tostring end
+        ) | join(\", \")) +
         (if .related_issues.note then \"\n\" + .related_issues.note else \"\" end)
       else
         \"\nNo overlapping issues found.\"
@@ -391,6 +398,16 @@ if [[ "${PROPOSAL_COUNT}" -gt 0 ]]; then
 
     # Jira rerun protection: skip if an issue with the same summary exists.
     if [[ "${FULLSEND_TRACKER}" == "jira" ]]; then
+      if [[ "${JIRA_CREATEMETA_VALIDATED}" != "true" ]]; then
+        if ! tracker_validate_create; then
+          echo "::warning::Jira project validation failed for ${RETRO_JIRA_PROJECT} — cannot create issues"
+          FAILED_PROPOSALS="${FAILED_PROPOSALS}
+- **${TITLE}** (\`${RETRO_JIRA_PROJECT}\`)"
+          continue
+        fi
+        JIRA_CREATEMETA_VALIDATED="true"
+      fi
+
       if ! EXISTING_URL=$(tracker_find_existing_issue "${TITLE}"); then
         echo "::warning::Jira duplicate check failed for proposal[$i] (${SAFE_TITLE}) — refusing to create issue"
         FAILED_PROPOSALS="${FAILED_PROPOSALS}
@@ -483,41 +500,43 @@ if [[ -n "${RECEIPT_SKIPPED}" ]]; then
   COMMENT=$(printf '%s\n\n### Proposals skipped (no dedup receipt)\n\nNot filed because they did not record a valid duplicate search (`related_issues`). Re-run retro, or search for duplicates and file manually:\n%s' "${COMMENT}" "${RECEIPT_SKIPPED}")
 fi
 
-# Truncate to forge-specific comment limit.
-MAX_COMMENT_LEN=$(forge_get_comment_max_len)
-if [[ ${#COMMENT} -gt ${MAX_COMMENT_LEN} ]]; then
-  TRUNCATION_SUFFIX=$'\n\n...(truncated)'
-  COMMENT="${COMMENT:0:$((MAX_COMMENT_LEN - ${#TRUNCATION_SUFFIX}))}"${TRUNCATION_SUFFIX}
-fi
+if [[ "${RETRO_MODE}" != "issues_only" ]]; then
+  # Truncate to forge-specific comment limit.
+  MAX_COMMENT_LEN=$(forge_get_comment_max_len)
+  if [[ ${#COMMENT} -gt ${MAX_COMMENT_LEN} ]]; then
+    TRUNCATION_SUFFIX=$'\n\n...(truncated)'
+    COMMENT="${COMMENT:0:$((MAX_COMMENT_LEN - ${#TRUNCATION_SUFFIX}))}"${TRUNCATION_SUFFIX}
+  fi
 
-if [[ "${RETRO_MODE}" == "issues_only" ]]; then
+  echo "Posting summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
+  # Note: we handle 401/403 inline rather than relying on github-api-csma.sh
+  # because the intent is different. CSMA retries rate-limited requests; here
+  # we want graceful degradation when the token permanently lacks permission
+  # to comment on a specific repo. Retrying a 403 permission error is futile.
+  COMMENT_OUTPUT=""
+  COMMENT_EXIT=0
+  COMMENT_OUTPUT=$(forge_post_comment "${ORIGINATING_REPO}" "${ORIGINATING_NUMBER}" "${COMMENT}") || COMMENT_EXIT=$?
+
+  if [[ ${COMMENT_EXIT} -ne 0 ]]; then
+    # Treat 401/403 as non-fatal — the token lacks permission to comment on
+    # this repo, but the core deliverables (analysis + proposal issues) are
+    # already complete. See #2305.
+    if echo "${COMMENT_OUTPUT}" | grep -qE "HTTP (401|403)|error: (401|403)|jira api: (401|403)"; then
+      # Sanitize before interpolating into GHA workflow command to prevent
+      # injecting ::set-output or ::save-state directives via crafted responses.
+      SAFE_OUTPUT=$(_gha_sanitize "${COMMENT_OUTPUT}")
+      echo "::warning::Could not post summary comment to ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: insufficient permissions (${SAFE_OUTPUT}). Skipping."
+    else
+      # Sanitize before echoing to prevent GHA workflow command injection.
+      SAFE_OUTPUT=$(_gha_sanitize "${COMMENT_OUTPUT}")
+      echo "ERROR: failed to post summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: ${SAFE_OUTPUT}"
+      exit 1
+    fi
+  fi
+else
   echo "Mode is issues_only — skipping summary comment posting"
-  echo "Post-retro complete."
-  exit 0
-fi
-
-echo "Posting summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}"
-# Note: we handle 401/403 inline rather than relying on github-api-csma.sh
-# because the intent is different. CSMA retries rate-limited requests; here
-# we want graceful degradation when the token permanently lacks permission
-# to comment on a specific repo. Retrying a 403 permission error is futile.
-COMMENT_OUTPUT=""
-COMMENT_EXIT=0
-COMMENT_OUTPUT=$(forge_post_comment "${ORIGINATING_REPO}" "${ORIGINATING_NUMBER}" "${COMMENT}") || COMMENT_EXIT=$?
-
-if [[ ${COMMENT_EXIT} -ne 0 ]]; then
-  # Treat 401/403 as non-fatal — the token lacks permission to comment on
-  # this repo, but the core deliverables (analysis + proposal issues) are
-  # already complete. See #2305.
-  if echo "${COMMENT_OUTPUT}" | grep -qE "HTTP (401|403)|error: (401|403)"; then
-    # Sanitize before interpolating into GHA workflow command to prevent
-    # injecting ::set-output or ::save-state directives via crafted responses.
-    SAFE_OUTPUT=$(_gha_sanitize "${COMMENT_OUTPUT}")
-    echo "::warning::Could not post summary comment to ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: insufficient permissions (${SAFE_OUTPUT}). Skipping."
-  else
-    # Sanitize before echoing to prevent GHA workflow command injection.
-    SAFE_OUTPUT=$(_gha_sanitize "${COMMENT_OUTPUT}")
-    echo "ERROR: failed to post summary comment on ${ORIGINATING_REPO}#${ORIGINATING_NUMBER}: ${SAFE_OUTPUT}"
+  if [[ -n "${FAILED_PROPOSALS}" || -n "${SKIPPED_TARGETS}" || -n "${RECEIPT_SKIPPED}" ]]; then
+    echo "ERROR: issues_only mode encountered proposal failures or skipped targets without summary report" >&2
     exit 1
   fi
 fi

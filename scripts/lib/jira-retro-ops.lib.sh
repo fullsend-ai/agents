@@ -420,7 +420,7 @@ _retro_jira_post_comment() {
   printf '%s' "${body}" | jira_auth_fullsend fullsend "${JIRA_TOKEN}" "${JIRA_USER_EMAIL:-}" \
     issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
     --project "${repo}" --number "${num}" \
-    --marker "<!-- fullsend:retro-agent -->" --result -
+    --marker "<!-- fullsend:retro-agent -->" --result - 2>&1
 }
 
 forge_post_comment() {
@@ -466,7 +466,7 @@ forge_mask_token() {
 
 forge_get_comment_max_len() {
   if [[ "${JIRA_ORIGINATING:-false}" == "true" ]]; then
-    echo "32768"
+    echo "32000"
   elif declare -f _forge_get_comment_max_len >/dev/null 2>&1; then
     _forge_get_comment_max_len
   else

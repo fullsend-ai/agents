@@ -71,11 +71,11 @@ See [Customizing with AGENTS.md](https://fullsend.sh/docs/guides/user/customizin
 Retro can deliver findings and improvement proposals to Jira Cloud instead of (or in addition to) GitHub/GitLab:
 
 - **Jira issue creation:** When `FULLSEND_TRACKER=jira`, retro files validated proposals into an operator-configured Jira Cloud project (`RETRO_JIRA_PROJECT`). Model proposals do not select arbitrary Jira projects.
-- **Retrospectives on Jira-originated work:** Retro can run against Jira issue URLs (`https://<site>.atlassian.net/browse/PROJ-123`) via manual dispatch, or against GitHub PRs / GitLab MRs associated with Jira work.
-- **Configurable output modes:** `RETRO_MODE` supports `all` (default: creates Jira issues and posts summary comment), `summary_only` (posts summary comment with proposals listed without creating issues), or `issues_only` (creates issues without posting summary).
-- **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with the exact same summary. Rerunning retro on the same workflow will not create duplicate Jira issues.
+- **Dedup search against forge:** The agent's duplicate search (`related_issues`) searches existing issues on the originating forge. Numeric references in the proposal receipt are rendered as full forge issue URLs, and proposals record their intended `Target repository`.
+- **Configurable output modes:** `RETRO_MODE` supports `all` (default: creates Jira issues and posts summary comment), `summary_only` (posts summary comment with proposals listed without creating issues), or `issues_only` (creates issues without posting summary; exits non-zero if proposals fail or are skipped).
+- **Idempotency & retry protection:** Before filing an issue in Jira, retro checks for an existing issue in `RETRO_JIRA_PROJECT` with an identical summary; reruns that produce different titles can still create duplicates.
 - **Traceability:** Created Jira issues preserve the originating GitHub/GitLab PR URL in the body footer, and the retro summary comment links back to all created Jira issues.
-- **Preflight validation:** Checks Jira create metadata (`createmeta`) before creating issues. Fails early with a clear diagnostic if the issue type is missing or requires fields retro does not provide.
+- **Preflight validation:** Checks Jira create metadata (`createmeta`) before creating issues. Fails with a warning and reports uncreated proposals in the summary if the issue type is missing or requires fields retro does not provide.
 
 To have retrospectives triggered by PR/MR close file their proposals in Jira, set `FULLSEND_TRACKER=jira` and the Jira variables in the runner env by extending the harness with `base:` composition. This configures the destination, not the event trigger; the standard retro dispatch must also be enabled for the repo. PR/MR close triggers retro whether merged or not, and `/fs-retro` remains available for manual runs.
 
