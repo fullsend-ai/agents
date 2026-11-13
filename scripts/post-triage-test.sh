@@ -2426,7 +2426,33 @@ MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"stat
 JIRA_COMPLETED_TRANSITION="NonExistent" \
 run_jira_test_stdout "jira-completed-fallback-done" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
-  "falling back to 'Done'"
+  "::warning::Transition 'NonExistent' (from JIRA_COMPLETED_TRANSITION) is not available on issue"
+
+# Jira completed action falls back via target status name (.to.name) / positive word match (e.g. 'Resolve Issue' -> 'Resolved').
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"name":"Duplicate","statusCategory":{"key":"done"}}},{"id":"71","name":"Resolve Issue","to":{"name":"Resolved","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-resolve-issue" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"71"}}'
+
+# Jira duplicate action does NOT skip when issue is in a different rejection status (Won't Do).
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test "jira-duplicate-on-wont-do-transitions" \
+  '{"action":"duplicate","reasoning":"same as TESTPROJ-10","duplicate_of":"TESTPROJ-10","comment":"Duplicate of TESTPROJ-10."}' \
+  '{"transition":{"id":"31"}}'
+
+# Jira not-planned action skips idempotently when issue is already in its matching rejection status (Won't Do).
+JIRA_NOT_PLANNED_TRANSITION="Won't Do" \
+MOCK_JIRA_STATUS_REJECTED=1 \
+run_jira_test_stdout "jira-not-planned-idempotent-wont-do" \
+  '{"action":"not-planned","reasoning":"out of scope","comment":"Out of scope."}' \
+  "is already in status 'Won't Do' (done); skipping transition for reason 'not planned'"
+if grep -qE "POST .*/transitions" "${JIRA_CURL_LOG}"; then
+  echo "FAIL: jira-not-planned-idempotent-wont-do — expected no transition POST"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: jira-not-planned-idempotent-wont-do-no-post"
+fi
 
 # Jira completed action refuses rejection-only Done transitions during fallback.
 MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Not Planned","to":{"statusCategory":{"key":"done"}}}]}' \

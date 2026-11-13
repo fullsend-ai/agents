@@ -1741,7 +1741,7 @@ if [[ -n "${JIRA_TOKEN:-}" ]]; then
 #
 # Optional env vars:
 #   JIRA_COMPLETED_TRANSITION   — transition name for the "completed" action
-#                                 (default: "Closed"; falls back to
+#                                 (no default; falls back to
 #                                 JIRA_SPLIT_TRANSITION when unset)
 #   JIRA_DUPLICATE_TRANSITION   — transition name for the "duplicate" action
 #   JIRA_NOT_PLANNED_TRANSITION — transition name for the "not planned" action
@@ -2161,10 +2161,9 @@ tracker_close_issue() {
   fi
 
   # Idempotency pre-flight: check if the issue is already in the matching terminal status.
-  local current_status_json
+  local current_status_json current_category="" current_status_name=""
   current_status_json=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status" 2>/dev/null) || true
   if [[ -n "${current_status_json}" ]]; then
-    local current_category current_status_name
     current_category=$(echo "${current_status_json}" | jq -r '.fields.status.statusCategory.key // empty')
     current_status_name=$(echo "${current_status_json}" | jq -r '.fields.status.name // empty')
     if [[ "${current_category}" == "done" ]]; then
@@ -2189,11 +2188,6 @@ tracker_close_issue() {
           echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (done); skipping transition for reason '${reason}'"
           return 0
         fi
-      elif [[ "${reason}" == "duplicate" || "${reason}" == "not planned" ]]; then
-        if [[ ${is_rejection_status} -eq 1 ]]; then
-          echo "Issue ${ISSUE_NUMBER} is already in status '${current_status_name}' (rejected); skipping transition for reason '${reason}'"
-          return 0
-        fi
       fi
     fi
   fi
@@ -2203,9 +2197,16 @@ tracker_close_issue() {
     echo "ERROR: failed to list transitions for issue ${ISSUE_NUMBER}" >&2
     return 1
   }
-  local transition_id
+  local transition_id target_status_name=""
   transition_id=$(echo "${transitions}" | jq -r --arg name "${transition_name}" \
     '[.transitions[] | select(.name == $name)][0].id // empty')
+  if [[ -n "${transition_id}" && "${current_category:-}" == "done" && -n "${current_status_name:-}" ]]; then
+    target_status_name=$(echo "${transitions}" | jq -r --arg id "${transition_id}" '.transitions[] | select(.id == $id) | (.to.name // empty)')
+    if [[ -n "${target_status_name}" && "${target_status_name,,}" == "${current_status_name,,}" ]]; then
+      echo "Issue ${ISSUE_NUMBER} is already in target status '${current_status_name}' (done); skipping transition for reason '${reason}'"
+      return 0
+    fi
+  fi
 
   # Fallback resolution when configured transition name is not directly available
   if [[ -z "${transition_id}" ]]; then
@@ -2218,19 +2219,25 @@ tracker_close_issue() {
         --arg target "${transition_name}" '
         [ .transitions[]
           | select((.to.statusCategory.key // "") == "done")
+          | (.name // "") as $n
+          | (.to.name // "") as $to
           | select(
-              ($dup != "" and ($dup | ascii_downcase) != ($target | ascii_downcase) and (.name | ascii_downcase) == ($dup | ascii_downcase)) or
-              ($not_planned != "" and ($not_planned | ascii_downcase) != ($target | ascii_downcase) and (.name | ascii_downcase) == ($not_planned | ascii_downcase)) or
-              (.name | test("(?i)won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon"))
+              ($dup != "" and ($dup | ascii_downcase) != ($target | ascii_downcase) and (($n | ascii_downcase) == ($dup | ascii_downcase) or ($to | ascii_downcase) == ($dup | ascii_downcase))) or
+              ($not_planned != "" and ($not_planned | ascii_downcase) != ($target | ascii_downcase) and (($n | ascii_downcase) == ($not_planned | ascii_downcase) or ($to | ascii_downcase) == ($not_planned | ascii_downcase))) or
+              ($n | test("(?i)won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon")) or
+              ($to | test("(?i)won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon"))
               | not
             )
         ] as $done_transitions
-        | ([$done_transitions[] | select(.name | test("(?i)^(done|closed|resolved|complete(d)?)$"))][0].id // empty)
+        | (
+            [$done_transitions[] | select(((.to.name // "") | test("(?i)^(done|closed|resolved|complete(d)?)$")) or (.name | test("(?i)^(done|closed|resolved|complete(d)?)$")))]
+            + [$done_transitions[] | select(((.to.name // "") | test("(?i)\\b(done|close(d)?|resolve(d)?|complete(d)?|finish(ed)?|fixed)\\b")) or (.name | test("(?i)\\b(done|close(d)?|resolve(d)?|complete(d)?|finish(ed)?|fixed)\\b")))]
+          )[0].id // empty
       ')
       if [[ -n "${transition_id}" ]]; then
         local fallback_name
         fallback_name=$(echo "${transitions}" | jq -r --arg id "${transition_id}" '.transitions[] | select(.id == $id).name')
-        echo "Transition '${transition_name}' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}; falling back to '${fallback_name}'"
+        echo "::warning::Transition '$(_gha_sanitize "${transition_name}")' (from ${transition_var}) is not available on issue ${ISSUE_NUMBER}; falling back to '$(_gha_sanitize "${fallback_name}")'"
         transition_name="${fallback_name}"
       fi
     fi
