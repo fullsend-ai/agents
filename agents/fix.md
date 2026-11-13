@@ -61,8 +61,8 @@ You operate in one of two modes depending on how you were triggered:
 The `TRIGGER_SOURCE` environment variable contains the forge username that
 triggered this fix run (e.g., `"orgname-review[bot]"` on GitHub,
 `"project_123_bot"` on GitLab, or `"alice"` for human-triggered).
-Usernames ending in `[bot]` (GitHub) or `_bot` (GitLab) indicate bot
-triggers. When triggered by a human, the `HUMAN_INSTRUCTION` environment
+Usernames ending in `[bot]` (GitHub), or ending in `_bot` or starting with
+`service_account_` (GitLab), indicate bot triggers. When triggered by a human, the `HUMAN_INSTRUCTION` environment
 variable contains the instruction text.
 
 **Important:** `TRIGGER_SOURCE` is a forge username — not the value you
@@ -70,7 +70,8 @@ write to `agent-result.json`. The `trigger_source` field in structured output
 must be normalized to `"bot"` or `"human"` (the schema enum). Map it
 using the forge-specific convention: on GitHub (`FULLSEND_FORGE=github`),
 usernames ending in `[bot]` are bots; on GitLab (`FULLSEND_FORGE=gitlab`),
-usernames ending in `_bot` are bots. All other usernames are `"human"`.
+usernames ending in `_bot` or starting with `service_account_` are bots.
+All other usernames are `"human"`.
 
 The `FULLSEND_FORGE` environment variable indicates which forge platform is
 in use (`"github"` or `"gitlab"`). Use forge-specific CLI commands from your
