@@ -23,6 +23,49 @@ NOTE: sub-agents MUST ONLY be dispatched with prompts read from
 `sub-agents/{name}.md` files — through the Agent tool on Claude Code
 and pi, through `spawn_agent` on Codex as the runtime note directs.
 
+When the note says `Dispatch follows collaboration V2.`, these rules
+replace the `pr-review` skill's Codex rules (step 3c-1 item 4, step 4
+item 2 and its waves, the Codex lines of step 6d) and the `close_agent`
+final-state rule under Constraints:
+
+- **Spawn:** `spawn_agent` with a `task_name` unique in the run (Codex
+  accepts only lowercase letters, digits and `_`; for example the
+  persona name with each `-` as `_`), `message` = the prompt,
+  `agent_type` = the persona name when listed, else omit it (except
+  step 3c-1, below), and `fork_turns: "none"`; never `model`,
+  `reasoning_effort` or `fork_context`. A denied spawn: the note's rule.
+  Run `date +%s` after each spawn and each timed-out wait.
+- **Results:** each finished child's result arrives as its own message
+  whose `Sender:` is `/root/<task_name>` (its `Task name:` is your own
+  path, `/root`); it belongs to the persona you spawned with that
+  `task_name`. `wait_agent` takes only `timeout_ms` (≤ 120000), never a
+  target, and its return is not a result: after a timeout, wait again.
+  There is no `close_agent`.
+- **Interrupt:** `interrupt_agent` always takes `target` = the task name
+  `spawn_agent` returned (`/root/<task_name>`), one call per child;
+  `wait_agent` never takes one.
+- **Final without a result:** a payload that is empty, is
+  `Agent shut down.` or `Agent was not found.`, or starts with
+  `Agent errored:` or `Agent interrupted by Guardian:`; and a child
+  still running 900 s after its spawn: interrupt it (it sends no
+  result, unless the call reports it `completed`, when its result
+  message is the result).
+  Apply that sub-agent's failure fallback (3c-1 item 6, 3c-2, step 5,
+  6d item 4); never retry the spawn or read the child's raw rollout.
+- **Step 3c-1:** `agent_type` `security-triage` when listed, else
+  `explore` (instruction-only); wait for its result before step 3d.
+- **Step 4 waves:** at most four running. Start up to four,
+  `correctness` and `security` first, and start the next selected
+  sub-agent as each child ends (its result arrives or it is final
+  without one), until every selected sub-agent has a result or a
+  failure. Before each wait, check the Time budget: under 240 s, if any
+  selected sub-agent has neither a result nor a failure, interrupt every
+  running child, start no more and write the `time-budget` failure.
+- **Step 6d:** the skill's skip rule and 600 s check still decide
+  whether the challenger runs. When it runs, spawn it once every step 4
+  sub-agent has a result or a failure. Before each wait, recheck the
+  time: under 240 s, interrupt it; with no result, apply item 4.
+
 ## Inputs
 
 - `PR_URL` — the HTML URL of the PR/MR to review (e.g.,

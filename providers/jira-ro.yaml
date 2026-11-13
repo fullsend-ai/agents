@@ -2,11 +2,14 @@
 # The sandbox gets this provider's placeholder, never the real token. The
 # proxy swaps the placeholder in for either Jira auth mode the skills
 # select: Basic (`--user email:token`) when JIRA_USER_EMAIL is set, Bearer
-# (`--oauth2-bearer token`) when it is unset or empty. fullsend refuses
-# FULLSEND_JIRA_TOKEN in provider credential values (fullsend#9079), so
-# this keeps reading the JIRA_TOKEN secret. The host-side scripts use the
-# FULLSEND_JIRA_* secrets through env.runner instead.
+# (`--oauth2-bearer token`) when it is unset or empty. The provider reads
+# the FULLSEND_JIRA_TOKEN repository secret, the same secret the host-side
+# scripts get through env.runner, so no JIRA_TOKEN repository secret is
+# needed. This needs a fullsend release that includes
+# fullsend-ai/fullsend#9411, which lets a provider credential value expand
+# FULLSEND_JIRA_TOKEN. The credential key stays JIRA_TOKEN: it is the name
+# the profile and the sandbox skills use for the placeholder.
 name: jira-ro
 type: fullsend-jira-ro
 credentials:
-  JIRA_TOKEN: "${JIRA_TOKEN}"
+  JIRA_TOKEN: "${FULLSEND_JIRA_TOKEN}"

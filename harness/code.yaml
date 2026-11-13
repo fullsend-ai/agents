@@ -178,9 +178,13 @@ overlays:
     # JIRA_API_URL and JIRA_USER_EMAIL reach the sandbox through an
     # expanded host file, not env.sandbox: a ${VAR} in env.sandbox fails the
     # run when the host variable is unset, and older fullsend releases do
-    # not set JIRA_API_URL. An unset value expands to empty here: the skills
-    # fall back to JIRA_BASE_URL, and an empty JIRA_USER_EMAIL selects
-    # Bearer auth (service account).
+    # not set JIRA_API_URL. fullsend run sets JIRA_USER_EMAIL from the
+    # optional FULLSEND_JIRA_EMAIL repository secret
+    # (fullsend-ai/fullsend#9411); there is no JIRA_USER_EMAIL secret. An
+    # unset value expands to empty here: the skills fall back to
+    # JIRA_BASE_URL, and an empty JIRA_USER_EMAIL selects Bearer auth
+    # (service account). The jira-ro provider reads FULLSEND_JIRA_TOKEN;
+    # there is no JIRA_TOKEN secret.
     host_files:
       - src: env/jira/code.env
         dest: /sandbox/workspace/.env.d/jira-code.env
