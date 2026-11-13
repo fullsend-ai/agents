@@ -2545,7 +2545,11 @@ fi
 # GITHUB_SIGNED_COMMITS=false so forge_push_branch is git push. A git
 # wrapper supplies the first-push failure text so each wording of the
 # production grep is hit; the retry is the real `git push --force-with-lease`.
+# A retry case first gives the branch an earlier code agent commit on the
+# remote and an open PR, as a rerun has.
 # ---------------------------------------------------------------------------
+RERUN_BOT_EMAIL="123+fullsend-ai-coder[bot]@users.noreply.github.com"
+
 run_code_push_retry_test() {
   local test_name="$1"
   local first_push_fail="${2:-}"
@@ -2554,6 +2558,15 @@ run_code_push_retry_test() {
 
   local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
   setup_sec_code_repo "${run_dir}" "agent/99-push-retry"
+  local open_pr=""
+  if [[ "${expect_retry}" == "true" ]]; then
+    local earlier
+    earlier="$(cd "${run_dir}/repo" && GIT_AUTHOR_NAME=fullsend-code GIT_AUTHOR_EMAIL="${RERUN_BOT_EMAIL}" \
+      GIT_COMMITTER_NAME=fullsend-code GIT_COMMITTER_EMAIL="${RERUN_BOT_EMAIL}" \
+      ${REAL_GIT} commit-tree -p main -m "fix: earlier run" "main^{tree}")"
+    ${REAL_GIT} -C "${run_dir}/repo" push -q origin "${earlier}:refs/heads/agent/99-push-retry"
+    open_pr="7"
+  fi
   local mock_bin="${run_dir}/mock-bin"
   local push_log="${run_dir}/push-calls.log"
   mkdir -p "${mock_bin}"
@@ -2568,9 +2581,11 @@ run_code_push_retry_test() {
 case "$1 $2" in
   "api -X")      echo "unexpected Git Data API call on the plain-push path: $*" >&2; exit 99 ;;
   "api repos/"*) echo "main"; exit 0 ;;
-  "pr list")     echo ""; exit 0 ;;
+  "pr list")     echo "${MOCK_OPEN_PR:-}"; exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
-  "pr view")     echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
+  "pr view")
+    if printf '%s\n' "$@" | grep -qx body; then echo '{"body":"Closes #99"}'; exit 0; fi
+    echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
   "issue comment"|"pr comment")
     printf '%s\n' "$@"
     cat 2>/dev/null || true
@@ -2589,7 +2604,7 @@ if [[ "\$1" == "push" ]]; then
   printf 'git %s\n' "\$*" >> "${push_log}"
   _force=false
   for _a in "\$@"; do
-    if [[ "\$_a" == "--force-with-lease" ]]; then
+    if [[ "\$_a" == --force-with-lease* ]]; then
       _force=true
     fi
   done
@@ -2618,6 +2633,8 @@ MOCKEOF
     export REPO_DIR="repo"
     export FULLSEND_FORGE="github"
     export GITHUB_SIGNED_COMMITS="false"
+    export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+    export MOCK_OPEN_PR="${open_pr}"
     if [[ -n "${first_push_fail}" ]]; then
       export MOCK_PUSH_FAIL="${first_push_fail}"
     else
@@ -2708,6 +2725,173 @@ run_code_push_retry_test "push-api-not-a-fast-forward" \
   "gh: Update is not a fast forward (HTTP 422)" "true" 0
 run_code_push_retry_test "push-unexpected-error" \
   "fatal: repository not found" "false" 1
+
+# ---------------------------------------------------------------------------
+# Rerun onto a branch that backs an open PR (#409, #342), against the real
+# script and a local bare remote.
+#
+# seed_rerun_repo RUN_DIR CLONE AUTHOR — the remote branch holds an earlier
+# code agent commit, then one by AUTHOR (code, fix or human); main has moved
+# on. CLONE "full" clones before AUTHOR's commit lands, so the tracking ref is
+# stale; "shallow" is a depth-1 single-branch clone of main, as Jira-sourced
+# runs check out, with no tracking ref for the branch; "checkout" is the same
+# depth-1 fetch in a repo set up as actions/checkout does (init, remote add
+# with the default fetch refspec), which the signed path's upstream step
+# needs. The clone then holds a
+# fresh code agent commit on agent/99-rerun. Sets RERUN_BEFORE (remote branch
+# tip) and RERUN_OLD_MAIN (a main commit a depth-1 clone does not have).
+# ---------------------------------------------------------------------------
+_rerun_commit() {
+  local dir="$1" file="$2" name="$3" email="$4" msg="$5"
+  local cname="${6:-$3}" cemail="${7:-$4}"
+  echo "${msg}" > "${dir}/${file}"
+  sec_fixture_git -C "${dir}" add "${file}"
+  GIT_AUTHOR_NAME="${name}" GIT_AUTHOR_EMAIL="${email}" \
+    GIT_COMMITTER_NAME="${cname}" GIT_COMMITTER_EMAIL="${cemail}" \
+    sec_fixture_git -C "${dir}" commit -q -m "${msg}"
+}
+
+seed_rerun_repo() {
+  local run_dir="$1" clone="$2" author="$3"
+  local bare="${run_dir}/remote.git" seed="${run_dir}/seed" repo="${run_dir}/repo"
+  local branch="${4:-agent/99-rerun}" bot="${RERUN_BOT_EMAIL}"
+  mkdir -p "${run_dir}"
+  sec_fixture_git init -q --bare -b main "${bare}"
+  sec_fixture_git init -q -b main "${seed}"
+  sec_fixture_git -C "${seed}" remote add origin "${bare}"
+  _rerun_commit "${seed}" README.md Dev dev@example.com "init"
+  RERUN_OLD_MAIN="$(sec_fixture_git -C "${seed}" rev-parse HEAD)"
+  sec_fixture_git -C "${seed}" push -q origin main
+  sec_fixture_git -C "${seed}" checkout -q -b "${branch}"
+  _rerun_commit "${seed}" run1.txt fullsend-code "${bot}" "fix: first run"
+  sec_fixture_git -C "${seed}" push -q origin "${branch}"
+  sec_fixture_git -C "${seed}" checkout -q main
+  _rerun_commit "${seed}" main2.txt Dev dev@example.com "main moves on"
+  sec_fixture_git -C "${seed}" push -q origin main
+  if [[ "${clone}" == "full" ]]; then
+    sec_fixture_git clone -q "${bare}" "${repo}"
+  fi
+  sec_fixture_git -C "${seed}" checkout -q "${branch}"
+  case "${author}" in
+    code)  _rerun_commit "${seed}" more.txt fullsend-code "${bot}" "fix: follow-up run" ;;
+    fix)   _rerun_commit "${seed}" more.txt fullsend-fix "${bot}" "fix: address review" ;;
+    human) _rerun_commit "${seed}" more.txt "Human Dev" human@example.com "fix: human change" ;;
+    amended)
+      _rerun_commit "${seed}" more.txt fullsend-code "${bot}" "fix: follow-up run" \
+        "Human Dev" human@example.com ;;
+    signed)
+      _rerun_commit "${seed}" more.txt "fullsend-ai-coder[bot]" "${bot}" \
+        "fix: follow-up run
+
+Authored-by: fullsend-code <${bot}>" GitHub noreply@github.com ;;
+  esac
+  sec_fixture_git -C "${seed}" push -q origin "${branch}"
+  RERUN_BEFORE="$(sec_fixture_git -C "${bare}" rev-parse "refs/heads/${branch}")"
+  if [[ "${clone}" == "shallow" ]]; then
+    sec_fixture_git clone -q --depth 1 --single-branch --branch main "file://${bare}" "${repo}"
+  elif [[ "${clone}" == "checkout" ]]; then
+    sec_fixture_git init -q "${repo}"
+    sec_fixture_git -C "${repo}" remote add origin "file://${bare}"
+    sec_fixture_git -C "${repo}" fetch -q --depth=1 origin "+refs/heads/main:refs/remotes/origin/main"
+  fi
+  sec_fixture_git -C "${repo}" checkout -q -b "${branch}" origin/main
+  _rerun_commit "${repo}" file.txt fullsend-code "${bot}" "fix: rerun"
+}
+
+# check_rerun_result NAME RUN_DIR CLONE EXPECT EXIT LOG [TIP_AUTHOR]
+# EXPECT "publish": the remote branch is the clone's HEAD and no longer holds
+# the earlier commits; a shallow clone gained no old main history.
+# EXPECT "refuse": the remote branch is unchanged and the failure names the
+# commit and its author.
+check_rerun_result() {
+  local name="$1" run_dir="$2" clone="$3" expect="$4" rc="$5" log="$6" tip_author="${7:-}"
+  local after head problem=""
+  after="$(${REAL_GIT} -C "${run_dir}/remote.git" rev-parse refs/heads/agent/99-rerun)"
+  head="$(${REAL_GIT} -C "${run_dir}/repo" rev-parse HEAD)"
+  if [[ "${expect}" == "publish" ]]; then
+    if [[ "${rc}" -ne 0 ]]; then
+      problem="exit ${rc}, want 0"
+    elif [[ "${after}" != "${head}" ]]; then
+      problem="remote tip ${after} is not the clone's HEAD ${head}"
+    elif ${REAL_GIT} -C "${run_dir}/remote.git" merge-base --is-ancestor "${RERUN_BEFORE}" "${after}"; then
+      problem="the earlier commits were kept"
+    elif [[ -n "${tip_author}" ]] \
+      && [[ "$(${REAL_GIT} -C "${run_dir}/remote.git" log -1 --format=%an "${after}")" != "${tip_author}" ]]; then
+      problem="remote tip not authored by ${tip_author}"
+    elif [[ "${clone}" != "full" ]] \
+      && ${REAL_GIT} -C "${run_dir}/repo" cat-file -e "${RERUN_OLD_MAIN}^{commit}" 2>/dev/null; then
+      problem="the shallow clone fetched old main history"
+    fi
+  else
+    local refused_author
+    refused_author="$(${REAL_GIT} -C "${run_dir}/remote.git" log -1 --format=%an "${RERUN_BEFORE}")"
+    if [[ "${rc}" -eq 0 ]]; then
+      problem="exit 0, want a refusal"
+    elif [[ "${after}" != "${RERUN_BEFORE}" ]]; then
+      problem="remote branch moved from ${RERUN_BEFORE} to ${after}"
+    elif ! grep -qF "commit ${RERUN_BEFORE:0:7} by ${refused_author}" "${log}"; then
+      problem="failure does not name commit ${RERUN_BEFORE:0:7} by ${refused_author}"
+    fi
+  fi
+  if [[ -n "${problem}" ]]; then
+    echo "FAIL: ${name} — ${problem}"
+    cat "${log}"
+    echo
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: ${name}"
+  fi
+}
+
+RERUN_BIN="${SEC_CODE_TMPDIR}/bin-rerun"
+mkdir -p "${RERUN_BIN}"
+cp "${SEC_CODE_MOCK_BIN}/gitleaks" "${SEC_CODE_MOCK_BIN}/sleep" "${SEC_CODE_MOCK_BIN}/git" "${RERUN_BIN}/"
+cat > "${RERUN_BIN}/gh" <<'MOCKEOF'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "api -X")      exec bash "${FAKE_GH_GIT_API}" "$@" ;;
+  "api repos/"*) echo "main"; exit 0 ;;
+  "pr list")     echo "7"; exit 0 ;;
+  "pr view")
+    if printf '%s\n' "$@" | grep -qx body; then echo '{"body":"Closes #99"}'; exit 0; fi
+    echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "issue comment"|"pr comment") printf '%s\n' "$@"; cat 2>/dev/null || true; exit 0 ;;
+  *)             exit 0 ;;
+esac
+MOCKEOF
+chmod +x "${RERUN_BIN}/gh"
+
+# run_code_rerun_test NAME CLONE AUTHOR SIGNED EXPECT [TIP_AUTHOR]
+run_code_rerun_test() {
+  local test_name="$1" clone="$2" author="$3" signed="$4" expect="$5" tip_author="${6:-}"
+  local run_dir="${SEC_CODE_TMPDIR}/run-${test_name}"
+  local log="${SEC_CODE_TMPDIR}/stdout-${test_name}.log"
+  seed_rerun_repo "${run_dir}" "${clone}" "${author}"
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export HOME="${SEC_CODE_TMPDIR}"
+    export PATH="${RERUN_BIN}:${PATH}"
+    export PUSH_TOKEN="fake..."
+    export REPO_FULL_NAME="test-org/test-repo"
+    export ISSUE_NUMBER="99"
+    export REPO_DIR="repo"
+    export FULLSEND_FORGE="github"
+    export GITHUB_SIGNED_COMMITS="${signed}"
+    export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+    bash "${POST_SCRIPT}"
+  ) > "${log}" 2>&1 < /dev/null || exit_code=$?
+  check_rerun_result "${test_name}" "${run_dir}" "${clone}" "${expect}" "${exit_code}" "${log}" "${tip_author}"
+}
+
+run_code_rerun_test "rerun-full-clone-stale-tracking-ref" full code false publish
+run_code_rerun_test "rerun-shallow-agent-commits-replaced" shallow code false publish
+run_code_rerun_test "rerun-shallow-human-commit-refused" shallow human false refuse
+run_code_rerun_test "rerun-shallow-fix-agent-commit-refused" shallow fix false refuse
+run_code_rerun_test "rerun-shallow-amended-agent-commit-refused" shallow amended false refuse
+run_code_rerun_test "rerun-shallow-signed-agent-commits-replaced" checkout signed true publish \
+  "fullsend-ai-coder[bot]"
 
 rm -rf "${SEC_CODE_TMPDIR}"
 
@@ -3342,6 +3526,58 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# --- GitLab rerun onto an open MR from a depth-1 clone (#342) ---
+# The single-branch clone has no fetch refspec for the branch, so only the
+# explicit lease on the fetched tracking ref lets the forced retry through.
+GL_RERUN_BIN="${GL_INT_TMPDIR}/bin-rerun"
+mkdir -p "${GL_RERUN_BIN}"
+cp "${GL_INT_MOCK_BIN}/sleep" "${GL_INT_MOCK_BIN}/gitleaks" "${GL_INT_MOCK_BIN}/git" "${GL_RERUN_BIN}/"
+cat > "${GL_RERUN_BIN}/curl" <<'MOCKEOF'
+#!/usr/bin/env bash
+url=""
+for arg in "$@"; do
+  case "${arg}" in
+    https://*) url="${arg}" ;;
+  esac
+done
+mr_url="https://gitlab.com/test-group/test-project/-/merge_requests/5"
+case "${url}" in
+  *merge_requests\?state=opened*)
+    echo "[{\"iid\":5,\"source_project_id\":1,\"web_url\":\"${mr_url}\"}]" ;;
+  */merge_requests/5)
+    echo "{\"iid\":5,\"description\":\"Closes #99\",\"web_url\":\"${mr_url}\"}" ;;
+  *projects/*)
+    echo '{"id":1,"default_branch":"main","merge_method":"merge"}' ;;
+  *)
+    echo '{}' ;;
+esac
+MOCKEOF
+chmod +x "${GL_RERUN_BIN}/curl"
+
+_gl_rerun_dir="${GL_INT_TMPDIR}/run-gl-rerun"
+_gl_rerun_log="${GL_INT_TMPDIR}/stdout-gl-rerun.log"
+seed_rerun_repo "${_gl_rerun_dir}" shallow code
+_gl_rerun_rc=0
+# shellcheck disable=SC2030,SC2031
+(
+  cd "${_gl_rerun_dir}"
+  export HOME="${GL_INT_TMPDIR}"
+  export PATH="${GL_RERUN_BIN}:${PATH}"
+  export PUSH_TOKEN="glpa..."
+  export REPO_FULL_NAME="test-group/test-project"
+  export ISSUE_NUMBER="99"
+  export ISSUE_URL="https://gitlab.com/test-group/test-project/-/issues/99"
+  export REPO_DIR="repo"
+  export FULLSEND_FORGE="gitlab"
+  export GITLAB_TOKEN="${PUSH_TOKEN}"
+  export GITLAB_HOST="gitlab.com"
+  export CI_SERVER_HOST="gitlab.com"
+  export GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}"
+  bash "${POST_SCRIPT}"
+) > "${_gl_rerun_log}" 2>&1 < /dev/null || _gl_rerun_rc=$?
+check_rerun_result "gitlab-rerun-shallow-explicit-lease" "${_gl_rerun_dir}" shallow publish \
+  "${_gl_rerun_rc}" "${_gl_rerun_log}"
+
 rm -rf "${GL_INT_TMPDIR}"
 
 # =============================================================================
@@ -3395,7 +3631,13 @@ case "\$1 \$2" in
   "api -X")      echo "unexpected Git Data API call: \$*" >&2; exit 99 ;;
   "api repos/"*) echo "main"; exit 0 ;;
   "pr list")     if [[ -n "\${MOCK_EXISTING_PR:-}" ]]; then echo "7"; fi; exit 0 ;;
-  "pr view")     echo "https://github.com/test-org/test-repo/pull/7"; exit 0 ;;
+  "pr view")
+    if printf '%s\n' "\$@" | grep -qx body; then
+      echo '{"body":"Related to https://test.atlassian.net/browse/TESTPROJ-42"}'
+    else
+      echo "https://github.com/test-org/test-repo/pull/7"
+    fi
+    exit 0 ;;
   "pr create")   echo "https://github.com/test-org/test-repo/pull/1"; exit 0 ;;
   *)             exit 0 ;;
 esac
@@ -3466,6 +3708,10 @@ setup_jira_int_repo() {
   local run_dir="$1"
   local branch_name="$2"
   local repo_dir="${run_dir}/repo"
+  if [ -n "${JIRA_INT_RERUN:-}" ]; then
+    seed_rerun_repo "${run_dir}" shallow human "${branch_name}"
+    return 0
+  fi
   ${JIRA_REAL_GIT} init -q --bare -b main "${run_dir}/remote.git"
   ${JIRA_REAL_GIT} clone -q "${run_dir}/remote.git" "${repo_dir}" 2>/dev/null
   ${JIRA_REAL_GIT} -C "${repo_dir}" config user.email "test@example.com"
@@ -3586,6 +3832,7 @@ jira_int_fail() {
 
 JIRA_CODE_MARKER="--marker <!-- fullsend:code-agent -->"
 JIRA_OUTCOME_MARKER="--marker <!-- fullsend:code-agent-outcome -->"
+JIRA_FAILURE_MARKER="--marker <!-- fullsend:code-agent-failure -->"
 
 # GitHub target: PR on GitHub, stage update with the PR URL on the Jira issue.
 run_jira_int "jira-github-target" github
@@ -3700,7 +3947,7 @@ elif ! grep -qF 'forced local push failure' "${JIRA_INT_OUT}"; then
   jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "did not reach push after tool setup"
 elif [ -s "${JIRA_INT_AWK_LOG}" ]; then
   jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "redaction exposed credentials to PATH-resolved awk"
-elif ! grep -qF -- "${JIRA_OUTCOME_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+elif ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
      || ! grep -qF 'env-token=fake-jira-token' "${JIRA_INT_FULLSEND_LOG}"; then
   jira_int_fail "jira-push-failure-keeps-token-from-shadow-awk" "trusted CLI did not receive the failure comment"
 else
@@ -3911,7 +4158,7 @@ JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
 if [ "${JIRA_INT_RC}" -ne 1 ]; then
   jira_int_fail "jira-post-failure-to-jira" "expected exit 1, got ${JIRA_INT_RC}"
 elif [ "$(grep -c "^fullsend issues post-comment" "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
-     || ! grep -qF -- "${JIRA_OUTCOME_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
      || grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
      || ! grep -qF "Branch validation failed" "${JIRA_INT_FULLSEND_LOG}" \
      || ! grep -qF "Agent requested branch 'release' but allowed branches are: main" "${JIRA_INT_FULLSEND_LOG}"; then
@@ -3928,11 +4175,81 @@ JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" \
   run_jira_int "jira-post-failure-write-failure" github CODE_ALLOWED_TARGET_BRANCHES=main MOCK_FULLSEND_FAIL=1
 if [ "${JIRA_INT_RC}" -ne 1 ]; then
   jira_int_fail "jira-post-failure-write-failure-warns" "expected exit 1, got ${JIRA_INT_RC}"
-elif ! grep -qF "Failed to post the failure comment to Jira issue TESTPROJ-42" "${JIRA_INT_OUT}"; then
+elif ! grep -qF "Post-code failure for TESTPROJ-42; see workflow logs" "${JIRA_INT_OUT}"; then
   jira_int_fail "jira-post-failure-write-failure-warns" "missing Jira write-failure warning"
 else
   echo "PASS: jira-post-failure-write-failure-warns"
 fi
+
+# Setup fails before any repository Git command. The failure helper and
+# trusted CLI must already be available; success must not print the fallback.
+run_jira_int "jira-early-setup-failure" github REPO_DIR=missing-repo
+if [ "${JIRA_INT_RC}" -ne 1 ] \
+   || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+   || ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+   || ! grep -qF 'Extracted repo not found at missing-repo' "${JIRA_INT_FULLSEND_LOG}" \
+   || grep -qF 'see workflow logs' "${JIRA_INT_OUT}"; then
+  jira_int_fail "jira-early-setup-failure" "expected one delivered setup failure without log fallback"
+else
+  echo "PASS: jira-early-setup-failure"
+fi
+
+# Exercise the real #1467 author guard against a local bare remote, starting
+# from a shallow clone. Both delivery outcomes must preserve the human commit.
+for _jira_refusal_write in success failure; do
+  _jira_refusal_name="jira-human-commit-refused-${_jira_refusal_write}"
+  _jira_refusal_fail=""
+  if [ "${_jira_refusal_write}" = failure ]; then _jira_refusal_fail=1; fi
+  JIRA_INT_RERUN=1 run_jira_int "${_jira_refusal_name}" github \
+    MOCK_EXISTING_PR=1 GIT_BOT_EMAIL="${RERUN_BOT_EMAIL}" MOCK_FULLSEND_FAIL="${_jira_refusal_fail}"
+  _jira_refusal_remote="${JIRA_INT_TMPDIR}/run-${_jira_refusal_name}/remote.git"
+  if [ "${JIRA_INT_RC}" -ne 1 ] \
+     || [ "$(${JIRA_REAL_GIT} -C "${_jira_refusal_remote}" rev-parse refs/heads/agent/TESTPROJ-42-fix)" != "${RERUN_BEFORE}" ] \
+     || [ "$(grep -c '^fullsend issues post-comment' "${JIRA_INT_FULLSEND_LOG}")" -ne 1 ] \
+     || ! grep -qF -- "${JIRA_FAILURE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qF -- "${JIRA_CODE_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -qF -- "${JIRA_OUTCOME_MARKER}" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF 'Push rejected' "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF "commit ${RERUN_BEFORE:0:7} by Human Dev" "${JIRA_INT_FULLSEND_LOG}" \
+     || ! grep -qF 'Close the pull request and run the code agent again' "${JIRA_INT_FULLSEND_LOG}" \
+     || grep -q '^gh issue comment' "${JIRA_INT_FORGE_LOG}"; then
+    jira_int_fail "${_jira_refusal_name}" "expected unchanged remote and one detailed Jira refusal"
+  elif { [ "${_jira_refusal_write}" = failure ] && ! grep -qF 'see workflow logs' "${JIRA_INT_OUT}"; } \
+       || { [ "${_jira_refusal_write}" = success ] && grep -qF 'see workflow logs' "${JIRA_INT_OUT}"; }; then
+    jira_int_fail "${_jira_refusal_name}" "log fallback must match delivery failure"
+  else
+    echo "PASS: ${_jira_refusal_name}"
+  fi
+done
+
+# New no-op and failure callers must reject mismatched destinations before
+# issuing any tracker or forge write, while preserving their own exit status.
+for _jira_bad_dest in \
+  'url|FULLSEND_WORK_ITEM_URL=https://other.example/browse/TESTPROJ-42' \
+  'key|FULLSEND_WORK_ITEM_KEY=TESTPROJ-7' \
+  'host|JIRA_BASE_URL=https://other.atlassian.net'; do
+  for _jira_bad_path in noop failure; do
+    _jira_bad_name="jira-${_jira_bad_path}-rejects-${_jira_bad_dest%%|*}"
+    if [ "${_jira_bad_path}" = noop ]; then
+      JIRA_INT_NO_BRANCH=1 run_jira_int "${_jira_bad_name}" github "${_jira_bad_dest#*|}"
+      _jira_bad_rc=0
+      _jira_bad_warning='Failed to post no-op comment'
+    else
+      JIRA_INT_RESULT_JSON="${JIRA_BRANCH_FAIL_RESULT}" run_jira_int "${_jira_bad_name}" github \
+        CODE_ALLOWED_TARGET_BRANCHES=main "${_jira_bad_dest#*|}"
+      _jira_bad_rc=1
+      _jira_bad_warning='see workflow logs'
+    fi
+    if [ "${JIRA_INT_RC}" -ne "${_jira_bad_rc}" ] \
+       || [ -s "${JIRA_INT_FULLSEND_LOG}" ] \
+       || grep -qE '^gh (issue comment|pr create|pr comment)' "${JIRA_INT_FORGE_LOG}" \
+       || ! grep -qF "${_jira_bad_warning}" "${JIRA_INT_OUT}"; then
+      jira_int_fail "${_jira_bad_name}" "expected zero writes, warning and preserved status"
+    else
+      echo "PASS: ${_jira_bad_name}"
+    fi
+  done
+done
 
 # Other external trackers keep the log-only behaviour on both paths.
 JIRA_EXT_TRACKER_ENV=(FULLSEND_TRACKER=linear FULLSEND_WORK_ITEM_SOURCE=linear
@@ -3968,7 +4285,7 @@ EXTERNAL_WORK_ITEM=true
 WORK_ITEM_KEY=TESTPROJ-42
 REPO_FULL_NAME=test-org/test-repo
 _body_file="$2"
-report_post_failure_to_external_tracker() {
+post_external_failure_comment() {
   printf '%s' "$1" > "${_body_file}"
   return 1
 }
@@ -3992,6 +4309,33 @@ elif ! grep -qF "Push failed" "${_trap_hook_body}" \
   FAILURES=$((FAILURES + 1))
 else
   echo "PASS: failure-hook-keeps-exit-code"
+fi
+
+# A failure in body construction is also best-effort, before any hook runs.
+cat > "${_trap_script}" <<'TRAPEOF'
+set -euo pipefail
+# shellcheck source=/dev/null
+source "$1"
+EXTERNAL_WORK_ITEM=true
+WORK_ITEM_KEY=TESTPROJ-42
+REPO_FULL_NAME=test-org/test-repo
+build_post_failure_comment() { return 7; }
+post_external_failure_comment() { echo UNEXPECTED_WRITE; }
+trap 'report_post_failure_to_issue' ERR
+(exit 3)
+echo UNEXPECTED_CONTINUE
+TRAPEOF
+_trap_rc=0
+bash "${_trap_script}" "${SCRIPT_DIR}/lib/post-failure-report.lib.sh" \
+  > "${JIRA_INT_TMPDIR}/trap-builder.log" 2>&1 || _trap_rc=$?
+if [ "${_trap_rc}" -ne 3 ] \
+   || ! grep -qF 'Could not build the post-code failure comment' "${JIRA_INT_TMPDIR}/trap-builder.log" \
+   || grep -q 'UNEXPECTED_' "${JIRA_INT_TMPDIR}/trap-builder.log"; then
+  echo "FAIL: failure-builder-keeps-exit-code — expected original exit 3 and no write"
+  cat "${JIRA_INT_TMPDIR}/trap-builder.log"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: failure-builder-keeps-exit-code"
 fi
 
 # Forge-originated run (fullsend run still exports FULLSEND_WORK_ITEM_SOURCE):

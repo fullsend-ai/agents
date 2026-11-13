@@ -40,7 +40,7 @@
 #   REPO_FULL_NAME    — owner/repo
 #   PR_NUMBER         — PR number
 #   REPO_DIR          — path to extracted repo (default: current directory)
-#   TRIGGER_SOURCE    — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix)
+#   TRIGGER_SOURCE    — forge username that triggered the fix (GitHub: [bot] suffix; GitLab: _bot suffix or service_account_ prefix)
 #
 # Optional environment variables:
 #   FIX_ITERATION     — current iteration count
@@ -395,8 +395,18 @@ _signed_push_update_ref() {
 forge_push_branch() {
   local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
   if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
-    local branch="$1"
+    local branch="$1" lease
     shift
+    if [ "${1:-}" = "--force-with-lease" ]; then
+      # Lease on the tracking ref explicitly: a single-branch clone has no
+      # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+      lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+        echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+        return 1
+      }
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      return
+    fi
     git push "$@" -u origin -- "${branch}"
     return
   fi
@@ -459,7 +469,11 @@ _forge_push_branch() {
     return 0
   fi
   git reset -q --soft "${tip}" || return 1
-  git branch -q --set-upstream-to="origin/${branch}" || return 1
+  # Set the upstream as `git push -u` does: --set-upstream-to refuses a
+  # remote-tracking ref outside the fetch refspec, as in a single-branch
+  # clone.
+  git config "branch.${branch}.remote" origin || return 1
+  git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
 # END bundled: lib/github-signed-push.lib.sh
@@ -933,9 +947,13 @@ forge_append_path() {
     ;;
 esac
 
+# is_bot_user USERNAME — true if USERNAME is an automated forge identity.
+# GitLab: access-token bot users (project_<id>_bot) and service accounts
+# (service_account_..., e.g. the installer-created fullsend-analyst /
+# fullsend-coder accounts named service_account_project_<id>_<hash>).
 is_bot_user() {
   if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
-    [[ "${1:-}" =~ _bot$ ]]
+    [[ "${1:-}" =~ _bot$ || "${1:-}" =~ ^service_account_ ]]
   else
     [[ "${1:-}" =~ \[bot\]$ ]]
   fi
@@ -1285,11 +1303,15 @@ gha_echo() {
 
 _redact_multiline_pem() {
   awk '
+    # OpenSSH/RSA/EC/DSA/PKCS8 PEM headers end in "...private key-----".
+    # OpenPGP'"'"'s ASCII-armor format instead ends in "...private key
+    # block-----" (issue #239) -- the optional "( block)?" covers both
+    # without requiring a separate pattern per key format.
     function is_pem_begin(line) {
-      return tolower(line) ~ /-----begin .*private key-----/
+      return tolower(line) ~ /-----begin .*private key( block)?-----/
     }
     function is_pem_end(line) {
-      return tolower(line) ~ /-----end .*private key-----/
+      return tolower(line) ~ /-----end .*private key( block)?-----/
     }
     is_pem_begin($0) {
       print "[REDACTED PRIVATE KEY]"
@@ -1627,22 +1649,27 @@ report_post_failure_to_issue() {
   local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
   local body
-  # REPO_FULL_NAME is required by post-code.src.sh before sourcing.
+  # REPO_FULL_NAME is required by post-code.src.sh setup.
+  # Reporting must not replace the original failure, even if rendering fails.
   # shellcheck disable=SC2153
-  body="$(build_post_failure_comment \
+  if ! body="$(build_post_failure_comment \
     "code" "${exit_code}" "${category}" "${detail}" \
-    "${REPO_FULL_NAME}" "/fs-code")"
+    "${REPO_FULL_NAME}" "/fs-code")"; then
+    gha_echo warning "Could not build the post-code failure comment; see workflow logs"
+    return 0
+  fi
 
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
   # target issue number and risk commenting on unrelated work. A caller that
-  # can write to the tracker defines report_post_failure_to_external_tracker
+  # can write to the tracker defines post_external_failure_comment
   # (post-code does, for Jira); its result never changes this exit path.
   if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
-    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
-    if declare -F report_post_failure_to_external_tracker >/dev/null 2>&1; then
-      report_post_failure_to_external_tracker "${body}" || true
+    if declare -F post_external_failure_comment >/dev/null 2>&1 \
+       && post_external_failure_comment "${body}"; then
+      return 0
     fi
+    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
     return 0
   fi
 

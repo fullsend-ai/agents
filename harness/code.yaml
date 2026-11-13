@@ -18,7 +18,7 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-code@sha256:8c5953b8bf88d681a66e2435cde5397bcac704f06fca5dc782f2206bcce91718
+image: ghcr.io/fullsend-ai/fullsend-code@sha256:6961dc3cf51abbb94291dea02c8d69a7aa33df1f146c6ae5c33304b27eb2203e
 policy: policies/base.yaml
 providers:
   - vertex-ai
@@ -178,9 +178,13 @@ overlays:
     # JIRA_API_URL and JIRA_USER_EMAIL reach the sandbox through an
     # expanded host file, not env.sandbox: a ${VAR} in env.sandbox fails the
     # run when the host variable is unset, and older fullsend releases do
-    # not set JIRA_API_URL. An unset value expands to empty here: the skills
-    # fall back to JIRA_BASE_URL, and an empty JIRA_USER_EMAIL selects
-    # Bearer auth (service account).
+    # not set JIRA_API_URL. fullsend run sets JIRA_USER_EMAIL from the
+    # optional FULLSEND_JIRA_EMAIL repository secret
+    # (fullsend-ai/fullsend#9411); there is no JIRA_USER_EMAIL secret. An
+    # unset value expands to empty here: the skills fall back to
+    # JIRA_BASE_URL, and an empty JIRA_USER_EMAIL selects Bearer auth
+    # (service account). The jira-ro provider reads FULLSEND_JIRA_TOKEN;
+    # there is no JIRA_TOKEN secret.
     host_files:
       - src: env/jira/code.env
         dest: /sandbox/workspace/.env.d/jira-code.env
@@ -189,8 +193,8 @@ overlays:
       runner:
         JIRA_BASE_URL: "${JIRA_BASE_URL}"
         # Runner-only Jira credentials: post-code writes the code-stage
-        # update and PR/MR URL to the Jira issue. The sandbox never gets the
-        # real token (the jira-ro provider supplies a placeholder). They
+        # update, PR/MR URL, no-op reason and failure details to the Jira issue.
+        # The sandbox never gets the real token (the jira-ro provider supplies a placeholder). They
         # come from the FULLSEND_JIRA_TOKEN and optional FULLSEND_JIRA_EMAIL
         # repository secrets (fullsend#9079). An absent email expands empty
         # here, and post-code then uses service-account Bearer auth.

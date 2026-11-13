@@ -105,8 +105,10 @@ check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_TOKEN '${FULLSEND_JIRA_TOKE
 check_runner_mapping "${TRIAGE_HARNESS}" triage JIRA_USER_EMAIL '${FULLSEND_JIRA_EMAIL}'
 check_runner_mapping "${TRIAGE_HARNESS}" triage FULLSEND_DIR '${FULLSEND_DIR}'
 
-# fullsend refuses FULLSEND_JIRA_* at sandbox-bound sites, so no sandbox
-# env, Jira host file, or provider may reference them.
+# The real FULLSEND_JIRA_* values must never reach the sandbox, so no
+# sandbox env or Jira host file may reference them. The jira-ro provider is
+# the one exception (below): it holds the token host-side and gives the
+# sandbox only a placeholder.
 for f in "${TRIAGE_HARNESS}" "${REPO_ROOT}/harness/code.yaml"; do
   name="$(basename "${f}" .yaml)"
   if jira_overlay_field "${f}" "(.env.sandbox // {}) | to_entries | .[] | .key + \"=\" + .value" | grep -qF 'FULLSEND_JIRA_'; then
@@ -115,10 +117,20 @@ for f in "${TRIAGE_HARNESS}" "${REPO_ROOT}/harness/code.yaml"; do
     assert_pass "${name}-no-fullsend-jira-in-sandbox"
   fi
 done
-if grep -hv '^[[:space:]]*#' "${REPO_ROOT}"/env/jira/*.env "${REPO_ROOT}/providers/jira-ro.yaml" | grep -qF 'FULLSEND_JIRA_'; then
-  assert_fail "no-fullsend-jira-in-host-files-or-provider" "FULLSEND_JIRA_* referenced in a Jira host file or the provider"
+if grep -hv '^[[:space:]]*#' "${REPO_ROOT}"/env/jira/*.env | grep -qF 'FULLSEND_JIRA_'; then
+  assert_fail "no-fullsend-jira-in-host-files" "FULLSEND_JIRA_* referenced in a Jira host file"
 else
-  assert_pass "no-fullsend-jira-in-host-files-or-provider"
+  assert_pass "no-fullsend-jira-in-host-files"
+fi
+
+# The jira-ro provider reads the FULLSEND_JIRA_TOKEN repository secret
+# (fullsend-ai/fullsend#9411) under the JIRA_TOKEN placeholder name, and
+# nothing else: no JIRA_TOKEN secret is needed.
+provider_creds="$(yq -r '.credentials // {} | to_entries | .[] | .key + "=" + .value' "${REPO_ROOT}/providers/jira-ro.yaml")"
+if [[ "${provider_creds}" == 'JIRA_TOKEN=${FULLSEND_JIRA_TOKEN}' ]]; then
+  assert_pass "provider-reads-fullsend-jira-token"
+else
+  assert_fail "provider-reads-fullsend-jira-token" "jira-ro credentials are '${provider_creds}', want 'JIRA_TOKEN=\${FULLSEND_JIRA_TOKEN}'"
 fi
 
 # JIRA_BASE_URL in sandbox env (non-secret, needed for API URLs)
@@ -259,12 +271,40 @@ for skill_file in "${SKILL_FILES[@]}"; do
   # Basic auth (--user email:token) only when the trimmed email is
   # non-empty, else Bearer (--oauth2-bearer token), so no curl sends Basic
   # auth with an empty or whitespace-only email.
-  if grep -qF -- 'JIRA_EMAIL="$(printf '"'%s'"' "${JIRA_USER_EMAIL:-}" | tr -d '"'[:space:]'"')"' "${skill_file}" \
+  if grep -qF -- 'JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"' "${skill_file}" \
     && grep -qF -- 'JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user' "${skill_file}" \
     && grep -qF -- 'JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"' "${skill_file}"; then
     assert_pass "${test_name}"
   else
     assert_fail "${test_name}" "missing the Basic/Bearer selection lines in ${skill_file}"
+  fi
+done
+
+# The sandbox command hook cannot analyse a command substitution in the
+# email trim and blocks the whole snippet (#1995). The trim must stay a
+# parameter expansion in every skill.
+if cmdsub_files="$(grep -rlF -- 'JIRA_EMAIL="$(' "${REPO_ROOT}/skills")"; then
+  assert_fail "skill-jira-email-no-command-substitution" \
+    "JIRA_EMAIL=\"\$( found in: ${cmdsub_files//$'\n'/ }"
+else
+  assert_pass "skill-jira-email-no-command-substitution"
+fi
+
+# The same hook blocks the issue-key command substitution, and blocks a
+# shell variable inside --data-urlencode, so the Jira skills derive the key
+# with parameter expansion and write the project key into JQL literally.
+for skill_file in "${SKILL_FILES[@]}"; do
+  skill_name="$(basename "$(dirname "${skill_file}")")"
+  [ -f "${skill_file}" ] || continue  # already reported above
+  if grep -qF -- 'ISSUE_KEY=$(' "${skill_file}"; then
+    assert_fail "skill-${skill_name}-issue-key-expansion" "ISSUE_KEY=\$( found in ${skill_file}"
+  else
+    assert_pass "skill-${skill_name}-issue-key-expansion"
+  fi
+  if grep -qE -- '--data-urlencode .*\$' "${skill_file}"; then
+    assert_fail "skill-${skill_name}-jql-literal" "a shell variable inside --data-urlencode in ${skill_file}"
+  else
+    assert_pass "skill-${skill_name}-jql-literal"
   fi
 done
 

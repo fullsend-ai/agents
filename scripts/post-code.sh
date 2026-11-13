@@ -33,8 +33,8 @@
 # also need FULLSEND_WORK_ITEM_URL, JIRA_TOKEN, and FULLSEND_DIR (whose
 # config.yaml holds tracker.jira for the fullsend CLI) to write the
 # code-stage update and PR/MR URL, or the no-PR or failure outcome, to the
-# Jira issue. JIRA_USER_EMAIL is
-# optional: when set, the write uses bot-user Basic auth; when unset or
+# Jira issue. JIRA_USER_EMAIL is optional: when set, the write uses bot-user
+# Basic auth; when unset or
 # empty, service-account Bearer auth. JIRA_BASE_URL is optional and
 # cross-checked against the work-item URL. GitLab targets take the GitLab
 # host from CI_SERVER_HOST.
@@ -369,11 +369,15 @@ gha_echo() {
 
 _redact_multiline_pem() {
   awk '
+    # OpenSSH/RSA/EC/DSA/PKCS8 PEM headers end in "...private key-----".
+    # OpenPGP'"'"'s ASCII-armor format instead ends in "...private key
+    # block-----" (issue #239) -- the optional "( block)?" covers both
+    # without requiring a separate pattern per key format.
     function is_pem_begin(line) {
-      return tolower(line) ~ /-----begin .*private key-----/
+      return tolower(line) ~ /-----begin .*private key( block)?-----/
     }
     function is_pem_end(line) {
-      return tolower(line) ~ /-----end .*private key-----/
+      return tolower(line) ~ /-----end .*private key( block)?-----/
     }
     is_pem_begin($0) {
       print "[REDACTED PRIVATE KEY]"
@@ -711,22 +715,27 @@ report_post_failure_to_issue() {
   local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
   local body
-  # REPO_FULL_NAME is required by post-code.src.sh before sourcing.
+  # REPO_FULL_NAME is required by post-code.src.sh setup.
+  # Reporting must not replace the original failure, even if rendering fails.
   # shellcheck disable=SC2153
-  body="$(build_post_failure_comment \
+  if ! body="$(build_post_failure_comment \
     "code" "${exit_code}" "${category}" "${detail}" \
-    "${REPO_FULL_NAME}" "/fs-code")"
+    "${REPO_FULL_NAME}" "/fs-code")"; then
+    gha_echo warning "Could not build the post-code failure comment; see workflow logs"
+    return 0
+  fi
 
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
   # target issue number and risk commenting on unrelated work. A caller that
-  # can write to the tracker defines report_post_failure_to_external_tracker
+  # can write to the tracker defines post_external_failure_comment
   # (post-code does, for Jira); its result never changes this exit path.
   if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
-    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
-    if declare -F report_post_failure_to_external_tracker >/dev/null 2>&1; then
-      report_post_failure_to_external_tracker "${body}" || true
+    if declare -F post_external_failure_comment >/dev/null 2>&1 \
+       && post_external_failure_comment "${body}"; then
+      return 0
     fi
+    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
     return 0
   fi
 
@@ -2052,8 +2061,18 @@ _signed_push_update_ref() {
 forge_push_branch() {
   local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
   if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
-    local branch="$1"
+    local branch="$1" lease
     shift
+    if [ "${1:-}" = "--force-with-lease" ]; then
+      # Lease on the tracking ref explicitly: a single-branch clone has no
+      # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+      lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+        echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+        return 1
+      }
+      git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+      return
+    fi
     git push "$@" -u origin -- "${branch}"
     return
   fi
@@ -2116,7 +2135,11 @@ _forge_push_branch() {
     return 0
   fi
   git reset -q --soft "${tip}" || return 1
-  git branch -q --set-upstream-to="origin/${branch}" || return 1
+  # Set the upstream as `git push -u` does: --set-upstream-to refuses a
+  # remote-tracking ref outside the fetch refspec, as in a single-branch
+  # clone.
+  git config "branch.${branch}.remote" origin || return 1
+  git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
 # END bundled: lib/github-signed-push.lib.sh
@@ -2897,8 +2920,18 @@ forge_set_push_remote() {
 
 # forge_push_branch BRANCH [--force-with-lease] — plain git push.
 forge_push_branch() {
-  local branch="$1"
+  local branch="$1" lease
   shift
+  if [ "${1:-}" = "--force-with-lease" ]; then
+    # Lease on the tracking ref explicitly: a single-branch clone has no
+    # fetch refspec for BRANCH, so a bare --force-with-lease reports stale info.
+    lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+      echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+      return 1
+    }
+    git push --force-with-lease="refs/heads/${branch}:${lease}" -u origin -- "${branch}"
+    return
+  fi
   git push "$@" -u origin -- "${branch}"
 }
 
@@ -3205,6 +3238,15 @@ forge_ensure_label() {
 }
 # END bundled: lib/labels.lib.sh
 
+# The Jira credentials were taken out of the environment at the top of this
+# script and are passed only to post_jira_code_comment. Resolve the trusted
+# tracker CLI now, before the failure trap or a no-op exit can write to Jira
+# and before repo-controlled installs can put a binary of the same name
+# earlier on PATH.
+_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
+# A relative PATH entry would resolve inside the repo after the cd below.
+[[ "${_jira_fullsend_bin}" == /* ]] || _jira_fullsend_bin=""
+
 # ---------------------------------------------------------------------------
 # enable_auto_merge — arm auto-merge on a PR/MR (best-effort).
 #
@@ -3325,15 +3367,16 @@ enable_auto_merge() {
 #
 # Writes <body> to the originating Jira issue under <marker>, so a rerun
 # edits the comment an earlier run left instead of adding another. The PR/MR
-# link uses JIRA_CODE_MARKER; no-PR and failure outcomes use
-# JIRA_OUTCOME_MARKER, so a later run without a PR/MR never replaces an
-# existing link. Returns non-zero when the write cannot be made; callers
-# decide whether that fails the step.
+# link uses JIRA_CODE_MARKER; no-op notices use JIRA_OUTCOME_MARKER and
+# failures use JIRA_FAILURE_MARKER, so neither replaces an existing link.
+# Returns non-zero when the write cannot be made; callers decide whether
+# that fails the step.
 #
 # Usage: post_jira_code_comment <marker> <body>
 # ---------------------------------------------------------------------------
 JIRA_CODE_MARKER="<!-- fullsend:code-agent -->"
 JIRA_OUTCOME_MARKER="<!-- fullsend:code-agent-outcome -->"
+JIRA_FAILURE_MARKER="<!-- fullsend:code-agent-failure -->"
 
 post_jira_code_comment() {
   local marker="$1"
@@ -3389,19 +3432,15 @@ post_jira_code_comment() {
     --marker "${marker}" --result -
 }
 
-# Called by report_post_failure_to_issue (post-failure-report.lib.sh) for an
-# external work item, with the sanitized failure comment. Writes it to a Jira
-# issue; other external trackers keep the log-only warning. Best-effort: the
-# caller ignores the status, so the original failure exit code stands.
-report_post_failure_to_external_tracker() {
+# Called by the shared failure reporter with a sanitized body. Return failure
+# for unsupported trackers or failed writes so it can emit the log fallback.
+post_external_failure_comment() {
   local body="$1"
 
   if [ "${WORK_ITEM_TRACKER}" != "jira" ]; then
-    return 0
+    return 1
   fi
-  if ! post_jira_code_comment "${JIRA_OUTCOME_MARKER}" "${body}"; then
-    gha_echo warning "Failed to post the failure comment to Jira issue ${WORK_ITEM_KEY}"
-  fi
+  post_jira_code_comment "${JIRA_FAILURE_MARKER}" "${body}"
 }
 
 # ---------------------------------------------------------------------------
@@ -3442,14 +3481,6 @@ else
   WORK_ITEM_KEY="${ISSUE_NUMBER}"
 fi
 
-# The Jira credentials were taken out of the environment at the top of this
-# script and are passed only to post_jira_code_comment. Resolve the trusted
-# tracker CLI now, before the failure trap or a no-op exit can write to Jira
-# and before repo-controlled installs can put a binary of the same name
-# earlier on PATH.
-_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
-# A relative PATH entry would resolve inside the repo after the cd below.
-[[ "${_jira_fullsend_bin}" == /* ]] || _jira_fullsend_bin=""
 trap 'report_post_failure_to_issue' ERR
 
 if [ "${REPO_DIR}" != "." ]; then
@@ -4069,6 +4100,41 @@ fi
 # ---------------------------------------------------------------------------
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
 # ---------------------------------------------------------------------------
+
+# The code agent's git author name; harness/code.yaml sets it in the sandbox.
+CODE_AGENT_AUTHOR_NAME="fullsend-code"
+
+# refuse_unless_agent_commits — the forced retry drops every commit on the
+# fetched origin/BRANCH that HEAD lacks; fail unless the code agent wrote
+# each one, so a person's or the fix agent's work is never replaced (#342).
+refuse_unless_agent_commits() {
+  local bot_email dropped sha name email committer committer_email short pr_note=""
+  bot_email="$(signoff_bot_email)"
+  if [ -z "${bot_email}" ]; then
+    post_fail_to_issue push-rejected \
+      "Cannot tell whether the commits on '${BRANCH}' are the code agent's (no bot email set) — refusing to replace them."
+  fi
+  if ! dropped="$(git rev-list "refs/remotes/origin/${BRANCH}" --not HEAD)"; then
+    post_fail_to_issue push-rejected \
+      "Could not list the commits on '${BRANCH}' that a forced push would replace — refusing to push."
+  fi
+  for sha in ${dropped}; do
+    IFS=$'\t' read -r name email <<< "$(commit_author_identity "${sha}")"
+    IFS=$'\t' read -r committer committer_email <<< "$(git log -1 --format='%cn%x09%ce' "${sha}")"
+    # Amending an agent commit keeps its author, so the committer must match
+    # too. GitHub is the committer of API-signed commits.
+    if [ "${name}" != "${CODE_AGENT_AUTHOR_NAME}" ] || [ "${email}" != "${bot_email}" ] \
+       || { [ "${committer_email}" != "${bot_email}" ] && [ "${committer_email}" != "noreply@github.com" ]; }; then
+      short="$(git rev-parse --short "${sha}")"
+      if [ -n "${OPEN_PR:-}" ]; then
+        pr_note=" (open PR #${OPEN_PR})"
+      fi
+      post_fail_to_issue push-rejected \
+        "Branch '${BRANCH}'${pr_note} holds commit ${short} by ${name:-unknown} (committed by ${committer:-unknown}), which is not the code agent's own; refusing to replace it. Close the pull request and run the code agent again, or ask for changes on the existing pull request instead."
+    fi
+  done
+}
+
 echo "Pushing branch ${BRANCH}..."
 PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
@@ -4076,6 +4142,28 @@ print_sanitized_gha_log "${PUSH_OUTPUT}"
 if [ "${PUSH_RC}" -ne 0 ]; then
   if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
     gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
+    # The lease and the commit check need the current remote tip (#409, #342).
+    # In a shallow clone a plain fetch pulls in old target-branch history,
+    # which the check would count as commits to replace; in a full clone
+    # --shallow-exclude would make the clone shallow.
+    SHALLOW_EXCLUDE_ARG=""
+    if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+      SHALLOW_EXCLUDE_ARG="--shallow-exclude=refs/heads/${TARGET_BRANCH}"
+    fi
+    echo "Fetching remote branch ${BRANCH} before the forced retry..."
+    BRANCH_FETCH_OUTPUT="$(git fetch ${SHALLOW_EXCLUDE_ARG:+"${SHALLOW_EXCLUDE_ARG}"} origin \
+      "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && BRANCH_FETCH_RC=0 || BRANCH_FETCH_RC=$?
+    # The push remote URL carries PUSH_TOKEN.
+    BRANCH_FETCH_OUTPUT="$(_redact_literal_token "${BRANCH_FETCH_OUTPUT}" "${PUSH_TOKEN}")"
+    print_sanitized_gha_log "${BRANCH_FETCH_OUTPUT}"
+    if [ "${BRANCH_FETCH_RC}" -ne 0 ]; then
+      PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
+${BRANCH_FETCH_OUTPUT}")"
+      post_fail_to_issue "${PUSH_CATEGORY}" "${PUSH_OUTPUT}
+Could not fetch '${BRANCH}' before the forced retry:
+${BRANCH_FETCH_OUTPUT}"
+    fi
+    refuse_unless_agent_commits
     FORCE_PUSH_OUTPUT=""
     if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"

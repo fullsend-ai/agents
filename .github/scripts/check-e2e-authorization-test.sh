@@ -17,6 +17,8 @@ MOCK_BIN="${TMPDIR}/bin"
 MOCK_ROLES_DIR="${TMPDIR}/roles"
 PR_JSON="${TMPDIR}/pr.json"
 EVENTS_JSON="${TMPDIR}/events.json"
+COMMENT_JSON="${TMPDIR}/comment.json"
+GH_LOG="${TMPDIR}/gh.log"
 
 mkdir -p "${MOCK_BIN}" "${MOCK_ROLES_DIR}"
 
@@ -48,6 +50,11 @@ write_events() {
 setup_mock_gh() {
   cat > "${MOCK_BIN}/gh" <<MOCKEOF
 #!/usr/bin/env bash
+echo "gh \$*" >> "${GH_LOG}"
+if [[ "\${MOCK_FAIL_COMMENT:-false}" == "true" ]] && [[ "\$*" == *"/issues/comments/"* ]]; then
+  echo "mock-gh: simulated comment failure" >&2
+  exit 1
+fi
 if [[ "\${MOCK_FAIL_PULLS:-false}" == "true" ]] && [[ "\$*" == *"/pulls/"* ]]; then
   echo "mock-gh: simulated pulls failure" >&2
   exit 1
@@ -67,7 +74,10 @@ case "\$*" in
     else
       role="read"
     fi
-    if [[ "\${role}" == raw:* ]]; then
+    if [[ "\${role}" == "notfound" ]]; then
+      echo "gh: Not Found (HTTP 404)" >&2
+      exit 1
+    elif [[ "\${role}" == raw:* ]]; then
       echo "\${role#raw:}"
     elif [[ "\${role}" == mismatch:* ]]; then
       mismatch_data="\${role#mismatch:}"
@@ -86,6 +96,9 @@ case "\$*" in
     else
       echo "{\"role_name\": \"\${role}\", \"permission\": \"\${role}\"}"
     fi
+    ;;
+  *"/issues/comments/"*)
+    cat "${COMMENT_JSON}"
     ;;
   *"/issues/"*"/events"*)
     if [[ -f "${EVENTS_JSON}" ]]; then
@@ -340,6 +353,190 @@ if echo "${output}" | grep -q '::warning::'; then
 else
   echo "PASS: authorized run does not emit ::warning::"
 fi
+unset PR_AUTHOR_LOGIN PR_AUTHOR_ASSOCIATION
+
+# --- /ok-to-test command mode (EVENT_NAME=issue_comment) ---
+# The comment names the reviewed sha; only a PR head equal to it runs.
+
+HEAD_SHA="1111111111111111111111111111111111111111"
+# Shares the 7-character prefix of HEAD_SHA but is a different commit.
+OTHER_SHA="1111111222222222222222222222222222222222"
+
+write_cmd_pr() {
+  jq -n --arg sha "${HEAD_SHA}" '{
+    user: {login: "forker"}, labels: [], updated_at: "2026-06-01T10:00:00Z",
+    head: {sha: $sha, ref: "feature", repo: {full_name: "forker/agents"}}
+  }' > "${PR_JSON}"
+}
+
+# write_comment BODY [LOGIN] [ISSUE]
+write_comment() {
+  local body="$1" login="${2:-maint}" issue="${3:-1}"
+  jq -n --arg body "${body}" --arg login "${login}" --arg issue "${issue}" '{
+    id: 900, user: {login: $login}, body: $body, created_at: "2026-06-01T12:00:00Z",
+    issue_url: ("https://api.github.com/repos/test-org/test-repo/issues/" + $issue)
+  }' > "${COMMENT_JSON}"
+}
+
+# Comment-mode calls are collected so the whole section can assert that no
+# timing lookup (issue events) and no label removal ever happens.
+CMD_GH_LOG="${TMPDIR}/gh-cmd.log"
+: > "${CMD_GH_LOG}"
+
+assert_cmd() {
+  local test_name="$1" expected_auth="$2" expected_reason="$3" expected_sha="$4"
+  local output auth reason sha
+  : > "${GH_LOG}"
+  output=$(run_auth 1 "test-org/test-repo")
+  cat "${GH_LOG}" >> "${CMD_GH_LOG}"
+  auth="$(grep -o 'authorized=[^ ]*' <<<"${output}" | cut -d= -f2)"
+  reason="$(grep -o 'reason=[^ ]*' <<<"${output}" | cut -d= -f2)"
+  sha="$(grep -o 'head_sha=[^ ]*' <<<"${output}" | cut -d= -f2)"
+  if [[ "${auth}" == "${expected_auth}" && "${reason}" == "${expected_reason}" && "${sha}" == "${expected_sha}" ]]; then
+    echo "PASS: ${test_name}"
+  else
+    echo "FAIL: ${test_name} — expected authorized=${expected_auth} reason=${expected_reason} head_sha=${expected_sha}, got: ${output}"
+    FAILURES=$((FAILURES + 1))
+  fi
+}
+
+export EVENT_NAME="issue_comment"
+export COMMENTER_LOGIN="maint"
+export COMMENT_ID="900"
+set_role "maint" "write"
+set_role "forker" "read"
+write_cmd_pr
+write_comment "/ok-to-test ${HEAD_SHA}"
+
+assert_cmd "/ok-to-test <full sha> from write commenter authorizes" "true" "ok_to_test" "${HEAD_SHA}"
+set_role "maint" "maintain"
+assert_cmd "/ok-to-test <sha> from maintain commenter authorizes" "true" "ok_to_test" "${HEAD_SHA}"
+set_role "maint" "admin"
+assert_cmd "/ok-to-test <sha> from admin commenter authorizes" "true" "ok_to_test" "${HEAD_SHA}"
+set_role "maint" "write"
+
+output=$(run_auth 1 "test-org/test-repo")
+if echo "${output}" | grep -q '::warning::'; then
+  echo "FAIL: authorized /ok-to-test should not emit ::warning:: — got: ${output}"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: authorized /ok-to-test does not emit ::warning::"
+fi
+
+# Sha format.
+write_comment "/ok-to-test ${HEAD_SHA:0:7}"
+assert_cmd "7-character sha prefix is missing_sha" "false" "missing_sha" "${HEAD_SHA}"
+write_comment "/ok-to-test ${HEAD_SHA:0:39}"
+assert_cmd "39-character sha prefix is missing_sha" "false" "missing_sha" "${HEAD_SHA}"
+write_comment "/ok-to-test ${HEAD_SHA}0"
+assert_cmd "41-character sha is missing_sha" "false" "missing_sha" "${HEAD_SHA}"
+write_comment "/ok-to-test ABCDEF0123456789ABCDEF0123456789ABCDEF01"
+HEAD_SHA="abcdef0123456789abcdef0123456789abcdef01" write_cmd_pr
+assert_cmd "uppercase sha authorizes" "true" "ok_to_test" "abcdef0123456789abcdef0123456789abcdef01"
+write_cmd_pr
+write_comment "/ok-to-test   ${HEAD_SHA}   "
+assert_cmd "spaces around sha authorize" "true" "ok_to_test" "${HEAD_SHA}"
+write_comment "/ok-to-test ${HEAD_SHA}"$'\r\n'"Reviewed the diff."
+assert_cmd "CRLF line ending after sha authorizes" "true" "ok_to_test" "${HEAD_SHA}"
+write_comment "/ok-to-test"
+assert_cmd "bare /ok-to-test is missing_sha" "false" "missing_sha" "${HEAD_SHA}"
+output=$(run_auth 1 "test-org/test-repo")
+if echo "${output}" | grep -q '::warning::.*/ok-to-test'; then
+  echo "PASS: refused /ok-to-test emits ::warning:: naming /ok-to-test"
+else
+  echo "FAIL: refused /ok-to-test emits ::warning:: naming /ok-to-test — got: ${output}"
+  FAILURES=$((FAILURES + 1))
+fi
+write_comment "/ok-to-test please"
+assert_cmd "/ok-to-test with words is missing_sha" "false" "missing_sha" "${HEAD_SHA}"
+write_comment "/ok-to-test${HEAD_SHA}"
+assert_cmd "sha without a space is missing_sha" "false" "missing_sha" "${HEAD_SHA}"
+write_comment "/ok-to-test"$'\n'"${HEAD_SHA}"
+assert_cmd "sha on the second line is missing_sha" "false" "missing_sha" "${HEAD_SHA}"
+write_comment "please"$'\n'"/ok-to-test ${HEAD_SHA}"
+assert_cmd "/ok-to-test <sha> on the second line is missing_sha" "false" "missing_sha" "${HEAD_SHA}"
+
+# The named sha is not the PR head: the PR changed since the review.
+write_comment "/ok-to-test 2222222222222222222222222222222222222222"
+assert_cmd "sha of another commit is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
+write_comment "/ok-to-test ${OTHER_SHA}"
+assert_cmd "full sha sharing a prefix with the head is stale" "false" "stale_ok_to_test" "${HEAD_SHA}"
+write_comment "/ok-to-test ${HEAD_SHA}"
+HEAD_SHA="${OTHER_SHA}" write_cmd_pr
+assert_cmd "reviewed sha after a later push is stale" "false" "stale_ok_to_test" "${OTHER_SHA}"
+write_cmd_pr
+
+# Untrusted commenters never get the head sha.
+write_comment "/ok-to-test ${HEAD_SHA}"
+set_role "maint" "triage"
+assert_cmd "/ok-to-test from triage commenter denied" "false" "untrusted_commenter" ""
+set_role "maint" "read"
+assert_cmd "/ok-to-test from read commenter denied" "false" "untrusted_commenter" ""
+set_role "maint" "mismatch:write:read"
+assert_cmd "/ok-to-test from mismatched role denied" "false" "untrusted_commenter" ""
+set_role "maint" "notfound"
+assert_cmd "/ok-to-test from non-collaborator denied" "false" "untrusted_commenter" ""
+set_role "maint" "write"
+
+# A fork author with write access authorizes their own head only as a commenter.
+set_role "forker" "write"
+export COMMENTER_LOGIN="forker"
+write_comment "/ok-to-test ${HEAD_SHA}" "forker"
+assert_cmd "/ok-to-test <sha> from write fork author authorizes" "true" "ok_to_test" "${HEAD_SHA}"
+set_role "forker" "read"
+assert_cmd "/ok-to-test <sha> from read fork author denied" "false" "untrusted_commenter" ""
+export COMMENTER_LOGIN="maint"
+
+# Comment identity comes from the API by id, never from the payload.
+write_comment "/ok-to-test ${HEAD_SHA}" "someone-else"
+assert_cmd "comment by another user fails closed" "false" "error" ""
+write_comment "/ok-to-test ${HEAD_SHA}" "maint" "2"
+assert_cmd "comment on another PR fails closed" "false" "error" ""
+write_comment "/ok-to-test ${HEAD_SHA}" "maint" "11"
+assert_cmd "comment on a PR whose number extends this one fails closed" "false" "error" ""
+write_comment "/ok-to-test ${HEAD_SHA}"
+unset COMMENTER_LOGIN
+assert_cmd "comment id supplies the commenter" "true" "ok_to_test" "${HEAD_SHA}"
+export COMMENTER_LOGIN="maint"
+export COMMENT_ID="900/../../pulls/1"
+assert_cmd "non-numeric comment id fails closed" "false" "error" ""
+unset COMMENT_ID
+assert_cmd "missing comment id fails closed" "false" "error" ""
+if grep -q . "${GH_LOG}"; then
+  echo "FAIL: missing comment id must not call the API"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: missing comment id makes no API call"
+fi
+export COMMENT_ID="900"
+
+export MOCK_FAIL_PERM="true"
+assert_cmd "commenter permission API failure returns error" "false" "error" ""
+unset MOCK_FAIL_PERM
+export MOCK_FAIL_PULLS="true"
+assert_cmd "PR API failure returns error" "false" "error" ""
+unset MOCK_FAIL_PULLS
+export MOCK_FAIL_COMMENT="true"
+assert_cmd "comment API failure returns error" "false" "error" ""
+unset MOCK_FAIL_COMMENT
+
+# A retained ok-to-test label plays no part in comment mode.
+jq '.labels = [{"name":"ok-to-test"}]' "${PR_JSON}" > "${PR_JSON}.tmp" && mv "${PR_JSON}.tmp" "${PR_JSON}"
+assert_cmd "/ok-to-test ignores a retained ok-to-test label" "true" "ok_to_test" "${HEAD_SHA}"
+write_cmd_pr
+
+if grep -qE '/events|DELETE' "${CMD_GH_LOG}"; then
+  echo "FAIL: comment mode must not read issue events or remove labels"
+  grep -E '/events|DELETE' "${CMD_GH_LOG}" | sed 's/^/  /'
+  FAILURES=$((FAILURES + 1))
+elif ! grep -q '/issues/comments/900' "${CMD_GH_LOG}"; then
+  echo "FAIL: comment mode call log is empty or missed the comment fetch"
+  FAILURES=$((FAILURES + 1))
+else
+  echo "PASS: comment mode never reads issue events or removes labels"
+fi
+
+unset EVENT_NAME COMMENTER_LOGIN COMMENT_ID
 
 # --- Summary ---
 echo ""

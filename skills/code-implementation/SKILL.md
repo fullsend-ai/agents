@@ -228,7 +228,7 @@ Fetch the issue content:
 ```bash
 if test "${FULLSEND_TRACKER:-}" = "jira"; then
   ISSUE_KEY="${ISSUE_URL##*/browse/}"
-  JIRA_EMAIL="$(printf '%s' "${JIRA_USER_EMAIL:-}" | tr -d '[:space:]')"
+  JIRA_EMAIL="${JIRA_USER_EMAIL:-}"; JIRA_EMAIL="${JIRA_EMAIL//[[:space:]]/}"
   JIRA_AUTH_FLAG=--oauth2-bearer; test -n "${JIRA_EMAIL}" && JIRA_AUTH_FLAG=--user
   JIRA_AUTH="${JIRA_EMAIL:+${JIRA_EMAIL}:}${JIRA_TOKEN}"
   curl --fail-with-body --silent "${JIRA_AUTH_FLAG}" "${JIRA_AUTH}" \

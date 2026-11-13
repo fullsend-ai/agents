@@ -74,11 +74,15 @@ gha_echo() {
 
 _redact_multiline_pem() {
   awk '
+    # OpenSSH/RSA/EC/DSA/PKCS8 PEM headers end in "...private key-----".
+    # OpenPGP'"'"'s ASCII-armor format instead ends in "...private key
+    # block-----" (issue #239) -- the optional "( block)?" covers both
+    # without requiring a separate pattern per key format.
     function is_pem_begin(line) {
-      return tolower(line) ~ /-----begin .*private key-----/
+      return tolower(line) ~ /-----begin .*private key( block)?-----/
     }
     function is_pem_end(line) {
-      return tolower(line) ~ /-----end .*private key-----/
+      return tolower(line) ~ /-----end .*private key( block)?-----/
     }
     is_pem_begin($0) {
       print "[REDACTED PRIVATE KEY]"
@@ -416,22 +420,27 @@ report_post_failure_to_issue() {
   local category="${POST_FAILURE_CATEGORY:-post-script-error}"
   local detail="${POST_FAILURE_DETAIL:-Post-code script failed before push or PR creation completed.}"
   local body
-  # REPO_FULL_NAME is required by post-code.src.sh before sourcing.
+  # REPO_FULL_NAME is required by post-code.src.sh setup.
+  # Reporting must not replace the original failure, even if rendering fails.
   # shellcheck disable=SC2153
-  body="$(build_post_failure_comment \
+  if ! body="$(build_post_failure_comment \
     "code" "${exit_code}" "${category}" "${detail}" \
-    "${REPO_FULL_NAME}" "/fs-code")"
+    "${REPO_FULL_NAME}" "/fs-code")"; then
+    gha_echo warning "Could not build the post-code failure comment; see workflow logs"
+    return 0
+  fi
 
   # An external tracker may have no corresponding target-forge issue. The
   # workflow status notification remains the source-of-truth; do not guess a
   # target issue number and risk commenting on unrelated work. A caller that
-  # can write to the tracker defines report_post_failure_to_external_tracker
+  # can write to the tracker defines post_external_failure_comment
   # (post-code does, for Jira); its result never changes this exit path.
   if [ "${EXTERNAL_WORK_ITEM:-false}" = "true" ]; then
-    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
-    if declare -F report_post_failure_to_external_tracker >/dev/null 2>&1; then
-      report_post_failure_to_external_tracker "${body}" || true
+    if declare -F post_external_failure_comment >/dev/null 2>&1 \
+       && post_external_failure_comment "${body}"; then
+      return 0
     fi
+    gha_echo warning "Post-code failure for ${WORK_ITEM_KEY:-external work item}; see workflow logs"
     return 0
   fi
 

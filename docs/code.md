@@ -107,6 +107,18 @@ rejected PR body falls back to the normalized commit body only if that text
 passes the same scan. Raw text-scan diagnostics are not logged.
 The Jira no-PR notice gets the same sanitization and context secret scan.
 
+### Reruns on an open pull request
+
+When you run the code agent again and its branch already backs an open pull
+request, the new run replaces the code agent's earlier commits on that branch.
+The post-script refuses the push if the branch holds a commit by anyone else,
+and names that commit in a failure comment. That includes a commit by you or
+the fix agent, a code agent commit you amended, and the merge commit GitHub's
+**Update branch** button adds.
+To start over, close the pull request and run the code agent again, which
+deletes the old branch; to keep the existing work, ask for changes on the open
+pull request instead.
+
 ### Signed commits
 
 With `GITHUB_SIGNED_COMMITS` set to `"true"` (it is `"false"` by default),
@@ -324,7 +336,10 @@ vars. Key differences from single-forge setup:
   `JIRA_BASE_URL` when it is empty. `JIRA_API_URL` and
   `JIRA_USER_EMAIL` reach the sandbox through the expanded
   `env/jira/code.env` host file, so an unset value is empty instead of
-  failing the run. The Jira overlay
+  failing the run. `fullsend run` sets `JIRA_USER_EMAIL` from the
+  optional `FULLSEND_JIRA_EMAIL` repository secret, and the `jira-ro`
+  provider reads the `FULLSEND_JIRA_TOKEN` repository secret (both need
+  fullsend-ai/fullsend#9411, see below). The Jira overlay
   composes with the target-forge overlay (GitHub or GitLab) via
   merge-all-matching.
 - **External work-item identity** — when the source tracker differs from the
@@ -350,10 +365,18 @@ vars. Key differences from single-forge setup:
   gateway from `tracker.jira` in that directory's `config.yaml`. This needs
   a fullsend release that includes the config-backed Jira commands
   ([fullsend-ai/fullsend#9078](https://github.com/fullsend-ai/fullsend/pull/9078)).
-  The sandbox `jira-ro` provider cannot expand `FULLSEND_JIRA_*`, so also
-  configure the `JIRA_TOKEN` secret for sandbox reads, as described in
-  [`docs/triage.md`](triage.md). With only `FULLSEND_JIRA_TOKEN` set, the
-  post-script write works but sandbox Jira reads fail.
+
+  Jira secrets:
+
+  - Set `FULLSEND_JIRA_TOKEN`, and `FULLSEND_JIRA_EMAIL` for a bot user.
+  - The post-script and the sandbox `jira-ro` provider both read
+    `FULLSEND_JIRA_TOKEN`. `fullsend run` sets `JIRA_USER_EMAIL` from
+    `FULLSEND_JIRA_EMAIL`.
+  - The legacy `JIRA_TOKEN` and `JIRA_USER_EMAIL` secrets are no longer read.
+  - The provider read and the `JIRA_USER_EMAIL` mapping need a fullsend
+    release that includes
+    [fullsend-ai/fullsend#9411](https://github.com/fullsend-ai/fullsend/issues/9411).
+
   The post-script takes the Jira credentials out of its environment before
   it runs any git command, so repo-controlled hooks, including the one that
   fires when it renames the agent branch, cannot read them from their
@@ -364,12 +387,13 @@ vars. Key differences from single-forge setup:
   PR/MR, review and merge stay on the code host: GitHub targets get a GitHub
   PR and GitLab targets get a GitLab MR. For GitLab targets the GitLab host
   is taken from `CI_SERVER_HOST`, because `ISSUE_URL` is the Jira URL.
-  A run that ends without a PR/MR writes its outcome to a separate comment
-  with the marker `<!-- fullsend:code-agent-outcome -->`: the no-PR notice
-  with the agent's explanation, or the failure category and sanitized detail
-  when the post-script fails. A rerun edits that comment, and it never
-  replaces the PR/MR link, so a later successful run leaves the earlier
-  outcome comment in place alongside its link. These writes are best-effort: a
+  A clean no-op writes the notice and agent's explanation to a comment with
+  the marker `<!-- fullsend:code-agent-outcome -->`. A post-script failure
+  writes its category and sanitized detail under the separate marker
+  `<!-- fullsend:code-agent-failure -->`, including a refused rerun that would
+  replace another author's commits. Retries update the matching comment;
+  neither comment replaces the PR/MR link. A later successful run leaves
+  earlier no-op or failure comments alongside its link. These writes are best-effort: a
   failed write is a warning and the run keeps its exit code. Every Jira
   write has the Jira token redacted from its text.
 - **Policy** is `policies/base.yaml` for all forges. Network access is
