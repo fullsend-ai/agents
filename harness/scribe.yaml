@@ -9,13 +9,11 @@ model: opus
 # effort is unset (internal/runtime/pi_run.go piDefaultThinking). Revisit
 # when the model: above moves to a generation with a different default.
 effort: high
-image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:259605fea321353552fdefd3a6a55e8b5c260998dfc5a622ed143e41a429995a
+image: ghcr.io/fullsend-ai/fullsend-sandbox@sha256:850b728ce6e6269884a96d7c81bfbcbec3a75f6e4c0a1809ece6f9c6d628ef44
 policy: policies/base.yaml
-openshell:
-  profiles:
-    - profiles/fullsend-vertex-ai.yaml
 providers:
-  - providers/vertex-ai.yaml
+  - vertex-ai
+  - openai
 role: scribe
 slug: fullsend-ai-scribe
 
@@ -40,6 +38,10 @@ host_files:
     dest: /sandbox/workspace/repo-docs-index.json
   - src: ${RUNNER_TEMP}/scribe-workspace/scribe-meta.json
     dest: /sandbox/workspace/scribe-meta.json
+  # scribe-titles.json (the Drive document titles, issue #706) is
+  # DELIBERATELY NOT listed here: titles are untrusted input, and keeping
+  # this file off host_files is what keeps them out of the sandboxed agent's
+  # context. Do not add it. See scripts/scribe-titles-trust-boundary-test.sh.
 
 skills: []
 
@@ -47,6 +49,7 @@ pre_script: scripts/pre-scribe.sh
 
 validation_loop:
   script: scripts/validate-output-schema.sh
+  preflight_check: 'python3 -c "import jsonschema"'
   schema: schemas/scribe-result.schema.json
   max_iterations: 2
 

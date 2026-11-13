@@ -29,6 +29,15 @@
 #   FULLSEND_FORGE    — "github" or "gitlab"
 #   REPO_DIR          — path to extracted repo (default: current directory)
 #
+# Jira-sourced runs (FULLSEND_TRACKER or FULLSEND_WORK_ITEM_SOURCE is "jira")
+# also need FULLSEND_WORK_ITEM_URL, JIRA_TOKEN, and FULLSEND_DIR (whose
+# config.yaml holds tracker.jira for the fullsend CLI) to write the
+# code-stage update and PR/MR URL to the Jira issue. JIRA_USER_EMAIL is
+# optional: when set, the write uses bot-user Basic auth; when unset or
+# empty, service-account Bearer auth. JIRA_BASE_URL is optional and
+# cross-checked against the work-item URL. GitLab targets take the GitLab
+# host from CI_SERVER_HOST.
+#
 # Optional environment variables:
 #   PUSH_TOKEN_SOURCE — "github-app" (for logging; default: unknown)
 #   CODE_ALLOWED_TARGET_BRANCHES
@@ -50,10 +59,95 @@
 # Exit codes:
 #   0  — branch pushed and PR/MR created, OR agent determined nothing to do
 #   1  — validation failure or error (nothing pushed), including a
-#        timeout-killed run that left uncommitted work and no commit
+#        timeout-killed run that left uncommitted work and no commit;
+#        also when a Jira-sourced run cannot write its stage update to Jira
+#        (the PR/MR already exists on the code host)
 set -euo pipefail
 
+# ---------------------------------------------------------------------------
+# Jira credential isolation — must run before any git command.
+#
+# Repo-controlled code (git hooks, including the reference-transaction hook
+# that `git branch -M` triggers, pre-commit tool installs and hooks) runs as
+# child processes of this one. Unsetting the credentials part-way through the
+# script is not enough: the environment this process started with stays
+# readable through /proc/<pid>/environ (for a hook, /proc/$PPID/environ and
+# up the parent chain), and an earlier git command would have inherited them.
+#
+# So on first entry, move the credentials out of the environment: write them
+# to an unlinked private file, then re-exec this script with them removed
+# from the environment. The re-exec'd process reads them into shell variables
+# and closes the file at once, before any repo-controlled code can run. They
+# then live only in this process's memory, and reach the one trusted
+# consumer, post_jira_stage_update, after all hooks have finished. The
+# FULLSEND_JIRA_* names are what the harness maps from and what the CLI
+# reads, so inherited copies are withheld as well.
+#
+# This still is not a boundary against a same-user process that can ptrace
+# this one; it removes the credentials from every environment and file a
+# hook could read without that.
+# ---------------------------------------------------------------------------
+_jira_token_saved=""
+_jira_email_saved=""
+if [[ -n "${_POST_CODE_JIRA_FD:-}" ]]; then
+  _jira_stash_fd="${_POST_CODE_JIRA_FD}"
+  unset _POST_CODE_JIRA_FD
+  { IFS= read -r -d '' _jira_token_saved || true; IFS= read -r -d '' _jira_email_saved || true; } \
+    < "/proc/self/fd/${_jira_stash_fd}"
+  exec {_jira_stash_fd}<&-
+  unset _jira_stash_fd
+elif [[ -n "${JIRA_TOKEN:-}${JIRA_USER_EMAIL:-}${FULLSEND_JIRA_TOKEN:-}${FULLSEND_JIRA_EMAIL:-}" ]]; then
+  _jira_stash_file="$(mktemp)"
+  exec {_jira_stash_fd}<>"${_jira_stash_file}"
+  rm -f "${_jira_stash_file}"
+  printf '%s\0%s\0' "${JIRA_TOKEN-}" "${JIRA_USER_EMAIL-}" >&"${_jira_stash_fd}"
+  exec env -u JIRA_TOKEN -u JIRA_USER_EMAIL -u FULLSEND_JIRA_TOKEN -u FULLSEND_JIRA_EMAIL \
+    _POST_CODE_JIRA_FD="${_jira_stash_fd}" "${BASH}" "${BASH_SOURCE[0]}" "$@"
+fi
+
 SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/git-graph-policy.lib.sh
+# BEGIN bundled: lib/git-graph-policy.lib.sh
+# shellcheck shell=bash
+# git-graph-policy.lib.sh — make Git read the object graph as stored, not as
+# rewritten.
+#
+# The repository is downloaded from the agent's sandbox, so .git can carry
+# refs/replace/*, info/grafts and objects/info/commit-graph*. Each one rewrites
+# ancestry for every Git command, including the merge-base, rebase and push
+# fast-forward checks that decide whether a human commit is kept. No single
+# switch disables all three (GIT_NO_REPLACE_OBJECTS does not cover grafts), so
+# git_graph_policy_init sets one per vector. They do not stack: Git ignores
+# the commit-graph while replace refs, grafts or a shallow file are present,
+# so disabling the first two is what makes core.commitGraph=false necessary.
+# Values are exported: Git child processes (gitleaks, rebase, filter-branch)
+# must be covered too.
+#
+# Call git_graph_policy_init once, before the first repository Git read.
+
+[[ -n "${GIT_GRAPH_POLICY_SH_LOADED:-}" ]] && return 0
+GIT_GRAPH_POLICY_SH_LOADED=1
+
+git_graph_policy_init() {
+  local count="${GIT_CONFIG_COUNT:-0}"
+  [[ -n "${_GIT_GRAPH_POLICY_READY:-}" ]] && return 0
+  [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+  _GIT_GRAPH_POLICY_READY=1
+  export GIT_NO_REPLACE_OBJECTS=1
+  export GIT_GRAFT_FILE=/dev/null
+  # Appended, not replaced: the caller may already pass config this way.
+  export "GIT_CONFIG_KEY_${count}=core.commitGraph"
+  export "GIT_CONFIG_VALUE_${count}=false"
+  count=$((count + 1))
+  # GIT_GRAFT_FILE=/dev/null is readable, so Git prints its graft deprecation
+  # advice on every history walk; gitleaks 8.30.1 treats that stderr as a scan
+  # failure and can leave the scan incomplete.
+  export "GIT_CONFIG_KEY_${count}=advice.graftFileDeprecated"
+  export "GIT_CONFIG_VALUE_${count}=false"
+  count=$((count + 1))
+  export GIT_CONFIG_COUNT="${count}"
+}
+# END bundled: lib/git-graph-policy.lib.sh
 # shellcheck source=lib/post-failure-report.lib.sh
 # BEGIN bundled: lib/post-failure-report.lib.sh
 # post-failure-report.lib.sh — Categorized, sanitized failure comments for post-scripts.
@@ -67,6 +161,151 @@ SCRIPT_DIR_POST="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 [[ -n "${POST_FAILURE_REPORT_SH_LOADED:-}" ]] && return 0
 POST_FAILURE_REPORT_SH_LOADED=1
+
+# shellcheck source=forge-transient-retry.lib.sh
+# BEGIN bundled: lib/forge-transient-retry.lib.sh
+# forge-transient-retry.lib.sh — Retry forge CLI/API calls on 5xx/timeouts.
+#
+# Usage:
+#   forge_retry_transient cmd [args...]
+#
+# On success, prints the command's stdout. On failure, prints the command's
+# combined output to stderr so callers (and workflow logs) can diagnose,
+# and stores the same sanitized text in FORGE_RETRY_LAST_ERROR so callers
+# can classify the error without capturing stderr (which would buffer
+# retry notices).
+# Retries only when the output looks like a transient 5xx or timeout.
+#
+# Environment:
+#   FORGE_TRANSIENT_RETRY_ATTEMPTS   — default 3
+#   FORGE_TRANSIENT_RETRY_BASE_DELAY — default 2 (seconds; doubles each retry)
+
+# shellcheck shell=bash
+
+[[ -n "${FORGE_TRANSIENT_RETRY_SH_LOADED:-}" ]] && return 0
+FORGE_TRANSIENT_RETRY_SH_LOADED=1
+
+forge_is_transient_error() {
+  local text="$1"
+  local lower
+  lower=$(printf '%s' "${text}" | tr '[:upper:]' '[:lower:]')
+
+  if echo "${lower}" | grep -qE \
+    'http[[:space:]]*5[0-9][0-9]|status([:]|[[:space:]]+code:?)[[:space:]]*5[0-9][0-9]|error:[[:space:]]*5[0-9][0-9]|\(http 5[0-9][0-9]\)'; then
+    return 0
+  fi
+  if echo "${lower}" | grep -qE \
+    'internal server error|service unavailable|bad gateway|gateway timeout'; then
+    return 0
+  fi
+  if echo "${lower}" | grep -qE \
+    'context deadline exceeded|connection reset|i/o timeout|operation timed out|timed out'; then
+    return 0
+  fi
+  # Go net/http (gh) and curl timeout diagnostics that carry no other marker.
+  # Specific phrases only: a bare "timeout" would match branch names such as
+  # "agent/42-fix-webhook-timeout".
+  if echo "${lower}" | grep -qE \
+    'tls handshake timeout|ssl connection timeout|timeout awaiting response headers|connection timeout after|client\.timeout exceeded'; then
+    return 0
+  fi
+  return 1
+}
+
+# Duplicate PR/MR create. GitHub CLI, GitHub GraphQL, and GitLab 409 all
+# include this phrase; other 422/400 validation errors do not.
+forge_is_already_exists_error() {
+  local lower
+  lower=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+  grep -qE 'already exists' <<< "${lower}"
+}
+
+_forge_retry_notice() {
+  local msg="$1"
+  # Always stderr so success stdout (e.g. a PR URL) stays clean.
+  if declare -F gha_echo >/dev/null 2>&1; then
+    gha_echo warning "${msg}" >&2
+  else
+    echo "${msg}" >&2
+  fi
+}
+
+# Sanitize captured command output before it reaches the runner log.
+# Secret redaction (tokens/PEMs) comes from sanitize_failure_detail when
+# post-failure-report.lib.sh is loaded. Whether or not it is, the same
+# order-safe escaping runs as the final step on every path: the shared
+# sanitizers delete "%0A"/"::" piecemeal, and a nested payload such as
+# ":%0%0AA:error" can reassemble into a live "::error" command after one
+# deletion pass. Escaping instead of deleting avoids that — "%" is escaped
+# first and then "::", so no sequence of the escaped output can form "::",
+# "%0A" or "%0D". ANSI escapes and other control characters are dropped
+# (newline and tab kept).
+_forge_retry_sanitize() {
+  local text="$1"
+  if declare -F sanitize_failure_detail >/dev/null 2>&1; then
+    # max_lines=0 disables truncation — this is diagnostic log output, not a
+    # length-limited PR comment.
+    text="$(sanitize_failure_detail "${text}" 0)"
+  fi
+  text="$(printf '%s' "${text}" | LC_ALL=C tr -d '\000-\010\013-\037\177')"
+  text="${text//%/%25}"
+  text="${text//::/%3A%3A}"
+  printf '%s' "${text}"
+}
+
+# Run a command, retrying transient 5xx/timeout failures with exponential
+# backoff (2s, 4s, 8s by default). Non-transient failures return immediately.
+forge_retry_transient() {
+  local max_attempts="${FORGE_TRANSIENT_RETRY_ATTEMPTS:-3}"
+  local delay="${FORGE_TRANSIENT_RETRY_BASE_DELAY:-2}"
+  local attempt=1
+  local outfile errfile rc combined
+
+  outfile=$(mktemp)
+  errfile=$(mktemp)
+  # Read by forge_create_pr after this function returns (same shell).
+  # shellcheck disable=SC2034
+  FORGE_RETRY_LAST_ERROR=""
+  # shellcheck disable=SC2064
+  trap "rm -f '${outfile}' '${errfile}'" RETURN
+
+  while [ "${attempt}" -le "${max_attempts}" ]; do
+    : >"${outfile}"
+    : >"${errfile}"
+    rc=0
+    "$@" >"${outfile}" 2>"${errfile}" || rc=$?
+
+    if [ "${rc}" -eq 0 ]; then
+      # shellcheck disable=SC2034
+      FORGE_RETRY_LAST_ERROR=""
+      cat "${outfile}"
+      return 0
+    fi
+
+    combined=$(cat "${outfile}" "${errfile}")
+    if [ "${attempt}" -lt "${max_attempts}" ] && forge_is_transient_error "${combined}"; then
+      _forge_retry_notice \
+        "Transient forge error (attempt ${attempt}/${max_attempts}); retrying in ${delay}s..."
+      sleep "${delay}"
+      delay=$((delay * 2))
+      attempt=$((attempt + 1))
+      continue
+    fi
+
+    local sanitized_combined
+    sanitized_combined="$(_forge_retry_sanitize "${combined}")"
+    # shellcheck disable=SC2034
+    FORGE_RETRY_LAST_ERROR="${sanitized_combined}"
+    printf '%s' "${sanitized_combined}" >&2
+    if [ -n "${sanitized_combined}" ]; then
+      printf '\n' >&2
+    fi
+    return "${rc}"
+  done
+
+  return 1
+}
+# END bundled: lib/forge-transient-retry.lib.sh
 
 POST_FAILURE_CATEGORY="${POST_FAILURE_CATEGORY:-}"
 POST_FAILURE_DETAIL="${POST_FAILURE_DETAIL:-}"
@@ -233,7 +472,7 @@ categorize_push_failure() {
   fi
 
   if echo "${push_output}" | grep -qiE \
-    'non-fast-forward|rejected|fetch first|protected branch|GH006|permission denied'; then
+    'non-fast-forward|rejected|fetch first|protected branch|GH006|permission denied|not a fast forward|rule violations'; then
     echo "push-rejected"
     return 0
   fi
@@ -361,6 +600,124 @@ _post_failure_ensure_token() {
   fi
 }
 
+# Create the last-resort label directly against the forge API. Deliberately
+# does not call forge_create_label: that helper swallows errors
+# (`2>/dev/null || true` on every forge), so we would never know whether the
+# label actually got created. A create failure here is non-fatal (the label
+# may already exist), but it must be visible, not silently eaten.
+_post_failure_create_label() {
+  local label="$1"
+  local description="$2"
+
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [ -z "${REPO_ENCODED:-}" ]; then
+      return 1
+    fi
+    if declare -F _gitlab_code_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_code_api POST "/projects/${REPO_ENCODED}/labels" \
+        --data-urlencode "name=${label}" \
+        --data-urlencode "description=${description}" \
+        --data-urlencode "color=#B60205" >/dev/null
+      return $?
+    fi
+    if declare -F _gitlab_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_api POST "/projects/${REPO_ENCODED}/labels" \
+        --data-urlencode "name=${label}" \
+        --data-urlencode "description=${description}" \
+        --data-urlencode "color=#B60205" >/dev/null
+      return $?
+    fi
+    return 1
+  fi
+
+  forge_retry_transient gh label create "${label}" --repo "${REPO_FULL_NAME}" \
+    --description "${description}" --color "B60205" --force >/dev/null
+}
+
+# Apply the last-resort label directly against the forge API and report the
+# real exit status. Deliberately does not call forge_add_label or
+# forge_add_pr_label: those helpers are the best-effort production paths
+# (github-code-ops.lib.sh / gitlab-code-ops.lib.sh / github-fix-ops.lib.sh /
+# gitlab-fix-ops.lib.sh) and unconditionally swallow forge errors
+# (`2>/dev/null || true`), so a failure during the same outage that already
+# failed the retried comment would go unnoticed no matter how it's wrapped.
+# Always go straight to the direct API calls below, wrapped in
+# forge_retry_transient, so a persistent failure is actually surfaced.
+_post_failure_add_label() {
+  local label="$1"
+  local target="$2"
+  local number="$3"
+
+  if [ "${FULLSEND_FORGE:-}" = "gitlab" ]; then
+    if [ -z "${REPO_ENCODED:-}" ]; then
+      return 1
+    fi
+    local endpoint
+    if [ "${target}" = "pr" ]; then
+      endpoint="/projects/${REPO_ENCODED}/merge_requests/${number}"
+    else
+      endpoint="/projects/${REPO_ENCODED}/issues/${number}"
+    fi
+    if declare -F _gitlab_code_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_code_api PUT "${endpoint}" \
+        --data-urlencode "add_labels=${label}" >/dev/null
+      return $?
+    fi
+    if declare -F _gitlab_api >/dev/null 2>&1; then
+      forge_retry_transient _gitlab_api PUT "${endpoint}" \
+        --data-urlencode "add_labels=${label}" >/dev/null
+      return $?
+    fi
+    return 1
+  fi
+
+  if [ "${target}" = "pr" ]; then
+    forge_retry_transient gh pr edit "${number}" --repo "${REPO_FULL_NAME}" \
+      --add-label "${label}" >/dev/null
+    return $?
+  fi
+  forge_retry_transient gh api "repos/${REPO_FULL_NAME}/issues/${number}/labels" \
+    -f "labels[]=${label}" --silent
+}
+
+# Last-resort discoverability when even the retried failure comment fails.
+# A label survives when every comment attempt is swallowed by a forge outage.
+_post_failure_apply_failed_label() {
+  local label="$1"
+  local target="${2:-issue}"
+  local number description
+
+  if [ "${target}" = "pr" ]; then
+    number="${PR_NUMBER:-}"
+    description="Fix agent post-script failed"
+  else
+    number="${ISSUE_NUMBER:-}"
+    description="Code agent post-script failed"
+  fi
+
+  if [ -z "${number}" ] || [ -z "${REPO_FULL_NAME:-}" ]; then
+    gha_echo warning "Cannot apply last-resort ${label} label (missing issue/PR number or repo)"
+    return 1
+  fi
+
+  gha_echo warning "Applying last-resort ${label} label so the failure is discoverable"
+
+  if ! _post_failure_create_label "${label}" "${description}"; then
+    gha_echo warning "Failed to create last-resort ${label} label (may already exist)"
+  fi
+
+  if _post_failure_add_label "${label}" "${target}" "${number}"; then
+    return 0
+  fi
+
+  # `number` may be the unvalidated raw env value on this path; escape it
+  # order-safely (not delete-based) before it reaches a workflow-command line.
+  local log_number
+  log_number="$(_forge_retry_sanitize "${number}")"
+  gha_echo warning "Failed to apply last-resort ${label} label to ${target} #${log_number}"
+  return 1
+}
+
 report_post_failure_to_issue() {
   local exit_code="${1:-$?}"
   local safe_issue_number
@@ -393,14 +750,16 @@ report_post_failure_to_issue() {
 
   gha_echo warning "Posting failure comment to issue #${safe_issue_number}..."
   if declare -F forge_post_issue_comment >/dev/null 2>&1; then
-    if ! forge_post_issue_comment "${body}"; then
+    if ! forge_retry_transient forge_post_issue_comment "${body}"; then
       gha_echo warning "Failed to post error comment to issue #${safe_issue_number}"
+      _post_failure_apply_failed_label "code-agent-failed" "issue" || true
     fi
   else
-    if ! gh issue comment "${ISSUE_NUMBER}" \
+    if ! forge_retry_transient gh issue comment "${ISSUE_NUMBER}" \
       --repo "${REPO_FULL_NAME}" \
-      --body "${body}" 2>/dev/null; then
-      gha_echo warning "Failed to post error comment to issue #${safe_issue_number} (check issues:write on PUSH_TOKEN)"
+      --body "${body}"; then
+      gha_echo warning "Failed to post error comment to issue #${safe_issue_number}"
+      _post_failure_apply_failed_label "code-agent-failed" "issue" || true
     fi
   fi
 }
@@ -428,14 +787,16 @@ report_post_failure_to_pr() {
 
   gha_echo warning "Posting failure comment to PR #${safe_pr_number}..."
   if declare -F forge_post_pr_comment >/dev/null 2>&1; then
-    if ! forge_post_pr_comment "${PR_NUMBER}" "${body}"; then
+    if ! forge_retry_transient forge_post_pr_comment "${PR_NUMBER}" "${body}"; then
       gha_echo warning "Failed to post error comment to PR #${safe_pr_number}"
+      _post_failure_apply_failed_label "fix-agent-failed" "pr" || true
     fi
   else
-    if ! gh pr comment "${PR_NUMBER}" \
+    if ! forge_retry_transient gh pr comment "${PR_NUMBER}" \
       --repo "${REPO_FULL_NAME}" \
-      --body "${body}" 2>/dev/null; then
-      gha_echo warning "Failed to post error comment to PR #${safe_pr_number} (check pull-requests:write on PUSH_TOKEN)"
+      --body "${body}"; then
+      gha_echo warning "Failed to post error comment to PR #${safe_pr_number}"
+      _post_failure_apply_failed_label "fix-agent-failed" "pr" || true
     fi
   fi
 }
@@ -467,7 +828,7 @@ post_fail_to_pr() {
 #   resolve_platform   — detect OS/arch and print a platform key (e.g. linux_x64)
 #   gitleaks_sha256    — print the SHA-256 checksum for a given platform key
 #   verify_checksum    — verify a file against an expected SHA-256 hash
-#   install_gitleaks   — download, verify, and install the gitleaks binary
+#   install_gitleaks   — select the expected version or checksum-install it; export GITLEAKS_BIN
 #
 # Uses case statements (not declare -A / mapfile) so the script runs on
 # bash 3.2 (macOS system bash).
@@ -530,7 +891,31 @@ verify_checksum() {
 }
 
 install_gitleaks() {
-  if command -v gitleaks >/dev/null 2>&1; then
+  local install_dir="${HOME}/.local/bin"
+  local installed_version path_bin path_dir
+  path_bin="$(command -v gitleaks 2>/dev/null || true)"
+  case "${path_bin}" in
+    /*) ;;
+    "") ;;
+    *) path_bin="${PWD}/${path_bin}" ;;
+  esac
+
+  if [ -n "${path_bin}" ] && [ -x "${path_bin}" ] \
+    && installed_version="$("${path_bin}" version 2>/dev/null)" \
+    && [ "${installed_version}" = "${GITLEAKS_VERSION}" ]; then
+    GITLEAKS_BIN="${path_bin}"
+    export GITLEAKS_BIN
+    path_dir="${path_bin%/*}"
+    export PATH="${path_dir}:${PATH}"
+    return 0
+  fi
+
+  GITLEAKS_BIN="${install_dir}/gitleaks"
+  if [ -x "${GITLEAKS_BIN}" ] \
+    && installed_version="$("${GITLEAKS_BIN}" version 2>/dev/null)" \
+    && [ "${installed_version}" = "${GITLEAKS_VERSION}" ]; then
+    export GITLEAKS_BIN
+    export PATH="${install_dir}:${PATH}"
     return 0
   fi
 
@@ -542,19 +927,27 @@ install_gitleaks() {
     echo "::error::No gitleaks checksum for platform: ${platform}" >&2
     return 1
   fi
-  mkdir -p "${HOME}/.local/bin"
+  mkdir -p "${install_dir}"
   tarball="$(mktemp)"
   if ! curl -fsSL \
        "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${platform}.tar.gz" \
        -o "${tarball}" \
      || ! verify_checksum "${tarball}" "${checksum}" \
-     || ! tar xzf "${tarball}" -C "${HOME}/.local/bin" gitleaks; then
+     || ! tar xzf "${tarball}" -C "${install_dir}" gitleaks; then
     rm -f "${tarball}"
     echo "::error::Failed to download and verify gitleaks v${GITLEAKS_VERSION} (${platform})" >&2
     return 1
   fi
   rm -f "${tarball}"
-  export PATH="${HOME}/.local/bin:${PATH}"
+
+  if ! installed_version="$("${GITLEAKS_BIN}" version 2>/dev/null)" \
+    || [ "${installed_version}" != "${GITLEAKS_VERSION}" ]; then
+    echo "::error::Installed gitleaks does not report expected version ${GITLEAKS_VERSION}" >&2
+    return 1
+  fi
+
+  export GITLEAKS_BIN
+  export PATH="${install_dir}:${PATH}"
 }
 # END bundled: lib/gitleaks-install.lib.sh
 # shellcheck source=lib/precommit-gate.lib.sh
@@ -600,20 +993,48 @@ signoff_bot_email() {
   printf '%s' "${GIT_BOT_EMAIL:-${GIT_COMMITTER_EMAIL:-}}"
 }
 
+# commit_author_identity SHA — prints "name<TAB>email". A commit published
+# through the GitHub API (docs/code.md "Signed commits") is authored by the
+# App's bot user and carries the sandbox identity in an `Authored-by: name
+# <email>` trailer. The trailer is the author only when the git author is
+# that bot (name ending in `[bot]`, email GIT_BOT_EMAIL) and the commit
+# carries exactly one; anything else is read from the git author fields.
+commit_author_identity() {
+  local sha="$1" name email trailers
+  IFS=$'\t' read -r name email <<< "$(git log -1 --format='%an%x09%ae' "${sha}" 2>/dev/null)"
+  if [[ "${name}" == *"[bot]" && "${email}" == "$(signoff_bot_email)" ]]; then
+    trailers="$(git log -1 --format='%(trailers:key=Authored-by,valueonly)' "${sha}" 2>/dev/null | sed '/^$/d')"
+    if [ "$(printf '%s\n' "${trailers}" | grep -c .)" = "1" ]; then
+      case "${trailers}" in
+        *" <"*">")
+          name="${trailers% <*}"
+          email="${trailers##* <}"
+          email="${email%>}"
+          ;;
+      esac
+    fi
+  fi
+  printf '%s\t%s\n' "${name}" "${email}"
+}
+
 # signoff_is_bot_commit <sha> — 0 when the commit is in scope for rewriting.
 # Author, not committer: a rebase re-stamps the committer onto commits the
 # human wrote. Author is also what the DCO app checks when it waives bots.
 signoff_is_bot_commit() {
-  local _sb_bot
+  local _sb_bot _sb_email
   _sb_bot="$(signoff_bot_email)"
   [ -z "${_sb_bot}" ] && return 0
-  [ "$(git log -1 --format='%ae' "$1" 2>/dev/null)" = "${_sb_bot}" ]
+  IFS=$'\t' read -r _ _sb_email <<< "$(commit_author_identity "$1")"
+  [ "${_sb_email}" = "${_sb_bot}" ]
 }
 
 # signoff_count_range <range> — number of in-scope commits carrying a trailer.
+# --first-parent is hardcoded here (not folded into the range string) so a
+# forge-conflict merge's second parent (historical target-branch commits)
+# is never walked; it's a no-op when the range has no merge commits.
 signoff_count_range() {
   local _sc_n=0 _sc_sha
-  for _sc_sha in $(git rev-list "$1" 2>/dev/null); do
+  for _sc_sha in $(git rev-list --first-parent "$1" 2>/dev/null); do
     if signoff_is_bot_commit "${_sc_sha}" \
        && git log -1 --format='%B' "${_sc_sha}" | grep -q '^Signed-off-by:'; then
       _sc_n=$((_sc_n + 1))
@@ -632,7 +1053,7 @@ signoff_present_in_range() {
 # closed. Never touches commits below the range's base.
 signoff_strip_range() {
   local _ss_range="$1" _ss_bot _ss_tmp _ss_sed _ss_sha
-  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0
+  local _ss_base="" _ss_tip_n=0 _ss_in_tip=1 _ss_below=0 _ss_shas=""
   _ss_bot="$(signoff_bot_email)"
   # Skip line 1 so a message whose subject IS the trailer keeps a subject.
   _ss_sed='1!{/^Signed-off-by:/d;}'
@@ -649,10 +1070,13 @@ signoff_strip_range() {
   # cat, and commit-tree cannot reproduce gpgsig, so a human commit inside the
   # range would lose its signature and change SHA. Agent commits sit at the
   # tip in practice; an in-scope trailer below a human commit fails closed.
-  for _ss_sha in $(git rev-list "${_ss_range}" 2>/dev/null); do
+  # --first-parent (hardcoded, not folded into the range string) keeps a
+  # forge-conflict merge's second parent out of scope; no-op otherwise.
+  for _ss_sha in $(git rev-list --first-parent "${_ss_range}" 2>/dev/null); do
     if [ "${_ss_in_tip}" -eq 1 ] && signoff_is_bot_commit "${_ss_sha}"; then
       _ss_tip_n=$((_ss_tip_n + 1))
       _ss_base="${_ss_sha}"
+      _ss_shas="${_ss_shas} ${_ss_sha}"
     else
       _ss_in_tip=0
       if signoff_is_bot_commit "${_ss_sha}" \
@@ -704,15 +1128,18 @@ signoff_strip_range() {
     return 1
   fi
 
-  # The narrowed range is agent-only by construction; the author check in the
-  # filter is a second line of defence. filter-branch exports each original
-  # commit's identity, so $GIT_AUTHOR_EMAIL is the commit being rewritten. The
-  # bot address goes through the environment, not the filter text: it
-  # contains "[bot]" and "+".
-  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_BOT_EMAIL="${_ss_bot}" \
+  # The narrowed range is agent-only by construction; as a second line of
+  # defence the filter rewrites only the commits the walk selected, which
+  # filter-branch names through GIT_COMMIT.
+  # --first-parent (passed to the underlying rev-list, same as the walk above)
+  # keeps a forge-conflict merge's second parent — historical target-branch
+  # commits — out of the rewrite. Without it, filter-branch regenerates every
+  # commit it is handed, including that second-parent history, which changes
+  # its SHAs and breaks the merge's TRUSTED_TARGET_SHA ancestry.
+  if ! FILTER_BRANCH_SQUELCH_WARNING=1 SIGNOFF_SHAS="${_ss_shas} " \
        git filter-branch -f \
-       --msg-filter 'if [ "${GIT_AUTHOR_EMAIL}" = "${SIGNOFF_BOT_EMAIL}" ]; then sed '"'${_ss_sed}'"'; else cat; fi' \
-       -- "${_ss_base}^..HEAD" >/dev/null; then
+       --msg-filter 'case "${SIGNOFF_SHAS}" in *" ${GIT_COMMIT} "*) sed '"'${_ss_sed}'"' ;; *) cat ;; esac' \
+       -- --first-parent "${_ss_base}^..HEAD" >/dev/null; then
     echo "signoff-strip: git filter-branch failed" >&2
     return 1
   fi
@@ -798,7 +1225,11 @@ precommit_install_deps() {
 #
 # Parameters:
 #   $1 — name of a bash array variable holding changed file paths (nameref)
-#   $2 — git range for gitleaks re-scan after auto-fix (e.g. "abc123..HEAD")
+#   $2 — gitleaks --log-opts for the re-scan after auto-fix: a plain range
+#        (e.g. "abc123..HEAD") or "--first-parent abc123..HEAD" when the
+#        caller detected a merge commit in range. The signoff helpers below
+#        need a plain git-rev-list range, so any "--first-parent " prefix is
+#        stripped before use — they add --first-parent internally instead.
 #   $3 — target branch name (for fallback diff derivation)
 #   $4 — merge-base commit (for diff derivation after auto-fix)
 #
@@ -815,6 +1246,10 @@ precommit_run_gate() {
   local _pg_scan_range="$2"
   local _pg_target_branch="$3"
   local _pg_merge_base="$4"
+  # signoff_* helpers take a plain git-rev-list range and add --first-parent
+  # themselves; strip any "--first-parent " prefix a caller folded into $2
+  # for the gitleaks --log-opts use below, so the two don't fight over quoting.
+  local _pg_plain_range="${_pg_scan_range#--first-parent }"
 
   # Output contract — callers read these after the function returns.
   # shellcheck disable=SC2034
@@ -865,7 +1300,20 @@ precommit_run_gate() {
     echo "Auto-fixed files:"
     git diff --name-only -- "${_pg_files[@]}" | sed 's/^/  /'
     git diff --name-only -z -- "${_pg_files[@]}" | xargs -0 -r git add --
-    git commit --amend --no-edit
+    # HEAD can be a forge-conflict resolution merge (issue #1518). Amending
+    # it would change the merge's tree, but the per-merge `--pipe` secret
+    # scan that covers merge-introduced content (post-fix.src.sh section 1)
+    # only runs once, before this gate — the `--log-opts` re-scan just below
+    # emits no patch at all for a "Merge:" commit, so an amended merge tree
+    # would never be scanned by anything. Create a new non-merge commit for
+    # the autofix instead: the merge commit's already-scanned tree stays
+    # untouched, and the new commit is an ordinary first-parent commit the
+    # `--log-opts` re-scan below can see.
+    if git rev-parse -q --verify HEAD^2 >/dev/null 2>&1; then
+      git commit -m "pre-commit: autofix forge-conflict resolution"
+    else
+      git commit --amend --no-edit
+    fi
 
     # Re-run secret scan on the amended commit.
     echo "Re-running secret scan on amended commit..."
@@ -887,9 +1335,9 @@ precommit_run_gate() {
     # Re-check signed-off-by trailers — strip if present (defense-in-depth).
     # The auto-fix amend above can only have re-added a trailer to HEAD (a repo
     # commit-msg hook); section 3b already cleaned the rest of the range.
-    if signoff_present_in_range "${_pg_scan_range}"; then
+    if signoff_present_in_range "${_pg_plain_range}"; then
       gha_echo warning "Signed-off-by trailer found after auto-fix amend — stripping"
-      if ! signoff_strip_range "${_pg_scan_range}"; then
+      if ! signoff_strip_range "${_pg_plain_range}"; then
         # shellcheck disable=SC2034
         PRECOMMIT_GATE_SIGNOFF_FAIL="true"
         # shellcheck disable=SC2034
@@ -901,7 +1349,7 @@ precommit_run_gate() {
         return 0
       fi
       # Re-scan: fail only if a trailer survives a rewrite that reported success
-      if signoff_present_in_range "${_pg_scan_range}"; then
+      if signoff_present_in_range "${_pg_plain_range}"; then
         # shellcheck disable=SC2034
         PRECOMMIT_GATE_SIGNOFF_FAIL="true"
         # shellcheck disable=SC2034
@@ -1236,6 +1684,86 @@ classify_branch_vs_pr_head() {
   fi
 }
 # END bundled: lib/branch-guard.lib.sh
+# shellcheck source=lib/jira-auth.lib.sh
+# BEGIN bundled: lib/jira-auth.lib.sh
+# shellcheck shell=bash
+# jira-auth.lib.sh — Jira credential-mode selection for host-side scripts.
+#
+# Shared by the Jira triage and scribe ops libraries and post-code.sh, and
+# bundled into each script that sources it. Two credential modes
+# (fullsend#9007):
+#
+#   token + email — bot user: Basic auth with email:token
+#   token only    — service account: Bearer auth with the token
+#
+# An email that is empty or only whitespace counts as absent. A harness
+# that maps an unset FULLSEND_JIRA_EMAIL to JIRA_USER_EMAIL yields an empty
+# string, and that must select Bearer, never an empty-user Basic header.
+#
+# Every helper takes the token and email as arguments, so callers that
+# withhold the credentials from their environment can pass saved copies.
+
+[[ -n "${JIRA_AUTH_SH_LOADED:-}" ]] && return 0
+JIRA_AUTH_SH_LOADED=1
+
+# Print the email with surrounding whitespace removed. Empty output means
+# no email, which selects Bearer auth.
+#
+# Usage: jira_auth_email <email>
+jira_auth_email() {
+  local email="$1"
+  email="${email#"${email%%[![:space:]]*}"}"
+  email="${email%"${email##*[![:space:]]}"}"
+  printf '%s' "${email}"
+}
+
+# Run curl with the Authorization for the selected mode, followed by the
+# caller's arguments. Fails without calling curl when the token is empty.
+#
+# Usage: jira_auth_curl <token> <email> [curl args...]
+jira_auth_curl() {
+  local token="$1"
+  local email
+  email="$(jira_auth_email "$2")"
+  shift 2
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    curl --user "${email}:${token}" "$@"
+  else
+    curl --oauth2-bearer "${token}" "$@"
+  fi
+}
+
+# Run the fullsend CLI with the Jira credentials it reads from its
+# environment: FULLSEND_JIRA_TOKEN always, FULLSEND_JIRA_EMAIL only for a
+# bot user. In Bearer mode an inherited FULLSEND_JIRA_EMAIL is removed, so
+# the CLI cannot pick Basic auth. The values go through the environment,
+# never the command line.
+#
+# Usage: jira_auth_fullsend <fullsend-bin> <token> <email> [cli args...]
+jira_auth_fullsend() {
+  local bin="$1"
+  local token="$2"
+  local email
+  email="$(jira_auth_email "$3")"
+  shift 3
+  if [[ -z "${token}" ]]; then
+    echo "ERROR: Jira token is empty" >&2
+    return 1
+  fi
+  if [[ -n "${email}" ]]; then
+    FULLSEND_JIRA_TOKEN="${token}" FULLSEND_JIRA_EMAIL="${email}" "${bin}" "$@"
+  else
+    (
+      unset FULLSEND_JIRA_EMAIL
+      FULLSEND_JIRA_TOKEN="${token}" "${bin}" "$@"
+    )
+  fi
+}
+# END bundled: lib/jira-auth.lib.sh
 
 # SCRIPT_DIR is used by code-ops.lib.sh dispatcher to locate forge-specific
 # ops libraries. Not directly referenced in this file.
@@ -1251,6 +1779,12 @@ SCRIPT_DIR="${SCRIPT_DIR_POST}"
 
 [[ -n "${CODE_OPS_SH_LOADED:-}" ]] && return 0
 CODE_OPS_SH_LOADED=1
+
+# Load the transient-retry helper unconditionally, before forge dispatch, so
+# forge_retry_transient is defined for every forge (including callers in the
+# pre-code scripts that wrap commands outside the forge-specific libs).
+# shellcheck source=forge-transient-retry.lib.sh
+# (already bundled: lib/forge-transient-retry.lib.sh)
 
 case "${FULLSEND_FORGE:-}" in
   github)
@@ -1270,6 +1804,334 @@ case "${FULLSEND_FORGE:-}" in
 
 [[ -n "${GITHUB_CODE_OPS_SH_LOADED:-}" ]] && return 0
 GITHUB_CODE_OPS_SH_LOADED=1
+
+# shellcheck source=forge-transient-retry.lib.sh
+# (already bundled: lib/forge-transient-retry.lib.sh)
+# forge_push_branch: a plain git push, or with GITHUB_SIGNED_COMMITS=true the
+# API publish that gets the commits signed by GitHub.
+# shellcheck source=github-signed-push.lib.sh
+# BEGIN bundled: lib/github-signed-push.lib.sh
+# shellcheck shell=bash
+# github-signed-push.lib.sh — Publish local commits through the GitHub Git
+# Data API so GitHub signs them.
+#
+# The sandbox has no signing key, so a pushed commit is unsigned and a
+# ruleset that requires signatures rejects it. GitHub signs the commits it
+# creates for an App installation token itself, as long as the request sets
+# no author, committer or signature. forge_push_branch rebuilds each commit
+# origin lacks (blobs, tree, commit, ref) and moves the local branch onto
+# the result. It takes this path only when GITHUB_SIGNED_COMMITS is "true";
+# otherwise it is a plain `git push`.
+#
+# The rebuilt commit's author is therefore the App's bot user; the sandbox
+# identity survives in an `Authored-by: name <email>` trailer, which
+# post-fix and the fix-history-rewrite skill read.
+#
+# Each blob, tree and commit is one content-creating request, against
+# GitHub's secondary limit of about 80 per minute and 500 per hour.
+#
+# Approach prototyped by Hector Martinez Lopez (@rh-hemartin) in
+# fullsend-ai/agents#357.
+#
+# Expected globals:
+#   GITHUB_SIGNED_COMMITS — "true" publishes through the API; anything else
+#                    is a plain git push
+#   REPO_FULL_NAME — owner/repo
+#   PUSH_TOKEN     — GitHub App installation token (GH_TOKEN as fallback)
+#   GIT_BOT_EMAIL  — the App bot's noreply address; only a commit it
+#                    authored keeps an existing Authored-by trailer
+# origin must carry push credentials (forge_set_push_remote) for the final
+# fetch.
+
+[[ -n "${GITHUB_SIGNED_PUSH_SH_LOADED:-}" ]] && return 0
+GITHUB_SIGNED_PUSH_SH_LOADED=1
+
+_SIGNED_PUSH_ZERO="0000000000000000000000000000000000000000"
+
+# _signed_push_api METHOD PATH PAYLOAD_FILE — prints the response body. PATH
+# is relative to the repository, or `graphql`. Retries rate-limit and 5xx
+# responses.
+_signed_push_api() {
+  local method="$1" path="$2" payload="$3"
+  local attempt body endpoint err rc
+  err="${_SIGNED_PUSH_DIR}/stderr"
+  case "${path}" in
+    graphql) endpoint="graphql" ;;
+    *) endpoint="repos/${REPO_FULL_NAME}/${path}" ;;
+  esac
+  for attempt in 1 2 3; do
+    rc=0
+    body="$(GH_TOKEN="${PUSH_TOKEN:-${GH_TOKEN:-}}" gh api -X "${method}" \
+      "${endpoint}" --input "${payload}" 2>"${err}")" || rc=$?
+    if [ "${rc}" -eq 0 ]; then
+      printf '%s' "${body}"
+      return 0
+    fi
+    if [ "${attempt}" -eq 3 ] || ! grep -qiE 'rate limit|HTTP 5[0-9][0-9]' "${err}"; then
+      break
+    fi
+    sleep $((attempt * 30))
+  done
+  cat "${err}" >&2
+  # gh prints only the top-level message; errors[] names the rule or object.
+  printf '%s' "${body}" \
+    | jq -r 'select(.message != null) | (.errors // [])[] | .message // tojson' >&2 2>/dev/null
+  return 1
+}
+
+# _signed_push_blob SHA — uploads the local blob SHA and checks that GitHub
+# stored it under the same SHA.
+_signed_push_blob() {
+  local sha="$1" payload="${_SIGNED_PUSH_DIR}/payload" resp got
+  if ! git cat-file blob "${sha}" | base64 | tr -d '\n' \
+      | jq -Rs '{content: ., encoding: "base64"}' > "${payload}"; then
+    echo "error: could not read blob ${sha}" >&2
+    return 1
+  fi
+  resp="$(_signed_push_api POST git/blobs "${payload}")" || return 1
+  got="$(printf '%s' "${resp}" | jq -r '.sha // empty')"
+  if [ "${got}" != "${sha}" ]; then
+    echo "error: GitHub stored blob ${sha} as '${got}'" >&2
+    return 1
+  fi
+}
+
+# _signed_push_mapped SHA — prints the SHA GitHub created for the local
+# commit SHA, or SHA itself when it was not rebuilt (it is on origin).
+_signed_push_mapped() {
+  awk -v sha="$1" '$1 == sha { print $2; found = 1; exit } END { if (!found) print sha }' \
+    "${_SIGNED_PUSH_MAP}"
+}
+
+# _signed_push_base_parent COMMIT — prints the parent whose tree differs
+# from COMMIT's in the fewest paths, so a merge uploads the smaller side.
+# Any parent's tree is already on GitHub (origin, or rebuilt and verified).
+_signed_push_base_parent() {
+  local commit="$1" parent best="" best_n="" n
+  for parent in $(git rev-parse -q "${commit}^@"); do
+    n="$(git diff-tree -r --no-renames --raw "${parent}" "${commit}" | wc -l | tr -d ' ')"
+    if [ -z "${best}" ] || [ "${n}" -lt "${best_n}" ]; then
+      best="${parent}"
+      best_n="${n}"
+    fi
+  done
+  [ -n "${best}" ] && echo "${best}"
+}
+
+# _signed_push_commit COMMIT — rebuilds COMMIT on its rebuilt parents and
+# prints the SHA GitHub created.
+_signed_push_commit() {
+  local commit="$1"
+  local entries="${_SIGNED_PUSH_DIR}/entries" payload="${_SIGNED_PUSH_DIR}/payload"
+  local local_parent base_tree tree new_tree known meta path src_mode dst_mode dst_sha status
+  local parent parents author keep resp sha reason
+  local_parent="$(_signed_push_base_parent "${commit}")" || {
+    echo "error: no commit on origin to build ${commit} on" >&2
+    return 1
+  }
+  base_tree="$(git rev-parse "${local_parent}^{tree}")"
+  tree="$(git rev-parse "${commit}^{tree}")"
+
+  # Blobs GitHub already has: the base tree's, and this push's uploads.
+  known="${_SIGNED_PUSH_DIR}/known-blobs"
+  git ls-tree -r "${base_tree}" | awk '$2 == "blob" { print $3 }' > "${known}"
+
+  # --raw -z entries: ":<src mode> <dst mode> <src sha> <dst sha> <status>\0<path>\0"
+  : > "${entries}"
+  while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+    read -r src_mode dst_mode _ dst_sha status <<< "${meta#:}"
+    if [ "${status}" = "D" ]; then
+      jq -nc --arg p "${path}" --arg m "${src_mode}" \
+        '{path: $p, mode: $m, type: (if $m == "160000" then "commit" else "blob" end), sha: null}'
+    elif [ "${dst_mode}" = "160000" ]; then
+      jq -nc --arg p "${path}" --arg s "${dst_sha}" \
+        '{path: $p, mode: "160000", type: "commit", sha: $s}'
+    else
+      if ! grep -qxF "${dst_sha}" "${known}" "${_SIGNED_PUSH_BLOBS}"; then
+        _signed_push_blob "${dst_sha}" || return 1
+        echo "${dst_sha}" >> "${_SIGNED_PUSH_BLOBS}"
+      fi
+      jq -nc --arg p "${path}" --arg m "${dst_mode}" --arg s "${dst_sha}" \
+        '{path: $p, mode: $m, type: "blob", sha: $s}'
+    fi >> "${entries}"
+  done < <(git diff-tree -r --no-renames -z --raw "${local_parent}" "${commit}")
+
+  if [ -s "${entries}" ]; then
+    jq -sc --arg b "${base_tree}" '{base_tree: $b, tree: .}' "${entries}" > "${payload}"
+    resp="$(_signed_push_api POST git/trees "${payload}")" || return 1
+    new_tree="$(printf '%s' "${resp}" | jq -r '.sha // empty')"
+  else
+    new_tree="${base_tree}"
+  fi
+  if [ "${new_tree}" != "${tree}" ]; then
+    echo "error: tree rebuilt for ${commit} is '${new_tree}', expected ${tree}" >&2
+    return 1
+  fi
+
+  parents="$(for parent in $(git rev-parse "${commit}^@"); do
+    _signed_push_mapped "${parent}"
+  done | jq -Rn '[inputs]')"
+  # A commit the App bot authored came back from GitHub and keeps the
+  # trailer it was published with; any other commit loses every Authored-by
+  # line first, so a crafted one cannot survive. interpret-trailers runs
+  # outside the checkout so a repo-local trailer.*.cmd cannot run here.
+  author="$(git log -1 --format='%an <%ae>' "${commit}")"
+  if [[ "${author}" == *"[bot] <${GIT_BOT_EMAIL:-}>" ]]; then
+    keep=1
+  else
+    # shellcheck disable=SC2016  # awk program, not shell expansion
+    keep='tolower($0) !~ /^authored-by:/'
+  fi
+  git cat-file commit "${commit}" | sed '1,/^$/d' | awk "${keep}" \
+    | git -C "${_SIGNED_PUSH_DIR}" interpret-trailers --no-divider \
+        --if-exists doNothing --trailer "Authored-by: ${author}" \
+    > "${payload}.msg" || {
+    echo "error: could not read the message of ${commit}" >&2
+    return 1
+  }
+  jq -n --rawfile m "${payload}.msg" --arg t "${tree}" --argjson p "${parents}" \
+    '{message: $m, tree: $t, parents: $p}' > "${payload}"
+  resp="$(_signed_push_api POST git/commits "${payload}")" || return 1
+  sha="$(printf '%s' "${resp}" | jq -r '.sha // empty')"
+  if [ -z "${sha}" ]; then
+    echo "error: no sha in the commit response" >&2
+    return 1
+  fi
+  if [ "$(printf '%s' "${resp}" | jq -r '.verification.verified')" != "true" ]; then
+    reason="$(printf '%s' "${resp}" | jq -r '.verification.reason // "unknown"')"
+    # An App installation token always gets a signature; a PAT (eval
+    # harness, local runs) never does.
+    if [ "${PUSH_TOKEN_SOURCE:-}" = "github-app" ]; then
+      echo "error: GitHub did not sign ${sha} (${reason})" >&2
+      return 1
+    fi
+    echo "warning: GitHub did not sign ${sha} (${reason})" >&2
+  fi
+  echo "${sha}"
+}
+
+# _signed_push_repo_id — prints the GraphQL node id of REPO_FULL_NAME.
+_signed_push_repo_id() {
+  local payload="${_SIGNED_PUSH_DIR}/payload" resp id
+  jq -n --arg o "${REPO_FULL_NAME%%/*}" --arg n "${REPO_FULL_NAME#*/}" \
+    '{query: "query($o: String!, $n: String!) { repository(owner: $o, name: $n) { id } }",
+      variables: {o: $o, n: $n}}' > "${payload}"
+  resp="$(_signed_push_api POST graphql "${payload}")" || return 1
+  id="$(printf '%s' "${resp}" | jq -r '.data.repository.id // empty')"
+  if [ -z "${id}" ]; then
+    echo "error: no repository id in the response for ${REPO_FULL_NAME}" >&2
+    return 1
+  fi
+  echo "${id}"
+}
+
+# _signed_push_update_ref BRANCH BEFORE AFTER FORCE — moves refs/heads/BRANCH
+# from BEFORE (all zeros: create) to AFTER. updateRefs applies it only while
+# the ref is still at BEFORE, the compare-and-swap --force-with-lease needs,
+# and without FORCE only as a fast-forward. A retried request that had
+# already been applied leaves the ref at AFTER, which counts as success.
+_signed_push_update_ref() {
+  local branch="$1" before="$2" after="$3" force="$4"
+  local payload="${_SIGNED_PUSH_DIR}/payload" repo_id current
+  repo_id="$(_signed_push_repo_id)" || return 1
+  jq -n --arg r "${repo_id}" --arg n "refs/heads/${branch}" \
+    --arg b "${before}" --arg a "${after}" --argjson f "${force}" \
+    '{query: "mutation($r: ID!, $u: [RefUpdate!]!) { updateRefs(input: {repositoryId: $r, refUpdates: $u}) { clientMutationId } }",
+      variables: {r: $r, u: [{name: $n, beforeOid: $b, afterOid: $a, force: $f}]}}' > "${payload}"
+  if _signed_push_api POST graphql "${payload}" > /dev/null; then
+    return 0
+  fi
+  current="$(git ls-remote --heads origin "refs/heads/${branch}")" || return 1
+  current="${current%%[[:space:]]*}"
+  current="${current:-${_SIGNED_PUSH_ZERO}}"
+  if [ "${current}" = "${after}" ]; then
+    return 0
+  fi
+  if [ "${current}" != "${before}" ]; then
+    echo "error: origin/${branch} moved from ${before} to ${current} (non-fast-forward)" >&2
+  fi
+  return 1
+}
+
+# forge_push_branch BRANCH [--force-with-lease]
+#
+# Drop-in for `git push -u origin BRANCH`: publishes the current branch's
+# commits that origin lacks through the API, updates origin/BRANCH, and
+# moves the local branch and its upstream onto the commits GitHub created.
+# Unless GITHUB_SIGNED_COMMITS is "true", it is that git push.
+# A non-fast-forward update needs --force-with-lease and, as with git, is
+# refused once origin/BRANCH differs from the remote-tracking ref.
+forge_push_branch() {
+  local rc=0 _SIGNED_PUSH_DIR _SIGNED_PUSH_MAP _SIGNED_PUSH_BLOBS
+  if [ "${GITHUB_SIGNED_COMMITS:-false}" != "true" ]; then
+    local branch="$1"
+    shift
+    git push "$@" -u origin -- "${branch}"
+    return
+  fi
+  _SIGNED_PUSH_DIR="$(mktemp -d)"
+  _SIGNED_PUSH_MAP="${_SIGNED_PUSH_DIR}/commits"
+  _SIGNED_PUSH_BLOBS="${_SIGNED_PUSH_DIR}/blobs"
+  touch "${_SIGNED_PUSH_MAP}" "${_SIGNED_PUSH_BLOBS}"
+  _forge_push_branch "$@" || rc=$?
+  rm -rf "${_SIGNED_PUSH_DIR}"
+  return "${rc}"
+}
+
+_forge_push_branch() {
+  local branch="$1" mode="${2:-}"
+  local remote_sha lease tip commit commits fetched
+  remote_sha="$(git ls-remote --heads origin "refs/heads/${branch}")" || {
+    echo "error: could not read origin/${branch}" >&2
+    return 1
+  }
+  remote_sha="${remote_sha%%[[:space:]]*}"
+  if [ "${mode}" = "--force-with-lease" ]; then
+    lease="$(git rev-parse -q --verify "refs/remotes/origin/${branch}")" || {
+      echo "error: no remote-tracking ref origin/${branch} to lease on; refusing the non-fast-forward update" >&2
+      return 1
+    }
+  elif [ -n "${remote_sha}" ] \
+       && ! { git cat-file -e "${remote_sha}^{commit}" 2>/dev/null \
+              && git merge-base --is-ancestor "${remote_sha}" HEAD; }; then
+    # A commit this clone has never fetched cannot be an ancestor of HEAD.
+    echo "error: origin/${branch} is at ${remote_sha}, not an ancestor of HEAD (non-fast-forward)" >&2
+    return 1
+  fi
+
+  # Parents before children: each parent is on origin or already rebuilt.
+  commits="$(git rev-list --reverse --topo-order HEAD --not --remotes=origin)" || return 1
+  tip="$(git rev-parse HEAD)"
+  for commit in ${commits}; do
+    tip="$(_signed_push_commit "${commit}")" || return 1
+    echo "Created signed commit ${tip} for ${commit}"
+    echo "${commit} ${tip}" >> "${_SIGNED_PUSH_MAP}"
+  done
+
+  if [ "${mode}" = "--force-with-lease" ]; then
+    _signed_push_update_ref "${branch}" "${lease}" "${tip}" true || return 1
+  elif [ "${remote_sha}" = "${tip}" ]; then
+    echo "Everything up-to-date"
+  else
+    _signed_push_update_ref "${branch}" "${remote_sha:-${_SIGNED_PUSH_ZERO}}" "${tip}" false || return 1
+  fi
+
+  # The push is complete once the ref moved; failing to move the local
+  # branch is a warning, not a failed push.
+  git fetch -q origin "+refs/heads/${branch}:refs/remotes/origin/${branch}" || {
+    echo "warning: origin/${branch} is at ${tip} but could not be fetched; the local branch was not moved" >&2
+    return 0
+  }
+  fetched="$(git rev-parse "refs/remotes/origin/${branch}")"
+  if [ "${fetched}" != "${tip}" ]; then
+    echo "warning: origin/${branch} is at ${fetched} right after the update to ${tip}; the local branch was not moved" >&2
+    return 0
+  fi
+  git reset -q --soft "${tip}" || return 1
+  git branch -q --set-upstream-to="origin/${branch}" || return 1
+  echo "Branch ${branch} is at ${tip} on origin"
+}
+# END bundled: lib/github-signed-push.lib.sh
 
 # --- URL handling ---
 
@@ -1327,7 +2189,7 @@ forge_create_label() {
 forge_post_issue_comment() {
   local body="$1"
   printf '%s' "${body}" | gh issue comment "${ISSUE_NUMBER}" \
-    --repo "${REPO_FULL_NAME}" --body-file - 2>/dev/null
+    --repo "${REPO_FULL_NAME}" --body-file -
 }
 
 forge_post_pr_comment() {
@@ -1335,7 +2197,7 @@ forge_post_pr_comment() {
   local body="$2"
   gh pr comment "${target_pr}" \
     --repo "${REPO_FULL_NAME}" \
-    --body "${body}" 2>/dev/null
+    --body "${body}"
 }
 
 # --- PR/MR lifecycle ---
@@ -1349,6 +2211,10 @@ forge_list_prs_for_issue() {
   # Use closedByPullRequestsReferences to find only PRs with closing keywords
   # (Fixes #N, Closes #N, etc.) for this issue. This avoids false positives
   # from text-search matching (e.g., #1 matching #12 in a PR title).
+  #
+  # GraphQL's Bot.login has no "[bot]" suffix, so strip it and check
+  # __typename == "Bot" to avoid false bot matches. `gh api` lacks --arg,
+  # so pipe the JSON through a standalone `jq -r --arg ...` filter.
   gh api graphql \
     -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
     -f query='
@@ -1359,17 +2225,19 @@ forge_list_prs_for_issue() {
             nodes {
               number
               url
-              author { login }
+              author { login __typename }
               state
             }
           }
         }
       }
-    }' --arg bot "${bot_login}" --arg coder "${coder_bot_login}" --jq '
+    }' 2>/dev/null \
+    | jq -r --arg bot "${bot_login%\[bot\]}" --arg coder "${coder_bot_login%\[bot\]}" '
     .data.repository.issue.closedByPullRequestsReferences.nodes
     | [.[] | select(.state == "OPEN")
-           | select(.author.login != $bot
-               and .author.login != $coder)]
+           | select(.author.__typename != "Bot"
+               or (.author.login != $bot
+                   and .author.login != $coder))]
     | .[] | "\(.number)\t\(.author.login)\t\(.url)"
   ' 2>/dev/null || true
 }
@@ -1379,8 +2247,37 @@ forge_list_prs_for_branch() {
   local owner="${REPO_FULL_NAME%%/*}"
   gh pr list --repo "${REPO_FULL_NAME}" --head "${branch}" \
     --state open --json number,headRepositoryOwner \
-    --jq "[.[] | select(.headRepositoryOwner.login == \"${owner}\")] | .[0].number // empty" \
+    --jq "[.[] | select((.headRepositoryOwner.login | ascii_downcase) == (\"${owner}\" | ascii_downcase))] | .[0].number // empty" \
     2>/dev/null
+}
+
+# Single open same-repo PR for this head and base. Zero or multiple
+# matches fail closed — adopting the wrong PR is worse than reporting
+# failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local json matches count url
+  json=$(forge_retry_transient gh pr list \
+    --repo "${REPO_FULL_NAME}" \
+    --head "${head}" \
+    --base "${base}" \
+    --state open \
+    --json number,url,headRepositoryOwner,headRefName,baseRefName) || return 1
+  matches=$(printf '%s' "${json}" | jq -c \
+    --arg owner "${owner}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select((.headRepositoryOwner.login | ascii_downcase) == ($owner | ascii_downcase))
+      | select(.headRefName == $head)
+      | select(.baseRefName == $base)
+      | .url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
 }
 
 forge_create_pr() {
@@ -1388,12 +2285,32 @@ forge_create_pr() {
   local head="$2"
   local title="$3"
   local body="$4"
-  gh pr create \
+  local urlfile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  urlfile=$(mktemp) || return 1
+  forge_retry_transient gh pr create \
     --repo "${REPO_FULL_NAME}" \
     --head "${head}" \
     --base "${base}" \
     --title "${title}" \
-    --body "${body}"
+    --body "${body}" >"${urlfile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    cat "${urlfile}"
+    rm -f "${urlfile}"
+    return 0
+  fi
+  rm -f "${urlfile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
+    return "${rc}"
+  fi
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "PR already exists but could not be resolved for head '${head}' into base '${base}'" >&2
+    return "${rc}"
+  fi
+  _forge_retry_notice "PR create reported already-exists; recovered ${resolved}"
+  printf '%s\n' "${resolved}"
 }
 
 forge_get_pr_url() {
@@ -1485,6 +2402,37 @@ forge_enable_auto_merge() {
 
 # --- Issue operations ---
 
+# forge_has_sub_issues — whether the GitHub issue has sub-issues (children).
+# Prints a non-negative integer that is non-zero iff children exist. GitHub
+# exposes an exact child count, but callers must treat the result as a
+# truthy/falsy signal only — GitLab's implementation of this same contract
+# can only report 0 or 1 — and must not display it as an exact count in
+# shared (forge-agnostic) messages. Fail-open: prints 0 on API errors so a
+# missing sub-issues field (older GHES) does not skip legitimate leaf work.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  local owner="${REPO_FULL_NAME%%/*}"
+  local name="${REPO_FULL_NAME##*/}"
+  local count
+  count="$(gh api graphql \
+    -f owner="${owner}" -f name="${name}" -F number="${issue_number}" \
+    -f query='
+    query($owner: String!, $name: String!, $number: Int!) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          subIssues(first: 1) {
+            totalCount
+          }
+        }
+      }
+    }' --jq '.data.repository.issue.subIssues.totalCount // 0' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
+
 forge_get_issue_comments() {
   local raw
   if ! raw="$(gh api --paginate \
@@ -1572,6 +2520,9 @@ GITLAB_CODE_OPS_SH_LOADED=1
 #
 # Fails closed: rejects when CI_SERVER_HOST is not set.
 #
+# Also derives the trusted origin (scheme, host, and optional port) from
+# CI_SERVER_URL so self-managed instances on non-default HTTPS ports work.
+#
 # Sourced by all gitlab-*-ops.lib.sh files and inlined by the bundler.
 
 [[ -n "${GITLAB_HOST_VALIDATION_SH_LOADED:-}" ]] && return 0
@@ -1598,7 +2549,38 @@ _validate_gitlab_host() {
     return 1
   fi
 }
+
+# Prints the trusted GitLab origin (https://host[:port]) for API requests
+# and generated links. Derived from CI_SERVER_URL, a GitLab CI predefined
+# variable that carries any non-default port; falls back to
+# https://${CI_SERVER_HOST} when CI_SERVER_URL is unset. Fails closed when
+# the origin is not HTTPS or its host does not match CI_SERVER_HOST.
+_gitlab_trusted_origin() {
+  _validate_gitlab_host "${CI_SERVER_HOST:-}" || return 1
+  local origin="${CI_SERVER_URL:-https://${CI_SERVER_HOST}}"
+  if [[ ! "${origin}" =~ ^https://([a-zA-Z0-9._-]+)(:[0-9]+)?$ ]]; then
+    echo "ERROR: CI_SERVER_URL is not an HTTPS origin (https://host[:port]): $(_gha_sanitize "${origin}")" >&2
+    return 1
+  fi
+  local host="${BASH_REMATCH[1]}"
+  _validate_gitlab_host "${host}" || return 1
+  printf '%s\n' "${origin}"
+}
+
+# Validates an origin (https://host[:port]) parsed from an untrusted URL
+# against the trusted CI server origin. Scheme, host, and port must all
+# match: a URL without a port only matches a trusted origin without one.
+_validate_gitlab_origin() {
+  local origin="$1" trusted
+  trusted=$(_gitlab_trusted_origin) || return 1
+  if [[ "${origin,,}" != "${trusted,,}" ]]; then
+    echo "ERROR: GitLab origin '$(_gha_sanitize "${origin}")' does not match CI server origin '$(_gha_sanitize "${trusted}")'" >&2
+    return 1
+  fi
+}
 # END bundled: lib/gitlab-host-validation.lib.sh
+# shellcheck source=forge-transient-retry.lib.sh
+# (already bundled: lib/forge-transient-retry.lib.sh)
 
 if ! declare -F gha_echo >/dev/null 2>&1; then
   gha_echo() { echo "::${1}::${2:-}"; }
@@ -1725,14 +2707,14 @@ forge_create_label() {
 forge_post_issue_comment() {
   local body="$1"
   _gitlab_code_api POST "/projects/${REPO_ENCODED}/issues/${ISSUE_NUMBER}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 forge_post_pr_comment() {
   local mr_iid="$1"
   local body="$2"
   _gitlab_code_api POST "/projects/${REPO_ENCODED}/merge_requests/${mr_iid}/notes" \
-    --data-urlencode "body=${body}" > /dev/null 2>/dev/null
+    --data-urlencode "body=${body}" > /dev/null
 }
 
 # --- MR lifecycle ---
@@ -1750,10 +2732,9 @@ forge_list_prs_for_issue() {
   while [[ "${page}" -le "${max_pages}" ]]; do
     local batch
     batch=$(_gitlab_code_api GET "/projects/${REPO_ENCODED}/merge_requests?state=opened&per_page=100&page=${page}" 2>/dev/null) || {
-      if [ "${page}" -eq 1 ]; then
-        gha_echo warning "forge_list_prs_for_issue: GitLab API failed on first page — failing closed"
-        return 1
-      fi
+      # Fail open on API errors. Warn on stderr, not via gha_echo's stdout —
+      # this function's stdout is captured as the caller's return value.
+      gha_echo warning "forge_list_prs_for_issue: GitLab API failed on page ${page} — failing open (treating as no existing PRs)" >&2
       break
     }
     local count
@@ -1800,24 +2781,74 @@ forge_list_prs_for_branch() {
     '[.[] | select(.source_project_id == ($pid | tonumber))] | .[0].iid // empty'
 }
 
+# Single open same-project MR for this source and target. Zero or
+# multiple matches fail closed — adopting the wrong MR is worse than
+# reporting failure.
+_forge_resolve_existing_pr_url() {
+  local head="$1"
+  local base="$2"
+  local head_encoded base_encoded mrs project_json project_id matches count url
+  head_encoded=$(printf '%s' "${head}" | jq -sRr @uri)
+  base_encoded=$(printf '%s' "${base}" | jq -sRr @uri)
+  mrs=$(forge_retry_transient _gitlab_code_api_with_status GET \
+    "/projects/${REPO_ENCODED}/merge_requests?state=opened&source_branch=${head_encoded}&target_branch=${base_encoded}") || return 1
+  project_json=$(forge_retry_transient _gitlab_code_api_with_status GET \
+    "/projects/${REPO_ENCODED}") || return 1
+  project_id=$(printf '%s' "${project_json}" | jq -r '.id // empty') || return 1
+  if [[ -z "${project_id}" ]]; then
+    return 1
+  fi
+  matches=$(printf '%s' "${mrs}" | jq -c \
+    --arg pid "${project_id}" --arg head "${head}" --arg base "${base}" \
+    '[.[]
+      | select(.source_project_id == ($pid | tonumber))
+      | select(.source_branch == $head)
+      | select(.target_branch == $base)
+      | .web_url] | unique') || return 1
+  count=$(printf '%s' "${matches}" | jq 'length') || return 1
+  url=$(printf '%s' "${matches}" | jq -r '.[0] // empty') || return 1
+  if [ "${count}" -ne 1 ] || [ -z "${url}" ]; then
+    return 1
+  fi
+  printf '%s\n' "${url}"
+}
+
 forge_create_pr() {
   local base="$1"
   local head="$2"
   local title="$3"
   local body="$4"
-  local response
-  response=$(_gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
+  local responsefile rc=0
+  # Call retry in this shell so FORGE_RETRY_LAST_ERROR survives; $(...)
+  # would run it in a subshell and drop the error text.
+  responsefile=$(mktemp) || return 1
+  forge_retry_transient _gitlab_code_api_with_status POST "/projects/${REPO_ENCODED}/merge_requests" \
     --data-urlencode "source_branch=${head}" \
     --data-urlencode "target_branch=${base}" \
     --data-urlencode "title=${title}" \
-    --data-urlencode "description=${body}") || return 1
-  local url
-  url=$(echo "${response}" | jq -r '.web_url // empty')
-  if [[ -z "${url}" ]]; then
-    echo "GitLab API error: MR created but response missing web_url" >&2
+    --data-urlencode "description=${body}" >"${responsefile}" || rc=$?
+  if [ "${rc}" -eq 0 ]; then
+    local url
+    url=$(jq -r '.web_url // empty' "${responsefile}")
+    rm -f "${responsefile}"
+    if [[ -z "${url}" ]]; then
+      echo "GitLab API error: MR created but response missing web_url" >&2
+      return 1
+    fi
+    echo "${url}"
+    return 0
+  fi
+  rm -f "${responsefile}"
+  if ! forge_is_already_exists_error "${FORGE_RETRY_LAST_ERROR-}"; then
     return 1
   fi
-  echo "${url}"
+  local resolved
+  if ! resolved="$(_forge_resolve_existing_pr_url "${head}" "${base}")"; then
+    echo "MR already exists but could not be resolved for source '${head}' into target '${base}'" >&2
+    return 1
+  fi
+  _forge_retry_notice "MR create reported already-exists; recovered ${resolved}"
+  echo "${resolved}"
 }
 
 forge_get_pr_url() {
@@ -1874,6 +2905,13 @@ forge_set_push_remote() {
   local token="$1"
   git remote set-url origin \
     "https://oauth2:${token}@${GITLAB_HOST}/${REPO_FULL_NAME}.git"
+}
+
+# forge_push_branch BRANCH [--force-with-lease] — plain git push.
+forge_push_branch() {
+  local branch="$1"
+  shift
+  git push "$@" -u origin -- "${branch}"
 }
 
 forge_check_remote_branch() {
@@ -1994,6 +3032,51 @@ forge_enable_auto_merge() {
 }
 
 # --- Issue operations ---
+
+# forge_has_sub_issues — 1 if the GitLab work item has child items, else 0.
+# Uses the work-item hierarchy widget (GitLab's analogue of GitHub sub-issues).
+# This only signals presence, not an exact child count (GitLab's hierarchy
+# widget here exposes hasChildren, not a count) — matches the GitHub
+# implementation's truthy/falsy contract; callers must not display this
+# value as an exact count in shared (forge-agnostic) messages.
+# Fail-open: prints 0 on API errors or older GitLab versions without the field.
+forge_has_sub_issues() {
+  local issue_number="${1:-${ISSUE_NUMBER}}"
+  if [[ -z "${GITLAB_HOST:-}" || -z "${REPO_FULL_NAME:-}" || -z "${issue_number}" ]]; then
+    echo 0
+    return 0
+  fi
+  _validate_gitlab_host "${GITLAB_HOST}" || {
+    echo 0
+    return 0
+  }
+  local payload
+  payload="$(jq -n \
+    --arg path "${REPO_FULL_NAME}" \
+    --arg iid "${issue_number}" \
+    --arg query 'query($path: ID!, $iid: String!) { project(fullPath: $path) { workItem(iid: $iid) { widgets { ... on WorkItemWidgetHierarchy { hasChildren } } } } }' \
+    '{query: $query, variables: {path: $path, iid: $iid}}')" || {
+    echo 0
+    return 0
+  }
+  local body
+  body="$(curl --fail --silent --show-error \
+    --connect-timeout 10 --max-time 30 \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    --header "Content-Type: application/json" \
+    --data "${payload}" \
+    "https://${GITLAB_HOST}/api/graphql" 2>/dev/null)" || {
+    echo 0
+    return 0
+  }
+  local count
+  count="$(printf '%s' "${body}" | jq -r '[.data.project.workItem.widgets[]? | select(.hasChildren == true)] | if length > 0 then 1 else 0 end' 2>/dev/null || true)"
+  if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
+    echo 0
+    return 0
+  fi
+  echo "${count}"
+}
 
 forge_get_issue_comments() {
   local notes="[]"
@@ -2261,8 +3344,17 @@ ISSUE_NUMBER="${ISSUE_NUMBER:-}"
 WORK_ITEM_URL="${FULLSEND_WORK_ITEM_URL:-${ISSUE_URL:-}}"
 EXTERNAL_WORK_ITEM=false
 
-if [ -n "${FULLSEND_TRACKER:-}" ] \
-   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_FORGE}" ]; then
+# `fullsend run` exports FULLSEND_WORK_ITEM_SOURCE for every run; it names the
+# source tracker when the harness did not set FULLSEND_TRACKER.
+if [ -n "${FULLSEND_TRACKER:-}" ] && [ -n "${FULLSEND_WORK_ITEM_SOURCE:-}" ] \
+   && [ "${FULLSEND_TRACKER}" != "${FULLSEND_WORK_ITEM_SOURCE}" ]; then
+  gha_echo error "FULLSEND_TRACKER and FULLSEND_WORK_ITEM_SOURCE name different trackers"
+  exit 1
+fi
+WORK_ITEM_TRACKER="${FULLSEND_TRACKER:-${FULLSEND_WORK_ITEM_SOURCE:-}}"
+
+if [ -n "${WORK_ITEM_TRACKER}" ] \
+   && [ "${WORK_ITEM_TRACKER}" != "${FULLSEND_FORGE}" ]; then
   EXTERNAL_WORK_ITEM=true
   : "${WORK_ITEM_URL:?FULLSEND_WORK_ITEM_URL is required for external-tracker runs}"
   WORK_ITEM_KEY="${FULLSEND_WORK_ITEM_KEY:-${WORK_ITEM_URL%/}}"
@@ -2287,21 +3379,38 @@ if [ "${REPO_DIR}" != "." ]; then
   cd "${REPO_DIR}"
 fi
 
+# The checkout came from the agent's sandbox and can rewrite ancestry
+# (refs/replace, grafts, commit-graph); pin Git to the stored graph first.
+# Separate from trust_cfg in uncommitted_work_status: that one blocks code
+# execution through repo-local config (fsmonitor, hooks, filters) for its
+# own commands; this one is exported for every Git read. Keep both.
+git_graph_policy_init
+
 # GitLab needs REPO_ENCODED and GITLAB_HOST for API calls.
-# Always derive GITLAB_HOST from the validated ISSUE_URL. If GITLAB_HOST is
-# pre-set in the environment, verify it matches the URL host to prevent
-# token exfiltration to an unintended host.
+# Always derive GITLAB_HOST from the validated ISSUE_URL (CI_SERVER_HOST for
+# external work items). If GITLAB_HOST is pre-set in the environment, verify
+# it matches that host to prevent token exfiltration to an unintended host.
 if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
-  if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
-    gha_echo error "ISSUE_URL format invalid for GitLab: '${ISSUE_URL:-}'"
-    exit 1
+  if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
+    # The source issue lives on another tracker, so ISSUE_URL is not a GitLab
+    # URL. The MR goes to the GitLab instance running this job.
+    if ! _validate_gitlab_host "${CI_SERVER_HOST:-}"; then
+      gha_echo error "Cannot determine the GitLab host for an external work item"
+      exit 1
+    fi
+    _url_host="${CI_SERVER_HOST}"
+  else
+    if ! forge_validate_issue_url "${ISSUE_URL:-}"; then
+      gha_echo error "ISSUE_URL format invalid for GitLab: '${ISSUE_URL:-}'"
+      exit 1
+    fi
+    # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
+    # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
+    # to the mismatched host.
+    _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   fi
   # shellcheck disable=SC2034
   REPO_ENCODED="$(printf '%s' "${REPO_FULL_NAME}" | jq -sRr @uri)"
-  # Derive GITLAB_HOST from ISSUE_URL first, then compare against any pre-set
-  # value. Using exit 1 (not post_fail_to_issue) avoids sending PRIVATE-TOKEN
-  # to the mismatched host.
-  _url_host="$(echo "${ISSUE_URL}" | sed -E 's|^https://([^/:]+)/.*|\1|')"
   if [[ -n "${GITLAB_HOST:-}" && "${GITLAB_HOST}" != "${_url_host}" ]]; then
     gha_echo error "GITLAB_HOST '${GITLAB_HOST}' does not match issue URL host '${_url_host}'"
     exit 1
@@ -2400,6 +3509,25 @@ if [ -n "${GITLAB_TOKEN:-}" ]; then
   echo "::add-mask::${GITLAB_TOKEN}"
 fi
 
+# Scan optional public text with built-in rules, not repository policy.
+# A file source skips .gitleaks.toml discovery; the private working directory
+# and explicit ignore path prevent .gitleaksignore discovery. The subshell
+# keeps these overrides local to public text, leaving commit scans unchanged.
+# Return 0 for clean text, 2 for findings, other nonzero for scan/setup errors.
+scan_public_text() (
+  local scan_dir rc=0
+  scan_dir="$(mktemp -d)" || return 1
+  trap 'rm -f "${scan_dir}/text"; rmdir "${scan_dir}"' EXIT
+  unset GITLEAKS_CONFIG GITLEAKS_CONFIG_TOML
+  printf '%s\n' "$1" > "${scan_dir}/text" || return 1
+  cd "${scan_dir}" || return 1
+  # Suppress both streams: even scanner failures may echo sensitive input.
+  "${GITLEAKS_BIN}" detect --source "${scan_dir}/text" --no-git --redact --exit-code 2 \
+    --ignore-gitleaks-allow --gitleaks-ignore-path "${scan_dir}" \
+    >/dev/null 2>&1 || rc=$?
+  return "${rc}"
+)
+
 # ---------------------------------------------------------------------------
 # No-op comment helper
 #
@@ -2436,10 +3564,14 @@ post_noop_comment() {
   if [ -n "${agent_context}" ]; then
     local sanitized_context
     sanitized_context="$(sanitize_failure_detail "${agent_context}")"
-    detail_block="
+    if ! install_gitleaks || ! scan_public_text "${sanitized_context}"; then
+      gha_echo warning "Agent context omitted because its secret scan did not pass"
+    else
+      detail_block="
 
 **Agent context:**
 ${sanitized_context}"
+    fi
   fi
 
   local body
@@ -2454,9 +3586,89 @@ ${detail_block}
 
 Retry with \`/fs-code\` if appropriate."
 
-  if ! forge_post_issue_comment "${body}"; then
+  if ! forge_retry_transient forge_post_issue_comment "${body}"; then
     gha_echo warning "Failed to post no-op comment to issue #${safe_issue_number}"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Jira stage update
+#
+# For Jira-sourced runs, writes a concise code-stage update with the PR/MR
+# URL to the originating Jira issue through the runner-side tracker CLI.
+# Branch, PR/MR, review, and merge stay on the code host. The fixed marker
+# makes a retried run edit its earlier comment instead of adding another.
+# Returns non-zero when the write fails so the caller can fail the step.
+#
+# Usage: post_jira_stage_update <verb phrase> <pr_url>
+# ---------------------------------------------------------------------------
+post_jira_stage_update() {
+  local verb="$1"
+  local pr_url="$2"
+
+  if [ "${WORK_ITEM_TRACKER}" != "jira" ]; then
+    return 0
+  fi
+
+  if [ -z "${pr_url}" ]; then
+    gha_echo error "No PR/MR URL to report to the Jira issue"
+    return 1
+  fi
+  if [[ ! "${WORK_ITEM_URL}" =~ ^https://([a-zA-Z0-9.-]+\.atlassian\.net)/browse/([A-Z][A-Z0-9]*)-([0-9]+)$ ]]; then
+    gha_echo error "FULLSEND_WORK_ITEM_URL is not a Jira Cloud issue URL"
+    return 1
+  fi
+  local jira_url="https://${BASH_REMATCH[1]}"
+  local project="${BASH_REMATCH[2]}"
+  local number="${BASH_REMATCH[3]}"
+  if [ "${project}-${number}" != "${WORK_ITEM_KEY}" ]; then
+    gha_echo error "FULLSEND_WORK_ITEM_KEY does not match the Jira issue in FULLSEND_WORK_ITEM_URL"
+    return 1
+  fi
+  local base_url="${JIRA_BASE_URL:-}"
+  while [[ "${base_url}" == */ ]]; do
+    base_url="${base_url%/}"
+  done
+  if [ -n "${base_url}" ] && [ "${base_url}" != "${jira_url}" ]; then
+    gha_echo error "JIRA_BASE_URL does not match the Jira host in FULLSEND_WORK_ITEM_URL"
+    return 1
+  fi
+  # The credentials were withheld from the environment at the start of the
+  # script (see "Jira credential isolation"); they are passed to the trusted
+  # CLI below and nowhere else. The email is optional: without it the CLI
+  # uses service-account Bearer auth.
+  if [ -z "${_jira_token_saved:-}" ]; then
+    gha_echo error "JIRA_TOKEN is required to write to Jira"
+    return 1
+  fi
+  if [ -z "${FULLSEND_DIR:-}" ]; then
+    gha_echo error "FULLSEND_DIR is required to write to Jira (the fullsend CLI reads tracker.jira from its config.yaml)"
+    return 1
+  fi
+  if [ -z "${_jira_fullsend_bin:-}" ]; then
+    gha_echo error "fullsend CLI not found; cannot write to Jira"
+    return 1
+  fi
+
+  local noun="pull request"
+  if [ "${FULLSEND_FORGE}" = "gitlab" ]; then
+    noun="merge request"
+  fi
+
+  local body
+  body="**Code stage:** ${verb} ${noun} ${pr_url} for ${WORK_ITEM_KEY}.
+
+Review and merge happen on the ${noun}."
+
+  # The credentials reach the CLI through FULLSEND_JIRA_TOKEN and, for a
+  # bot user only, FULLSEND_JIRA_EMAIL, never through command-line flags,
+  # keeping them out of the process list. The Jira site and API gateway
+  # come from tracker.jira in FULLSEND_DIR's config.yaml.
+  printf '%s' "${body}" | jira_auth_fullsend "${_jira_fullsend_bin}" \
+    "${_jira_token_saved}" "${_jira_email_saved:-}" \
+    issues post-comment --tracker jira --fullsend-dir "${FULLSEND_DIR}" \
+    --project "${project}" --number "${number}" \
+    --marker "<!-- fullsend:code-agent -->" --result -
 }
 
 # ---------------------------------------------------------------------------
@@ -2497,7 +3709,9 @@ uncommitted_work_status() {
   # Pin trusted git config: the extracted tree is untrusted, and both
   # invocations below are index/status commands that would otherwise honor
   # repo-local config from that tree (fsmonitor hooks, hidden untracked
-  # files) while PUSH_TOKEN is present in the environment.
+  # files) while PUSH_TOKEN is present in the environment. Ancestry rewrites
+  # (replace refs, grafts, commit-graph) are handled separately and globally
+  # by git_graph_policy_init; do not fold one into the other.
   local trust_cfg=(-c core.fsmonitor=false -c core.useBuiltinFSMonitor=false -c core.hooksPath=/dev/null -c status.showUntrackedFiles=all)
   # filter.<name>.clean/smudge/process drivers are a separate config
   # namespace from hooks — core.hooksPath does not neutralize them. If
@@ -2604,6 +3818,12 @@ BRANCH="${SAFE_BRANCH}"
 
 echo "Branch: ${BRANCH}"
 echo "Token source: ${PUSH_TOKEN_SOURCE:-unknown}"
+
+# The Jira credentials were taken out of the environment at the top of this
+# script and are passed only to post_jira_stage_update. Resolve the trusted
+# tracker CLI now, before repo-controlled installs can put a binary of the
+# same name earlier on PATH.
+_jira_fullsend_bin="$(command -v fullsend 2>/dev/null || true)"
 
 # ---------------------------------------------------------------------------
 # 2. Compute changed files
@@ -2812,27 +4032,16 @@ fi
 
 # ---------------------------------------------------------------------------
 # 7b. Push, with --force-with-lease fallback for non-fast-forward errors.
-#
-# Fetch origin/BRANCH before the lease retry so the tracking ref is current
-# (issue #409). Without it, --force-with-lease compares against the clone-time
-# ref and fails with "stale info". The + refspec force-updates the tracking
-# ref. force-with-lease still rejects a concurrent push after the fetch.
 # ---------------------------------------------------------------------------
 echo "Pushing branch ${BRANCH}..."
-PUSH_OUTPUT="$(git push -u origin -- "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
+PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" 2>&1)" && PUSH_RC=0 || PUSH_RC=$?
 print_sanitized_gha_log "${PUSH_OUTPUT}"
 
 if [ "${PUSH_RC}" -ne 0 ]; then
-  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first"; then
-    gha_echo warning "Plain push failed (non-fast-forward) — fetching and retrying with --force-with-lease"
-    echo "Fetching remote branch ${BRANCH} before --force-with-lease retry..."
-    FETCH_OUTPUT="$(git fetch origin "+refs/heads/${BRANCH}:refs/remotes/origin/${BRANCH}" 2>&1)" && FETCH_RC=0 || FETCH_RC=$?
-    print_sanitized_gha_log "${FETCH_OUTPUT}"
-    if [ "${FETCH_RC}" -ne 0 ]; then
-      gha_echo warning "Fetch of origin/${BRANCH} failed — --force-with-lease may reject due to a stale tracking ref"
-    fi
+  if echo "${PUSH_OUTPUT}" | grep -qi "non-fast-forward\|rejected\|fetch first\|not a fast forward"; then
+    gha_echo warning "Plain push failed (non-fast-forward) — retrying with --force-with-lease"
     FORCE_PUSH_OUTPUT=""
-    if ! FORCE_PUSH_OUTPUT="$(git push --force-with-lease -u origin -- "${BRANCH}" 2>&1)"; then
+    if ! FORCE_PUSH_OUTPUT="$(forge_push_branch "${BRANCH}" --force-with-lease 2>&1)"; then
       print_sanitized_gha_log "${FORCE_PUSH_OUTPUT}"
       PUSH_CATEGORY="$(categorize_push_failure "${PUSH_OUTPUT}
 ${FORCE_PUSH_OUTPUT}")"
@@ -2860,7 +4069,7 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
 
   # This path exits before the PR body is assembled, so the note goes here.
   if [ "${SIGNOFF_STRIPPED}" = "true" ] && declare -F forge_post_pr_comment >/dev/null; then
-    forge_post_pr_comment "${EXISTING_PR_NUM}" \
+    forge_retry_transient forge_post_pr_comment "${EXISTING_PR_NUM}" \
       "Removed a Signed-off-by trailer from ${SIGNOFF_STRIPPED_COUNT} agent commit(s) on this branch." \
       || gha_echo warning "Could not post the Signed-off-by strip note to PR #${EXISTING_PR_NUM}"
   fi
@@ -2868,6 +4077,10 @@ if [ -n "${EXISTING_PR_NUM}" ]; then
   enable_auto_merge "${EXISTING_PR_NUM}" "${REPO_FULL_NAME}" existing
   if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
     maybe_assign_pr "${EXISTING_PR_NUM}"
+  fi
+  if ! post_jira_stage_update "pushed new commits to" "${EXISTING_PR_URL}"; then
+    gha_echo error "Failed to write the code-stage update to Jira issue ${WORK_ITEM_KEY}"
+    exit 1
   fi
   exit 0
 fi
@@ -2901,36 +4114,29 @@ fi
 # never sees it, but it becomes a public PR description.
 PR_BODY_SCAN_STATUS="skipped"
 if [ -n "${PR_BODY_FROM_RESULT}" ]; then
-  PR_BODY_TMP="$(mktemp)"
-  printf '%s\n' "${PR_BODY_FROM_RESULT}" > "${PR_BODY_TMP}"
-  GL_STDERR="$(mktemp)"
   GL_RC=0
-  gitleaks detect --source "${PR_BODY_TMP}" --no-git --redact 2>"${GL_STDERR}" || GL_RC=$?
-  if [ -s "${GL_STDERR}" ]; then
-    sed 's/^/::debug::gitleaks: /' "${GL_STDERR}"
-  fi
-  rm -f "${GL_STDERR}"
+  scan_public_text "${PR_BODY_FROM_RESULT}" || GL_RC=$?
   if [ "${GL_RC}" -eq 0 ]; then
     PR_BODY_SCAN_STATUS="passed"
-  elif [ "${GL_RC}" -eq 1 ]; then
-    gha_echo warning "BLOCKED — secret detected in pr_body; falling back to commit body"
+  elif [ "${GL_RC}" -eq 2 ]; then
+    gha_echo warning "BLOCKED — secret detected in pr_body; checking commit-body fallback"
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="blocked"
   else
-    gha_echo warning "gitleaks scan failed (exit ${GL_RC}); falling back to commit body"
+    gha_echo warning "gitleaks scan failed (exit ${GL_RC}); checking commit-body fallback"
     PR_BODY_FROM_RESULT=""
     PR_BODY_SCAN_STATUS="error"
   fi
-  rm -f "${PR_BODY_TMP}"
 fi
 
 extract_commit_body() {
   local raw
   raw="$(git log -1 --format='%b' HEAD \
     | sed '/^Signed-off-by:/d' \
+    | sed '/^Authored-by:/d' \
     | sed '/^Closes #/d' \
     | sed '/^Related to #/d' \
-    | sed -e :a -e '/^\n*$/{ $d; N; ba; }')"
+    | sed -e ':a' -e '/^\n*$/{' -e '$d' -e 'N' -e 'ba' -e '}')"
   echo "${raw}" | awk '
     /^$/           { if (buf) print buf; print; buf=""; next }
     /^[-*#>]|^  /  { if (buf) print buf; buf=""; print; next }
@@ -2998,6 +4204,25 @@ if [ -z "${COMMIT_BODY}" ]; then
   COMMIT_BODY="$(extract_commit_body)"
 fi
 
+# Scan the final normalized description after removing trailers. Removing a
+# Signed-off-by line can join text that was separate during the earlier scan.
+COMMIT_BODY_SCAN_STATUS="skipped"
+if [ -n "${COMMIT_BODY}" ]; then
+  GL_RC=0
+  scan_public_text "${COMMIT_BODY}" || GL_RC=$?
+  if [ "${GL_RC}" -eq 0 ]; then
+    COMMIT_BODY_SCAN_STATUS="passed"
+  else
+    COMMIT_BODY=""
+    if [ "${GL_RC}" -eq 2 ]; then
+      COMMIT_BODY_SCAN_STATUS="blocked"
+    else
+      COMMIT_BODY_SCAN_STATUS="error"
+    fi
+    gha_echo warning "Commit body secret scan did not pass; using generic description"
+  fi
+fi
+
 if [ -z "${COMMIT_BODY}" ]; then
   if [ "${EXTERNAL_WORK_ITEM}" = "true" ]; then
     DESCRIPTION="Automated implementation for ${WORK_ITEM_KEY}."
@@ -3010,9 +4235,17 @@ fi
 
 case "${PR_BODY_SCAN_STATUS}" in
   passed)  PR_BODY_SCAN_LINE="- [x] PR body secret scan passed (gitleaks — no-git)" ;;
-  blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked, fell back to commit body" ;;
-  error)   PR_BODY_SCAN_LINE="- [x] PR body secret scan: error, fell back to commit body" ;;
-  *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (commit body path)" ;;
+  blocked) PR_BODY_SCAN_LINE="- [x] PR body secret scan: blocked; commit-body fallback attempted" ;;
+  error)   PR_BODY_SCAN_LINE="- [x] PR body secret scan: error; commit-body fallback attempted" ;;
+  *)       PR_BODY_SCAN_LINE="- [x] PR body secret scan: N/A (no PR body to scan)" ;;
+esac
+
+COMMIT_BODY_SCAN_LINE=""
+case "${COMMIT_BODY_SCAN_STATUS}" in
+  passed)  COMMIT_BODY_SCAN_LINE="
+- [x] Final PR description secret scan passed (gitleaks — no-git)" ;;
+  blocked|error) COMMIT_BODY_SCAN_LINE="
+- [x] Final PR description secret scan: ${COMMIT_BODY_SCAN_STATUS}; generic description used" ;;
 esac
 
 SIGNOFF_STRIPPED_LINE=""
@@ -3039,7 +4272,7 @@ ${ISSUE_REFERENCE}
 
 - [x] Branch is not main/master (\`${BRANCH}\`)
 - [x] Secret scan passed (gitleaks — \`${SCAN_RANGE}\`)
-${PR_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
+${PR_BODY_SCAN_LINE}${COMMIT_BODY_SCAN_LINE}${SIGNOFF_STRIPPED_LINE}"
 
 PR_CREATE_STDERR=$(mktemp)
 if ! PR_URL=$(forge_create_pr \
@@ -3049,9 +4282,14 @@ if ! PR_URL=$(forge_create_pr \
   "${PR_BODY}" 2>"${PR_CREATE_STDERR}"); then
   PR_CREATE_OUTPUT="$(cat "${PR_CREATE_STDERR}")"
   rm -f "${PR_CREATE_STDERR}"
+  print_sanitized_gha_log "${PR_CREATE_OUTPUT}"
   post_fail_to_issue pr-creation-failed "${PR_CREATE_OUTPUT}"
 fi
+PR_CREATE_OUTPUT="$(cat "${PR_CREATE_STDERR}")"
 rm -f "${PR_CREATE_STDERR}"
+if [ -n "${PR_CREATE_OUTPUT}" ]; then
+  print_sanitized_gha_log "${PR_CREATE_OUTPUT}"
+fi
 
 echo "PR created: ${PR_URL}"
 forge_write_output "pr_url" "${PR_URL}"
@@ -3073,4 +4311,12 @@ enable_auto_merge "${PR_NUMBER_FROM_URL}" "${REPO_FULL_NAME}"
 
 if [ "${EXTERNAL_WORK_ITEM}" != "true" ]; then
   maybe_assign_pr "${PR_NUMBER_FROM_URL}"
+fi
+
+# ---------------------------------------------------------------------------
+# 10. Jira stage update (Jira-sourced runs only)
+# ---------------------------------------------------------------------------
+if ! post_jira_stage_update "opened" "${PR_URL}"; then
+  gha_echo error "Failed to write the code-stage update to Jira issue ${WORK_ITEM_KEY}"
+  exit 1
 fi

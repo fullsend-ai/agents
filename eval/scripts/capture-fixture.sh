@@ -144,12 +144,19 @@ case "${FIXTURE_TYPE}" in
     # Code agent post-script opens exactly one PR today; --limit 1 is enough.
     # Raise the limit (or filter by headRefName) if a future case opens multiple.
     # gh pr list is best-effort so a transient API blip still yields fixture-state.json.
+    # A failed or malformed lookup records pull_requests_fetch_failed with
+    # pull_requests=null: PR existence is unknown, which judges must not
+    # read as "the agent created no PR" (a successful empty lookup is []).
+    prs_fetch_failed="false"
     if ! prs_json=$(retry_cmd gh pr list --repo "$EPHEMERAL_REPO" --state all --limit 1 \
       --json number,title,url,state,headRefName,baseRefName); then
-      echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO}; recording pull_requests=[]" >&2
-      prs_json='[]'
+      echo "WARNING: gh pr list failed for ${EPHEMERAL_REPO} after retries; PR existence unknown, marking pull_requests_fetch_failed" >&2
+      prs_fetch_failed="true"
+    elif ! printf '%s' "$prs_json" | jq -e 'type == "array"' >/dev/null 2>&1; then
+      echo "WARNING: gh pr list returned malformed output for ${EPHEMERAL_REPO} (expected a JSON array); PR existence unknown, marking pull_requests_fetch_failed" >&2
+      prs_fetch_failed="true"
     fi
-    if [[ -z "$prs_json" ]]; then
+    if [[ "$prs_fetch_failed" == "true" ]]; then
       prs_json='[]'
     fi
 
@@ -168,7 +175,9 @@ case "${FIXTURE_TYPE}" in
            | del(.headRefName, .baseRefName)')")
       fi
     done < <(printf '%s' "$prs_json" | jq -c '.[]')
-    if [[ ${#pr_lines[@]} -eq 0 ]]; then
+    if [[ "$prs_fetch_failed" == "true" ]]; then
+      prs_with_files='null'
+    elif [[ ${#pr_lines[@]} -eq 0 ]]; then
       prs_with_files='[]'
     else
       prs_with_files=$(printf '%s\n' "${pr_lines[@]}" | jq -s '.')
@@ -180,6 +189,7 @@ case "${FIXTURE_TYPE}" in
       --argjson issue "$issue_json" \
       --argjson comments "$comments_json" \
       --argjson pull_requests "$prs_with_files" \
+      --arg pull_requests_fetch_failed "$prs_fetch_failed" \
       '{
         fixture_type: $fixture_type,
         fixture_url: $fixture_url,
@@ -189,7 +199,8 @@ case "${FIXTURE_TYPE}" in
         assignees: [($issue.assignees // [])[] | .login],
         milestone: ($issue.milestone.title // null),
         comments: $comments,
-        pull_requests: $pull_requests
+        pull_requests: $pull_requests,
+        pull_requests_fetch_failed: ($pull_requests_fetch_failed == "true")
       }' > "$STATE_FILE"
     ;;
 

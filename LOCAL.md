@@ -131,9 +131,17 @@ runner, no override workaround needed:
 
 ```bash
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
+# Bot user: set the email (Basic auth). Service account: leave both email
+# variables unset (Bearer auth).
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
+# The post-scripts read the FULLSEND_JIRA_* names (fullsend#9079); the
+# sandbox's jira-ro provider reads JIRA_TOKEN.
+export FULLSEND_JIRA_TOKEN="${JIRA_TOKEN}"
+export FULLSEND_JIRA_EMAIL="${JIRA_USER_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
+# The post-scripts require the .fullsend directory; nothing sets it for you.
+export FULLSEND_DIR="<path to the .fullsend directory>"
 export FULLSEND_FORGE="jira"
 
 # Transition names for closing issues — set to match your Jira workflow.
@@ -164,12 +172,18 @@ external key as a GitHub or GitLab issue number.
 ```bash
 # Jira-source env vars (JIRA_USER_EMAIL and JIRA_BASE_URL enter the code
 # sandbox as non-secret config; JIRA_TOKEN is read by the jira-ro
-# provider on the host — it never enters the code agent's runner or
-# sandbox environment)
+# provider on the host and never enters the sandbox environment). The
+# post-code Jira write uses FULLSEND_JIRA_TOKEN and, for a bot user,
+# FULLSEND_JIRA_EMAIL. For a service account, leave both email variables
+# unset (Bearer auth).
 export FULLSEND_WORK_ITEM_URL="https://your-site.atlassian.net/browse/TESTPROJ-42"
 export JIRA_USER_EMAIL="you@example.com"
 export JIRA_TOKEN="your-jira-api-token"
+export FULLSEND_JIRA_TOKEN="${JIRA_TOKEN}"
+export FULLSEND_JIRA_EMAIL="${JIRA_USER_EMAIL}"
 export JIRA_BASE_URL="https://your-site.atlassian.net"
+# The post-scripts require the .fullsend directory; nothing sets it for you.
+export FULLSEND_DIR="<path to the .fullsend directory>"
 
 # Target forge — the code agent still pushes/creates PRs on this forge
 export FULLSEND_FORGE="github"
@@ -234,8 +248,12 @@ for a significant change, not for every iteration.
 ## Runtime and model overrides
 
 When running agents locally with `--fullsend-dir .`, the CLI reads the
-root `config.yaml`. To switch from the default Claude Code runtime to
-pi, add a `runtime` key:
+root `config.yaml`. That file is also the functional-eval workspace, so
+every agent runs on `claude-sonnet-5-5` (its `models.aliases` points both
+`sonnet` and `opus` there, and review uses the eval-only overlay
+`eval/harness/review.yaml`). Your Vertex project must serve that id; to
+run another model, pass a full id with `--model`. To switch from the
+default Claude Code runtime to pi, add a `runtime` key:
 
 ```yaml
 # config.yaml

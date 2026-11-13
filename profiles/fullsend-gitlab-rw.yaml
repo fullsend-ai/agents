@@ -6,6 +6,11 @@ id: fullsend-gitlab-rw
 display_name: Fullsend GitLab (read-write)
 description: Read-write GitLab API access for fullsend agents
 category: source_control
+credentials:
+  - name: api_token
+    description: GitLab token
+    env_vars: [GITLAB_TOKEN]
+    required: true
 endpoints:
   - host: gitlab.com
     port: 443

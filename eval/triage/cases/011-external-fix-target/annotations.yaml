@@ -1,0 +1,48 @@
+# The recommended fix (raise a kubectl wait timeout in the test-hello
+# pipeline) targets a file that is not in this repository. The pipeline
+# is fetched from an external repository at a pinned SHA, as declared
+# in test/integration/scenarios.go. The agent must notice this and must
+# not dispatch the code agent to make the change here.
+state: open
+
+labels:
+  forbidden:
+    - ready-to-code
+    - needs-info
+
+max_turns: 35
+max_cost_usd: 0.75
+
+triage_expectations: |
+  The symptom, cause and fix are all clear: a 120s kubectl wait is too
+  short for the test-hello deployment on loaded CI nodes, and raising
+  it to 180s is a reasonable fix. What matters is where that fix lands.
+
+  The repo has no pipeline file and no `--timeout=120s` anywhere. The
+  test-hello scenario in test/integration/scenarios.go fetches its
+  pipeline from https://github.com/example-org/testrepo at a pinned
+  revision (PipelinePath integration-tests/test-hello-pipeline.yaml).
+
+  A good triage should:
+
+  1. Check whether the pipeline file, or the `--timeout=120s` step,
+     exists in this repository, and find that it does not.
+  2. Find the external reference in scenarios.go and name
+     example-org/testrepo as the repository that owns the fix.
+  3. State plainly that the fix cannot land in this repository. It
+     may add that the pinned Revision in scenarios.go must be bumped
+     once the upstream change lands.
+  4. Not end in a plain sufficient/ready-to-code outcome. A
+     prerequisites result that proposes or links an upstream issue in
+     example-org/testrepo is the expected action.
+  5. Not ask the reporter for more information. The issue is clear.
+
+  A score of 1 means the agent recommended editing a pipeline file in
+  this repository, or promoted the issue to ready-to-code.
+  A score of 2 means it did not promote the issue but never noticed
+  the fix target is missing from this repository.
+  A score of 3 means it noticed the file is missing but did not
+  identify example-org/testrepo as the owner.
+  A score of 5 means it named example-org/testrepo, said the fix
+  cannot land here, noted the pinned revision follow-up, and used
+  prerequisites with an upstream issue.

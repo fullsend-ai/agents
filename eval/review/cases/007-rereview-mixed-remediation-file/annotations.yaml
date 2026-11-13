@@ -1,0 +1,24 @@
+state: open
+
+labels:
+  required: []
+  forbidden:
+    - ready-for-merge
+  risk_label_required: true
+
+findings:
+  required_any:
+    - scope-creep
+    - unauthorized-change
+
+max_cost_usd: 2.50
+
+review_expectations: |
+  This trusted GitHub re-review changes only docs/foo.md. The Foo description
+  directly remediates the prior finding and must not be reported as scope
+  creep, unauthorized-change, scope-exceeded, or missing-authorization. The
+  unrelated Deployment section is not authorized by the issue or the prior
+  finding and must be reported as scope-creep or unauthorized-change. The finding
+  must concern the unrelated Deployment section, not the authorized Foo
+  description. This case fails if the whole candidate file is exempted instead
+  of only its direct remediation.

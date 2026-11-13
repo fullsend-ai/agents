@@ -21,17 +21,16 @@ Use `Bash` for verification and committing. Use `Read`/`Write`/`Grep`/`Glob` for
 
 ## Progress markers
 
-At steps 1, 2, 4, 7a, 7b, 7c, and 8: `echo "::notice::STEP <N>: <title>"`
+At steps 1, 2, and 4: `echo "::notice::STEP <N>: <title>"`. The
+`fix-verification` skill emits its own markers for steps 7a, 7b, 7c,
+and 8.
 
 ## Time budget
 
 If `TIMEOUT_SECONDS` is set, capture `AGENT_START=$(date +%s)` at the
-very beginning, then check remaining time before 7b, before 7b's
-direct-execution fallback, before each 7c retry, and before 8 — skip
-the check when `TIMEOUT_SECONDS` is unset. Exact commands and the
-per-step thresholds (10% before 7b, a flat 300s floor before the 7b
-fallback, 20% before a 7c retry, 8% before 8): see
-[references/timing.md](references/timing.md).
+very beginning — the `fix-verification` skill's time checks in steps 7
+and 8 depend on it. See that skill for the exact commands and
+per-step thresholds.
 
 ## Process
 
@@ -49,6 +48,7 @@ Read the environment:
 echo "PR_NUMBER=${PR_NUMBER}"
 echo "TRIGGER_SOURCE=${TRIGGER_SOURCE}"
 echo "FIX_ITERATION=${FIX_ITERATION:-1}"
+echo "FIX_CONFLICT_UPDATE_STRATEGY=${FIX_CONFLICT_UPDATE_STRATEGY:-merge}"
 ```
 
 - `PR_NUMBER` — which PR to fix (required)
@@ -63,11 +63,12 @@ echo "FIX_ITERATION=${FIX_ITERATION:-1}"
 - `HUMAN_INSTRUCTION` — the human's instruction text (only when
   trigger type is `"human"`)
 - `FIX_ITERATION` — which iteration of the review→fix loop this is
+- `FIX_CONFLICT_UPDATE_STRATEGY` — `merge` (default) or `rebase` (agents/fix.md)
 
 If `PR_NUMBER` is not set, stop.
 
-Fetch the PR metadata using the forge-specific commands from your forge skill
-(e.g., `gh pr view` on GitHub, `curl` on GitLab).
+Fetch the PR metadata via your forge skill (e.g., `gh pr view` on GitHub,
+`curl` on GitLab). Reconcile a real conflict per agents/fix.md.
 
 If the PR is closed or merged, stop.
 
@@ -80,10 +81,8 @@ echo "::notice::STEP 2: Gather review feedback"
 First, fetch the current PR diff so you know exactly what code is on the branch.
 Use the forge-specific commands from your forge skill (e.g., `gh pr diff` on
 GitHub, `curl` to fetch MR changes on GitLab). Also inspect the PR's project
-CI using the forge-specific `fix-review` skill's CI recipes: read job
-logs/artifacts, classify each job (`passing`, `pending`, `pr-related`,
-`unrelated`, `flaky`, `transient-infra`), and record up to 50 inspected jobs
-in `ci_inspections` (see step 9).
+CI using the `fix-ci-inspection` skill (forge-specific recipes remain in this
+skill's github/gitlab siblings).
 
 **If trigger type is `"bot"` (bot-triggered):**
 
@@ -131,145 +130,25 @@ Read full files (not just reviewed lines), related test files, and affected impo
 
 ### 6. Implement fixes
 
-For each finding (top-down in file): make the change, follow existing patterns, avoid new dependencies unless requested, update tests if needed. **Scope guardrail:** Only address review feedback and project-CI failures classified `pr-related` that fall within authorized scope (a bot-triggered run, or a human instruction that does not already limit the work to a specific change — a narrow instruction such as `rebase` does not authorize extra CI-driven edits). For `flaky`/`transient-infra` failures, recommend a rerun instead of editing code. For `unrelated` failures, point the user to the responsible owner instead of editing code. No unmentioned refactors, features, bug fixes, or doc improvements.
+For each finding (top-down in file): make the change, follow existing patterns, avoid new dependencies unless requested, update tests if needed. **Scope guardrail:** Only address review feedback and `pr-related` project-CI failures within authorized scope (see the `fix-ci-inspection` skill). No unmentioned refactors, features, bug fixes, or doc improvements.
 
 ### 7. Verify
 
-**7a. Secret scan — MANDATORY FIRST STEP**
-
-```bash
-echo "::notice::STEP 7a: Secret scan"
-```
-
-```bash
-scan-secrets <files-you-modified>
-```
-
-If secrets are detected: hard stop. Remove them, re-scan.
-
-**7b. Pre-commit hooks — run them, do not skip them**
-
-```bash
-echo "::notice::STEP 7b: Pre-commit hooks"
-```
-
-Same rules as the code agent (see step 9b of the code-implementation
-skill for the full text):
-- Maximum 2 pre-commit/hook-execution runs per validation-loop
-  iteration (not per sandbox). A `pre-commit run` that failed on
-  infrastructure before executing any hook does not count — the
-  direct-execution fallback takes its place. A validation-loop retry
-  is a new iteration with a fresh budget; 7c's own retries do not
-  reopen 7b.
-- Pre-format your code before running pre-commit.
-- If `pre-commit` itself cannot run — typically because it cannot
-  fetch remote hook repositories — do not skip verification, unless
-  the fallback floor below says you cannot afford it. Otherwise fall
-  back to running the configured hooks directly, honoring each hook's
-  `entry`, `args`, `rev`, `stages`, `additional_dependencies`, and
-  file filters.
-- If the second run still fails, log the exact hook, file, and error
-  in the commit message and move on. Never claim hooks passed when
-  they did not.
-
-```bash
-test -f .pre-commit-config.yaml && pre-commit run --files <all-changed-files>
-```
-
-**Time recheck before the fallback.** Run this **only** when the
-`pre-commit run` above failed on infrastructure (could not fetch hook
-repositories, or died before executing any hook) — not after a pass,
-not after real hook errors. Re-check remaining time against a flat
-300s floor; see [references/timing.md](references/timing.md) for the
-exact commands. If below the floor, skip the fallback — `repo: local`
-hooks included, since a local `entry` can fetch too and 7c's lint
-still runs — treat 7b as finished, and put this in the commit message:
-
-> Note: pre-commit hooks were not run. `pre-commit` could not
-> complete (infrastructure failure), and the remaining time budget
-> was below the floor for running the hooks directly.
-
-Skipping consumes no run but closes 7b for this iteration. Otherwise,
-run the fallback as described above.
-
-**7c. Tests and linters — MANDATORY**
-
-```bash
-echo "::notice::STEP 7c: Tests and linters"
-```
-
-Discover build/test commands: Read Makefile, package.json, pyproject.toml, or equivalent. Run test command (e.g., `make test`, `npm test`, `go test ./...`, `pytest`), then lint command (e.g., `make lint`, `golangci-lint run`, `eslint`, `ruff`) as separate invocations (not `&&`-chained; lint runs even if tests fail).
-
-If tests fail: read output, fix, re-run secret scan (7a) then tests (7c). Don't re-run pre-commit — 7b is closed for this iteration whether you spent the budget or skipped it. Retry limit: `MAX_RETRIES` (default: 1).
-
-**7d. Self-review**
-
-Run `git diff`. Check for: unrelated changes, debug prints/TODOs, secrets, protected paths.
+Follow the `fix-verification` skill: mandatory secret scanning (7a),
+pre-commit hooks with the infrastructure fallback (7b), tests and
+linters with the retry limit (7c), and self-review (7d).
 
 ### 8. Commit
 
-```bash
-echo "::notice::STEP 8: Commit"
-```
-
-**8a. Stage files**
-
-`git add` only files you modified.
-
-**8b. Scan staged content**
-
-```bash
-git diff --cached --stat
-scan-secrets --staged
-```
-
-**NEVER use `git commit -s` or `Signed-off-by`.** DCO is for humans; bot commits are exempt.
-
-**8c. Commit**
-
-Follow repo conventions. Reference PR number. Note disagreements.
-
-```bash
-git commit -m "fix: address review feedback on PR #${PR_NUMBER}
-
-<summary>
-
-Addresses #${PR_NUMBER}"
-which gitlint &>/dev/null && gitlint --commit HEAD
-```
+Follow the `fix-verification` skill: stage only the files you
+modified, scan the staged content, then commit following repo
+conventions, referencing the PR number and noting any disagreements.
 
 ### 9. Produce structured output
 
-**MANDATORY.** Write `$FULLSEND_OUTPUT_DIR/agent-result.json`:
-
-```json
-{
-  "pr_number": 42,
-  "trigger_source": "bot",
-  "iteration": 1,
-  "actions": [
-    {"type": "fix", "finding": "Missing input validation", "path": "src/input.sh", "description": "Reject empty input before processing"},
-    {"type": "disagree", "finding": "Rename the public command", "path": "src/cli.sh", "reason": "The existing name is part of the documented public interface"}
-  ],
-  "decision_points": [{"description": "Preserve the public command name", "alternatives": ["Rename the command", "Keep the documented name"], "rationale": "Renaming would break existing callers"}],
-  "summary": "Addressed both review findings",
-  "strategy_change": null,
-  "tests_passed": true,
-  "files_changed": ["src/input.sh"],
-  "ci_inspections": [
-    {"job": "lint", "status": "success", "classification": "passing", "diagnosis": "Lint passed."},
-    {"job": "unit-tests", "status": "failure", "classification": "pr-related", "diagnosis": "Failing test matches this diff.", "remediation": "Fixed the test."}
-  ]
-}
-```
-
-**Schema:** `additionalProperties: false`. Use only schema-defined fields — e.g. optional `rebased_onto_target` (`agents/fix.md` step 8) and `ci_inspections` (project CI jobs inspected per step 2 and `agents/fix.md`'s Project CI inspection section; each entry requires `job` and `classification`, with `status`/`diagnosis`/`remediation` optional — see the forge-specific `fix-review` skill for the recipes that gather these). `trigger_source` is `"bot"`/`"human"`. Types: `fix` (needs `type`, `finding`, `description`) or `disagree` (needs `type`, `finding`, `reason`). Required: `pr_number`, `trigger_source`, `actions` (≥1), `summary`, `tests_passed`, `files_changed`.
-
-Validate: `fullsend-check-output "${FULLSEND_OUTPUT_DIR}/agent-result.json"`. If fails after 3 attempts, write best JSON and exit.
-
-## Partial work
-
-If token limit reached: commit partial work, document addressed/remaining findings in structured output.
+Follow the `fix-result-contract` skill: schema requirements, the
+`fullsend-check-output` validation loop, partial-work behavior, and
+validation-retry semantics for `agent-result.json`.
 
 ## Constraints
 

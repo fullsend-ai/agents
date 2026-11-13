@@ -24,12 +24,14 @@ This project uses [Conventional Commits](https://www.conventionalcommits.org/). 
 
 ## DCO (Developer Certificate of Origin)
 
-This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce sign-off on commits.
+This project uses the [Probot DCO app](https://github.com/apps/dco) to enforce sign-off on commits. A local `commit-msg` hook configured in `.pre-commit-config.yaml` (`.github/scripts/check-dco-signoff.sh`) also validates that human commits include a matching `Signed-off-by` trailer before push.
 
 - **Human contributors and human-driven agent sessions:** Add `Signed-off-by` to your commits with `git commit -s`. The human directing the session is the one certifying the DCO, just as they would for any other commit.
 - **Autonomous agents: do NOT add `Signed-off-by` trailers.** Do not use `git commit -s` and do not manually append a `Signed-off-by` line. Your commits are exempt — see below.
 
-**Why autonomous agents are exempt.** The DCO is a human attestation — it certifies personhood and legal authority to contribute. No one is present to make that certification in an autonomous session. The fullsend agents commit using the GitHub App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub recognizes as `author.type: "Bot"`. The Probot DCO app auto-skips bot-authored commits. The human who merges an agent PR accepts responsibility for the contribution.
+**Why autonomous agents are exempt.** The DCO is a human attestation — it certifies personhood and legal authority to contribute. No one is present to make that certification in an autonomous session. The fullsend agents commit using the GitHub App's bot identity (`<id>+<slug>[bot]@users.noreply.github.com`), which GitHub recognizes as `author.type: "Bot"`. Both the Probot DCO app and the local `commit-msg` hook auto-skip bot-authored commits. The human who merges an agent PR accepts responsibility for the contribution.
+
+**Installing the local commit-msg hook.** Run `pre-commit install` (or `pre-commit install --hook-type commit-msg`) to activate the hook locally. Note that `pre-commit run --all-files` only runs hooks in the `pre-commit` stage; git hooks must be installed via `pre-commit install` to run during `git commit`.
 
 ## Pull request workflow
 
@@ -58,16 +60,33 @@ Small adjustments in response to review feedback are normal iteration — this g
 
 ### Functional tests for external contributors
 
-Functional tests (the `Functional Tests` workflow) run automatically for
-org/repo members and collaborators. For other contributors, a maintainer
-must add the `ok-to-test` label **after** the latest push.
+Functional tests (the `Functional Tests` and `Behaviour Tests` workflows) run
+automatically for same-repository pull requests authored by users with
+**write access or higher** (`write`, `maintain`, or `admin`).
+
+They need `/ok-to-test <sha>` for:
+
+- contributors without write access (including those with read or triage
+  roles);
+- any pull request from a fork, **including one whose author has write
+  access**: `pull_request` runs from forks get no secrets.
+
+Someone with write access reviews the latest push and comments on the PR:
+
+```text
+/ok-to-test <full 40-character sha of the latest push>
+```
+
+The comment's first line must be `/ok-to-test` and the full sha; a short
+prefix is refused. The tests run only when that sha is still the PR head, and
+the `functional-tests-complete` and `behaviour` checks report on that commit.
+**A later push needs a new comment** naming the new head. The `ok-to-test`
+label no longer starts a run.
 
 This is a separate gate from GitHub's own first-time-contributor
 workflow-approval prompt (the "Approve and run workflows" button). Approving
-that prompt unblocks `pull_request`-triggered workflows (like `CI`) but has
-no effect on `pull_request_target`-triggered functional tests — those still
-need the `ok-to-test` label. If new commits land after `ok-to-test` is
-applied, the label is automatically removed and must be re-applied.
+that prompt lets `pull_request`-triggered workflows start, but a fork PR's
+functional tests still need `/ok-to-test <sha>`.
 
 ### Merging
 
