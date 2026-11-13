@@ -102,13 +102,72 @@ curl --fail --silent --show-error \
 #   - _links.closed_as_duplicate_of present  -> duplicate (structured link)
 #   - a `duplicate` / `not-planned` / `completed` label (applied by fullsend
 #     triage)                                 -> that reason
-#   - otherwise                               -> unknown; the not-planned
-#     (30-day) and completed rules are best-effort and should be skipped rather
-#     than guessed. closed_at is still available for the 30-day window.
+#   - otherwise                               -> unknown; do not guess a
+#     reason from the state alone.
+# Whatever the label, run the closed-candidate recipe below on every closed
+# same-topic hit: with no close reason, the closing note is the main signal for
+# a rejection, and a merged closing MR or a closing commit is the real-fix signal.
 curl --fail --silent --show-error \
   --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
   "https://${GITLAB_HOST}/api/v4/projects/${TARGET_ENCODED}/issues?search=<keywords>&per_page=20" \
   | jq '.[] | {iid: .iid, title: .title, state: .state, closed_at: .closed_at, labels: .labels, closed_as_duplicate_of: ._links.closed_as_duplicate_of, web_url: .web_url, description: .description}'
+
+# Closed-candidate recipe: run on every closed same-topic hit from any pass.
+# Use the candidate's own project path (encoded) — it may be a layer project,
+# not the target. The search returns no notes and no closing MR. closed_at and
+# closed_by identify the closure:
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/<candidate-project-encoded>/issues/<candidate-iid>" \
+  | jq '{iid: .iid, state: .state, closed_at: .closed_at, closed_by: .closed_by.username, labels: .labels}'
+# Merge requests that close the issue on merge; a merged one is a real fix:
+curl --fail --silent --show-error \
+  --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+  "https://${GITLAB_HOST}/api/v4/projects/<candidate-project-encoded>/issues/<candidate-iid>/closed_by" \
+  | jq '[.[] | {iid: .iid, state: .state, web_url: .web_url}]'
+# The closing system note ("closed via merge request !N" or "closed via commit
+# <sha>" is a real fix) and two notes at or before closed_at: closing_comment,
+# the last non-system note by a project member with the Developer role or higher
+# (access level 30+), and closer_comment, the last non-system note by the user
+# who closed the issue. Only closing_comment is an authoritative rejection;
+# closer_comment is context only and never replaces it. Page through every note
+# first so a long thread cannot cut off the closure evidence, then look up each
+# commenter's access level; a lookup that fails, returns nothing, or returns
+# non-numeric output counts as no access (level 0) without stopping the recipe.
+cand=<candidate-project-encoded>
+iid=<candidate-iid>
+notes_file=$(mktemp)
+page=1
+while :; do
+  batch=$(curl --fail --silent --show-error \
+    --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    "https://${GITLAB_HOST}/api/v4/projects/${cand}/issues/${iid}/notes?sort=asc&order_by=created_at&per_page=100&page=${page}")
+  printf '%s\n' "${batch}" >> "${notes_file}"
+  test "$(printf '%s' "${batch}" | jq length)" -eq 100 || break
+  page=$((page + 1))
+done
+levels='{}'
+for uid in $(jq -s -r --arg at "<closed_at>" \
+    '[.[][] | select((.system | not) and .created_at <= $at) | .author.id] | unique | .[]' "${notes_file}"); do
+  lvl=$(curl --fail --silent --header "PRIVATE-TOKEN: ${GITLAB_TOKEN}" \
+    "https://${GITLAB_HOST}/api/v4/projects/${cand}/members/all/${uid}" | jq '.access_level // 0' 2>/dev/null || true)
+  printf '%s' "${lvl}" | grep -Eq '^[0-9]+$' || lvl=0
+  levels=$(printf '%s' "${levels}" | jq --arg u "${uid}" --argjson l "${lvl}" '. + {($u): $l}')
+done
+jq -s --arg at "<closed_at>" --arg by "<closed_by>" --argjson levels "${levels}" '
+    add as $all
+    | def level: $levels[(.author.id | tostring)] // 0;
+      {closing_system_note: ([$all[] | select(.system and (.body | startswith("closed")))] | last | .body?),
+       closing_comment: ([$all[] | select((.system | not) and .created_at <= $at and level >= 30)]
+         | last
+         | if . then {author: .author.username, access_level: level,
+                      maintainer: true, created_at: .created_at, body: .body}
+           else null end),
+       closer_comment: ([$all[] | select((.system | not) and .created_at <= $at and .author.username == $by)]
+         | last
+         | if . then {author: .author.username, access_level: level,
+                      maintainer: (level >= 30), created_at: .created_at, body: .body}
+           else null end)}' "${notes_file}"
 
 # Follow a duplicate chain to its canonical. Prefer the structured link
 # (_links.closed_as_duplicate_of, added in gitlab!89375) from the projection
