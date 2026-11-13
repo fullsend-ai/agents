@@ -205,6 +205,15 @@ judges:
           body for body in ((item.get("body") or "") for item in state.get("comments") or [])
           if body.split("\n", 1)[0].rstrip("\r") == marker
       ]
+      if not stickies and any(
+          (item.get("body") or "").split("\n", 1)[0].rstrip("\r") == "<!-- fullsend:review-notice -->"
+          for item in state.get("comments") or []
+      ):
+          # fullsend post-review posts stale-head and failure notices under their
+          # own marker (fullsend-ai/fullsend#9399), so the prior-review fetchers
+          # never read a notice as the last review. A run whose only output is a
+          # notice wrote no findings to judge: abstain.
+          return None, "Not scored: the run posted only a review notice (stale-head or agent failure)"
       if len(stickies) != 1:
           return False, f"Findings not attributable to this run: expected one review-agent sticky comment, found {len(stickies)}"
       # Edits keep earlier runs below the first history sentinel; only the
@@ -280,6 +289,15 @@ judges:
           body for body in ((item.get("body") or "") for item in state.get("comments") or [])
           if body.split("\n", 1)[0].rstrip("\r") == marker
       ]
+      if not stickies and any(
+          (item.get("body") or "").split("\n", 1)[0].rstrip("\r") == "<!-- fullsend:review-notice -->"
+          for item in state.get("comments") or []
+      ):
+          # fullsend post-review posts stale-head and failure notices under their
+          # own marker (fullsend-ai/fullsend#9399), so the prior-review fetchers
+          # never read a notice as the last review. A run whose only output is a
+          # notice wrote no review action: abstain, as for a notice in the sticky.
+          return None, "Not scored: the run posted only a review notice (stale-head or agent failure)"
       if len(stickies) != 1:
           return False, f"Action not attributable to this run: expected one review-agent sticky comment, found {len(stickies)}"
       # Edits keep earlier runs below the first history sentinel; only the
