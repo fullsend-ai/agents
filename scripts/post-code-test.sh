@@ -520,7 +520,7 @@ _mc_pipefail_subject="$(
   # shellcheck disable=SC2030,SC2034,SC2153
   MERGE_BASE="${_mc_merge_base}"
   PATH="$(dirname "${MC_REAL_GIT}"):${PATH}"
-  eval "${_mc_pipefail_line}"
+  eval "${_mc_pipefail_line}" || exit $?
   printf '%s' "${COMMIT_SUBJECT}"
 )" || _mc_pipefail_exit=$?
 
