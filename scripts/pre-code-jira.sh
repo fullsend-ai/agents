@@ -2160,6 +2160,8 @@ tracker_close_issue() {
     return 1
   fi
 
+  local rejection_re="won.?t (do|fix|implement)|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon|declin|defer|not a bug|as designed|out of scope"
+
   # Idempotency pre-flight: check if the issue is already in the matching terminal status.
   local current_status_json current_category="" current_status_name=""
   current_status_json=$(_jira_api GET "/issue/${ISSUE_NUMBER}?fields=status" 2>/dev/null) || true
@@ -2175,7 +2177,7 @@ tracker_close_issue() {
       local is_rejection_status=0
       local dup_name="${JIRA_DUPLICATE_TRANSITION:-}"
       local not_planned_name="${JIRA_NOT_PLANNED_TRANSITION:-}"
-      if echo "${current_status_name}" | grep -qiE "won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon"; then
+      if echo "${current_status_name}" | grep -qiE "${rejection_re}"; then
         is_rejection_status=1
       elif [[ -n "${dup_name}" && "${dup_name,,}" != "${transition_name,,}" && "${current_status_name,,}" == "${dup_name,,}" ]]; then
         is_rejection_status=1
@@ -2216,7 +2218,8 @@ tracker_close_issue() {
       transition_id=$(echo "${transitions}" | jq -r \
         --arg dup "${dup_name}" \
         --arg not_planned "${not_planned_name}" \
-        --arg target "${transition_name}" '
+        --arg target "${transition_name}" \
+        --arg reject_re "${rejection_re}" '
         [ .transitions[]
           | select((.to.statusCategory.key // "") == "done")
           | (.name // "") as $n
@@ -2224,14 +2227,14 @@ tracker_close_issue() {
           | select(
               ($dup != "" and ($dup | ascii_downcase) != ($target | ascii_downcase) and (($n | ascii_downcase) == ($dup | ascii_downcase) or ($to | ascii_downcase) == ($dup | ascii_downcase))) or
               ($not_planned != "" and ($not_planned | ascii_downcase) != ($target | ascii_downcase) and (($n | ascii_downcase) == ($not_planned | ascii_downcase) or ($to | ascii_downcase) == ($not_planned | ascii_downcase))) or
-              ($n | test("(?i)won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon")) or
-              ($to | test("(?i)won.?t do|not.?planned|duplicate|obsolete|reject|cancel|invalid|cannot reproduce|abandon"))
+              ($n | test($reject_re; "i")) or
+              ($to | test($reject_re; "i"))
               | not
             )
         ] as $done_transitions
         | (
-            [$done_transitions[] | select(((.to.name // "") | test("(?i)^(done|closed|resolved|complete(d)?)$")) or (.name | test("(?i)^(done|closed|resolved|complete(d)?)$")))]
-            + [$done_transitions[] | select(((.to.name // "") | test("(?i)\\b(done|close(d)?|resolve(d)?|complete(d)?|finish(ed)?|fixed)\\b")) or (.name | test("(?i)\\b(done|close(d)?|resolve(d)?|complete(d)?|finish(ed)?|fixed)\\b")))]
+            [$done_transitions[] | (.to.name // "") as $to | (.name // "") as $n | select(if $to != "" then ($to | test("(?i)^(done|closed|resolved|complete(d)?)$")) else ($n | test("(?i)^(done|closed|resolved|complete(d)?)$")) end)]
+            + [$done_transitions[] | (.to.name // "") as $to | (.name // "") as $n | select(if $to != "" then ($to | test("(?i)\\b(done|close(d)?|resolve(d)?|complete(d)?|finish(ed)?|fixed)\\b")) else ($n | test("(?i)\\b(done|close(d)?|resolve(d)?|complete(d)?|finish(ed)?|fixed)\\b")) end)]
           )[0].id // empty
       ')
       if [[ -n "${transition_id}" ]]; then

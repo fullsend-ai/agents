@@ -2424,9 +2424,22 @@ run_jira_test "jira-completed-transitions" \
 # Jira completed action falls back to available Done transition if configured name is not present.
 MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"statusCategory":{"key":"done"}}},{"id":"41","name":"Won'\''t Do","to":{"statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"statusCategory":{"key":"done"}}}]}' \
 JIRA_COMPLETED_TRANSITION="NonExistent" \
-run_jira_test_stdout "jira-completed-fallback-done" \
+run_jira_test "jira-completed-fallback-done" \
   '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
-  "::warning::Transition 'NonExistent' (from JIRA_COMPLETED_TRANSITION) is not available on issue"
+  '{"transition":{"id":"51"}}'
+if grep -qF "::warning::Transition 'NonExistent' (from JIRA_COMPLETED_TRANSITION) is not available on issue" "${TMPDIR}/stdout.log"; then
+  echo "PASS: jira-completed-fallback-done-warning"
+else
+  echo "FAIL: jira-completed-fallback-done-warning — expected fallback warning in stdout"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Jira completed fallback skips rejection target statuses (e.g. "Close Issue" -> "Won't Fix" / "Deferred") and matches positive Done target.
+MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"42","name":"Close Issue","to":{"name":"Won'\''t Fix","statusCategory":{"key":"done"}}},{"id":"43","name":"Close Issue","to":{"name":"Deferred","statusCategory":{"key":"done"}}},{"id":"51","name":"Done","to":{"name":"Done","statusCategory":{"key":"done"}}}]}' \
+JIRA_COMPLETED_TRANSITION="NonExistent" \
+run_jira_test "jira-completed-fallback-skips-close-issue-wont-fix" \
+  '{"action":"completed","reasoning":"all child issues are closed","comment":"All tracked work is done."}' \
+  '{"transition":{"id":"51"}}'
 
 # Jira completed action falls back via target status name (.to.name) / positive word match (e.g. 'Resolve Issue' -> 'Resolved').
 MOCK_JIRA_TRANSITIONS='{"transitions":[{"id":"31","name":"Duplicate","to":{"name":"Duplicate","statusCategory":{"key":"done"}}},{"id":"71","name":"Resolve Issue","to":{"name":"Resolved","statusCategory":{"key":"done"}}}]}' \
