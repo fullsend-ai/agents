@@ -713,7 +713,7 @@ forge_get_finding_comment_links() {
 
 # Resolve still-open review threads on GitLab whose only comments are outdated
 # inline comments authored by the review agent. Best-effort: failures log a
-# warning and return success so they cannot block posting the new review.
+# warning and return success so they do not fail the post-review step.
 forge_resolve_outdated_review_threads() {
   if [[ -z "${REPO_ENCODED:-}" || -z "${PR_NUMBER:-}" ]]; then
     return 0
@@ -1000,13 +1000,6 @@ The \`/fs-review\` command only reviews open PRs/MRs.
 
   exit 0
 fi
-
-# Resolve still-open GitHub/GitLab review threads whose only comments are
-# outdated inline comments authored by the review agent. A later push
-# marks those threads isOutdated (or updates MR HEAD SHA on GitLab);
-# leaving them unresolved keeps them in the PR/MR's unresolved-review state.
-# Best-effort.
-forge_resolve_outdated_review_threads
 
 # Find the agent result — prefer the validated iteration when set.
 # Trust boundary: FULLSEND_VALIDATED_ITERATION_DIR is set by the fullsend CLI
@@ -2763,6 +2756,12 @@ if [ "${ACTION}" = "failure" ]; then
   echo "::error::Review result reported action=failure (reason: ${FAILURE_REASON}) — failure notice was published, but propagating a failed task outcome (PR #${PR_NUMBER} in ${REPO})" >&2
   exit 1
 fi
+
+# Resolve still-open GitHub/GitLab review threads whose only comments are
+# outdated inline comments authored by the review agent. Run only after a
+# real review has been posted so missing/failed agent runs or stale-head
+# exits do not close existing unresolved threads. Best-effort.
+forge_resolve_outdated_review_threads
 
 if [ "${OUTCOME_LABEL}" = "ready-for-merge" ]; then
   echo "Approve disposition — applying ready-for-merge label"

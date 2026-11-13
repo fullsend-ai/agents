@@ -722,7 +722,7 @@ forge_get_finding_comment_links() {
 
 # Resolve still-open review threads on GitLab whose only comments are outdated
 # inline comments authored by the review agent. Best-effort: failures log a
-# warning and return success so they cannot block posting the new review.
+# warning and return success so they do not fail the post-review step.
 forge_resolve_outdated_review_threads() {
   if [[ -z "${REPO_ENCODED:-}" || -z "${PR_NUMBER:-}" ]]; then
     return 0

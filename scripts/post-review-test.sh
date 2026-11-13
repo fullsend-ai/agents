@@ -4811,6 +4811,74 @@ MOCK_GITLAB_USER_FAIL=1 \
 run_gitlab_outdated_test "gitlab-user-fail-other-bot-no-mutation" \
   "${GITLAB_USERFAIL_OTHER_BOT_DISC}" no-curl-call "resolved=true"
 
+# Verify outdated threads are NOT resolved when no review is produced
+# (missing agent-result.json) or when the agent reports action=failure.
+run_no_review_outdated_test() {
+  local test_name="$1"
+  local forge="$2"
+  local mode="$3"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}"
+  if [[ "${mode}" == "failure" ]]; then
+    mkdir -p "${run_dir}/iteration-1/output"
+    jq -nc --arg repo "$([[ "${forge}" == "github" ]] && echo "test-org/test-repo" || echo "test-group/test-project")" \
+      '{action:"failure",reason:"tool-failure",pr_number:99,repo:$repo,head_sha:"c0ffee1",body:"Review failed."}' \
+      > "${run_dir}/iteration-1/output/agent-result.json"
+  fi
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export PR_NUMBER="99"
+    export FULLSEND_FORGE="${forge}"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    if [[ "${forge}" == "github" ]]; then
+      export REVIEW_TOKEN="fake-token"
+      export REPO_FULL_NAME="test-org/test-repo"
+      export PR_URL="https://github.com/test-org/test-repo/pull/99"
+      export MOCK_REVIEW_THREADS_JSON="${ELIGIBLE_ENVELOPE}"
+    else
+      export REVIEW_TOKEN="fake-gitlab-token"
+      export REPO_FULL_NAME="test-group/test-project"
+      export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+      export CI_SERVER_HOST="gitlab.com"
+      export MOCK_MR_HEAD_SHA="c0ffee1"
+      export MOCK_GITLAB_DISCUSSIONS="${GITLAB_OUTDATED_DISC}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 1 ]]; then
+    echo "FAIL: ${test_name} — expected exit code 1, got ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  local forbidden
+  if [[ "${forge}" == "github" ]]; then
+    forbidden="resolveReviewThread"
+  else
+    forbidden="discussions/disc_outdated?resolved=true"
+  fi
+  if grep -qF -- "${forbidden}" "${GH_LOG}"; then
+    echo "FAIL: ${test_name} — unexpected thread resolution '${forbidden}' when no review was posted"
+    cat "${GH_LOG}"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+  echo "PASS: ${test_name}"
+}
+
+run_no_review_outdated_test "github-missing-result-no-resolve" "github" "missing"
+run_no_review_outdated_test "github-action-failure-no-resolve" "github" "failure"
+run_no_review_outdated_test "gitlab-missing-result-no-resolve" "gitlab" "missing"
+run_no_review_outdated_test "gitlab-action-failure-no-resolve" "gitlab" "failure"
+
 # No label-actions output line may carry '::' after its own '::cmd::' prefix.
 shopt -s nullglob
 LABEL_LOGS=("${TMPDIR}"/stdout-label-actions-*.log)
