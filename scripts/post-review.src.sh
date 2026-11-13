@@ -84,10 +84,11 @@ The \`/fs-review\` command only reviews open PRs/MRs.
   exit 0
 fi
 
-# Resolve still-open GitHub review threads whose only comments are
+# Resolve still-open GitHub/GitLab review threads whose only comments are
 # outdated inline comments authored by the review agent. A later push
-# marks those threads isOutdated; leaving them unresolved keeps them
-# in the PR's unresolved-review state. Best-effort (GitLab no-op).
+# marks those threads isOutdated (or updates MR HEAD SHA on GitLab);
+# leaving them unresolved keeps them in the PR/MR's unresolved-review state.
+# Best-effort.
 forge_resolve_outdated_review_threads
 
 # Find the agent result — prefer the validated iteration when set.

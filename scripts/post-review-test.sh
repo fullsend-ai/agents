@@ -666,6 +666,17 @@ for arg in "\$@"; do
   PREV="\${arg}"
 done
 
+# PUT /merge_requests/:iid/discussions/:disc_id → resolve discussion
+if [[ "\${METHOD}" == "PUT" ]] && [[ "\${URL}" == *"/discussions/"* ]]; then
+  echo "curl-put-discussion \${URL}" >> "${GH_LOG}"
+  if [[ -n "\${MOCK_RESOLVE_DISCUSSION_FAIL:-}" ]]; then
+    echo "mock discussion resolve failure" >&2
+    exit 1
+  fi
+  echo '{}'
+  exit 0
+fi
+
 # PUT /merge_requests/:iid (add/remove labels) → success
 if [[ "\${METHOD}" == "PUT" ]]; then
   echo '{}'
@@ -680,14 +691,29 @@ fi
 
 # GET /user → authenticated GitLab review-token identity
 if [[ "\${URL}" == *"/user" ]]; then
-  echo '{"username":"'"\${MOCK_GITLAB_REVIEW_ACTOR:-review-bot}"'"}'
+  echo '{"id":100,"username":"'"\${MOCK_GITLAB_REVIEW_ACTOR:-review-bot}"'"}'
+  exit 0
+fi
+
+# GET /merge_requests/:iid/discussions → discussions
+if [[ "\${URL}" == *"/discussions"* ]]; then
+  if [[ -n "\${MOCK_GITLAB_DISCUSSIONS_FAIL:-}" ]]; then
+    echo "mock discussions fetch failure" >&2
+    exit 1
+  fi
+  if [[ -n "\${MOCK_GITLAB_DISCUSSIONS:-}" ]]; then
+    echo "\${MOCK_GITLAB_DISCUSSIONS}"
+  else
+    echo "[]"
+  fi
   exit 0
 fi
 
 # GET /merge_requests/:iid → MR metadata
-if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" != *"/notes"* ]] && [[ "\${URL}" != *"/changes"* ]] && [[ "\${URL}" != *"/labels"* ]]; then
+if [[ "\${URL}" == *"/merge_requests/"* ]] && [[ "\${URL}" != *"/notes"* ]] && [[ "\${URL}" != *"/changes"* ]] && [[ "\${URL}" != *"/labels"* ]] && [[ "\${URL}" != *"/discussions"* ]]; then
   DRAFT="\${MOCK_MR_IS_DRAFT:-false}"
-  echo '{"state":"opened","draft":'"\${DRAFT}"',"author":{"username":"testuser"},"iid":99}'
+  HEAD_SHA="\${MOCK_MR_HEAD_SHA:-c0ffee1}"
+  echo '{"state":"opened","draft":'"\${DRAFT}"',"author":{"username":"testuser"},"iid":99,"diff_refs":{"head_sha":"'"\${HEAD_SHA}"'"}}'
   exit 0
 fi
 
@@ -4651,6 +4677,104 @@ run_gitlab_outdated_noop_test() {
   echo "PASS: ${test_name}"
 }
 run_gitlab_outdated_noop_test
+
+run_gitlab_outdated_test() {
+  local test_name="$1"
+  local discussions_json="$2"
+  local check_type="$3"
+  local pattern="$4"
+  local resolve_fail="${5:-}"
+
+  local run_dir="${TMPDIR}/run-${test_name}"
+  mkdir -p "${run_dir}/iteration-1/output"
+  echo '{"action":"comment","pr_number":99,"repo":"test-group/test-project","head_sha":"c0ffee1","body":"notes"}' \
+    > "${run_dir}/iteration-1/output/agent-result.json"
+  : > "${GH_LOG}"
+
+  local exit_code=0
+  # shellcheck disable=SC2030,SC2031
+  (
+    cd "${run_dir}"
+    export PATH="${MOCK_BIN}:${PATH}"
+    export REVIEW_TOKEN="fake-gitlab-token"
+    export PR_NUMBER="99"
+    export REPO_FULL_NAME="test-group/test-project"
+    export PR_URL="https://gitlab.com/test-group/test-project/-/merge_requests/99"
+    export CI_SERVER_HOST="gitlab.com"
+    export FULLSEND_FORGE="gitlab"
+    export REVIEW_FINDING_SEVERITY_THRESHOLD="low"
+    export MOCK_MR_HEAD_SHA="c0ffee1"
+    if [[ -n "${discussions_json}" ]]; then
+      export MOCK_GITLAB_DISCUSSIONS="${discussions_json}"
+    fi
+    if [[ -n "${resolve_fail}" ]]; then
+      export MOCK_RESOLVE_DISCUSSION_FAIL="${resolve_fail}"
+    fi
+    bash "${POST_SCRIPT}"
+  ) > "${TMPDIR}/stdout-${test_name}.log" 2>&1 || exit_code=$?
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "FAIL: ${test_name} — exit code ${exit_code}"
+    cat "${TMPDIR}/stdout-${test_name}.log"
+    FAILURES=$((FAILURES + 1))
+    return
+  fi
+
+  case "${check_type}" in
+    stdout)
+      if ! grep -qF -- "${pattern}" "${TMPDIR}/stdout-${test_name}.log"; then
+        echo "FAIL: ${test_name} — stdout missing '${pattern}'"
+        cat "${TMPDIR}/stdout-${test_name}.log"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+    curl-call)
+      if ! grep -qF -- "${pattern}" "${GH_LOG}"; then
+        echo "FAIL: ${test_name} — mock curl log missing '${pattern}'"
+        cat "${GH_LOG}"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+    no-curl-call)
+      if grep -qF -- "${pattern}" "${GH_LOG}"; then
+        echo "FAIL: ${test_name} — mock curl log unexpected '${pattern}'"
+        cat "${GH_LOG}"
+        FAILURES=$((FAILURES + 1))
+        return
+      fi
+      ;;
+  esac
+  echo "PASS: ${test_name}"
+}
+
+GITLAB_OUTDATED_DISC='[{"id":"disc_outdated","notes":[{"id":10,"author":{"id":100,"username":"review-bot"},"resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}}]}]'
+GITLAB_SYSTEM_NOTE_DISC='[{"id":"disc_sys","notes":[{"id":14,"author":{"id":100,"username":"review-bot"},"resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}},{"id":15,"system":true,"author":{"id":1,"username":"system"},"body":"added 1 commit"}]}]'
+GITLAB_RESOLVED_DISC='[{"id":"disc_resolved","notes":[{"id":11,"author":{"id":100,"username":"review-bot"},"resolvable":true,"resolved":true,"position":{"head_sha":"older_sha"}}]}]'
+GITLAB_HUMAN_DISC='[{"id":"disc_human","notes":[{"id":12,"author":{"id":200,"username":"alice"},"resolvable":true,"resolved":false,"position":{"head_sha":"older_sha"}}]}]'
+GITLAB_CURRENT_DISC='[{"id":"disc_current","notes":[{"id":13,"author":{"id":100,"username":"review-bot"},"resolvable":true,"resolved":false,"position":{"head_sha":"c0ffee1"}}]}]'
+
+run_gitlab_outdated_test "gitlab-outdated-thread-resolved" \
+  "${GITLAB_OUTDATED_DISC}" curl-call "discussions/disc_outdated?resolved=true"
+
+run_gitlab_outdated_test "gitlab-outdated-thread-with-system-notes-resolved" \
+  "${GITLAB_SYSTEM_NOTE_DISC}" curl-call "discussions/disc_sys?resolved=true"
+
+run_gitlab_outdated_test "gitlab-outdated-thread-resolved-log" \
+  "${GITLAB_OUTDATED_DISC}" stdout "Resolved 1 outdated review-agent thread(s)"
+
+run_gitlab_outdated_test "gitlab-already-resolved-no-mutation" \
+  "${GITLAB_RESOLVED_DISC}" no-curl-call "discussions/disc_resolved?resolved=true"
+
+run_gitlab_outdated_test "gitlab-human-comment-no-mutation" \
+  "${GITLAB_HUMAN_DISC}" no-curl-call "discussions/disc_human?resolved=true"
+
+run_gitlab_outdated_test "gitlab-current-thread-no-mutation" \
+  "${GITLAB_CURRENT_DISC}" no-curl-call "discussions/disc_current?resolved=true"
+
+run_gitlab_outdated_test "gitlab-resolve-fail-nonfatal" \
+  "${GITLAB_OUTDATED_DISC}" stdout "Failed to resolve review thread" "1"
 
 # No label-actions output line may carry '::' after its own '::cmd::' prefix.
 shopt -s nullglob

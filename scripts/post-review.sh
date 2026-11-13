@@ -711,9 +711,86 @@ forge_get_finding_comment_links() {
   echo '{}'
 }
 
-# GitHub-only: GitLab discussions have no isOutdated equivalent in this
-# issue's scope. No-op so post-review can call this unconditionally.
+# Resolve still-open review threads on GitLab whose only comments are outdated
+# inline comments authored by the review agent. Best-effort: failures log a
+# warning and return success so they cannot block posting the new review.
 forge_resolve_outdated_review_threads() {
+  if [[ -z "${REPO_ENCODED:-}" || -z "${PR_NUMBER:-}" ]]; then
+    return 0
+  fi
+
+  local mr_info current_sha
+  mr_info=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}" 2>/dev/null) || mr_info="{}"
+  current_sha=$(echo "${mr_info}" | jq -r '.diff_refs.head_sha // .sha // empty' 2>/dev/null) || current_sha=""
+  if [[ -z "${current_sha}" ]]; then
+    return 0
+  fi
+
+  local current_user bot_user_id bot_username
+  current_user=$(_gitlab_api GET "/user" 2>/dev/null) || current_user="{}"
+  bot_user_id=$(echo "${current_user}" | jq -r '.id // empty' 2>/dev/null) || bot_user_id=""
+  bot_username=$(echo "${current_user}" | jq -r '.username // empty' 2>/dev/null) || bot_username=""
+
+  local page=1 all_discussions="[]"
+  while [[ "${page}" -le 10 ]]; do
+    local response
+    response=$(_gitlab_api GET "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions?per_page=100&page=${page}" 2>/dev/null) || break
+    if [[ -z "${response}" || "${response}" == "[]" || "${response}" != "["* ]]; then
+      break
+    fi
+    all_discussions=$(jq -c -s '.[0] + .[1]' <<< "${all_discussions} ${response}" 2>/dev/null) || break
+    local count
+    count=$(jq 'length' <<< "${response}" 2>/dev/null) || count=0
+    [[ "${count}" -lt 100 ]] && break
+    page=$((page + 1))
+  done
+
+  local discussion_ids
+  discussion_ids=$(echo "${all_discussions}" | jq -r --arg current_sha "${current_sha}" --arg bot_id "${bot_user_id}" --arg bot_user "${bot_username}" '
+    .[]
+    | select(.id != null)
+    | .notes |= (map(select(.system != true)) // [])
+    | select(.notes | type == "array" and length > 0)
+    | select(.notes | any(.resolvable == true and .resolved == false))
+    | select(
+        if ($bot_id != "") then
+          .notes | all((.author.id | tostring) == $bot_id or (.author.username // "" | ascii_downcase) == ($bot_user | ascii_downcase))
+        else
+          .notes | all((.author.username // "" | test("(^|[-_])bot([-_]|$)|\\[bot\\]$|fullsend"; "i")) or (.body // "" | test("<!--[ ]*fullsend|🤖 Fullsend"; "i")))
+        end
+      )
+    | select(
+        if ($current_sha != "") then
+          (.notes[0].position.head_sha // empty) != "" and .notes[0].position.head_sha != $current_sha
+        else
+          false
+        end
+      )
+    | .id
+  ' 2>/dev/null) || discussion_ids=""
+
+  if [[ -z "${discussion_ids}" ]]; then
+    return 0
+  fi
+
+  local resolved=0 failed=0
+  while IFS= read -r disc_id; do
+    [[ -z "${disc_id}" ]] && continue
+    if _gitlab_api PUT "/projects/${REPO_ENCODED}/merge_requests/${PR_NUMBER}/discussions/${disc_id}?resolved=true" >/dev/null 2>&1; then
+      resolved=$((resolved + 1))
+    else
+      failed=$((failed + 1))
+      echo "::warning::Failed to resolve review thread $(_gha_sanitize "${disc_id}")"
+    fi
+  done <<< "${discussion_ids}"
+
+  if [[ "${resolved}" -gt 0 ]]; then
+    echo "Resolved ${resolved} outdated review-agent thread(s)"
+  fi
+  if [[ "${failed}" -gt 0 ]]; then
+    echo "::warning::Failed to resolve ${failed} outdated review thread(s)"
+  fi
+
   return 0
 }
 
@@ -922,10 +999,11 @@ The \`/fs-review\` command only reviews open PRs/MRs.
   exit 0
 fi
 
-# Resolve still-open GitHub review threads whose only comments are
+# Resolve still-open GitHub/GitLab review threads whose only comments are
 # outdated inline comments authored by the review agent. A later push
-# marks those threads isOutdated; leaving them unresolved keeps them
-# in the PR's unresolved-review state. Best-effort (GitLab no-op).
+# marks those threads isOutdated (or updates MR HEAD SHA on GitLab);
+# leaving them unresolved keeps them in the PR/MR's unresolved-review state.
+# Best-effort.
 forge_resolve_outdated_review_threads
 
 # Find the agent result — prefer the validated iteration when set.
