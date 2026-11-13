@@ -556,7 +556,11 @@ _forge_push_branch() {
     return 0
   fi
   git reset -q --soft "${tip}" || return 1
-  git branch -q --set-upstream-to="origin/${branch}" || return 1
+  # Set the upstream as `git push -u` does: --set-upstream-to refuses a
+  # remote-tracking ref outside the fetch refspec, as in a single-branch
+  # clone.
+  git config "branch.${branch}.remote" origin || return 1
+  git config "branch.${branch}.merge" "refs/heads/${branch}" || return 1
   echo "Branch ${branch} is at ${tip} on origin"
 }
 # END bundled: lib/github-signed-push.lib.sh
