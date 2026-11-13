@@ -471,6 +471,7 @@ ${MC_REAL_GIT} -C "${_mc_repo}" checkout -q -b agent/42-test
 echo "feature" > "${_mc_repo}/feature.txt"
 ${MC_REAL_GIT} -C "${_mc_repo}" add feature.txt
 ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "feat(#42): add primary feature"
+_mc_first_commit="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-parse HEAD)"
 echo "fix" > "${_mc_repo}/fix.txt"
 ${MC_REAL_GIT} -C "${_mc_repo}" add fix.txt
 ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
@@ -478,7 +479,7 @@ ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -m "fix(#42): suppress lint warning"
 # Reimplement the multi-commit title selection from post-code.src.sh
 _mc_count="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
 if [ "${_mc_count}" -gt 1 ]; then
-  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+  _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | sed -n '1p')"
 else
   _mc_subject="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
 fi
@@ -493,11 +494,69 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# Single-commit case: rewind to one commit and verify
-${MC_REAL_GIT} -C "${_mc_repo}" reset -q --hard HEAD~1
+# Verify post-code.src.sh and bundled post-code.sh actually use sed -n '1p' (not head -).
+for _mc_script in "${SCRIPT_DIR}/post-code.src.sh" "${SCRIPT_DIR}/post-code.sh"; do
+  if ! grep -qE "COMMIT_SUBJECT=.*sed -n '1p'" "${_mc_script}" || grep -qE "COMMIT_SUBJECT=.*head -" "${_mc_script}"; then
+    echo "FAIL: multi-commit-script-uses-sed (${_mc_script})"
+    FAILURES=$((FAILURES + 1))
+  else
+    echo "PASS: multi-commit-script-uses-sed (${_mc_script##*/})"
+  fi
+done
+
+# Multi-commit pipefail regression test — exercise the exact COMMIT_SUBJECT= pipeline
+# from POST_SCRIPT against >64KB of commit subject output to prove sed drains the stream without SIGPIPE 141.
+_mc_pad="$(printf 'x%.0s' {1..8192})"
+for _mc_i in $(seq 1 12); do
+  echo "pad ${_mc_i}" >> "${_mc_repo}/fix.txt"
+  ${MC_REAL_GIT} -C "${_mc_repo}" commit -q -am "fix(#42): padding commit ${_mc_i} ${_mc_pad}"
+done
+
+_eval_commit_subject_pipefail() {
+  (
+    set -eo pipefail
+    cd "${_mc_repo}"
+    # shellcheck disable=SC2030,SC2034,SC2153
+    MERGE_BASE="${_mc_merge_base}"
+    PATH="$(dirname "${MC_REAL_GIT}"):${PATH}"
+    eval "$1" || exit $?
+    printf '%s' "${COMMIT_SUBJECT}"
+  )
+}
+
+_mc_pipefail_line="$(grep -m1 -E "COMMIT_SUBJECT=.*sed -n '1p'" "${POST_SCRIPT}" || true)"
+if [ -z "${_mc_pipefail_line}" ]; then
+  echo "FAIL: multi-commit-git-integration-pipefail-safe (COMMIT_SUBJECT pipeline not found)"
+  FAILURES=$((FAILURES + 1))
+else
+  _mc_pipefail_exit=0
+  _mc_pipefail_subject="$(_eval_commit_subject_pipefail "${_mc_pipefail_line}")" || _mc_pipefail_exit=$?
+
+  if [ "${_mc_pipefail_exit}" -eq 0 ] && [ "${_mc_pipefail_subject}" = "feat(#42): add primary feature" ]; then
+    echo "PASS: multi-commit-git-integration-pipefail-safe"
+  else
+    echo "FAIL: multi-commit-git-integration-pipefail-safe (exit=${_mc_pipefail_exit}, subject='${_mc_pipefail_subject}')"
+    FAILURES=$((FAILURES + 1))
+  fi
+
+  _mc_sed_pat="sed -n '1p'"
+  _mc_control_line="${_mc_pipefail_line//"${_mc_sed_pat}"/head -1}"
+  _mc_control_exit=0
+  _mc_control_subject="$(_eval_commit_subject_pipefail "${_mc_control_line}")" || _mc_control_exit=$?
+
+  if [ "${_mc_control_exit}" -eq 141 ]; then
+    echo "PASS: multi-commit-git-integration-control-head-sigpipe"
+  else
+    echo "FAIL: multi-commit-git-integration-control-head-sigpipe (expected exit=141, got exit=${_mc_control_exit}, subject='${_mc_control_subject}')"
+    FAILURES=$((FAILURES + 1))
+  fi
+fi
+
+# Single-commit case: rewind to initial feature commit and verify
+${MC_REAL_GIT} -C "${_mc_repo}" reset -q --hard "${_mc_first_commit}"
 _mc_count_single="$(${MC_REAL_GIT} -C "${_mc_repo}" rev-list --count "${_mc_merge_base}..HEAD")"
 if [ "${_mc_count_single}" -gt 1 ]; then
-  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | head -1)"
+  _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log --format='%s' --reverse "${_mc_merge_base}..HEAD" | sed -n '1p')"
 else
   _mc_subject_single="$(${MC_REAL_GIT} -C "${_mc_repo}" log -1 --format='%s' HEAD)"
 fi
