@@ -449,6 +449,28 @@ else
 fi
 rm -rf "$ROOT"
 
+# A malformed annotations.yaml next to a valid release:true case: yq cannot
+# read it, so the run must fail naming the file — not skip with exit 0 and
+# not run the readable subset.
+run_test
+ROOT="$(mktemp -d)"; setup_fixture "$ROOT"
+BROKEN="${ROOT}/eval/testagent/cases/002-full-only-case/annotations.yaml"
+printf 'release: [\n' > "$BROKEN"
+RC=0
+OUT=$(run_rf "$ROOT" testagent EVAL_TIER=release 2>&1) || RC=$?
+shopt -s nullglob
+LEFTOVER=("${ROOT}"/eval/testagent/release-cases-*)
+shopt -u nullglob
+if [[ $RC -ne 0 ]] && echo "$OUT" | grep -qF "ERROR: could not read ${BROKEN}" \
+  && ! echo "$OUT" | grep -q "skipping functional tests" \
+  && [[ "$(cat "${ROOT}/capture/execute-calls" 2>/dev/null || echo 0)" == "0" ]] \
+  && [[ ${#LEFTOVER[@]} -eq 0 ]]; then
+  pass "release tier fails naming an annotations.yaml that yq cannot read"
+else
+  fail "release tier fails naming an annotations.yaml that yq cannot read (rc=$RC, leftover: ${LEFTOVER[*]:-none}, output: $OUT)"
+fi
+rm -rf "$ROOT"
+
 # ---------------------------------------------------------------------------
 # Both tiers: deterministic contract judges gate; LLM-quality, live-model
 # behaviour and budget judges are report-only (thresholds dropped at runtime)
